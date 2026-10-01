@@ -78,11 +78,15 @@ class CliInput:
         return stripped
 
 
-# parity-exempt: records the options and query of one call and answers with one plain reply; a one-off call reaches nothing else
+# parity-exempt: records the options and query of one call and answers with a scripted reply; a one-off call reaches nothing else
 class _FakeSDKClient:
-    """Stands in for ``claude_agent_sdk.ClaudeSDKClient`` on the one-off path: records, then answers."""
+    """Stands in for ``claude_agent_sdk.ClaudeSDKClient`` on the one-off path: records, then answers.
+
+    The answer is :attr:`answer` when a recording set one, else a plain ``ok``.
+    """
 
     received: list[CliInput] = []
+    answer: list[Any] | None = None
 
     def __init__(self, options: Any = None) -> None:
         self._options = options
@@ -100,6 +104,10 @@ class _FakeSDKClient:
     async def receive_response(self) -> AsyncIterator[Any]:
         from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock  # noqa: PLC0415
 
+        if _FakeSDKClient.answer is not None:
+            for message in _FakeSDKClient.answer:
+                yield message
+            return
         yield AssistantMessage(content=[TextBlock(text="ok")], model=DEFAULT_CHAT_MODEL)
         yield ResultMessage(
             subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1, session_id="s"
@@ -111,17 +119,20 @@ def _tripwire_init(self: Any, *_args: Any, **_kwargs: Any) -> None:
 
 
 @contextmanager
-def recording_cli() -> Iterator[list[CliInput]]:
+def recording_cli(answer: list[Any] | None = None) -> Iterator[list[CliInput]]:
     """every SDK client binding patched to record what each call sends; pooling off meanwhile.
 
     A model must be BUILT inside the block as well as called there: the subscription model class
     captures ``ClaudeSDKClient`` when it is built.
 
+    :param answer: the SDK messages every call is answered with, in order; a plain ``ok`` when omitted
+    :ptype answer: list[Any] | None
     :return: the calls the CLI received, in order, filled in as they arrive
     :rtype: Iterator[list[CliInput]]
     """
     received: list[CliInput] = []
     _FakeSDKClient.received = received
+    _FakeSDKClient.answer = answer
     claude_cli_pool.configure_claude_cli_pool(enabled=False)
     try:
         with (
@@ -133,6 +144,7 @@ def recording_cli() -> Iterator[list[CliInput]]:
     finally:
         claude_cli_pool.configure_claude_cli_pool(enabled=True)
         _FakeSDKClient.received = []
+        _FakeSDKClient.answer = None
 
 
 def subscription_model(token: str = TOKEN, **model_kwargs: Any) -> BaseChatModel:

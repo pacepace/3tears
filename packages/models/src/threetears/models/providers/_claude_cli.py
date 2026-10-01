@@ -198,6 +198,7 @@ from threetears.models.claude_cli_pool import (
     claude_cli_pool,
 )
 from threetears.models.errors import ModelProviderError, ModelRateLimitError
+from threetears.models.providers._junk_tool_calls import drop_junk_tool_calls
 from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation
 from threetears.tool_schema import self_contained_input_schema
 
@@ -910,12 +911,14 @@ def _subscription_model_cls() -> type:
             """
             info = dict(generation_info or {})
             usage = _usage_metadata(info.get("usage"))
-            return AIMessage(
+            message = AIMessage(
                 content=content,
                 tool_calls=list(tool_calls or []),
                 response_metadata=info,
                 usage_metadata=usage,
             )
+            drop_junk_tool_calls(message)
+            return message
 
         async def _astream(
             self,
@@ -1025,25 +1028,24 @@ def _subscription_model_cls() -> type:
                             content = json.dumps(answer) if answer is not None else "\n".join(held)
                             if content and run_manager:
                                 await run_manager.on_llm_new_token(content)
-                        yield ChatGenerationChunk(
-                            message=AIMessageChunk(
-                                content=content,
-                                chunk_position="last",
-                                tool_call_chunks=[
-                                    {
-                                        "id": call["id"],
-                                        "name": call["name"],
-                                        "args": json.dumps(call["args"]),
-                                        "index": index,
-                                        "type": "tool_call_chunk",
-                                    }
-                                    for index, call in enumerate(tool_calls)
-                                ],
-                                response_metadata=generation_info,
-                                usage_metadata=usage,
-                            ),
-                            generation_info=generation_info,
+                        last = AIMessageChunk(
+                            content=content,
+                            chunk_position="last",
+                            tool_call_chunks=[
+                                {
+                                    "id": call["id"],
+                                    "name": call["name"],
+                                    "args": json.dumps(call["args"]),
+                                    "index": index,
+                                    "type": "tool_call_chunk",
+                                }
+                                for index, call in enumerate(tool_calls)
+                            ],
+                            response_metadata=generation_info,
+                            usage_metadata=usage,
                         )
+                        drop_junk_tool_calls(last)
+                        yield ChatGenerationChunk(message=last, generation_info=generation_info)
 
     return _SubscriptionChatModel
 
