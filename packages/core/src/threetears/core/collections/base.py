@@ -2508,8 +2508,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         row L3 committed last. L1 caches the row only when L2 took it. The ordering needs no
         order columns: the L2 revision read before the write is the fence, on every collection.
         The save itself never fails for it; an unreadable L2 caches nothing and the save still
-        succeeds. When the row is not cached, the entity's change buffer carries it, so the
-        handle still reads what it saved.
+        succeeds.
+
+        **The handle holds what it saved.** Whether or not any tier took the row, the saved entity
+        holds the row as stored (:meth:`BaseEntity.hold_row`) and answers from it, never from L1's
+        copy of the key: that copy is a cache a caller's transaction settling the key, a peer's
+        broadcast or expiry may drop at any time, and a later write may replace.
 
         **Cached only while no other write of the key overlapped it, in this process.** L1 takes
         the row only when no other save of the same key was in flight while this one was, and no
@@ -2634,8 +2638,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             await self._write_buffer.add(self.table_name, entity_id, data)
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
-            if entity.holds_row:
-                entity.hold_row(data)
+            # a saved handle answers from the row it saved, never from L1's copy of the key, which
+            # any eviction may drop and any later write may replace.
+            entity.hold_row(data)
         elif caller_transaction is not None:
             # enrolled before the write, so a write whose outcome is unknown -- it raised, but the
             # caller may still commit what reached L3 -- is settled with the rest.
@@ -2679,15 +2684,16 @@ class BaseCollection(ABC, Generic[EntityT]):
                     entity.hold_row(data)
                 else:
                     entity.original_date_updated = stored.get("date_updated")
-                    cached = await self._cache_committed_row(entity_id, stored, before, ticket)
+                    await self._cache_committed_row(entity_id, stored, before, ticket)
                     # a key the stored row does not carry is one this table does not hold: the
                     # caller's own, which a read back cannot speak to. the handle keeps it; the
                     # tiers do not, since they hold what an L3 read gives.
                     carried = {key: value for key, value in data.items() if key not in stored}
-                    if not cached or entity.holds_row or carried:
-                        # the handle still reads what it saved, as on a collection with no L1; an
-                        # entity that holds its row keeps holding it, now the row as stored.
-                        entity.hold_row({**carried, **stored})
+                    # the handle holds the row as stored whether or not L1 took it: L1's copy of
+                    # the key is a cache any eviction may drop (a caller's transaction settling
+                    # the key, a peer's broadcast, expiry) and any later write may replace, and
+                    # a handle reading through it would answer None, or another version.
+                    entity.hold_row({**carried, **stored})
 
         await self._publish_invalidation(entity_id)
         if generation_failure is not None:
@@ -2810,7 +2816,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     async def _cache_committed_row(
         self, entity_id: Any, data: dict[str, Any], before: _L2BeforeWrite, ticket: _KeyTicket
-    ) -> bool:
+    ) -> None:
         """cache a row whose L3 write committed, in L2 and L1, only while no later write has touched the key.
 
         The L3 write is a round trip, and a later save of the same row can complete inside it:
@@ -2845,8 +2851,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :ptype before: _L2BeforeWrite
         :param ticket: the write's ticket on the key, taken before its first await
         :ptype ticket: _KeyTicket
-        :return: whether L1 now holds the row; when not, the caller keeps it on the entity's handle
-        :rtype: bool
+        :return: nothing
+        :rtype: None
         """
         self._clear_l1_marker(entity_id)
         landed = True
@@ -2861,7 +2867,6 @@ class BaseCollection(ABC, Generic[EntityT]):
             self._evict_l1(entity_id)
         if not before.fenced:
             await self._save_to_l2(entity_id, data)
-        return cached
 
     async def _write_l2_at(self, entity_id: Any, data: dict[str, Any], revision: int | None) -> bool:
         """write a committed row to L2 at ``revision``, or delete the key when that is refused.
@@ -2943,6 +2948,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             data = await self.fetch_from_store(entity_id)
             if data is None:
                 raise ValueError(f"Entity {entity_id} not found in storage")
+            # the handle holds the row it reloaded, as a loaded handle holds the row it read: L1's
+            # copy is the fenced write below, never set_data's, and the handle never answers from it.
+            entity.hold_row(data)
             entity.set_data(data)
             entity.original_date_updated = data.get("date_updated")
             if self._l1 is not None:
@@ -2956,7 +2964,6 @@ class BaseCollection(ABC, Generic[EntityT]):
                     # a write or eviction of the key overlapped the read, so the row may already be
                     # older than L3's: the handle keeps it, L1 does not.
                     self._evict_l1(entity_id)
-                    entity.hold_row(data)
         if before is not None:
             live, revision = before
             # a live L2 value is refreshed only where L3 is never behind L2: a collection whose L3

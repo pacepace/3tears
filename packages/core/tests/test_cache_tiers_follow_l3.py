@@ -33,6 +33,7 @@ from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table, Te
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import CallerTransaction
 from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
@@ -426,6 +427,117 @@ class TestAReadInFlightDuringAWrite:
         assert store.rows[_ID]["members"] == "y"
         assert _l1_members(coll) in {None, "y"}, "a read cached the row it fetched before a peer's save"
         assert await _served(coll) == "y"
+
+
+class _Buffered(_Tiered):
+    """the collection above, writing L3 behind L2 through a write buffer."""
+
+    l3_write_policy: ClassVar[Literal["synchronous", "write_behind"] | None] = "write_behind"
+
+    def __init__(self, registry: CollectionRegistry, config: DefaultCoreConfig, store: _Store) -> None:
+        self._store = store
+        BaseCollection.__init__(self, registry, config, write_buffer=WriteBuffer())
+
+
+async def _buffered_replica(nats: FakeNatsClient, store: _Store) -> _Buffered:
+    l1 = SQLiteBackend(db_name=f"tier_order_{uuid.uuid4().hex[:8]}")
+    l1.initialize(_metadata())
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1, l2_client=nats, l3_pool=object(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    collection = _Buffered(registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""), store)
+    await registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+    return collection
+
+
+def _whole_row(members: str) -> dict[str, Any]:
+    """a row naming every column, so a write-behind save does not refuse it for server defaults."""
+    return {"id": _ID, "members": members, "l2_epoch": None, "l2_revision": None}
+
+
+class TestASavingHandleOutlivesItsCachedRow:
+    """a handle that saved a row keeps reading the row it saved, whatever later evicts L1's copy.
+
+    L1 is a cache: a CallerTransaction settling the key, a peer's broadcast, an explicit
+    invalidation or expiry may drop the row at any time. A saved handle is no longer new -- it is
+    a handle onto the version it stored, exactly as a loaded one is onto the version it read -- so
+    it answers from that row, never from whatever L1 holds for the key now, and never ``None``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_invalidation_after_the_save_leaves_the_handle_reading_its_row(self) -> None:
+        nats, store = FakeNatsClient(), _Store()
+        coll = await _replica(nats, store)
+        saved = coll.create(_row("base"))
+        await coll.save_entity(saved)
+        assert _l1_members(coll) == "base", "the harness no longer caches an uncontended save"
+        await coll.invalidate_cache(_ID)
+        assert saved.members == "base"
+        assert saved.to_dict()["members"] == "base"
+
+    @pytest.mark.asyncio
+    async def test_a_rolled_back_caller_transaction_over_the_key_leaves_the_handle_reading_its_row(self) -> None:
+        nats, store = FakeNatsClient(), _Store()
+        coll = await _replica(nats, store)
+        saved = coll.create(_row("base"))
+        await coll.save_entity(saved)
+        conn = _Conn(store)
+
+        class _Abort(Exception):
+            pass
+
+        with pytest.raises(_Abort):
+            async with CallerTransaction(conn):
+                entity = await coll.get(_ID)
+                assert entity is not None
+                entity.members = "x"
+                await coll.save_entity(entity, conn=conn)
+                raise _Abort
+        assert _l1_members(coll) is None, "the transaction's end no longer evicts the key it touched"
+        assert saved.members == "base"
+        assert saved.date_created is not None
+
+    @pytest.mark.asyncio
+    async def test_a_peers_save_reads_as_the_peers_row_only_through_a_new_read(self) -> None:
+        nats, store = FakeNatsClient(), _Store()
+        coll = await _replica(nats, store)
+        peer = await _replica(nats, store)
+        saved = coll.create(_row("base"))
+        await coll.save_entity(saved)
+        await peer.save_entity(peer.create(_row("y")))
+        assert saved.members == "base", "the handle answered with another version, or with nothing"
+        assert await _served(coll) == "y"
+
+    @pytest.mark.asyncio
+    async def test_a_reloaded_handle_keeps_the_row_it_reloaded(self) -> None:
+        nats, store = FakeNatsClient(), _Store()
+        coll = await _replica(nats, store)
+        saved = coll.create(_row("base"))
+        await coll.save_entity(saved)
+        store.rows[_ID]["members"] = "reloaded"
+        await coll.reload_entity(saved)
+        await coll.invalidate_cache(_ID)
+        assert saved.members == "reloaded"
+
+    @pytest.mark.asyncio
+    async def test_a_write_behind_save_leaves_the_handle_reading_its_row(self) -> None:
+        nats, store = FakeNatsClient(), _Store()
+        coll = await _buffered_replica(nats, store)
+        saved = coll.create(_whole_row("base"))
+        await coll.save_entity(saved)
+        await coll.invalidate_cache(_ID)
+        assert saved.members == "base"
+
+    @pytest.mark.asyncio
+    async def test_a_saved_handles_next_edit_reaches_l3_and_not_l1_ahead_of_it(self) -> None:
+        nats, store = FakeNatsClient(), _Store()
+        coll = await _replica(nats, store)
+        saved = coll.create(_row("base"))
+        await coll.save_entity(saved)
+        saved.members = "edited"
+        assert _l1_members(coll) == "base", "an unsaved edit reached L1 ahead of L3"
+        await coll.save_entity(saved)
+        assert store.rows[_ID]["members"] == "edited"
+        assert await _served(coll) == "edited"
 
 
 class TestACancelledCompareAndSwapPersist:

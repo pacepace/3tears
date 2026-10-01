@@ -207,6 +207,9 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         await self._publish_invalidation(entity.id)
         entity.mark_clean()
         entity.original_date_updated = data.get("date_updated")
+        # the handle answers from the row it saved: L1 is a cache of L2 here, and a peer's
+        # broadcast may drop the key at any time.
+        entity.hold_row(data)
 
     async def delete(self, entity_id: Any) -> bool:
         """remove heartbeat row from L1 and L2.

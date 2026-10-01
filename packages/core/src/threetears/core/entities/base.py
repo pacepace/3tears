@@ -8,7 +8,9 @@ A LOADED entity (``is_new=False``) with a collection holds its own row and write
 no cache tier on construction; _changes still tracks only its edits. Whoever read
 the row decides whether L1 takes it: a by-key read does, under the collection's
 per-key fence, and a multi-row scan does not, since it read L3 outside that fence
-and a write of the key may have landed meanwhile. Entities without a collection
+and a write of the key may have landed meanwhile. A new entity holds its row from its
+first save on, as a loaded one does: L1's copy of the key is a cache any eviction may
+drop, and a handle reading through it would answer None. Entities without a collection
 (factory-created) use _changes as transient storage until saved.
 """
 
@@ -119,7 +121,9 @@ class BaseEntity:
     A loaded entity (``is_new=False``) with a collection holds its own row
     and writes no cache tier on construction: only the read that produced
     the row may decide whether L1 takes it, under the collection's per-key
-    fence.
+    fence. A new entity reads through L1 only until it is saved: from then on
+    the collection has it hold the row as stored (and a reload, the row it
+    reloaded), since L1 may drop the key at any time.
 
     Entities created without a collection use _changes as temporary
     in-memory storage until they are attached to a collection via save().
@@ -253,9 +257,9 @@ class BaseEntity:
 
         Reads and :meth:`to_dict` answer from it with the entity's edits on top, and attribute
         writes change the entity without touching L1: the row L1 holds for the key, if any, may be
-        another version of it. A loaded entity starts this way; a collection calls this when it
-        withholds a row from L1 -- a save that did not cache, a reload that did not -- so the handle
-        still reads what it saved or read. Unsaved edits stay tracked.
+        another version of it. A loaded entity starts this way; a collection calls this once it has
+        saved or reloaded the entity, and when a write of it did not land, so the handle reads what
+        it saved or read whatever later drops L1's copy of the key. Unsaved edits stay tracked.
 
         :param data: the row, keyed by column name
         :ptype data: dict[str, Any]
