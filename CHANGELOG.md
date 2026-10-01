@@ -22,6 +22,12 @@ person erasure made right after the restart, which waits 30 seconds for that bac
   finishes.
 - **`JetStreamPullConsumer(...)` takes a required `ack_wait_seconds`.** `jetstream_pull_subscribe`
   passes its own; a direct constructor call must add it.
+- **A durable that already exists takes the `ack_wait` and `max_deliver` its code asks for.**
+  `jetstream_pull_subscribe` and `jetstream_subscribe_durable` read the live durable before
+  binding and, when either differs, send its config back with those two fields changed, which the
+  server applies in place. nats-py creates a durable only when it is missing, so before this a
+  changed `ack_wait` never reached a stream that already had the durable: the hub's rebuilt audit
+  consumer asked for 20 seconds and the running stack's durable kept 60.
 - **`threetears.agent.audit.DEFAULT_ANONYMIZE_TIMEOUT_SECONDS` is 60 seconds, was 30.** The hub's
   anonymize responder waits half of the caller's timeout for the audit backlog, and that half must
   outlast the hub's audit redelivery window (its durable's `ack_wait` plus one fetch, 25 seconds).

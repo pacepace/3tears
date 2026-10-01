@@ -17,6 +17,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from nats.js.api import ConsumerConfig as NatsConsumerConfig
+from nats.js.errors import NotFoundError as NatsNotFoundError
 from pydantic import BaseModel
 
 from threetears.nats.client import DEFAULT_JETSTREAM_PUBLISH_TIMEOUT
@@ -1346,6 +1348,11 @@ def _client_with_js() -> tuple[NatsClient, Any]:
     js.update_stream = AsyncMock()
     js.publish = AsyncMock()
     js.subscribe = AsyncMock(return_value="sub-handle")
+    # a fresh server: no durable exists yet, so a bind creates it with the config it is given
+    js.consumer_info = AsyncMock(side_effect=NatsNotFoundError())
+    js.add_consumer = AsyncMock()
+    # the lookup nats-py's own bind makes when no stream is named
+    js.find_stream_name_by_subject = AsyncMock(return_value="3tears-found-by-subject")
     fake.jetstream = MagicMock(return_value=js)  # type: ignore[attr-defined]
     return client, js
 
@@ -2244,6 +2251,69 @@ async def test_a_failing_in_progress_ack_is_logged_and_the_handler_still_finishe
     msg.ack.assert_awaited_once()
     msg.in_progress.assert_awaited_once()
     assert any("in-progress ack failed" in r.getMessage() and "durable=d" in r.getMessage() for r in caplog.records)
+
+
+def _live_durable(*, ack_wait: float, max_deliver: int) -> Any:
+    """the consumer_info a server answers for a durable that already exists."""
+    info = MagicMock()
+    info.config = NatsConsumerConfig(
+        name="d", durable_name="d", ack_wait=ack_wait, max_deliver=max_deliver, filter_subject="3tears.audit.>"
+    )
+    return info
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consumer_kind", ["push", "pull"])
+async def test_an_existing_durable_takes_the_ack_wait_and_budget_the_code_now_asks_for(consumer_kind: str) -> None:
+    """a durable created under an older config is updated on bind, never silently kept.
+
+    nats-py's subscribe and pull_subscribe create a durable only when it is missing, and bind to an
+    existing one as it is. A changed ack_wait or max_deliver then reached no deployed stream at
+    all: the hub's audit durable kept a 60-second ack_wait after the code asked for 20.
+    """
+    client, js = _pull_js(psub=MagicMock())
+    js.consumer_info = AsyncMock(return_value=_live_durable(ack_wait=60.0, max_deliver=5))
+    kwargs: dict[str, Any] = {
+        "subject": Subjects.audit_wildcard(),
+        "durable": "d",
+        "cb": AsyncMock(),
+        "max_deliver": 4,
+        "ack_wait_seconds": 20.0,
+        "stream": "3tears-audit",
+    }
+    if consumer_kind == "push":
+        await client.jetstream_subscribe_durable(**kwargs)
+    else:
+        await client.jetstream_pull_subscribe(**kwargs)
+
+    js.add_consumer.assert_awaited_once()
+    (stream,) = js.add_consumer.await_args.args
+    sent = js.add_consumer.await_args.kwargs["config"]
+    assert stream == "3tears-audit"
+    assert (sent.durable_name, sent.ack_wait, sent.max_deliver) == ("d", 20.0, 4)
+    assert sent.filter_subject == "3tears.audit.>", "the update keeps every field it was not asked to change"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consumer_kind", ["push", "pull"])
+async def test_a_durable_already_as_asked_is_left_alone(consumer_kind: str) -> None:
+    """no update is sent when the live durable already carries the config asked for."""
+    client, js = _pull_js(psub=MagicMock())
+    js.consumer_info = AsyncMock(return_value=_live_durable(ack_wait=20.0, max_deliver=4))
+    kwargs: dict[str, Any] = {
+        "subject": Subjects.audit_wildcard(),
+        "durable": "d",
+        "cb": AsyncMock(),
+        "max_deliver": 4,
+        "ack_wait_seconds": 20.0,
+        "stream": "3tears-audit",
+    }
+    if consumer_kind == "push":
+        await client.jetstream_subscribe_durable(**kwargs)
+    else:
+        await client.jetstream_pull_subscribe(**kwargs)
+
+    js.add_consumer.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -95,6 +95,7 @@ from nats.errors import (
     StaleConnectionError as _NatsStaleConnectionError,
     TimeoutError as _NatsTimeoutError,
 )
+from nats.js.errors import NotFoundError as _NatsJsNotFoundError
 from pydantic import BaseModel, ValidationError
 from threetears.observe import get_logger, representative_exception
 
@@ -4940,6 +4941,13 @@ class NatsClient:
                 config=config,
             )
 
+        await self._reconcile_durable(
+            subject=subject,
+            durable=durable,
+            stream=stream,
+            ack_wait_seconds=ack_wait_seconds,
+            max_deliver=max_deliver,
+        )
         # bound and registered as one step against a renewal, which would otherwise miss a
         # consumer bound on the old connection after it enumerated them.
         async with self._handover_lock:
@@ -4962,6 +4970,57 @@ class NatsClient:
             dead_letter_subject.path if dead_letter_subject is not None else None,
         )
         return consumer
+
+    async def _reconcile_durable(
+        self,
+        *,
+        subject: Subject,
+        durable: str,
+        stream: str | None,
+        ack_wait_seconds: float,
+        max_deliver: int,
+    ) -> None:
+        """bring an EXISTING durable's ack wait and delivery budget to what the code asks for.
+
+        nats-py's ``subscribe`` and ``pull_subscribe`` create a durable only when it is missing and
+        bind an existing one as it stands, so a changed ``ack_wait`` or ``max_deliver`` otherwise
+        never reaches a stream that already has the durable -- every deployed one. The live config
+        is sent back with only those two fields changed, which the server applies as an update;
+        a missing durable is left to the bind, which creates it with the full config.
+
+        :param subject: subject the durable consumes (finds the stream when ``stream`` is ``None``)
+        :ptype subject: Subject
+        :param durable: durable consumer name
+        :ptype durable: str
+        :param stream: backing stream name, or ``None`` to look it up by subject as the bind would
+        :ptype stream: str | None
+        :param ack_wait_seconds: the ack wait the durable must carry
+        :ptype ack_wait_seconds: float
+        :param max_deliver: the delivery budget the durable must carry
+        :ptype max_deliver: int
+        :return: nothing
+        :rtype: None
+        :raises Exception: when the server refuses the lookup or the update; the bind does not run
+        """
+        js = self.jetstream_context()
+        stream_name = stream if stream is not None else await js.find_stream_name_by_subject(subject.path)
+        live: Any = None
+        try:
+            live = (await js.consumer_info(stream_name, durable)).config
+        except _NatsJsNotFoundError:
+            live = None
+        if live is not None and (live.ack_wait != ack_wait_seconds or live.max_deliver != max_deliver):
+            await js.add_consumer(stream_name, config=live.evolve(ack_wait=ack_wait_seconds, max_deliver=max_deliver))
+            log.info(
+                "durable consumer config updated to what its code asks for: durable=%s stream=%s "
+                "ack_wait %.1fs -> %.1fs, max_deliver %s -> %d",
+                durable,
+                stream_name,
+                live.ack_wait or 0.0,
+                ack_wait_seconds,
+                live.max_deliver,
+                max_deliver,
+            )
 
     async def _redeliver_or_deadletter(
         self,
@@ -5127,6 +5186,13 @@ class NatsClient:
                 config=config,
             )
 
+        await self._reconcile_durable(
+            subject=subject,
+            durable=durable,
+            stream=stream,
+            ack_wait_seconds=ack_wait_seconds,
+            max_deliver=max_deliver,
+        )
         bound_to = self._raw
         psub = await _bind()
 
