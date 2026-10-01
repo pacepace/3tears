@@ -272,7 +272,7 @@ async def test_a_hash_collision_refuses_to_overwrite_a_live_ticket(nats: FakeNat
         await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
 
 
-async def test_the_factories_open_memory_backed_buckets(nats: FakeNatsClient) -> None:
+async def test_the_factories_open_memory_backed_buckets() -> None:
     """auth-flow state is memory-backed, and this test is the inverse of the one it replaces.
 
     0.40.0 made these factories request `storage="file"`, on the reasoning that a memory
@@ -295,10 +295,11 @@ async def test_the_factories_open_memory_backed_buckets(nats: FakeNatsClient) ->
     it through `WindowedCounter` from the identity service, not from here. Nothing in this
     change touches them.
     """
-    await ticket_store(nats, name="tickets", ttl=timedelta(hours=1))
-    await state_store(nats, name="state", ttl=timedelta(hours=1))
+    recording = _RecordingClient()
+    await ticket_store(recording, name="tickets", ttl=timedelta(hours=1))
+    await state_store(recording, name="state", ttl=timedelta(hours=1))
 
-    opened = {name: bucket.storage for name, bucket in nats._buckets.items()}  # noqa: SLF001 -- the fake's recorded opens ARE the subject
+    opened = dict(recording.storage_by_bucket)
 
     assert opened == {"tickets": "memory", "state": "memory"}, (
         f"an auth-flow store asked for file storage again: {opened}. The cross-replica "
@@ -318,15 +319,18 @@ async def test_the_factories_open_a_bucket_and_wrap_it(nats: FakeNatsClient) -> 
 
 
 class _RecordingClient(FakeNatsClient):
-    """the shipped in-memory client, recording the create flag of every bucket open."""
+    """the shipped in-memory client, recording the create flag and storage of every bucket open."""
 
     def __init__(self) -> None:
         super().__init__()
         self.create_flags: list[bool] = []
+        self.storage_by_bucket: list[tuple[str, str]] = []
 
     async def kv_bucket(self, **kwargs: Any) -> Any:  # type: ignore[override]
         self.create_flags.append(kwargs.get("create_if_missing", True))
-        return await super().kv_bucket(**kwargs)
+        bucket = await super().kv_bucket(**kwargs)
+        self.storage_by_bucket.append((kwargs["name"], bucket.storage))
+        return bucket
 
 
 async def test_the_factories_declare_their_bucket_by_default() -> None:
@@ -359,7 +363,10 @@ async def test_a_bind_only_factory_never_creates_an_absent_bucket(nats: FakeNats
         await ticket_store(nats, name="tickets", ttl=timedelta(hours=1), create_if_missing=False)
     with pytest.raises(KeyError):
         await state_store(nats, name="state", ttl=timedelta(hours=1), create_if_missing=False)
-    assert nats._buckets == {}  # noqa: SLF001 -- the fake's recorded opens ARE the subject
+    # neither refused open left a bucket behind: binding either one is still refused
+    for name in ("tickets", "state"):
+        with pytest.raises(KeyError):
+            await nats.kv_bucket(name=name, create_if_missing=False)
 
 
 async def test_a_bind_only_factory_never_issues_stream_create_through_the_real_opener() -> None:

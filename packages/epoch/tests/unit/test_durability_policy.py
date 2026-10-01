@@ -7,8 +7,8 @@ CDN there is nothing inside this system that can repair it. A durable row where
 ephemeral would have done costs a Postgres round trip.
 
 So the dangerous default is ephemeral, and ephemeral is exactly what a new
-subject gets for free: :func:`~threetears.epoch.client._is_durable` answers
-``False`` for anything it does not recognise. That is correct as a runtime
+subject gets for free: :class:`~threetears.epoch.client.EpochClient` counts
+anything it does not recognise on the ephemeral substrate. That is correct as a runtime
 fallback and useless as a policy -- nothing makes the author of a new
 ``*_epoch`` builder notice they had a decision to make.
 
@@ -20,21 +20,77 @@ someone writes down which substrate it takes and why.
 It deliberately drives the REAL factory rather than literal paths: the
 classifier reads a subject's shape, that shape is produced in another package,
 and a hand-written literal would keep matching after the builder changed.
+
+The two tables are read from ``client.py``'s source, where they are declared as
+literals, and the substrate a subject gets is observed from what the real
+client does: it reads a durable subject's row from Postgres and an ephemeral
+one's counter from NATS KV. Neither reaches into the module's private names.
 """
 
 from __future__ import annotations
 
+import ast
 import inspect
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from threetears.epoch.client import (  # noqa: SLF001 - this module IS the policy's test
-    _DURABLE_FAMILIES,
-    _EPHEMERAL_FAMILIES,
-    _is_durable,
-)
+from threetears.core.testing.kv import FakeNatsClient
+from threetears.epoch.client import EpochClient
 from threetears.nats.subjects import Subject, Subjects, set_default_namespace
+
+
+def _declared_table(name: str) -> tuple[tuple[str, ...], ...]:
+    """one of ``client.py``'s substrate tables, as its source declares it.
+
+    :param name: the table's name in ``threetears/epoch/client.py``
+    :ptype name: str
+    :return: the literal assigned to it
+    :rtype: tuple[tuple[str, ...], ...]
+    :raises AssertionError: when the file no longer declares it as a literal, so nothing here
+        passes on an empty table
+    """
+    tree = ast.parse(Path(inspect.getfile(EpochClient)).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+            and node.value is not None
+        ):
+            table: tuple[tuple[str, ...], ...] = ast.literal_eval(node.value)
+            assert table, f"{name} is declared empty"
+            return table
+    raise AssertionError(f"threetears/epoch/client.py no longer declares {name} as a literal")
+
+
+_DURABLE_FAMILIES = _declared_table("_DURABLE_FAMILIES")
+_EPHEMERAL_FAMILIES = _declared_table("_EPHEMERAL_FAMILIES")
+
+
+# parity-exempt: records which substrate EpochClient reads; it reads a durable row with fetchval alone
+class _RecordingPool:
+    """the Postgres pool a durable subject's read goes to; it has no rows."""
+
+    def __init__(self) -> None:
+        self.reads: list[str] = []
+
+    async def fetchval(self, _sql: str, subject_path: str) -> None:
+        self.reads.append(subject_path)
+
+
+async def _counts_durably(subject: Subject) -> bool:
+    """whether the real client reads ``subject``'s epoch from the durable substrate.
+
+    :param subject: an epoch subject
+    :ptype subject: Subject
+    :return: ``True`` when the read went to Postgres rather than to the NATS KV counter
+    :rtype: bool
+    """
+    pool = _RecordingPool()
+    assert await EpochClient(pool, FakeNatsClient()).current(subject) == 0  # type: ignore[arg-type]
+    return pool.reads == [subject.path]
 
 
 @pytest.fixture(autouse=True)
@@ -136,7 +192,7 @@ class TestEveryEpochSubjectHasADecidedSubstrate:
 class TestTheDeclarationMatchesTheClassifier:
     """A table nothing consults is documentation, not policy."""
 
-    def test_every_durable_declaration_classifies_durable(self) -> None:
+    async def test_every_durable_declaration_classifies_durable(self) -> None:
         """Built through the real factory, so a changed subject shape fails here.
 
         :return: nothing
@@ -144,9 +200,9 @@ class TestTheDeclarationMatchesTheClassifier:
         """
         builders = _epoch_builders()
         for name, _marker, _why in _DURABLE_FAMILIES:
-            assert _is_durable(_build(builders[name])), f"{name} is declared durable but classifies ephemeral"
+            assert await _counts_durably(_build(builders[name])), f"{name} is declared durable but counts ephemeral"
 
-    def test_every_ephemeral_declaration_classifies_ephemeral(self) -> None:
+    async def test_every_ephemeral_declaration_classifies_ephemeral(self) -> None:
         """The other direction, which is the one a stray marker would break.
 
         :return: nothing
@@ -154,9 +210,9 @@ class TestTheDeclarationMatchesTheClassifier:
         """
         builders = _epoch_builders()
         for name, _why in _EPHEMERAL_FAMILIES:
-            assert not _is_durable(_build(builders[name])), f"{name} is declared ephemeral but classifies durable"
+            assert not await _counts_durably(_build(builders[name])), f"{name} is declared ephemeral but counts durably"
 
-    def test_a_non_epoch_subject_is_never_durable(self) -> None:
+    async def test_a_non_epoch_subject_is_never_durable(self) -> None:
         """The classifier keys on the epoch suffix, not on the marker alone.
 
         A tile DATA subject shares the `.tiles.` segment and must not be routed
@@ -168,7 +224,7 @@ class TestTheDeclarationMatchesTheClassifier:
         :return: nothing
         :rtype: None
         """
-        assert not _is_durable(Subject(path="polprobe.datasource.ds1.tiles.parcels.render", kind="point"))
+        assert not await _counts_durably(Subject(path="polprobe.datasource.ds1.tiles.parcels.render", kind="point"))
 
     def test_every_declaration_carries_a_reason(self) -> None:
         """A table entry with no reason is a rubber stamp. BOTH tables.

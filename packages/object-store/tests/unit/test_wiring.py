@@ -106,13 +106,17 @@ def test_missing_env_ref_raises() -> None:
         )
 
 
-def test_omitted_credential_refs_defer_to_the_ambient_chain() -> None:
+async def test_omitted_credential_refs_defer_to_the_ambient_chain() -> None:
     """no refs -> no static keys: boto's default chain (env, IRSA, IMDS) decides.
 
     the shape a pod under an IAM role for its service account uses — there is no
     static key to reference, and passing None through to the client is exactly
-    how boto is told to resolve credentials itself.
+    how boto is told to resolve credentials itself. asserted where it takes
+    effect: the kwargs the store hands the client when it opens one.
     """
-    store = build_s3_object_store(endpoint_url=None, bucket="backups")
-    assert store._access_key is None  # noqa: SLF001 -- pinning what reaches the client
-    assert store._secret_key is None  # noqa: SLF001
+    session = _CapturingSession()
+    store = build_s3_object_store(endpoint_url=None, bucket="backups", session=session)
+    await store.ensure_bucket()
+    assert session.client_kwargs is not None
+    assert session.client_kwargs["aws_access_key_id"] is None
+    assert session.client_kwargs["aws_secret_access_key"] is None
