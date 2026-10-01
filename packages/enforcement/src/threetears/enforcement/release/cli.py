@@ -14,14 +14,14 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
 from threetears.enforcement.release.bump import BUMP_KINDS, run_release
 from threetears.enforcement.release.config import ConfigError, load_release_config
 from threetears.enforcement.release.versions import parse_version
 
-__all__ = ["main"]
+__all__ = ["main", "release_date"]
 
 _ACTIONS = (*BUMP_KINDS, "release", "sync", "verify")
 
@@ -56,6 +56,27 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def release_date(now: datetime, zone: tzinfo | None = None) -> str:
+    """the calendar date a release cut at ``now`` is headed with.
+
+    the operator's calendar date, as every release heading before this tool used:
+    a release cut in the evening west of UTC is dated the day it was cut, not the
+    UTC day that has already begun.
+
+    :param now: an aware instant, normally ``datetime.now(UTC)``
+    :ptype now: datetime
+    :param zone: the operator's zone; ``None`` means this machine's local zone
+    :ptype zone: tzinfo | None
+    :return: the date as ``YYYY-MM-DD``
+    :rtype: str
+    :raises ValueError: if ``now`` is naive
+    """
+    if now.tzinfo is None:
+        msg = "release_date needs an aware instant; a naive one has no calendar day"
+        raise ValueError(msg)
+    return now.astimezone(zone).strftime("%Y-%m-%d")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """runs the tool.
 
@@ -79,8 +100,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ConfigError, OSError, ValueError) as exc:
         sys.stderr.write(f"error: {exc}\n")
     else:
-        # the operator's calendar date, as every release heading before this tool used:
-        # a release cut in the evening west of UTC is dated the day it was cut.
-        today = datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
+        today = release_date(datetime.now(UTC))
         status = run_release(config, args.action, today, sys.stdout, sys.stderr, args.version)
     return status
