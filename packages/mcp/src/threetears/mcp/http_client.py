@@ -94,6 +94,12 @@ class PlatformHttpClient:
     :ptype token_field: str
     :param timeout: per-request timeout in seconds
     :ptype timeout: float
+    :param transport: httpx transport the client sends through; ``None``
+        uses httpx's default network transport. Supplying one routes
+        every request (login included) through it -- an in-process
+        ``httpx.ASGITransport`` against an app, a transport with its own
+        proxy/TLS/retry policy, or ``httpx.MockTransport``
+    :ptype transport: httpx.AsyncBaseTransport | None
     """
 
     def __init__(
@@ -105,6 +111,7 @@ class PlatformHttpClient:
         login_path: str = "/api/v1/auth/login",
         token_field: str = "access_token",
         timeout: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         """capture config; no I/O until :meth:`login` or first request.
 
@@ -120,6 +127,9 @@ class PlatformHttpClient:
         :ptype token_field: str
         :param timeout: per-request timeout
         :ptype timeout: float
+        :param transport: httpx transport to send through; ``None`` for
+            httpx's default network transport
+        :ptype transport: httpx.AsyncBaseTransport | None
         :return: nothing
         :rtype: None
         :raises ValueError: when ``base_url`` is empty
@@ -132,7 +142,7 @@ class PlatformHttpClient:
         self._login_path = login_path
         self._token_field = token_field
         self._timeout = timeout
-        self._client = httpx.AsyncClient(timeout=timeout)
+        self._client = httpx.AsyncClient(timeout=timeout, transport=transport)
         self._token: str | None = None
         # serializes login() so concurrent first-requests + concurrent
         # 401-refreshes don't trigger a login storm. each waiter that

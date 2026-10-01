@@ -359,14 +359,17 @@ async def test_usage_is_reported_the_way_every_chat_model_reports_it() -> None:
 async def test_a_tool_result_without_a_name_is_named_by_the_call_it_answers() -> None:
     from langchain_core.messages import ToolMessage
 
-    model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
-    query, _system = model._convert_messages(  # noqa: SLF001 -- the method under test
-        [
-            HumanMessage(content="write a"),
-            AIMessage(
-                content="", tool_calls=[{"id": "tu-1", "name": "threetears.stage_a_write", "args": {"path": "a"}}]
-            ),
-            ToolMessage(content="write landed", tool_call_id="tu-1"),
-        ]
-    )
+    with _no_real_sdk_calls():
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
+        _FakeSDKClient.script = _replies([_assistant_text("done"), _result()])
+        await model.ainvoke(
+            [
+                HumanMessage(content="write a"),
+                AIMessage(
+                    content="", tool_calls=[{"id": "tu-1", "name": "threetears.stage_a_write", "args": {"path": "a"}}]
+                ),
+                ToolMessage(content="write landed", tool_call_id="tu-1"),
+            ]
+        )
+    [query] = _FakeSDKClient.prompts
     assert '<prompt-turn role="tool" name="threetears.stage_a_write">\nwrite landed\n</prompt-turn>' in query

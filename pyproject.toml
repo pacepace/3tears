@@ -249,108 +249,24 @@ ignore = ["N818", "N811"]
 # live in tests/enforcement/_underscore_exemptions.txt.
 "packages/nats/src/threetears/nats/_nats_py_internals.py" = ["SLF001"]
 
-# scrape suites assert on the private state that IS the behaviour under test, one reason per
-# file so the list and the reasons cannot drift apart:
-#   test_robots.py               RobotsGate's per-origin cache and fetch clocks -- bounded
-#                                retention and `forget` are observable nowhere else
-#   test_tool.py                 ScrapeTool's resolved egress and robots gate, which have no
-#                                accessors; asserting the constructor argument would assert
-#                                the test's own input
-#   test_driver_api.py           the httpx transport's connection pool, the only place a
-#                                configured proxy is visible after construction
-#   test_driver_listing_detail.py  the pacing delay, which has no accessor and is the
-#                                behaviour under test
-#   test_driver_contract.py      the protected dropped-solve warning and its bounded origin
-#                                set -- this suite asserts the CARDINALITY across every
-#                                backend, where the per-driver call sites are covered at
-#                                render level in each driver's own suite
-#
-# Paired entries live in
-# tests/enforcement/_underscore_exemptions.txt, which the file header requires be kept in
-# lockstep with these ignores.
-#
-# Declared here rather than as inline `noqa` to match the suites already exempted this way in
-# the block below, and so the reasons live in one reviewable list instead of scattered across
-# call sites. NOT because it is the repo-wide norm -- inline pragmas outnumber per-file entries
-# here by roughly an order of magnitude, and an earlier version of this comment asserted the
-# opposite without counting. No exact figures: the attempt after that one quoted a count its
-# own commit immediately invalidated.
-#
-# The cost is real and worth stating: a per-file ignore also suppresses every FUTURE
-# private access in the files listed below, where an inline pragma would not. That is the trade the
-# ledger exists to offset -- the entries are the record of what was actually justified.
-#
-# It does NOT affect the enforcement walker either way: `find_local_src_roots` scans
-# `packages/*/src` only, so no `tests/` tree is ever walked. Verified by deleting an entry and
-# watching the gate stay green.
-# Both assert the L2 timestamp contract across the serialize/rehydrate boundary. The
-# rehydration is `BaseCollection`'s internal read-path step rather than a public seam, and
-# asserting the property through a live KV round-trip instead would make these tests about
-# NATS fixtures rather than about the contract. Entries in the exemptions ledger.
-"packages/scrape/tests/test_health.py" = ["SLF001"]
-"packages/scrape/tests/test_robots.py" = ["SLF001"]
-"packages/scrape/tests/test_tool.py" = ["SLF001"]
-"packages/scrape/tests/test_driver_api.py" = ["SLF001"]
-"packages/scrape/tests/test_driver_listing_detail.py" = ["SLF001"]
-"packages/scrape/tests/test_driver_contract.py" = ["SLF001"]
-# NameMangledToolProxy._arun/_run forward to delegate._arun/_run because
-# the proxy already executed the LangChain BaseTool wrapper chain
-# (callbacks, validation); calling delegate.arun/run would double-fire
-# that chain. paired entries in tests/enforcement/_underscore_exemptions.txt.
-"packages/models/src/threetears/models/tool_name_translation.py" = ["SLF001"]
 # redshift_connector keeps a connection's socket on the private ``Connection._usock`` and offers
 # no public accessor; the Redshift driver needs it to set the keepalive knobs ``connect()`` does
 # not accept and to lift the login timeout ``connect()`` leaves on the socket. this module is the
 # one owner of that access. paired entry in tests/enforcement/_underscore_exemptions.txt.
 "packages/datasources/src/threetears/datasources/drivers/_redshift_connector_internals.py" = ["SLF001"]
-# OpenRouter name-translation tests exercise the LangChain BaseTool proxy
-# and the ChatOpenRouter subclass: ``_arun`` / ``_astream`` are the
-# LangChain-internal entry points the production translation layer
-# overrides, and ``_name_reverse_map`` is the per-instance lookup table
-# the subclass populates on ``bind_tools`` and consults on every
-# stream chunk. tests assert the table is populated correctly and that
-# the overrides forward without double-firing the wrapper chain (same
-# rationale as ``tool_name_translation.py`` above). paired entries
-# live in tests/enforcement/_underscore_exemptions.txt.
-"packages/models/tests/unit/models/test_provider_openrouter.py" = ["SLF001"]
-# Anthropic-wrapper streaming regression test monkey-patches
-# ``ChatAnthropic._astream`` to yield fake chunks so the test does not
-# need a real Anthropic HTTP call. Same exemption rationale as the
-# OpenRouter test above. paired entries live in
-# tests/enforcement/_underscore_exemptions.txt.
-"packages/models/tests/unit/models/test_provider_anthropic.py" = ["SLF001"]
-# OpenAI-wrapper streaming regression test monkey-patches
-# ``ChatOpenAI._astream`` for the same reason as the Anthropic /
-# OpenRouter tests above. paired entries live in
-# tests/enforcement/_underscore_exemptions.txt.
-"packages/models/tests/unit/models/test_provider_openai.py" = ["SLF001"]
-# UsageTracker tests reach into two import-time anchors with no public
-# accessors: OpenTelemetry's ``_TRACER_PROVIDER_SET_ONCE._done`` is the
-# only documented escape from OTel 1.39+'s once-flag guard so tests can
-# re-init the tracer provider (same rationale as the matching entry in
-# ``packages/observe/src/threetears/observe/setup.py``); and the
-# tracker's ``_prom`` field is the cached PromEmitter the tests assert
-# is shared per-registry to lock in the identity-by-registry contract.
-# paired entries live in tests/enforcement/_underscore_exemptions.txt.
-"packages/models/tests/unit/models/test_tracking.py" = ["SLF001"]
-# GU-05-05 span-attribute tests re-init the tracer provider via the same
-# OTel ``_TRACER_PROVIDER_SET_ONCE._done`` escape as test_tracking.py above.
-# paired entry lives in tests/enforcement/_underscore_exemptions.txt.
-"packages/models/tests/unit/models/test_tracking_dimensions.py" = ["SLF001"]
-# ScrapeCollection's in-memory L3 fallback (self._rows) has no public
-# accessor -- tests assert directly on it to prove writes/deletes reach
-# the fallback store when no real L3 pool is configured, the exact shape
-# every other 3tears collection's own unit tests use for the same
-# assertion. No paired _underscore_exemptions.txt entry: the custom
-# underscore_access enforcement walker only flags base-class method
-# shadowing, not test-fixture attribute access, so this ruff-only ignore
-# doesn't need one.
-"packages/scrape/tests/test_collections.py" = ["SLF001"]
+# Claude Agent SDK private members -- ClaudeSDKClient._query and ._transport,
+# Query._send_control_request, SubprocessCLITransport._process -- confined to this one module.
+# The SDK has no public agent switch, tool-server swap, conversation rewind or CLI pid; nothing
+# else in the repo touches those members. Paired entries in
+# tests/enforcement/_underscore_exemptions.txt, and test_claude_sdk_internals.py checks the
+# members against the installed SDK.
+"packages/models/src/threetears/models/_claude_sdk_internals.py" = ["SLF001"]
 # NOT a per-file ignore for the sidecar: `packages/scrape/sidecar/ruff.toml` is a
 # nested config and therefore a FULL override, so ruff never reads a root key for a
 # path beneath it. The key that used to sit here was inert from the moment that file
 # was added, and inert-but-plausible is worse than absent -- it reads as coverage.
-# The sidecar's own `"tests/*"` entry carries the same exemption, with the reason.
+# The sidecar carries no SLF001 ignore of its own either: its tests reach the container
+# through its lifespan and HTTP routes.
 
 [tool.pytest.ini_options]
 # ``packages/scrape/sidecar`` is a separate deployable with its own

@@ -791,16 +791,44 @@ class TestCamoufoxDriverLazyLaunch:
         assert exited == [True]
 
 
+async def _launch_options(driver: CamoufoxDriver, monkeypatch) -> dict:
+    """Render once through *driver* and return the options its browser was launched with.
+
+    Camoufox is replaced at its import site by a stub that records its constructor
+    arguments, so this is what a real launch would have been handed.
+    """
+    launched: list[dict] = []
+
+    # parity-exempt: hand-rolled subset stub of camoufox's third-party AsyncCamoufox (only the async-context-manager surface CamoufoxDriver._ensure_browser calls)
+    class _RecordingAsyncCamoufox:
+        def __init__(self, **kwargs):
+            launched.append(kwargs)
+            self._browser = _FakeCamoufoxBrowser(_FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200)))
+
+        async def __aenter__(self):
+            return self._browser
+
+        async def __aexit__(self, *exc_info):
+            return None
+
+    monkeypatch.setattr("camoufox.async_api.AsyncCamoufox", _RecordingAsyncCamoufox)
+    await driver.render("https://example.gov")
+    await driver.close()
+    assert len(launched) == 1
+    return launched[0]
+
+
 class TestTheExitReachesTheBrowserLaunch:
     """The half the driver contract cannot see: whether the launch actually carries the exit.
 
     `test_driver_contract.py` pins that an exit given to this driver comes back on the
     `RenderedPage`. That round trip passes against an INJECTED browser, so it says nothing
     about whether a real launch would have been proxied -- which is the whole of what this
-    driver was missing. These read the launch options directly.
+    driver was missing. These render through a launch the driver performs itself and read
+    the options that launch was given.
     """
 
-    def test_a_proxy_exit_becomes_a_playwright_proxy_option(self) -> None:
+    async def test_a_proxy_exit_becomes_a_playwright_proxy_option(self, monkeypatch) -> None:
         """Camoufox is Firefox via Playwright, so the exit is `proxy={"server": ...}`.
 
         :return: nothing
@@ -810,17 +838,20 @@ class TestTheExitReachesTheBrowserLaunch:
 
         driver = CamoufoxDriver(egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"))
 
-        assert driver._launch_proxy_options() == {"proxy": {"server": "socks5://127.0.0.1:9050"}}  # noqa: SLF001
+        assert await _launch_options(driver, monkeypatch) == {
+            "headless": True,
+            "proxy": {"server": "socks5://127.0.0.1:9050"},
+        }
 
-    def test_no_exit_expresses_no_opinion(self) -> None:
+    async def test_no_exit_expresses_no_opinion(self, monkeypatch) -> None:
         """`None` must leave the launch alone rather than inventing a proxy key.
 
         :return: nothing
         :rtype: None
         """
-        assert CamoufoxDriver()._launch_proxy_options() == {}  # noqa: SLF001
+        assert await _launch_options(CamoufoxDriver(), monkeypatch) == {"headless": True}
 
-    def test_a_direct_exit_does_not_become_a_proxy_server(self) -> None:
+    async def test_a_direct_exit_does_not_become_a_proxy_server(self, monkeypatch) -> None:
         """`direct://` is Chromium's spelling and would be a bogus host to Firefox.
 
         Forwarding it as a Playwright `server` would make Playwright try to resolve
@@ -834,19 +865,25 @@ class TestTheExitReachesTheBrowserLaunch:
 
         driver = CamoufoxDriver(egress=DirectEgress())
 
-        assert driver._launch_proxy_options() == {}  # noqa: SLF001
+        assert await _launch_options(driver, monkeypatch) == {"headless": True}
 
-    def test_the_direct_sentinel_is_the_one_egress_actually_returns(self) -> None:
+    async def test_the_direct_sentinel_is_the_one_egress_actually_returns(self, monkeypatch) -> None:
         """Pins the two sides together rather than against a literal typed twice.
 
         If `DirectEgress` ever changed its spelling, a hard-coded `"direct://"` in this
-        driver would silently start forwarding it as a real proxy server.
+        driver would silently start forwarding it as a real proxy server. Asserted on the
+        launch itself: `DirectEgress` must return a non-``None`` argument (so the launch is
+        decided by the driver recognising that spelling, not by the no-argument branch),
+        and the launch that results must still carry no proxy.
 
         :return: nothing
         :rtype: None
         """
         from threetears.core.egress import DirectEgress
 
-        from threetears.scrape.drivers.camoufox import _DIRECT_PROXY_ARG  # noqa: SLF001
+        egress = DirectEgress()
+        assert egress.browser_proxy_arg() is not None
 
-        assert DirectEgress().browser_proxy_arg() == _DIRECT_PROXY_ARG
+        launch = await _launch_options(CamoufoxDriver(egress=egress), monkeypatch)
+
+        assert "proxy" not in launch

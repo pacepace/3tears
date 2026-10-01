@@ -21,9 +21,9 @@ shape mirrors :mod:`threetears.epoch.tests.integration.test_multi_pod`:
 - a revoke path covers the inverse: ``remove_grant`` then bump;
   receiver's ``allows`` flips to False.
 - a missed-broadcast path covers the periodic catch-up tick: the
-  receiver's listener never sees the broadcast (subscription
-  detached), but the next ``catch_up`` call discovers the higher
-  epoch and reloads the cache. The grants are in Postgres; the EPOCH
+  receiver's subscription never delivers the broadcast, but the
+  authorizer's own catch-up tick discovers the higher epoch and
+  reloads the cache. The grants are in Postgres; the EPOCH
   is a NATS KV counter -- ``mcp.rbac.epoch`` is not in the durable
   tile family.
 
@@ -51,7 +51,6 @@ from threetears.mcp import (
     McpToolGrantCollection,
 )
 from threetears.mcp.migrations import register as register_mcp
-from threetears.nats.subjects import Subject
 from threetears.nats import NatsClient, Subjects, set_default_namespace
 
 pytestmark = pytest.mark.integration
@@ -205,23 +204,6 @@ async def _build_started_authorizer(
 # ---------------------------------------------------------------------
 
 
-def _rbac_epoch(test_name: str) -> Subject:
-    """a test-scoped RBAC epoch subject, used by the catch-up test alone.
-
-    The epoch counter lives in a NATS KV bucket now, and the broker container
-    is session-scoped, so the bucket OUTLIVES a single test. The catch-up test
-    asserts ABSOLUTE epochs (``new_epoch == 1``), which would otherwise depend
-    on execution order -- passing alone, failing in suite. The per-test
-    ``pg_schema`` used to give that isolation for free by resetting
-    ``config_epochs``.
-
-    Built from the real builder rather than a literal, so a change to the
-    subject's shape still reaches these tests.
-    """
-    base = Subjects.mcp_rbac_epoch()
-    return Subject(path=f"{base.path}.{test_name}", kind=base.kind)
-
-
 @pytest.mark.asyncio
 async def test_grant_added_on_pod_a_propagates_to_pod_b(
     pg_pool: asyncpg.Pool,
@@ -354,6 +336,44 @@ async def test_grant_removed_on_pod_a_propagates_to_pod_b(
             await pod_b.stop()
 
 
+class _BroadcastDroppingNats:
+    """a pod's NATS client whose subscriptions never receive anything.
+
+    every call is forwarded to the real connected client except
+    ``subscribe_typed``, which accepts the registration and drops it --
+    the "every broadcast was lost" condition (subscriber blip, dropped
+    message) made deterministic. KV reads still reach the real broker, so
+    the epoch counter the catch-up tick reads is the real one.
+    """
+
+    def __init__(self, inner: NatsClient) -> None:
+        """wrap a connected client.
+
+        :param inner: the pod's real NATS client
+        :ptype inner: NatsClient
+        :return: nothing
+        :rtype: None
+        """
+        self.inner = inner
+
+    async def subscribe_typed(self, **_kwargs: Any) -> None:
+        """accept the subscription and never deliver to it.
+
+        :return: nothing
+        :rtype: None
+        """
+
+    def __getattr__(self, name: str) -> Any:
+        """forward everything else to the real client.
+
+        :param name: attribute name
+        :ptype name: str
+        :return: the real client's attribute
+        :rtype: Any
+        """
+        return getattr(self.inner, name)
+
+
 @pytest.mark.asyncio
 async def test_missed_broadcast_recovers_via_catchup(
     pg_pool: asyncpg.Pool,
@@ -362,14 +382,16 @@ async def test_missed_broadcast_recovers_via_catchup(
     """grant added during a NATS outage; pod B catches up via the periodic tick.
 
     proves the safety net: even if every NATS broadcast dropped
-    (subscriber blip, JetStream redelivery edge), the periodic
-    :meth:`EpochListener.catch_up` reads the epoch counter
-    and the authorizer reloads.
+    (subscriber blip, JetStream redelivery edge), the authorizer's own
+    periodic catch-up tick reads the epoch counter and reloads.
 
-    deterministic simulation: pod B never subscribes (so it cannot
-    receive any broadcast). pod A mutates + bumps. pod B's
-    last_seen stays at 0; the next ``catch_up`` call sees the
-    higher epoch on the KV counter and reloads. no NATS-dispatch race.
+    deterministic simulation: pod B is started normally -- subscribe,
+    prime, catch-up loop -- but its subscription is wired to a client
+    that never delivers, so the broadcast cannot be what recovers it.
+    pod A mutates + bumps; pod B is stale until its catch-up tick sees
+    the higher epoch on the KV counter and reloads. epochs are compared
+    relative to the counter's value at the start, because the broker,
+    and with it the counter for this subject, is shared by the session.
     """
     set_default_namespace("itest")
     async with (
@@ -379,23 +401,15 @@ async def test_missed_broadcast_recovers_via_catchup(
         pod_a_epoch_client = EpochClient(pg_pool, pod_a_nc)
         pod_a_collection = _build_collection(pg_pool)
 
-        # pod B: build the authorizer + listener manually WITHOUT
-        # calling start() so the subscribe + prime never run. last_seen
-        # stays at the dict default (0). every broadcast misses by
-        # construction.
         pod_b_epoch_client = EpochClient(pg_pool, pod_b_nc)
-        pod_b_listener = EpochListener(pod_b_nc, pod_b_epoch_client)
+        pod_b_listener = EpochListener(_BroadcastDroppingNats(pod_b_nc), pod_b_epoch_client)  # type: ignore[arg-type]
         pod_b_collection = _build_collection(pg_pool)
         pod_b_authorizer = LocalGrantAuthorizer(
             grant_loader=pod_b_collection.load_all_grants,
             epoch_client=pod_b_epoch_client,
             epoch_listener=pod_b_listener,
-            catchup_interval_seconds=3600.0,
+            catchup_interval_seconds=0.05,
         )
-        # NOTE: deliberately NOT calling pod_b_authorizer.start() --
-        # that would subscribe + prime last_seen, preempting the
-        # missed-broadcast scenario. cache stays empty and last_seen
-        # stays 0; the catch_up call below is the recovery path.
 
         principal_id = uuid4()
         permission = "mcp.test.read"
@@ -404,35 +418,33 @@ async def test_missed_broadcast_recovers_via_catchup(
             principal_id=principal_id,
         )
 
-        # baseline: cache empty, deny.
-        assert await pod_b_authorizer.allows(identity, permission) is False
+        epoch_before = await pod_a_epoch_client.current(Subjects.mcp_rbac_epoch())
+        await pod_b_authorizer.start()
+        try:
+            # baseline: cache empty, deny.
+            assert await pod_b_authorizer.allows(identity, permission) is False
 
-        # pod A adds + bumps. broadcast goes out; pod B does not
-        # receive (no subscription).
-        grant_entity = await pod_a_collection.add_grant(
-            principal_type="user",
-            principal_id=principal_id,
-            tool_name="probe",
-            permission=permission,
-        )
-        new_epoch = await pod_a_epoch_client.bump(
-            _rbac_epoch("catchup"),
-            payload={"grant_id": str(grant_entity.grant_id), "action": "create"},
-        )
-        assert new_epoch == 1
+            # pod A adds + bumps. the broadcast goes out; pod B's
+            # subscription never delivers it.
+            grant_entity = await pod_a_collection.add_grant(
+                principal_type="user",
+                principal_id=principal_id,
+                tool_name="probe",
+                permission=permission,
+            )
+            new_epoch = await pod_a_epoch_client.bump(
+                Subjects.mcp_rbac_epoch(),
+                payload={"grant_id": str(grant_entity.grant_id), "action": "create"},
+            )
+            assert new_epoch == epoch_before + 1
 
-        # pod B is still stale.
-        assert await pod_b_authorizer.allows(identity, permission) is False
-
-        # the periodic catch-up tick: invoke once explicitly with the
-        # authorizer's on_bump as the callback. ``catch_up`` sees
-        # current=1 > last_seen=0, advances last_seen, fires the
-        # callback which calls _reload_cache.
-        result = await pod_b_listener.catch_up(
-            _rbac_epoch("catchup"),
-            pod_b_authorizer._on_rbac_bump,  # noqa: SLF001
-        )
-        assert result == 1
-
-        # cache reloaded -> grant visible.
-        assert await pod_b_authorizer.allows(identity, permission) is True
+            # the catch-up tick sees current > last_seen, advances
+            # last_seen, and reloads the cache -> grant visible.
+            for _ in range(40):
+                if await pod_b_authorizer.allows(identity, permission):
+                    break
+                await asyncio.sleep(0.05)
+            assert await pod_b_authorizer.allows(identity, permission) is True
+            assert pod_b_listener.last_seen(Subjects.mcp_rbac_epoch()) >= new_epoch
+        finally:
+            await pod_b_authorizer.stop()

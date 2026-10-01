@@ -35,13 +35,12 @@ class _FakeTransport:
 
 def _build_client(transport: httpx.MockTransport) -> PlatformHttpClient:
     """build a client with the supplied mock transport injected."""
-    client = PlatformHttpClient(
+    return PlatformHttpClient(
         base_url="http://test.example",
         email="admin@example.org",
         password="hunter2",
+        transport=transport,
     )
-    client._client = httpx.AsyncClient(transport=transport)  # noqa: SLF001
-    return client
 
 
 class TestLogin:
@@ -270,15 +269,39 @@ class TestFromEnv:
 
     @pytest.mark.asyncio
     async def test_from_env_picks_up_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """env-var values flow through to the client config."""
+        """env-var values flow through to the client config.
+
+        observed on the wire: the login POST goes to the overridden URL and
+        carries the overridden credentials. ``from_env`` builds through
+        ``cls(...)``, so a subclass that only adds a transport sees exactly
+        the configuration ``from_env`` resolved.
+        """
         monkeypatch.setenv("MCP_E2E_URL", "http://override.example")
         monkeypatch.setenv("MCP_ADMIN_EMAIL", "ops@example.org")
         monkeypatch.setenv("MCP_ADMIN_PASSWORD", "topsecret")
-        client = PlatformHttpClient.from_env()
+        seen: list[httpx.Request] = []
+
+        def responder(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"access_token": "tok"})
+
+        class _MockTransportClient(PlatformHttpClient):
+            """routes through a MockTransport; configuration untouched."""
+
+            def __init__(self, *, base_url: str, email: str, password: str) -> None:
+                super().__init__(
+                    base_url=base_url,
+                    email=email,
+                    password=password,
+                    transport=httpx.MockTransport(responder),
+                )
+
+        client = _MockTransportClient.from_env()
         try:
-            assert client._base_url == "http://override.example"  # noqa: SLF001
-            assert client._email == "ops@example.org"  # noqa: SLF001
-            assert client._password == "topsecret"  # noqa: SLF001
+            await client.login()
+            assert len(seen) == 1
+            assert str(seen[0].url) == "http://override.example/api/v1/auth/login"
+            assert json.loads(seen[0].content) == {"email": "ops@example.org", "password": "topsecret"}
         finally:
             await client.aclose()
 

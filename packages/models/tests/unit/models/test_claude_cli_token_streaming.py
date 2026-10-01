@@ -99,6 +99,7 @@ def _model_streaming(messages: list[Any]):
 
 
 async def _collect_chunks(messages: list[Any]) -> list[Any]:
+    """Every message chunk a caller streaming one call receives, in order."""
     # ``create_subscription_chat`` MUST run inside the patch context: it calls
     # ``_subscription_model_cls()``, which does ``from claude_agent_sdk import
     # ClaudeSDKClient`` -- a module-level import whose result is captured as a
@@ -108,13 +109,7 @@ async def _collect_chunks(messages: list[Any]) -> list[Any]:
     # ``_astream`` would launch a REAL Claude Code CLI subprocess call.
     with _model_streaming(messages):
         model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
-        chunks = [
-            chunk
-            async for chunk in model._astream(  # noqa: SLF001 -- the method under test
-                [HumanMessage(content="hi")],
-                run_manager=None,
-            )
-        ]
+        chunks = [chunk async for chunk in model.astream([HumanMessage(content="hi")])]
     return chunks
 
 
@@ -129,8 +124,8 @@ class TestTokenLevelStreaming:
         ]
         chunks = await _collect_chunks(messages)
 
-        text_chunks = [c for c in chunks if c.message.content]
-        assert [c.message.content for c in text_chunks] == ["Hello ", "world"]
+        text_chunks = [c for c in chunks if c.content]
+        assert [c.content for c in text_chunks] == ["Hello ", "world"]
 
     async def test_assistant_message_text_not_doubled_after_streaming(self) -> None:
         """The terminal AssistantMessage does not re-yield text already streamed via deltas."""
@@ -142,7 +137,7 @@ class TestTokenLevelStreaming:
         ]
         chunks = await _collect_chunks(messages)
 
-        combined = "".join(c.message.content for c in chunks)
+        combined = "".join(c.content for c in chunks)
         assert combined == "Hello world"
 
     async def test_no_stream_events_falls_back_to_whole_message(self) -> None:
@@ -153,9 +148,9 @@ class TestTokenLevelStreaming:
         ]
         chunks = await _collect_chunks(messages)
 
-        text_chunks = [c for c in chunks if c.message.content]
+        text_chunks = [c for c in chunks if c.content]
         assert len(text_chunks) == 1
-        assert text_chunks[0].message.content == "No deltas here"
+        assert text_chunks[0].content == "No deltas here"
 
     async def test_streamed_flag_resets_between_assistant_messages(self) -> None:
         """A second AssistantMessage in the same turn (post-tool-call) gets its own
@@ -175,7 +170,7 @@ class TestTokenLevelStreaming:
         ]
         chunks = await _collect_chunks(messages)
 
-        combined = "".join(c.message.content for c in chunks)
+        combined = "".join(c.content for c in chunks)
         assert combined == "First, streamed.Second, not streamed."
 
     async def test_non_text_delta_events_are_ignored(self) -> None:
@@ -199,7 +194,7 @@ class TestTokenLevelStreaming:
         ]
         chunks = await _collect_chunks(messages)
 
-        assert all(c.message.content == "" for c in chunks)
+        assert all(c.content == "" for c in chunks)
 
     async def test_tool_calls_ride_the_terminal_chunk_after_the_streamed_text(self) -> None:
         """Tool calls are handed back on the last chunk; the text before them still streams."""
@@ -212,13 +207,13 @@ class TestTokenLevelStreaming:
         ]
         chunks = await _collect_chunks(messages)
 
-        assert [c.message.content for c in chunks] == ["calling a tool", ""]
+        assert [c.content for c in chunks] == ["calling a tool", ""]
         final = chunks[-1]
-        assert final.message.tool_call_chunks == [
+        assert final.tool_call_chunks == [
             {"id": "tu-1", "name": "echo", "args": '{"x": 1}', "index": 0, "type": "tool_call_chunk"},
         ]
-        assert final.generation_info["finish_reason"] == "tool_calls"
-        assert "internal_tool_calls" not in final.generation_info
+        assert final.response_metadata["finish_reason"] == "tool_calls"
+        assert "internal_tool_calls" not in final.response_metadata
 
     async def test_result_message_still_yields_the_terminal_chunk(self) -> None:
         """The ResultMessage -> final chunk_position='last' chunk is unaffected."""
@@ -229,6 +224,6 @@ class TestTokenLevelStreaming:
         chunks = await _collect_chunks(messages)
 
         final = chunks[-1]
-        assert final.generation_info["session_id"] == "sess-42"
-        assert final.generation_info["total_cost_usd"] == 0.01
-        assert final.generation_info["finish_reason"] == "stop"
+        assert final.response_metadata["session_id"] == "sess-42"
+        assert final.response_metadata["total_cost_usd"] == 0.01
+        assert final.response_metadata["finish_reason"] == "stop"

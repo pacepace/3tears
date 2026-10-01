@@ -17,8 +17,12 @@ pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
 from threetears.models import DEFAULT_CHAT_MODEL
-from threetears.models.providers import _claude_cli as claude_cli
 from threetears.models.providers._claude_cli import create_subscription_chat
+
+from ._claude_cli_recorder import advertised_tools, call_tool, subscription_model
+
+#: What the CLI's handler answers for every bound tool call: the call belongs to the caller.
+_HANDED_BACK = "This tool call was handed to the caller."
 
 
 class _EchoTool(BaseTool):
@@ -49,13 +53,6 @@ class _DottedNameTool(BaseTool):
         return f"result:{kwargs}"
 
 
-def _wrap(tool: BaseTool):
-    """Build the subscription model and wrap ``tool``, returning the raw ``SdkMcpTool``."""
-    model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
-    schema = {"properties": {"x": {"type": "string"}}, "required": []}
-    return model._wrap_langchain_tool(tool, schema)  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
-
-
 class _MustNotRunTool(BaseTool):
     """A tool whose running is the failure."""
 
@@ -69,23 +66,22 @@ class _MustNotRunTool(BaseTool):
         raise AssertionError("the CLI's handler ran the tool; tool calls belong to the caller")
 
 
-def _wrapped_handler(tool: BaseTool):
-    """Build the subscription model, wrap ``tool``, and return the SDK tool's raw async handler."""
-    return _wrap(tool).handler
+def _bound(tool: BaseTool) -> Any:
+    """A subscription model with ``tool`` bound, built the way a caller builds one."""
+    return subscription_model().bind_tools([tool])
 
 
 class TestTheHandlerRunsNothing:
-    async def test_the_handler_answers_without_running_the_tool(self) -> None:
-        result = await _wrapped_handler(_MustNotRunTool())({"to": "someone"})
-        assert result == {"content": [{"type": "text", "text": claude_cli._HANDED_BACK}]}  # noqa: SLF001
+    """Each call goes through the in-process server the CLI calls, exactly as the CLI calls it."""
 
-    async def test_a_dotted_tool_is_registered_under_its_wire_name_and_still_not_run(self) -> None:
-        from threetears.models.tool_name_translation import build_name_translation
+    def test_the_handler_answers_without_running_the_tool(self) -> None:
+        result = call_tool(lambda: _bound(_MustNotRunTool()), "threetears_send_email", {})
+        assert result.isError is False
+        assert [(block.type, block.text) for block in result.content] == [("text", _HANDED_BACK)]
 
-        [wire_tool], _reverse_map = build_name_translation([_MustNotRunTool()])
-        sdk_tool = _wrap(wire_tool)
-        assert sdk_tool.name == "threetears_send_email"
-        assert "is_error" not in await sdk_tool.handler({})
+    def test_a_dotted_tool_is_registered_under_its_wire_name_and_still_not_run(self) -> None:
+        assert list(advertised_tools(lambda: _bound(_MustNotRunTool()))) == ["threetears_send_email"]
+        assert call_tool(lambda: _bound(_MustNotRunTool()), "threetears_send_email", {}).isError is False
 
 
 class TestDottedToolNamePermissionFix:
@@ -150,54 +146,34 @@ class TestOptionalParameterSchemaFix:
         "required": ["query"],
     }
 
-    def test_optional_list_parameter_resolves_to_array_not_string(self) -> None:
-        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
-        sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
-            _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
+    def _advertised(self) -> dict[str, Any]:
+        tool = StructuredTool.from_function(
+            func=_storyboard, name="echo", description="echoes its input", args_schema=self._MEMORY_SEARCH_LIKE_SCHEMA
         )
-        assert sdk_tool.input_schema["properties"]["ids"]["type"] == "array"
+        return _advertised(tool)
+
+    def test_optional_list_parameter_resolves_to_array_not_string(self) -> None:
+        assert self._advertised()["properties"]["ids"]["type"] == "array"
 
     def test_optional_string_parameter_still_resolves_to_string(self) -> None:
-        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
-        sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
-            _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
-        )
-        assert sdk_tool.input_schema["properties"]["alias"]["type"] == "string"
+        assert self._advertised()["properties"]["alias"]["type"] == "string"
 
     def test_plain_typed_parameters_are_unaffected(self) -> None:
-        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
-        sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
-            _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
-        )
-        assert sdk_tool.input_schema["properties"]["query"]["type"] == "string"
-        assert sdk_tool.input_schema["properties"]["limit"]["type"] == "integer"
+        advertised = self._advertised()
+        assert advertised["properties"]["query"]["type"] == "string"
+        assert advertised["properties"]["limit"]["type"] == "integer"
 
     def test_only_the_genuinely_required_field_is_marked_required(self) -> None:
         """The SDK's own required-everything fallback must never trigger: ``ids``/``limit``/
         ``alias`` all have defaults in the source schema and must NOT appear in ``required``,
         even though they're present in ``properties``."""
-        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
-        sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
-            _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
-        )
-        assert sdk_tool.input_schema["required"] == ["query"]
+        assert self._advertised()["required"] == ["query"]
 
-    async def test_final_advertised_schema_survives_create_sdk_mcp_server_unmodified(self) -> None:
+    def test_final_advertised_schema_survives_create_sdk_mcp_server_unmodified(self) -> None:
         """End-to-end: create_sdk_mcp_server's own schema builder must pass our full schema
         through VERBATIM (its required-everything fallback only fires for a bare {name: type}
         map) -- this is what the model actually sees when a turn starts."""
-        from claude_agent_sdk import create_sdk_mcp_server
-        from mcp.types import ListToolsRequest
-
-        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
-        sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
-            _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
-        )
-        server = create_sdk_mcp_server("test", tools=[sdk_tool])
-        handler = server["instance"].request_handlers[ListToolsRequest]
-        result = await handler(ListToolsRequest(method="tools/list"))
-
-        advertised = result.root.tools[0].inputSchema
+        advertised = self._advertised()
         assert advertised["required"] == ["query"]
         assert advertised["properties"]["ids"]["type"] == "array"
 
@@ -254,24 +230,10 @@ def _storyboard(**_: Any) -> str:
 
 
 def _advertised(tool: BaseTool) -> dict[str, Any]:
-    """The input schema the CLI is shown for ``tool``, through the path ``bind_tools`` takes.
-
-    ``_get_tool_schema`` then ``_wrap_langchain_tool`` -- what the base class's ``bind_tools`` calls
-    for every tool -- then the SDK's own MCP server, whose tool listing is what the model reads.
+    """The input schema the CLI is shown for ``tool``: bound the way a caller binds it, then read
+    from the tool listing of the in-process server the call hands the CLI -- what the model reads.
     """
-    import asyncio
-
-    from claude_agent_sdk import create_sdk_mcp_server
-    from mcp.types import ListToolsRequest
-
-    model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
-    schema = model._get_tool_schema(tool)  # noqa: SLF001 -- the base class's seam under test  # type: ignore[attr-defined]
-    sdk_tool = model._wrap_langchain_tool(tool, schema)  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
-    server = create_sdk_mcp_server("test", tools=[sdk_tool])
-    handler = server["instance"].request_handlers[ListToolsRequest]
-    result = asyncio.run(handler(ListToolsRequest(method="tools/list")))
-    advertised: dict[str, Any] = result.root.tools[0].inputSchema
-    return advertised
+    return advertised_tools(lambda: _bound(tool))[tool.name]
 
 
 _SHOT = {

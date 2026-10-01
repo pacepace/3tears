@@ -380,7 +380,7 @@ async def test_exported_local_storage_is_actually_restored(monkeypatch: pytest.M
         "origins": [{"origin": "https://example.gov/page", "localStorage": '{"cf_token": "earned", "n": "2"}'}],
     }
 
-    await hitl._apply_origin_storage(_Tab(), state)
+    await hitl.apply_origin_storage(_Tab(), state)
 
     joined = " ".join(e for _, e in written)
     assert "cf_token" in joined
@@ -403,7 +403,7 @@ async def test_storage_is_not_written_into_the_wrong_origin() -> None:
             written.append(expression)
 
     state = {"origins": [{"origin": "https://example.gov/page", "localStorage": '{"k": "v"}'}]}
-    await hitl._apply_origin_storage(_Tab(), state)
+    await hitl.apply_origin_storage(_Tab(), state)
 
     assert written == []
 
@@ -423,7 +423,7 @@ async def test_a_value_with_quotes_does_not_break_the_expression() -> None:
             written.append(expression)
 
     nasty = '{"k": "va\\"lue\\u0027); alert(1); //"}'
-    await hitl._apply_origin_storage(_Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": nasty}]})
+    await hitl.apply_origin_storage(_Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": nasty}]})
 
     assert len(written) == 1
     # The payload is inside a JSON string literal rather than loose in the source.
@@ -441,9 +441,7 @@ async def test_unparseable_storage_is_skipped_without_losing_the_cookies() -> No
         async def evaluate(self, expression: str, **_kw: Any) -> None:
             raise AssertionError("should not have been called")
 
-    await hitl._apply_origin_storage(
-        _Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": "{oh no"}]}
-    )
+    await hitl.apply_origin_storage(_Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": "{oh no"}]})
 
 
 async def test_a_page_that_refuses_script_does_not_fail_the_restore() -> None:
@@ -455,7 +453,7 @@ async def test_a_page_that_refuses_script_does_not_fail_the_restore() -> None:
         async def evaluate(self, expression: str, **_kw: Any) -> None:
             raise RuntimeError("script evaluation is blocked")
 
-    await hitl._apply_origin_storage(
+    await hitl.apply_origin_storage(
         _Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": '{"a":"1"}'}]}
     )
 
@@ -527,19 +525,25 @@ async def test_export_state_never_raises_into_a_completion(manager: SessionManag
     """The contract the narrowed catch in complete_tab depends on.
 
     `complete_tab` catches only TimeoutError. That is correct exactly as long as this holds,
-    so it is asserted here rather than assumed -- if `_export_state` ever starts propagating,
-    this fails and names the reason instead of a completion blowing up in production.
+    so it is asserted here rather than assumed -- if the export ever starts propagating, this
+    fails and names the reason instead of a completion blowing up in production.
+
+    Asserted through `complete_tab` itself, the caller whose narrowed catch depends on the
+    promise: an export that raised would reach this test as an exception, and one that keeps
+    its promise yields a completed tab carrying no state.
     """
     session = await manager.open(now=1000.0)
     tab = await manager.open_tab(session, target_id="t", url="https://example.gov/a")
+    before = session.free_slots()
 
     async def _boom(*_a: Any, **_k: Any) -> dict[str, Any]:
         raise RuntimeError("the browser stopped answering")
 
     monkeypatch.setattr(hitl, "_export_context_state", _boom)
-    state = await manager._export_state(session.tabs[tab.tab_id])
+    completed = await manager.complete_tab(session, tab.tab_id)
 
-    assert state is None, "a failing export returns None rather than raising into the completion"
+    assert completed.exported_state is None, "a failing export yields no state rather than raising into the completion"
+    assert session.free_slots() == before + 1, "and the completion still frees the slot"
 
 
 class TestCredentialsAreNotRenderable:

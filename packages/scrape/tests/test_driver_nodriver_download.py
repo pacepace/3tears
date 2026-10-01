@@ -269,6 +269,26 @@ class TestNodriverDownloadDriver:
         assert isinstance(page, RenderedPage)
         assert page.timing_ms >= 0.0
 
+    async def test_a_non_json_error_body_still_raises_the_driver_error(self):
+        """A 5xx the sidecar did not write -- an ingress or proxy page -- has no JSON body.
+
+        It must still surface as this driver's documented error, not as a bare decode error
+        from inside the driver that no caller is written to catch.
+        """
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, text="<html>service unavailable</html>")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        driver = NodriverDownloadDriver("http://sidecar.test", client=client)
+
+        with pytest.raises(NodriverDownloadError) as exc_info:
+            await driver.render("https://example.gov/notice.pdf")
+
+        assert exc_info.value.code == "unknown"
+        assert "service unavailable" in exc_info.value.message
+        await client.aclose()
+
 
 class TestNodriverDownloadAnnouncesADroppedSolve:
     """Through render(), because the call site is what was untested.

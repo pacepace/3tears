@@ -41,37 +41,19 @@ line-length = 120
 select = ["SLF", "F", "N"]
 ignore = ["N818", "N811"]
 
-[lint.per-file-ignores]
-# Restated from the repo root, which cannot reach this far once a nested config exists:
-# a ruff.toml is a full override, not an extension. Reinstating the root's setting is
-# deliberate rather than a copy for its own sake -- dropping it would silently turn the
-# already-justified private access in this container's own test suite into failures the moment
-# this file exists. (`main.py` and `hitl.py` carry their own keys further down, added later and
-# for a different reason, so they are unaffected either way.)
+# No per-file SLF001 ignores, here or in tests, under the underscore contract (owner ruling,
+# 2026-10-01): a leading underscore is an implementation detail that nothing outside its module
+# binds to, tests included.
 #
-# The sidecar's module-level globals (_browser/_ready) and its lazy warm-up hook have no
-# public accessor; tests set and read them directly to drive cold-start, warm-start and
-# retry scenarios without launching a real Chromium. The HITL suites do the same for the
-# lifecycle's process handles and argument builders, where the private thing IS the
-# behaviour under test.
-"tests/*" = ["SLF001"]
-
-# main.py and hitl.py are two halves of ONE container and import each other. The helpers they
-# share are module-private on purpose: nothing outside the container may call them, and a
-# public alias would advertise them to consumers that must not have them.
+# There used to be three. `tests/*` let the suites set the module's browser globals and call its
+# private helpers directly; they now boot the container through its own lifespan, with
+# `uc.start` handing back a fake, and assert through the HTTP routes and the launch arguments.
+# `main.py` and `hitl.py` reached into each other's module-private helpers; those four helpers
+# (`create_isolated_tab`, `execute_nav_steps`, `apply_context_state`, `apply_origin_storage`)
+# are public now, declared in each module's `__all__`, because the other half of the container
+# is a real production caller. The earlier worry that a public name would "advertise" them to
+# consumers does not apply: this container is never imported as a library -- consumers reach it
+# over HTTP only -- so a module-level name is visible to nothing outside the image.
 #
-# Declared here rather than as inline `noqa`, with entries in
-# `tests/enforcement/_underscore_exemptions.txt`, because that is the channel the exemptions
-# file's own header requires: every entry there must have a matching ruff ignore so the two
-# stay in step, and the reasons then live in one reviewable list instead of at each call site.
-#
-# The cost, stated rather than glossed: a per-file ignore also suppresses every FUTURE private
-# access in the files listed below, which an inline pragma would not. The ledger entries are what
-# offsets that -- they record what was actually justified, so a new access is visible as an
-# undocumented one rather than as silence.
-#
-# It makes no difference to the enforcement walker: `find_local_src_roots` scans
-# `packages/*/src` only, so neither this container's files nor any `tests/` tree is ever walked
-# by it. Ruff at the repo root is the only thing that reads these.
-"main.py" = ["SLF001"]
-"hitl.py" = ["SLF001"]
+# A third-party private member reached from here would be confined to one module with a
+# per-file ignore and a ledger entry in `tests/enforcement/_underscore_exemptions.txt`. None is.

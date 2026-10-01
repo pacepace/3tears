@@ -53,8 +53,20 @@ class TestNoRedundantSlf001Pragmas:
             "unscanned while this suite still reports success"
         )
 
-        scanned = all_exempted_files(_REPO_ROOT)
-        assert len(scanned) > 25, f"only {len(scanned)} files scanned; discovery has silently collapsed"
+        # Anchored on named files rather than on a count. A count floor tracked how many
+        # exemptions happened to exist, so every exemption the underscore cleanup retired
+        # pushed the guard toward failing on a correct, smaller ledger. These two are
+        # third-party confinement modules -- the one kind of per-file ignore the underscore
+        # contract keeps -- so each must be discovered for as long as its ignore exists.
+        scanned = set(all_exempted_files(_REPO_ROOT))
+        for anchor in (
+            "packages/observe/src/threetears/observe/setup.py",
+            "packages/models/src/threetears/models/_claude_sdk_internals.py",
+        ):
+            assert _REPO_ROOT / anchor in scanned, (
+                f"{anchor} carries a per-file SLF001 ignore but was not scanned; discovery has "
+                f"silently collapsed ({len(scanned)} files scanned)"
+            )
 
     def test_every_slf001_exemption_glob_matches_something(self) -> None:
         """A key matching no file is a stale exemption AND a silent hole in the check below.

@@ -19,13 +19,16 @@ from unittest.mock import AsyncMock, patch
 import textwrap
 
 import pytest
-from packages.scrape.tests._pacer_fakes import _FakeDelayPacer
+from packages.scrape.tests._egress_fakes import FakeEgress
+from packages.scrape.tests._pacer_fakes import FakeDelayPacer
+from pydantic import SecretStr
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitState
 from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.health import ScrapeTargetHealthCollection
 from threetears.scrape.robots import RobotsGate
+from threetears.scrape.session_state import record_session_state, seal_session_state
 from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.llm_retry import StructuredCallTimeoutError
 from threetears.scrape.tool import MODEL_UNAVAILABLE_STATUS, ScrapeTool, _derive_target_id, _ssrf_block_reason
@@ -130,6 +133,48 @@ async def _seed_recipe(recipe_collection, target_id: str, strategy: dict) -> Non
         }
     )
     await recipe_collection.save_entity(entity)
+
+
+_STORED_SOLVE_KEY = SecretStr("an-operator-master-key-for-the-stored-solve-tests")
+_STORED_SOLVE_SCHEMA = {"employer": "str"}
+
+
+def _robots_file(body: str):
+    """A robots fetcher serving *body* for every origin."""
+
+    async def _fetch(_url: str) -> tuple[int, str]:
+        return 200, body
+
+    return _fetch
+
+
+async def _settle_background_tasks() -> None:
+    """Let fire-and-forget work scheduled by the call under test run to completion."""
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+async def _execute_with_a_stored_solve(driver, health, *, url: str, circuit=None, robots=None):
+    """Run ``execute`` for a target a human has already solved, through backend ``"old"``.
+
+    The solve is stored the way the operator flow stores one -- sealed under the tool's key in
+    the target's health row -- so the tool reads it itself and hands it to the render.
+    """
+    target_id = _derive_target_id(url, _STORED_SOLVE_SCHEMA)
+    state = {"cookies": [{"name": "session", "value": "abc", "domain": ".example.gov"}], "origins": []}
+    await record_session_state(health, target_id=target_id, state=seal_session_state(state, _STORED_SOLVE_KEY))
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        health_collection=health,
+        session_state_key=_STORED_SOLVE_KEY,
+        circuit=circuit,
+        drivers={"old": driver},
+        api_key="k",
+        robots=robots,
+    )
+    return await tool.execute(url=url, field_schema=_STORED_SOLVE_SCHEMA, driver_backend="old")
 
 
 class TestDeriveTargetId:
@@ -514,7 +559,7 @@ class TestScrapeToolFetchCircuit:
     """
 
     @staticmethod
-    def _tool(driver, circuit, recipe_collection, extraction_collection, health_collection):
+    def _tool(driver, circuit, recipe_collection, extraction_collection, health_collection, **kwargs):
         return ScrapeTool(
             recipe_collection=recipe_collection,
             extraction_collection=extraction_collection,
@@ -522,6 +567,7 @@ class TestScrapeToolFetchCircuit:
             circuit=circuit,
             drivers={"nodriver": driver},
             api_key="k",
+            **kwargs,
         )
 
     async def test_a_repeatedly_blocked_target_stops_being_fetched_and_stops_being_classified(self):
@@ -868,8 +914,7 @@ class TestScrapeToolFetchCircuit:
         circuit = TargetCircuit(health_collection, breaker_for=lambda _target: breaker)
         driver = _FakeDriver(_SINGLE_HTML)
         gate = RobotsGate(fetch=self._robots_fetcher("User-agent: *\nCrawl-delay: 120\n"))
-        tool = self._tool(driver, circuit, recipe_collection, extraction_collection, health_collection)
-        tool._robots = gate
+        tool = self._tool(driver, circuit, recipe_collection, extraction_collection, health_collection, robots=gate)
         gate.note_fetched(url)
 
         with (
@@ -1300,7 +1345,6 @@ async def test_a_driver_that_cannot_take_a_solve_is_not_backed_off() -> None:
     """
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
-    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 
     class _PreSessionStateDriver:
         """# parity-with: threetears.scrape.driver.ScrapeDriver"""
@@ -1320,45 +1364,28 @@ async def test_a_driver_that_cannot_take_a_solve_is_not_backed_off() -> None:
         ) -> RenderedPage:
             raise AssertionError("the render must not be attempted once the mismatch is known")
 
-    class _SpyCircuit:
-        """# parity-with: threetears.scrape.circuit.TargetCircuit"""
+    health = ScrapeTargetHealthCollection(CollectionRegistry(), DefaultCoreConfig(), nats_client=None)
+    circuit = TargetCircuit(health, policy=BackoffPolicy(failure_threshold=1))
+    pacer = FakeDelayPacer()
+    gate = RobotsGate(fetch=_robots_file("User-agent: *\nCrawl-delay: 10\n"), delay_pacer=pacer)
+    url = "https://example.gov/x"
 
-        def __init__(self) -> None:
-            self.unreachable: list[str] = []
+    result = await _execute_with_a_stored_solve(_PreSessionStateDriver(), health, url=url, circuit=circuit, robots=gate)
 
-        async def record_unreachable(self, target_id: str) -> None:
-            self.unreachable.append(target_id)
-
-    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
-    circuit = _SpyCircuit()
-    tool = ScrapeTool(
-        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
-        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
-        drivers={"old": _PreSessionStateDriver()},  # type: ignore[dict-item]
-        circuit=circuit,  # type: ignore[arg-type]
-        api_key="k",
-        robots=None,
+    assert result.success is False
+    assert "does not accept session_state" in (result.error or ""), (
+        f"the incompatibility was reported as something else: {result.error}"
     )
-
-    page, error, fetch_attempted = await tool._render_once(
-        _PreSessionStateDriver(),  # type: ignore[arg-type]
-        "https://example.gov/x",
-        wait_for=None,
-        nav_steps=None,
-        solved_state={"cookies": {"session": "abc"}},
-        target_id="t1",
-        driver_backend="old",
-    )
-
-    assert page is None
-    assert fetch_attempted is False, "a refusal issued before the driver call reported a fetch"
-    assert "does not accept session_state" in (error or ""), (
-        f"the incompatibility was reported as something else: {error}"
-    )
-    assert circuit.unreachable == [], (
+    target_id = _derive_target_id(url, _STORED_SOLVE_SCHEMA)
+    assert (await circuit.check(target_id)).permitted, (
         "a driver that cannot take a solve was recorded as an unreachable fetch, so the durable "
         "circuit will back the target off for hours over a wiring mistake time cannot fix"
     )
+    # A refusal issued before the driver call is not a fetch: the origin's fleet turn, claimed
+    # for it, is given back -- which happens only when the render reports it never went out.
+    await _settle_background_tasks()
+    assert pacer.keys == ["https://example.gov"], "the fleet turn was never claimed, so this proves nothing"
+    assert pacer.refunded == ["https://example.gov"], "a refusal before the driver call reported a fetch"
 
 
 async def test_a_refused_fetch_does_not_charge_the_origins_clock() -> None:
@@ -1375,7 +1402,6 @@ async def test_a_refused_fetch_does_not_charge_the_origins_clock() -> None:
     """
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
-    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
     from threetears.scrape.robots import RobotsGate
 
     class _PreSessionStateDriver:
@@ -1388,29 +1414,19 @@ async def test_a_refused_fetch_does_not_charge_the_origins_clock() -> None:
         async def render(self, url: str, *, timeout: float = 30.0, wait_for: str | None = None) -> RenderedPage:
             raise AssertionError("the render must not be attempted once the mismatch is known")
 
-    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
-    gate = RobotsGate()
-    tool = ScrapeTool(
-        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
-        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
-        drivers={"old": _PreSessionStateDriver()},  # type: ignore[dict-item]
-        api_key="k",
-        robots=gate,
-    )
+    health = ScrapeTargetHealthCollection(CollectionRegistry(), DefaultCoreConfig(), nats_client=None)
+    gate = RobotsGate(fetch=_robots_file("User-agent: *\nCrawl-delay: 10\n"))
 
-    await tool._render_once(
-        _PreSessionStateDriver(),  # type: ignore[arg-type]
-        "https://example.gov/x",
-        wait_for=None,
-        nav_steps=None,
-        solved_state={"cookies": {"session": "abc"}},
-        target_id="t1",
-        driver_backend="old",
+    result = await _execute_with_a_stored_solve(
+        _PreSessionStateDriver(), health, url="https://example.gov/x", robots=gate
     )
+    assert "does not accept session_state" in (result.error or ""), "the refusal path was not the one taken"
 
-    assert "https://example.gov" not in gate._last_fetch_at, (
-        "a fetch that was refused before the driver call still started the origin's crawl-delay "
-        "clock, so every sibling target on that origin is paced for a request nobody sent"
+    owed = (await gate.check("https://example.gov/y")).wait_seconds
+    assert owed == 0.0, (
+        f"a fetch that was refused before the driver call still started the origin's crawl-delay "
+        f"clock ({owed}s now owed), so every sibling target on that origin is paced for a request "
+        "nobody sent"
     )
 
 
@@ -1431,26 +1447,19 @@ async def test_a_render_failure_logs_what_actually_went_wrong(caplog) -> None:
     from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 
     reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    boom = _FakeDriver(_SINGLE_HTML, raise_exc=TimeoutError("upstream did not answer"))
     tool = ScrapeTool(
         recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
         extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
-        drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
+        drivers={"nodriver": boom},
         api_key="k",
         robots=None,
     )
-    boom = _FakeDriver(_SINGLE_HTML, raise_exc=TimeoutError("upstream did not answer"))
 
     with caplog.at_level("WARNING", logger="threetears.scrape.tool"):
-        await tool._render_once(
-            boom,  # type: ignore[arg-type]
-            "https://example.gov/x",
-            wait_for=None,
-            nav_steps=None,
-            solved_state=None,
-            target_id="t1",
-            driver_backend="nodriver",
-        )
+        result = await tool.execute(url="https://example.gov/x", field_schema={"employer": "str"})
 
+    assert result.success is False and "upstream did not answer" in (result.error or "")
     failed = [r for r in caplog.records if "render failed" in r.message]
     assert failed, "the render failure was not logged at all"
     record = failed[0]
@@ -1534,25 +1543,42 @@ def test_a_driver_taking_kwargs_is_not_called_incompatible() -> None:
 class TestEgressByName:
     """The registry's reason to exist: configuration names an exit, nothing branches on it."""
 
-    def test_a_name_resolves_through_the_registry(self) -> None:
+    @pytest.mark.real_robots_fetch
+    async def test_a_name_resolves_through_the_registry(self) -> None:
+        """Observed as the route the tool's own robots read takes, which is what the exit is for.
+
+        A tool built with no ``robots`` argument builds its gate from the exit the name
+        resolved to, so the robots request reaching the registered exit's transport is the
+        resolution, seen from outside.
+        """
         from threetears.core.collections.registry import CollectionRegistry
         from threetears.core.config import DefaultCoreConfig
-        from threetears.core.egress import EgressRegistry, SocksEgress
+        from threetears.core.egress import EgressRegistry
         from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 
+        import httpx
+
+        url = "https://example.gov/warn"
+        schema = {"employer": "str", "affected_count": "int"}
+        tor = FakeEgress("tor", respond=lambda _request: httpx.Response(200, text=""))
         reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+        recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+        await _seed_recipe(recipes, _derive_target_id(url, schema), _SINGLE_STRATEGY)
         tool = ScrapeTool(
-            recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+            recipe_collection=recipes,
             extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
-            drivers={},
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
             api_key="k",
             egress="tor",
-            egress_registry=EgressRegistry({"tor": SocksEgress("tor")}),
-            robots=None,
+            egress_registry=EgressRegistry({"tor": tor}),
         )
 
-        assert tool._egress is not None
-        assert tool._egress.name == "tor"
+        with patch("threetears.scrape.eval_loop.classify_failed_page", return_value=None):
+            await tool.execute(url=url, field_schema=schema)
+
+        assert [str(r.url) for r in tor.requests] == ["https://example.gov/robots.txt"], (
+            "the exit named 'tor' is not the one this tool's robots read left by"
+        )
 
     def test_an_unknown_name_raises_rather_than_quietly_going_direct(self) -> None:
         """The failure this forbids is silent and total: a deployment that asked for TOR,
@@ -1583,8 +1609,8 @@ class TestTheFleetAndTheSiteBothBind:
     """
 
     @staticmethod
-    def _pacer(*, claimed: bool, retry_after: float = 0.0) -> _FakeDelayPacer:
-        return _FakeDelayPacer(claimed=claimed, retry_after_seconds=retry_after)
+    def _pacer(*, claimed: bool, retry_after: float = 0.0) -> FakeDelayPacer:
+        return FakeDelayPacer(claimed=claimed, retry_after_seconds=retry_after)
 
     async def _slept_waiting_for(self, pacer) -> list[float]:
         from threetears.core.collections.registry import CollectionRegistry
@@ -1652,6 +1678,7 @@ class TestTheFleetAndTheSiteBothBind:
         await circuit.record_blocked(target_id)
 
         pacer = self._pacer(claimed=True)
+        gate = RobotsGate(fetch=_fetch, delay_pacer=pacer)
         tool = ScrapeTool(
             recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
             extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
@@ -1659,7 +1686,7 @@ class TestTheFleetAndTheSiteBothBind:
             api_key="k",
             health_collection=health,
             circuit=circuit,
-            robots=RobotsGate(fetch=_fetch, delay_pacer=pacer),
+            robots=gate,
         )
 
         # A delay is already owed, so the OTHER `fetch_will_happen` guard -- the one on the
@@ -1667,7 +1694,7 @@ class TestTheFleetAndTheSiteBothBind:
         # delay before being told it will not fetch: a caller blocked for up to the delay
         # ceiling to be handed a backoff result. The previous version never called
         # `note_fetched`, so the wait was zero either way and that guard was deletable green.
-        tool._robots.note_fetched(url)
+        gate.note_fetched(url)
         slept: list[float] = []
 
         async def _record(seconds: float) -> None:
@@ -1714,7 +1741,7 @@ class TestACancelledPollReturnsItsTurn:
         url, schema = "https://example.gov/cancelled-turn", {"employer": "str"}
         await _seed_recipe(recipes, _derive_target_id(url, schema), {"selectors": _SINGLE_STRATEGY})
 
-        pacer = _FakeDelayPacer()
+        pacer = FakeDelayPacer()
         gate = RobotsGate(fetch=_fetch, delay_pacer=pacer)
         gate.note_fetched(url)  # a delay is owed, so the sleep below is real
         tool = ScrapeTool(
@@ -1763,7 +1790,7 @@ class TestACancelledPollReturnsItsTurn:
         url, schema = "https://example.gov/refused-turn", {"employer": "str"}
         await _seed_recipe(recipes, _derive_target_id(url, schema), {"selectors": _SINGLE_STRATEGY})
 
-        pacer = _FakeDelayPacer(claimed=False, retry_after_seconds=25.0)
+        pacer = FakeDelayPacer(claimed=False, retry_after_seconds=25.0)
         gate = RobotsGate(fetch=_fetch, delay_pacer=pacer)
         gate.note_fetched(url)
         tool = ScrapeTool(
@@ -1801,7 +1828,7 @@ class TestACancelledPollReturnsItsTurn:
         url, schema = "https://example.gov/kept-turn", {"employer": "str"}
         await _seed_recipe(recipes, _derive_target_id(url, schema), {"selectors": _SINGLE_STRATEGY})
 
-        pacer = _FakeDelayPacer()
+        pacer = FakeDelayPacer()
         tool = ScrapeTool(
             recipe_collection=recipes,
             extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
