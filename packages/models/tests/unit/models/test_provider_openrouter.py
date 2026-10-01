@@ -31,7 +31,18 @@ from threetears.models.tool_name_translation import (
     reverse_translate_message,
 )
 
+from ._provider_wire import (
+    AnthropicMessagesWire,
+    ChatCompletionsWire,
+    TextBlock,
+    openrouter_model,
+    text_deltas,
+    tool_call_delta,
+)
 from ._translation_helpers import DottedTool as _DottedTool
+
+#: the XML-attribute-leak tool name from the 2026-05-19 prod incident
+_JUNK_NAME = 'memory_recall" name="memory_recall'
 
 
 class TestCreateOpenRouterChat:
@@ -211,8 +222,40 @@ class TestBuildNameTranslation:
         assert tool.invoked_with == [{"expression": "1+1"}]
 
 
+def _answer_calling(*names: str, arguments: str = '{"expression": "2+2"}') -> ChatCompletionsWire:
+    """a wire whose answer calls each of ``names`` by that exact wire name, streamed or not.
+
+    OpenRouter's default deadline makes a plain ``ainvoke`` collect the stream, so the answer is
+    scripted both ways and reads the same whichever the request asks for.
+
+    :param names: the tool names the answer calls
+    :ptype names: str
+    :param arguments: the raw arguments every call carries
+    :ptype arguments: str
+    :return: the wire
+    :rtype: ChatCompletionsWire
+    """
+    calls = [{"index": i, "id": f"call_{i}", "name": name, "arguments": arguments} for i, name in enumerate(names)]
+    return ChatCompletionsWire(
+        deltas=[tool_call_delta(*calls)],
+        message={
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": call["id"], "type": "function", "function": {"name": call["name"], "arguments": arguments}}
+                for call in calls
+            ],
+        },
+        finish="tool_calls",
+    )
+
+
 class TestNameTranslatingChatOpenRouter:
-    """End-to-end name-translation via the ``ChatOpenRouter`` subclass."""
+    """End-to-end name-translation via the ``ChatOpenRouter`` subclass.
+
+    Every answer comes from a scripted chat-completions API through the real
+    ``openrouter`` SDK, so a name is asserted as the caller receives it.
+    """
 
     def test_factory_returns_translating_subclass(self) -> None:
         """The factory builds the translating subclass, not vanilla
@@ -222,85 +265,87 @@ class TestNameTranslatingChatOpenRouter:
         model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
         assert "Translating" in type(model).__name__
 
-    def test_bind_tools_populates_reverse_map(self) -> None:
-        """``bind_tools`` mutates the instance's reverse map so a
-        subsequent ``_astream`` / ``_agenerate`` can rewrite tool-call
-        names.
+    @pytest.mark.asyncio
+    async def test_bind_tools_teaches_the_model_its_wire_names(self) -> None:
+        """``bind_tools`` records each dotted tool's wire name on the model, so
+        an answer calling ``threetears_calculator`` reaches the caller as the
+        canonical ``threetears.calculator`` -- and the tool went out under its
+        wire name.
         """
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
-        tool = _DottedTool()
-        model.bind_tools([tool])
-        # PrivateAttr: access via the standard pydantic shape
-        reverse = model._name_reverse_map
-        assert reverse == {"threetears_calculator": "threetears.calculator"}
+        wire = _answer_calling("threetears_calculator")
+        model = openrouter_model(wire)
 
-    def test_reverse_translate_message_rewrites_tool_calls(self) -> None:
+        result = await model.bind_tools([_DottedTool()]).ainvoke("what is 2+2?")
+
+        assert [tool["function"]["name"] for tool in wire.bodies[-1]["tools"]] == ["threetears_calculator"]
+        assert result.tool_calls[0]["name"] == "threetears.calculator"
+
+    @pytest.mark.asyncio
+    async def test_a_finished_answers_tool_calls_are_untranslated(self) -> None:
         """A finished ``AIMessage`` with underscored tool-call names
         gets its names rewritten back to the canonical dotted form.
         """
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        model = openrouter_model(_answer_calling("threetears_calculator"))
         model.bind_tools([_DottedTool()])
-        msg = AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "threetears_calculator",
-                    "args": {"expression": "2+2"},
-                    "id": "call_1",
-                },
-            ],
-        )
-        reverse_translate_message(msg, model._name_reverse_map)
-        assert msg.tool_calls[0]["name"] == "threetears.calculator"
 
-    def test_reverse_translate_message_rewrites_tool_call_chunks(self) -> None:
+        result = await model.ainvoke("what is 2+2?")
+
+        assert result.tool_calls == [
+            {
+                "name": "threetears.calculator",
+                "args": {"expression": "2+2"},
+                "id": "call_0",
+                "type": "tool_call",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_streamed_answers_tool_call_chunks_are_untranslated(self) -> None:
         """Streaming chunks carry partial ``tool_call_chunks``; the name
         field arrives once at the start of each call. The reverse
         translation rewrites that first chunk so consumers accumulating
         tool calls see canonical names from the start.
         """
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
-        model.bind_tools([_DottedTool()])
-        chunk = AIMessageChunk(
-            content="",
-            tool_call_chunks=[
-                {
-                    "name": "threetears_calculator",
-                    "args": "",
-                    "id": "call_1",
-                    "index": 0,
-                },
+        wire = ChatCompletionsWire(
+            deltas=[
+                tool_call_delta({"index": 0, "id": "call_1", "name": "threetears_calculator", "arguments": ""}),
+                tool_call_delta({"index": 0, "id": None, "name": None, "arguments": '{"expression": "2+2"}'}),
             ],
+            finish="tool_calls",
         )
-        reverse_translate_message(chunk, model._name_reverse_map)
-        assert chunk.tool_call_chunks[0]["name"] == "threetears.calculator"
+        model = openrouter_model(wire)
+        model.bind_tools([_DottedTool()])
 
-    def test_reverse_translate_message_rewrites_invalid_tool_calls(self) -> None:
-        """Malformed streamed tool calls land in ``invalid_tool_calls``
+        named = [
+            call_chunk["name"]
+            async for chunk in model.astream("what is 2+2?")
+            for call_chunk in chunk.tool_call_chunks
+            if call_chunk["name"]
+        ]
+
+        assert named == ["threetears.calculator"]
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_calls_invalid_tool_calls_are_untranslated(self) -> None:
+        """Malformed tool calls land in ``invalid_tool_calls``
         and the consumer / 3tears-agents both inspect them when ``tool_calls``
         is empty. Translate those names too so the recovery code sees
         canonical form.
         """
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        # arguments no JSON parser can repair (a truncated ``{partial`` is repaired to ``{}``
+        # when the answer is streamed, and so is not malformed at all)
+        model = openrouter_model(_answer_calling("threetears_calculator", arguments="not json"))
         model.bind_tools([_DottedTool()])
-        msg = AIMessage(
-            content="",
-            invalid_tool_calls=[
-                {
-                    "name": "threetears_calculator",
-                    "args": "{partial",
-                    "id": "call_1",
-                    "error": "JSONDecodeError",
-                },
-            ],
-        )
-        reverse_translate_message(msg, model._name_reverse_map)
-        assert msg.invalid_tool_calls[0]["name"] == "threetears.calculator"
+
+        result = await model.ainvoke("what is 2+2?")
+
+        assert result.tool_calls == []
+        assert [call["name"] for call in result.invalid_tool_calls] == ["threetears.calculator"]
 
     @pytest.mark.asyncio
     async def test_ainvoke_untranslates_when_aggregating_from_astream(self) -> None:
         """``ainvoke`` un-translates tool-call names even when it aggregates
-        internally from the protected ``_astream``.
+        internally from the provider's stream.
 
         Regression for the converged-loop tool-dispatch failure
         (2026-06-22): the 3tears ``agent_node`` calls ``model.ainvoke`` while
@@ -315,47 +360,22 @@ class TestNameTranslatingChatOpenRouter:
         are canonical regardless of the internal route.
 
         ``stream=True`` makes ``_should_stream`` true (``chat_models.py``:
-        ``if kwargs.get("stream"): return True``), forcing the ``_astream``
+        ``if kwargs.get("stream"): return True``), forcing the stream
         aggregation path this test must exercise. Without the override the
         returned name stays ``threetears_calculator`` and this fails.
         """
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, run_manager, kwargs
-            # The wire form: the model called the tool by its mangled
-            # (underscored) name; un-translation has NOT happened yet.
-            yield ChatGenerationChunk(
-                message=AIMessageChunk(
-                    content="",
-                    tool_call_chunks=[
-                        {
-                            "name": "threetears_calculator",
-                            "args": "{}",
-                            "id": "call_1",
-                            "index": 0,
-                        },
-                    ],
-                ),
-            )
-
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        # The wire form: the model called the tool by its mangled
+        # (underscored) name; un-translation has NOT happened yet.
+        wire = ChatCompletionsWire(
+            deltas=[tool_call_delta({"index": 0, "id": "call_1", "name": "threetears_calculator", "arguments": "{}"})],
+            finish="tool_calls",
+        )
+        model = openrouter_model(wire)
         model.bind_tools([_DottedTool()])
 
-        original_astream = ChatOpenRouter._astream
-        try:
-            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
-            result = await model.ainvoke("hi", stream=True)
-        finally:
-            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+        result = await model.ainvoke("hi", stream=True)
 
+        assert wire.bodies[-1]["stream"] is True
         # The aggregated message's tool call carries the canonical dotted
         # name, not the underscored wire form.
         assert result.tool_calls, "expected an aggregated tool call"
@@ -408,54 +428,19 @@ class TestNameTranslatingChatOpenRouter:
         where it was persisted as an unrecoverable invocation. The
         wrapper now drops those entries before yielding the chunk.
         """
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
-
-        junk_name = 'memory_recall" name="memory_recall'
-
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, run_manager, kwargs
-            # Two invalid_tool_calls: one with a junk name, one
-            # plausibly recoverable.
-            yield ChatGenerationChunk(
-                message=AIMessageChunk(
-                    content="",
-                    invalid_tool_calls=[
-                        {
-                            "name": junk_name,
-                            "args": "{}",
-                            "id": "call_junk",
-                            "error": "JSONDecodeError",
-                        },
-                        {
-                            "name": "threetears_calculator",
-                            "args": "{partial",
-                            "id": "call_ok",
-                            "error": "JSONDecodeError",
-                        },
-                    ],
-                ),
-            )
-
-        model = create_openrouter_chat(
-            "deepseek/deepseek-chat-v3-0324",
-            "sk-test",
+        # Two malformed calls in one delta: one with a junk name, one
+        # plausibly recoverable.
+        wire = ChatCompletionsWire(
+            deltas=[
+                tool_call_delta(
+                    {"index": 0, "id": "call_junk", "name": _JUNK_NAME, "arguments": "not json"},
+                    {"index": 1, "id": "call_ok", "name": "threetears_calculator", "arguments": "not json"},
+                )
+            ],
+            finish="tool_calls",
         )
 
-        original_astream = ChatOpenRouter._astream
-        try:
-            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
-            chunks: list[AIMessageChunk] = []
-            async for chunk in model.astream("hi"):
-                chunks.append(chunk)
-        finally:
-            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+        chunks: list[AIMessageChunk] = [chunk async for chunk in openrouter_model(wire).astream("hi")]
 
         # The chunk carrying invalid_tool_calls should keep only the
         # well-named entry; the junk name must be dropped.
@@ -465,7 +450,7 @@ class TestNameTranslatingChatOpenRouter:
         assert len(kept) == 1
         assert kept[0]["name"] == "threetears_calculator"
         assert kept[0]["id"] == "call_ok"
-        assert all(call["name"] != junk_name for call in kept)
+        assert all(call["name"] != _JUNK_NAME for call in kept)
 
     @pytest.mark.asyncio
     async def test_astream_keeps_nameless_streaming_continuation(self) -> None:
@@ -481,45 +466,19 @@ class TestNameTranslatingChatOpenRouter:
         since the merge re-derives from ``tool_call_chunks``), but the
         per-chunk log storm was the real cost.
         """
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, run_manager, kwargs
-            # A streaming continuation fragment: no name, partial args.
-            yield ChatGenerationChunk(
-                message=AIMessageChunk(
-                    content="",
-                    invalid_tool_calls=[
-                        {
-                            "name": None,
-                            "args": ' "2+2"}',
-                            "id": None,
-                            "error": "JSONDecodeError",
-                        },
-                    ],
+        # The first delta names the call; the continuation carries no name and
+        # arguments that do not parse on their own.
+        wire = ChatCompletionsWire(
+            deltas=[
+                tool_call_delta(
+                    {"index": 0, "id": "call_1", "name": "threetears_calculator", "arguments": '{"expression":'}
                 ),
-            )
-
-        model = create_openrouter_chat(
-            "deepseek/deepseek-chat-v3-0324",
-            "sk-test",
+                tool_call_delta({"index": 0, "id": None, "name": None, "arguments": ' "2+2"}'}),
+            ],
+            finish="tool_calls",
         )
 
-        original_astream = ChatOpenRouter._astream
-        try:
-            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
-            chunks: list[AIMessageChunk] = []
-            async for chunk in model.astream("hi"):
-                chunks.append(chunk)
-        finally:
-            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+        chunks: list[AIMessageChunk] = [chunk async for chunk in openrouter_model(wire).astream("hi")]
 
         carrier_chunks = [c for c in chunks if c.invalid_tool_calls]
         assert len(carrier_chunks) == 1
@@ -535,131 +494,82 @@ class TestNameTranslatingChatOpenRouter:
         non-streaming path (``ainvoke`` and friends) needs the same
         defense so consumers that don't stream are equally protected.
         """
-        from langchain_core.outputs import ChatGeneration, ChatResult
-        from langchain_openrouter import ChatOpenRouter
-
-        junk_name = 'memory_recall" name="memory_recall'
-
-        async def _fake_super_agenerate(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ) -> ChatResult:
-            del self, messages, stop, run_manager, kwargs
-            return ChatResult(
-                generations=[
-                    ChatGeneration(
-                        message=AIMessage(
-                            content="",
-                            invalid_tool_calls=[
-                                {
-                                    "name": junk_name,
-                                    "args": "{}",
-                                    "id": "call_junk",
-                                    "error": "JSONDecodeError",
-                                },
-                                {
-                                    "name": "threetears_calculator",
-                                    "args": "{partial",
-                                    "id": "call_ok",
-                                    "error": "JSONDecodeError",
-                                },
-                            ],
-                        ),
-                    ),
+        wire = ChatCompletionsWire(
+            message={
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_junk", "type": "function", "function": {"name": _JUNK_NAME, "arguments": "not json"}},
+                    {
+                        "id": "call_ok",
+                        "type": "function",
+                        "function": {"name": "threetears_calculator", "arguments": "not json"},
+                    },
                 ],
-            )
-
-        model = create_openrouter_chat(
-            "deepseek/deepseek-chat-v3-0324",
-            "sk-test",
+            },
+            finish="tool_calls",
         )
+        model = openrouter_model(wire)
         # the provider's own ``_agenerate`` runs only when no deadline is set; with one the
         # answer comes from the stream (``test_agenerate_under_a_deadline_drops_junk_names_too``)
         model.request_timeout = None
 
-        original_agenerate = ChatOpenRouter._agenerate
-        try:
-            ChatOpenRouter._agenerate = _fake_super_agenerate  # type: ignore[method-assign]
-            result = await model.ainvoke("hi")
-        finally:
-            ChatOpenRouter._agenerate = original_agenerate  # type: ignore[method-assign]
+        result = await model.ainvoke("hi")
 
+        assert wire.bodies[-1].get("stream") is not True
         kept = result.invalid_tool_calls
         assert len(kept) == 1
         assert kept[0]["name"] == "threetears_calculator"
-        assert all(call["name"] != junk_name for call in kept)
+        assert all(call["name"] != _JUNK_NAME for call in kept)
 
     @pytest.mark.asyncio
-    async def test_agenerate_under_a_deadline_drops_junk_names_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_agenerate_under_a_deadline_drops_junk_names_too(self) -> None:
         """with a deadline ``_agenerate`` collects the stream; the junk filter still applies."""
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
-
-        junk_name = 'memory_recall" name="memory_recall'
-
-        async def _streams_two_bad_calls(self: Any, *args: Any, **kwargs: Any):
-            del self, args, kwargs
-            yield ChatGenerationChunk(
-                message=AIMessageChunk(
-                    content="",
-                    tool_call_chunks=[
-                        {"name": junk_name, "args": "not json", "id": "call_junk", "index": 0},
-                        {"name": "threetears_calculator", "args": "not json", "id": "call_ok", "index": 1},
-                    ],
-                ),
-            )
-
-        monkeypatch.setattr(ChatOpenRouter, "_astream", _streams_two_bad_calls)
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        wire = ChatCompletionsWire(
+            deltas=[
+                tool_call_delta(
+                    {"index": 0, "id": "call_junk", "name": _JUNK_NAME, "arguments": "not json"},
+                    {"index": 1, "id": "call_ok", "name": "threetears_calculator", "arguments": "not json"},
+                )
+            ],
+            finish="tool_calls",
+        )
+        model = openrouter_model(wire)
         assert model.call_deadline_s() == 120
+
         result = await model.ainvoke("hi")
 
+        assert wire.bodies[-1]["stream"] is True
         assert [call["name"] for call in result.invalid_tool_calls] == ["threetears_calculator"]
 
-    def test_reverse_translate_message_noop_when_no_tools_bound(self) -> None:
-        """Without any prior ``bind_tools`` call the reverse map is
-        empty; ``_reverse_translate_message`` short-circuits without
-        mutating the message.
+    @pytest.mark.asyncio
+    async def test_no_tools_bound_means_no_translation(self) -> None:
+        """Without any prior ``bind_tools`` call the model has no translation
+        map, so even an underscored name that a dotted tool WOULD mangle to
+        reaches the caller unchanged.
         """
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
-        msg = AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "external_tool",
-                    "args": {},
-                    "id": "call_1",
-                },
-            ],
-        )
-        reverse_translate_message(msg, model._name_reverse_map)
-        # No bind_tools means no translation map; the name stays as-is.
-        assert msg.tool_calls[0]["name"] == "external_tool"
+        model = openrouter_model(_answer_calling("threetears_calculator", "external_tool"))
 
-    def test_reverse_translate_message_noop_for_unmatched_name(self) -> None:
+        result = await model.ainvoke("hi")
+
+        # No bind_tools means no translation map; the names stay as-is.
+        assert [call["name"] for call in result.tool_calls] == ["threetears_calculator", "external_tool"]
+
+    @pytest.mark.asyncio
+    async def test_an_unmatched_name_passes_through(self) -> None:
         """A tool-call name not in the reverse map (e.g. from a tool
         that was already underscored, or an LLM hallucination) passes
         through unchanged.
         """
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        model = openrouter_model(_answer_calling("some_other_tool"))
         model.bind_tools([_DottedTool()])
-        msg = AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "some_other_tool",
-                    "args": {},
-                    "id": "call_1",
-                },
-            ],
-        )
-        reverse_translate_message(msg, model._name_reverse_map)
-        assert msg.tool_calls[0]["name"] == "some_other_tool"
 
-    def test_rebind_replaces_reverse_map(self) -> None:
+        result = await model.ainvoke("hi")
+
+        assert [call["name"] for call in result.tool_calls] == ["some_other_tool"]
+
+    @pytest.mark.asyncio
+    async def test_rebind_replaces_reverse_map(self) -> None:
         """A second ``bind_tools`` call with a different tool set
         replaces the reverse map wholesale. Otherwise stale entries
         from a prior bind would translate names that don't belong to
@@ -669,12 +579,14 @@ class TestNameTranslatingChatOpenRouter:
         class _OtherTool(_DottedTool):
             name: str = "threetears.web_search"
 
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        model = openrouter_model(_answer_calling("threetears_web_search", "threetears_calculator"))
         model.bind_tools([_DottedTool()])
         model.bind_tools([_OtherTool()])
-        assert model._name_reverse_map == {
-            "threetears_web_search": "threetears.web_search",
-        }
+
+        result = await model.ainvoke("hi")
+
+        # the current bind's name is untranslated; the earlier bind's is not
+        assert [call["name"] for call in result.tool_calls] == ["threetears.web_search", "threetears_calculator"]
 
     @pytest.mark.asyncio
     async def test_astream_translates_aimessage_chunk_tool_calls(self) -> None:
@@ -693,64 +605,20 @@ class TestNameTranslatingChatOpenRouter:
         output and we post-process the AIMessageChunks after they're
         yielded. This test pins the new contract.
         """
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            """Stand in for ``ChatOpenRouter._astream`` -- yields a
-            single ChatGenerationChunk whose nested AIMessageChunk
-            carries the wire-form tool_call name the LLM emitted.
-
-            Takes ``self`` because we patch it onto the class -- the
-            method-binding semantics need the receiver slot.
-            """
-            del self, messages, stop, run_manager, kwargs
-            yield ChatGenerationChunk(
-                message=AIMessageChunk(
-                    content="",
-                    tool_call_chunks=[
-                        {
-                            "name": "threetears_calculator",
-                            "args": "",
-                            "id": "call_1",
-                            "index": 0,
-                        },
-                    ],
-                ),
-            )
-
-        model = create_openrouter_chat(
-            "deepseek/deepseek-chat-v3-0324",
-            "sk-test",
+        # One delta carrying the wire-form tool_call name the LLM emitted.
+        wire = ChatCompletionsWire(
+            deltas=[tool_call_delta({"index": 0, "id": "call_1", "name": "threetears_calculator", "arguments": ""})],
+            finish="tool_calls",
         )
+        model = openrouter_model(wire)
         model.bind_tools([_DottedTool()])
 
-        # Patch the parent ``_astream`` so the test does not need a
-        # real OpenRouter HTTP call. Our wrapper inherits ``_astream``
-        # from ChatOpenRouter; ``model.astream(...)`` flows through
-        # BaseChatModel.astream -> ChatOpenRouter._astream -> back up
-        # through our ``astream`` override which post-processes each
-        # AIMessageChunk.
-        original_astream = ChatOpenRouter._astream
-        try:
-            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
-            chunks: list[AIMessageChunk] = []
-            async for chunk in model.astream("hi"):
-                chunks.append(chunk)
-        finally:
-            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+        chunks: list[AIMessageChunk] = [chunk async for chunk in model.astream("hi")]
 
         # ``BaseChatModel.astream`` auto-yields a final empty chunk
         # with ``chunk_position="last"`` after the source iterator
-        # completes (line ~942 of chat_models.py). Filter for the
-        # tool-call-carrying chunk so the assertion stays robust to
-        # that framework behavior.
+        # completes. Filter for the tool-call-carrying chunk so the
+        # assertion stays robust to that framework behavior.
         translated = [c for c in chunks if c.tool_call_chunks]
         assert len(translated) == 1
         assert translated[0].tool_call_chunks[0]["name"] == "threetears.calculator", (
@@ -775,48 +643,23 @@ class TestNameTranslatingChatOpenRouter:
         instead of shipping silently and surfacing only as a prod
         incident.
         """
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
+        model = openrouter_model(ChatCompletionsWire(deltas=text_deltas("hello ", "world", "!")))
 
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, kwargs
-            for text in ("hello ", "world", "!"):
-                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
-                if run_manager is not None:
-                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
-                yield chunk
-
-        model = create_openrouter_chat(
-            "deepseek/deepseek-chat-v3-0324",
-            "sk-test",
-        )
-
-        original_astream = ChatOpenRouter._astream
-        try:
-            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
-            stream_event_count = 0
-            collected_text = ""
-            async for event in model.astream_events("hi", version="v2"):
-                if event["event"] == "on_chat_model_stream":
-                    stream_event_count += 1
-                    collected_text += event["data"]["chunk"].content
-        finally:
-            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+        stream_event_count = 0
+        collected_text = ""
+        async for event in model.astream_events("hi", version="v2"):
+            if event["event"] == "on_chat_model_stream":
+                stream_event_count += 1
+                collected_text += event["data"]["chunk"].content
 
         # ``BaseChatModel.astream`` adds a final empty chunk with
         # ``chunk_position="last"`` after the source iterator finishes,
-        # producing one extra ``on_chat_model_stream`` event. Three real
-        # fake chunks → at least 3 events, and ``collected_text`` is
+        # producing one extra ``on_chat_model_stream`` event. Three
+        # streamed deltas → at least 3 events, and ``collected_text`` is
         # robust to that empty tail.
         assert stream_event_count >= 3, (
-            f"Expected >=3 on_chat_model_stream events (one per fake"
-            f" chunk plus the framework's final empty chunk); got"
+            f"Expected >=3 on_chat_model_stream events (one per streamed"
+            f" delta plus the framework's final empty chunk); got"
             f" {stream_event_count}. The wrapper is breaking the"
             f" callback chain that drives astream_events(v2) — exactly"
             f" the 2026-05-13 production fingerprint (chunks delivered to"
@@ -824,7 +667,7 @@ class TestNameTranslatingChatOpenRouter:
         )
         assert collected_text == "hello world!", (
             "Stream events fired but their chunks did not carry the"
-            f" parent's content as-yielded; got {collected_text!r}."
+            f" provider's content as-streamed; got {collected_text!r}."
         )
 
     @pytest.mark.asyncio
@@ -857,22 +700,6 @@ class TestNameTranslatingChatOpenRouter:
         contextvar-vs-bound-callbacks merge path is on the test surface.
         """
         from langchain_core.callbacks import AsyncCallbackHandler
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, kwargs
-            for text in ("hello ", "world", "!"):
-                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
-                if run_manager is not None:
-                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
-                yield chunk
 
         class _RecordingCallback(AsyncCallbackHandler):
             """Stand in for ``UsageTrackingCallback`` /
@@ -893,27 +720,19 @@ class TestNameTranslatingChatOpenRouter:
                 self.start_seen += 1
 
             async def on_llm_new_token(self, token: str, **_: Any) -> None:
-                del token
-                self.token_seen += 1
+                if token:
+                    self.token_seen += 1
 
         bound_cb = _RecordingCallback()
-        model = create_openrouter_chat(
-            "deepseek/deepseek-chat-v3-0324",
-            "sk-test",
-        )
+        model = openrouter_model(ChatCompletionsWire(deltas=text_deltas("hello ", "world", "!")))
         # Mirror ``threetears.models.factory.create_chat_model``'s
         # ``model.with_config(callbacks=[...])`` step.
         bound_model = model.with_config(callbacks=[bound_cb])
 
-        original_astream = ChatOpenRouter._astream
-        try:
-            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
-            stream_event_count = 0
-            async for event in bound_model.astream_events("hi", version="v2"):
-                if event["event"] == "on_chat_model_stream":
-                    stream_event_count += 1
-        finally:
-            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+        stream_event_count = 0
+        async for event in bound_model.astream_events("hi", version="v2"):
+            if event["event"] == "on_chat_model_stream":
+                stream_event_count += 1
 
         # Event_streamer must still see chat-model-stream events even
         # though the bound list of callbacks is also present.
@@ -921,13 +740,13 @@ class TestNameTranslatingChatOpenRouter:
             "with_config-bound list callbacks REPLACED the contextvar's"
             " event_streamer manager — `on_chat_model_stream` events"
             f" never reached astream_events. Got {stream_event_count}"
-            " events (need >=3 from three fake chunks plus framework's"
+            " events (need >=3 from three streamed deltas plus framework's"
             " trailing empty chunk). This is the 2026-05-13"
             " production fingerprint — fix the wrapper's `astream`"
             " override (do not forward `config` verbatim; pre-merge it"
             " with the contextvar via merge_configs)."
         )
-        # And the bound callbacks must STILL fire — the fix can't"
+        # And the bound callbacks must STILL fire — the fix can't
         # silently drop UsageTracker / CircuitBreaker either.
         assert bound_cb.start_seen >= 1, (
             "Bound callback's on_chat_model_start never fired —"
@@ -936,8 +755,8 @@ class TestNameTranslatingChatOpenRouter:
         )
         assert bound_cb.token_seen >= 3, (
             "Bound callback's on_llm_new_token fired"
-            f" {bound_cb.token_seen} times — expected >=3 (one per"
-            " fake chunk). The fix silently dropped the list of bound"
+            f" {bound_cb.token_seen} times for text — expected >=3 (one per"
+            " streamed delta). The fix silently dropped the list of bound"
             " handlers somewhere in the merge."
         )
 
@@ -947,7 +766,7 @@ class TestVanillaChatAnthropicBaseline:
     in the inheritance chain -- emits ``on_chat_model_stream`` events
     correctly. Comparison case for the wrapper tests above. If THIS
     test fails the bug isn't in our wrapper; it's in the LangChain
-    framework or our monkey-patch shape. If this passes and the
+    framework or the scripted wire. If this passes and the
     wrapper test fails, the wrapper is the culprit.
 
     Anthropic-direct is the second provider Pace asked us to verify on
@@ -958,50 +777,31 @@ class TestVanillaChatAnthropicBaseline:
     @pytest.mark.asyncio
     async def test_anthropic_direct_emits_on_chat_model_stream(self) -> None:
         """Vanilla ``ChatAnthropic.astream_events(v2)`` emits one
-        ``on_chat_model_stream`` per yielded chunk (plus the framework's
-        final empty chunk). No wrapper subclassing involved.
+        ``on_chat_model_stream`` per streamed delta (plus the framework's
+        bracketing empty chunks). No wrapper subclassing involved.
         """
         from langchain_anthropic import ChatAnthropic
-        from langchain_core.outputs import ChatGenerationChunk
 
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, kwargs
-            for text in ("anthropic ", "direct ", "streams"):
-                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
-                if run_manager is not None:
-                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
-                yield chunk
-
-        # ChatAnthropic requires an api_key to construct; the fake
-        # ``_astream`` short-circuits before any HTTP call.
-        model = ChatAnthropic(
-            model=DEFAULT_CHAT_MODEL,  # type: ignore[call-arg]
-            anthropic_api_key="sk-test",  # type: ignore[arg-type]
-        )
-
-        original_astream = ChatAnthropic._astream
-        try:
-            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
+        wire = AnthropicMessagesWire(blocks=[TextBlock(["anthropic ", "direct ", "streams"])])
+        with wire.serve() as url:
+            model = ChatAnthropic(
+                model=DEFAULT_CHAT_MODEL,  # type: ignore[call-arg]
+                anthropic_api_key="sk-test",  # type: ignore[arg-type]
+                base_url=url,
+                max_retries=0,
+            )
             stream_event_count = 0
             collected_text = ""
             async for event in model.astream_events("hi", version="v2"):
                 if event["event"] == "on_chat_model_stream":
                     stream_event_count += 1
                     collected_text += event["data"]["chunk"].content
-        finally:
-            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
 
         assert stream_event_count >= 3, (
             f"Vanilla ChatAnthropic.astream_events(v2) did not emit a"
-            f" stream event per chunk (got {stream_event_count}). This"
+            f" stream event per delta (got {stream_event_count}). This"
             f" baseline failing means the framework is broken or the"
-            f" monkey-patch shape is wrong -- look there before"
+            f" scripted wire is wrong -- look there before"
             f" suspecting the OpenRouter wrapper."
         )
         assert collected_text == "anthropic direct streams"
@@ -1116,6 +916,22 @@ class TestForwardTranslateInput:
         assert forward_translate_input(original) is original
 
 
+def _outbound_with_dotted_call() -> list[Any]:
+    """a history whose prior round called a tool by its canonical dotted name.
+
+    :return: the messages
+    :rtype: list[Any]
+    """
+    return [
+        SystemMessage(content="sys"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+        ),
+        ToolMessage(content="hit", tool_call_id="c1"),
+    ]
+
+
 class TestOpenRouterForwardTranslation:
     """The wrapper forward-translates dotted tool-call names on the OUTBOUND
     ``messages`` before the provider call.
@@ -1126,120 +942,55 @@ class TestOpenRouterForwardTranslation:
     ``^[a-zA-Z0-9_-]`` validator rejects the dot, 400-ing the turn. The
     reverse pass un-translates responses but nothing mangled the dotted
     name back to wire form on the way OUT. These tests pin the forward
-    direction on both the streaming and non-streaming code paths.
+    direction on both the streaming and non-streaming code paths, on the
+    request body the SDK actually sent.
     """
 
     @pytest.mark.asyncio
     async def test_astream_forward_translates_outbound_dotted_names(self) -> None:
         """``astream`` sends the wire (underscored) name; the caller's message
         keeps the canonical dotted name."""
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
+        wire = ChatCompletionsWire()
+        outbound = _outbound_with_dotted_call()
 
-        captured: dict[str, Any] = {}
+        async for _ in openrouter_model(wire).astream(outbound):
+            pass
 
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, stop, run_manager, kwargs
-            captured["messages"] = messages
-            yield ChatGenerationChunk(message=AIMessageChunk(content="ok"))
-
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
-        outbound = [
-            SystemMessage(content="sys"),
-            AIMessage(
-                content="",
-                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
-            ),
-            ToolMessage(content="hit", tool_call_id="c1"),
-        ]
-
-        original_astream = ChatOpenRouter._astream
-        try:
-            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
-            async for _ in model.astream(outbound):
-                pass
-        finally:
-            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
-
-        sent = captured["messages"]
-        ai = [m for m in sent if isinstance(m, AIMessage) and m.tool_calls][0]
-        assert ai.tool_calls[0]["name"] == "threetears_web_search"
+        assert wire.sent_tool_call_names() == ["threetears_web_search"]
         # The caller's original AIMessage keeps the canonical dotted name.
         assert outbound[1].tool_calls[0]["name"] == "threetears.web_search"
 
     @pytest.mark.asyncio
     async def test_agenerate_forward_translates_outbound_dotted_names(self) -> None:
-        """``_agenerate`` (the non-streaming path) mangles the outbound names too."""
-        from langchain_core.outputs import ChatGeneration, ChatResult
-        from langchain_openrouter import ChatOpenRouter
+        """``_agenerate`` (the non-streaming path) mangles the outbound names too.
 
-        captured: dict[str, Any] = {}
-
-        async def _fake_super_agenerate(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ) -> ChatResult:
-            del self, stop, run_manager, kwargs
-            captured["messages"] = messages
-            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
-
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
-        outbound = [
-            AIMessage(
-                content="",
-                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
-            ),
-        ]
-
+        Through ``agenerate``, which does not forward-translate itself, so the
+        name on the wire is the one ``_agenerate`` sent.
+        """
+        wire = ChatCompletionsWire()
+        outbound = _outbound_with_dotted_call()
+        model = openrouter_model(wire)
         # the provider's own ``_agenerate`` runs only when no deadline is set
         model.request_timeout = None
 
-        original = ChatOpenRouter._agenerate
-        try:
-            ChatOpenRouter._agenerate = _fake_super_agenerate  # type: ignore[method-assign]
-            await model._agenerate(outbound)
-        finally:
-            ChatOpenRouter._agenerate = original  # type: ignore[method-assign]
+        await model.agenerate([outbound])
 
-        sent = captured["messages"]
-        assert sent[0].tool_calls[0]["name"] == "threetears_web_search"
-        assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
+        assert wire.bodies[-1].get("stream") is not True
+        assert wire.sent_tool_call_names() == ["threetears_web_search"]
+        assert outbound[1].tool_calls[0]["name"] == "threetears.web_search"
 
     @pytest.mark.asyncio
-    async def test_agenerate_under_a_deadline_forward_translates_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_agenerate_under_a_deadline_forward_translates_too(self) -> None:
         """with a deadline ``_agenerate`` sends through the stream, names mangled the same way."""
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
+        wire = ChatCompletionsWire()
+        outbound = _outbound_with_dotted_call()
 
-        captured: dict[str, Any] = {}
+        result = await openrouter_model(wire).agenerate([outbound])
 
-        async def _fake_super_astream(self: Any, messages: Any, *args: Any, **kwargs: Any):
-            del self, args, kwargs
-            captured["messages"] = messages
-            yield ChatGenerationChunk(message=AIMessageChunk(content="ok"))
-
-        monkeypatch.setattr(ChatOpenRouter, "_astream", _fake_super_astream)
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
-        outbound = [
-            AIMessage(
-                content="",
-                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
-            ),
-        ]
-        result = await model._agenerate(outbound)
-
-        assert result.generations[0].message.content == "ok"
-        assert captured["messages"][0].tool_calls[0]["name"] == "threetears_web_search"
-        assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
+        assert wire.bodies[-1]["stream"] is True
+        assert result.generations[0][0].message.content == "ok"
+        assert wire.sent_tool_call_names() == ["threetears_web_search"]
+        assert outbound[1].tool_calls[0]["name"] == "threetears.web_search"
 
 
 from threetears.models.errors import ModelCallTimeout, is_provider_error  # noqa: E402
@@ -1251,79 +1002,45 @@ class TestTheTimeoutHolds:
     The SDK applies the timeout to each read, and OpenRouter keeps a call open with
     keep-alives, so a stalled upstream ran as long as it liked: one call took 218 s
     against a 120 s timeout (metallm, 2026-09-26). Here the timeout holds, on silence:
-    a non-streamed call collects the stream too (``test_openrouter_deadline_is_on_silence``)."""
+    a non-streamed call collects the stream too (``test_openrouter_deadline_is_on_silence``).
+    The silences are the scripted API's own, sent through the real SDK."""
 
     @staticmethod
-    def _model(timeout_ms: int | None) -> Any:
-        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+    def _model(wire: ChatCompletionsWire, timeout_ms: int | None) -> Any:
+        model = openrouter_model(wire)
         model.request_timeout = timeout_ms
         return model
 
     @pytest.mark.asyncio
-    async def test_a_call_that_never_answers_ends_at_the_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import asyncio
-
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _stalls(self: Any, *args: Any, **kwargs: Any) -> Any:
-            await asyncio.sleep(5)
-            yield AIMessageChunk(content="late")
-
-        monkeypatch.setattr(ChatOpenRouter, "_astream", _stalls)
+    async def test_a_call_that_never_answers_ends_at_the_timeout(self) -> None:
+        wire = ChatCompletionsWire(deltas=text_deltas("late"), silence_after=0, silence_s=5)
         with pytest.raises(ModelCallTimeout):
-            await self._model(50).ainvoke([HumanMessage(content="hi")])
+            await self._model(wire, 50).ainvoke([HumanMessage(content="hi")])
 
     @pytest.mark.asyncio
-    async def test_a_stream_that_goes_quiet_ends_at_the_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import asyncio
-
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _one_then_nothing(self: Any, *args: Any, **kwargs: Any):
-            yield ChatGenerationChunk(message=AIMessageChunk(content="Hel"))
-            await asyncio.sleep(5)
-            yield ChatGenerationChunk(message=AIMessageChunk(content="lo"))
-
-        monkeypatch.setattr(ChatOpenRouter, "_astream", _one_then_nothing)
+    async def test_a_stream_that_goes_quiet_ends_at_the_timeout(self) -> None:
+        wire = ChatCompletionsWire(deltas=text_deltas("Hel", "lo"), silence_after=1, silence_s=5)
         seen: list[str] = []
         with pytest.raises(ModelCallTimeout):
-            async for chunk in self._model(50).astream([HumanMessage(content="hi")]):
+            async for chunk in self._model(wire, 50).astream([HumanMessage(content="hi")]):
                 seen.append(str(chunk.content))
-        assert seen == ["Hel"]
+        # the stream's own empty bracketing chunks aside, only what came before the silence
+        assert [text for text in seen if text] == ["Hel"]
 
     @pytest.mark.asyncio
-    async def test_a_long_stream_that_keeps_arriving_finishes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_a_long_stream_that_keeps_arriving_finishes(self) -> None:
         """The limit is on silence, not length: ten chunks 30 ms apart -- 300 ms in all -- outlast a
         150 ms timeout. The gap sits well inside the timeout: at 30 ms against 50 ms, scheduler
         jitter on a loaded machine was enough to trip it."""
-        import asyncio
-
-        from langchain_core.outputs import ChatGenerationChunk
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _steady(self: Any, *args: Any, **kwargs: Any):
-            for i in range(10):
-                await asyncio.sleep(0.03)
-                yield ChatGenerationChunk(message=AIMessageChunk(content=str(i)))
-
-        monkeypatch.setattr(ChatOpenRouter, "_astream", _steady)
-        seen = [str(c.content) async for c in self._model(150).astream([HumanMessage(content="hi")])]
+        wire = ChatCompletionsWire(deltas=text_deltas(*(str(i) for i in range(10))), gap_s=0.03)
+        seen = [str(c.content) async for c in self._model(wire, 150).astream([HumanMessage(content="hi")])]
         assert "".join(seen) == "0123456789"
 
     @pytest.mark.asyncio
-    async def test_no_timeout_set_means_no_deadline(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import asyncio
-
-        from langchain_core.outputs import ChatGeneration, ChatResult
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _slowish(self: Any, *args: Any, **kwargs: Any) -> ChatResult:
-            await asyncio.sleep(0.1)
-            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
-
-        monkeypatch.setattr(ChatOpenRouter, "_agenerate", _slowish)
-        result = await self._model(None).ainvoke([HumanMessage(content="hi")])
+    async def test_no_timeout_set_means_no_deadline(self) -> None:
+        wire = ChatCompletionsWire(answer_delay_s=0.1)
+        result = await self._model(wire, None).ainvoke([HumanMessage(content="hi")])
+        assert wire.bodies[-1].get("stream") is not True
         assert result.content == "ok"
 
 

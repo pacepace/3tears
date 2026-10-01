@@ -9,11 +9,10 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
-    AIMessageChunk,
+    HumanMessage,
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.outputs import ChatGenerationChunk
 
 from threetears.models import (
     DEFAULT_CHAT_MODEL,
@@ -29,7 +28,11 @@ from threetears.models.providers.anthropic import (
 )
 from threetears.models.providers._claude_cli import is_subscription_token
 
+from ._provider_wire import AnthropicMessagesWire, TextBlock, ToolUseBlock, anthropic_model
 from ._translation_helpers import DottedTool
+
+#: the XML-attribute-leak tool name from the 2026-05-19 prod incident
+_JUNK_NAME = 'memory_recall" name="memory_recall'
 
 
 class TestSubscriptionRouting:
@@ -189,7 +192,8 @@ class TestAnthropicWrapperStreaming:
     The fix moves translation off ``_astream`` and onto ``astream`` (the
     public Runnable method), so ``BaseChatModel.astream``'s callback
     wiring runs unchanged against ``ChatAnthropic._astream``'s untouched
-    output. These tests pin that contract.
+    output. These tests pin that contract, with the answer streamed by a
+    scripted Messages API and parsed by the real ``ChatAnthropic``.
     """
 
     @pytest.mark.asyncio
@@ -198,36 +202,17 @@ class TestAnthropicWrapperStreaming:
         ``on_chat_model_stream`` events for every chunk the wrapper
         passes through.
         """
-
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, kwargs
-            for text in ("anthro", "pic ", "wrapper ", "ok"):
-                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
-                if run_manager is not None:
-                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
-                yield chunk
-
-        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
-
-        original_astream = ChatAnthropic._astream
-        try:
-            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
+        wire = AnthropicMessagesWire(blocks=[TextBlock(["anthro", "pic ", "wrapper ", "ok"])])
+        with wire.serve() as url:
+            model = anthropic_model(url)
             stream_event_count = 0
             collected_text = ""
             async for event in model.astream_events("hi", version="v2"):
                 if event["event"] == "on_chat_model_stream":
                     stream_event_count += 1
                     collected_text += event["data"]["chunk"].content
-        finally:
-            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
 
-        # 4 fake chunks plus the framework's final empty chunk.
+        # 4 text deltas plus the framework's bracketing empty chunks.
         assert stream_event_count >= 4, (
             f"Expected >=4 on_chat_model_stream events; got"
             f" {stream_event_count}. The Anthropic wrapper is breaking"
@@ -240,13 +225,12 @@ class TestAnthropicWrapperStreaming:
         """The ``ainvoke`` override must NOT break token streaming.
 
         The converged tool loop runs ``model.ainvoke`` under an outer
-        ``astream_events`` tap, so ``ainvoke`` aggregates from the protected
-        ``_astream`` and fires ``on_llm_new_token``. This pins that the public
-        ``ainvoke`` override (+ its ``merge_configs`` callback-preservation)
+        ``astream_events`` tap, so ``ainvoke`` aggregates from the
+        provider's stream and fires ``on_llm_new_token``. This pins that the
+        public ``ainvoke`` override (+ its ``merge_configs`` callback-preservation)
         still delivers streamed tokens to a callback handler — i.e. the
         un-translation post-processing did not swallow the streaming path.
         """
-        from langchain_anthropic import ChatAnthropic
         from langchain_core.callbacks import AsyncCallbackHandler
 
         tokens: list[str] = []
@@ -255,34 +239,17 @@ class TestAnthropicWrapperStreaming:
             async def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
                 tokens.append(token)
 
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, kwargs
-            for text in ("a", "b", "c"):
-                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
-                if run_manager is not None:
-                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
-                yield chunk
-
-        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
-
-        original_astream = ChatAnthropic._astream
-        try:
-            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
-            # stream=True forces the _astream aggregation path; the callback
+        wire = AnthropicMessagesWire(blocks=[TextBlock(["a", "b", "c"])])
+        with wire.serve() as url:
+            model = anthropic_model(url)
+            # stream=True forces the stream-aggregation path; the callback
             # handler rides config["callbacks"], which the override's
             # merge_configs must preserve.
             result = await model.ainvoke("hi", stream=True, config={"callbacks": [_Recorder()]})
-        finally:
-            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
 
-        # Tokens streamed to the handler (a trailing framework empty chunk is
-        # normal); the override did not swallow the streaming path.
+        assert wire.bodies[-1]["stream"] is True, "the answer was not streamed, so no token path was exercised"
+        # Tokens streamed to the handler (empty framework chunks are normal);
+        # the override did not swallow the streaming path.
         assert "".join(tokens) == "abc"
         assert result.content == "abc"
 
@@ -311,20 +278,6 @@ class TestAnthropicWrapperStreaming:
         """
         from langchain_core.callbacks import AsyncCallbackHandler
 
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, kwargs
-            for text in ("anthro", "pic ", "wrapper ", "ok"):
-                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
-                if run_manager is not None:
-                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
-                yield chunk
-
         class _RecordingCallback(AsyncCallbackHandler):
             def __init__(self) -> None:
                 self.start_seen = 0
@@ -340,22 +293,17 @@ class TestAnthropicWrapperStreaming:
                 self.start_seen += 1
 
             async def on_llm_new_token(self, token: str, **_: Any) -> None:
-                del token
-                self.token_seen += 1
+                if token:
+                    self.token_seen += 1
 
         bound_cb = _RecordingCallback()
-        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
-        bound_model = model.with_config(callbacks=[bound_cb])
-
-        original_astream = ChatAnthropic._astream
-        try:
-            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
+        wire = AnthropicMessagesWire(blocks=[TextBlock(["anthro", "pic ", "wrapper ", "ok"])])
+        with wire.serve() as url:
+            bound_model = anthropic_model(url).with_config(callbacks=[bound_cb])
             stream_event_count = 0
             async for event in bound_model.astream_events("hi", version="v2"):
                 if event["event"] == "on_chat_model_stream":
                     stream_event_count += 1
-        finally:
-            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
 
         assert stream_event_count >= 4, (
             "with_config-bound list callbacks REPLACED the contextvar's"
@@ -369,7 +317,7 @@ class TestAnthropicWrapperStreaming:
         )
         assert bound_cb.token_seen >= 4, (
             f"Bound callback's on_llm_new_token fired {bound_cb.token_seen}"
-            " times — expected >=4 (one per fake chunk). The fix"
+            " times for text — expected >=4 (one per streamed delta). The fix"
             " silently dropped the list of bound handlers."
         )
 
@@ -379,129 +327,71 @@ class TestAnthropicWrapperToolNameValidation:
 
     Mirrors the OpenRouter wrapper's validation hook. Both wrappers
     drop ``invalid_tool_calls`` entries whose names fail the canonical
-    3tears tool-name regex before yielding the chunk / returning the
-    result. This blocks the 2026-05-19 prod incident
-    (conv ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``) from recurring
-    on either provider.
+    3tears tool-name regex before returning the result. This blocks the
+    2026-05-19 prod incident (conv ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``)
+    from recurring on either provider.
+
+    Anthropic's wire shapes where a junk name can surface. A non-streamed
+    answer carries each ``tool_use`` input as a parsed JSON object, so it
+    never yields an ``invalid_tool_calls`` entry at all; a streamed answer
+    sends a block's name on ``content_block_start`` and its raw input on the
+    later ``input_json_delta`` events, so a single chunk never pairs a name
+    with unparseable arguments. The junk entry first exists when the chunks
+    are merged -- which is what ``ainvoke`` and ``agenerate`` do with a
+    streamed answer, and where the filter is asserted here. The
+    non-streamed ``_agenerate`` filter is the same mixin code, asserted over
+    the chat-completions wire in ``test_provider_openai.py`` and
+    ``test_provider_openrouter.py``.
     """
 
-    @pytest.mark.asyncio
-    async def test_astream_drops_invalid_tool_calls_with_junk_names(self) -> None:
-        """``astream`` drops ``invalid_tool_calls`` entries whose names
-        fail the canonical regex.
-        """
-        from langchain_core.messages import AIMessage
-
-        junk_name = 'memory_recall" name="memory_recall'
-
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, run_manager, kwargs
-            yield ChatGenerationChunk(
-                message=AIMessageChunk(
-                    content="",
-                    invalid_tool_calls=[
-                        {
-                            "name": junk_name,
-                            "args": "{}",
-                            "id": "call_junk",
-                            "error": "JSONDecodeError",
-                        },
-                        {
-                            "name": "threetears_calculator",
-                            "args": "{partial",
-                            "id": "call_ok",
-                            "error": "JSONDecodeError",
-                        },
-                    ],
-                ),
-            )
-
-        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
-
-        original_astream = ChatAnthropic._astream
-        try:
-            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
-            chunks: list[AIMessageChunk] = []
-            async for chunk in model.astream("hi"):
-                chunks.append(chunk)
-        finally:
-            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
-
-        # Confirm the AIMessage shape so the typing import is used.
-        _ = AIMessage(content="placeholder")
-        carrier_chunks = [c for c in chunks if c.invalid_tool_calls]
-        assert len(carrier_chunks) == 1
-        kept = carrier_chunks[0].invalid_tool_calls
-        assert len(kept) == 1
-        assert kept[0]["name"] == "threetears_calculator"
-        assert all(call["name"] != junk_name for call in kept)
+    @staticmethod
+    def _junk_answer() -> AnthropicMessagesWire:
+        return AnthropicMessagesWire(
+            blocks=[
+                ToolUseBlock("toolu_junk", _JUNK_NAME, ["not json"]),
+                ToolUseBlock("toolu_ok", "threetears_calculator", ["not json"]),
+            ],
+            stop_reason="tool_use",
+        )
 
     @pytest.mark.asyncio
-    async def test_agenerate_drops_invalid_tool_calls_with_junk_names(self) -> None:
-        """``_agenerate`` mirrors the streaming-path filter for
-        non-streaming calls.
+    async def test_a_streamed_ainvoke_drops_invalid_tool_calls_with_junk_names(self) -> None:
+        """``ainvoke`` over a streamed answer drops ``invalid_tool_calls``
+        entries whose names fail the canonical regex.
         """
-        from langchain_core.messages import AIMessage
-        from langchain_core.outputs import ChatGeneration, ChatResult
-
-        junk_name = 'memory_recall" name="memory_recall'
-
-        async def _fake_super_agenerate(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ) -> ChatResult:
-            del self, messages, stop, run_manager, kwargs
-            return ChatResult(
-                generations=[
-                    ChatGeneration(
-                        message=AIMessage(
-                            content="",
-                            invalid_tool_calls=[
-                                {
-                                    "name": junk_name,
-                                    "args": "{}",
-                                    "id": "call_junk",
-                                    "error": "JSONDecodeError",
-                                },
-                                {
-                                    "name": "threetears_calculator",
-                                    "args": "{partial",
-                                    "id": "call_ok",
-                                    "error": "JSONDecodeError",
-                                },
-                            ],
-                        ),
-                    ),
-                ],
-            )
-
-        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
-
-        original_agenerate = ChatAnthropic._agenerate
-        try:
-            ChatAnthropic._agenerate = _fake_super_agenerate  # type: ignore[method-assign]
-            result = await model.ainvoke("hi")
-        finally:
-            ChatAnthropic._agenerate = original_agenerate  # type: ignore[method-assign]
+        wire = self._junk_answer()
+        with wire.serve() as url:
+            model = anthropic_model(url)
+            result = await model.bind_tools([DottedTool()]).ainvoke("hi", stream=True)
 
         kept = result.invalid_tool_calls
         assert len(kept) == 1
-        assert kept[0]["name"] == "threetears_calculator"
-        assert all(call["name"] != junk_name for call in kept)
+        assert kept[0]["name"] == "threetears.calculator"
+        assert kept[0]["id"] == "toolu_ok"
+        assert all(call["name"] != _JUNK_NAME for call in kept)
+
+    @pytest.mark.asyncio
+    async def test_agenerate_drops_invalid_tool_calls_with_junk_names(self) -> None:
+        """``agenerate`` (the batch chokepoint) mirrors the filter on the
+        same streamed answer.
+        """
+        wire = self._junk_answer()
+        with wire.serve() as url:
+            model = anthropic_model(url)
+            # agenerate is the model's own surface, so the bound tools ride in as the kwargs the
+            # binding would send
+            bound = model.bind_tools([DottedTool()])
+            result = await model.agenerate([[HumanMessage(content="hi")]], stream=True, **bound.kwargs)  # type: ignore[attr-defined]
+
+        kept = result.generations[0][0].message.invalid_tool_calls
+        assert len(kept) == 1
+        assert kept[0]["name"] == "threetears.calculator"
+        assert all(call["name"] != _JUNK_NAME for call in kept)
 
     @pytest.mark.asyncio
     async def test_ainvoke_untranslates_when_aggregating_from_astream(self) -> None:
         """``ainvoke`` un-translates tool-call names even when it aggregates
-        internally from the protected ``_astream``.
+        internally from the provider's stream.
 
         Regression for the converged-loop tool-dispatch failure
         (2026-06-22): with a streaming callback active (the converged
@@ -513,45 +403,21 @@ class TestAnthropicWrapperToolNameValidation:
         leaked to the caller and missed the dotted dispatch map. The public
         ``ainvoke`` override post-processes the aggregated result.
 
-        ``stream=True`` makes ``_should_stream`` true, forcing the
-        ``_astream`` aggregation path. Without the override the returned name
-        stays ``threetears_calculator`` and this fails.
+        ``stream=True`` makes ``_should_stream`` true, forcing the stream
+        aggregation path. Without the override the returned name stays
+        ``threetears_calculator`` and this fails.
         """
+        # The wire form: the tool was called by its mangled (underscored)
+        # name; un-translation has not happened yet.
+        wire = AnthropicMessagesWire(
+            blocks=[ToolUseBlock("toolu_1", "threetears_calculator", ["{}"])],
+            stop_reason="tool_use",
+        )
+        with wire.serve() as url:
+            result = await anthropic_model(url).bind_tools([DottedTool()]).ainvoke("hi", stream=True)
 
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, messages, stop, run_manager, kwargs
-            # The wire form: the tool was called by its mangled (underscored)
-            # name; un-translation has not happened yet.
-            yield ChatGenerationChunk(
-                message=AIMessageChunk(
-                    content="",
-                    tool_call_chunks=[
-                        {
-                            "name": "threetears_calculator",
-                            "args": "{}",
-                            "id": "call_1",
-                            "index": 0,
-                        },
-                    ],
-                ),
-            )
-
-        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
-        model.bind_tools([DottedTool()])
-
-        original_astream = ChatAnthropic._astream
-        try:
-            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
-            result = await model.ainvoke("hi", stream=True)
-        finally:
-            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
-
+        assert wire.bodies[-1]["stream"] is True
+        assert [tool["name"] for tool in wire.bodies[-1]["tools"]] == ["threetears_calculator"]
         assert result.tool_calls, "expected an aggregated tool call"
         assert result.tool_calls[0]["name"] == "threetears.calculator"
 
@@ -564,27 +430,13 @@ class TestAnthropicForwardTranslation:
     ``^[a-zA-Z0-9_-]{1,128}$`` and rejects the dot, so a prior round's
     ``AIMessage`` carrying a canonical dotted ``tool_calls`` name would 400
     the turn when re-sent. Parity with the OpenRouter / OpenAI forward
-    translation.
+    translation. Asserted on the request body the SDK actually sent.
     """
 
     @pytest.mark.asyncio
     async def test_astream_forward_translates_outbound_dotted_names(self) -> None:
         """``astream`` sends the wire (underscored) name; the caller's message
         keeps the canonical dotted name."""
-        captured: dict[str, Any] = {}
-
-        async def _fake_super_astream(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ):
-            del self, stop, run_manager, kwargs
-            captured["messages"] = messages
-            yield ChatGenerationChunk(message=AIMessageChunk(content="ok"))
-
-        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
         outbound = [
             SystemMessage(content="sys"),
             AIMessage(
@@ -593,56 +445,36 @@ class TestAnthropicForwardTranslation:
             ),
             ToolMessage(content="hit", tool_call_id="c1"),
         ]
-
-        original_astream = ChatAnthropic._astream
-        try:
-            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
-            async for _ in model.astream(outbound):
+        wire = AnthropicMessagesWire()
+        with wire.serve() as url:
+            async for _ in anthropic_model(url).astream(outbound):
                 pass
-        finally:
-            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
 
-        sent = captured["messages"]
-        ai = [m for m in sent if isinstance(m, AIMessage) and m.tool_calls][0]
-        assert ai.tool_calls[0]["name"] == "threetears_web_search"
+        assert wire.sent_tool_use_names() == ["threetears_web_search"]
         assert outbound[1].tool_calls[0]["name"] == "threetears.web_search"
 
     @pytest.mark.asyncio
     async def test_agenerate_forward_translates_outbound_dotted_names(self) -> None:
-        """The non-streaming path mangles the outbound names too."""
-        from langchain_core.outputs import ChatGeneration, ChatResult
+        """The non-streaming path mangles the outbound names too.
 
-        captured: dict[str, Any] = {}
-
-        async def _fake_super_agenerate(
-            self: Any,
-            messages: Any,
-            stop: Any = None,
-            run_manager: Any = None,
-            **kwargs: Any,
-        ) -> ChatResult:
-            del self, stop, run_manager, kwargs
-            captured["messages"] = messages
-            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
-
-        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
+        Through ``agenerate``, which does not forward-translate itself, so the
+        name on the wire is the one ``_agenerate`` sent.
+        """
         outbound = [
+            HumanMessage(content="search"),
             AIMessage(
                 content="",
                 tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
             ),
+            ToolMessage(content="hit", tool_call_id="c1"),
         ]
+        wire = AnthropicMessagesWire()
+        with wire.serve() as url:
+            await anthropic_model(url).agenerate([outbound])
 
-        original = ChatAnthropic._agenerate
-        try:
-            ChatAnthropic._agenerate = _fake_super_agenerate  # type: ignore[method-assign]
-            await model._agenerate(outbound)
-        finally:
-            ChatAnthropic._agenerate = original  # type: ignore[method-assign]
-
-        sent = captured["messages"]
-        assert sent[0].tool_calls[0]["name"] == "threetears_web_search"
-        assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
+        assert "stream" not in wire.bodies[-1] or wire.bodies[-1]["stream"] is False
+        assert wire.sent_tool_use_names() == ["threetears_web_search"]
+        assert outbound[1].tool_calls[0]["name"] == "threetears.web_search"
 
 
 class TestAnthropicToolChoice:

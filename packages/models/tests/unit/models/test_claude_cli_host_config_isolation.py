@@ -29,16 +29,21 @@ import pytest
 pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
-from threetears.models import DEFAULT_CHAT_MODEL
-from threetears.models.providers._claude_cli import create_subscription_chat
+from langchain_core.messages import HumanMessage
+
+from ._claude_cli_recorder import sent_to_cli, subscription_model
 
 _TOKEN_A = "sk-ant-oat01-faketokenfortest-aaaa"
 _TOKEN_B = "sk-ant-oat01-faketokenfortest-bbbb"
 
 
-def _options(token: str = _TOKEN_A, **kwargs: object):
-    model = create_subscription_chat(DEFAULT_CHAT_MODEL, token, **kwargs)
-    return model._build_options()  # noqa: SLF001 -- the method under test
+def _options(token: str = _TOKEN_A, *, call_kwargs: dict[str, object] | None = None, **model_kwargs: object):
+    """the options the CLI is launched with for one call of a model built with ``model_kwargs``."""
+    return sent_to_cli(
+        [HumanMessage(content="hi")],
+        build=lambda: subscription_model(token, **model_kwargs),
+        **(call_kwargs or {}),
+    ).options
 
 
 class TestHostConfigIsolation:
@@ -87,8 +92,8 @@ class TestHostConfigIsolation:
         assert "faketokenfortest" not in _options().env["CLAUDE_CONFIG_DIR"]
 
     def test_isolation_survives_a_per_call_override(self) -> None:
-        """``_build_options`` takes overrides on every call; none of them may reopen the host config."""
-        model = create_subscription_chat(DEFAULT_CHAT_MODEL, _TOKEN_A)
-        options = model._build_options(permission_mode="default")  # noqa: SLF001
+        """A call carries its own option overrides; none of them may reopen the host config."""
+        options = _options(call_kwargs={"permission_mode": "default"})
+        assert options.permission_mode == "default", "the per-call override never reached the CLI"
         assert options.env.get("CLAUDE_CONFIG_DIR")
         assert "no-session-persistence" in options.extra_args
