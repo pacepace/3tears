@@ -399,15 +399,25 @@ class TestTheMissingFileGateCannotSilentlyEmpty:
         assert missing_files(ledger, tmp_path) == []
 
     def test_the_real_ledger_is_actually_read(self) -> None:
-        """The vacuity guard: the live check must see all 311 entries, not zero.
+        """The vacuity guard: the live check must see every entry in the ledger, not zero.
 
         This is what would have caught the defect. `test_every_entry_names_a_file_that_exists`
         asserts an empty result, which an empty INPUT satisfies just as well.
 
+        Compared against an independent count of the ledger's entry lines rather than a fixed
+        floor. The floor (once "more than 300") described how many exemptions existed, not
+        whether the parser read them, and the underscore cleanup shrinks the ledger by design.
+
         :return: nothing
         :rtype: None
         """
-        assert len(ledger_paths(_EXEMPTIONS)) > 300
+        entry_lines = [
+            line
+            for line in (raw.strip() for raw in _EXEMPTIONS.read_text().split("\n"))
+            if line and not line.startswith("#")
+        ]
+        assert entry_lines, "the ledger holds no entries at all"
+        assert len(ledger_paths(_EXEMPTIONS)) == len(entry_lines)
 
 
 class TestTheTwoOccurrenceCountersAgree:
