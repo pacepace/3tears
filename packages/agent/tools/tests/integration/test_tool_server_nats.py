@@ -7,6 +7,12 @@ NATS server rather than depending on a pre-running ``localhost:4222``.
 ``check_docker_available`` inside the fixture gates the suite on the
 docker daemon -- a fresh checkout without docker still skips
 gracefully, but with docker (the normal case) the tests run.
+
+There is no hub here, so each test declares what the hub would before a pod starts: the
+``{ns}-proxy_assertion_nonces`` bucket (:func:`_declare_the_hubs_buckets`). A tool server runs in a
+pod, which holds no stream-management verb, so its replay guard BINDS that bucket and never creates
+it; with nothing declaring it, ``serve()`` waits for a declarer and then fails, and no call or
+heartbeat ever reaches the bus.
 """
 
 from __future__ import annotations
@@ -43,17 +49,47 @@ pytestmark = [
 
 # -- helpers --
 
+#: the replay guard's bucket a tool server binds, as the suffix the client layers ``{ns}-`` onto.
+_PROXY_ASSERTION_NONCES = "proxy_assertion_nonces"
+
+
+async def _declare_the_hubs_buckets(nats_url: str, namespace: str) -> None:
+    """declare, as the hub does at startup, the shared pod bucket a tool server binds.
+
+    The shape is the hub's ``PodBucketDeclarer`` shape, not an approximation: memory storage, one
+    revision, ``allow_direct``, and no bucket-wide expiry (the guard writes per-entry TTLs). A
+    bucket declared any other way would fail differently from production.
+
+    :param nats_url: the testcontainer's NATS URL
+    :ptype nats_url: str
+    :param namespace: the namespace the pod runs in
+    :ptype namespace: str
+    :return: nothing
+    :rtype: None
+    """
+    declarer = await NatsClient.connect(
+        nats_url=nats_url,
+        nats_subject_namespace=namespace,
+        client_name="tool-server-itest-hub-declarer",
+    )
+    try:
+        await declarer.ensure_kv_bucket(
+            name=_PROXY_ASSERTION_NONCES, ttl=None, storage="memory", history=1, direct=True
+        )
+    finally:
+        await declarer.shutdown()
+
 
 async def _warm_the_replay_watermark(nc: NatsClient, pod_id: str) -> None:
-    """make the pod's nonce bucket exist, then wait until it will accept an assertion.
+    """wait until the pod's replay guard will accept an assertion.
 
     The pod's replay guard refuses any assertion issued before its bucket's creation time plus
     its reach: a nonce it cannot find might have been wiped rather than never seen. The tool-pod
     guard passes a future tolerance of zero, so the reach is :data:`CLOCK_DRIFT_ALLOWANCE` alone
-    -- and the bucket is created lazily by the FIRST call, so that call is always inside its own
-    window, however long the test waited beforehand.
+    -- and the bucket was declared moments before the pod started, so a first call is inside that
+    window.
 
-    So this does what production does: one call lands and is refused (creating the bucket), and
+    So this does what production does after a broker wipe: one call lands and is refused, and
     every call after the window is accepted. That is the documented cost of failing closed after
     a wipe -- 5s for tool-pod assertions in ``docs/design-durable-coordination.md`` -- and a
     test that skipped it was asserting against the window rather than against the round trip.
@@ -81,7 +117,7 @@ async def _warm_the_replay_watermark(nc: NatsClient, pod_id: str) -> None:
             timeout=timedelta(seconds=5),
         )
     )
-    assert refused["success"] is False, "the first call after a bucket is created must be refused"
+    assert refused["success"] is False, "the first call after a bucket is declared must be refused"
     # two seconds of margin, not a fraction: a proxy assertion's ``iat`` is whole seconds, so
     # a freshly minted one can read up to a second EARLIER than the moment it was minted.
     await asyncio.sleep(CLOCK_DRIFT_ALLOWANCE.total_seconds() + 2.0)
@@ -158,7 +194,7 @@ class TestToolServerNatsIntegration:
         the call is built with the shared :func:`_signed_call_payload` scaffolding and the server is
         wired with the matching :func:`_pod_jwks_provider` (the combined Hub-identity + proxy-assertion
         JWKS), exercising the live-NATS happy path under the production verification contract. the
-        pod provisions its own NATS-KV replay guard in ``serve()`` against the JetStream container.
+        pod binds its NATS-KV replay guard in ``serve()`` to the bucket declared for it.
 
         :param nats_container: NATS URL from the canonical testcontainer fixture
         :ptype nats_container: str
@@ -167,6 +203,7 @@ class TestToolServerNatsIntegration:
         """
         pod_id = f"integ-{uuid4().hex[:8]}"
         namespace = f"integ_{uuid4().hex[:8]}"
+        await _declare_the_hubs_buckets(nats_container, namespace)
 
         server = ToolServer(
             nats_url=nats_container,
@@ -258,6 +295,7 @@ class TestToolServerNatsIntegration:
         composite_pod_id = Subjects.agent_inprocess_pod_id(agent_id, instance_id)
         assert composite_pod_id == f"{agent_id}.{instance_id}"  # two tokens, structural dot intact
         namespace = f"composite_{uuid4().hex[:8]}"
+        await _declare_the_hubs_buckets(nats_container, namespace)
 
         server = ToolServer(
             nats_url=nats_container,
@@ -351,6 +389,7 @@ class TestToolServerNatsIntegration:
         """
         pod_id = f"hb-integ-{uuid4().hex[:8]}"
         namespace = f"hb_{uuid4().hex[:8]}"
+        await _declare_the_hubs_buckets(nats_container, namespace)
 
         server = ToolServer(
             nats_url=nats_container,
