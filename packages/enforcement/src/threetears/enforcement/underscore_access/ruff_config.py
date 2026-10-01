@@ -19,13 +19,13 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-__all__ = ["all_exempted_files", "exempted_files", "ruff_configs", "slf001_globs"]
+__all__ = ["all_exempted_files", "exempted_files", "is_vendored", "ruff_configs", "slf001_globs"]
 
 #: directories whose contents are somebody else's code and not this repo's to enforce.
 _VENDORED = {".venv", "node_modules", ".git", "__pycache__"}
 
 
-def _is_vendored(path: Path, repo_root: Path) -> bool:
+def is_vendored(path: Path, repo_root: Path) -> bool:
     """whether *path* sits under a vendored directory or a nested checkout INSIDE the repo.
 
     relative to the root deliberately: testing an absolute path's parts means a checkout living
@@ -39,6 +39,17 @@ def _is_vendored(path: Path, repo_root: Path) -> bool:
     only in the safe direction: no file of this repo's own tree can sit below a nested ``.git``,
     so nothing this discovery previously covered legitimately is dropped -- the incident the
     module docstring records was root-only *config* blindness, which this does not reintroduce.
+
+    public because :mod:`~threetears.enforcement.underscore_access.pragma_policy` walks every
+    python file of the repo and has to exclude exactly what this module excludes: two answers
+    to "is this file this repo's" is how one check scans a tree the other ignores.
+
+    :param path: a path under *repo_root*
+    :ptype path: Path
+    :param repo_root: the repo's root
+    :ptype repo_root: Path
+    :return: ``True`` when *path* is vendored or belongs to a nested checkout
+    :rtype: bool
     """
     relative_parts = path.relative_to(repo_root).parts
     if any(part in _VENDORED for part in relative_parts):
@@ -56,7 +67,7 @@ def ruff_configs(repo_root: Path) -> list[Path]:
     configs: list[Path] = []
     for name in ("pyproject.toml", "ruff.toml", ".ruff.toml"):
         for path in repo_root.rglob(name):
-            if _is_vendored(path, repo_root):
+            if is_vendored(path, repo_root):
                 continue
             if path.name == "pyproject.toml" and "[tool.ruff" not in path.read_text(errors="replace"):
                 continue  # a pyproject with no ruff section configures nothing
@@ -85,7 +96,7 @@ def exempted_files(config: Path, pattern: str, repo_root: Path) -> list[Path]:
     """
     base = config.parent
     matched = base.glob(pattern) if "/" in pattern else base.rglob(pattern)
-    return sorted(p for p in matched if p.suffix == ".py" and not _is_vendored(p, repo_root))
+    return sorted(p for p in matched if p.suffix == ".py" and not is_vendored(p, repo_root))
 
 
 def all_exempted_files(repo_root: Path) -> list[Path]:

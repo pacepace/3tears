@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### An SLF001 suppression outside a recorded src module fails the build
+
+A leading underscore is a stability contract in `src/` and `tests/` alike (owner ruling,
+2026-10-01). Inline `# noqa: SLF001` pragmas and per-file ignores on test files let tests bind to
+private state while every gate stayed green.
+
+- **`threetears.enforcement.underscore_access.pragma_policy`** (new):
+  `slf001_policy_findings(repo_root, exemptions_path)` reports every comment that suppresses SLF001
+  (a code list naming it, a bare `noqa` on a line reading a private name, a bare file-level
+  directive), every per-file SLF001 ignore covering a file that is not a `src` module, every `src`
+  module ignored without an exemptions-ledger entry, and every ledger entry naming a test file.
+  `scanned_python_files` and `slf001_ignored_files` are the two inputs, for a consumer shell's
+  non-vacuity floors. The module docstring is the consumer's thin shell; 3tears runs it as
+  `tests/enforcement/test_slf001_pragma_policy.py`. `ruff_config.is_vendored` is public so the
+  file walk excludes exactly what the config discovery excludes.
+- **Third-party private members are confined, one module per library.** nats-py's stay in
+  `threetears.nats._nats_py_internals`, now under a per-file ignore with a ledger entry per access
+  instead of inline pragmas. OpenTelemetry's set-once guard moved out of `observe/setup.py` into
+  `threetears.observe._otel_internals`. `observe/logging.py` reads its call-site frame through
+  `inspect.currentframe()` rather than `sys._getframe()`, so it needs no exemption at all.
+- `CollectionAttemptLimiter` takes `clock=`, handed to its `WindowedCounter` -- the counter's own
+  time seam, carried through so a window boundary can be stood on.
+- `ConnectionRegistry.user_ids()`, `WebhookReceiver.verifier_for()` and
+  `RoomFanout.subscribed_rooms()` / `referenced_rooms()` -- added unreleased, with no caller
+  outside their own class -- are removed; their tests assert the behaviour instead.
+
 ### A refused websocket connection tells the client which refusal it was
 
 `WebSocketHandler`'s auth seam was `async (token) -> dict | None`. `None` carried no reason, so
