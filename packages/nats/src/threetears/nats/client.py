@@ -1799,25 +1799,38 @@ class _ConnectionLifecycle:
     Also owns what a transition must stop with it: the task opening a candidate, the tasks retiring
     replaced connections, and the publish gate a handover closes while it settles.
 
+    Also owns whether the client can hand over at all (:attr:`can_hand_over`): only a client that
+    opened its own connection knows how to open a successor, and every handover -- the renewal
+    loop's, a lame-duck move's, a requested renewal's, a direct :meth:`NatsClient.renew_connection`
+    -- opens one with the :attr:`opener` held here.
+
     :param current: the connection the client starts with
     :ptype current: nats.aio.client.Client
     :param state: its state, which its callbacks already read
     :ptype state: _ConnectionState
+    :param opener: how to open another connection like ``current``, or ``None`` for a client built
+        around a connection it did not open
+    :ptype opener: _ConnectionOpener | None
     """
 
-    __slots__ = ("_phase", "_current", "_connections", "_publish_gate", "_opening", "_retirements")
+    __slots__ = ("_phase", "_current", "_connections", "_publish_gate", "_opening", "_retirements", "_opener")
 
-    def __init__(self, current: _NatsPyClient, state: _ConnectionState) -> None:
+    def __init__(
+        self, current: _NatsPyClient, state: _ConnectionState, *, opener: _ConnectionOpener | None = None
+    ) -> None:
         """start RUNNING, with ``current`` the one connection.
 
         :param current: the connection the client starts with
         :ptype current: nats.aio.client.Client
         :param state: its state
         :ptype state: _ConnectionState
+        :param opener: how to open a successor, or ``None`` when the client cannot
+        :ptype opener: _ConnectionOpener | None
         :return: nothing
         :rtype: None
         """
         state.role = _Role.CURRENT
+        self._opener = opener
         self._phase = _Phase.RUNNING
         self._current = current
         self._connections: dict[_NatsPyClient, _ConnectionState] = {current: state}
@@ -1847,6 +1860,28 @@ class _ConnectionLifecycle:
         :rtype: bool
         """
         return self._phase in (_Phase.RUNNING, _Phase.RENEWING)
+
+    @property
+    def opener(self) -> _ConnectionOpener | None:
+        """how to open a successor connection, or ``None`` for a client that cannot.
+
+        :return: the opener
+        :rtype: _ConnectionOpener | None
+        """
+        return self._opener
+
+    @property
+    def can_hand_over(self) -> bool:
+        """whether the current connection can still be replaced by a successor.
+
+        True for a live client that can open one, whatever would start the handover: a renewal
+        armed or not, a server entering lame-duck mode, a requested renewal. Whoever must know
+        that a connection can stop being current reads it here.
+
+        :return: True when a handover can occur
+        :rtype: bool
+        """
+        return self._opener is not None and self.is_live
 
     @property
     def current(self) -> _NatsPyClient:
@@ -2453,7 +2488,6 @@ class NatsClient:
         "_reconnect_callbacks",
         "_health_state",
         "_renewal_task",
-        "_opener",
         "_handover_lock",
         "_reply_routes",
         "_push_consumers",
@@ -2477,17 +2511,15 @@ class NatsClient:
         # the credential-renewal loop, when the owner asked for one (:meth:`renew_credential`);
         # cancelled by :meth:`shutdown`.
         self._renewal_task: asyncio.Task[None] | None = None
-        # how to open another connection like the current one -- set by :meth:`connect`, and
-        # what :meth:`renew_connection` opens the successor with. ``None`` for a client built
-        # around a connection it did not open, which therefore cannot renew it.
-        self._opener: _ConnectionOpener | None = None
         # serializes a renewal's handover against a subscribe that would otherwise land on the
         # connection being replaced after the handover enumerated the subscriptions.
         self._handover_lock = asyncio.Lock()
-        # request reply subject -> the connection that received the request, recorded while a
-        # renewal is armed so a reply owed across a handover leaves on the connection NATS lets
-        # answer it. an entry leaves when the reply is sent, or when its connection is retired.
-        self._reply_routes: dict[str, _NatsPyClient] = {}
+        # request reply subject -> (the connection that received the request, time.monotonic() then),
+        # recorded whenever a handover can occur so a reply owed across one leaves on the connection
+        # NATS lets answer it. an entry leaves when the reply is sent, when its connection is
+        # retired, or once it is older than the longest request (:meth:`_note_reply_route`). kept in
+        # the order recorded, which is oldest first.
+        self._reply_routes: dict[str, tuple[_NatsPyClient, float]] = {}
         # durable push consumers, which a handover moves by rebinding the durable on the successor.
         self._push_consumers: list[JetStreamPushConsumer] = []
         # the abandonment a deliberate credential refusal started (:meth:`abandon_on_refusal`), held so
@@ -2707,8 +2739,7 @@ class NatsClient:
         )
 
         client = cls(raw=raw_client, namespace=nats_subject_namespace, client_name=client_name)
-        client._opener = opener
-        client._lifecycle = _ConnectionLifecycle(raw_client, state)
+        client._lifecycle = _ConnectionLifecycle(raw_client, state, opener=opener)
         # a server shutting down (a rolling restart) tells its clients first; this one moves to a
         # successor then, the way a renewal does, instead of losing what is in flight to a reconnect.
         opener.lame_duck_handler = client._move_off_lame_duck_server
@@ -2967,7 +2998,7 @@ class NatsClient:
         :raises Exception: whatever opening or subscribing the successor raised; the current
             connection is untouched
         """
-        opener = self._opener
+        opener = self._lifecycle.opener
         if opener is None:
             raise NatsClientError(
                 "this NATS client was built around a connection it did not open, so it cannot open a "
@@ -3158,17 +3189,25 @@ class NatsClient:
         :rtype: None
         """
         self._lifecycle.forget(connection)
-        stale = [reply for reply, via in self._reply_routes.items() if via is connection]
+        stale = [reply for reply, (via, _noted) in self._reply_routes.items() if via is connection]
         for reply in stale:
             del self._reply_routes[reply]
 
     def _note_reply_route(self, reply_subject: str, connection: _NatsPyClient) -> None:
         """remember which connection received a request, so its reply can leave on that connection.
 
-        Recorded only while a renewal is armed: only then can the connection that received a
-        request stop being the current one before the reply is sent. An entry leaves when the
-        reply is sent -- by any publish method, all of which go through :meth:`_reply_connection`
-        -- or when its connection is retired.
+        Recorded whenever the lifecycle says a handover can occur
+        (:attr:`_ConnectionLifecycle.can_hand_over`): a renewal loop, a server entering lame-duck
+        mode, a requested renewal and a direct :meth:`renew_connection` all replace the current
+        connection, armed renewal or not, and a reply owed across any of them must still leave on
+        the connection that received the request. A client that cannot hand over has one
+        connection for life and records nothing.
+
+        An entry leaves when the reply is sent -- by any publish method, all of which go through
+        :meth:`_reply_connection` -- or when its connection is retired. A reply that is never
+        sent (a handler that failed, a request it chose not to answer) is bounded too: each new
+        entry first drops those older than the longest request this client declared, by which
+        time no requester is still waiting and a replaced connection is no longer held for it.
 
         :param reply_subject: the request's reply subject
         :ptype reply_subject: str
@@ -3177,8 +3216,18 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        if self._renewal_task is not None:
-            self._reply_routes[reply_subject] = connection
+        if not self._lifecycle.can_hand_over:
+            return
+        now = time.monotonic()
+        horizon = now - self._longest_request_seconds
+        routes = self._reply_routes
+        while routes:
+            oldest = next(iter(routes))
+            if routes[oldest][1] >= horizon:
+                break
+            del routes[oldest]
+        routes.pop(reply_subject, None)
+        routes[reply_subject] = (connection, now)
 
     async def _reply_connection(self, reply_subject: str) -> _NatsPyClient:
         """the connection a reply to ``reply_subject`` must leave on.
@@ -3194,9 +3243,9 @@ class NatsClient:
         :return: the connection to publish the reply on
         :rtype: nats.aio.client.Client
         """
-        via = self._reply_routes.pop(reply_subject, None)
-        if via is not None and not via.is_closed:
-            return via
+        route = self._reply_routes.pop(reply_subject, None)
+        if route is not None and not route[0].is_closed:
+            return route[0]
         return await self._lifecycle.publishing_connection()
 
     async def _pinned_connection(self, pin: PublishPin) -> _NatsPyClient:

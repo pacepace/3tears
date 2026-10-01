@@ -48,6 +48,21 @@ health probe would fail, and every subscribe and pull-consumer stop would degrad
 - A unit test constructs real nats-py objects and checks every declared attribute. A nats-py
   bump that renames one now fails CI by name. CI has no Docker, so this check does not need it.
 
+### A reply owed across a lame-duck move or a requested renewal leaves on the connection that received the request
+
+The client recorded which connection received a request only while `renew_credential` was armed.
+But a server entering lame-duck mode, `renew_on_request` and a direct `renew_connection()` also
+hand the client to a successor, with no renewal loop running. Take a static-credential service
+answering through `allow_responses` during a rolling restart. Its reply left on the successor,
+the server refused it as a permissions violation, and the publish reported success.
+
+- The route is now recorded whenever the connection lifecycle says a handover can occur: the
+  client opened its own connection, and is live. The lifecycle owns the opener a successor is
+  opened with, so this question and `renew_connection` read the same thing.
+- The route map is bounded. A route whose reply is never sent is dropped once it is older than
+  the longest request the client declared (`renew_credential(longest_request_seconds=...)`,
+  default the sync reply budget). By then no requester is waiting.
+
 ### A subscription exists when subscribe returns, and a stopping pull consumer strands nothing
 
 Both were found through the aibots hub's audit-anonymize test, which failed intermittently under
@@ -298,7 +313,8 @@ before its credential expires.
   handover while each message is delivered to exactly one of them. A plain subscription on both
   would deliver twice (the live test doubles messages when this is reverted).
 - A reply to a request received on a connection since replaced leaves on THAT connection
-  (`publish_reply` / `publish_raw_reply`); recorded only while a renewal is armed.
+  (`publish_reply` / `publish_raw_reply`). Recorded whenever the client can hand over, whether or
+  not a renewal is armed. See "A reply owed across a lame-duck move or a requested renewal".
 - Everything else bound to a connection follows the current one: `NatsKvBucket` rebinds its
   handle (one `STREAM.INFO`, no declaration) before its next operation after a renewal; a
   `watch_key` whose connection is retired replaces its consumer on the successor rather than

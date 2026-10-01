@@ -864,6 +864,96 @@ async def test_a_server_in_lame_duck_mode_moves_the_client_to_a_successor(monkey
     await client.shutdown()
 
 
+async def test_a_reply_owed_across_a_lame_duck_move_leaves_on_the_connection_that_received_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """a client that never armed a renewal still hands over in a rolling restart, and owes replies across it.
+
+    a static-credential service answering through allow_responses: the reply sent from the
+    successor would be refused as a permissions violation while the publish reports success.
+    """
+    current, successor = _Conn("current"), _Conn("successor")
+    client, options_of = await _connected_capturing(monkeypatch, current, successor)
+    owed: list[IncomingMessage] = []
+
+    async def _cb(msg: IncomingMessage) -> None:
+        owed.append(msg)
+
+    await client.subscribe(Subject.raw("calls"), cb=_cb)
+    await current.subs[0].queue_in.put(_Msg(b"call", reply="_INBOX.requester.1", subject="calls"))
+    await _settle()
+
+    await options_of[current]["lame_duck_mode_cb"]()
+    await _until(lambda: client.raw is successor)
+    assert owed[0].reply_subject is not None
+    await client.publish_raw_reply(reply_subject=owed[0].reply_subject, payload=b"done")
+
+    assert current.published == [("_INBOX.requester.1", b"done")]
+    assert successor.published == []
+    await client.shutdown()
+
+
+async def test_a_reply_owed_across_a_requested_renewal_leaves_on_the_connection_that_received_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """renew_on_request hands over with no renewal loop running; the reply still leaves on the receiver."""
+    from threetears.nats import CredentialRenewalReason, CredentialRenewalRequest
+
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    owed: list[IncomingMessage] = []
+
+    async def _cb(msg: IncomingMessage) -> None:
+        owed.append(msg)
+
+    await client.subscribe(Subject.raw("calls"), cb=_cb)
+    await client.renew_on_request(inbox_prefix="_INBOX_pod", is_mine=lambda request: True)
+    calls_sub, notice_sub = current.subs
+    await calls_sub.queue_in.put(_Msg(b"call", reply="_INBOX.requester.1", subject="calls"))
+    await _settle()
+
+    request = CredentialRenewalRequest(reason=CredentialRenewalReason.GRANTS_CHANGED, pod_id=None)
+    await notice_sub.queue_in.put(_Msg(request.model_dump_json().encode(), subject=notice_sub.subject))
+    await _until(lambda: client.raw is successor)
+    assert owed[0].reply_subject is not None
+    await client.publish_raw_reply(reply_subject=owed[0].reply_subject, payload=b"done")
+
+    assert current.published == [("_INBOX.requester.1", b"done")]
+    assert successor.published == []
+    await client.shutdown()
+
+
+async def test_a_reply_never_sent_is_not_remembered_past_the_longest_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """the route map is bounded: a request older than the longest request has no requester waiting."""
+    monkeypatch.setattr(client_module, "seconds_until_reauth", lambda _ttl, **_kw: 3600.0)
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(monkeypatch, current, successor)
+    client.renew_credential(ttl_seconds=lambda: 300, longest_request_seconds=0.05)
+    owed: list[IncomingMessage] = []
+
+    async def _cb(msg: IncomingMessage) -> None:
+        owed.append(msg)
+
+    await client.subscribe(Subject.raw("calls"), cb=_cb)
+    await current.subs[0].queue_in.put(_Msg(b"abandoned", reply="_INBOX.requester.old", subject="calls"))
+    await _settle()
+    await asyncio.sleep(0.1)
+    # a later request is noted, and noting it ages out the one whose reply was never sent
+    await current.subs[0].queue_in.put(_Msg(b"fresh", reply="_INBOX.requester.new", subject="calls"))
+    await _settle()
+
+    await client.renew_connection(retire_after=timedelta(seconds=30))
+    await _settle()
+    old, new = (msg.reply_subject for msg in owed)
+    assert old is not None and new is not None
+    await client.publish_raw_reply(reply_subject=new, payload=b"in time")
+    await client.publish_raw_reply(reply_subject=old, payload=b"too late")
+
+    assert current.published == [("_INBOX.requester.new", b"in time")]
+    assert successor.published == [("_INBOX.requester.old", b"too late")], "an aged-out route is not kept"
+    await client.shutdown()
+
+
 async def test_a_move_that_cannot_open_a_successor_is_retried_until_it_lands(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(client_module, "REAUTH_RETRY_SECONDS", 0.01)
     current, successor = _Conn("current"), _Conn("successor")
