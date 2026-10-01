@@ -1,4 +1,4 @@
-"""close one NATS connection on demand, through the server's system account.
+"""close one NATS connection on demand, or ask whether one is still open, through the system account.
 
 NATS has no way to take authority away from a live connection: a user JWT's permissions are fixed at
 connect, and the server closes the connection only when that JWT's ``exp`` passes. The one
@@ -18,6 +18,11 @@ Verified against nats-server 2.12.6 and 2.14.2 (``events.go`` ``kickClient`` ->
 ``"no such client or leafnode id"``, the only error ``DisconnectClientByID`` returns; and a server id
 that no running server holds has no responder at all. ``packages/nats/tests/integration/
 test_connection_kick_live.py`` pins all three on both versions.
+
+Asking WITHOUT closing is ``$SYS.REQ.SERVER.<server_id>.CONNZ`` with ``{"cid": <client id>}``
+(:func:`probe_connection`): the server lists its OPEN connections filtered to that client id, so an
+empty list means it no longer holds the connection, and -- as with a kick -- a server id no running
+server holds has no responder. The same live test pins both answers on both versions.
 """
 
 from __future__ import annotations
@@ -37,18 +42,27 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_KICK_TIMEOUT",
+    "DEFAULT_PROBE_TIMEOUT",
     "NO_SUCH_CLIENT_DESCRIPTION",
     "SERVER_PING_SUBJECT",
     "ConnectionKickError",
+    "ConnectionProbeError",
+    "ConnectionProbeRequest",
+    "ConnectionProbeResponse",
+    "HeldConnection",
+    "HeldConnections",
     "KickClientRequest",
     "KickOutcome",
     "NatsConnectionRef",
+    "ProbeOutcome",
     "ServerApiError",
     "ServerApiResponse",
     "ServerIdentity",
     "SystemAccountUnavailableError",
+    "connz_subject",
     "kick_connection",
     "kick_subject",
+    "probe_connection",
     "require_system_account",
 ]
 
@@ -56,6 +70,10 @@ __all__ = [
 #: on the server that holds the connection; this bounds a server too loaded, or too partitioned, to
 #: answer, so the caller can retry rather than wait on it.
 DEFAULT_KICK_TIMEOUT: Final[timedelta] = timedelta(seconds=2)
+
+#: how long a connection probe waits for its server's answer: one filtered lookup on the server that
+#: holds the connection, bounded for the same reason as a kick.
+DEFAULT_PROBE_TIMEOUT: Final[timedelta] = timedelta(seconds=2)
 
 #: the description nats-server answers a kick of a client id it does not hold with. It is the only
 #: error ``DisconnectClientByID`` returns, so it means "that connection is already gone".
@@ -155,6 +173,67 @@ class ServerApiResponse(BaseModel):
     error: ServerApiError | None = None
 
 
+class ConnectionProbeRequest(BaseModel):
+    """the body of a ``$SYS.REQ.SERVER.<server_id>.CONNZ`` request naming one client id.
+
+    The server filters its open connections to this client id; nothing is closed.
+
+    :param cid: the client id to look up, on the server the request is addressed to
+    :ptype cid: int
+    """
+
+    cid: int = Field(ge=1)
+
+
+class HeldConnection(BaseModel):
+    """one connection a CONNZ reply lists, read as far as its client id.
+
+    :param cid: the server's id for the connection
+    :ptype cid: int
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    cid: int
+
+
+class HeldConnections(BaseModel):
+    """the ``data`` of a CONNZ reply: the open connections that matched the request.
+
+    :param connections: the matching open connections; empty when the server does not hold the id
+    :ptype connections: list[HeldConnection]
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    connections: list[HeldConnection]
+
+
+class ConnectionProbeResponse(ServerApiResponse):
+    """a system-account CONNZ reply, read as far as a probe needs.
+
+    :param data: what the server holds, when the request succeeded
+    :ptype data: HeldConnections | None
+    """
+
+    data: HeldConnections | None = None
+
+
+class ProbeOutcome(StrEnum):
+    """what a connection probe found.
+
+    :attr:`NOT_HELD` is proof the connection is closed. :attr:`SERVER_GONE` is NOT, on its own; see
+    :attr:`KickOutcome.SERVER_GONE`, whose silence means the same two things.
+    """
+
+    #: the server lists the connection open.
+    HELD = "held"
+    #: the server answered and lists no open connection with that client id: it is closed.
+    NOT_HELD = "not_held"
+    #: no server answered for that id: restarted, or cut off from the asking client.
+    SERVER_GONE = "server_gone"
+
+
 class KickOutcome(StrEnum):
     """what became of a kick.
 
@@ -182,6 +261,13 @@ class SystemAccountUnavailableError(NatsClientError):
     responder on any ``$SYS.REQ.SERVER`` subject -- which a kick reads as "the server is gone" -- so a
     misconfigured login would make every kick look done while closing nothing. This is how that is
     caught before the first one.
+    """
+
+
+class ConnectionProbeError(NatsClientError):
+    """a probe whose answer proves nothing -- no answer in time, a refusal, or a reply that is not one.
+
+    The connection may be open or closed; a caller treats it as possibly open.
     """
 
 
@@ -310,3 +396,85 @@ def _read_kick_reply(reply: bytes, connection: NatsConnectionRef) -> KickOutcome
             )
         outcome = KickOutcome.NOT_CONNECTED
     return outcome
+
+
+def connz_subject(server_id: str) -> Subject:
+    """the system-account subject that lists ``server_id``'s open connections.
+
+    :param server_id: the server that holds the connection
+    :ptype server_id: str
+    :return: ``$SYS.REQ.SERVER.<server_id>.CONNZ``
+    :rtype: Subject
+    :raises ValueError: when ``server_id`` is not a server nkey
+    """
+    ref = NatsConnectionRef(server_id=server_id, client_id=1)
+    return Subject.raw(f"$SYS.REQ.SERVER.{ref.server_id}.CONNZ")
+
+
+async def probe_connection(
+    system_client: NatsClient,
+    connection: NatsConnectionRef,
+    *,
+    timeout: timedelta = DEFAULT_PROBE_TIMEOUT,
+) -> ProbeOutcome:
+    """ask ``connection``'s server whether it still holds it, closing nothing.
+
+    :param system_client: a client connected as a user of the server's SYSTEM account; no other
+        account can reach the CONNZ subject, which then has no responder
+    :ptype system_client: NatsClient
+    :param connection: the connection to look up
+    :ptype connection: NatsConnectionRef
+    :param timeout: how long to wait for the server's answer
+    :ptype timeout: timedelta
+    :return: :attr:`ProbeOutcome.HELD`, :attr:`ProbeOutcome.NOT_HELD`, or
+        :attr:`ProbeOutcome.SERVER_GONE` when no server holds that id
+    :rtype: ProbeOutcome
+    :raises ConnectionProbeError: when the server did not answer in time, the request failed on the
+        wire, or the answer is a refusal or not a CONNZ reply -- nothing is proven either way
+    """
+    subject = connz_subject(connection.server_id)
+    payload = ConnectionProbeRequest(cid=connection.client_id).model_dump_json().encode("utf-8")
+    reply: bytes | None = None
+    try:
+        reply = await system_client.request_raw(subject=subject, payload=payload, timeout=timeout)
+    except NoRespondersError:
+        # NOSILENT: no server holds this id any more, which is itself the answer (SERVER_GONE below)
+        reply = None
+    except RequestError as exc:
+        raise ConnectionProbeError(
+            f"probe of client {connection.client_id} on server {connection.server_id} has no answer: {exc}"
+        ) from exc
+    outcome = ProbeOutcome.SERVER_GONE if reply is None else _read_probe_reply(reply, connection)
+    return outcome
+
+
+def _read_probe_reply(reply: bytes, connection: NatsConnectionRef) -> ProbeOutcome:
+    """what a server's CONNZ answer says about the connection.
+
+    :param reply: the server's answer
+    :ptype reply: bytes
+    :param connection: the connection the probe named
+    :ptype connection: NatsConnectionRef
+    :return: :attr:`ProbeOutcome.HELD` or :attr:`ProbeOutcome.NOT_HELD`
+    :rtype: ProbeOutcome
+    :raises ConnectionProbeError: when the answer is not a CONNZ reply, reports a failure, or carries
+        no data
+    """
+    try:
+        response = ConnectionProbeResponse.model_validate_json(reply)
+    except ValidationError as exc:
+        raise ConnectionProbeError(
+            f"probe of client {connection.client_id} on server {connection.server_id} answered with a reply "
+            f"that is not a CONNZ response: {exc}"
+        ) from exc
+    if response.error is not None:
+        raise ConnectionProbeError(
+            f"probe of client {connection.client_id} on server {connection.server_id} was refused: "
+            f"code={response.error.code} description={response.error.description!r}"
+        )
+    if response.data is None:
+        raise ConnectionProbeError(
+            f"probe of client {connection.client_id} on server {connection.server_id} answered without data"
+        )
+    held = any(entry.cid == connection.client_id for entry in response.data.connections)
+    return ProbeOutcome.HELD if held else ProbeOutcome.NOT_HELD

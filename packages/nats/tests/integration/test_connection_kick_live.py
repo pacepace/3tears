@@ -12,7 +12,9 @@ the one the clusters run (2.14.2):
 - a kick of that connection closes it within milliseconds, and a callout that refuses the
   principal keeps it from coming back;
 - the three answers a kick can get -- kicked, already gone, server gone -- are the ones
-  :func:`~threetears.nats.kick_connection` reads.
+  :func:`~threetears.nats.kick_connection` reads;
+- a CONNZ probe closes nothing, and its three answers -- held, not held, server gone -- are the ones
+  :func:`~threetears.nats.probe_connection` reads.
 
 Gated on docker: a checkout without docker skips cleanly.
 """
@@ -39,6 +41,7 @@ from threetears.nats import (
     NatsClient,
     NatsConnectionRef,
     PrincipalPermissions,
+    ProbeOutcome,
     PrincipalResolver,
     RefusedPrincipal,
     ResolvedPrincipal,
@@ -47,6 +50,7 @@ from threetears.nats import (
     account_public_key,
     generate_account_seed,
     kick_connection,
+    probe_connection,
     require_system_account,
 )
 from threetears.nats.subjects import get_default_namespace, set_default_namespace
@@ -366,3 +370,57 @@ async def test_the_kick_reply_shapes_are_the_ones_the_helper_reads(image: str, t
 
         assert gone["error"] == {"code": 500, "description": "no such client or leafnode id"}
         assert gone["server"]["id"] == connection.server_id
+
+
+@pytest.mark.parametrize("image", _IMAGES)
+async def test_a_probe_closes_nothing_and_says_whether_the_connection_is_held(image: str, tmp_path: Path) -> None:
+    """held while open, not held once closed, server gone for an id no server holds."""
+    if not check_docker_available():
+        pytest.skip("Docker not available")
+
+    async with _stack(image, tmp_path) as stack:
+        [connection] = stack.recorder.admitted
+
+        held = await probe_connection(stack.system, connection)
+        assert held is ProbeOutcome.HELD
+        assert stack.pod.is_connected, "a probe closed the connection it asked about"
+        assert await stack.pod.request_raw(subject=Subject.raw(_QUERY_SUBJECT), payload=b"q") == b"answer"
+
+        stack.resolver.fenced = True
+        assert await kick_connection(stack.system, connection) is KickOutcome.KICKED
+        outcome = await probe_connection(stack.system, connection)
+        for _ in range(200):
+            if outcome is ProbeOutcome.NOT_HELD:
+                break
+            await asyncio.sleep(0.01)
+            outcome = await probe_connection(stack.system, connection)
+        elsewhere = await probe_connection(
+            stack.system, NatsConnectionRef(server_id=_ABSENT_SERVER_ID, client_id=connection.client_id)
+        )
+
+        assert outcome is ProbeOutcome.NOT_HELD
+        assert elsewhere is ProbeOutcome.SERVER_GONE
+
+
+@pytest.mark.parametrize("image", _IMAGES)
+async def test_the_connz_reply_shape_is_the_one_the_probe_reads(image: str, tmp_path: Path) -> None:
+    """pins the raw CONNZ reply filtered by client id, so a server release that changes it fails here."""
+    if not check_docker_available():
+        pytest.skip("Docker not available")
+
+    async with _stack(image, tmp_path) as stack:
+        [connection] = stack.recorder.admitted
+        subject = Subject.raw(f"$SYS.REQ.SERVER.{connection.server_id}.CONNZ")
+
+        held = json.loads(
+            await stack.system.request_raw(subject=subject, payload=json.dumps({"cid": connection.client_id}).encode())
+        )
+        absent = json.loads(
+            await stack.system.request_raw(subject=subject, payload=json.dumps({"cid": 999_999}).encode())
+        )
+
+        assert held["server"]["id"] == connection.server_id
+        assert [entry["cid"] for entry in held["data"]["connections"]] == [connection.client_id]
+        assert "error" not in held
+        assert absent["data"]["connections"] == []
+        assert "error" not in absent

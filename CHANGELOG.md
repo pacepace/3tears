@@ -33,6 +33,18 @@ test anywhere. Both live in `3tears-enforcement` now.
 - `release.yml` calls `bump-version.sh verify X.Y.Z` (was `--verify`). The bump now also moves
   `## Unreleased` under `## vX.Y.Z -- <date>`.
 
+### `3tears-nats` asks whether a connection is still open: `probe_connection`
+
+- New in `threetears.nats.system_account` (re-exported): `probe_connection(system_client,
+  connection)` sends `$SYS.REQ.SERVER.<server_id>.CONNZ` filtered to the connection's client id,
+  which closes nothing, and answers `ProbeOutcome.HELD`, `NOT_HELD` (proof it is closed) or
+  `SERVER_GONE` (no responder: restarted or partitioned, as with a kick). No answer in time, a
+  refusal, or a reply that is not a CONNZ response raises `ConnectionProbeError`: nothing is
+  proven. Typed wire models `ConnectionProbeRequest`, `ConnectionProbeResponse`,
+  `HeldConnections`, `HeldConnection`; `connz_subject(server_id)`; `DEFAULT_PROBE_TIMEOUT`.
+- Moved from the aibots hub's connection fence, which built it privately. The live test pins the
+  CONNZ reply shape on nats-server 2.12.6 and 2.14.2 beside the kick's.
+
 ### `3tears-nats` caps nats-py at what it was verified against, and one module owns the private surface
 
 `NatsClient` depends on eleven nats-py private attributes: the ordered round trip, server-side
