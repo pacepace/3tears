@@ -33,6 +33,23 @@ test anywhere. Both live in `3tears-enforcement` now.
 - `release.yml` calls `bump-version.sh verify X.Y.Z` (was `--verify`). The bump now also moves
   `## Unreleased` under `## vX.Y.Z -- <date>`.
 
+### `3tears-enforcement` owns the declared-imports gate: `threetears.enforcement.imports_declared`
+
+Five aibots repos carried their own copy of "every import comes from a declared dependency",
+in three different strengths: the hub's covered every non-stdlib import with a guard on both
+computed inputs; the SDK's and admin's covered `threetears.*` only; client delivery's covered
+the platform families only; survey had none. One gate now, each repo's test a thin config call.
+
+- `run_imports_declared_enforcement(ImportsDeclaredConfig(repo_root=..., first_party=...,
+  source_roots=..., required_import_roots=..., required_owned_modules=...))`. Every
+  non-stdlib, non-first-party import under the source roots must be owned (at its full module
+  path, through the installed distributions' file lists and editable checkouts) by a
+  distribution the manifest declares.
+- Both inputs carry a non-vacuity guard: the walk must find `required_import_roots`, and the
+  owner map must know `required_owned_modules` (the half that emptied silently under editable
+  installs). Imports nothing installed provides are reported apart, since their fix is a sync.
+- `imports_declared_findings(config)` returns the findings for a caller that reports its own way.
+
 ### `3tears-nats` asks whether a connection is still open: `probe_connection`
 
 - New in `threetears.nats.system_account` (re-exported): `probe_connection(system_client,
