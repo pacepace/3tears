@@ -94,34 +94,6 @@ packages/agent/tools/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_typ
 # rationale: autouse fixture clears the module-level _RESOLVED validators cache between tests so fake-stub resolvers from one case do not leak across cases; no public clear-cache helper exists because the only legitimate caller is this fixture.
 packages/agent/workspace/tests/unit/test_validators.py:_clear_resolve_cache#0:_RESOLVED
 
-# rationale: lifecycle test asserts fire_and_forget holds a strong reference to a task scheduled on a caller's running loop until it completes; _pending_tasks is the internal strong-reference anchor with no public accessor and exposing one would add API surface only this test needs
-packages/core/tests/test_bridge.py:test_fire_and_forget_survives_gc_on_running_loop#0:_pending_tasks
-# rationale: lifecycle test asserts fire_and_forget holds a strong reference to a task scheduled on a caller's running loop until it completes; _pending_tasks is the internal strong-reference anchor with no public accessor and exposing one would add API surface only this test needs
-packages/core/tests/test_bridge.py:test_fire_and_forget_survives_gc_on_running_loop#1:_pending_tasks
-
-# rationale: test reads module-level _HAS_DUCKDB import-availability sentinel to snapshot the original value before monkeypatching it to False for the ImportError-branch test.
-packages/core/tests/test_duckdb_backend.py:TestImportError.test_import_error_without_duckdb#0:_HAS_DUCKDB
-# rationale: test reads module-level _HAS_DUCKDB import-availability sentinel to snapshot the original value before monkeypatching it to False for the ImportError-branch test.
-packages/core/tests/test_duckdb_backend.py:TestImportError.test_import_error_without_duckdb#1:_HAS_DUCKDB
-# rationale: test reads module-level _HAS_DUCKDB import-availability sentinel to snapshot the original value before monkeypatching it to False for the ImportError-branch test.
-packages/core/tests/test_duckdb_backend.py:TestImportError.test_import_error_without_duckdb#2:_HAS_DUCKDB
-
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/core/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_and_lazy_are_the_same_set#0:_LAZY
-# rationale: lazy-surface consistency test asserts the package's _LAZY resolution table and __all__ are the SAME set, in both directions -- it previously asserted only a subset, which let four names be reachable and undeclared. _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/core/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
-
-# rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_factory_resolves_l2_from_registry#0:_nats_client
-# rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_explicit_none_disables_l2#0:_nats_client
-# rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_explicit_client_wins_over_registry#0:_nats_client
-# rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_bind_table_l2_override_wins_over_default#0:_nats_client
-# rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_datastore_create_table_threads_registry_l2#0:_nats_client
-
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
 packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_astream_events_emits_on_chat_model_stream#0:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).

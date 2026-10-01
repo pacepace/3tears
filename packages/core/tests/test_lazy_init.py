@@ -1,7 +1,7 @@
 """lazy-surface consistency tests for the core package __init__.
 
-pins the three-way agreement between ``__all__``, the ``_LAZY`` map,
-and the ``TYPE_CHECKING`` import block (the decision record is
+pins the three-way agreement between ``__all__``, the lazy map as the
+source declares it, and the ``TYPE_CHECKING`` import block (the decision record is
 docs/separate-concerns-decisions.md), plus the import-cost win: a bare
 ``import threetears.core`` must not load the heavy backend stack.
 """
@@ -43,6 +43,33 @@ def _type_checking_names(init_path: Path) -> set[str]:
     return names
 
 
+def _declared_lazy_names(init_path: Path) -> set[str]:
+    """the names the package's lazy map declares, read from its source.
+
+    Read from the file rather than from the module object, so these tests check the package's
+    declaration without binding to the private map the package resolves names through.
+
+    :param init_path: path to the package ``__init__.py``
+    :ptype init_path: Path
+    :return: the keys of the dict literal assigned to ``_LAZY``
+    :rtype: set[str]
+    :raises AssertionError: when the file declares no such map, so no test here passes vacuously
+    """
+    tree = ast.parse(init_path.read_text())
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and target.id == "_LAZY":
+            names = set(ast.literal_eval(value))
+            assert names, "the lazy map is declared empty"
+            return names
+    raise AssertionError(f"{init_path} no longer declares its lazy map as a literal")
+
+
 class TestLazySurfaceConsistency:
     def test_all_and_lazy_are_the_same_set(self) -> None:
         """Both directions, because one of them had drifted and a subset check cannot see it.
@@ -60,14 +87,14 @@ class TestLazySurfaceConsistency:
         decided on. If a genuinely internal lazy import is ever wanted, that is a deliberate
         exception to add here with its reason -- not a hole to leave open for every name.
         """
-        lazy, declared = set(core._LAZY), set(core.__all__)
+        lazy, declared = _declared_lazy_names(Path(core.__file__)), set(core.__all__)
         assert lazy == declared, (
             f"reachable but undeclared: {sorted(lazy - declared)}; declared but unreachable: {sorted(declared - lazy)}"
         )
 
     def test_type_checking_block_matches_lazy(self) -> None:
         init_path = Path(core.__file__)
-        assert _type_checking_names(init_path) == set(core._LAZY)
+        assert _type_checking_names(init_path) == _declared_lazy_names(init_path)
 
     def test_every_public_name_resolves(self) -> None:
         for name in core.__all__:

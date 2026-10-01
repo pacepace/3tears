@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import weakref
 
 import pytest
 
@@ -17,29 +18,36 @@ async def test_fire_and_forget_survives_gc_on_running_loop() -> None:
     asyncio keeps only a weak reference to a task returned by ``create_task``.
     Without a strong reference held elsewhere, a ``gc.collect()`` before the
     task gets a chance to run can finalize it, silently dropping the coroutine.
-    The bridge must hold a strong reference until the task completes.
+    The bridge must hold a strong reference until the task completes -- and
+    only until then, or every scheduled task leaks.
+
+    The task waits on a future nothing else references, so the event loop holds
+    no strong reference to it either: if the bridge did not hold one, the
+    collection below would reclaim it.
     """
-    completed = asyncio.Event()
+    tasks: list[weakref.ref[asyncio.Task[object]]] = []
 
     async def _work() -> None:
-        # yield control so the task is still pending when gc runs below
-        await asyncio.sleep(0.05)
-        completed.set()
+        task = asyncio.current_task()
+        assert task is not None
+        tasks.append(weakref.ref(task))
+        await asyncio.get_running_loop().create_future()
 
     _bridge.fire_and_forget(_work())
+    await asyncio.sleep(0)  # the task starts and suspends on its unreferenced future
 
-    # the task must be tracked while pending
-    assert len(_bridge._pending_tasks) == 1
-
-    # force a collection cycle while the task is still pending; a weakly-held
-    # task would be eligible for finalization here
     gc.collect()
+    pending = tasks[0]()
+    assert pending is not None, "the pending task was garbage-collected: nothing held it"
+    assert not pending.done()
 
-    await asyncio.wait_for(completed.wait(), timeout=1.0)
+    pending.cancel()
+    await asyncio.wait({pending})
+    del pending
+    await asyncio.sleep(0)  # the done callback runs
 
-    # done callback must clear the strong reference to avoid leaking tasks
-    await asyncio.sleep(0)
-    assert len(_bridge._pending_tasks) == 0
+    gc.collect()
+    assert tasks[0]() is None, "the finished task is still held: every scheduled task would leak"
 
 
 @pytest.mark.asyncio

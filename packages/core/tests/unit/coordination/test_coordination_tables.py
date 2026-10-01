@@ -41,6 +41,25 @@ from threetears.core.data.migrations import MigrationRunner, MigrationScope
 from threetears.core.testing.kv import FakeNatsClient
 
 
+def _running_flush_loops() -> list[asyncio.Task[Any]]:
+    """the write-behind flush loops live on the running event loop.
+
+    A flush loop is a background task named ``coordination-flush``; whether one is running is
+    observable on the loop itself, which is where a leaked one would keep running.
+
+    :return: every unfinished flush-loop task
+    :rtype: list[asyncio.Task[Any]]
+    """
+    return [task for task in asyncio.all_tasks() if task.get_name() == "coordination-flush" and not task.done()]
+
+
+class _ForeignCollection:
+    """some other collection a consumer registered under a coordination table's name."""
+
+    def __init__(self, table_name: str) -> None:
+        self.table_name = table_name
+
+
 class _RecordingStore:
     """a DataStore that records the DDL it is given."""
 
@@ -276,7 +295,7 @@ class TestTheSharedCollection:
     def test_a_foreign_collection_on_the_table_is_refused(self) -> None:
         registry = _registry()
         coordination_collection(registry, CoordinationCountersCollection, _config())
-        registry._collections["coordination_claims"] = object()  # noqa: SLF001 - simulating a foreign registration
+        registry.register(_ForeignCollection("coordination_claims"))  # type: ignore[arg-type]
         with pytest.raises(TypeError, match="already registered"):
             coordination_collection(registry, CoordinationClaimsCollection, _config())
 
@@ -448,7 +467,7 @@ class TestTheFlusher:
         await registry.close_collections()
 
         assert ("throttle", "ip-1") in store.rows, "shutdown lost the buffered write"
-        assert collection._flusher is None  # noqa: SLF001 - asserting the task was released
+        assert _running_flush_loops() == [], "shutdown left the flush loop running"
 
     @pytest.mark.asyncio
     async def test_one_collection_failing_to_close_does_not_abandon_the_rest(self) -> None:
@@ -487,9 +506,9 @@ class TestTheFlusher:
         assert collection.write_buffer is not None, "a declared write-behind policy got nowhere to wait"
         collection.ensure_flushing()
         collection.ensure_flushing()  # idempotent: called from every write
-        assert collection._flusher is not None and collection._flusher.running  # noqa: SLF001 - asserting own state
+        assert len(_running_flush_loops()) == 1, "a write-behind collection must run exactly one flush loop"
         await collection.aclose()
-        assert collection._flusher is None  # noqa: SLF001 - asserting own state
+        assert _running_flush_loops() == [], "closing the collection left its flush loop running"
 
     @pytest.mark.asyncio
     async def test_a_synchronous_collection_starts_no_flusher(self) -> None:
@@ -497,7 +516,7 @@ class TestTheFlusher:
         collection = coordination_collection(registry, CoordinationRevocationsCollection, _config())
         assert collection.write_buffer is None
         collection.ensure_flushing()
-        assert collection._flusher is None  # noqa: SLF001 - asserting own state
+        assert _running_flush_loops() == []
 
     @pytest.mark.asyncio
     async def test_without_l3_nothing_flushes(self) -> None:
@@ -505,7 +524,7 @@ class TestTheFlusher:
         registry = _registry()
         collection = coordination_collection(registry, CoordinationCountersCollection, _config())
         collection.ensure_flushing()
-        assert collection._flusher is None  # noqa: SLF001 - asserting own state
+        assert _running_flush_loops() == []
 
 
 class TestTheSweep:
