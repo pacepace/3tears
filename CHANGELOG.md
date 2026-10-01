@@ -81,6 +81,30 @@ names on the way out, which matters when LangChain sends a `tool_use` block by i
 does whenever no `tool_calls` entry shares the block's id, as for history rebuilt from stored
 content -- and which Anthropic would otherwise refuse.
 
+### The serving tool pod answers a forwarded identity that does not verify `IDENTITY_REFUSED`
+
+The pod re-verifies the identity the registry forwards, and refused one that did not verify with
+no `error_code` and a message naming the check that failed (`identity verification failed
+(IdentityTokenError)`, `user-assertion verification failed (ValueError)`). An unnamed refusal had no
+face to map to, so the hub's HTTP face rendered it as its 502 fallback; the registry's door, which
+checks the same identity first, already answered `IDENTITY_REFUSED`.
+
+- **Breaking: `ToolServer` answers `IDENTITY_REFUSED`, message `forwarded identity could not be
+  verified`, for every refusal of its identity gate**: an absent, expired, unknown-key or malformed
+  handshake token, a user assertion that does not verify or does not bind to the handshake token
+  or the conversation, and a user assertion on a tool pod's token. Through the hub this is now a
+  401, not a 502. A caller matching the old message text matches the code instead. Nothing
+  retries it: the registry fails over only on `TOOL_UNAVAILABLE`.
+- The reason stays on the pod's side. Its WARNING lines (`pod identity verification failed`,
+  `pod user-assertion verification failed`, `pod user-assertion presented on a tool pod token`)
+  still name the check and the exception, beside the tool name, and the baseline `tool.call`
+  audit's `failure_reason` still records which check refused.
+- **The proxy-assertion refusal is unchanged, on purpose.** It answers a different condition: the
+  identity verified, and the call did not prove it came through the registry for this body and
+  this pod (absent assertion, spliced body, replayed nonce, missing replay guard). It is the pod's
+  counterpart of the registry's `TOOL_POP_UNVERIFIED`, not an identity refusal, and still carries
+  no `error_code`.
+
 ### The registry answers a forwarded identity that does not verify `IDENTITY_REFUSED`
 
 The tool-call door answered the condition every hub door answers `IDENTITY_REFUSED` with two codes

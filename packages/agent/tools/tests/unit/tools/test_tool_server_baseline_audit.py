@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.context import ToolContextManager
 from threetears.agent.tools.server import ToolServer
+from threetears.core.security import IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE
 from threetears.nats import IncomingMessage, Subject, set_default_namespace
 
 from threetears.core.testing.replay_guard import FakeReplayGuard
@@ -606,9 +607,10 @@ async def test_absent_user_assertion_leaves_actor_none_and_no_context_manager() 
 async def test_user_assertion_failclosed_denies(flavor: str) -> None:
     """a mis-bound / expired / invalid / user-less user-assertion is denied fail-closed (no dispatch).
 
-    mirrors the proxy's IDENTITY_REFUSED: the pod rejects the call before the tool runs,
-    so the reply is an error and the baseline audit records a ``user-assertion verification failed``
-    failure rather than a successful tool.call.
+    mirrors the proxy's IDENTITY_REFUSED: the pod rejects the call before the tool runs, so
+    the reply is ``IDENTITY_REFUSED`` with the one message that does not say which check refused,
+    and the baseline audit -- server-side -- records the ``user-assertion verification failed``
+    reason rather than a successful tool.call.
     """
     set_default_namespace("ns")
     nats = _FakeNats()
@@ -652,7 +654,8 @@ async def test_user_assertion_failclosed_denies(flavor: str) -> None:
     _reply_subject, response = nats.replies[0]
     response_data = json.loads(response.model_dump_json())
     assert response_data["success"] is False
-    assert "user-assertion verification failed" in response_data["error"]
+    assert response_data["error_code"] == IDENTITY_REFUSED
+    assert response_data["error"] == IDENTITY_REFUSED_MESSAGE
     # ...and the baseline audit records the fail-closed denial, not a success.
     env = _audit_envelopes(nats, ".audit.tool.call")[0]
     assert env["outcome"] == "failure"
@@ -746,7 +749,8 @@ async def test_user_assertion_replayed_into_different_conversation_denies() -> N
     _reply_subject, response = nats.replies[0]
     response_data = json.loads(response.model_dump_json())
     assert response_data["success"] is False  # the cross-conversation replay is denied
-    assert "user-assertion verification failed" in response_data["error"]
+    assert response_data["error_code"] == IDENTITY_REFUSED
+    assert response_data["error"] == IDENTITY_REFUSED_MESSAGE
     env = _audit_envelopes(nats, ".audit.tool.call")[0]
     assert env["outcome"] == "failure"
     assert env["actor_user_id"] is None  # U was NOT impersonated in conversation D
@@ -790,7 +794,8 @@ async def test_user_assertion_with_no_conversation_id_denies() -> None:
     _reply_subject, response = nats.replies[0]
     response_data = json.loads(response.model_dump_json())
     assert response_data["success"] is False
-    assert "user-assertion verification failed" in response_data["error"]
+    assert response_data["error_code"] == IDENTITY_REFUSED
+    assert response_data["error"] == IDENTITY_REFUSED_MESSAGE
     env = _audit_envelopes(nats, ".audit.tool.call")[0]
     assert env["outcome"] == "failure"
     assert env["actor_user_id"] is None

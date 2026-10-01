@@ -52,7 +52,7 @@ from threetears.agent.tools.http_operation import RestAffordance
 from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolutionCache
 from threetears.core.namespaces import build_tool_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
-from threetears.core.security import CachedHubJwksProvider
+from threetears.core.security import IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE, CachedHubJwksProvider
 from threetears.core.security.identity_token import (
     IdentityClaims,
     IdentityKeyNotFoundError,
@@ -2619,11 +2619,21 @@ class ToolServer:
         identity, on ANY failure REJECT the call (return a rejection reason). there is no off/warn
         passthrough -- a call the pod cannot authenticate never runs on the unverified envelope.
 
+        Every rejection here is one condition -- the forwarded identity does not verify -- and the
+        caller answers it :data:`~threetears.core.security.IDENTITY_REFUSED` with
+        :data:`~threetears.core.security.IDENTITY_REFUSED_MESSAGE`, as the registry's door does. The
+        reason string this returns, and the structural detail this method logs, are server-side
+        only: a caller learns that it was refused, never which check refused it. The proxy
+        assertion is checked separately, by :meth:`_verify_proxy_assertion`, because it answers a
+        different question -- whether the call came through the registry -- not whose identity it
+        forwards.
+
         :param request: the parsed inbound call request
         :ptype request: CallRequest
         :return: ``(request, reason, principal_is_tool_pod)`` where ``request`` is the re-stamped
             request on verify success (else the original), ``reason`` is ``None`` when the call may
-            proceed or a rejection-reason string when the call MUST be rejected without
+            proceed or the server-side rejection reason (for the log and the audit, never the reply)
+            when the call MUST be rejected without
             dispatching, and ``principal_is_tool_pod`` is whether the VERIFIED principal is a tool
             pod -- ``False`` on every rejection, so nothing downstream can read a mark a failed
             verification never earned
@@ -2850,6 +2860,11 @@ class ToolServer:
         any other verified caller is refused ``TOOL_CALLER_NOT_OWNER``
         before the tool is looked up. a Tool Pod's server serves every
         caller.
+
+        a forwarded identity that does not verify -- the handshake token,
+        or the per-turn user assertion -- is refused ``IDENTITY_REFUSED``
+        with the one message the registry and every hub door use; which
+        check refused it is logged here, never sent.
 
         audit-task-01 (AUD-03): every dispatch -- including malformed
         requests, unknown-tool rejections, and raising tools -- emits a
@@ -3186,10 +3201,17 @@ class ToolServer:
 
             request, identity_rejection, principal_is_tool_pod = await self._verify_identity(request)
             if identity_rejection is not None:
+                # the registry and every hub door answer a forwarded identity that does not verify
+                # with this code and this one message, and so does the pod: a caller learns that
+                # it was refused, never which check refused it. ``identity_rejection`` -- which
+                # check, and the exception type -- stays on this side, in the log line below and
+                # the baseline audit's failure reason; ``_verify_identity`` already logged the
+                # structural detail beside the tool name.
                 error_response = CallResponse(
                     success=False,
                     content="",
-                    error=identity_rejection,
+                    error=IDENTITY_REFUSED_MESSAGE,
+                    error_code=IDENTITY_REFUSED,
                     context=request.context,
                 )
                 await self._answer(msg, error_response, delivery_subject)
@@ -3197,6 +3219,7 @@ class ToolServer:
                     "pod rejected call: identity unverified",
                     extra={
                         "extra_data": {
+                            "error_code": IDENTITY_REFUSED,
                             "reason": identity_rejection,
                             "tool_key": tool_key,
                             "correlation_id": correlation_id_log,
