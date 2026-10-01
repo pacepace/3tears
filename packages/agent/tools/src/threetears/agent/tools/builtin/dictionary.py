@@ -1,7 +1,18 @@
-"""Dictionary lookup tool using the free dictionaryapi.dev API."""
+"""Dictionary lookup: the Free Dictionary API, and Wiktionary when it does not answer.
+
+The Free Dictionary API (api.dictionaryapi.dev) is a free community service with
+one host. On 2026-10-01 it took connections and never answered, so every lookup
+waited out its timeout -- and the lookup was a blocking call inside an async
+tool, so each wait stalled every turn on the worker. The lookup is async now,
+waits less, and asks Wiktionary's REST API when the first source times out,
+cannot be reached or fails on its side. A "no such word" from the first source
+is an answer, not a failure: it is not asked again.
+"""
 
 from __future__ import annotations
 
+import html
+import re
 from typing import Any
 
 import httpx
@@ -15,9 +26,45 @@ from threetears.agent.tools.utils import tool_error
 __all__ = [
     "DictionaryTool",
     "create_dictionary_tool",
+    "lookup",
 ]
 
 _MAX_CHARS = 3000
+
+#: How long the first source gets before Wiktionary is asked.
+_PRIMARY_TIMEOUT_S = 5.0
+_FALLBACK_TIMEOUT_S = 10.0
+#: Wikimedia asks every client to say who it is.
+_USER_AGENT = "threetears-dictionary/1.1 (https://github.com/pacepace/3tears)"
+_TAGS = re.compile(r"<[^>]+>")
+
+
+def _plain(fragment: str) -> str:
+    """Wiktionary's HTML fragment as plain text."""
+    return " ".join(html.unescape(_TAGS.sub("", fragment)).split())
+
+
+def _format_wiktionary(word: str, language: str, data: dict[str, Any]) -> str | None:
+    """Wiktionary's definitions in the same shape as the first source's; None when it has none in ``language``."""
+    entries = [e for e in data.get(language, []) if e.get("language") != "Translingual"]
+    if not entries:
+        return None
+    parts: list[str] = [word, ""]
+    for entry in entries:
+        definitions = [d for d in entry.get("definitions", []) if _plain(d.get("definition", ""))][:3]
+        if not definitions:
+            continue
+        parts.append(f"[{str(entry.get('partOfSpeech', '')).lower()}]")
+        for i, defn in enumerate(definitions, 1):
+            parts.append(f"  {i}. {_plain(defn.get('definition', ''))}")
+            examples = [_plain(x) for x in defn.get("examples", []) if _plain(x)]
+            if examples:
+                parts.append(f"     Example: {examples[0]}")
+        parts.append("")
+    if len(parts) == 2:
+        return None
+    parts.append("(from Wiktionary)")
+    return window_text("\n".join(parts).strip(), max_chars=_MAX_CHARS).rendered(tool="dictionary")
 
 
 def _format_entry(data: list[dict[str, Any]]) -> str:
@@ -61,24 +108,62 @@ def _format_entry(data: list[dict[str, Any]]) -> str:
     return window_text("\n".join(parts).strip(), max_chars=_MAX_CHARS).rendered(tool="dictionary")
 
 
-def _create_lookup_fn(language: str) -> Any:
-    """Create a lookup function bound to a language."""
+async def _from_wiktionary(client: httpx.AsyncClient, word: str, language: str, why: str) -> str:
+    """Ask Wiktionary, after the first source failed for ``why``."""
+    try:
+        resp = await client.get(
+            f"https://en.wiktionary.org/api/rest_v1/page/definition/{word}",
+            timeout=_FALLBACK_TIMEOUT_S,
+            headers={"User-Agent": _USER_AGENT},
+        )
+        if resp.status_code == 404:
+            return f"No definition found for '{word}'"
+        resp.raise_for_status()
+        found = _format_wiktionary(word, language, resp.json())
+        return found if found is not None else f"No definition found for '{word}'"
+    except httpx.HTTPStatusError as exc:
+        return tool_error("dictionary", "lookup", f"{why}; Wiktionary answered HTTP {exc.response.status_code}")
+    except httpx.HTTPError as exc:
+        return tool_error("dictionary", "lookup", f"{why}; Wiktionary failed too: {type(exc).__name__}")
 
-    def _lookup(word: str) -> str:
-        url = f"https://api.dictionaryapi.dev/api/v2/entries/{language}/{word}"
+
+async def lookup(word: str, language: str = "en", *, transport: httpx.AsyncBaseTransport | None = None) -> str:
+    """A word's definitions, from the Free Dictionary API or, when it does not answer, Wiktionary.
+
+    :param word: the word
+    :ptype word: str
+    :param language: ISO 639-1 language code
+    :ptype language: str
+    :param transport: the HTTP transport, for tests; None uses the network
+    :ptype transport: httpx.AsyncBaseTransport | None
+    :return: the definitions as text, "No definition found ..." or a tool error
+    :rtype: str
+    """
+    async with httpx.AsyncClient(transport=transport) as client:
         try:
-            with httpx.Client(timeout=10.0) as client:
-                resp = client.get(url)
-            if resp.status_code == 404:
-                return f"No definition found for '{word}'"
-            resp.raise_for_status()
+            resp = await client.get(
+                f"https://api.dictionaryapi.dev/api/v2/entries/{language}/{word}", timeout=_PRIMARY_TIMEOUT_S
+            )
+        except httpx.TimeoutException:
+            return await _from_wiktionary(client, word, language, "the Free Dictionary API did not answer")
+        except httpx.HTTPError as exc:
+            return await _from_wiktionary(
+                client, word, language, f"the Free Dictionary API failed: {type(exc).__name__}"
+            )
+        if resp.status_code == 404:
+            return f"No definition found for '{word}'"
+        if resp.status_code >= 500:
+            return await _from_wiktionary(
+                client, word, language, f"the Free Dictionary API answered HTTP {resp.status_code}"
+            )
+        if resp.status_code >= 400:
+            return tool_error("dictionary", "lookup", f"HTTP {resp.status_code}")
+        try:
             return _format_entry(resp.json())
-        except httpx.HTTPStatusError as exc:
-            return tool_error("dictionary", "lookup", f"HTTP {exc.response.status_code}")
-        except Exception as exc:
-            return tool_error("dictionary", "lookup", str(exc))
-
-    return _lookup
+        except ValueError, LookupError, AttributeError:
+            return await _from_wiktionary(
+                client, word, language, "the Free Dictionary API answered something unreadable"
+            )
 
 
 def create_dictionary_tool(config: dict[str, Any], description: str) -> StructuredTool:
@@ -100,7 +185,7 @@ def create_dictionary_tool(config: dict[str, Any], description: str) -> Structur
 
 
 class DictionaryTool(TearsTool):
-    """TearsTool wrapper for dictionary lookups via dictionaryapi.dev.
+    """TearsTool wrapper for dictionary lookups: the Free Dictionary API, then Wiktionary.
 
     looks up word definitions, phonetics, synonyms, and antonyms
     using free dictionary API. configurable language at construction.
@@ -117,14 +202,16 @@ class DictionaryTool(TearsTool):
         "required": ["word"],
     }
 
-    def __init__(self, language: str = "en") -> None:
+    def __init__(self, language: str = "en", *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         """initialize dictionary tool with language.
 
         :param language: ISO 639-1 language code for lookups
         :ptype language: str
+        :param transport: the HTTP transport, for tests; None uses the network
+        :ptype transport: httpx.AsyncBaseTransport | None
         """
         self._language = language
-        self._lookup_fn = _create_lookup_fn(language)
+        self._transport = transport
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """look up word definition.
@@ -135,7 +222,7 @@ class DictionaryTool(TearsTool):
         :rtype: ToolResult
         """
         word = kwargs.get("word", "")
-        content = self._lookup_fn(word)
+        content = await lookup(word, self._language, transport=self._transport)
         success = not content.startswith("[TOOL ERROR]")
         result = ToolResult(
             success=success,
