@@ -285,6 +285,10 @@ _PULL_CONSUMER_ERROR_BACKOFF_SECONDS: Final[float] = 1.0
 #: handlers of the fetch in flight to finish before it unsubscribes anyway.
 _PULL_CONSUMER_STOP_HANDLER_GRACE_SECONDS: Final[float] = 10.0
 
+#: how many in-progress acks a pull consumer's handler sends per ``ack_wait`` while it runs, so a
+#: slow but live handler keeps its message and ``ack_wait`` only ever measures a fetcher that died.
+_PULL_CONSUMER_IN_PROGRESS_PER_ACK_WAIT: Final[int] = 3
+
 #: how often a :class:`JetStreamResultWaiter` re-checks its own deadline while waiting.
 #:
 #: This is a poll cadence, NOT added latency: a fetch already outstanding when the answer is
@@ -1043,6 +1047,9 @@ class JetStreamPullConsumer:
     :ptype batch: int
     :param fetch_timeout_seconds: idle poll cadence (per-fetch wait)
     :ptype fetch_timeout_seconds: float
+    :param ack_wait_seconds: the durable's ack wait; a running handler sends an in-progress ack
+        :data:`_PULL_CONSUMER_IN_PROGRESS_PER_ACK_WAIT` times within each one
+    :ptype ack_wait_seconds: float
     :param bound_to: the nats-py connection ``psub`` was made on
     :ptype bound_to: Any
     :param current_connection: reads the client's current connection
@@ -1061,6 +1068,7 @@ class JetStreamPullConsumer:
         subject: Subject,
         batch: int,
         fetch_timeout_seconds: float,
+        ack_wait_seconds: float,
         bound_to: Any,
         current_connection: Callable[[], Any],
         resubscribe: Callable[[], Awaitable[Any]],
@@ -1081,6 +1089,9 @@ class JetStreamPullConsumer:
         :ptype batch: int
         :param fetch_timeout_seconds: idle poll cadence (per-fetch wait)
         :ptype fetch_timeout_seconds: float
+        :param ack_wait_seconds: the durable's ack wait, which paces the running handler's
+            in-progress acks
+        :ptype ack_wait_seconds: float
         :param bound_to: the nats-py connection ``psub`` was made on
         :ptype bound_to: Any
         :param current_connection: reads the client's current connection
@@ -1097,6 +1108,7 @@ class JetStreamPullConsumer:
         self._subject = subject
         self._batch = batch
         self._fetch_timeout_seconds = fetch_timeout_seconds
+        self._in_progress_interval_seconds = ack_wait_seconds / _PULL_CONSUMER_IN_PROGRESS_PER_ACK_WAIT
         self._stopped = False
         # set whenever no fetch is in flight -- see stop()
         self._idle = asyncio.Event()
@@ -1156,16 +1168,56 @@ class JetStreamPullConsumer:
         (its ``nak``, ``ack`` or dead-letter publish on a failing transport) does, and the caller
         decides what it costs.
 
+        while it runs, the message is held with in-progress acks (:meth:`_hold_while_handled`), so
+        the durable's ``ack_wait`` bounds how long a DEAD fetcher keeps a message from the others,
+        never how long a live handler may take.
+
         :param msg: the JetStream message
         :ptype msg: Any
         :return: nothing
         :rtype: None
         :raises Exception: whatever the redelivery policy raises
         """
+        holding = asyncio.create_task(self._hold_while_handled(msg))
         try:
-            await self._cb(msg)
-        except Exception as exc:  # noqa: BLE001 — bounded redelivery owns the outcome; never swallow
-            await self._redeliver(msg, exc)
+            try:
+                await self._cb(msg)
+            except Exception as exc:  # noqa: BLE001 — bounded redelivery owns the outcome; never swallow
+                await self._redeliver(msg, exc)
+        finally:
+            holding.cancel()
+            # gather, not a bare await: a cancellation of THIS task still propagates, while the
+            # holder's own cancellation, which was asked for just above, is collected as a result
+            await asyncio.gather(holding, return_exceptions=True)
+
+    async def _hold_while_handled(self, msg: Any) -> None:
+        """send an in-progress ack every fraction of ``ack_wait`` until cancelled.
+
+        a refused in-progress ack (a transport closing under the handler) is logged and ends the
+        holding: the handler still finishes and acks or redelivers through the usual step, and if it
+        outlives ``ack_wait`` the server redelivers to another fetcher, which the handler contract
+        (idempotent, at-least-once) already tolerates.
+
+        :param msg: the JetStream message being handled
+        :ptype msg: Any
+        :return: nothing
+        :rtype: None
+        """
+        refused: Exception | None = None
+        while refused is None:
+            await asyncio.sleep(self._in_progress_interval_seconds)
+            try:
+                await msg.in_progress()
+            except Exception as exc:  # noqa: BLE001 — logged below; the handler's own outcome is unaffected
+                refused = exc
+        log.warning(
+            "durable pull consumer: an in-progress ack failed while a handler ran (durable=%s, subject=%s): %s: %s "
+            "-- the message is no longer held, and a handler outliving ack_wait is redelivered to another fetcher",
+            self._durable,
+            getattr(msg, "subject", None),
+            type(refused).__name__,
+            refused,
+        )
 
     async def run(self) -> None:
         """loop fetch+dispatch until :meth:`stop` (or task cancellation).
@@ -5035,7 +5087,9 @@ class NatsClient:
         :param dead_letter_subject: subject poisoned payload parks on, or None
         :ptype dead_letter_subject: Subject | None
         :param ack_wait_seconds: server-side ack timeout; a fetcher that dies
-            mid-handle redelivers the message to another fetcher after this
+            mid-handle redelivers the message to another fetcher after this. a live
+            handler holds its message with in-progress acks, so this bounds a dead
+            fetcher's hold, never a handler's running time
         :ptype ack_wait_seconds: float
         :param stream: backing stream name to bind the consumer to
         :ptype stream: str | None
@@ -5103,6 +5157,7 @@ class NatsClient:
             subject=subject,
             batch=batch,
             fetch_timeout_seconds=fetch_timeout_seconds,
+            ack_wait_seconds=ack_wait_seconds,
             bound_to=bound_to,
             current_connection=lambda: self._raw,
             resubscribe=_bind,

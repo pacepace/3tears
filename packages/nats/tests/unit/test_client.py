@@ -2109,6 +2109,7 @@ def _stopping_pull_consumer(
         subject=Subjects.channels_deliver("slack"),
         batch=1,
         fetch_timeout_seconds=0.01,
+        ack_wait_seconds=60.0,
         bound_to=fake,
         current_connection=lambda: fake,
         resubscribe=AsyncMock(),
@@ -2186,6 +2187,63 @@ async def test_pull_stop_is_idempotent() -> None:
 
     unsubscribe.assert_awaited_once()
     assert fake.wire == wire_after_first
+
+
+@pytest.mark.asyncio
+async def test_a_pull_handler_holds_its_message_while_it_runs() -> None:
+    """a handler running longer than ack_wait keeps its message with in-progress acks, then stops.
+
+    ack_wait is the durable's crash detector: a fetcher that dies mid-handle hands the message
+    to another after it. Without a heartbeat it is also a ceiling on every handler, so a slow but
+    live one is redelivered under it and runs twice -- which forces ack_wait long, and a long
+    ack_wait is how long a crashed fetcher's message waits for anyone else.
+    """
+    msg = _fake_js_msg()
+    msg.in_progress = AsyncMock()
+    psub = MagicMock()
+    psub.fetch = AsyncMock(return_value=[msg])
+    client, _js = _pull_js(psub=psub)
+
+    async def slow(_msg: Any) -> None:
+        await asyncio.sleep(0.2)
+        await _msg.ack()
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.audit_wildcard(), durable="d", cb=slow, max_deliver=5, ack_wait_seconds=0.06
+    )
+    await consumer.fetch_and_process()
+    held = msg.in_progress.await_count
+    await asyncio.sleep(0.1)
+
+    assert held >= 3, f"a 0.2s handler under a 0.06s ack_wait sent {held} in-progress acks"
+    assert msg.in_progress.await_count == held, "in-progress acks continued after the handler finished"
+    msg.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_in_progress_ack_is_logged_and_the_handler_still_finishes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """an in-progress ack the transport refuses is logged with the durable; the handler is not disturbed."""
+    msg = _fake_js_msg()
+    msg.in_progress = AsyncMock(side_effect=ConnectionError("transport closed"))
+    psub = MagicMock()
+    psub.fetch = AsyncMock(return_value=[msg])
+    client, _js = _pull_js(psub=psub)
+
+    async def slow(_msg: Any) -> None:
+        await asyncio.sleep(0.1)
+        await _msg.ack()
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.audit_wildcard(), durable="d", cb=slow, max_deliver=5, ack_wait_seconds=0.03
+    )
+    with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+        await consumer.fetch_and_process()
+
+    msg.ack.assert_awaited_once()
+    msg.in_progress.assert_awaited_once()
+    assert any("in-progress ack failed" in r.getMessage() and "durable=d" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio

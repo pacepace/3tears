@@ -94,8 +94,11 @@ log = get_logger(__name__)
 #: client sends a longer list in batches of this size.
 MAX_ANONYMIZE_ACTORS: Final[int] = 500
 
-#: seconds a pod waits for the hub's answer to one batch.
-DEFAULT_ANONYMIZE_TIMEOUT_SECONDS: Final[float] = 30.0
+#: seconds a pod waits for the hub's answer to one batch. the hub spends up to half of it waiting
+#: for the audit backlog published before the request to be persisted, and that half must outlast
+#: the hub's audit redelivery window -- the durable's ack wait plus one fetch -- or a message a
+#: crashed hub replica was holding fails every request made inside that window.
+DEFAULT_ANONYMIZE_TIMEOUT_SECONDS: Final[float] = 60.0
 
 #: every ``error_code`` a responder answers with.
 #:

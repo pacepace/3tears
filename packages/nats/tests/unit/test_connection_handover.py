@@ -436,6 +436,7 @@ async def test_a_pull_consumer_follows_the_renewal_before_its_next_fetch() -> No
         subject=Subject.raw("jobs"),
         batch=1,
         fetch_timeout_seconds=0.01,
+        ack_wait_seconds=60.0,
         bound_to="A",
         current_connection=lambda: connections["current"],
         resubscribe=_resubscribe,

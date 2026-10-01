@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A pull consumer's handler holds its message while it runs
+
+`ack_wait` on a durable pull consumer did two jobs: it was how long a message a dead fetcher held
+waited for anyone else, and it was a ceiling on every live handler, which was redelivered to
+another fetcher -- and ran twice -- once it ran past it. The second job forced `ack_wait` long, and
+a long `ack_wait` is a long strand. Found in the pre-PR live validation, 2026-09-30: a hub killed
+three seconds into its shutdown left an audit event awaiting ack for the full 60 seconds, and the
+person erasure made right after the restart, which waits 30 seconds for that backlog, failed.
+
+- **`JetStreamPullConsumer` sends an in-progress ack three times per `ack_wait`** while a handler
+  runs, for a fetched message and for one `stop()` collects alike, and stops when the handler
+  returns. `ack_wait` now bounds only a dead fetcher's hold, so a consumer can set it short. A
+  refused in-progress ack is logged with the durable and ends the holding; the handler still
+  finishes.
+- **`JetStreamPullConsumer(...)` takes a required `ack_wait_seconds`.** `jetstream_pull_subscribe`
+  passes its own; a direct constructor call must add it.
+- **`threetears.agent.audit.DEFAULT_ANONYMIZE_TIMEOUT_SECONDS` is 60 seconds, was 30.** The hub's
+  anonymize responder waits half of the caller's timeout for the audit backlog, and that half must
+  outlast the hub's audit redelivery window (its durable's `ack_wait` plus one fetch, 25 seconds).
+
 ### A row the database completes is cached as L3 holds it, never as it was sent
 
 A save that named only some of a table's columns, leaving the rest to their server defaults,
