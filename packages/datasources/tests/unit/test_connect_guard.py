@@ -23,9 +23,11 @@ the contract (hub issue #523, the lockout it closes):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -51,10 +53,13 @@ from threetears.datasources.drivers import (
     create_driver,
     guarded_connect,
 )
+from threetears.datasources.drivers._redshift_connector_internals import connection_socket
 from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 from threetears.nats import KvError
+
+from ._helpers.driver_shims import PoolAcquireHandle
 
 _PASSWORD_ENV = "TEST_CONNECT_GUARD_PW"
 _REVISION = "rev-1"
@@ -479,6 +484,22 @@ class TestARefusingWarehouseCostsOneLogin:
             assert connect.call_count == 2
 
 
+def _working_pool() -> MagicMock:
+    """an ``asyncpg.Pool`` stand-in whose connection answers ``SELECT 1``.
+
+    :return: the pool
+    :rtype: MagicMock
+    """
+    conn = MagicMock(spec=asyncpg.Connection, name="PooledConn")
+    conn.fetchval = AsyncMock(return_value=1)
+    conn.execute = AsyncMock(return_value=None)
+    pool = MagicMock(name="Pool")
+    pool.acquire = MagicMock(side_effect=lambda *a, **k: PoolAcquireHandle(pool, conn))
+    pool.release = AsyncMock(return_value=None)
+    pool.close = AsyncMock(return_value=None)
+    return pool
+
+
 class TestAsyncpgGuardsEveryPooledLogin:
     """the pool's own logins -- its first and every replacement -- go through the guard."""
 
@@ -505,49 +526,170 @@ class TestAsyncpgGuardsEveryPooledLogin:
             connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="pg"),
         )
 
-    async def test_the_pool_logs_in_through_the_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        create_pool = AsyncMock(return_value=MagicMock())
+    async def _pool_login_hook(self, driver: AsyncpgDriver, monkeypatch: pytest.MonkeyPatch) -> Any:
+        """let ``driver`` create its pool, and return the per-login hook it handed the pool.
+
+        :param driver: a driver that has not yet created its pool
+        :ptype driver: AsyncpgDriver
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: the ``connect`` callable the pool calls for every login it makes
+        :rtype: Any
+        """
+        create_pool = AsyncMock(return_value=_working_pool())
         monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool", create_pool)
-        driver = self._driver(_replica(_Nats()), uuid.uuid4())
+        await driver.test_connection()
+        create_pool.assert_awaited_once()
+        return create_pool.await_args.kwargs["connect"]
 
-        await driver._ensure_pool()  # noqa: SLF001 -- the pool's construction arguments are the contract
+    async def test_the_pool_logs_in_through_the_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the hook the pool logs in with asks the guard first: a paused credential is not sent."""
+        datasource_id = uuid.uuid4()
+        guards = _replica(_Nats())
+        driver = self._driver(guards, datasource_id)
+        hook = await self._pool_login_hook(driver, monkeypatch)
+        connect = AsyncMock()
+        monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.connect", connect)
+        await guards.record(datasource_id, _REVISION)
 
-        assert create_pool.await_args.kwargs["connect"] == driver._connect_one  # noqa: SLF001
+        with pytest.raises(DriverCredentialPausedError):
+            await hook(host="pg.example.com", port=5432, database="warehouse", password=_PASSWORD)
+
+        connect.assert_not_awaited()
 
     async def test_concurrent_first_callers_share_one_pool(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """each first caller building its own pool was one login apiece, and a leaked pool apiece."""
         created = asyncio.Event()
+        pools: list[MagicMock] = []
 
         async def _slow_create_pool(**kwargs: Any) -> MagicMock:
             del kwargs
             await created.wait()
-            return MagicMock()
+            pools.append(_working_pool())
+            return pools[-1]
 
         create_pool = AsyncMock(side_effect=_slow_create_pool)
         monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool", create_pool)
         driver = self._driver(_replica(_Nats()), uuid.uuid4())
 
-        callers = [asyncio.create_task(driver._ensure_pool()) for _ in range(5)]  # noqa: SLF001 -- pool creation is the contract
+        callers = [asyncio.create_task(driver.test_connection()) for _ in range(5)]
         await asyncio.sleep(0)
         created.set()
-        pools = await asyncio.gather(*callers)
+        await asyncio.gather(*callers)
 
         assert create_pool.await_count == 1
-        assert all(pool is pools[0] for pool in pools)
+        # the one pool is the one every caller ran on, and the one close() closes.
+        (pool,) = pools
+        assert pool.acquire.call_count == 5
+        await driver.close()
+        pool.close.assert_awaited_once()
 
     async def test_a_refused_pooled_login_pauses_the_next(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        driver = self._driver(_replica(_Nats()), uuid.uuid4())
+        hook = await self._pool_login_hook(driver, monkeypatch)
         connect = AsyncMock(side_effect=asyncpg.exceptions.InvalidPasswordError("password authentication failed"))
         monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.connect", connect)
-        driver = self._driver(_replica(_Nats()), uuid.uuid4())
         login = {"host": "pg.example.com", "port": 5432, "database": "warehouse", "password": _PASSWORD}
 
         with pytest.raises(DriverAuthError) as exc_info:
-            await driver._connect_one(**login)  # noqa: SLF001 -- the pool's per-login hook
+            await hook(**login)
         with pytest.raises(DriverCredentialPausedError):
-            await driver._connect_one(**login)  # noqa: SLF001
+            await hook(**login)
 
         assert connect.await_count == 1
         assert _PASSWORD not in str(exc_info.value)
+
+
+@dataclass
+class _RunningQuery:
+    """a query in flight on a Redshift driver, its backend pid 4242.
+
+    :ivar task: the query's task
+    :ivar connect: the patched ``redshift_connector.connect``; its first call opened ``main``
+    """
+
+    task: asyncio.Task[Any]
+    connect: MagicMock
+
+
+@asynccontextmanager
+async def _a_running_query(
+    driver: RedshiftDriver,
+    terminate_login: Callable[..., Any] | None = None,
+) -> AsyncIterator[_RunningQuery]:
+    """start a query on ``driver`` and hold it in flight until its connection is closed.
+
+    the connection's backend pid is 4242, so cancelling the query sends the cancel path
+    to log in afresh and terminate that pid. every login after the first is handed to
+    ``terminate_login``.
+
+    :param driver: the driver to run the query on
+    :ptype driver: RedshiftDriver
+    :param terminate_login: stands in for ``redshift_connector.connect`` for the cancel
+        path's login; ``None`` when no such login may happen
+    :ptype terminate_login: Callable[..., Any] | None
+    :return: the running query, inside the connect patch
+    :rtype: AsyncIterator[_RunningQuery]
+    """
+    loop = asyncio.get_running_loop()
+    running = asyncio.Event()
+    main = MagicMock(name="QueryConnection")
+    cursor = MagicMock(name="QueryCursor")
+    cursor.fetchone.return_value = (4242,)
+    cursor.description = []
+    cursor.fetchall.return_value = []
+
+    def _execute(sql: str, *args: Any) -> None:
+        del args
+        if not sql.startswith("SELECT pg_sleep"):
+            return
+        loop.call_soon_threadsafe(running.set)
+        import time
+
+        for _ in range(200):
+            if main.close.called:
+                return
+            time.sleep(0.025)
+
+    cursor.execute.side_effect = _execute
+    main.cursor.return_value = cursor
+    logins = {"count": 0}
+
+    def _connect(**kwargs: Any) -> Any:
+        logins["count"] += 1
+        if logins["count"] == 1:
+            return main
+        if terminate_login is None:
+            raise AssertionError("the cancel path logged in when it must not")
+        return terminate_login(**kwargs)
+
+    with patch(
+        "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+        side_effect=_connect,
+    ) as connect:
+        task = asyncio.create_task(driver.fetch("SELECT pg_sleep(60)"))
+        try:
+            async with asyncio.timeout(5.0):
+                await running.wait()
+            yield _RunningQuery(task=task, connect=connect)
+        finally:
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+async def _cancel(running: _RunningQuery) -> None:
+    """cancel the running query and wait for its cancel path to finish.
+
+    :param running: the query to cancel
+    :ptype running: _RunningQuery
+    :return: nothing
+    :rtype: None
+    """
+    running.task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running.task
 
 
 class TestTheCancelPathLogsInUnderTheGuard:
@@ -556,19 +698,20 @@ class TestTheCancelPathLogsInUnderTheGuard:
     async def test_a_paused_credential_skips_the_terminate_login(self) -> None:
         datasource_id = uuid.uuid4()
         guards = _replica(_Nats())
-        await guards.record(datasource_id, _REVISION)
         driver = RedshiftDriver(
             _redshift_config(),
             datasource_name="ds",
             connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds"),
         )
         try:
-            with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect") as connect:
-                await driver._terminate_backend(4242)  # noqa: SLF001 -- the cancel path's login is the contract
+            async with _a_running_query(driver) as running:
+                # refused elsewhere while the query runs: the cancel path must not send it again.
+                await guards.record(datasource_id, _REVISION)
+                await _cancel(running)
         finally:
             await driver.close()
 
-        connect.assert_not_called()
+        assert running.connect.call_count == 1
 
     async def test_a_refused_terminate_login_pauses_the_credential(self) -> None:
         datasource_id = uuid.uuid4()
@@ -578,15 +721,19 @@ class TestTheCancelPathLogsInUnderTheGuard:
             datasource_name="ds",
             connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds"),
         )
+
+        def _refusing_login(**kwargs: Any) -> Any:
+            del kwargs
+            raise _refused()
+
         try:
-            with patch(
-                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
-                side_effect=_refused(),
-            ):
-                await driver._terminate_backend(4242)  # noqa: SLF001 -- never raises; the pause is the effect
+            async with _a_running_query(driver, _refusing_login) as running:
+                # never raises past the cancellation; the pause is the effect
+                await _cancel(running)
         finally:
             await driver.close()
 
+        assert running.connect.call_count == 2
         assert await guards.refused_at(datasource_id, _REVISION) is not None
 
 
@@ -604,15 +751,15 @@ class TestNoLoginIsLeftOpen:
         driver = RedshiftDriver(_redshift_config(), datasource_name="ds")
         connection = MagicMock()
         try:
-            with patch(
-                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
-                return_value=connection,
-            ) as connect:
-                await driver._terminate_backend(4242)  # noqa: SLF001 -- the cancel path's login is the contract
+            async with _a_running_query(driver, lambda **kwargs: connection) as running:
+                await _cancel(running)
         finally:
             await driver.close()
 
-        assert connect.call_args.kwargs["sslmode"] == _redshift_config().sslmode
+        assert running.connect.call_count == 2
+        query_login, terminate_login = running.connect.call_args_list
+        assert terminate_login.kwargs == query_login.kwargs
+        assert terminate_login.kwargs["sslmode"] == _redshift_config().sslmode
         connection.close.assert_called_once()
 
     async def test_a_terminate_that_outlasts_its_timeout_still_closes_its_connection(
@@ -633,11 +780,9 @@ class TestNoLoginIsLeftOpen:
             return connection
 
         try:
-            with patch(
-                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
-                side_effect=_slow_login,
-            ):
-                await driver._terminate_backend(4242)  # noqa: SLF001 -- times out; the close is the effect
+            async with _a_running_query(driver, _slow_login) as running:
+                # times out; the close is the effect
+                await _cancel(running)
                 async with asyncio.timeout(2.0):
                     await closed.wait()
         finally:
@@ -669,11 +814,9 @@ class TestNoLoginIsLeftOpen:
             raise _refused()
 
         try:
-            with patch(
-                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
-                side_effect=_slow_refusal,
-            ):
-                await driver._terminate_backend(4242)  # noqa: SLF001 -- times out; the pause is the effect
+            async with _a_running_query(driver, _slow_refusal) as running:
+                # times out; the pause is the effect
+                await _cancel(running)
                 async with asyncio.timeout(2.0):
                     while await guards.refused_at(datasource_id, _REVISION) is None:
                         await asyncio.sleep(0.02)
@@ -706,15 +849,13 @@ class TestTheCancelHoldsTheLoginSlotForTheLoginOnly:
         connection.cursor.return_value.execute.side_effect = _slow_terminate
         other = guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds")
         try:
-            with patch(
-                "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
-                return_value=connection,
-            ):
-                cancelling = asyncio.create_task(driver._terminate_backend(4242))  # noqa: SLF001 -- the cancel path is the contract
+            async with _a_running_query(driver, lambda **kwargs: connection) as running:
+                running.task.cancel()
                 await terminating.wait()
                 async with asyncio.timeout(0.15):
                     assert await guarded_connect(other, AsyncMock(return_value="connection")) == "connection"
-                await cancelling
+                with pytest.raises(asyncio.CancelledError):
+                    await running.task
         finally:
             await driver.close()
 
@@ -736,21 +877,18 @@ class TestTheCancelHoldsTheLoginSlotForTheLoginOnly:
             return connection
 
         try:
-            with (
-                caplog.at_level("INFO", logger="threetears.datasources.drivers.redshift_driver"),
-                patch(
-                    "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
-                    side_effect=_slow_login,
-                ),
-            ):
-                cancelling = asyncio.create_task(driver._terminate_backend(4242))  # noqa: SLF001 -- the cancel path is the contract
-                await login_started.wait()
-                cancelling.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await cancelling
-                async with asyncio.timeout(2.0):
-                    await closed.wait()
-                await asyncio.sleep(0.05)
+            with caplog.at_level("INFO", logger="threetears.datasources.drivers.redshift_driver"):
+                async with _a_running_query(driver, _slow_login) as running:
+                    # the query is cancelled, and its cancel path starts the terminate login...
+                    running.task.cancel()
+                    await login_started.wait()
+                    # ...then the caller gives up on that too.
+                    running.task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await running.task
+                    async with asyncio.timeout(2.0):
+                        await closed.wait()
+                    await asyncio.sleep(0.05)
         finally:
             await driver.close()
 
@@ -778,8 +916,9 @@ class TestALoginIsBounded:
             await driver.close()
 
         assert connect.call_args.kwargs["timeout"] == _redshift_config().connect_timeout_seconds
-        # left on, the bound would fail every statement longer than it.
-        connection._usock.settimeout.assert_called_with(None)  # noqa: SLF001 -- redshift_connector's socket is the contract
+        # left on, the bound would fail every statement longer than it. the socket is the one
+        # the driver reaches, through the one module that owns redshift_connector's internals.
+        connection_socket(connection).settimeout.assert_called_with(None)
 
     async def test_a_connection_whose_socket_cannot_be_reached_is_refused(self) -> None:
         """a bound that cannot be lifted would fail a long build hours later; the login fails now instead."""
@@ -824,7 +963,8 @@ class TestALoginIsBounded:
                 "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
                 side_effect=_slow_login,
             ):
-                acquiring = asyncio.create_task(driver._acquire_connection())  # noqa: SLF001 -- the login path under test
+                # the login path under test: the first query's cache-miss login
+                acquiring = asyncio.create_task(driver.test_connection())
                 await login_started.wait()
                 acquiring.cancel()
                 with pytest.raises(asyncio.CancelledError):
@@ -840,9 +980,19 @@ class TestALoginIsBounded:
 class TestTheFactoryHandsTheGuardOn:
     """``create_driver`` passes a guard to the drivers that honour one, and says when it cannot."""
 
-    def test_a_redshift_driver_carries_it(self) -> None:
-        guard = MagicMock()
+    async def test_a_redshift_driver_carries_it(self) -> None:
+        """the factory-built driver consults the guard it was given: a paused credential is not sent."""
+        datasource_id = uuid.uuid4()
+        guards = _replica(_Nats())
+        await guards.record(datasource_id, _REVISION)
+        guard = guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds")
 
         driver = create_driver(_redshift_config(), datasource_name="ds", connect_guard=guard)
 
-        assert driver._connect_guard is guard  # noqa: SLF001 -- what the factory wired is the contract
+        try:
+            with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect") as connect:
+                with pytest.raises(DriverCredentialPausedError):
+                    await driver.test_connection()
+        finally:
+            await driver.close()
+        connect.assert_not_called()

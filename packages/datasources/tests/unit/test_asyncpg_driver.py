@@ -87,8 +87,55 @@ def _build_mock_pool(
     pool.is_closing = MagicMock(return_value=False)
 
     # surface the connection mock so tests can assert against it
-    pool._conn = conn  # noqa: SLF001 - test surface only
+    pool.recorded_conn = conn
     return pool
+
+
+def _driver_owning(
+    pool: MagicMock,
+    config: PostgresConnectionConfig | YugabyteConnectionConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncpgDriver:
+    """build a driver that will create ``pool`` as its OWN pool on first use.
+
+    the owned-pool path is what a postgres / yugabyte datasource takes in
+    production: ``asyncpg.create_pool`` runs lazily on the first query.
+    patching it to hand back ``pool`` keeps that path intact.
+
+    :param pool: the mocked pool the driver's first query creates
+    :ptype pool: MagicMock
+    :param config: an owned-pool config
+    :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: a driver that has not yet created its pool
+    :rtype: AsyncpgDriver
+    """
+    monkeypatch.setattr(
+        "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+        AsyncMock(return_value=pool),
+    )
+    return AsyncpgDriver(config)
+
+
+def _unresolvable_password_config(monkeypatch: pytest.MonkeyPatch) -> PostgresConnectionConfig:
+    """an owned-pool config whose password reference resolves to nothing.
+
+    the driver refuses it by name before any login, which is how a test
+    reads the ``datasource_name`` a driver carries.
+
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the config
+    :rtype: PostgresConnectionConfig
+    """
+    monkeypatch.delenv("ABSENT_ASYNCPG_DRIVER_PW", raising=False)
+    return PostgresConnectionConfig(
+        datasource_type=DataSourceType.POSTGRES,
+        host="localhost",
+        database="x",
+        password_ref="env://ABSENT_ASYNCPG_DRIVER_PW",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -137,35 +184,57 @@ def agent_internal_config() -> AgentInternalConnectionConfig:
 class TestConstruction:
     """``__init__`` stores config + external_pool correctly; no I/O."""
 
-    def test_init_postgres_no_external_pool(self, postgres_config: PostgresConnectionConfig) -> None:
-        """constructing a postgres driver does NOT open a pool eagerly."""
+    @pytest.mark.asyncio
+    async def test_init_postgres_no_external_pool(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """constructing a postgres driver does NOT open a pool eagerly; the first query opens one it owns."""
+        pool = _build_mock_pool()
+        create_pool = AsyncMock(return_value=pool)
+        monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool", create_pool)
         driver = AsyncpgDriver(postgres_config)
-        assert driver._config is postgres_config  # noqa: SLF001
-        assert driver._pool is None  # noqa: SLF001
-        assert driver._owns_pool is True  # noqa: SLF001
-        assert driver._closed is False  # noqa: SLF001
+        create_pool.assert_not_awaited()
+        # not closed at construction: the first query creates the pool from the config.
+        await driver.fetch("SELECT 1")
+        create_pool.assert_awaited_once()
+        assert create_pool.await_args.kwargs["host"] == postgres_config.host
+        assert create_pool.await_args.kwargs["database"] == postgres_config.database
+        # the driver owns that pool, so its close closes it.
+        await driver.close()
+        pool.close.assert_awaited_once()
 
-    def test_init_agent_internal_with_external_pool(self, agent_internal_config: AgentInternalConnectionConfig) -> None:
-        """agent-internal driver borrows the passed-in pool."""
-        external = _build_mock_pool()
+    @pytest.mark.asyncio
+    async def test_init_agent_internal_with_external_pool(
+        self, agent_internal_config: AgentInternalConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """agent-internal driver borrows the passed-in pool: queries run on it, none is created, close leaves it."""
+        create_pool = AsyncMock()
+        monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool", create_pool)
+        external = _build_mock_pool(fetch_records=[{"x": 1}])
         driver = AsyncpgDriver(agent_internal_config, external_pool=external)
-        assert driver._pool is external  # noqa: SLF001
-        assert driver._owns_pool is False  # noqa: SLF001
+        assert await driver.fetch("SELECT 1") == [{"x": 1}]
+        create_pool.assert_not_awaited()
+        await driver.close()
+        external.close.assert_not_called()
 
-    def test_init_datasource_name_default_is_unknown(self, postgres_config: PostgresConnectionConfig) -> None:
+    @pytest.mark.asyncio
+    async def test_init_datasource_name_default_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """omitting ``datasource_name`` defaults to ``"unknown"``.
 
         the OTel metric label still tags emissions; ``"unknown"`` is
         the documented sentinel for callers who don't have the name
-        in scope.
+        in scope. a refusal names the datasource the same way, which
+        is how this reads it.
         """
-        driver = AsyncpgDriver(postgres_config)
-        assert driver._datasource_name == "unknown"  # noqa: SLF001
+        with pytest.raises(DriverMissingCredentialError, match="datasource 'unknown'"):
+            await AsyncpgDriver(_unresolvable_password_config(monkeypatch)).fetch("SELECT 1")
 
-    def test_init_datasource_name_captured(self, postgres_config: PostgresConnectionConfig) -> None:
-        """passing ``datasource_name`` stores it for metric tagging."""
-        driver = AsyncpgDriver(postgres_config, datasource_name="warehouse")
-        assert driver._datasource_name == "warehouse"  # noqa: SLF001
+    @pytest.mark.asyncio
+    async def test_init_datasource_name_captured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a passed ``datasource_name`` is the name the driver reports itself under."""
+        driver = AsyncpgDriver(_unresolvable_password_config(monkeypatch), datasource_name="warehouse")
+        with pytest.raises(DriverMissingCredentialError, match="datasource 'warehouse'"):
+            await driver.fetch("SELECT 1")
 
 
 class TestClose:
@@ -177,16 +246,20 @@ class TestClose:
         driver = AsyncpgDriver(postgres_config)
         # no pool created yet, close should still work
         await driver.close()
-        assert driver._closed is True  # noqa: SLF001
+        with pytest.raises(RuntimeError, match="closed"):
+            await driver.fetch("SELECT 1")
         # second call: no-op
         await driver.close()
 
     @pytest.mark.asyncio
-    async def test_close_owned_pool_calls_pool_close(self, postgres_config: PostgresConnectionConfig) -> None:
+    async def test_close_owned_pool_calls_pool_close(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """owned-pool path: :meth:`close` awaits ``pool.close()``."""
         pool = _build_mock_pool()
-        driver = AsyncpgDriver(postgres_config)
-        driver._pool = pool  # noqa: SLF001 - inject mock
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        # the owned pool exists once a query has created it.
+        await driver.fetch("SELECT 1")
         await driver.close()
         pool.close.assert_awaited_once()
 
@@ -237,49 +310,46 @@ class TestQueryRouting:
     """fetch/execute route through the mocked pool's acquired connection."""
 
     @pytest.mark.asyncio
-    async def test_fetch_returns_dicts(self, postgres_config: PostgresConnectionConfig) -> None:
+    async def test_fetch_returns_dicts(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """:meth:`fetch` returns the records as dicts."""
         pool = _build_mock_pool(fetch_records=[{"a": 1, "b": "x"}])
-        driver = AsyncpgDriver(postgres_config)
-        driver._pool = pool  # noqa: SLF001
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
         rows = await driver.fetch("SELECT $1, $2", 1, "x")
         assert rows == [{"a": 1, "b": "x"}]
         # the connection mock's fetch should have been awaited with the
         # SQL unchanged ($N placeholders are asyncpg-native).
-        pool._conn.fetch.assert_awaited_once_with(  # noqa: SLF001
-            "SELECT $1, $2", 1, "x"
-        )
+        pool.recorded_conn.fetch.assert_awaited_once_with("SELECT $1, $2", 1, "x")
 
     @pytest.mark.asyncio
-    async def test_execute_routes_through_conn_execute(self, postgres_config: PostgresConnectionConfig) -> None:
+    async def test_execute_routes_through_conn_execute(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """:meth:`execute` calls ``conn.execute`` once."""
         pool = _build_mock_pool()
-        driver = AsyncpgDriver(postgres_config)
-        driver._pool = pool  # noqa: SLF001
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
         await driver.execute("INSERT INTO t VALUES ($1)", 42)
-        pool._conn.execute.assert_awaited_once_with(  # noqa: SLF001
-            "INSERT INTO t VALUES ($1)", 42
-        )
+        pool.recorded_conn.execute.assert_awaited_once_with("INSERT INTO t VALUES ($1)", 42)
 
 
 class TestIntrospectionRouting:
     """list_tables / list_columns / table_hashes use the right SQL constants."""
 
     @pytest.mark.asyncio
-    async def test_list_tables_uses_tables_sql(self, postgres_config: PostgresConnectionConfig) -> None:
+    async def test_list_tables_uses_tables_sql(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """:meth:`list_tables` calls fetch with :data:`_POSTGRES_TABLES_SQL`."""
         pool = _build_mock_pool(fetch_records=[{"table_schema": "s1", "table_name": "t1"}])
-        driver = AsyncpgDriver(postgres_config)
-        driver._pool = pool  # noqa: SLF001
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
         rows = await driver.list_tables(["s1"])
         assert rows == [{"table_schema": "s1", "table_name": "t1"}]
-        pool._conn.fetch.assert_awaited_once_with(  # noqa: SLF001
-            _POSTGRES_TABLES_SQL, ["s1"]
-        )
+        pool.recorded_conn.fetch.assert_awaited_once_with(_POSTGRES_TABLES_SQL, ["s1"])
 
     @pytest.mark.asyncio
     async def test_list_columns_uses_columns_sql_and_preserves_is_nullable(
-        self, postgres_config: PostgresConnectionConfig
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """:meth:`list_columns` preserves raw ``is_nullable`` (not bool)."""
         pool = _build_mock_pool(
@@ -294,18 +364,15 @@ class TestIntrospectionRouting:
                 }
             ]
         )
-        driver = AsyncpgDriver(postgres_config)
-        driver._pool = pool  # noqa: SLF001
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
         rows = await driver.list_columns(["s1"])
         assert rows[0]["is_nullable"] == "NO"  # raw string, NOT bool
         assert isinstance(rows[0]["is_nullable"], str)
-        pool._conn.fetch.assert_awaited_once_with(  # noqa: SLF001
-            _POSTGRES_COLUMNS_SQL, ["s1"]
-        )
+        pool.recorded_conn.fetch.assert_awaited_once_with(_POSTGRES_COLUMNS_SQL, ["s1"])
 
     @pytest.mark.asyncio
     async def test_table_hashes_returns_dict_keyed_by_schema_table(
-        self, postgres_config: PostgresConnectionConfig
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """:meth:`table_hashes` returns ``{(schema, table): digest}``."""
         pool = _build_mock_pool(
@@ -317,13 +384,10 @@ class TestIntrospectionRouting:
                 }
             ]
         )
-        driver = AsyncpgDriver(postgres_config)
-        driver._pool = pool  # noqa: SLF001
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
         hashes = await driver.table_hashes(["s1"])
         assert hashes == {("s1", "t1"): "abc123"}
-        pool._conn.fetch.assert_awaited_once_with(  # noqa: SLF001
-            _POSTGRES_TABLE_HASHES_SQL, ["s1"]
-        )
+        pool.recorded_conn.fetch.assert_awaited_once_with(_POSTGRES_TABLE_HASHES_SQL, ["s1"])
 
 
 # ---------------------------------------------------------------------------
@@ -335,25 +399,25 @@ class TestTestConnection:
     """:meth:`test_connection` issues ``SELECT 1`` and sanitizes failures."""
 
     @pytest.mark.asyncio
-    async def test_test_connection_happy_path(self, postgres_config: PostgresConnectionConfig) -> None:
+    async def test_test_connection_happy_path(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """successful round-trip returns None silently."""
         pool = _build_mock_pool(fetchval_value=1)
-        driver = AsyncpgDriver(postgres_config)
-        driver._pool = pool  # noqa: SLF001
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
         # should not raise
         await driver.test_connection()
-        pool._conn.fetchval.assert_awaited_once_with("SELECT 1")  # noqa: SLF001
+        pool.recorded_conn.fetchval.assert_awaited_once_with("SELECT 1")
 
     @pytest.mark.asyncio
-    async def test_test_connection_sanitizes_failure(self, postgres_config: PostgresConnectionConfig) -> None:
+    async def test_test_connection_sanitizes_failure(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """backend failure surfaces as :class:`DriverConnectError`, no chain."""
         pool = _build_mock_pool()
         # seed a failure
-        pool._conn.fetchval.side_effect = RuntimeError(  # noqa: SLF001
-            "kapow"
-        )
-        driver = AsyncpgDriver(postgres_config)
-        driver._pool = pool  # noqa: SLF001
+        pool.recorded_conn.fetchval.side_effect = RuntimeError("kapow")
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
         with pytest.raises(DriverConnectError) as exc_info:
             await driver.test_connection()
         # ``from None`` MUST break the cause chain so the original
@@ -381,11 +445,19 @@ class TestBorrowedPool:
         assert rows == [{"x": 1}]
 
     @pytest.mark.asyncio
-    async def test_owns_pool_false_for_borrowed(self, agent_internal_config: AgentInternalConnectionConfig) -> None:
-        """``_owns_pool`` flag is False for the borrowed path."""
+    async def test_owns_pool_false_for_borrowed(
+        self, agent_internal_config: AgentInternalConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """the borrowed path never creates a pool of its own, even after use."""
+        create_pool = AsyncMock()
+        monkeypatch.setattr("threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool", create_pool)
         pool = _build_mock_pool()
         driver = AsyncpgDriver(agent_internal_config, external_pool=pool)
-        assert driver._owns_pool is False  # noqa: SLF001
+        await driver.fetch("SELECT 1")
+        await driver.execute("SELECT 1")
+        await driver.close()
+        create_pool.assert_not_awaited()
+        pool.close.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_close_does_not_close_borrowed_pool(
@@ -408,18 +480,15 @@ class TestPlaceholderPassthrough:
 
     @pytest.mark.asyncio
     async def test_dollar_n_placeholder_passed_through_unchanged(
-        self, postgres_config: PostgresConnectionConfig
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``$1, $2`` SQL is forwarded to ``conn.fetch`` verbatim."""
         pool = _build_mock_pool(fetch_records=[])
-        driver = AsyncpgDriver(postgres_config)
-        driver._pool = pool  # noqa: SLF001
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
         await driver.fetch("SELECT $1, $2, $10")
         # the helper is a no-op for asyncpg style; the SQL passed to
         # the connection MUST match the input verbatim.
-        pool._conn.fetch.assert_awaited_once_with(  # noqa: SLF001
-            "SELECT $1, $2, $10"
-        )
+        pool.recorded_conn.fetch.assert_awaited_once_with("SELECT $1, $2, $10")
 
 
 # ---------------------------------------------------------------------------
@@ -762,7 +831,7 @@ class TestABorrowedConnectionIsScopedToItsSchema:
 
         await driver.fetch("SELECT 1")
 
-        conn = fake_pool._conn  # noqa: SLF001 - the builder's documented test surface
+        conn = fake_pool.recorded_conn
         executed = [call.args[0] for call in conn.execute.await_args_list]
         assert 'SET search_path TO "agent_abc123"' in executed
 
@@ -789,7 +858,7 @@ class TestABorrowedConnectionIsScopedToItsSchema:
 
         await driver.fetch("SELECT 1")
 
-        conn = fake_pool._conn  # noqa: SLF001 - the builder's documented test surface
+        conn = fake_pool.recorded_conn
         executed = [call.args[0] for call in conn.execute.await_args_list]
         assert any('"weird""name"' in statement for statement in executed)
 
@@ -818,6 +887,6 @@ class TestABorrowedConnectionIsScopedToItsSchema:
 
         await driver.fetch("SELECT 1")
 
-        conn = fake_pool._conn  # noqa: SLF001 - the builder's documented test surface
+        conn = fake_pool.recorded_conn
         executed = [call.args[0] for call in conn.execute.await_args_list]
         assert not any("search_path" in statement for statement in executed)

@@ -160,6 +160,7 @@ if TYPE_CHECKING:
     RedshiftCursor = Any
 
 from threetears.datasources.config import RedshiftConnectionConfig
+from threetears.datasources.drivers._redshift_connector_internals import connection_socket
 from threetears.datasources.drivers._sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers._util import (
     _translate_placeholders,
@@ -356,31 +357,6 @@ def _report_late_terminate(unit: asyncio.Future[None]) -> None:
         )
 
 
-def _connection_socket(conn: RedshiftConnection) -> Any:
-    """the socket a redshift_connector connection talks over, or ``None`` when it exposes none.
-
-    redshift_connector keeps its underlying ``SSLSocket`` on the private ``_usock`` attribute and
-    offers no public accessor, while this driver must reach it twice: to tune TCP keepalive and to
-    lift the login timeout. read here, ONCE, as an attribute under a reasoned SLF001 pragma -- the
-    spelling every check sees -- rather than through ``getattr`` with the name as a string, which
-    hid the dependency from all of them. a release that renames it degrades to ``None``, and each
-    caller says what that costs.
-
-    :param conn: live redshift_connector connection
-    :ptype conn: RedshiftConnection
-    :return: the connection's socket, or ``None``
-    :rtype: Any
-    """
-    result: Any = None
-    try:
-        result = conn._usock  # noqa: SLF001 -- redshift_connector exposes its socket nowhere else
-    except AttributeError:
-        # NOSILENT: an absent socket is the answer this returns, and each caller logs or raises
-        # what that means for it -- a keepalive left at the system default, or a refused login.
-        result = None
-    return result
-
-
 def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionConfig) -> None:
     """apply aggressive OS-level TCP keepalive on a redshift_connector connection.
 
@@ -402,9 +378,9 @@ def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionCon
     """
     if not cfg.tcp_keepalive:
         return
-    sock = _connection_socket(conn)
+    sock = connection_socket(conn)
     if sock is None:
-        log.warning("redshift keepalive: connection exposes no _usock; leaving keepalive at the system default")
+        log.warning("redshift keepalive: connection exposes no socket; leaving keepalive at the system default")
         return
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -882,7 +858,7 @@ class RedshiftDriver(Driver):
         # lift the connect timeout: left on, it would fail every statement longer than the
         # login bound with a "connection time out". a socket this cannot reach would carry
         # that failure to a long build hours later, so the login fails now, naming it.
-        sock = _connection_socket(conn)
+        sock = connection_socket(conn)
         if sock is None:
             with self._suppress_close():
                 conn.close()

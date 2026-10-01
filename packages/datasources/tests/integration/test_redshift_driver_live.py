@@ -37,11 +37,13 @@ from __future__ import annotations
 import asyncio
 import tracemalloc
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers.base import Driver
+from threetears.datasources.drivers import redshift_driver as redshift_driver_module
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.introspection import compute_column_hash
 
@@ -429,15 +431,35 @@ class TestCloseDrainsCache:
 
     @pytest.mark.asyncio
     async def test_close_drains_cache(self, redshift_config: RedshiftConnectionConfig) -> None:
-        """run a query (fills cache), close, assert cache is empty."""
+        """run a query (fills cache), close, assert every connection it opened is closed."""
         config = _make_config(redshift_config)
+        # a spy on the driver's own login, not a login of the test's: every call is the
+        # driver's, with the gated fixture's identity.
+        connector = redshift_driver_module.redshift_connector
+        real_connect = connector.connect
+        opened: list[Any] = []
+
+        def _recording_connect(**kwargs: Any) -> Any:
+            connection = real_connect(**kwargs)
+            opened.append(connection)
+            return connection
+
         driver = RedshiftDriver(config, datasource_name="central-reporting")
-        await driver.fetch("SELECT 1")
-        # cache should now have one connection
-        assert len(driver._cache) >= 1  # noqa: SLF001
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            side_effect=_recording_connect,
+        ):
+            await driver.fetch("SELECT 1")
+            # the query left its connection in the cache, still open: a second query reuses it.
+            await driver.fetch("SELECT 1")
+        assert len(opened) == 1
         await driver.close()
-        assert len(driver._cache) == 0  # noqa: SLF001
-        assert driver._closed is True  # noqa: SLF001
+        # closed by the drain: redshift_connector refuses to close a connection twice.
+        for connection in opened:
+            with pytest.raises(connector.InterfaceError, match="connection is closed"):
+                connection.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            await driver.fetch("SELECT 1")
 
 
 # ---------------------------------------------------------------------------
