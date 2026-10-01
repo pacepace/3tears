@@ -33,6 +33,21 @@ test anywhere. Both live in `3tears-enforcement` now.
 - `release.yml` calls `bump-version.sh verify X.Y.Z` (was `--verify`). The bump now also moves
   `## Unreleased` under `## vX.Y.Z -- <date>`.
 
+### `3tears-nats` caps nats-py at what it was verified against, and one module owns the private surface
+
+`NatsClient` depends on eleven nats-py private attributes: the ordered round trip, server-side
+`UNSUB`, a pull inbox's queue, and a forced reconnect. nats-py had no upper bound. A release that
+renamed one would have installed clean and broken at runtime. `ping()` would answer `False`, every
+health probe would fail, and every subscribe and pull-consumer stop would degrade at once.
+
+- **`nats-py>=2.15,<2.17`** (was `>=2.15`). The surface is unchanged between 2.15.0 and 2.16.0.
+  The nats unit suite and live integration suite pass on both.
+- Every private access now lives in `threetears.nats._nats_py_internals`. Its docstring gives
+  each attribute, why it is used, the versions verified, and how to raise the cap. `client.py`
+  holds none of them.
+- A unit test constructs real nats-py objects and checks every declared attribute. A nats-py
+  bump that renames one now fails CI by name. CI has no Docker, so this check does not need it.
+
 ### A subscription exists when subscribe returns, and a stopping pull consumer strands nothing
 
 Both were found through the aibots hub's audit-anonymize test, which failed intermittently under

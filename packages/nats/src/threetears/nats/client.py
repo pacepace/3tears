@@ -77,7 +77,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, NamedTuple, T
 
 from nats.aio.client import (
     DEFAULT_FLUSH_TIMEOUT as _NATS_FLUSH_TIMEOUT_SECONDS,
-    PING_PROTO as _PING_PROTO,
     Client as _NatsPyClient,
 )
 from nats.aio.subscription import DEFAULT_SUB_PENDING_BYTES_LIMIT, DEFAULT_SUB_PENDING_MSGS_LIMIT
@@ -100,6 +99,13 @@ from pydantic import BaseModel, ValidationError
 from threetears.observe import get_logger, representative_exception
 
 from threetears.nats._diagnostics import permissions_violation_remedy
+from threetears.nats._nats_py_internals import (
+    force_reconnect,
+    pull_subscription_inbox,
+    send_unsubscribe,
+    take_queued_messages,
+    write_pending_then_ping,
+)
 from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
 from threetears.nats._receipt import ReceiptBacklog
 from threetears.nats.credential_refusal import CredentialRefusal
@@ -1249,20 +1255,13 @@ class JetStreamPullConsumer:
         :rtype: list[Any]
         :raises Exception: when the connection cannot carry the ``UNSUB`` or its round trip
         """
-        # rationale: nats-py exposes no way to remove a subscription's interest without also forgetting
-        # the subscription, nor the queue of a pull subscription's inbox; see the docstring.
-        sub = self._psub._sub  # noqa: SLF001 -- see rationale above
+        # nats-py exposes no way to remove a subscription's interest without also forgetting the
+        # subscription, nor the queue of a pull subscription's inbox: _nats_py_internals owns both.
+        sub = pull_subscription_inbox(self._psub)
         connection = self._bound_to
-        await connection._send_unsubscribe(sub._id)  # noqa: SLF001 -- see rationale above
+        await send_unsubscribe(connection, sub)
         await _round_trip(connection)
-        delivered: list[Any] = []
-        queue = sub._pending_queue  # noqa: SLF001 -- see rationale above
-        while not queue.empty():
-            msg = queue.get_nowait()
-            queue.task_done()
-            sub._pending_size -= len(msg.data)  # noqa: SLF001 -- see rationale above
-            if not _NatsJetStreamContext.is_status_msg(msg):
-                delivered.append(msg)
+        delivered = [msg for msg in take_queued_messages(sub) if not _NatsJetStreamContext.is_status_msg(msg)]
         if delivered:
             log.info(
                 "durable pull consumer stop: %d message(s) delivered to a request the last fetch had left "
@@ -1585,25 +1584,10 @@ async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_S
         raise _NatsConnectionClosedError
     if not connection.is_connected:
         raise NatsClientError("cannot round-trip a NATS connection that is not currently connected")
-    loop = asyncio.get_running_loop()
-    pong: asyncio.Future[bool] = loop.create_future()
-    # rationale: nats-py exposes no round trip that is ordered after the pending buffer, bounded,
-    # and safe to cancel or time out; see the docstring. these are the fields its own flusher and
-    # _send_ping use, touched in the same order and with no await between them.
-    pending: list[bytes] = connection._pending  # noqa: SLF001 -- see rationale above
-    transport = connection._transport  # noqa: SLF001 -- see rationale above
-    if pending:
-        transport.writelines(pending[:])
-        connection._pending = []  # noqa: SLF001 -- see rationale above
-        connection._pending_data_size = 0  # noqa: SLF001 -- see rationale above
-    connection._pongs.append(pong)  # noqa: SLF001 -- see rationale above
-    transport.write(_PING_PROTO)
-    wake: asyncio.Future[None] = loop.create_future()
-    try:
-        connection._flush_queue.put_nowait(wake)  # noqa: SLF001 -- see rationale above
-    except asyncio.QueueFull:
-        # NOSILENT: the flusher already holds wake-ups it has not taken, and each one drains the transport
-        pass
+    pong: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+    # nats-py exposes no round trip that is ordered after the pending buffer, bounded, and safe to
+    # cancel or time out; see the docstring. _nats_py_internals owns the fields this needs.
+    write_pending_then_ping(connection, pong)
     try:
         await asyncio.wait_for(asyncio.shield(pong), timeout=timeout)
     except TimeoutError:
@@ -1635,9 +1619,9 @@ async def _stop_routing_then_drain(raw_subscription: Any, connection: Any) -> No
     :rtype: None
     :raises Exception: whatever the connection raises; the caller logs it
     """
-    # rationale: nats-py exposes no way to remove a subscription's interest without also forgetting
-    # the subscription (unsubscribe) or racing its own round trip (drain); see the docstring.
-    await connection._send_unsubscribe(raw_subscription._id)  # noqa: SLF001 -- see rationale above
+    # nats-py exposes no way to remove a subscription's interest without also forgetting the
+    # subscription (unsubscribe) or racing its own round trip (drain); see the docstring.
+    await send_unsubscribe(connection, raw_subscription)
     await _round_trip(connection)
     await raw_subscription.drain()
 
@@ -2884,7 +2868,7 @@ class NatsClient:
         # StaleConnectionError, the error a dead connection's ping timer would raise. the
         # is_connected guard above keeps us out of the method's else-branch, which would _close.
         # nats-py 2.x exposes no public alternative.
-        await raw._process_op_err(_NatsStaleConnectionError())  # noqa: SLF001 -- no public force-reconnect; see rationale above
+        await force_reconnect(raw, _NatsStaleConnectionError())
 
     async def renew_connection(self, *, retire_after: timedelta) -> None:
         """replace the current connection with a freshly authenticated one, losing nothing in flight.
