@@ -11,6 +11,7 @@ lands on a span attribute).
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 
 import httpx
@@ -366,39 +367,52 @@ def test_breaker_spy_satisfies_protocol() -> None:
 class TestEgressWiring:
     """The one transport, leaving by a configured exit."""
 
-    def test_an_egress_driver_supplies_the_transport(self) -> None:
+    @pytest.mark.asyncio
+    async def test_an_egress_driver_supplies_the_transport(self) -> None:
         """This is the reuse the seam exists for: httpx proxying IS a transport, and
-        ``TracedHttpClient`` already had a transport seam, so an exit needed no new plumbing."""
+        ``TracedHttpClient`` already had a transport seam, so an exit needed no new plumbing.
+
+        The request has to leave through the configured exit, so the exit here is a listener
+        the test owns, and the assertion is what reached it. httpx binds a default transport
+        regardless of the egress, so anything weaker than "the exit saw the request" passes with
+        the egress ignored entirely -- the one property this test exists for.
+        """
         from threetears.core.egress import ProxyEgress
         from threetears.core.http_client import TracedHttpClient
 
-        client = TracedHttpClient(
-            upstream_base_url="https://upstream.example",
-            egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
-        )
-        assert client.egress_name == "tor"
+        seen: list[str] = []
 
-        # The bound transport must be the PROXIED one, not merely "a transport". httpx binds a
-        # default transport regardless, so both `is not None` and `is not <other instance>`
-        # were true with the egress ignored entirely -- assertions that could not fail, on the
-        # one property this test exists for.
-        #
-        # httpx builds a different POOL for a proxied transport: `AsyncHTTPProxy` rather than
-        # `AsyncConnectionPool`, carrying the proxy url. That is the observable difference, so
-        # it is what gets asserted. Reaching into the pool is reaching into httpx's internals,
-        # which is worth it here: the alternative is an assertion that passes when the feature
-        # is deleted.
-        pool = client._client._transport._pool  # noqa: SLF001 -- the pool type IS the assertion
-        assert type(pool).__name__ != "AsyncConnectionPool", (
-            "the configured exit was ignored; this is the unproxied pool httpx builds by default"
-        )
-        # The scheme decides the pool class -- AsyncSOCKSProxy here, AsyncHTTPProxy for an
-        # http:// exit -- so the url is asserted rather than the class name, which is the part
-        # that says WHICH exit rather than merely that there is one.
-        proxy_url = pool._proxy_url  # noqa: SLF001 -- httpx exposes the exit on the pool alone
-        assert "9050" in str(proxy_url), "proxied, but not through the configured exit"
+        async def _exit(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            request_line = (await reader.readline()).decode().strip()
+            seen.append(request_line)
+            while (await reader.readline()) not in (b"\r\n", b""):
+                pass
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            await writer.drain()
+            writer.close()
 
-    def test_an_explicit_transport_wins_over_a_configured_egress(self) -> None:
+        server = await asyncio.start_server(_exit, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            client = TracedHttpClient(
+                upstream_base_url="http://upstream.example",
+                egress=ProxyEgress("exit", f"http://127.0.0.1:{port}"),
+            )
+            assert client.egress_name == "exit"
+            async with client:
+                response = await client.get("/ping")
+        finally:
+            server.close()
+            await server.wait_closed()
+
+        assert response.status_code == 200
+        # A forward proxy is sent the absolute URL; reaching THIS listener names which exit.
+        assert seen == ["GET http://upstream.example/ping HTTP/1.1"], (
+            f"the request did not leave through the configured exit: {seen}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_transport_wins_over_a_configured_egress(self) -> None:
         """``transport`` is the documented test seam.
 
         A test that binds one is asserting on what this client does with it; letting ambient
@@ -409,13 +423,23 @@ class TestEgressWiring:
         from threetears.core.egress import ProxyEgress
         from threetears.core.http_client import TracedHttpClient
 
-        pinned = httpx.MockTransport(lambda _req: httpx.Response(200))
+        handled: list[str] = []
+
+        def _answer(request: httpx.Request) -> httpx.Response:
+            handled.append(str(request.url))
+            return httpx.Response(200)
+
+        pinned = httpx.MockTransport(_answer)
         client = TracedHttpClient(
             upstream_base_url="https://upstream.example",
             transport=pinned,
             egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
         )
-        assert client._client._transport is pinned  # noqa: SLF001
+        async with client:
+            response = await client.get("/ping")
+
+        assert response.status_code == 200
+        assert handled == ["https://upstream.example/ping"], "the configured egress replaced the bound transport"
 
     def test_no_egress_reports_nothing_and_direct_egress_reports_direct(self) -> None:
         """The two facts stay apart: nobody configured an exit, versus somebody chose the default.

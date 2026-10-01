@@ -469,7 +469,7 @@ class TestARefusalIsNotAnExistingBucket:
 
 
 class TestTheSelfHealCarriesDirect:
-    """`_reopen` runs after a NATS restart wipes JetStream.
+    """The self-heal re-open runs after a NATS restart wipes JetStream.
 
     If it forgot `direct`, the bucket would come back with the field unset --
     every read silently back on the body-carried form no key-scoped grant can
@@ -478,7 +478,12 @@ class TestTheSelfHealCarriesDirect:
 
     @pytest.mark.asyncio
     async def test_a_reopen_recreates_with_the_declared_direct(self) -> None:
-        js = _ScriptedJetStream()
+        """An operation that hits the vanished stream re-opens the bucket, declaring ``direct`` again.
+
+        :return: nothing
+        :rtype: None
+        """
+        js = _VanishingStreamJetStream()
         bucket = await NatsKvBucket.open(
             client=_ScriptedClient(js),  # type: ignore[arg-type]
             full_name="probe",
@@ -489,5 +494,36 @@ class TestTheSelfHealCarriesDirect:
             direct=True,
         )
         js.added.clear()
-        await bucket._reopen()  # noqa: SLF001 - the self-heal under test
+
+        assert await bucket.get(key="k") == b"healed"
+
+        assert len(js.added) == 1, "the vanished stream did not trigger exactly one re-open"
         assert js.added[0].allow_direct is True
+
+
+# parity-exempt: nats-py KeyValue stand-in exposing only get, the one call the self-heal test drives
+class _VanishedKv:
+    """a handle whose stream a broker restart wiped: every read fails as nats-py reports it."""
+
+    async def get(self, _key: str) -> Any:
+        raise RuntimeError("nats: no response from stream")
+
+
+# parity-exempt: nats-py KeyValue stand-in exposing only get, the one call the self-heal test drives
+class _HealedKv:
+    """the handle a re-open binds, on the recreated stream."""
+
+    async def get(self, _key: str) -> Any:
+        return type("_Entry", (), {"value": b"healed", "revision": 1})()
+
+
+class _VanishingStreamJetStream(_ScriptedJetStream):
+    """binds a vanished handle first, and a healed one on every bind after it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.binds = 0
+
+    async def key_value(self, _name: str) -> Any:
+        self.binds += 1
+        return _VanishedKv() if self.binds == 1 else _HealedKv()

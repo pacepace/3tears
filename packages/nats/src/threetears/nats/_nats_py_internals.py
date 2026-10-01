@@ -8,6 +8,10 @@ attributes, so a nats-py release that renames one breaks here, by name, and in t
 checks this module's declared surface (``tests/unit/test_nats_py_internals.py``) -- not as an
 ``AttributeError`` that a health probe catches and turns into a fleet-wide restart loop.
 
+The module carries the workspace's per-file SLF001 ignore for nats-py, and every access below has
+an entry with its reason in ``tests/enforcement/_underscore_exemptions.txt``; nothing else in the
+workspace reads or writes them on a nats-py object, and no access carries an inline pragma.
+
 **Verified against nats-py 2.15.0 and 2.16.0** (``nats/aio/client.py``,
 ``nats/aio/subscription.py`` and ``nats/js/client.py`` read in both; every attribute below is
 unchanged between them). ``packages/nats/pyproject.toml`` caps nats-py below the first release
@@ -117,16 +121,16 @@ def write_pending_then_ping(connection: Client, pong: asyncio.Future[bool]) -> N
     :rtype: None
     :raises RuntimeError: when the connection has no transport or flusher (never opened)
     """
-    transport = connection._transport  # noqa: SLF001 -- see the module docstring
-    flush_queue = connection._flush_queue  # noqa: SLF001 -- see the module docstring
+    transport = connection._transport
+    flush_queue = connection._flush_queue
     if transport is None or flush_queue is None:
         raise RuntimeError("cannot write to a nats-py connection that has never been opened")
-    pending = connection._pending  # noqa: SLF001 -- see the module docstring
+    pending = connection._pending
     if pending:
         transport.writelines(pending[:])
-        connection._pending = []  # noqa: SLF001 -- see the module docstring
-        connection._pending_data_size = 0  # noqa: SLF001 -- see the module docstring
-    connection._pongs.append(pong)  # noqa: SLF001 -- see the module docstring
+        connection._pending = []
+        connection._pending_data_size = 0
+    connection._pongs.append(pong)
     transport.write(PING_PROTO)
     wake: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     try:
@@ -147,7 +151,7 @@ async def send_unsubscribe(connection: Client, subscription: Subscription) -> No
     :rtype: None
     :raises Exception: whatever nats-py raises for a connection that cannot send
     """
-    await connection._send_unsubscribe(subscription._id)  # noqa: SLF001 -- see the module docstring
+    await connection._send_unsubscribe(subscription._id)
 
 
 def pull_subscription_inbox(psub: JetStreamContext.PullSubscription) -> Subscription:
@@ -158,7 +162,7 @@ def pull_subscription_inbox(psub: JetStreamContext.PullSubscription) -> Subscrip
     :return: the subscription its fetch responses arrive on
     :rtype: Subscription
     """
-    inbox: Subscription = psub._sub  # noqa: SLF001 -- see the module docstring
+    inbox: Subscription = psub._sub
     return inbox
 
 
@@ -170,12 +174,12 @@ def take_queued_messages(subscription: Subscription) -> list[Msg]:
     :return: the queued messages, oldest first, status messages included
     :rtype: list[Msg]
     """
-    queue = subscription._pending_queue  # noqa: SLF001 -- see the module docstring
+    queue = subscription._pending_queue
     taken: list[Msg] = []
     while not queue.empty():
         msg = queue.get_nowait()
         queue.task_done()
-        subscription._pending_size -= len(msg.data)  # noqa: SLF001 -- see the module docstring
+        subscription._pending_size -= len(msg.data)
         taken.append(msg)
     return taken
 
@@ -190,7 +194,7 @@ async def force_reconnect(connection: Client, error: Exception) -> None:
     :return: nothing
     :rtype: None
     """
-    await connection._process_op_err(error)  # noqa: SLF001 -- see the module docstring
+    await connection._process_op_err(error)
 
 
 def _instances() -> dict[str, object]:

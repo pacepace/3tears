@@ -281,17 +281,30 @@ class TestSubscriptionLifecycleRaces:
         the first ``join_room`` is parked mid-subscribe sees no handle to
         tear down, the subscribe then completes and stores a handle, and the
         pod stays subscribed to a room it holds nobody in — forever.
+
+        the room must also be fully released, which is observed two ways: the
+        fanout keeps no reference to the room key at all (no retained handle,
+        no zero ref-count left behind), and the room's next first join
+        subscribes afresh while its last leave tears that subscription down.
         """
+        import gc
+        import weakref
+
+        class _RoomKey(str):
+            """a room key the test can watch for references to."""
+
         nats = _GatedNats()
         state = _FakeRoomState()
         fanout = RoomFanout(state, nats)  # type: ignore[arg-type]
+        room = _RoomKey(ROOM)
+        watched = weakref.ref(room)
 
-        join_task = asyncio.create_task(fanout.join_room(ROOM, "c1", "user-1", "cust"))
+        join_task = asyncio.create_task(fanout.join_room(room, "c1", "user-1", "cust"))
         await nats.subscribe_started.wait()  # first join is parked inside subscribe
 
         # a concurrent leave of the same (only) member; let it make all the
         # progress it can while the subscribe is still in flight.
-        leave_task = asyncio.create_task(fanout.leave_room(ROOM, "c1"))
+        leave_task = asyncio.create_task(fanout.leave_room(room, "c1"))
         await asyncio.sleep(0)
 
         nats.release()  # let the subscribe complete
@@ -302,8 +315,19 @@ class TestSubscriptionLifecycleRaces:
         assert nats.subscriptions[0].unsubscribed is True, (
             "subscription orphaned: room has no members but stays subscribed"
         )
-        assert ROOM not in fanout.subscribed_rooms()
-        assert ROOM not in fanout.referenced_rooms()
+
+        # the fake room state's own records are the only other holders of the key
+        state.joins.clear()
+        state.leaves.clear()
+        del room, join_task, leave_task
+        gc.collect()
+        assert watched() is None, "the fanout still holds the room after its last member left"
+
+        await fanout.join_room(ROOM, "c2", "user-2", "cust")
+        assert len(nats.subscriptions) == 2, "the next first join did not subscribe afresh"
+        assert nats.subscriptions[1].unsubscribed is False
+        await fanout.leave_room(ROOM, "c2")
+        assert nats.subscriptions[1].unsubscribed is True
 
 
 class TestRoomFrameWire:

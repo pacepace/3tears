@@ -31,6 +31,7 @@ from threetears.backup.selective import (
     SelectionTooLargeError,
     SelectiveRestore,
 )
+from threetears.object_store import EncryptedObjectStore
 from threetears.object_store.filesystem import FilesystemObjectStore
 
 _TOOLS = ("pg_dump", "pg_restore", "pg_dumpall", "psql")
@@ -159,11 +160,15 @@ class TestClusterBackupSet:
         assert all(dump.sha256 for dump in manifest.databases)
 
     async def test_the_globals_dump_captures_cluster_roles(self, backup_set: Any) -> None:
-        cluster, manifest, *_ = backup_set
+        _, manifest, *_, root = backup_set
         assert manifest.globals_key is not None
         from threetears.backup.gzip import gunzip_stream  # noqa: PLC0415
 
-        store = cluster._store  # noqa: SLF001 -- decrypt through the engine's own wrapper, as a restore would
+        # decrypted the way a restore would: the same encrypting wrapper, over the same store,
+        # with the same passphrase the set was written under
+        store = EncryptedObjectStore(
+            FilesystemObjectStore(root), SecretStr("drill-passphrase"), scrypt_n=_TEST_WORK_FACTOR
+        )
         chunks = [chunk async for chunk in gunzip_stream(store.open_read(manifest.globals_key))]
         assert b"drill_reader" in b"".join(chunks)
 

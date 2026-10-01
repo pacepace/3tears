@@ -14,6 +14,8 @@ wrong in the direction that matters: it would under-trust a counter that is in f
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from datetime import timedelta
 
 from threetears.core.collections.registry import CollectionRegistry
@@ -54,6 +56,7 @@ class CollectionAttemptLimiter:
         max_attempts: int = 5,
         window: timedelta = timedelta(minutes=15),
         fail_open: bool = False,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         """
         :param registry: the collection registry the counter reads and writes through. L2 is
@@ -72,6 +75,10 @@ class CollectionAttemptLimiter:
             reports "not limited" instead of raising. Defaults to ``False`` -- pass ``True``
             only with an authoritative check behind this one.
         :ptype fail_open: bool
+        :param clock: the time source the window is measured on, handed to the counter; the
+            counter's own seam, carried through so a window boundary can be stood on rather than
+            waited for
+        :ptype clock: Callable[[], float]
         """
         self._max_attempts = max_attempts
         self._window = window
@@ -80,6 +87,7 @@ class CollectionAttemptLimiter:
             purpose=purpose,
             window_seconds=int(window.total_seconds()),
             fail_open=fail_open,
+            clock=clock,
         )
 
     def _verdict(self, state: WindowState | None) -> AttemptWindow:

@@ -11,15 +11,15 @@ import asyncio
 import importlib.metadata
 
 from nats.aio.client import Client
-from nats.aio.msg import Msg
-from nats.aio.subscription import Subscription
 
-from threetears.nats._nats_py_internals import (  # noqa: SLF001 - module is private by design; this is its test
+from threetears.nats._nats_py_internals import (
     PRIVATE_SURFACE,
     PrivateAttribute,
     missing_private_attributes,
     take_queued_messages,
 )
+
+from ._wire_server import wire_server
 
 
 def test_the_installed_nats_py_has_every_private_attribute_the_wrapper_uses() -> None:
@@ -52,19 +52,33 @@ def test_the_declared_surface_covers_every_class_the_wrapper_reaches_into() -> N
 
 
 def test_taking_the_queue_keeps_nats_py_pending_bytes_right() -> None:
-    """taking queued messages empties the queue and the byte count nats-py tracks beside it."""
+    """taking queued messages empties the queue and the byte count nats-py tracks beside it.
+
+    The messages arrive the way they do in production: a server delivers them to a subscription
+    with no callback, and nats-py's read loop queues them and counts their bytes. The queue and the
+    count are then read through nats-py's public ``pending_msgs`` and ``pending_bytes``.
+    """
 
     async def scenario() -> None:
-        subscription = Subscription(Client(), id=3, subject="inbox")
-        for data in (b"one", b"three"):
-            msg = Msg(_client=Client(), subject="inbox", data=data)
-            subscription._pending_queue.put_nowait(msg)  # noqa: SLF001 -- seeding what the read loop would
-            subscription._pending_size += len(data)  # noqa: SLF001 -- seeding what the read loop would
+        async with wire_server() as server:
+            connection = Client()
+            await connection.connect(server.url, allow_reconnect=False)
+            try:
+                subscription = await connection.subscribe("inbox")
+                await connection.flush()
+                for data in (b"one", b"three"):
+                    await server.deliver("inbox", data)
+                async with asyncio.timeout(2.0):
+                    while subscription.pending_msgs < 2:
+                        await asyncio.sleep(0.01)
+                assert subscription.pending_bytes == len(b"one") + len(b"three")
 
-        taken = take_queued_messages(subscription)
+                taken = take_queued_messages(subscription)
 
-        assert [msg.data for msg in taken] == [b"one", b"three"]
-        assert subscription._pending_queue.empty()  # noqa: SLF001 -- the property under test
-        assert subscription._pending_size == 0  # noqa: SLF001 -- the property under test
+                assert [msg.data for msg in taken] == [b"one", b"three"]
+                assert subscription.pending_msgs == 0
+                assert subscription.pending_bytes == 0
+            finally:
+                await connection.close()
 
     asyncio.run(scenario())

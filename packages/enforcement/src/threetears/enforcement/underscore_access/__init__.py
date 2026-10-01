@@ -30,6 +30,11 @@ directions, and
 :mod:`~threetears.enforcement.underscore_access.ruff_config` is the
 single definition of which paths ARE exempted, so two consumers
 cannot answer that differently.
+
+:mod:`~threetears.enforcement.underscore_access.pragma_policy` holds
+the SLF001 suppression policy itself: no inline ``noqa`` for SLF001, and
+a per-file ignore only on a ``src`` module the ledger records. Its
+module docstring shows the thin shell a consumer repo adds to enable it.
 """
 
 from threetears.enforcement.underscore_access.config import (
@@ -50,9 +55,20 @@ from threetears.enforcement.underscore_access.ledger import (
     unlisted_accesses,
     unresolved_entries,
 )
+from threetears.enforcement.underscore_access.pragma_policy import (
+    is_src_module,
+    ledger_entries_outside_src,
+    scanned_python_files,
+    slf001_ignored_files,
+    slf001_ignores_outside_src,
+    slf001_ignores_without_a_ledger_entry,
+    slf001_policy_findings,
+    slf001_pragma_offenders,
+)
 from threetears.enforcement.underscore_access.ruff_config import (
     all_exempted_files,
     exempted_files,
+    is_vendored,
     ruff_configs,
     slf001_globs,
 )
@@ -81,7 +97,10 @@ __all__ = [
     "carry_forward_rationales",
     "enclosing_scopes",
     "exempted_files",
+    "is_src_module",
+    "is_vendored",
     "ledger_entries",
+    "ledger_entries_outside_src",
     "missing_files",
     "orphan_rationales",
     "package_id",
@@ -89,7 +108,13 @@ __all__ = [
     "ruff_configs",
     "run_underscore_enforcement",
     "same_package",
+    "scanned_python_files",
     "slf001_globs",
+    "slf001_ignored_files",
+    "slf001_ignores_outside_src",
+    "slf001_ignores_without_a_ledger_entry",
+    "slf001_policy_findings",
+    "slf001_pragma_offenders",
     "unlisted_accesses",
     "unresolved_entries",
     "shape_a_violations",

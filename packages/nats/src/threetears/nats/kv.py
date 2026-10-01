@@ -40,7 +40,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, runtime_checkable
 
 from nats.errors import ConnectionClosedError as _NatsConnectionClosedError
 from nats.js.api import (
@@ -742,6 +742,79 @@ def _render_differences(differences: dict[str, tuple[Any, Any]]) -> str:
     )
 
 
+class _KvHandleBinding(NamedTuple):
+    """what one open of a bucket produces, before it is put on a :class:`NatsKvBucket`.
+
+    :ivar kv: the nats-py handle
+    :ivar entry_ttl: the per-entry TTL a bind-only open stamps on its writes, or ``None``
+    :ivar bound_to: the connection the handle was bound through
+    """
+
+    kv: KeyValue
+    entry_ttl: timedelta | None
+    bound_to: Any
+
+
+async def _bind_kv_handle(
+    *,
+    client: NatsClient,
+    full_name: str,
+    ttl: timedelta | None,
+    storage: str,
+    create_if_missing: bool,
+    history: int,
+    direct: bool | None,
+) -> _KvHandleBinding:
+    """open, create or reconcile a bucket and return the handle it yields.
+
+    The one opener behind :meth:`NatsKvBucket.open`, which wraps the result in a new bucket, and
+    :meth:`NatsKvBucket._reopen`, which refreshes an existing bucket in place with it.
+
+    :param client: connected wrapper client
+    :ptype client: NatsClient
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :param ttl: TTL for entries; ``None`` for no expiry
+    :ptype ttl: timedelta | None
+    :param storage: ``"file"`` or ``"memory"``
+    :ptype storage: str
+    :param create_if_missing: create (and reconcile) bucket rather than bind read-only
+    :ptype create_if_missing: bool
+    :param history: per-key historical revision count
+    :ptype history: int
+    :param direct: request ``allow_direct`` on the backing stream; ``None`` neither requests nor compares it
+    :ptype direct: bool | None
+    :return: the handle, its per-entry TTL, and the connection it was bound through
+    :rtype: _KvHandleBinding
+    :raises KvError: if bucket creation or binding fails
+    :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
+    :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
+    """
+    # the connection is read with the context, with no await between, so the handle records
+    # the connection it was actually bound on even when a renewal lands while it opens.
+    bound_to = client.raw
+    js = client.jetstream_context()
+    storage_type = StorageType.FILE if storage == "file" else StorageType.MEMORY
+    ttl_seconds = int(ttl.total_seconds()) if ttl is not None else 0
+
+    kv = await open_kv_stream(
+        js=js,
+        full_name=full_name,
+        config=build_kv_stream_config(
+            bucket=full_name,
+            ttl_seconds=ttl_seconds,
+            history=history,
+            storage_type=storage_type,
+            direct=direct,
+        ),
+        create_if_missing=create_if_missing,
+    )
+    entry_ttl: timedelta | None = None
+    if not create_if_missing and ttl is not None and ttl_seconds > 0:
+        entry_ttl = await _entry_ttl_for_bound_bucket(js=js, full_name=full_name, ttl=ttl)
+    return _KvHandleBinding(kv=kv, entry_ttl=entry_ttl, bound_to=bound_to)
+
+
 class NatsKvBucket:
     """one JetStream KV bucket.
 
@@ -884,40 +957,26 @@ class NatsKvBucket:
             bucket-wide expiry that would expire its entries at the wrong age
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
         """
-        # the connection is read with the context, with no await between, so the handle records
-        # the connection it was actually bound on even when a renewal lands while it opens.
-        bound_to = client.raw
-        js = client.jetstream_context()
-        storage_type = StorageType.FILE if storage == "file" else StorageType.MEMORY
-        ttl_seconds = int(ttl.total_seconds()) if ttl is not None else 0
-
-        kv = await open_kv_stream(
-            js=js,
-            full_name=full_name,
-            config=build_kv_stream_config(
-                bucket=full_name,
-                ttl_seconds=ttl_seconds,
-                history=history,
-                storage_type=storage_type,
-                direct=direct,
-            ),
-            create_if_missing=create_if_missing,
-        )
-        entry_ttl: timedelta | None = None
-        if not create_if_missing and ttl is not None and ttl_seconds > 0:
-            entry_ttl = await _entry_ttl_for_bound_bucket(js=js, full_name=full_name, ttl=ttl)
-
-        return cls(
+        binding = await _bind_kv_handle(
             client=client,
             full_name=full_name,
-            kv=kv,
             ttl=ttl,
             storage=storage,
             create_if_missing=create_if_missing,
             history=history,
             direct=direct,
-            entry_ttl=entry_ttl,
-            bound_to=bound_to,
+        )
+        return cls(
+            client=client,
+            full_name=full_name,
+            kv=binding.kv,
+            ttl=ttl,
+            storage=storage,
+            create_if_missing=create_if_missing,
+            history=history,
+            direct=direct,
+            entry_ttl=binding.entry_ttl,
+            bound_to=binding.bound_to,
         )
 
     # ------------------------------------------------------------------
@@ -939,7 +998,7 @@ class NatsKvBucket:
         recreates the bucket with the same ``allow_direct`` it was declared with
         rather than with the field unset.
         """
-        rebound = await NatsKvBucket.open(
+        binding = await _bind_kv_handle(
             client=self._client,
             full_name=self._full_name,
             ttl=self._ttl,
@@ -948,9 +1007,9 @@ class NatsKvBucket:
             history=self._history,
             direct=self._direct,
         )
-        self._kv = rebound._kv  # noqa: SLF001 - sibling instance of the same class
-        self._entry_ttl = rebound._entry_ttl  # noqa: SLF001 - sibling instance of the same class
-        self._bound_to = rebound._bound_to  # noqa: SLF001 - sibling instance of the same class
+        self._kv = binding.kv
+        self._entry_ttl = binding.entry_ttl
+        self._bound_to = binding.bound_to
 
     async def _follow_connection(self) -> None:
         """rebind the handle when a credential renewal has replaced the connection it was bound on.

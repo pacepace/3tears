@@ -30,6 +30,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.collection_factory import create_dynamic_collection
 from threetears.core.data.schema import ColumnDef, TableDef
 from threetears.core.data.store import DataStore
+from threetears.core.testing.kv import FakeNatsClient
 
 from .migrations._fake_store import FakeLockingPool
 
@@ -109,6 +110,32 @@ def _widgets_table() -> TableDef:
     )
 
 
+def _widget_pool() -> FakeAsyncpgPool:
+    """an L3 pool holding one widget, so a read reaches every tier."""
+    return FakeAsyncpgPool(rows={"w1": {"id": "w1", "name": "sprocket", "score": 42}})
+
+
+async def _opened_l2_on(client: FakeNatsClient, collection: Any) -> bool:
+    """whether ``collection`` opened its L2 bucket on ``client``.
+
+    A bind-only open succeeds only for a bucket something already created on that client, so it
+    answers the question without creating anything itself; the fake refuses an absent one with
+    ``KeyError``.
+
+    :param client: the L2 client to ask
+    :ptype client: FakeNatsClient
+    :param collection: the collection whose bucket is looked for
+    :ptype collection: Any
+    :return: ``True`` when the bucket exists on ``client``
+    :rtype: bool
+    """
+    try:
+        await client.kv_bucket(name=collection.L2_BUCKET_SUFFIX, create_if_missing=False)
+    except KeyError:
+        return False
+    return True
+
+
 def _make_l1() -> SQLiteBackend:
     return SQLiteBackend(db_name=f"test_factory_{uuid.uuid4().hex[:8]}")
 
@@ -166,12 +193,16 @@ class TestFetchReturnsDict:
 
 
 class TestL2RegistryFallback:
-    """collections resolve L2 from the registry when no arg is supplied."""
+    """collections resolve L2 from the registry when no arg is supplied.
 
-    def test_factory_resolves_l2_from_registry(self) -> None:
-        l2_client = object()
+    Which client a collection resolved is observed through what it does with it: a read opens
+    the collection's L2 bucket on that client, and on no other.
+    """
+
+    async def test_factory_resolves_l2_from_registry(self) -> None:
+        l2_client = FakeNatsClient()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=l2_client, kv_key_scope="hub")
+        registry.configure(l3_pool=_widget_pool(), l2_client=l2_client, kv_key_scope="hub")
 
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
@@ -179,11 +210,13 @@ class TestL2RegistryFallback:
             config=DefaultCoreConfig(collection_flush="ALWAYS"),
         )
 
-        assert collection._nats_client is l2_client
+        await collection.get("w1")
+        assert await _opened_l2_on(l2_client, collection)
 
-    def test_explicit_none_disables_l2(self) -> None:
+    async def test_explicit_none_disables_l2(self) -> None:
+        registry_client = FakeNatsClient()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=object(), kv_key_scope="hub")
+        registry.configure(l3_pool=_widget_pool(), l2_client=registry_client, kv_key_scope="hub")
 
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
@@ -192,12 +225,15 @@ class TestL2RegistryFallback:
             nats_client=None,
         )
 
-        assert collection._nats_client is None
+        assert collection.broadcasts_invalidations is False
+        assert await collection.get("w1") is not None  # the read is served without L2
+        assert not await _opened_l2_on(registry_client, collection)
 
-    def test_explicit_client_wins_over_registry(self) -> None:
-        constructor_client = object()
+    async def test_explicit_client_wins_over_registry(self) -> None:
+        constructor_client = FakeNatsClient()
+        registry_client = FakeNatsClient()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=object(), kv_key_scope="hub")
+        registry.configure(l3_pool=_widget_pool(), l2_client=registry_client, kv_key_scope="hub")
 
         collection = create_dynamic_collection(
             table_def=_widgets_table(),
@@ -206,7 +242,9 @@ class TestL2RegistryFallback:
             nats_client=constructor_client,
         )
 
-        assert collection._nats_client is constructor_client
+        await collection.get("w1")
+        assert await _opened_l2_on(constructor_client, collection)
+        assert not await _opened_l2_on(registry_client, collection)
 
     def test_bind_table_refuses_an_l2_client_with_no_registry_scope(self) -> None:
         """the third L2-wiring path was the ungated one.
@@ -234,11 +272,11 @@ class TestL2RegistryFallback:
 
         assert registry.get_l3_pool("widgets") is not None
 
-    def test_bind_table_l2_override_wins_over_default(self) -> None:
-        default_client = object()
-        table_client = object()
+    async def test_bind_table_l2_override_wins_over_default(self) -> None:
+        default_client = FakeNatsClient()
+        table_client = FakeNatsClient()
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeAsyncpgPool(), l2_client=default_client, kv_key_scope="hub")
+        registry.configure(l3_pool=_widget_pool(), l2_client=default_client, kv_key_scope="hub")
         registry.bind_table("widgets", l2_client=table_client)
 
         collection = create_dynamic_collection(
@@ -247,11 +285,13 @@ class TestL2RegistryFallback:
             config=DefaultCoreConfig(collection_flush="ALWAYS"),
         )
 
-        assert collection._nats_client is table_client
+        await collection.get("w1")
+        assert await _opened_l2_on(table_client, collection)
+        assert not await _opened_l2_on(default_client, collection)
 
     async def test_datastore_create_table_threads_registry_l2(self) -> None:
         """closes the §13/2 gap: DataStore collections get L2 via the registry."""
-        l2_client = object()
+        l2_client = FakeNatsClient()
         registry = CollectionRegistry()
         # create_table runs its DDL on one acquired connection under the DDL lock
         registry.configure(l3_pool=FakeLockingPool(), l2_client=l2_client, kv_key_scope="hub")
@@ -259,7 +299,9 @@ class TestL2RegistryFallback:
 
         collection = await store.create_table(_widgets_table())
 
-        assert collection._nats_client is l2_client
+        assert collection.broadcasts_invalidations is True
+        await collection.get("w1")
+        assert await _opened_l2_on(l2_client, collection)
 
 
 def _embeddings_table() -> TableDef:

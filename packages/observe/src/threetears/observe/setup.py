@@ -144,6 +144,8 @@ def init_telemetry(config: TelemetryConfig) -> bool:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
 
+    from threetears.observe._otel_internals import allow_tracer_provider_reset
+
     resource = Resource.create(
         {
             "service.name": config.service_name,
@@ -162,15 +164,12 @@ def init_telemetry(config: TelemetryConfig) -> bool:
 
     provider.add_span_processor(BatchSpanProcessor(exporter))
 
-    # Reset the once-only flag so we can (re-)set the provider.
-    # Needed on OTel SDK >=1.39 where set_tracer_provider is guarded by
-    # _TRACER_PROVIDER_SET_ONCE which only allows a single set.
-    try:
-        trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined, unused-ignore]
-    except AttributeError:
-        # The private guard this reaches into was renamed or removed by an SDK upgrade. The
-        # set_tracer_provider below then keeps whatever provider was installed first, so tracing
-        # quietly stops reaching our exporter -- the one failure here that has to be loud.
+    # Reset the once-only flag so we can (re-)set the provider: on OTel >=1.39
+    # set_tracer_provider is guarded so it only takes effect once. See _otel_internals.
+    if not allow_tracer_provider_reset():
+        # The private guard was renamed or removed by an SDK upgrade. The set_tracer_provider
+        # below then keeps whatever provider was installed first, so tracing quietly stops
+        # reaching our exporter -- the one failure here that has to be loud.
         logger.warning(
             "could not reset the OTel set-once guard; set_tracer_provider may be a no-op",
             extra={"extra_data": {"guard": "trace._TRACER_PROVIDER_SET_ONCE._done"}},
@@ -279,6 +278,8 @@ def shutdown_telemetry() -> None:
     from opentelemetry import trace
     from opentelemetry.trace import NoOpTracerProvider
 
+    from threetears.observe._otel_internals import allow_tracer_provider_reset
+
     try:
         _tracer_provider.force_flush(timeout_millis=2000)
     except Exception as exc:  # noqa: BLE001 -- shutdown continues regardless
@@ -298,10 +299,8 @@ def shutdown_telemetry() -> None:
         )
 
     # Reset the global provider so new init_telemetry calls work
-    try:
-        trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined, unused-ignore]
-    except AttributeError:
-        # Same private guard as init_telemetry: without the reset a later init_telemetry cannot
+    if not allow_tracer_provider_reset():
+        # Same guard as init_telemetry: without the reset a later init_telemetry cannot
         # install its provider, so tracing never comes back after this shutdown.
         logger.warning(
             "could not reset the OTel set-once guard; a later init_telemetry may be a no-op",

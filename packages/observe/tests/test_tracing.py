@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from threetears.observe.tracing import (
-    _check_otel,
     _get_param_names,
     _record_safe_args,
     _record_safe_result,
@@ -17,37 +21,56 @@ from threetears.observe.tracing import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _reset_otel_check():
-    """Reset the OTel availability cache between tests."""
-    import threetears.observe.tracing as mod
+@contextmanager
+def _tracing_without_otel(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
+    """``threetears.observe.tracing`` imported afresh into a process where OpenTelemetry is absent.
 
-    original = mod._otel_available
-    yield
-    mod._otel_available = original
+    The availability check runs once per process and remembers its answer, so the module the
+    rest of this suite shares has already seen OpenTelemetry installed. A fresh import with the
+    distribution unimportable is the state an install without it is in. ``patch.dict`` restores
+    ``sys.modules`` on exit and ``monkeypatch`` the package attribute the import rebinds, so the
+    rest of the process never sees this copy; the copy itself stays usable after the block.
+
+    :param monkeypatch: pytest's patcher
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the freshly imported module
+    :rtype: Iterator[ModuleType]
+    """
+    import threetears.observe as observe_pkg
+
+    monkeypatch.setattr(observe_pkg, "tracing", importlib.import_module("threetears.observe.tracing"))
+    with patch.dict(sys.modules, {"opentelemetry": None, "opentelemetry.trace": None}):
+        sys.modules.pop("threetears.observe.tracing", None)
+        yield importlib.import_module("threetears.observe.tracing")
 
 
 class TestOtelCheck:
-    """OTel availability detection."""
+    """OTel availability detection, observed through whether a traced call makes a span."""
 
     def test_otel_available_when_installed(self):
-        import threetears.observe.tracing as mod
+        # OTel is a dev dependency, so a traced call goes to a tracer
+        with patch("opentelemetry.trace.get_tracer") as get_tracer:
 
-        mod._otel_available = None
-        result = _check_otel()
-        # OTel is a dev dependency so should be available
-        assert result is True
+            @traced
+            def add(a, b):
+                return a + b
 
-    def test_otel_cached_after_first_check(self):
-        import threetears.observe.tracing as mod
+            assert add(1, 2) == 3
+        get_tracer.assert_called_once()
 
-        mod._otel_available = None
-        _check_otel()
-        assert mod._otel_available is not None
-        # Second call uses cache
-        cached = mod._otel_available
-        _check_otel()
-        assert mod._otel_available is cached
+    def test_otel_cached_after_first_check(self, monkeypatch: pytest.MonkeyPatch):
+        """the first check decides for the process: OTel arriving later does not change it."""
+        with _tracing_without_otel(monkeypatch) as tracing:
+
+            @tracing.traced
+            def add(a, b):
+                return a + b
+
+            assert add(1, 2) == 3  # the check runs here, with OTel absent
+
+        with patch("opentelemetry.trace.get_tracer") as get_tracer:
+            assert add(1, 2) == 3  # OTel importable again
+        get_tracer.assert_not_called()
 
 
 class TestParamNames:
@@ -173,38 +196,31 @@ class TestTracedDecorator:
         with pytest.raises(ValueError, match="boom"):
             await explode()
 
-    def test_traced_passthrough_without_otel(self):
-        import threetears.observe.tracing as mod
+    def test_traced_passthrough_without_otel(self, monkeypatch: pytest.MonkeyPatch):
+        with _tracing_without_otel(monkeypatch) as tracing:
 
-        mod._otel_available = False
+            @tracing.traced(record_args=True, record_result=True)
+            def add(a, b):
+                return a + b
 
-        @traced(record_args=True, record_result=True)
-        def add(a, b):
-            return a + b
+            assert add(1, 2) == 3
 
-        assert add(1, 2) == 3
+    async def test_traced_async_passthrough_without_otel(self, monkeypatch: pytest.MonkeyPatch):
+        with _tracing_without_otel(monkeypatch) as tracing:
 
-    async def test_traced_async_passthrough_without_otel(self):
-        import threetears.observe.tracing as mod
+            @tracing.traced(record_args=True)
+            async def add(a, b):
+                return a + b
 
-        mod._otel_available = False
-
-        @traced(record_args=True)
-        async def add(a, b):
-            return a + b
-
-        assert await add(1, 2) == 3
+            assert await add(1, 2) == 3
 
 
 class TestSetSpanAttribute:
     """set_span_attribute() -- attach attributes to the current active span."""
 
-    def test_noop_without_otel(self):
-        import threetears.observe.tracing as mod
-
-        mod._otel_available = False
-
-        set_span_attribute("key", "value")  # must not raise
+    def test_noop_without_otel(self, monkeypatch: pytest.MonkeyPatch):
+        with _tracing_without_otel(monkeypatch) as tracing:
+            tracing.set_span_attribute("key", "value")  # must not raise
 
     def test_noop_without_recording_span(self):
         with patch("opentelemetry.trace.get_current_span") as mock_get_span:
