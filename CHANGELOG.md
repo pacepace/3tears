@@ -25,8 +25,24 @@ content block. Only a finished `ainvoke` with malformed arguments was protected.
   with it.
 - **Finished answers drop the call from `tool_calls`, `invalid_tool_calls` and the content
   blocks**, not only from `invalid_tool_calls`.
+- **The Claude subscription backend hands back no junk call either**, invoked or streamed. A turn
+  that asked only for a junk call still ends as a turn that stopped for tools (not a failed
+  call), with no call handed back; its `finish_reason` still reads `tool_calls`, as Anthropic's
+  `stop_reason` does after the API wrapper drops one.
 - `drop_junk_invalid_tool_calls` (in the private `providers._name_translation_mixin`) is gone;
   `providers._junk_tool_calls` holds the filter. Nothing outside the package used it.
+
+### A tool call's content block carries the same name as its `tool_calls` entry
+
+Anthropic carries every tool call twice, as a `tool_use` content block and as a `tool_calls`
+entry. The wrappers translated the entry back to the canonical dotted name and left the block on
+the wire name, so one message named the tool two ways. `reverse_translate_message` now translates
+tool-call content blocks too (`tool_use`, OpenAI Responses' `function_call`, LangChain's
+`tool_call` / `tool_call_chunk` / `invalid_tool_call`), finished and streamed; a provider's own
+server-side tool blocks are left alone. `forward_translate_message` mangles those blocks' dotted
+names on the way out, which matters when LangChain sends a `tool_use` block by its own name -- it
+does whenever no `tool_calls` entry shares the block's id, as for history rebuilt from stored
+content -- and which Anthropic would otherwise refuse.
 
 ### An SLF001 suppression outside a recorded src module fails the build
 
