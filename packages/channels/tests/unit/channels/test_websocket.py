@@ -302,16 +302,31 @@ class TestConnectionRegistry:
         assert ws_b in connections
 
     def test_unregister_last_connection_drops_user_bucket(self) -> None:
-        """removing a user's last handle leaves no empty bucket behind."""
+        """removing a user's last handle leaves no empty bucket behind.
+
+        the bucket is keyed by the user id, so a bucket that lingered would keep that id alive
+        for the life of the pod -- one entry per user who ever connected. observed as exactly
+        that: once the last handle leaves, the registry holds no reference to the id.
+        """
+        import gc
+        import weakref
+
         from threetears.channels.websocket import ConnectionRegistry
+
+        class _UserId(str):
+            """a user id the test can watch for references to."""
 
         registry = ConnectionRegistry()
         ws = MockWebSocket()
-        registry.register("user-1", ws)
-        registry.unregister("user-1", ws)
-        # bucket is gone, not a lingering empty list
+        user_id = _UserId("user-1")
+        watched = weakref.ref(user_id)
+        registry.register(user_id, ws)
+        registry.unregister(user_id, ws)
+        del user_id
+        gc.collect()
+
         assert registry.get_connections("user-1") == []
-        assert "user-1" not in registry.user_ids()
+        assert watched() is None, "the registry still holds the user's bucket after its last handle left"
 
     def test_concurrent_register_unregister_does_not_race(self) -> None:
         """parallel register/unregister from threads keeps a consistent map.

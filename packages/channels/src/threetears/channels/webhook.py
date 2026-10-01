@@ -247,22 +247,6 @@ class WebhookReceiver:
         """
         self._verifiers[scheme] = verifier
 
-    def verifier_for(self, scheme: str) -> Verifier | None:
-        """Return the verifier registered for a scheme, or ``None`` when none is.
-
-        The same lookup the receiver performs at handle time against the
-        subscription row's ``verification_scheme``: a consumer can confirm
-        what a scheme resolves to after :meth:`register_verifier`, and
-        ``None`` here is exactly the case the receiver answers 400 for.
-
-        :param scheme: scheme name matching the
-            ``webhook_subscriptions.verification_scheme`` column
-        :ptype scheme: str
-        :return: the registered verifier, or ``None`` for an unknown scheme
-        :rtype: Verifier | None
-        """
-        return self._verifiers.get(scheme)
-
     def register(self, app: FastAPI, *, mount_path: str = "/webhooks") -> None:
         """Mount the receiver as a ``POST`` route on a FastAPI app.
 
@@ -374,7 +358,7 @@ class WebhookReceiver:
             return self._json_response(result)
 
         scheme = sub.verification_scheme
-        verifier = self.verifier_for(scheme)
+        verifier = self._verifiers.get(scheme)
         if verifier is None:
             log.warning(
                 "webhook_receiver unknown verification_scheme",

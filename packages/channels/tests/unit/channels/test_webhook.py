@@ -233,25 +233,75 @@ class TestVerifyGenericHmacSha256:
 # ============================================================
 
 
+def _status_for(receiver: WebhookReceiver, *, scheme: str, payload: bytes, signature: str) -> int:
+    """the status the mounted receiver answers a delivery to a subscription of ``scheme`` with.
+
+    The subscription carries the secret ``test-secret``; the wake adapter is stubbed to accept,
+    so the status says only what the receiver's verifier for ``scheme`` decided: 202 accepted,
+    403 rejected, 400 no verifier registered for the scheme.
+
+    :param receiver: the receiver under test
+    :ptype receiver: WebhookReceiver
+    :param scheme: the subscription row's ``verification_scheme``
+    :ptype scheme: str
+    :param payload: the delivered body
+    :ptype payload: bytes
+    :param signature: the signature header's value
+    :ptype signature: str
+    :return: the HTTP status
+    :rtype: int
+    """
+
+    async def _accepting_adapter(**_kwargs: Any) -> WebhookReceiveResult:
+        return WebhookReceiveResult(status_code=202, fire_id=uuid4(), message="ok")
+
+    with (
+        _patch_subscription_lookup(_build_subscription(verification_scheme=scheme, secret_plaintext="test-secret")),
+        patch("threetears.agent.wake.webhook_adapter.webhook_receive", _accepting_adapter),
+    ):
+        response = TestClient(_make_app(receiver)).post(
+            f"/webhooks/{uuid4()}", content=payload, headers={DEFAULT_SIGNATURE_HEADER: signature}
+        )
+    status: int = response.status_code
+    return status
+
+
+def _hmac_signature(payload: bytes, secret: bytes = b"test-secret") -> str:
+    """a valid ``generic_hmac_sha256`` signature header value for ``payload``."""
+    return "sha256=" + hmac.new(secret, payload, sha256).hexdigest()
+
+
 class TestRegisterVerifier:
-    """Pluggable :data:`Verifier` registry behaviour."""
+    """Pluggable :data:`Verifier` registry behaviour, observed through what a delivery is answered."""
 
     def test_default_scheme_is_preregistered(self) -> None:
         receiver = _build_receiver()
         # The default ``generic_hmac_sha256`` scheme is wired at
         # construction time so subscriptions land with a working
-        # verifier without consumer ceremony.
-        assert receiver.verifier_for("generic_hmac_sha256") is verify_generic_hmac_sha256
+        # verifier without consumer ceremony: a correct HMAC is accepted
+        # and a wrong one refused, with nothing registered by the caller.
+        payload = b'{"hello": "world"}'
+        assert (
+            _status_for(receiver, scheme="generic_hmac_sha256", payload=payload, signature=_hmac_signature(payload))
+            == 202
+        )
+        assert (
+            _status_for(receiver, scheme="generic_hmac_sha256", payload=payload, signature="sha256=" + "0" * 64) == 403
+        )
 
     def test_register_custom_scheme(self) -> None:
         receiver = _build_receiver()
+        seen: list[str] = []
 
         def _github_stub(secret: bytes, payload: bytes, signature_value: str) -> bool:
-            del secret, payload, signature_value
+            del secret, payload
+            seen.append(signature_value)
             return True
 
+        assert _status_for(receiver, scheme="github", payload=b"{}", signature="vendor=1") == 400  # not yet known
         receiver.register_verifier("github", _github_stub)
-        assert receiver.verifier_for("github") is _github_stub
+        assert _status_for(receiver, scheme="github", payload=b"{}", signature="vendor=1") == 202
+        assert seen == ["vendor=1"]
 
     def test_register_overrides_existing(self) -> None:
         receiver = _build_receiver()
@@ -261,7 +311,12 @@ class TestRegisterVerifier:
             return False
 
         receiver.register_verifier("generic_hmac_sha256", _replacement)
-        assert receiver.verifier_for("generic_hmac_sha256") is _replacement
+        # a signature the default verifier accepts is refused: the replacement decided
+        payload = b'{"hello": "world"}'
+        assert (
+            _status_for(receiver, scheme="generic_hmac_sha256", payload=payload, signature=_hmac_signature(payload))
+            == 403
+        )
 
 
 # ============================================================

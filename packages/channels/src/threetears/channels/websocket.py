@@ -364,20 +364,6 @@ class ConnectionRegistry:
         with self._lock:
             return list(self._connections.get(user_id, []))
 
-    def user_ids(self) -> list[str]:
-        """return a snapshot of the users holding at least one live socket handle.
-
-        a user appears here exactly while they have a bucket in the map;
-        :meth:`unregister` drops the bucket with its last handle, so a user
-        whose every socket has gone is absent rather than present with an
-        empty list.
-
-        :return: snapshot list of user ids with a live bucket (empty when none)
-        :rtype: list[str]
-        """
-        with self._lock:
-            return list(self._connections)
-
 
 class WebSocketHandler:
     """manages websocket connection lifecycle with delegated authentication.

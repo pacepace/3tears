@@ -124,37 +124,66 @@ class TestSerialization:
     """L2 codec round-trips, including datetime rehydration."""
 
     async def test_connection_serialize_deserialize_round_trip(self, bus: InMemoryNatsBus) -> None:
-        collection, _ = make_pod(bus)
-        coll = collection.connections
+        """a row one pod writes comes back to another pod's read with its datetimes as datetimes.
+
+        Through the real L2 read path: pod B has never seen the row, so its read misses L1 and is
+        served from the shared bucket pod A wrote -- ``serialize`` on the way in, ``deserialize``
+        and the base collection's datetime rehydration on the way out.
+        """
+        pod_a, _ = make_pod(bus)
+        pod_b, _ = make_pod(bus)
         now = datetime.now(UTC)
-        row = {
-            "connection_id": "conn-x",
-            "room_id": "cust:story:main:scene.md",
-            "user_id": "user-1",
-            "pod_id": "pod-a",
-            "customer_id": "cust",
-            "date_last_heartbeat": now,
-            "date_created": now,
-            "date_updated": now,
-        }
-        # `_rehydrate_datetimes` after `deserialize` is exactly what `BaseCollection`'s L2
-        # read path does. The rehydration used to live inside this collection's own
-        # `deserialize`; it moved to the base so three packages stopped each having their own
-        # answer, and this asserts the same property one layer out.
-        restored = coll._rehydrate_datetimes(coll.deserialize(coll.serialize(row)))
-        assert restored["connection_id"] == "conn-x"
+        await pod_a.connections.save_entity(
+            pod_a.connections.create(
+                {
+                    "connection_id": "conn-x",
+                    "room_id": "cust:story:main:scene.md",
+                    "user_id": "user-1",
+                    "pod_id": "pod-a",
+                    "customer_id": "cust",
+                    "date_last_heartbeat": now,
+                }
+            )
+        )
+
+        restored = await pod_b.connections.get("conn-x")
+
+        assert restored is not None
+        assert restored.connection_id == "conn-x"
         # datetimes come back as aware-UTC datetime objects, not strings
-        assert isinstance(restored["date_last_heartbeat"], datetime)
-        assert restored["date_last_heartbeat"].tzinfo is not None
-        assert restored["date_last_heartbeat"] == now
+        assert isinstance(restored.date_last_heartbeat, datetime)
+        assert restored.date_last_heartbeat.tzinfo is not None
+        assert restored.date_last_heartbeat == now
 
     async def test_naive_datetime_coerced_to_aware_utc(self, bus: InMemoryNatsBus) -> None:
-        collection, _ = make_pod(bus)
-        coll = collection.connections
+        """an L2 entry carrying a naive timestamp is read back as aware UTC.
+
+        The entry is written to the shared bucket as an older writer would have left it, then
+        read by a pod that has never cached the row.
+        """
+        pod, _ = make_pod(bus)
+        coll = pod.connections
         naive_iso = "2024-06-01T12:00:00"
-        payload = json.dumps({"connection_id": "c", "date_last_heartbeat": naive_iso}).encode()
-        restored = coll._rehydrate_datetimes(coll.deserialize(payload))
-        assert restored["date_last_heartbeat"].tzinfo is UTC
+        payload = json.dumps(
+            {
+                "connection_id": "c",
+                "room_id": "cust:story:main:scene.md",
+                "user_id": "user-1",
+                "pod_id": "pod-a",
+                "customer_id": "cust",
+                "date_last_heartbeat": naive_iso,
+                "date_created": naive_iso,
+                "date_updated": naive_iso,
+            }
+        ).encode()
+        bucket = await bus.kv_bucket(name=coll.L2_BUCKET_SUFFIX)
+        await bucket.put(key=coll.l2_key("c"), value=payload)
+
+        restored = await coll.get("c")
+
+        assert restored is not None
+        assert restored.date_last_heartbeat.tzinfo is UTC
+        assert restored.date_last_heartbeat == datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 
     async def test_room_members_round_trip(self, bus: InMemoryNatsBus) -> None:
         collection, _ = make_pod(bus)
