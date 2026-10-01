@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### L1 caches a JSON value holding a UUID, datetime or Decimal instead of failing a committed write
+
+`SQLiteBackend.serialize_value` encoded JSON columns with a bare `json.dumps`, so a dict or list
+holding a `UUID`, `datetime` or `Decimal` raised `TypeError`. L2 encodes the same value through
+`schema_sql.json_default` and L3's jsonb codec through `default=str`, and the L1 step runs after the
+L3 commit: the caller was told a write both other tiers had taken had failed, and the invalidation
+broadcast after the cache step never ran, leaving peers serving their old L1 copy. Found through the
+survey engine, whose session row carried a respondent's `session_id` inside `memory_data`.
+
+**Behaviour change:** L1 encodes JSON (`dict`, `list`, `tuple`) values with
+`threetears.core.backends.schema_sql.json_default`, the encoder L2 uses. A nested `UUID`, `datetime`,
+`Decimal` or `bytes` is cached as its string, exactly as L2 caches it; anything else still raises.
+
+### `nats_container` can leave out the SYSTEM account: `nats_system_account`
+
+Declaring the SYSTEM account (above, "the NATS test container declares a SYSTEM account") makes
+nats-server admit the global account through a hidden no-auth user, which it applies only to a
+client presenting NO credential. A client presenting a connect token -- a tool pod opens its own
+connection with one -- is checked against token auth nobody configured and refused with
+`Authorization Violation`, where before the account existed the server ignored the token. The
+survey engine's tool-pod registration suite failed on exactly this.
+
+- **`nats_system_account`** (new session fixture, default `True`): override it to `False` in a
+  suite's conftest, as with `nats_jetstream`, when the code under test presents connect tokens to a
+  bus that verifies none. The server then declares no auth and admits every client.
+- **`nats_container` takes it as a parameter**; a caller driving the fixture body directly passes
+  `(nats_jetstream, nats_system_account, tmp_path_factory)`.
+
 ### A saved handle reads the row it saved, not L1's copy of the key
 
 A new entity read its fields through L1 after a save that cached, so anything that later dropped

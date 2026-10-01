@@ -106,7 +106,7 @@ def test_an_external_database_skips_the_container_and_the_wait(
     gen = fixtures.db_container.__wrapped__("unused-image")
     assert next(gen) == "postgresql://ci/db"
     monkeypatch.setenv("THREETEARS_TEST_NATS_URL", "nats://ci:4222")
-    assert next(fixtures.nats_container.__wrapped__(True, tmp_path_factory)) == "nats://ci:4222"
+    assert next(fixtures.nats_container.__wrapped__(True, True, tmp_path_factory)) == "nats://ci:4222"
 
 
 def test_the_stagger_setting_name_is_exported() -> None:
