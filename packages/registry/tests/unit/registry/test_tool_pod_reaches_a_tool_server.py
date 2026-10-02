@@ -29,7 +29,7 @@ from uuid import UUID, uuid7
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
-from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.base_tool import CONFLICT, MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.tools.server import CallRequest, ToolServer
 from threetears.core.security import (
@@ -94,6 +94,31 @@ class _ScopeRecordingTool(TearsTool):
 
     def mcp_schema(self) -> MCPToolDefinition:
         return MCPToolDefinition(name=_TOOL, version=_VERSION, description="echo", input_schema={"type": "object"})
+
+    def mcp_name(self) -> str:
+        return _TOOL
+
+    def mcp_version(self) -> str:
+        return _VERSION
+
+
+class _RefusingTool(TearsTool):
+    """answers every call with the failure it was built with."""
+
+    def __init__(self, error_code: str | None) -> None:
+        self.error_code = error_code
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        del kwargs
+        return ToolResult(
+            success=False,
+            content="",
+            error="what this call changes was changed by someone else",
+            error_code=self.error_code,
+        )
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        return MCPToolDefinition(name=_TOOL, version=_VERSION, description="refuses", input_schema={"type": "object"})
 
     def mcp_name(self) -> str:
         return _TOOL
@@ -199,8 +224,8 @@ async def _catalog() -> ToolCatalog:
     return catalog
 
 
-async def _composed(*, with_signer: bool) -> tuple[ToolCallClient, _ScopeRecordingTool, _ProxyNats, UUID]:
-    """wire caller -> real proxy -> real pod in process; returns the client, the pod's tool, the hop, the pod id."""
+async def _composed[T: TearsTool](*, with_signer: bool, tool: T) -> tuple[ToolCallClient, T, _ProxyNats, UUID]:
+    """wire caller -> real proxy -> real pod serving ``tool`` in process; returns the client, the tool, the hop, the pod id."""
     hub_priv, hub_pub = generate_signing_keypair()
     seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
     proxy_signer = ProxyAssertionSigner.from_secret(SecretStr(seed))
@@ -214,7 +239,6 @@ async def _composed(*, with_signer: bool) -> tuple[ToolCallClient, _ScopeRecordi
         jwks_provider=lambda: combined,
         assertion_replay_guard=FakeReplayGuard(),
     )
-    tool = _ScopeRecordingTool()
     server.register(tool)
 
     proxy = CallProxy(
@@ -244,7 +268,7 @@ async def _composed(*, with_signer: bool) -> tuple[ToolCallClient, _ScopeRecordi
 class TestTheComposedPath:
     @pytest.mark.asyncio
     async def test_a_tool_pods_call_is_signed_by_the_proxy_and_runs_on_the_real_pod(self) -> None:
-        client, tool, hop, pod_id = await _composed(with_signer=True)
+        client, tool, hop, pod_id = await _composed(with_signer=True, tool=_ScopeRecordingTool())
 
         reply = await client.call(_TOOL, _VERSION, {"text": "hi"})
 
@@ -267,7 +291,7 @@ class TestTheComposedPath:
     @pytest.mark.asyncio
     async def test_without_the_proxy_signer_the_pod_refuses_the_same_call(self) -> None:
         """the A/B: the shipped failure was an unsigned forward, and the pod is bound to refuse one."""
-        client, tool, hop, _pod_id = await _composed(with_signer=False)
+        client, tool, hop, _pod_id = await _composed(with_signer=False, tool=_ScopeRecordingTool())
 
         with pytest.raises(ToolCallError) as excinfo:
             await client.call(_TOOL, _VERSION, {"text": "hi"})
@@ -275,3 +299,30 @@ class TestTheComposedPath:
         assert excinfo.value.error_code == TOOL_PROXY_ASSERTION_UNVERIFIED
         assert hop.forwarded[0].proxy_assertion is None
         assert tool.contexts == []  # the tool never ran
+
+
+class TestAToolsOwnRefusalCode:
+    """the code a tool names on its ``ToolResult`` reaches the caller through the real pod and proxy."""
+
+    @pytest.mark.asyncio
+    async def test_the_code_rides_from_the_tool_result_to_the_caller_unchanged(self) -> None:
+        client, _tool, hop, _pod_id = await _composed(with_signer=True, tool=_RefusingTool(CONFLICT))
+
+        with pytest.raises(ToolCallError) as excinfo:
+            await client.call(_TOOL, _VERSION, {})
+
+        assert excinfo.value.error_code == "CONFLICT"
+        assert "changed by someone else" in str(excinfo.value)
+        # the proxy forwarded to the pod: the code is the pod's, not a refusal of the registry's own
+        assert len(hop.forwarded) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_names_no_code_still_arrives_with_none(self) -> None:
+        """the A/B: without a code the caller sees no code, so the code above came from the tool."""
+        client, _tool, _hop, _pod_id = await _composed(with_signer=True, tool=_RefusingTool(None))
+
+        with pytest.raises(ToolCallError) as excinfo:
+            await client.call(_TOOL, _VERSION, {})
+
+        # the client's own placeholder for a failure the answer did not name
+        assert excinfo.value.error_code == "UNKNOWN"
