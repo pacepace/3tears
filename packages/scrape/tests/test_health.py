@@ -27,7 +27,7 @@ from threetears.core.testing.kv import FakeNatsClient
 from threetears.models import LlmPurpose
 
 from threetears.scrape.challenge import PageVerdict
-from threetears.scrape.collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipeCollection
+from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
@@ -439,36 +439,55 @@ async def test_the_vision_strategies_also_stamp(
     The first version of this feature put the stamp only at the multi-row entry point's
     common exit, which both of these strategies return before reaching, so two whole
     classes of target silently never got a fingerprint while the helper's docstring
-    claimed full coverage. Their inner extraction functions are patched out here because
-    the question is purely whether the surrounding entry point stamps, not how a vision
-    read behaves.
+    claimed full coverage. Each strategy runs through the public entry point with its
+    model calls held at the eval loop's public extraction functions and its grounding
+    judge injected as confirming, because the question is purely whether the surrounding
+    entry point stamps, not how a vision read behaves.
     """
-    for strategy_type, inner in (
-        ("per_document", "_run_per_document_extraction"),
-        ("multi_row_vision", "_run_multi_row_vision_extraction"),
+    import threetears.scrape.eval_loop as eval_loop_module
+
+    record = {"employer": "Acme Corp"}
+
+    per_document_page = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
+    with patch.object(eval_loop_module, "extract_fields_directly_chunked", AsyncMock(return_value=record)):
+        per_document = await run_eval_loop_multi_row(
+            "warn_per_document",
+            per_document_page,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="unused",
+            strategy_type="per_document",
+            document_judge=AsyncMock(return_value=True),
+            health_collection=health,
+        )
+
+    with (
+        patch.object(eval_loop_module, "extract_page_images", lambda _html: [b"page-0"]),
+        patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=[record])),
     ):
-        target_id = f"warn_{strategy_type}"
+        multi_row_vision = await run_eval_loop_multi_row(
+            "warn_multi_row_vision",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="unused",
+            strategy_type="multi_row_vision",
+            multi_row_judge=AsyncMock(return_value={0}),
+            health_collection=health,
+        )
 
-        async def _validated(*_args: Any, **_kwargs: Any) -> ScrapeExtraction:
-            return ScrapeExtraction({"target_id": target_id, "validation_status": "validated"})
-
-        with patch(f"threetears.scrape.eval_loop.{inner}", side_effect=_validated):
-            result = await run_eval_loop_multi_row(
-                target_id,
-                _PAGE,
-                "https://example.gov/warn",
-                {"employer": str},
-                recipe_collection=recipes,
-                extraction_collection=extractions,
-                api_key="unused",
-                strategy_type=strategy_type,  # type: ignore[arg-type]
-                health_collection=health,
-            )
-
-        assert result.validation_status == "validated"
-        stored = await health.get(target_id)
+    for strategy_type, result, page in (
+        ("per_document", per_document, per_document_page),
+        ("multi_row_vision", multi_row_vision, _PAGE),
+    ):
+        assert result.validation_status == "validated", strategy_type
+        stored = await health.get(f"warn_{strategy_type}")
         assert stored is not None, f"{strategy_type} returned validated but stamped no fingerprint"
-        assert stored.content_fingerprint == content_fingerprint(_PAGE)
+        assert stored.content_fingerprint == content_fingerprint(page)
 
 
 def _over_one_l2(nats_client: FakeNatsClient, config: DefaultCoreConfig) -> ScrapeTargetHealthCollection:
