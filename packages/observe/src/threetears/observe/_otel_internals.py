@@ -26,6 +26,11 @@ those modules, importing this module fails naming the one that moved, and
 ``tests/test_otel_internals.py`` -- the guard -- fails with it; when it keeps the names but
 changes how a record travels to the exporter, the guard's round trip fails.
 
+The names imported here set the ``otel`` extra's floor: ``LogRecordExporter`` first shipped in
+opentelemetry-sdk 1.39.0, so api, sdk and exporter are declared ``>=1.39``.
+``scripts/test-otel-floor.sh`` runs the guard at exactly that floor in CI; raising the code past
+it without raising the floor goes red there rather than in a consumer.
+
 Consumers never import these modules: a host app gets log export through
 :func:`threetears.observe.init_telemetry` with ``loki_endpoint`` set.
 """

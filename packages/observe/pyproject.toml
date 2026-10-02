@@ -25,10 +25,15 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+# The floor is what `_otel_internals` imports, not what shipped last: opentelemetry-sdk 1.39.0 is
+# the first release with `opentelemetry.sdk._logs.export.LogRecordExporter`. api, sdk and the
+# exporter release in lockstep (each sdk pins its api exactly, each exporter its sdk minor), so
+# all three move together. scripts/test-otel-floor.sh runs the OpenTelemetry tests at exactly
+# these floors, and CI runs it, so a floor that falls behind the code goes red here.
 otel = [
-    "opentelemetry-api>=1.28",
-    "opentelemetry-sdk>=1.28",
-    "opentelemetry-exporter-otlp>=1.28",
+    "opentelemetry-api>=1.39",
+    "opentelemetry-sdk>=1.39",
+    "opentelemetry-exporter-otlp>=1.39",
 ]
 asgi = [
     "uuid-utils",

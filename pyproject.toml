@@ -47,9 +47,11 @@ dev-dependencies = [
     # (the whole guard) stays checked instead of resolving to Any.
     "types-PyYAML>=6.0",
     "ruff>=0.15.18",
-    "opentelemetry-api>=1.28",
-    "opentelemetry-sdk>=1.28",
-    "opentelemetry-exporter-otlp>=1.28",
+    # the same floor as 3tears-observe's `otel` extra (see the comment there); the dev install
+    # must never resolve below what the package itself declares it needs.
+    "opentelemetry-api>=1.39",
+    "opentelemetry-sdk>=1.39",
+    "opentelemetry-exporter-otlp>=1.39",
     "duckdb>=1.0",
     # the NATS client is an optional extra of 3tears-nats (`[client]`) so that
     # an L1-SQLite-only consumer is not forced to build `nkeys`, which ships no
