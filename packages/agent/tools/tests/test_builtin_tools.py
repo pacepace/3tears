@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -185,56 +184,174 @@ class TestCurrentDate:
 
 
 class TestDictionary:
-    def _create(self) -> Any:
-        from threetears.agent.tools.builtin.dictionary import create_dictionary_tool
+    """The Free Dictionary API first; Wiktionary when it does not answer.
 
-        return create_dictionary_tool({}, "Look up words")
+    Driven through ``httpx.MockTransport``: the lookup's own requests, its
+    timeouts and its status handling run as they do against the network.
+    """
 
-    def test_success(self):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = [
+    _FREE = [
+        {
+            "word": "hello",
+            "phonetic": "/helo/",
+            "meanings": [
+                {
+                    "partOfSpeech": "noun",
+                    "definitions": [{"definition": "A greeting", "example": "She said hello."}],
+                    "synonyms": ["hi", "greetings"],
+                    "antonyms": ["goodbye"],
+                }
+            ],
+        }
+    ]
+    _WIKTIONARY = {
+        "en": [
+            {"partOfSpeech": "Symbol", "language": "Translingual", "definitions": [{"definition": "ISO code"}]},
             {
-                "word": "hello",
-                "phonetic": "/helo/",
-                "meanings": [
+                "partOfSpeech": "Interjection",
+                "language": "English",
+                "definitions": [
                     {
-                        "partOfSpeech": "noun",
-                        "definitions": [{"definition": "A greeting", "example": "She said hello."}],
-                        "synonyms": ["hi", "greetings"],
-                        "antonyms": ["goodbye"],
+                        "definition": '<span>A <a href="/wiki/greeting">greeting</a> said on meeting</span>',
+                        "examples": ["<i>Hello</i>, everyone."],
                     }
                 ],
-            }
+            },
         ]
+    }
 
-        tool = self._create()
-        with patch("threetears.agent.tools.builtin.dictionary.httpx.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock(return_value=False)
-            mock_client.get.return_value = mock_response
-            mock_client_cls.return_value = mock_client
+    @staticmethod
+    def _tool(handler: Any) -> Any:
+        import httpx
 
-            result = tool.invoke({"word": "hello"})
-            assert "hello" in result
-            assert "/helo/" in result
-            assert "greeting" in result.lower()
+        from threetears.agent.tools.builtin.dictionary import DictionaryTool
 
-    def test_not_found(self):
-        mock_response = MagicMock()
-        mock_response.status_code = 404
+        return DictionaryTool(transport=httpx.MockTransport(handler))
 
-        tool = self._create()
-        with patch("threetears.agent.tools.builtin.dictionary.httpx.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock(return_value=False)
-            mock_client.get.return_value = mock_response
-            mock_client_cls.return_value = mock_client
+    @staticmethod
+    def _routes(free: Any, wiktionary: Any = None) -> tuple[Any, list[str]]:
+        """A handler answering each host with its function, and the hosts it was asked, in order."""
+        asked: list[str] = []
 
-            result = tool.invoke({"word": "xyznotaword"})
-            assert "No definition found" in result
+        def handler(request: Any) -> Any:
+            asked.append(request.url.host)
+            return (free if request.url.host == "api.dictionaryapi.dev" else wiktionary)(request)
+
+        return handler, asked
+
+    @pytest.mark.asyncio
+    async def test_the_first_source_answers(self) -> None:
+        import httpx
+
+        handler, asked = self._routes(lambda r: httpx.Response(200, json=self._FREE))
+        result = await self._tool(handler).execute(word="hello")
+        assert result.success
+        assert "/helo/" in result.content and "A greeting" in result.content
+        assert asked == ["api.dictionaryapi.dev"]
+
+    @pytest.mark.asyncio
+    async def test_no_such_word_is_an_answer_and_wiktionary_is_not_asked(self) -> None:
+        import httpx
+
+        handler, asked = self._routes(lambda r: httpx.Response(404))
+        result = await self._tool(handler).execute(word="xyznotaword")
+        assert "No definition found" in result.content
+        assert asked == ["api.dictionaryapi.dev"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure",
+        ["timeout", "connect", "server"],
+    )
+    async def test_when_the_first_source_fails_wiktionary_answers(self, failure: str) -> None:
+        import httpx
+
+        def free(request: Any) -> Any:
+            if failure == "timeout":
+                raise httpx.ReadTimeout("no answer", request=request)
+            if failure == "connect":
+                raise httpx.ConnectError("refused", request=request)
+            return httpx.Response(503)
+
+        handler, asked = self._routes(free, lambda r: httpx.Response(200, json=self._WIKTIONARY))
+        result = await self._tool(handler).execute(word="hello")
+        assert result.success, result.content
+        assert asked == ["api.dictionaryapi.dev", "en.wiktionary.org"]
+        assert "[interjection]" in result.content
+        # HTML is gone; the translingual ISO code is not an English meaning.
+        assert "1. A greeting said on meeting" in result.content and "<" not in result.content
+        assert "Example: Hello, everyone." in result.content
+        assert "ISO code" not in result.content
+        assert "(from Wiktionary)" in result.content
+
+    @pytest.mark.asyncio
+    async def test_wiktionary_asks_with_a_user_agent(self) -> None:
+        import httpx
+
+        agents: list[str] = []
+
+        def wiktionary(request: Any) -> Any:
+            agents.append(request.headers.get("user-agent", ""))
+            return httpx.Response(200, json=self._WIKTIONARY)
+
+        handler, _asked = self._routes(lambda r: httpx.Response(502), wiktionary)
+        await self._tool(handler).execute(word="hello")
+        assert agents and agents[0].startswith("threetears-dictionary/")
+
+    @pytest.mark.asyncio
+    async def test_both_failing_is_a_tool_error_that_says_why(self) -> None:
+        import httpx
+
+        def down(request: Any) -> Any:
+            raise httpx.ReadTimeout("no answer", request=request)
+
+        handler, _asked = self._routes(down, down)
+        result = await self._tool(handler).execute(word="hello")
+        assert not result.success
+        assert "did not answer" in result.content and "Wiktionary failed too" in result.content
+
+    @pytest.mark.asyncio
+    async def test_a_word_wiktionary_does_not_have_in_the_language_is_not_found(self) -> None:
+        import httpx
+
+        only_irish = {"ga": [{"partOfSpeech": "Noun", "language": "Irish", "definitions": [{"definition": "cat"}]}]}
+        handler, _asked = self._routes(lambda r: httpx.Response(500), lambda r: httpx.Response(200, json=only_irish))
+        result = await self._tool(handler).execute(word="cat")
+        assert "No definition found" in result.content
+
+    @pytest.mark.asyncio
+    async def test_a_slow_source_does_not_stop_other_work(self) -> None:
+        """A blocking lookup inside the async tool stalled every turn on the worker while it waited."""
+        import asyncio
+
+        import httpx
+
+        from threetears.agent.tools.builtin.dictionary import DictionaryTool
+
+        class _Slow(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request: Any) -> Any:
+                await asyncio.sleep(0.3)
+                return httpx.Response(200, json=self._free, request=request)
+
+            _free = self._FREE
+
+        ticks = 0
+
+        async def _tick() -> None:
+            nonlocal ticks
+            for _ in range(10):
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        await asyncio.gather(DictionaryTool(transport=_Slow()).execute(word="hello"), _tick())
+        assert ticks == 10
+
+    @pytest.mark.asyncio
+    async def test_the_langchain_tool_runs_the_same_lookup(self) -> None:
+        from threetears.agent.tools.builtin.dictionary import create_dictionary_tool
+
+        tool = create_dictionary_tool({}, "Look up words")
+        assert tool.name and tool.coroutine is not None
 
 
 # ---------------------------------------------------------------------------

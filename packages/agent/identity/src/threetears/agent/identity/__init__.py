@@ -45,8 +45,10 @@ if TYPE_CHECKING:
         IdentityRestoredEvent,
     )
     from threetears.agent.identity.lifecycle import (
+        IdentityProposalOutOfDate,
         consent,
         content_hash,
+        is_out_of_date,
         propose,
         reject,
         rollback,
@@ -81,6 +83,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     ),
     "IdentityBlockKey": ("threetears.agent.identity.types", "IdentityBlockKey"),
     "IdentityConsentedEvent": ("threetears.agent.identity.events", "IdentityConsentedEvent"),
+    "IdentityProposalOutOfDate": ("threetears.agent.identity.lifecycle", "IdentityProposalOutOfDate"),
     "IdentityProposeInput": ("threetears.agent.identity.tools", "IdentityProposeInput"),
     "IdentityProposedEvent": ("threetears.agent.identity.events", "IdentityProposedEvent"),
     "IdentityRestoredEvent": ("threetears.agent.identity.events", "IdentityRestoredEvent"),
@@ -102,6 +105,7 @@ _LAZY: dict[str, tuple[str, str]] = {
         "threetears.agent.identity.collections",
         "identity_versions_table",
     ),
+    "is_out_of_date": ("threetears.agent.identity.lifecycle", "is_out_of_date"),
     "load_identity_propose_tool": (
         "threetears.agent.identity.tools",
         "load_identity_propose_tool",
@@ -124,6 +128,7 @@ __all__ = [
     "IdentityAuthorizerDependencies",
     "IdentityBlockKey",
     "IdentityConsentedEvent",
+    "IdentityProposalOutOfDate",
     "IdentityProposeInput",
     "IdentityProposedEvent",
     "IdentityRestoredEvent",
@@ -136,6 +141,7 @@ __all__ = [
     "content_hash",
     "identity_namespace_name",
     "identity_versions_table",
+    "is_out_of_date",
     "load_identity_propose_tool",
     "propose",
     "reject",

@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.58.0 -- unreleased
 
 ### Testing: `FakeNatsClient` declares, and models a broker restart
 
@@ -1319,6 +1319,35 @@ does so already. A test harness that builds a collection without running `__init
 A caller that passes neither gets exactly the bucket it got before. A test can now drive time
 instead of waiting for it; the unit tests that asserted refills against the wall clock failed on a
 loaded machine.
+
+A consent can no longer undo the changes made since its proposal, and the dictionary answers when
+its first source does not. No schema changes.
+
+### Upgrade
+
+- **`agent-identity` `consent` can raise.** A proposal whose parent is no longer the block's
+  active version raises `IdentityProposalOutOfDate` instead of applying. A host that consents must
+  catch it and offer only `reject` for that proposal (metallm maps it to a 409).
+
+### agent-identity: consent refuses an out-of-date proposal
+
+A proposal is a whole replacement text. Consented after the block moved on (a sibling proposal
+applied first, a rollback, an edit), it put back the text it was made from and erased every change
+since.
+
+- `lifecycle.consent` raises `IdentityProposalOutOfDate` when the block's active version is not the
+  proposal's `parent_version_id`. It writes and emits nothing; the proposal stays `proposed`, and
+  `reject` still answers it. A block with no active version accepts any proposal.
+- `is_out_of_date(version, active)` is public, so a host can mark a stale proposal before anyone
+  tries to consent. Both names are exported from `threetears.agent.identity`.
+
+### agent-tools: the dictionary falls back to Wiktionary
+
+- The lookup is async. When the Free Dictionary API times out, cannot be reached, answers 5xx or
+  returns something unreadable, the tool asks Wiktionary's REST definitions and says the answer
+  came from there. A 404 from the first source is an answer, and Wiktionary is not asked.
+- Each request takes httpx's default timeout (5 s). The tool's name, schema and version (1.0) are
+  unchanged.
 
 ## v0.57.0 -- 2026-09-30
 
