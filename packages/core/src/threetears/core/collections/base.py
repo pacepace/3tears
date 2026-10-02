@@ -989,8 +989,29 @@ class BaseCollection(ABC, Generic[EntityT]):
                 out[column] = value.replace(tzinfo=UTC)
         return out
 
+    def decode_row(self, data: bytes) -> dict[str, Any]:
+        """decode one stored row of this collection: :meth:`deserialize`, then its declared instants.
+
+        The one decode for text this collection's rows were stored as -- an L2 value, or a row the
+        write buffer kept in L1 across a flush or a restart. :meth:`deserialize` is the subclass's
+        codec; every :attr:`datetime_columns` value it leaves as text, or as a naive datetime, then
+        comes back aware UTC, so a collection whose codec knows nothing of types (a durable-store
+        one, a hand-written one) still hands its instants on typed.
+
+        :param data: the stored bytes
+        :ptype data: bytes
+        :return: the row, its declared instants aware
+        :rtype: dict[str, Any]
+        :raises CorruptCacheEntry: when a declared instant will not parse
+        """
+        return self._rehydrate_datetimes(self.deserialize(data))
+
     def _rehydrate_datetimes(self, row: dict[str, Any]) -> dict[str, Any]:
         """Restore :attr:`datetime_columns` from the ISO strings the L2 codec produced.
+
+        A codec that already parsed the column (a dynamic collection's) may hand back a naive
+        datetime for a value stored before write-side normalisation; it is read as UTC exactly as
+        the same value left as text is.
 
         :raises CorruptCacheEntry: when a value will not parse. The caller treats that as a
             cache miss and falls through to L3 rather than failing the read -- see the
@@ -1000,12 +1021,15 @@ class BaseCollection(ABC, Generic[EntityT]):
             return row
         for column in self.datetime_columns:
             value = row.get(column)
-            if not isinstance(value, str):
+            if isinstance(value, str):
+                try:
+                    parsed = datetime.fromisoformat(value)
+                except ValueError as exc:
+                    raise CorruptCacheEntry(self.table_name, column, value) from exc
+            elif isinstance(value, datetime):
+                parsed = value
+            else:
                 continue
-            try:
-                parsed = datetime.fromisoformat(value)
-            except ValueError as exc:
-                raise CorruptCacheEntry(self.table_name, column, value) from exc
             if parsed.tzinfo is None:
                 log.warning(
                     "naive datetime read from L2 and assumed UTC; written before write-side "
@@ -1754,7 +1778,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 return _AbsentMarker(generation=raw[len(_ABSENT_MARKER_PREFIX) :].decode("utf-8"))
             except UnicodeDecodeError as exc:
                 raise CorruptCacheEntry(self.table_name, "absent-marker generation", raw) from exc
-        return self._rehydrate_datetimes(self.deserialize(raw))
+        return self.decode_row(raw)
 
     async def _write_l2_marker(self, entity_id: Any, generation: str, revision: int | None) -> None:
         """record in L2 that ``entity_id`` is absent under ``generation``, never over a writer's value.

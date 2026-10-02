@@ -168,9 +168,17 @@ class ClusterBackup:
 
         :param admin_dsn: a dsn with rights to enumerate databases and dump each one; also the
             dsn the globals dump runs against.
-        :param when: backup timestamp (defaults to now, UTC) — also the storage partition.
+        :param when: backup timestamp (defaults to now, UTC) — also the storage partition; must be
+            timezone-aware.
         :return: the written manifest, which is the set's durable identity.
+        :raises ValueError: when ``when`` is naive -- refused here, before any dump runs, because the
+            manifest written last stores the instant in the one stored form, which refuses it
         """
+        if when is not None and when.utcoffset() is None:
+            raise ValueError(
+                f"refusing to back up under a naive datetime in 'when' ({when.isoformat()}): it names no instant. "
+                f"pass it timezone-aware -- datetime.now(UTC), or attach the zone it was measured in"
+            )
         moment = when or datetime.now(UTC)
         backup_id = uuid7()
         driver = await self._detect(admin_dsn)

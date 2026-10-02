@@ -25,7 +25,13 @@ from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
 from threetears.core.collections.merge import repoint_user_rows
-from threetears.core.collections.reapply import REAPPLY_BACKOFF_SECONDS, REAPPLY_MAX_ATTEMPTS, reapply_on_lost_race
+from threetears.core.collections.reapply import (
+    REAPPLY_BACKOFF_SECONDS,
+    REAPPLY_MAX_ATTEMPTS,
+    ExponentialBackoff,
+    full_jitter_backoff,
+    reapply_on_lost_race,
+)
 from threetears.core.collections.registry import (
     CacheInvalidationMessage,
     CollectionRegistry,
@@ -84,6 +90,7 @@ __all__ = [
     "DATETIMETZ_TYPE",
     "DerivedCollection",
     "DurableStoreCollection",
+    "ExponentialBackoff",
     "FlushStrategy",
     "INT_TYPE",
     "JSONB_TYPE",
@@ -101,6 +108,7 @@ __all__ = [
     "deserialize_from_json",
     "encode_jsonb",
     "flush_pending",
+    "full_jitter_backoff",
     "init_connection",
     "reapply_on_lost_race",
     "register_jsonb_text_codec",

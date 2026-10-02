@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID
 
+from threetears.core.serialization import json_datetime
+
 __all__ = [
     "BackupManifest",
     "DatabaseDump",
@@ -128,7 +130,10 @@ class BackupManifest:
         return sum(len(dump.tables) for dump in self.databases)
 
     def to_json(self) -> bytes:
-        """Serialize for storage (stable field order, UTF-8)."""
+        """Serialize for storage (stable field order, UTF-8).
+
+        :raises ValueError: when ``created_at`` is naive: a stored instant must name one
+        """
         payload = {
             # 2 adds `failed_databases`. Deliberately a VERSION bump rather than
             # an optional field: a reader that did not understand it would report
@@ -136,7 +141,9 @@ class BackupManifest:
             # already holds that refusing beats silently misreading.
             "version": 2,
             "backup_id": str(self.backup_id),
-            "created_at": self.created_at.isoformat(),
+            # the one stored form of an instant; from_json also reads the `isoformat()` spelling
+            # every manifest written before it carries
+            "created_at": json_datetime(self.created_at, field="created_at"),
             "driver": self.driver,
             "globals_key": self.globals_key,
             "failed_databases": [{"database": f.database, "error": f.error} for f in self.failed_databases],

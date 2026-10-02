@@ -80,8 +80,9 @@ _shutdown_called: bool = False
 class _CallSiteEnrichingHandler(logging.Handler):
     """Logging handler that enriches OTel LogRecords with call-site attributes.
 
-    The standard OTel LoggingHandler maps Python's ``pathname``/``funcName``/
-    ``lineno`` to ``code.filepath``/``code.function``/``code.lineno``.
+    The OTel LoggingHandler (opentelemetry-instrumentation-logging's, built with
+    ``log_code_attributes=True``) maps Python's ``pathname``/``funcName``/
+    ``lineno`` to ``code.file.path``/``code.function.name``/``code.line.number``.
     ``ThreeTearsLogger`` sets enriched ``call_site_*`` attributes on the Python
     LogRecord.  This handler patches those onto the LogRecord's standard fields
     *before* the OTel handler processes them, so the downstream collector

@@ -13,9 +13,16 @@ OpenTelemetry-touching observe tests in an isolated environment pinned to exactl
 floors. What this module guards is everything around that run that can rot silently:
 
 - every OpenTelemetry requirement in the workspace states a ``>=`` floor the script can read;
+- every one also states a ceiling below its next major (owner ruling, 2026-10-01): ``<2`` on the
+  1.x core train, ``<1`` on the 0.x contrib train. A major is where OpenTelemetry may drop the
+  private logs modules ``_otel_internals`` imports, so a consumer must not resolve one untested;
 - api, sdk and exporter declared together share ONE floor -- they release in lockstep (each sdk
   pins its api exactly, each exporter its sdk minor), so a split floor is either unresolvable or
   a stale line that looks deliberate;
+- a contrib package (``opentelemetry-instrumentation-logging``, whose handler replaced the SDK's
+  deprecated one) is declared at the contrib release paired with the core floor: contrib
+  ``0.(N+21)b0`` ships with core ``1.N`` and pins its api to it, so any other pairing is
+  unresolvable at the floor;
 - the repo's dev install never declares a lower floor than 3tears-observe itself;
 - CI's ``check`` job still runs the floor script, so the run cannot drop out of the gate.
 
@@ -37,9 +44,17 @@ _FLOOR_SCRIPT = "scripts/test-otel-floor.sh"
 #: the release-train members 3tears declares; they version together.
 _LOCKSTEP = ("opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp")
 
+#: the contrib-train members 3tears declares; versioned ``0.Mb0``, released alongside core ``1.(M-21)``.
+_CONTRIB = ("opentelemetry-instrumentation-logging",)
+
+#: contrib minor minus core minor on one OpenTelemetry release: contrib 0.61b0 ships with core 1.40.0.
+_CONTRIB_MINOR_OFFSET = 21
+
 #: ``opentelemetry-sdk>=1.39`` or ``opentelemetry-sdk>=1.39,<2`` -> name, floor.
 _OTEL_REQUIREMENT = re.compile(r"^(?P<name>opentelemetry-[a-z0-9-]+)(?:\[[a-z0-9,_-]+\])?(?P<spec>.*)$")
 _FLOOR = re.compile(r"^>=(?P<floor>[0-9][0-9A-Za-z.]*)(?:,<[0-9A-Za-z.]+)?$")
+_CEILING = re.compile(r"^>=[0-9][0-9A-Za-z.]*,<(?P<ceiling>[0-9A-Za-z.]+)$")
+_RELEASE = re.compile(r"^(?P<major>[0-9]+)\.(?P<minor>[0-9]+)")
 
 
 def _declared_lists() -> dict[str, list[str]]:
@@ -97,6 +112,31 @@ def _floor(spec: str) -> str | None:
     return match["floor"] if match is not None else None
 
 
+def _ceiling(spec: str) -> str | None:
+    """return the ``<`` ceiling of a ``>=floor,<ceiling`` specifier, or ``None`` when it states none.
+
+    :param spec: a specifier such as ``>=1.40,<2``
+    :ptype spec: str
+    :return: the ceiling version text
+    :rtype: str | None
+    """
+    match = _CEILING.match(spec)
+    return match["ceiling"] if match is not None else None
+
+
+def _major_minor(version: str) -> tuple[int, int]:
+    """return the major and minor of a version such as ``1.40`` or ``0.61b0``.
+
+    :param version: the version text
+    :ptype version: str
+    :return: major, minor
+    :rtype: tuple[int, int]
+    """
+    match = _RELEASE.match(version)
+    assert match is not None, f"cannot read a major.minor from {version!r}"
+    return int(match["major"]), int(match["minor"])
+
+
 _LISTS = _declared_lists()
 _OBSERVE_OTEL = _otel_requirements(
     tomllib.loads(_OBSERVE_PYPROJECT.read_text(encoding="utf-8"))["project"]["optional-dependencies"]["otel"]
@@ -107,8 +147,8 @@ def test_the_declarations_were_found() -> None:
     """both inputs are non-empty: a silent zero would pass every comparison below."""
     with_otel = [label for label, deps in _LISTS.items() if _otel_requirements(deps)]
     assert len(_LISTS) > 20, f"only {len(_LISTS)} requirement lists found; the package layout changed"
-    assert set(_OBSERVE_OTEL) == set(_LOCKSTEP), (
-        f"3tears-observe's otel extra declares {sorted(_OBSERVE_OTEL)}; expected exactly {list(_LOCKSTEP)}"
+    assert set(_OBSERVE_OTEL) == {*_LOCKSTEP, *_CONTRIB}, (
+        f"3tears-observe's otel extra declares {sorted(_OBSERVE_OTEL)}; expected exactly {[*_LOCKSTEP, *_CONTRIB]}"
     )
     assert "pyproject.toml tool.uv.dev-dependencies" in with_otel, (
         "the root dev-dependencies no longer name OpenTelemetry; this guard compares them to observe's floor"
@@ -127,6 +167,50 @@ def test_every_opentelemetry_requirement_states_a_floor() -> None:
         "OpenTelemetry requirements with no `>=` floor:\n  "
         + "\n  ".join(floorless)
         + "\n\nDeclare the lowest release whose names the code imports, e.g. `opentelemetry-sdk>=1.39`."
+    )
+
+
+def test_every_opentelemetry_requirement_states_a_ceiling_below_its_next_major() -> None:
+    """a major may drop the private logs modules the code imports; no consumer resolves one untested."""
+    unbounded = []
+    for label, deps in _LISTS.items():
+        for name, spec in _otel_requirements(deps).items():
+            floor = _floor(spec)
+            ceiling = _ceiling(spec)
+            expected = str(_major_minor(floor)[0] + 1) if floor is not None else None
+            if ceiling is None or ceiling != expected:
+                unbounded.append(f"{label}: {name}{spec} (expected a ceiling of <{expected})")
+    assert not unbounded, (
+        "OpenTelemetry requirements without a ceiling below their next major:\n  "
+        + "\n  ".join(unbounded)
+        + "\n\nDeclare `>=<floor>,<<next major>`, e.g. `opentelemetry-sdk>=1.40,<2`; raise the ceiling only "
+        "after the code is tested against that major."
+    )
+
+
+def test_a_contrib_floor_is_the_release_paired_with_the_core_floor() -> None:
+    """contrib ``0.(N+21)b0`` pins api ``1.N`` exactly, so its floor follows the core floor or cannot resolve."""
+    mismatched: list[str] = []
+    for label, deps in _LISTS.items():
+        declared = _otel_requirements(deps)
+        core_floors = {_floor(spec) for name, spec in declared.items() if name in _LOCKSTEP}
+        for name, spec in declared.items():
+            if name not in _CONTRIB:
+                continue
+            contrib_floor = _floor(spec)
+            assert contrib_floor is not None, f"{label}: {name}{spec} states no floor"
+            reference = core_floors or {_floor(_OBSERVE_OTEL["opentelemetry-api"])}
+            for core_floor in reference:
+                assert core_floor is not None
+                expected_minor = _major_minor(core_floor)[1] + _CONTRIB_MINOR_OFFSET
+                if _major_minor(contrib_floor) != (0, expected_minor):
+                    mismatched.append(
+                        f"{label}: {name}{spec} with core floor {core_floor} (expected 0.{expected_minor}b0)"
+                    )
+    assert not mismatched, (
+        "OpenTelemetry contrib floors not paired with the core floor:\n  "
+        + "\n  ".join(mismatched)
+        + "\n\nEach contrib release pins the api of the core release it ships with; move them together."
     )
 
 
