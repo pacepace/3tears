@@ -45,6 +45,7 @@ from threetears.core.security.identity_token import (
     jwk_thumbprint,
     sign_identity_token,
 )
+from threetears.core.security import TOOL_POP_LEDGER_UNAVAILABLE, TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE
 from threetears.core.security.pop import access_token_hash, make_pop_proof
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.nats import IncomingMessage, KvError, set_default_namespace
@@ -1468,7 +1469,11 @@ class TestAHostFailureIsAnsweredNotTimedOut:
 
         nc.request_raw.assert_not_called()
         assert len(guard.seen) == 1
-        assert self._reply(nc).error_code == "TOOL_POP_LEDGER_UNAVAILABLE"
+        reply = self._reply(nc)
+        assert reply.error_code == TOOL_POP_LEDGER_UNAVAILABLE == "TOOL_POP_LEDGER_UNAVAILABLE"
+        # one client message, the same one the tool pod answers its own ledger outage with; the
+        # exception type and text stay in the registry's ERROR log.
+        assert reply.error == TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE
 
     @pytest.mark.asyncio
     async def test_a_pod_answer_that_does_not_parse_is_answered(self, hub: tuple[Any, dict[str, Any]]) -> None:

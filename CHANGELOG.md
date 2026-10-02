@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A tool pod whose assertion replay ledger fails answers `TOOL_POP_LEDGER_UNAVAILABLE` instead of timing out
+
+`ToolServer` records every proxy assertion's nonce in a shared KV ledger before it runs the tool, and
+the ledger fails closed: when its bucket cannot be reached it raises `KvError` rather than answering
+"fresh". That exception escaped the dispatch with no reply published, so the registry waited its
+whole budget and the caller was told `TOOL_TIMEOUT` about a pod that had refused in milliseconds.
+
+**Behaviour change:** the pod now answers that outage `TOOL_POP_LEDGER_UNAVAILABLE`, the code the
+registry already answered its own pop ledger outage with, and the registry and the pod carry one
+message for it. Only the ledger's own failure (`threetears.nats.errors.NatsClientError`) is caught;
+the bucket, the error and what to check go to the pod's ERROR log.
+
+- **`TOOL_POP_LEDGER_UNAVAILABLE` / `TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE`** (new, in
+  `threetears.core.security`): one spelling for both hops. The registry's reply text changes from
+  `the replay ledger could not be reached (<ExceptionType>); the call was not checked, retry` to the
+  shared message; the exception type stays in its ERROR log.
+- **A JWKS provider that raises during the pod's assertion check** now refuses the call
+  `TOOL_PROXY_ASSERTION_UNVERIFIED` with a reply. The check read the provider directly, so a failure
+  there escaped the dispatch exactly as the ledger's did; it now reads through the same converting
+  loader the identity check uses.
+
 ### L1 caches a JSON value holding a UUID, datetime or Decimal instead of failing a committed write
 
 `SQLiteBackend.serialize_value` encoded JSON columns with a bare `json.dumps`, so a dict or list

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, Iterable
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
@@ -55,6 +56,8 @@ from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import (
     IDENTITY_REFUSED,
     IDENTITY_REFUSED_MESSAGE,
+    TOOL_POP_LEDGER_UNAVAILABLE,
+    TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE,
     TOOL_PROXY_ASSERTION_UNVERIFIED,
     TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
     CachedHubJwksProvider,
@@ -921,6 +924,23 @@ class DiscoveryProbeResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # ToolServer
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _AssertionGateRefusal:
+    """why the proxy-assertion gate refused a call: what the caller is told, and what stays here.
+
+    :param error_code: the code the caller branches on
+    :ptype error_code: str
+    :param error: the one message that code carries
+    :ptype error: str
+    :param reason: the server-side reason, for the log and the baseline audit, never the reply
+    :ptype reason: str
+    """
+
+    error_code: str
+    error: str
+    reason: str
 
 
 class HardCallTimeout(Exception):
@@ -2765,7 +2785,7 @@ class ToolServer:
         )
         return request.model_copy(update={"context": verified_context}), None, principal.is_tool_pod
 
-    async def _verify_proxy_assertion(self, request: CallRequest) -> str | None:
+    async def _verify_proxy_assertion(self, request: CallRequest) -> _AssertionGateRefusal | None:
         """verify the registry proxy's body-bound assertion (the pod's PRIMARY identity gate).
 
         The proxy signs an assertion binding the verified caller identity + the call body + a
@@ -2776,25 +2796,37 @@ class ToolServer:
         provisioned by serve() or injected) -- a guardless pod fails closed rather than silently
         skipping single-use enforcement, mirroring the registry proxy's required pop replay guard.
 
-        Every rejection here is one condition -- the call could not show it came through the
-        registry for this body and this pod -- and the caller answers it
-        :data:`~threetears.core.security.TOOL_PROXY_ASSERTION_UNVERIFIED` with its one message.
-        The reason string this returns, and the detail this method logs, are server-side only.
+        Every rejection of the assertion itself is one condition -- the call could not show it came
+        through the registry for this body and this pod -- and the caller answers it
+        :data:`~threetears.core.security.TOOL_PROXY_ASSERTION_UNVERIFIED` with its one message. A
+        JWKS provider that fails here is that condition too: the assertion could not be verified.
+
+        **A replay ledger that cannot be reached is a different condition.** The assertion verified;
+        recording its nonce failed. The ledger fails closed, so the call is still refused, but as
+        :data:`~threetears.core.security.TOOL_POP_LEDGER_UNAVAILABLE` -- the code the registry
+        answers its own ledger outage with -- because nothing was judged bad and a retry may
+        succeed. Only the ledger's own failure, a :class:`~threetears.nats.errors.NatsClientError`
+        from its KV bucket, is caught; anything else is a defect and is not dressed as an outage.
+        Before this, that exception escaped the dispatch with no reply, and the caller waited out
+        its whole budget to be told ``TOOL_TIMEOUT``.
+
+        The reason each refusal carries, and the detail this method logs, are server-side only.
 
         :param request: the parsed inbound call request
         :ptype request: CallRequest
-        :return: ``None`` when the call may proceed; the server-side rejection reason (for the log
-            and the audit, never the reply) when it MUST be rejected
-        :rtype: str | None
+        :return: ``None`` when the call may proceed; the refusal -- its code, its one message, and
+            the server-side reason for the log and the audit -- when it MUST be rejected
+        :rtype: _AssertionGateRefusal | None
         """
-        reason: str | None = None
+        refusal: _AssertionGateRefusal | None = None
         try:
             assertion = request.proxy_assertion
             if assertion is None:
                 raise IdentityTokenError("inbound call carries no proxy assertion")
             if self._jwks_provider is None:
                 raise IdentityTokenError("no JWKS provider for proxy assertion verification")
-            if self._assertion_replay_guard is None:
+            guard = self._assertion_replay_guard
+            if guard is None:
                 # fail closed: without a replay guard a captured assertion could be replayed verbatim
                 # within its accept window. serve() always provisions one; a guardless pod must not
                 # silently drop single-use enforcement.
@@ -2806,23 +2838,71 @@ class ToolServer:
             body_hash = canonical_call_hash(request.tool_name, request.arguments, correlation_id)
             claims = verify_proxy_assertion(
                 assertion,
-                jwks=self._jwks_provider(),
+                # through the converting loader: a provider that raises here would otherwise escape
+                # the dispatch with no reply, exactly as the ledger below once did.
+                jwks=self._load_pod_jwks(request.tool_name),
                 expected_pod_id=self._pod_id,
                 body_hash=body_hash,
                 leeway_seconds=_ASSERTION_LEEWAY_SECONDS,
             )
-            if not await self._assertion_replay_guard.record_unique(
-                claims.jti, issued_at=datetime.fromtimestamp(claims.iat, UTC)
-            ):
-                raise IdentityTokenError("proxy assertion nonce replay")
+            try:
+                fresh = await guard.record_unique(claims.jti, issued_at=datetime.fromtimestamp(claims.iat, UTC))
+            except NatsClientError as exc:
+                refusal = self._assertion_ledger_unavailable(request, guard.bucket_name, exc)
+            else:
+                if not fresh:
+                    raise IdentityTokenError("proxy assertion nonce replay")
         except (IdentityTokenError, ValueError) as exc:
             kind = type(exc).__name__
             # the structural failure reason (absent assertion, kid miss, spliced body, replayed
             # nonce), never token or key material.
             extra = {"extra_data": {"reason": kind, "detail": str(exc), "tool_name": request.tool_name}}
             log.warning("pod proxy-assertion verification failed; rejecting", extra=extra)
-            reason = f"proxy assertion verification failed ({kind})"
-        return reason
+            refusal = _AssertionGateRefusal(
+                error_code=TOOL_PROXY_ASSERTION_UNVERIFIED,
+                error=TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
+                reason=f"proxy assertion verification failed ({kind})",
+            )
+        return refusal
+
+    def _assertion_ledger_unavailable(
+        self, request: CallRequest, bucket_name: str, exc: NatsClientError
+    ) -> _AssertionGateRefusal:
+        """the refusal for a call whose assertion verified but whose nonce could not be recorded.
+
+        Logged once at ERROR with the ledger's error and what to do about it; the reply carries
+        the one shared message and never the exception.
+
+        :param request: the call request
+        :ptype request: CallRequest
+        :param bucket_name: the ledger's KV bucket, as the guard names it
+        :ptype bucket_name: str
+        :param exc: what the ledger raised
+        :ptype exc: NatsClientError
+        :return: the ``TOOL_POP_LEDGER_UNAVAILABLE`` refusal
+        :rtype: _AssertionGateRefusal
+        """
+        log.error(
+            "tool call refused: the proxy-assertion replay ledger could not be reached, so the nonce "
+            "could not be recorded and the call is denied unchecked. Check this pod's NATS connection "
+            "and its grant on the ledger bucket's keys under its own scope; the hub declares the "
+            "bucket at startup and after every NATS reconnect, so also check that the hub is up",
+            extra={
+                "extra_data": {
+                    "error_code": TOOL_POP_LEDGER_UNAVAILABLE,
+                    "pod_id": self._pod_id,
+                    "bucket": bucket_name,
+                    "tool_name": request.tool_name,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            },
+        )
+        return _AssertionGateRefusal(
+            error_code=TOOL_POP_LEDGER_UNAVAILABLE,
+            error=TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE,
+            reason=f"proxy assertion replay ledger unavailable ({type(exc).__name__})",
+        )
 
     def _foreign_caller_rejection(self, request: CallRequest) -> str | None:
         """refuse a verified caller that is not the agent this in-process server belongs to.
@@ -3249,34 +3329,34 @@ class ToolServer:
             # attribution when the pod overrode a forged or absent identity.
             bind_log_context(request.context)
 
-            assertion_rejection = await self._verify_proxy_assertion(request)
-            if assertion_rejection is not None:
+            assertion_refusal = await self._verify_proxy_assertion(request)
+            if assertion_refusal is not None:
                 # the identity verified; what did not is the call's proof that it came through the
-                # registry for this body and this pod. one code and one message whatever the check
-                # was: ``assertion_rejection`` stays on this side, in the log line below and the
-                # baseline audit's failure reason, beside the detail ``_verify_proxy_assertion``
-                # already logged.
+                # registry for this body and this pod -- or the ledger that makes that proof single
+                # use. one code and one message per condition, whatever the check was: the reason
+                # stays on this side, in the log line below and the baseline audit's failure reason,
+                # beside the detail ``_verify_proxy_assertion`` already logged.
                 error_response = CallResponse(
                     success=False,
                     content="",
-                    error=TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
-                    error_code=TOOL_PROXY_ASSERTION_UNVERIFIED,
+                    error=assertion_refusal.error,
+                    error_code=assertion_refusal.error_code,
                     context=request.context,
                 )
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
-                    "pod rejected call: proxy assertion unverified",
+                    "pod rejected call at the proxy-assertion gate",
                     extra={
                         "extra_data": {
-                            "error_code": TOOL_PROXY_ASSERTION_UNVERIFIED,
-                            "reason": assertion_rejection,
+                            "error_code": assertion_refusal.error_code,
+                            "reason": assertion_refusal.reason,
                             "tool_key": tool_key,
                             "correlation_id": correlation_id_log,
                         }
                     },
                 )
                 outcome = "failure"
-                failure_reason = assertion_rejection
+                failure_reason = assertion_refusal.reason
                 return
 
             owner_rejection = self._foreign_caller_rejection(request)

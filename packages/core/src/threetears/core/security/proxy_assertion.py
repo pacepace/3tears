@@ -24,6 +24,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from threetears.core.security.identity_token import IdentityTokenError
 
 __all__ = [
+    "TOOL_POP_LEDGER_UNAVAILABLE",
+    "TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE",
     "TOOL_PROXY_ASSERTION_UNVERIFIED",
     "TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE",
     "ProxyAssertionClaims",
@@ -51,6 +53,22 @@ TOOL_PROXY_ASSERTION_UNVERIFIED = "TOOL_PROXY_ASSERTION_UNVERIFIED"
 #: the one message :data:`TOOL_PROXY_ASSERTION_UNVERIFIED` carries. A caller learns the call was
 #: refused, never which check refused it; the pod's WARNING log names the check.
 TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE = "the call could not be verified as forwarded by the registry to this pod"
+
+#: the code a verifier answers when the replay ledger its single-use check depends on cannot be
+#: reached.
+#:
+#: The condition: a proof (the caller's proof of possession, at the registry) or an assertion (the
+#: registry's proxy assertion, at the tool pod) verified, and recording its nonce failed -- the
+#: ledger's KV bucket was unreachable, or refused. The ledger fails closed, so the call is denied,
+#: but not as an unverified proof or assertion: nothing was judged bad, the check could not be
+#: made. It is transient, so it answers as an outage the caller may retry, not as a refusal it must
+#: not. One condition, one code, on both hops: the registry and the pod both answer it. Spelled
+#: ONCE here; the hub's error faces map it.
+TOOL_POP_LEDGER_UNAVAILABLE = "TOOL_POP_LEDGER_UNAVAILABLE"
+
+#: the one message :data:`TOOL_POP_LEDGER_UNAVAILABLE` carries. The ledger's error, and what to do
+#: about it, go to the answering verifier's ERROR log, never into the reply.
+TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE = "the replay ledger could not be reached, so the call was not checked; retry"
 
 
 def _reject(reason: str) -> NoReturn:
