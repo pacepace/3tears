@@ -63,6 +63,15 @@ NAMES on `__cause__`, because their enforcement keeps `nats.*` imports out of pr
   test that vanished a bucket named in `declared_buckets` and expected the next operation to heal
   it now has to declare it again (`ensure_kv_bucket`), as the real declarer does.
 
+### Fixed: a refusal an operation's self-heal meets is raised as itself, not as a `KvError`
+
+`KvConfigMismatch` and `StreamSubjectsOverlapError` are deliberately not `KvError`s, because the
+L2 accessors catch `KvError` and degrade. An open raised them as themselves, but a `NatsKvBucket`
+operation (`get`, `get_entry`, `get_latest`, `put`, `create`, `update`, `delete`, `date_created`)
+whose self-heal re-bound or recreated its bucket and met one wrapped it into a plain `KvError`, so
+the refusal was downgraded to a per-operation warning and the process ran on against a bucket it
+refuses. Those operations now raise both as themselves.
+
 ## v0.58.0 -- 2026-10-02
 
 ### Security: a pod-signed proof's issue time may be 5 seconds ahead, not 60 -- a broker restart costs tool calls 10 seconds, not 65

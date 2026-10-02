@@ -64,6 +64,7 @@ from threetears.nats.errors import (
     KvBucketNotFoundError,
     KvConfigMismatch,
     KvError,
+    NatsClientError,
     PublishTimeoutError,
     StreamSubjectsOverlapError,
 )
@@ -274,6 +275,14 @@ def _msg_ttl_seconds(ttl: timedelta | None) -> float | None:
     if seconds < 1:
         raise ValueError(f"a per-entry KV TTL must be at least one second, got {ttl}")
     return float(seconds)
+
+
+#: Refusals an open raises that are deliberately NOT :class:`KvError`s, because the L2 accessors catch
+#: ``KvError`` and degrade: a bind-only open finding config it refuses, and a create whose subjects
+#: another stream owns. An operation whose self-heal re-binds or recreates its bucket can meet either,
+#: and must raise it as itself rather than through :func:`_kv_error` -- wrapped, it would be caught
+#: and downgraded to a per-operation warning, and the process would run on against the bucket.
+_OPEN_REFUSALS: Final[tuple[type[NatsClientError], ...]] = (KvConfigMismatch, StreamSubjectsOverlapError)
 
 
 def _kv_error(message: str, *, bucket: str, cause: BaseException) -> KvError:
@@ -1208,6 +1217,9 @@ class NatsKvBucket:
         except KeyNotFoundError:
             # NOSILENT: a miss is this method's documented result, reported to the caller as None
             return None
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
         except Exception as exc:
             raise _kv_error(
                 f"KV get failed: bucket={self._full_name} key={key}: {exc}", bucket=self._full_name, cause=exc
@@ -1228,6 +1240,9 @@ class NatsKvBucket:
         except KeyNotFoundError:
             # NOSILENT: a miss is this method's documented result, reported to the caller as None
             return None
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
         except Exception as exc:
             raise _kv_error(
                 f"KV get_entry failed: bucket={self._full_name} key={key}: {exc}", bucket=self._full_name, cause=exc
@@ -1263,6 +1278,9 @@ class NatsKvBucket:
             marker = getattr(exc, "entry", None)
             marker_revision = getattr(marker, "revision", None)
             return (None, int(marker_revision) if marker_revision else 0)
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
         except Exception as exc:
             raise _kv_error(
                 f"KV get_latest failed: bucket={self._full_name} key={key}: {exc}", bucket=self._full_name, cause=exc
@@ -1292,6 +1310,9 @@ class NatsKvBucket:
             return await self._put_with_ttl(key=key, value=value, msg_ttl=msg_ttl)
         try:
             revision = await self._run_with_reopen(lambda: self._kv.put(key, value), passthrough=())
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
         except Exception as exc:
             raise _kv_error(
                 f"KV put failed: bucket={self._full_name} key={key}: {exc}", bucket=self._full_name, cause=exc
@@ -1320,6 +1341,9 @@ class NatsKvBucket:
         subject = f"$KV.{self._full_name}.{key}"
         try:
             ack = await self._run_with_reopen(lambda: js.publish(subject, value, msg_ttl=msg_ttl), passthrough=())
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
         except Exception as exc:
             raise _kv_error(
                 f"KV put failed: bucket={self._full_name} key={key}: {exc}", bucket=self._full_name, cause=exc
@@ -1363,6 +1387,9 @@ class NatsKvBucket:
                 extra={"extra_data": {"bucket": self._full_name, "key": key}},
             )
             return None
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
         except Exception as exc:
             raise _kv_error(
                 f"KV create failed: bucket={self._full_name} key={key}: {exc}", bucket=self._full_name, cause=exc
@@ -1402,6 +1429,9 @@ class NatsKvBucket:
                 extra={"extra_data": {"bucket": self._full_name, "key": key, "expected_revision": revision}},
             )
             return None
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
         except Exception as exc:
             raise _kv_error(
                 f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}",
@@ -1463,6 +1493,9 @@ class NatsKvBucket:
                 bucket=self._full_name,
                 cause=exc,
             ) from exc
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
         except Exception as exc:
             raise _kv_error(
                 f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}",
@@ -1502,6 +1535,9 @@ class NatsKvBucket:
             return True
         except KeyWrongLastSequenceError:
             return False
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
         except Exception as exc:
             raise _kv_error(
                 f"KV delete failed: bucket={self._full_name} key={key} revision={revision}: {exc}",
@@ -1530,6 +1566,9 @@ class NatsKvBucket:
         stream = f"KV_{self._full_name}"
         try:
             info: StreamInfo = await self._run_with_reopen(lambda: js.stream_info(stream), passthrough=())
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
         except Exception as exc:
             raise _kv_error(
                 f"KV stream info failed: bucket={self._full_name}: {exc}", bucket=self._full_name, cause=exc

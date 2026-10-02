@@ -34,6 +34,7 @@ from threetears.nats import (
     is_key_not_found,
     is_nats_error,
 )
+from threetears.nats.errors import KvConfigMismatch, StreamSubjectsOverlapError
 from threetears.nats.kv import KvTimings
 
 #: a bind wait shrunk so a test of an absent bucket spends milliseconds, not the production 30s.
@@ -80,6 +81,9 @@ class _FakeWire:
     :ivar streams: the streams the server holds
     :ivar unanswered: when set, every request dies on its deadline, as a refused or unreachable one does
     :ivar vanish_after_infos: drop every stream once this many ``STREAM.INFO`` requests were answered
+    :ivar create_reply: the answer to a ``STREAM.CREATE``; ``None`` leaves it unanswered
+    :ivar unacknowledged_publishes: how many KV writes in a row nothing acknowledges, as a broker in
+        the middle of losing a stream does
     """
 
     def __init__(self) -> None:
@@ -92,6 +96,8 @@ class _FakeWire:
         self.is_closed = False
         # nats-py names a consumer in its create subject only for a server that says it can
         self.connected_server_version = ServerVersion("2.11.0")
+        self.create_reply: _WireMsg | None = None
+        self.unacknowledged_publishes = 0
 
     def jetstream(self, **_kwargs: Any) -> JetStreamContext:
         return JetStreamContext(self)  # type: ignore[arg-type]
@@ -107,6 +113,8 @@ class _FakeWire:
             reply = self._stream_info(subject.removeprefix("$JS.API.STREAM.INFO."))
         elif subject.startswith("$JS.API.DIRECT.GET."):
             reply = self._direct_get(subject.removeprefix("$JS.API.DIRECT.GET.").split(".", 1)[0])
+        elif subject.startswith("$JS.API.STREAM.CREATE."):
+            reply = self.create_reply
         elif subject.startswith("$KV."):
             reply = self._publish(subject.split(".")[1])
         elif subject.startswith("$JS.API.CONSUMER.CREATE."):
@@ -144,8 +152,9 @@ class _FakeWire:
 
     def _publish(self, bucket: str) -> _WireMsg:
         stream = f"KV_{bucket}"
-        if stream not in self.streams:
+        if stream not in self.streams or self.unacknowledged_publishes > 0:
             # no stream captures the subject, so nothing acknowledges it
+            self.unacknowledged_publishes = max(0, self.unacknowledged_publishes - 1)
             raise nats.errors.NoRespondersError
         self.seq += 1
         return _WireMsg(json.dumps({"stream": stream, "seq": self.seq}).encode())
@@ -462,3 +471,48 @@ class TestTheRawHandleClassifiers:
         assert not is_bucket_not_found(error)
         assert not is_key_not_found(error)
         assert not is_nats_error(error)
+
+
+class TestARefusalDuringAnOperationsRebindKeepsItsType:
+    """an operation that re-binds its bucket and is refused there surfaces the refusal, never a KvError.
+
+    ``KvConfigMismatch`` and ``StreamSubjectsOverlapError`` are deliberately NOT ``KvError``s: the L2
+    accessors catch ``KvError`` and degrade, so a refusal raised as one is downgraded to a warning and
+    the process runs on against a bucket it refuses. The open raises them as themselves; an operation
+    whose self-heal re-binds the bucket used to wrap them into a plain ``KvError``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_config_mismatch_found_on_rebind_is_raised_as_itself(self) -> None:
+        wire = _FakeWire()
+        wire.streams[_STREAM] = _kv_stream_config(_STREAM)
+        bucket = await _client(wire).ensure_kv_bucket(name="nonces", create_if_missing=False, direct=True)
+        # the bucket was recreated without direct gets, and this write is the first to notice
+        wire.streams[_STREAM] = {**_kv_stream_config(_STREAM), "allow_direct": False}
+        wire.unacknowledged_publishes = 1
+
+        raised = await _raised_by(bucket.put(key="k", value=b"v"))
+
+        assert isinstance(raised, KvConfigMismatch), repr(raised)
+        assert not isinstance(raised, KvError)
+
+    @pytest.mark.asyncio
+    async def test_a_subjects_overlap_found_on_recreate_is_raised_as_itself(self) -> None:
+        wire = _FakeWire()
+        wire.streams[_STREAM] = _kv_stream_config(_STREAM)
+        # a handle that may declare (create_if_missing defaults to True), bound while the stream exists
+        bucket = NatsKvBucket(
+            client=_client(wire),
+            full_name=_BUCKET,
+            kv=await wire.jetstream().key_value(_BUCKET),
+            ttl=None,
+            timings=_FAST,
+        )
+        # the stream is gone, and another stream now owns its subjects
+        wire.streams.clear()
+        wire.create_reply = _api_error(400, 10065, "subjects overlap with an existing stream")
+
+        raised = await _raised_by(bucket.put(key="k", value=b"v"))
+
+        assert isinstance(raised, StreamSubjectsOverlapError), repr(raised)
+        assert not isinstance(raised, KvError)
