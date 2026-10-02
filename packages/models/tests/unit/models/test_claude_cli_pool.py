@@ -207,8 +207,10 @@ async def _spares_started(pool: ClaudeCliPool) -> None:
     :ptype pool: ClaudeCliPool
     """
     del pool
-    others = asyncio.all_tasks() - {asyncio.current_task()} - set(_CLI_READERS)
-    await asyncio.gather(*others)
+    # re-read after each completion: a reader created by a spare that is still connecting registers
+    # itself on its first step, so a snapshot taken before that step names it as background work.
+    while others := asyncio.all_tasks() - {asyncio.current_task()} - set(_CLI_READERS):
+        await asyncio.wait(others, return_when=asyncio.FIRST_COMPLETED)
 
 
 #: The reader task of every scripted CLI a test connected (:func:`_scripted_cli`). Each runs for its
@@ -1137,10 +1139,7 @@ class TestAToolCallThroughTheSdksOwnDispatch:
         sdk = pytest.importorskip("claude_agent_sdk")
         from claude_agent_sdk import create_sdk_mcp_server
         from claude_agent_sdk import tool as sdk_tool
-        from claude_agent_sdk._internal.query import Query
         from langchain_core.runnables.config import ensure_config, var_child_runnable_config
-
-        from threetears.models.claude_cli_pool import bind_tool_server_to_context
 
         seen_config: list[str | None] = []
 
@@ -1152,9 +1151,11 @@ class TestAToolCallThroughTheSdksOwnDispatch:
         instance = create_sdk_mcp_server(name="langchain-tools", version="1.0.0", tools=[confirm])["instance"]
 
         class CliSendingOneToolCall(sdk.Transport):  # type: ignore[misc,name-defined]
-            """the CLI's end of stdout: sends one ``tools/call`` control request, records the answer."""
+            """the CLI's end of stdin/stdout: answers the SDK's own control requests, sends one
+            ``tools/call`` when told to, and records the SDK's answer to it."""
 
             def __init__(self) -> None:
+                self.inbox: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
                 self.answered = asyncio.Event()
                 self.answers: list[dict[str, Any]] = []
 
@@ -1162,28 +1163,40 @@ class TestAToolCallThroughTheSdksOwnDispatch:
                 return None
 
             async def write(self, data: str) -> None:
-                self.answers.append(json.loads(data))
-                self.answered.set()
+                message = json.loads(data)
+                if message.get("type") == "control_request":
+                    # the SDK's initialize handshake and the checkout's mcp_set_servers: answered as
+                    # the CLI does
+                    response = {"subtype": "success", "request_id": message["request_id"], "response": {}}
+                    await self.inbox.put({"type": "control_response", "response": response})
+                elif message.get("type") == "control_response":
+                    self.answers.append(message)
+                    self.answered.set()
+
+            def send_tool_call(self) -> None:
+                self.inbox.put_nowait(
+                    {
+                        "type": "control_request",
+                        "request_id": "call-1",
+                        "request": {
+                            "subtype": "mcp_message",
+                            "server_name": "langchain-tools",
+                            "message": {
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "tools/call",
+                                "params": {"name": "confirm", "arguments": {"x": "y"}},
+                            },
+                        },
+                    }
+                )
 
             async def read_messages(self) -> Any:
-                yield {
-                    "type": "control_request",
-                    "request_id": "call-1",
-                    "request": {
-                        "subtype": "mcp_message",
-                        "server_name": "langchain-tools",
-                        "message": {
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "method": "tools/call",
-                            "params": {"name": "confirm", "arguments": {"x": "y"}},
-                        },
-                    },
-                }
-                await asyncio.Event().wait()
+                while (message := await self.inbox.get()) is not None:
+                    yield message
 
             async def close(self) -> None:
-                return None
+                await self.inbox.put(None)
 
             def is_ready(self) -> bool:
                 return True
@@ -1195,25 +1208,27 @@ class TestAToolCallThroughTheSdksOwnDispatch:
             var_child_runnable_config.set({"configurable": {"who": who}})
 
         transport = CliSendingOneToolCall()
-        query = Query(transport, is_streaming_mode=True)
+        client = sdk.ClaudeSDKClient(transport=transport)
 
         # Conversation A connects the CLI: the SDK's reader task, and every tool call it spawns,
         # carries A's context.
         reader_context = contextvars.Context()
         reader_context.run(become, "A")
+        await asyncio.create_task(client.connect(), context=reader_context)
+
+        session = PooledCliSession(client, key="k", pid=None, marker="m")
 
         async def borrower() -> None:
+            # the pool's own checkout path: the borrower's tool server, bound to its context
             become("B")
-            query.sdk_mcp_servers = {
-                "langchain-tools": bind_tool_server_to_context(instance, contextvars.copy_context())
-            }
+            await session.prepare(model=None, tool_server=instance, call_context=contextvars.copy_context())
 
         await asyncio.create_task(borrower())
-        await asyncio.create_task(query.start(), context=reader_context)
         try:
+            transport.send_tool_call()
             await asyncio.wait_for(transport.answered.wait(), timeout=5)
         finally:
-            await query.close()
+            await client.disconnect()
 
         assert seen_config == ["B"], "the handler saw the conversation that started the CLI"
         [answer] = transport.answers
@@ -1839,7 +1854,8 @@ class TestTheRealSessionMarksARefusalStructural:
 
 def _scripted_cli(behaviour: dict[str, str]) -> Any:
     """a session factory whose sessions are REAL :class:`PooledCliSession` objects over the SDK's real
-    ``Query``, talking the control protocol to a scripted CLI.
+    ``ClaudeSDKClient``, talking the control protocol to a scripted CLI through the client's public
+    ``transport`` argument.
 
     ``behaviour`` maps a control request's subtype to how the CLI treats it: ``"refuse"`` answers
     an error response (the SDK raises a bare ``Exception``), ``"silent"`` never answers (the SDK
@@ -1852,7 +1868,6 @@ def _scripted_cli(behaviour: dict[str, str]) -> Any:
     :rtype: Any
     """
     sdk = pytest.importorskip("claude_agent_sdk")
-    from claude_agent_sdk._internal.query import Query
 
     class ScriptedTransport(sdk.Transport):  # type: ignore[misc,name-defined]
         """the CLI's end of stdin/stdout, answering each control request as scripted."""
@@ -1881,6 +1896,10 @@ def _scripted_cli(behaviour: dict[str, str]) -> Any:
             await self.inbox.put({"type": "control_response", "response": response})
 
         async def read_messages(self) -> Any:
+            # the task iterating this is the SDK's reader loop for this CLI's life
+            reader = asyncio.current_task()
+            if reader is not None:
+                _CLI_READERS.add(reader)
             while (message := await self.inbox.get()) is not None:
                 yield message
 
@@ -1893,30 +1912,9 @@ def _scripted_cli(behaviour: dict[str, str]) -> Any:
         async def end_input(self) -> None:
             return None
 
-    class ScriptedClient:
-        """the parts of ``ClaudeSDKClient`` a pooled session drives, over the SDK's real ``Query``."""
-
-        def __init__(self) -> None:
-            self._query = Query(ScriptedTransport(), is_streaming_mode=True)
-
-        async def connect(self) -> None:
-            await self._query.start()
-
-        async def set_model(self, model: str | None) -> None:
-            await self._query.set_model(model)
-
-        async def query(self, prompt: Any, session_id: str = "default") -> None:
-            async for message in prompt:
-                await self._query.transport.write(json.dumps({"session_id": session_id, **message}) + "\n")
-
-        async def disconnect(self) -> None:
-            await self._query.close()
-
     async def factory(options: Any, *, key: str) -> PooledCliSession:
-        client = ScriptedClient()
-        before = asyncio.all_tasks()
+        client = sdk.ClaudeSDKClient(transport=ScriptedTransport())
         await client.connect()
-        _CLI_READERS.update(asyncio.all_tasks() - before)
         session = PooledCliSession(client, key=key, pid=None, marker="m")
         session.agents = frozenset(getattr(options, "agents", None) or {})
         return session

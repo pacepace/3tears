@@ -5,7 +5,7 @@ the caller passes already-decoded content. ``expected_sha256`` enables
 HTTP-If-Match-style optimistic concurrency: when supplied, the write is
 rejected cleanly if another writer has advanced the head sha since the
 caller last read. journal + head-state + workspace version pointer
-advance in a single transaction via :func:`_write_file_atomic`; sandbox
+advance in a single transaction via :func:`write_file_atomic`; sandbox
 write-enforcement gates the call before any mutation.
 """
 
@@ -43,8 +43,8 @@ from threetears.agent.workspace.tools.helpers import (
     Sha256Mismatch,
     WorkspaceNotFound,
     _resolve_validators,
-    _resolve_workspace,
-    _write_file_atomic,
+    resolve_workspace,
+    write_file_atomic,
     authorize_workspace,
     authorize_workspace_file,
     workspace_audit_identity,
@@ -89,7 +89,7 @@ class FsWriteTool(TearsTool):
     resolves workspace, enforces sandbox write BEFORE any mutation,
     coerces ``content`` to bytes, determines journal action from whether
     a head row already exists, then runs the three-row transaction
-    through :func:`_write_file_atomic`. OCC failure converts to a clean
+    through :func:`write_file_atomic`. OCC failure converts to a clean
     agent-visible error including the current sha so the LLM can re-read
     and retry.
     """
@@ -130,7 +130,7 @@ class FsWriteTool(TearsTool):
         :param namespace: NATS subject namespace for audit subject
         :ptype namespace: str | None
         :param validators: per-pattern validator entries forwarded to
-            :func:`_write_file_atomic` for every write; defaults to None
+            :func:`write_file_atomic` for every write; defaults to None
         :ptype validators: list[ValidatorEntry] | None
         :param acl_cache: shared :class:`AclCache` wired with loaders
             at bootstrap; authorization runs against this cache on
@@ -172,7 +172,7 @@ class FsWriteTool(TearsTool):
         result: ToolResult
         correlation_id = uuid7()
         try:
-            workspace = await _resolve_workspace(
+            workspace = await resolve_workspace(
                 workspace_arg,
                 self._context_provider(),
                 self._workspaces,
@@ -201,7 +201,7 @@ class FsWriteTool(TearsTool):
             action: Literal["create", "update"] = "update" if existing is not None else "create"
             old_bytes: bytes = existing.content if existing is not None else b""
             old_sha: str | None = existing.sha256 if existing is not None else None
-            new_version, new_sha256 = await _write_file_atomic(
+            new_version, new_sha256 = await write_file_atomic(
                 db_pool=self._db_pool,
                 workspace=workspace,
                 relative_path=relative_path,

@@ -266,7 +266,7 @@ def create_anthropic_chat(
     # instead of the HTTP API — the SAME Anthropic model ids, no separate provider. An API key
     # (``sk-ant-api…``) takes the ChatAnthropic path below. Imported lazily so the optional
     # ``langchain-claude-code`` dep is only pulled when a subscription token is actually used.
-    from threetears.models.providers._claude_cli import create_subscription_chat, is_subscription_token
+    from threetears.models.providers.claude_cli import create_subscription_chat, is_subscription_token
 
     if is_subscription_token(api_key):
         return create_subscription_chat(model_name, api_key, **extra_kwargs)

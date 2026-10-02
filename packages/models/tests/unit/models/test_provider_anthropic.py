@@ -26,7 +26,7 @@ from threetears.models.providers.anthropic import (
     create_anthropic_chat,
     strip_v1_suffix,
 )
-from threetears.models.providers._claude_cli import is_subscription_token
+from threetears.models.providers.claude_cli import is_subscription_token
 
 from ._provider_wire import AnthropicMessagesWire, TextBlock, ToolUseBlock, anthropic_model
 from ._translation_helpers import DottedTool

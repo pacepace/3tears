@@ -31,7 +31,8 @@ from threetears.core.collections.registry import CacheInvalidationMessage, Colle
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
 
-from threetears.agent.wake.collections import WakeScheduleCollection, WebhookSubscriptionCollection
+from threetears.agent.wake import tick as tick_mod
+from threetears.agent.wake.collections import WakeFireCollection, WakeScheduleCollection, WebhookSubscriptionCollection
 from threetears.agent.wake.protected import delete_protected, update_protected
 from threetears.agent.wake.rate_limit import resume_schedule_serialized
 from threetears.agent.wake.tables import (
@@ -39,7 +40,9 @@ from threetears.agent.wake.tables import (
     wake_fires_table,
     webhook_subscriptions_table,
 )
-from threetears.agent.wake.tick import _WakeDueSchedule
+from threetears.agent.wake.tick import wake_tick_job
+from threetears.agent.wake.types import WakeDispatchResult, WakeTrigger
+from threetears.scheduled_jobs import DueSchedule
 
 _SCOPE = "wake-cache-principal"
 
@@ -476,19 +479,62 @@ class TestASubscriptionUpdateReachesEveryReader:
         assert bytes(entity.secret_ciphertext) == b"new-secret"
 
 
+class _DueStore(_Store):
+    """the L3 above, answering the tick's due-schedule scan with one row."""
+
+    def __init__(self, due_row: dict[str, Any]) -> None:
+        super().__init__()
+        self.due_row = due_row
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        del args
+        return [dict(self.due_row)] if "FROM agent_wake_schedules" in sql else []
+
+
+async def _listed_by_the_tick(
+    monkeypatch: pytest.MonkeyPatch, schedules: WakeScheduleCollection, fires: WakeFireCollection
+) -> list[DueSchedule]:
+    """the due rows the scheduled-jobs engine lists when ``wake_tick_job`` runs over ``schedules``.
+
+    :param monkeypatch: pytest's monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :param schedules: the schedule collection the tick lists
+    :ptype schedules: WakeScheduleCollection
+    :param fires: the fire collection the tick records into
+    :ptype fires: WakeFireCollection
+    :return: what the engine's scan answered
+    :rtype: list[DueSchedule]
+    """
+    listed: list[DueSchedule] = []
+
+    async def _listing_engine(schedule_store: Any, _fire_store: Any, _routes: Any, **_kwargs: Any) -> None:
+        listed.extend(await schedule_store.list_due_for_tick(datetime.now(UTC), kinds=("agent_wake",), limit=10))
+
+    async def _never_fired(_t: WakeTrigger, _f: UUID, _p: Any) -> WakeDispatchResult:
+        raise AssertionError("the tick only lists here")
+
+    monkeypatch.setattr(tick_mod, "scheduled_tick_job", _listing_engine)
+    await wake_tick_job(object(), None, _never_fired, schedules=schedules, fires=fires)
+    return listed
+
+
 class TestADueScheduleOutlivesAnEviction:
     @pytest.mark.asyncio
-    async def test_the_tick_reads_what_it_listed_after_the_row_is_evicted(self) -> None:
+    async def test_the_tick_reads_what_it_listed_after_the_row_is_evicted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """the tick reads a due row's fields AFTER it claims the row, and the claim evicts it.
 
         A due schedule that read its fields through the entity's L1 proxy would lose them to its
         own claim -- or to any other replica's write to the row broadcast while the tick ran.
         """
-        store = _Store()
         conv, sid = uuid.uuid4(), uuid.uuid4()
-        collection = WakeScheduleCollection(registry=await _replica(FakeNatsClient(), store), config=_config())
-        row = _schedule_row(conv, sid)
-        due = _WakeDueSchedule(collection.entity_class(row, is_new=False, collection=collection))
+        store = _DueStore(_schedule_row(conv, sid))
+        registry = await _replica(FakeNatsClient(), store)
+        collection = WakeScheduleCollection(registry=registry, config=_config())
+        [due] = await _listed_by_the_tick(
+            monkeypatch, collection, WakeFireCollection(registry=registry, config=_config())
+        )
 
         collection.evict_from_cache_sync((conv, sid))
 

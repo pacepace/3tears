@@ -81,8 +81,8 @@ runs the canonical cancellation assertions.
 
 Callers always pass `$1`-style placeholders. Concrete drivers translate
 to their dialect by calling
-`_translate_placeholders(sql, target_style)` from
-`drivers/_util.py`. Never roll your own regex -- the helper handles
+`translate_placeholders(sql, target_style)` from
+`drivers/sql_fragments.py`. Never roll your own regex -- the helper handles
 the edge cases (`$10` vs `$1`, escaped `$$`, `'$1'` inside a string
 literal) that bite a per-driver implementation.
 
@@ -106,7 +106,7 @@ calls naively (e.g. `asyncio.to_thread` direct) loses cancellation
 semantics and lets you accidentally exhaust the default executor.
 
 Instead, every sync-backed driver owns an `AsyncSyncBridge`
-(`drivers/_sync_bridge.py`):
+(`drivers/sync_bridge.py`):
 
 ```python
 class RedshiftDriver(Driver):
@@ -178,12 +178,12 @@ normalize it.
 
 ## Observability contract
 
-Decorate your async query-emitting methods with `@_observed("<backend>")`
+Decorate your async query-emitting methods with `@observed("<backend>")`
 from `base.py`:
 
 ```python
 class AsyncpgDriver(Driver):
-    @_observed("asyncpg")
+    @observed("asyncpg")
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         ...
 ```
@@ -232,7 +232,7 @@ Concretely:
   `__init__` or first-use method are fine).
 - `drivers/__init__.py` exports ONLY the ABC, factory, and
   TypedDicts. No concrete driver class is re-exported here.
-- `_sync_bridge.py` is the ONE place permitted to import
+- `sync_bridge.py` is the ONE place permitted to import
   `ThreadPoolExecutor` at module top. Everything else is lazy.
 
 `tests/unit/test_lazy_imports.py` audits this in a fresh subprocess
@@ -278,7 +278,7 @@ Live under `tests/enforcement/`:
 - `tests/unit/test_lazy_imports.py` -- runtime audit; package roots
   do not load backend libs.
 - (planned) AST walker forbidding direct `ThreadPoolExecutor`
-  instantiation outside `_sync_bridge.py`.
+  instantiation outside `sync_bridge.py`.
 - (planned) AST walker forbidding `try: ... except asyncio.CancelledError:`
   in driver modules outside `base.py`.
 
@@ -324,12 +324,12 @@ The stub's module-level docstring MUST cover, in this order:
 2. **Connection lifecycle** — pool? client? per-call? what's the
    shape of the long-lived object?
 3. **Placeholder style** — `%s` / `:N` / `@pN`. Reference
-   `_translate_placeholders` with the target style; never reimplement
+   `translate_placeholders` with the target style; never reimplement
    the regex.
 4. **Cancellation mechanism** — the specific API call. Wire it into
    `Driver._with_cancellation` (NOT a per-method try/except).
 5. **Sync-to-async bridge** — almost always `AsyncSyncBridge` from
-   `_sync_bridge.py`. The next implementer reads this and knows NOT
+   `sync_bridge.py`. The next implementer reads this and knows NOT
    to instantiate `ThreadPoolExecutor` directly.
 6. **Row-shape pinning** — `TableRow` / `ColumnRow`. `is_nullable`
    MUST be the raw warehouse string (or document the mapping if
@@ -341,7 +341,7 @@ The stub's module-level docstring MUST cover, in this order:
    `ConnectionConfig`. NO inline literals. Enforcement test catches.
 9. **Secret handling** — `SecretStr` resolution at last moment +
    exception sanitization pattern.
-10. **Observability** — same metric names; same `@_observed`
+10. **Observability** — same metric names; same `@observed`
     decorator (`driver_type=` matches the backend slug).
 11. **Anything that does NOT transfer** — backend-specific
     deviations (no `pg_sleep`, no `information_schema`-as-table,

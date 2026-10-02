@@ -113,7 +113,7 @@ dev-dependencies = [
     "hypothesis>=6.100",
     # the Claude Code subscription provider (models[claude-cli]), installed in dev for
     # the same reason as the adapters above: without it the five test modules covering
-    # _claude_cli.py skip silently, and mypy resolves ClaudeCodeChatModel to Any so the
+    # claude_cli.py skip silently, and mypy resolves ClaudeCodeChatModel to Any so the
     # whole module goes unchecked. Only the CLI BINARY + Node are runtime requirements;
     # the python packages import fine without them, so this costs nothing here.
     "langchain-claude-code>=0.1.0",

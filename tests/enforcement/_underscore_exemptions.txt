@@ -68,6 +68,8 @@
 
 # rationale: redshift_connector (verified 2.1.7) keeps a connection's socket on Connection._usock and has no public accessor for it; the Redshift driver must set the TCP keepalive idle/interval/count knobs connect() does not accept, and lift the login timeout connect(timeout=) leaves on the socket, which would otherwise fail every statement longer than the login bound. this module is the one owner of the access; packages/datasources/tests/unit/test_redshift_connector_internals.py pins that Connection.__init__ still assigns it.
 packages/datasources/src/threetears/datasources/drivers/_redshift_connector_internals.py:connection_socket#0:_usock
+# rationale: the confinement module's OWN test (owner ruling 1, 2026-10-01). it imports _redshift_connector_internals to pin the one redshift_connector private it owns: test_the_installed_redshift_connector_still_keeps_its_socket_where_the_driver_reads_it walks redshift_connector.Connection.__init__ (verified 2.1.7) for the Connection._usock assignment, and test_a_connection_without_a_socket_answers_none checks connection_socket degrades to None. this test exists to fail when a library upgrade moves _usock, and connection_socket has no other public route: the drivers call it from inside the package.
+packages/datasources/tests/unit/test_redshift_connector_internals.py:<module>#0:_redshift_connector_internals
 
 # rationale: Claude Agent SDK exposes the CLI subprocess nowhere; ClaudeSDKClient._transport._process.pid is the only way to get the pid the CLI pool kills on dispose (it falls back to a /proc marker scan when this answers None), and test_claude_sdk_internals checks both members against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:cli_process_pid#0:_process
@@ -81,6 +83,8 @@ packages/models/src/threetears/models/_claude_sdk_internals.py:remove_tool_serve
 packages/models/src/threetears/models/_claude_sdk_internals.py:send_control_request#0:_query
 # rationale: Claude Agent SDK (claude-agent-sdk <0.3) has no public way to send the apply_flag_settings, mcp_set_servers or rewind_conversation control requests the CLI pool needs; ClaudeSDKClient._query and Query._send_control_request are reached only here, and test_claude_sdk_internals checks both against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:send_control_request#0:_send_control_request
+# rationale: the confinement module's OWN test (owner ruling 1, 2026-10-01). it imports _claude_sdk_internals to check PRIVATE_SURFACE -- ClaudeSDKClient._query and ._transport, Query._send_control_request and .sdk_mcp_servers, SubprocessCLITransport._process -- against the installed claude-agent-sdk (verified 0.2.116, capped <0.3) via missing_private_attributes, and to prove that check can fail. it exists to fail when an SDK release moves one of them; nothing outside threetears.models reaches these functions, so there is no public caller to test through.
+packages/models/tests/unit/models/test_claude_sdk_internals.py:<module>#0:_claude_sdk_internals
 
 # rationale: nats-py Client._process_op_err: nats-py has no public force-reconnect; this is the entry its own read loop uses when a connection goes stale
 packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_process_op_err

@@ -1,41 +1,41 @@
-"""Unit tests for pure-logic helpers on the agent-wake collections.
+"""Unit tests for how the agent-wake collections write a new row.
 
 The Collection classes are wired to a real Postgres pool in
-integration tests; the unit suite exercises:
+integration tests; the unit suite drives each collection's
+``save_to_store`` for a NEW row against a connection that records the
+statement, and checks:
 
-- ``_schedule_insert_params`` / ``_fire_insert_params`` /
-  ``_subscription_insert_params`` projections preserve declared column
-  order so positional asyncpg parameters stay aligned with the SQL
-  placeholders.
-- ``_build_upsert_sql`` emits a syntactically valid upsert with the
-  expected conflict target.
-- Class attributes (``primary_key_column``, ``partition_column``)
+- every value is bound at the position of its column in the INSERT's own
+  column list, so positional asyncpg parameters stay aligned with the SQL
+  placeholders;
+- the upsert carries the expected conflict target and update set;
+- defaults applied for omitted columns mirror the schema's DEFAULT
+  semantics;
+- class attributes (``primary_key_column``, ``partition_column``)
   declare the documented contract.
-- Defaults applied by the value-for-column helpers mirror the schema's
-  DEFAULT semantics.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from uuid_utils import uuid7
 
 from threetears.agent.wake.collections import (
-    _AGENT_WAKE_SCHEDULES_UPSERT_SQL,
-    _FIRE_INSERT_COLUMNS,
-    _SCHEDULE_INSERT_COLUMNS,
-    _SUBSCRIPTION_INSERT_COLUMNS,
-    _WAKE_FIRES_UPSERT_SQL,
-    _WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL,
     WakeFireCollection,
     WakeScheduleCollection,
     WebhookSubscriptionCollection,
-    _build_upsert_sql,
-    _fire_insert_params,
-    _schedule_insert_params,
-    _subscription_insert_params,
+)
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
+
+#: the shape of every new-row write: the insert, its placeholders, and the upsert tail.
+_UPSERT = re.compile(
+    r"^INSERT INTO (?P<table>\w+) \((?P<columns>[^)]*)\) VALUES \((?P<placeholders>[^)]*)\) "
+    r"ON CONFLICT \((?P<conflict>[^)]*)\) DO UPDATE SET (?P<updates>.+)$"
 )
 
 
@@ -44,10 +44,94 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-class TestScheduleInsertParams:
-    """``_schedule_insert_params`` preserves column order + applies defaults."""
+# parity-exempt: records the one asyncpg Connection.execute call save_to_store makes on a new row; nothing else is reached
+class _RecordingConnection:
+    """an asyncpg-compatible connection that records each statement and its parameters."""
 
-    def test_full_row_round_trip(self) -> None:
+    def __init__(self) -> None:
+        self.statements: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        self.statements.append((sql, params))
+        return "INSERT 0 1"
+
+
+class _Insert:
+    """one recorded new-row write, read back by column name."""
+
+    def __init__(self, sql: str, params: tuple[Any, ...]) -> None:
+        match = _UPSERT.match(sql)
+        assert match is not None, f"not an upsert: {sql}"
+        self.sql = sql
+        self.table = match["table"]
+        self.columns = tuple(c.strip() for c in match["columns"].split(","))
+        self.placeholders = tuple(p.strip() for p in match["placeholders"].split(","))
+        self.conflict = tuple(c.strip() for c in match["conflict"].split(","))
+        self.updates = tuple(u.strip() for u in match["updates"].split(","))
+        self.params = params
+
+    def __getitem__(self, column: str) -> Any:
+        return self.params[self.columns.index(column)]
+
+
+def _config() -> DefaultCoreConfig:
+    return DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+
+
+async def _insert(collection_class: type[Any], data: dict[str, Any]) -> _Insert:
+    """save ``data`` as a new row through ``collection_class`` and return the recorded write.
+
+    :param collection_class: the collection to write through
+    :ptype collection_class: type[Any]
+    :param data: the row
+    :ptype data: dict[str, Any]
+    :return: the one statement the save executed
+    :rtype: _Insert
+    """
+    connection = _RecordingConnection()
+    collection = collection_class(registry=CollectionRegistry(), config=_config())
+    affected = await collection.save_to_store(data, conn=connection)
+    assert affected == 1
+    [(sql, params)] = connection.statements
+    return _Insert(sql, params)
+
+
+def _schedule_row(**overrides: Any) -> dict[str, Any]:
+    """the minimum new schedule row, with columns replaced per test."""
+    now = datetime.now(UTC)
+    row: dict[str, Any] = {
+        "conversation_id": _new_uuid(),
+        "schedule_id": _new_uuid(),
+        "user_id": _new_uuid(),
+        "agent_id": _new_uuid(),
+        "schedule_type": "daily_at",
+        "date_created": now,
+        "date_updated": now,
+    }
+    row.update(overrides)
+    return row
+
+
+def _subscription_row(**overrides: Any) -> dict[str, Any]:
+    """the minimum new subscription row, with columns replaced per test."""
+    now = datetime.now(UTC)
+    row: dict[str, Any] = {
+        "conversation_id": _new_uuid(),
+        "subscription_id": _new_uuid(),
+        "user_id": _new_uuid(),
+        "agent_id": _new_uuid(),
+        "secret_ciphertext": b"\x01",
+        "date_created": now,
+        "date_updated": now,
+    }
+    row.update(overrides)
+    return row
+
+
+class TestScheduleInsert:
+    """A new schedule binds every column at its position and applies defaults."""
+
+    async def test_full_row_round_trip(self) -> None:
         """Every column in the dict is bound at its declared position."""
         conv = _new_uuid()
         sched = _new_uuid()
@@ -74,57 +158,38 @@ class TestScheduleInsertParams:
             "date_created": now,
             "date_updated": now,
         }
-        params = _schedule_insert_params(data)
-        assert len(params) == len(_SCHEDULE_INSERT_COLUMNS)
-        conv_idx = _SCHEDULE_INSERT_COLUMNS.index("conversation_id")
-        skill_idx = _SCHEDULE_INSERT_COLUMNS.index("skill_id")
-        policy_idx = _SCHEDULE_INSERT_COLUMNS.index("missed_fire_policy")
-        config_idx = _SCHEDULE_INSERT_COLUMNS.index("schedule_config")
-        assert params[conv_idx] == conv
-        assert params[skill_idx] == skill
-        assert params[policy_idx] == "coalesce"
-        assert params[config_idx] == {"expr": "*/5 * * * *"}
+        insert = await _insert(WakeScheduleCollection, data)
+        assert insert.table == "agent_wake_schedules"
+        assert len(insert.params) == len(insert.columns) == len(insert.placeholders)
+        for column, value in data.items():
+            assert insert[column] == value, column
 
-    def test_defaults_applied_for_omitted_columns(self) -> None:
+    async def test_defaults_applied_for_omitted_columns(self) -> None:
         """Missing ``status`` / ``missed_fire_policy`` / etc. get defaults."""
-        data = {
-            "conversation_id": _new_uuid(),
-            "schedule_id": _new_uuid(),
-            "user_id": _new_uuid(),
-            "agent_id": _new_uuid(),
-            "schedule_type": "daily_at",
-            "date_created": datetime.now(UTC),
-            "date_updated": datetime.now(UTC),
-        }
-        params = _schedule_insert_params(data)
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("status")] == "active"
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("execution_mode")] == "spawn"
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("protected")] is False
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("missed_fire_policy")] == "coalesce"
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("schedule_config")] == {}
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("skill_id")] is None
+        insert = await _insert(WakeScheduleCollection, _schedule_row())
+        assert insert["status"] == "active"
+        assert insert["execution_mode"] == "spawn"
+        assert insert["protected"] is False
+        assert insert["missed_fire_policy"] == "coalesce"
+        assert insert["schedule_config"] == {}
+        assert insert["skill_id"] is None
 
-    def test_null_jsonb_coerced_to_empty_dict(self) -> None:
+    async def test_null_jsonb_coerced_to_empty_dict(self) -> None:
         """Explicit ``schedule_config=None`` writes ``{}`` to satisfy NOT NULL."""
-        data = {
-            "conversation_id": _new_uuid(),
-            "schedule_id": _new_uuid(),
-            "user_id": _new_uuid(),
-            "agent_id": _new_uuid(),
-            "schedule_type": "cron",
-            "schedule_config": None,
-            "date_created": datetime.now(UTC),
-            "date_updated": datetime.now(UTC),
-        }
-        params = _schedule_insert_params(data)
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("schedule_config")] == {}
+        insert = await _insert(WakeScheduleCollection, _schedule_row(schedule_type="cron", schedule_config=None))
+        assert insert["schedule_config"] == {}
+
+    async def test_a_missing_protected_flag_binds_false(self) -> None:
+        """a cached row with no flag (written before v007, or never read back) upserts as unprotected."""
+        insert = await _insert(WakeScheduleCollection, _schedule_row(schedule_type="interval", protected=None))
+        assert insert["protected"] is False
 
 
-class TestFireInsertParams:
-    """``_fire_insert_params`` preserves column order."""
+class TestFireInsert:
+    """A new fire binds every column at its position."""
 
-    def test_full_row_round_trip(self) -> None:
-        """All 12 fire columns map positionally."""
+    async def test_full_row_round_trip(self) -> None:
+        """Every fire column maps positionally."""
         conv = _new_uuid()
         fire_id = _new_uuid()
         schedule = _new_uuid()
@@ -143,13 +208,13 @@ class TestFireInsertParams:
             "error": None,
             "date_created": now,
         }
-        params = _fire_insert_params(data)
-        assert len(params) == len(_FIRE_INSERT_COLUMNS)
-        assert params[_FIRE_INSERT_COLUMNS.index("conversation_id")] == conv
-        assert params[_FIRE_INSERT_COLUMNS.index("status")] == "fired"
-        assert params[_FIRE_INSERT_COLUMNS.index("display_suppressed")] is False
+        insert = await _insert(WakeFireCollection, data)
+        assert insert.table == "wake_fires"
+        assert len(insert.params) == len(insert.columns) == len(insert.placeholders)
+        for column, value in data.items():
+            assert insert[column] == value, column
 
-    def test_display_suppressed_defaults_to_false(self) -> None:
+    async def test_display_suppressed_defaults_to_false(self) -> None:
         """Omitted ``display_suppressed`` defaults to ``False``."""
         data = {
             "conversation_id": _new_uuid(),
@@ -158,28 +223,14 @@ class TestFireInsertParams:
             "actual_fired_at": datetime.now(UTC),
             "status": "fired",
         }
-        params = _fire_insert_params(data)
-        assert params[_FIRE_INSERT_COLUMNS.index("display_suppressed")] is False
-
-    def test_a_missing_protected_flag_binds_false(self) -> None:
-        """a cached row with no flag (written before v007, or never read back) upserts as unprotected."""
-        data = {
-            "conversation_id": _new_uuid(),
-            "schedule_id": _new_uuid(),
-            "user_id": _new_uuid(),
-            "agent_id": _new_uuid(),
-            "schedule_type": "interval",
-            "protected": None,
-            "date_created": datetime.now(UTC),
-            "date_updated": datetime.now(UTC),
-        }
-        assert _schedule_insert_params(data)[_SCHEDULE_INSERT_COLUMNS.index("protected")] is False
+        insert = await _insert(WakeFireCollection, data)
+        assert insert["display_suppressed"] is False
 
 
-class TestSubscriptionInsertParams:
-    """``_subscription_insert_params`` preserves column order + defaults."""
+class TestSubscriptionInsert:
+    """A new subscription binds every column at its position and applies defaults."""
 
-    def test_full_row_round_trip(self) -> None:
+    async def test_full_row_round_trip(self) -> None:
         """Every subscription column is bound at its declared position."""
         conv = _new_uuid()
         sub = _new_uuid()
@@ -205,73 +256,71 @@ class TestSubscriptionInsertParams:
             "date_created": now,
             "date_updated": now,
         }
-        params = _subscription_insert_params(data)
-        assert len(params) == len(_SUBSCRIPTION_INSERT_COLUMNS)
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("conversation_id")] == conv
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("default_skill_id")] == default_skill
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("secret_ciphertext")] == b"\x00\xff"
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("verification_scheme")] == "generic_hmac_sha256"
+        insert = await _insert(WebhookSubscriptionCollection, data)
+        assert insert.table == "webhook_subscriptions"
+        assert len(insert.params) == len(insert.columns) == len(insert.placeholders)
+        for column, value in data.items():
+            assert insert[column] == value, column
 
-    def test_defaults_applied_for_omitted_columns(self) -> None:
+    async def test_defaults_applied_for_omitted_columns(self) -> None:
         """Missing enums fall back to schema defaults."""
-        data = {
-            "conversation_id": _new_uuid(),
-            "subscription_id": _new_uuid(),
-            "user_id": _new_uuid(),
-            "agent_id": _new_uuid(),
-            "secret_ciphertext": b"\x01",
-            "date_created": datetime.now(UTC),
-            "date_updated": datetime.now(UTC),
-        }
-        params = _subscription_insert_params(data)
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("execution_mode")] == "spawn"
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("verification_scheme")] == "generic_hmac_sha256"
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("status")] == "active"
+        insert = await _insert(WebhookSubscriptionCollection, _subscription_row())
+        assert insert["execution_mode"] == "spawn"
+        assert insert["verification_scheme"] == "generic_hmac_sha256"
+        assert insert["status"] == "active"
 
-    def test_secret_ciphertext_coerced_to_bytes(self) -> None:
+    async def test_secret_ciphertext_coerced_to_bytes(self) -> None:
         """A bytearray input is normalised to ``bytes``."""
-        data = {
-            "conversation_id": _new_uuid(),
-            "subscription_id": _new_uuid(),
-            "user_id": _new_uuid(),
-            "agent_id": _new_uuid(),
-            "secret_ciphertext": bytearray(b"\xab\xcd"),
-            "date_created": datetime.now(UTC),
-            "date_updated": datetime.now(UTC),
-        }
-        params = _subscription_insert_params(data)
-        value = params[_SUBSCRIPTION_INSERT_COLUMNS.index("secret_ciphertext")]
+        insert = await _insert(
+            WebhookSubscriptionCollection, _subscription_row(secret_ciphertext=bytearray(b"\xab\xcd"))
+        )
+        value = insert["secret_ciphertext"]
         assert isinstance(value, bytes)
         assert value == b"\xab\xcd"
 
 
-class TestBuildUpsertSql:
-    """``_build_upsert_sql`` emits SQL with the expected shape."""
+class TestUpsertShape:
+    """Each new-row write is a positional upsert on the table's composite pk."""
 
-    def test_upsert_includes_conflict_clause(self) -> None:
-        """Generated SQL carries ``ON CONFLICT (pk_cols) DO UPDATE SET ...``."""
-        sql = _build_upsert_sql(
-            "demo",
-            ("a", "b", "c"),
-            ("b", "c"),
-            ("a",),
+    async def test_placeholders_are_positional_in_column_order(self) -> None:
+        """``$1..$n`` bind the columns in the order the INSERT lists them."""
+        for collection_class, row in (
+            (WakeScheduleCollection, _schedule_row()),
+            (WebhookSubscriptionCollection, _subscription_row()),
+        ):
+            insert = await _insert(collection_class, row)
+            assert insert.placeholders == tuple(f"${i + 1}" for i in range(len(insert.columns)))
+
+    async def test_agent_wake_schedules_upsert_targets_composite_pk(self) -> None:
+        """The schedule upsert conflict-targets the composite pk, and never rewrites what is fixed at insert."""
+        insert = await _insert(WakeScheduleCollection, _schedule_row())
+        assert insert.conflict == ("conversation_id", "schedule_id")
+        expected = [
+            c for c in insert.columns if c not in {"conversation_id", "schedule_id", "date_created", "protected"}
+        ]
+        assert insert.updates == tuple(f"{c} = EXCLUDED.{c}" for c in expected)
+
+    async def test_wake_fires_upsert_targets_composite_pk(self) -> None:
+        """The fire upsert conflict-targets the composite pk and fixes up only the finalize columns."""
+        data = {
+            "conversation_id": _new_uuid(),
+            "fire_id": _new_uuid(),
+            "schedule_id": _new_uuid(),
+            "actual_fired_at": datetime.now(UTC),
+            "status": "fired",
+        }
+        insert = await _insert(WakeFireCollection, data)
+        assert insert.conflict == ("conversation_id", "fire_id")
+        assert insert.updates == tuple(
+            f"{c} = EXCLUDED.{c}" for c in ("status", "display_suppressed", "output_text", "latency_ms", "error")
         )
-        assert sql.startswith("INSERT INTO demo (a, b, c) VALUES ($1, $2, $3) ")
-        assert "ON CONFLICT (a) DO UPDATE SET" in sql
-        assert "b = EXCLUDED.b" in sql
-        assert "c = EXCLUDED.c" in sql
 
-    def test_agent_wake_schedules_upsert_targets_composite_pk(self) -> None:
-        """The module-level schedule upsert conflict-targets the composite pk."""
-        assert "ON CONFLICT (conversation_id, schedule_id)" in _AGENT_WAKE_SCHEDULES_UPSERT_SQL
-
-    def test_wake_fires_upsert_targets_composite_pk(self) -> None:
-        """The module-level fire upsert conflict-targets the composite pk."""
-        assert "ON CONFLICT (conversation_id, fire_id)" in _WAKE_FIRES_UPSERT_SQL
-
-    def test_webhook_subscriptions_upsert_targets_composite_pk(self) -> None:
-        """The module-level subscription upsert conflict-targets the composite pk."""
-        assert "ON CONFLICT (conversation_id, subscription_id)" in _WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL
+    async def test_webhook_subscriptions_upsert_targets_composite_pk(self) -> None:
+        """The subscription upsert conflict-targets the composite pk."""
+        insert = await _insert(WebhookSubscriptionCollection, _subscription_row())
+        assert insert.conflict == ("conversation_id", "subscription_id")
+        expected = [c for c in insert.columns if c not in {"conversation_id", "subscription_id", "date_created"}]
+        assert insert.updates == tuple(f"{c} = EXCLUDED.{c}" for c in expected)
 
 
 class TestCollectionClassAttributes:

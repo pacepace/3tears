@@ -53,13 +53,12 @@ from threetears.datasources.drivers import (
     create_driver,
     guarded_connect,
 )
-from threetears.datasources.drivers._redshift_connector_internals import connection_socket
 from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 from threetears.nats import KvError
 
-from ._helpers.driver_shims import PoolAcquireHandle
+from ._helpers.driver_shims import PoolAcquireHandle, RedshiftConnectionWithSocket
 
 _PASSWORD_ENV = "TEST_CONNECT_GUARD_PW"
 _REVISION = "rev-1"
@@ -762,11 +761,8 @@ class TestNoLoginIsLeftOpen:
         assert terminate_login.kwargs["sslmode"] == _redshift_config().sslmode
         connection.close.assert_called_once()
 
-    async def test_a_terminate_that_outlasts_its_timeout_still_closes_its_connection(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr("threetears.datasources.drivers.redshift_driver._CANCEL_TIMEOUT_SECONDS", 0.05)
-        driver = RedshiftDriver(_redshift_config(), datasource_name="ds")
+    async def test_a_terminate_that_outlasts_its_timeout_still_closes_its_connection(self) -> None:
+        driver = RedshiftDriver(_redshift_config(), datasource_name="ds", cancel_timeout_seconds=0.05)
         connection = MagicMock()
         closed = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -793,17 +789,15 @@ class TestNoLoginIsLeftOpen:
         executed = [call.args[0] for call in connection.cursor.return_value.execute.call_args_list]
         assert "SELECT pg_terminate_backend(4242)" in executed
 
-    async def test_a_terminate_that_outlasts_its_timeout_still_records_a_refusal(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_a_terminate_that_outlasts_its_timeout_still_records_a_refusal(self) -> None:
         """the slot is held until the login resolves, so the refusal it meets is not lost."""
-        monkeypatch.setattr("threetears.datasources.drivers.redshift_driver._CANCEL_TIMEOUT_SECONDS", 0.05)
         datasource_id = uuid.uuid4()
         guards = _replica(_Nats())
         driver = RedshiftDriver(
             _redshift_config(),
             datasource_name="ds",
             connect_guard=guards.for_credential(datasource_id, credential_revision=_REVISION, datasource_name="ds"),
+            cancel_timeout_seconds=0.05,
         )
 
         def _slow_refusal(**kwargs: Any) -> MagicMock:
@@ -902,7 +896,7 @@ class TestALoginIsBounded:
 
     async def test_the_login_carries_its_bound_and_lifts_it_once_open(self) -> None:
         driver = RedshiftDriver(_redshift_config(), datasource_name="ds")
-        connection = MagicMock()
+        connection = RedshiftConnectionWithSocket(MagicMock())
         cursor = MagicMock()
         cursor.fetchone.return_value = (1,)
         connection.cursor.return_value = cursor
@@ -917,8 +911,8 @@ class TestALoginIsBounded:
 
         assert connect.call_args.kwargs["timeout"] == _redshift_config().connect_timeout_seconds
         # left on, the bound would fail every statement longer than it. the socket is the one
-        # the driver reaches, through the one module that owns redshift_connector's internals.
-        connection_socket(connection).settimeout.assert_called_with(None)
+        # the connection carries where redshift_connector keeps it.
+        connection.socket.settimeout.assert_called_with(None)
 
     async def test_a_connection_whose_socket_cannot_be_reached_is_refused(self) -> None:
         """a bound that cannot be lifted would fail a long build hours later; the login fails now instead."""

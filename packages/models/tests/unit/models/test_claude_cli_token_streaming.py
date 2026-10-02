@@ -5,7 +5,7 @@ claude-max-convergence Chunk 9; see
 ``ClaudeCodeChatModel._astream`` sets ``include_partial_messages=True`` but never reads the
 ``StreamEvent`` deltas the SDK subprocess then emits -- a turn arrives as one or two large lumps
 instead of a real token stream. ``_SubscriptionChatModel._astream`` (overridden in
-``_claude_cli.py``) consumes those deltas and yields each one immediately.
+``claude_cli.py``) consumes those deltas and yields each one immediately.
 
 These tests mock ``claude_agent_sdk.ClaudeSDKClient`` (the SDK subprocess boundary) and construct
 REAL ``StreamEvent``/``AssistantMessage``/``ResultMessage`` instances so the method's own
@@ -27,7 +27,7 @@ pytest.importorskip("claude_agent_sdk")
 from claude_agent_sdk import AssistantMessage, ResultMessage, StreamEvent, TextBlock, ToolUseBlock
 
 from threetears.models import DEFAULT_CHAT_MODEL
-from threetears.models.providers._claude_cli import create_subscription_chat
+from threetears.models.providers.claude_cli import create_subscription_chat
 
 
 @pytest.fixture(autouse=True)

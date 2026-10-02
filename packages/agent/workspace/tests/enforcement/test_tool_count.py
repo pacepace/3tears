@@ -1,9 +1,9 @@
 """enforcement: workspace tool registry matches frozen 19-name set.
 
 importing :mod:`threetears.agent.workspace.tools` fires every tool
-module's ``register_tool_builder`` side-effect, populating
-:data:`threetears.agent.workspace.factory._TOOL_BUILDERS`. this test
-constructs every registered builder with stub dependencies, collects
+module's ``register_tool_builder`` side-effect, populating the factory's
+builder registry. this test constructs every registered builder through
+:func:`build_workspace_tools` with stub dependencies, collects
 ``mcp_name`` from each, and asserts the set exactly equals the frozen
 expected set. any drift -- a rename, an addition, a removal, or a missed
 registration -- fails the test with the specific set difference.
@@ -165,16 +165,12 @@ class TestWorkspaceToolCount:
         """
         # side-effect import: registers all 19 builders.
         from threetears.agent.workspace import tools as _tools  # noqa: F401
-        from threetears.agent.workspace.factory import (
-            _TOOL_BUILDERS,
-            build_workspace_tools,
-        )
+        from threetears.agent.workspace.factory import build_workspace_tools
 
-        assert len(_TOOL_BUILDERS) == _EXPECTED_WORKSPACE_TOOL_COUNT, (
-            f"expected {_EXPECTED_WORKSPACE_TOOL_COUNT} registered builders; found {len(_TOOL_BUILDERS)}"
-        )
         tools = build_workspace_tools(**_stub_dependencies())
-        assert len(tools) == _EXPECTED_WORKSPACE_TOOL_COUNT
+        assert len(tools) == _EXPECTED_WORKSPACE_TOOL_COUNT, (
+            f"expected {_EXPECTED_WORKSPACE_TOOL_COUNT} built tools (one per registered builder); found {len(tools)}"
+        )
 
     def test_tool_names_match_frozen_set(self) -> None:
         """

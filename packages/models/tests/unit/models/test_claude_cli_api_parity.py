@@ -9,10 +9,11 @@ itself sends:
 - thinking and effort were left unset, so Claude Code's defaults applied -- adaptive thinking on,
   and each model's own launch effort -- where the API route sends neither.
 
-Both are pinned here against the API route's actual request, captured at its ``httpx`` transport,
+Both are pinned here against the API route's actual request, captured by a scripted Messages API on
+loopback,
 and the subscription route's actual CLI options and query, captured at the Agent SDK client. What
 the CLI adds on its own and no option removes (the identity line, a ``currentDate`` reminder, the
-attribution block) is listed in ``_claude_cli``'s module docstring and is outside what these see.
+attribution block) is listed in ``claude_cli``'s module docstring and is outside what these see.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 
 from threetears.models import DEFAULT_CHAT_MODEL, claude_cli_pool  # noqa: E402
 from threetears.models.factory import create_chat_model  # noqa: E402
+
+from ._provider_wire import serve_http_handler  # noqa: E402
 
 API_KEY = "sk-ant-api03-faketestkey"
 TOKEN = "sk-ant-oat01-faketokenfortest"
@@ -75,13 +78,10 @@ async def _api_request(**provider_kwargs: Any) -> dict[str, Any]:
         received.append(json.loads(request.content))
         return httpx.Response(200, json=body)
 
-    def client(*, base_url: str | None, **_kwargs: Any) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url=base_url or "https://api.anthropic.com", transport=httpx.MockTransport(handler)
+    with serve_http_handler(handler) as base_url:
+        model = create_chat_model(
+            DEFAULT_CHAT_MODEL, api_key=API_KEY, max_retries=0, base_url=base_url, **provider_kwargs
         )
-
-    with patch("langchain_anthropic.chat_models._get_default_async_httpx_client", client):
-        model = create_chat_model(DEFAULT_CHAT_MODEL, api_key=API_KEY, max_retries=0, **provider_kwargs)
         await model.ainvoke(_MESSAGES)
     [request] = received
     return request

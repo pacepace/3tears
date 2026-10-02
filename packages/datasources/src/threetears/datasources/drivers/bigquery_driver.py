@@ -42,7 +42,7 @@ Placeholder style
     :class:`ArrayQueryParameter` attached to a
     :class:`QueryJobConfig`. callers pass ``$N``-style placeholders
     per the ABC contract; the driver translates via
-    :func:`threetears.datasources.drivers._util._translate_placeholders`
+    :func:`threetears.datasources.drivers.sql_fragments.translate_placeholders`
     with target ``"named-at"`` -- ``$1`` -> ``@p1``. then walks the
     ``params`` positional tuple and builds the matching
     :class:`ScalarQueryParameter("p1", type_str, value)` list to
@@ -62,7 +62,7 @@ Cancellation mechanism
 Sync-to-async bridge
     ``google-cloud-bigquery`` is blocking (HTTPS calls are
     synchronous); route every call through
-    :class:`threetears.datasources.drivers._sync_bridge.AsyncSyncBridge`
+    :class:`threetears.datasources.drivers.sync_bridge.AsyncSyncBridge`
     (the SAME bridge :class:`RedshiftDriver` already uses). size
     from :attr:`BigQueryConnectionConfig.executor_max_workers`.
     NEVER instantiate :class:`concurrent.futures.ThreadPoolExecutor`
@@ -125,7 +125,7 @@ Secret handling
 
 Observability
     decorate query-emitting methods with
-    :func:`threetears.datasources.drivers.base._observed`
+    :func:`threetears.datasources.drivers.base.observed`
     (``driver_type="bigquery"``). cancellation.fired / .failed,
     executor.saturation are manual emissions mirroring the
     :class:`RedshiftDriver` pattern. cache.hit/miss does NOT apply
@@ -183,8 +183,8 @@ class BigQueryDriver(Driver):
     implementation does. read this module's top-of-file docstring
     before writing the implementation -- the helpers to reuse
     (:class:`AsyncSyncBridge`, :meth:`Driver._with_cancellation`,
-    :func:`_translate_placeholders` with ``"named-at"`` target, the
-    :func:`_observed` decorator) and the BigQuery-specific
+    :func:`translate_placeholders` with ``"named-at"`` target, the
+    :func:`observed` decorator) and the BigQuery-specific
     deviations (no information_schema, ``QueryJob.cancel``,
     REST-paginated row iteration, python-side Tier-2 hash) are all
     documented there.
@@ -195,7 +195,7 @@ class BigQueryDriver(Driver):
     :ptype config: BigQueryConnectionConfig
     :param datasource_name: human-readable datasource name surfaced
         as the ``datasource_name`` attribute on every OTel metric
-        emitted by :func:`_observed` (when the impl lands). defaults
+        emitted by :func:`observed` (when the impl lands). defaults
         to ``"unknown"`` so callers that don't have the name in scope
         still produce valid metric streams
     :ptype datasource_name: str
@@ -274,7 +274,7 @@ class BigQueryDriver(Driver):
         When this driver is built, note that BigQuery diverges further than the
         other engines: ``MD5()`` returns BYTES rather than a hex string, so the
         hash needs ``TO_HEX(MD5(k))`` before the substring, and the cast in
-        :func:`threetears.datasources.drivers._util.build_relation_key_expression`
+        :func:`threetears.datasources.drivers.sql_fragments.build_relation_key_expression`
         is ``STRING`` rather than ``VARCHAR``. The shared builder will need a
         dialect seam before this driver can use it.
 

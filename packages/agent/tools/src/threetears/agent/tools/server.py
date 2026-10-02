@@ -1023,6 +1023,7 @@ class ToolServer:
         engagement_resolver: "EngagementScopeResolver | None" = None,
         max_concurrent_calls: int | None = None,
         max_call_seconds: float | None = None,
+        result_delivery_retry_seconds: float = _RESULT_DELIVERY_RETRY_SECONDS,
     ) -> None:
         """initialize tool server.
 
@@ -1166,6 +1167,10 @@ class ToolServer:
             tool that raises its OWN ``TimeoutError`` within the ceiling is
             unaffected -- that stays an ordinary tool failure. Must be > 0.
         :ptype max_call_seconds: float | None
+        :param result_delivery_retry_seconds: the pause between attempts to publish a durable
+            result after a transient failure -- long enough for a reconnect to complete, short
+            enough to fit every attempt inside a caller's timeout. Must be >= 0.
+        :ptype result_delivery_retry_seconds: float
         :param assertion_replay_anchor: the durable first-existence record for the
             self-provisioned assertion replay guard, so it can tell a first run from a wiped
             bucket. ``None`` for a pod with nowhere to record one, which leaves that guard
@@ -1180,7 +1185,8 @@ class ToolServer:
         :ptype assertion_replay_guard: ReplayGuard | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value, ``max_concurrent_calls`` /
-            ``max_call_seconds`` is set to a non-positive value, an injected
+            ``max_call_seconds`` is set to a non-positive value,
+            ``result_delivery_retry_seconds`` is negative, an injected
             ``assertion_replay_guard`` was sized for a smaller verifier future tolerance than the
             pod's assertion leeway, ``pod_id`` is dotted -- an agent's shape -- but names no
             agent (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`), or ``agent_id``
@@ -1193,6 +1199,9 @@ class ToolServer:
         if max_call_seconds is not None and max_call_seconds <= 0:
             raise ValueError(f"max_call_seconds must be > 0 when set, got {max_call_seconds}")
         self._max_call_seconds = max_call_seconds
+        if result_delivery_retry_seconds < 0:
+            raise ValueError(f"result_delivery_retry_seconds must be >= 0, got {result_delivery_retry_seconds}")
+        self._result_delivery_retry_seconds = result_delivery_retry_seconds
         # A slot each concurrent tool.run holds; None leaves dispatch unbounded.
         # Constructed here (no running loop yet) and bound to the serve() loop on
         # first acquire -- the server runs on a single loop, so one semaphore is
@@ -3492,7 +3501,7 @@ class ToolServer:
                     subject.path,
                     exc,
                 )
-                await asyncio.sleep(_RESULT_DELIVERY_RETRY_SECONDS)
+                await asyncio.sleep(self._result_delivery_retry_seconds)
 
     async def _respond(self, msg: IncomingMessage, response: BaseModel) -> None:
         """publish ``response`` to the inbound message's reply subject.

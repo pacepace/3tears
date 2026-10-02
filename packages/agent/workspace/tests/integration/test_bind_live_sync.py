@@ -22,16 +22,15 @@ EVENT DELIVERY CHOICE
 :func:`watchfiles.awatch` delivers events on a cadence that depends on
 OS-native watchers (Darwin FSEvents in this environment); inside a
 tight-timed test that cadence is unreliable. to keep the test
-deterministic we invoke the production helper :func:`_handle_watch_batch`
-directly with a synthesized ``(Change.added, abs_path)`` set. the same
-helper is what the :func:`_watch_loop` coroutine calls for each
-``awatch`` batch, so the coverage faithfully exercises the code path
-under test; the only simulated piece is the event-delivery cadence.
+deterministic the bind window is handed a scripted change source
+(``bind(watch_changes=...)``) and a synthesized ``(Change.added,
+abs_path)`` set is delivered through it. the window's own watcher task
+and batch handler apply it, so the only simulated piece is the
+event-delivery cadence.
 """
 
 from __future__ import annotations
 
-from collections import deque
 from pathlib import Path
 from typing import Any
 from uuid import uuid7
@@ -45,12 +44,10 @@ from threetears.agent.workspace.config import (
 )
 from threetears.agent.workspace.lease import WorkspaceFileLease
 from threetears.nats.subject_permissions import WORKSPACE_LOCKS_BUCKET_SUFFIX, agent_platform_bucket_suffix
-from threetears.agent.workspace.materialize import (
-    _handle_watch_batch,
-    bind,
-)
+from threetears.agent.workspace.materialize import bind
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.fs_read import FsReadTool
+from packages.agent.workspace.tests._helpers.scripted_watch import ScriptedWatch
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -64,8 +61,8 @@ async def test_bind_live_watcher_imports_external_write(
     """mid-bind external write lands in L3 via the live watcher helper.
 
     writes a new file into ``disk_root`` inside the bind body,
-    synthesizes the :func:`watchfiles.awatch` batch the OS would have
-    delivered, invokes :func:`_handle_watch_batch` directly, and then
+    delivers the :func:`watchfiles.awatch` batch the OS would have
+    delivered through the window's scripted change source, and then
     reads the file through :class:`FsReadTool` to prove the row
     reached L3 before capture-back runs.
 
@@ -90,6 +87,7 @@ async def test_bind_live_watcher_imports_external_write(
     lease = WorkspaceFileLease(fx.nats, agent_id=fx.agent_id, pod_id="test-pod")
     new_payload = b"audience_units:\n  - audience_unit: external_add\n"
     new_relpath = "externally_added.yaml"
+    watch = ScriptedWatch()
 
     async with bind(
         agent_id=fx.agent_id,
@@ -106,30 +104,15 @@ async def test_bind_live_watcher_imports_external_write(
         lease_max_wait_seconds=10,
         nats_client=fx.nats,
         namespace="threetears-test",
+        watch_changes=watch,
     ) as disk_root:
         # external process writes a new file into disk_root.
         new_path = disk_root / new_relpath
         new_path.write_bytes(new_payload)
 
-        # simulate the awatch batch the OS would deliver; the production
-        # helper is called verbatim.
-        workspace = await fx.workspace_collection.find_by_id(
-            fx.agent_id,
-            fx.workspace_id,
-        )
-        assert workspace is not None
-        just_wrote: deque[tuple[str, str]] = deque(maxlen=256)
-        changed = await _handle_watch_batch(
-            batch={(Change.added, str(new_path))},
-            workspace=workspace,
-            disk_root=disk_root,
-            resolved_root=disk_root.resolve(),
-            db_pool=fx.pool,
-            actor_id=fx.agent_id,
-            correlation_id=uuid7(),
-            just_wrote=just_wrote,
-        )
-        assert changed == [new_relpath]
+        # deliver the awatch batch the OS would; the window's watcher applies it.
+        await watch.deliver({(Change.added, str(new_path))})
+        assert fx.store.files[(fx.workspace_id, new_relpath)].content == new_payload
 
         # read the file back via fs_read INSIDE the bind window to prove
         # L3 already carries the row.

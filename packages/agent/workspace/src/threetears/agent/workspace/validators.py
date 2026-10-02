@@ -185,7 +185,7 @@ def dispatch_validators(
     ``None``.
 
     takes a ``list[ValidatorEntry]`` directly rather than the full
-    :class:`WorkspaceConfig` so :func:`_write_file_atomic` can keep
+    :class:`WorkspaceConfig` so :func:`write_file_atomic` can keep
     dependency flow explicit and tests can exercise dispatch without
     instantiating a whole config graph.
 

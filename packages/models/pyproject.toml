@@ -42,7 +42,7 @@ dependencies = [
 [project.optional-dependencies]
 # Claude Pro/Max SUBSCRIPTION as a chat model (the anthropic provider routes an OAuth `sk-ant-oat…`
 # token here instead of the HTTP API). Pulls langchain-claude-code → claude-agent-sdk; needs Node +
-# the Claude Code CLI on PATH at runtime. Imported lazily in providers/_claude_cli.py.
+# the Claude Code CLI on PATH at runtime. Imported lazily in providers/claude_cli.py.
 # 3tears-langgraph is here (not in the base dependencies) purely for its typed tool-event classes +
 # dispatch_event helper -- reused so a subscription-backed turn's tool calls surface through the
 # SAME event shape node-path tools already emit, with no new event vocabulary for consumers to

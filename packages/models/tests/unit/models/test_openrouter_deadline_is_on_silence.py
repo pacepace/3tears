@@ -12,17 +12,17 @@ answer, sent once as a JSON response (the old path, no deadline) and once as ser
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessageChunk, HumanMessage
-from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.messages import HumanMessage
 
 from threetears.models.errors import ModelCallTimeout
 from threetears.models.providers.openrouter import create_openrouter_chat
+
+from ._provider_wire import ChatCompletionsWire, openrouter_model, text_deltas
 
 _MODEL = "deepseek/deepseek-v4-pro"
 _SERVED_BY = "DeepInfra"
@@ -176,48 +176,30 @@ class TestTheStreamedAnswerIsTheSameAnswer:
 
 
 class TestTheDeadlineIsOnSilence:
-    """``_astream`` is replaced below the mixin, so the mixin's deadline is the one under test."""
+    """the deadline measured against a real stream's pacing, served by a scripted OpenRouter.
+
+    the wire paces the server-sent events itself, so the whole stack under the mixin -- the SDK's
+    event parsing, LangChain's chunking -- runs as it does live, and only the timing is scripted.
+    """
 
     @staticmethod
-    def _deadline_model(deadline_ms: int) -> Any:
-        model = create_openrouter_chat(_MODEL, "sk-or-test", max_retries=0)
+    def _deadline_model(wire: ChatCompletionsWire, deadline_ms: int) -> Any:
+        model = openrouter_model(wire, _MODEL)
         model.request_timeout = deadline_ms
         return model
 
-    async def test_an_answer_longer_than_the_deadline_with_no_long_gap_arrives(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _writes_for_a_while(self: Any, *args: Any, **kwargs: Any):
-            for i in range(10):
-                await asyncio.sleep(0.03)
-                yield ChatGenerationChunk(message=AIMessageChunk(content=str(i)))
-
-        monkeypatch.setattr(ChatOpenRouter, "_astream", _writes_for_a_while)
+    async def test_an_answer_longer_than_the_deadline_with_no_long_gap_arrives(self) -> None:
         # 300 ms of answer against a 150 ms deadline; no gap is longer than 30 ms
-        answer = await self._deadline_model(150).ainvoke([HumanMessage(content="hi")])
+        wire = ChatCompletionsWire(deltas=text_deltas(*(str(i) for i in range(10))), gap_s=0.03)
+        answer = await self._deadline_model(wire, 150).ainvoke([HumanMessage(content="hi")])
         assert answer.content == "0123456789"
 
-    async def test_an_answer_that_goes_quiet_for_the_deadline_times_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _starts_then_stalls(self: Any, *args: Any, **kwargs: Any):
-            yield ChatGenerationChunk(message=AIMessageChunk(content="Hel"))
-            await asyncio.sleep(5)
-            yield ChatGenerationChunk(message=AIMessageChunk(content="lo"))
-
-        monkeypatch.setattr(ChatOpenRouter, "_astream", _starts_then_stalls)
+    async def test_an_answer_that_goes_quiet_for_the_deadline_times_out(self) -> None:
+        wire = ChatCompletionsWire(deltas=text_deltas("Hel", "lo"), silence_after=1, silence_s=5.0)
         with pytest.raises(ModelCallTimeout, match="no chunk within 0.05 s"):
-            await self._deadline_model(50).ainvoke([HumanMessage(content="hi")])
+            await self._deadline_model(wire, 50).ainvoke([HumanMessage(content="hi")])
 
-    async def test_an_answer_that_never_starts_times_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from langchain_openrouter import ChatOpenRouter
-
-        async def _never(self: Any, *args: Any, **kwargs: Any):
-            await asyncio.sleep(5)
-            yield ChatGenerationChunk(message=AIMessageChunk(content="late"))
-
-        monkeypatch.setattr(ChatOpenRouter, "_astream", _never)
+    async def test_an_answer_that_never_starts_times_out(self) -> None:
+        wire = ChatCompletionsWire(deltas=text_deltas("late"), silence_after=0, silence_s=5.0)
         with pytest.raises(ModelCallTimeout):
-            await self._deadline_model(50).ainvoke([HumanMessage(content="hi")])
+            await self._deadline_model(wire, 50).ainvoke([HumanMessage(content="hi")])

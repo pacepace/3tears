@@ -26,6 +26,26 @@ private module path, and a private name bound by a string (`monkeypatch.setattr(
 - **3tears' own gate, `tests/enforcement/test_private_binding.py`, is red** until this repo's
   findings are fixed. Nothing is exempted.
 
+### datasources, models, registry: the private bindings their tests held are gone
+
+The private-binding gate's findings in these three packages, fixed at the front door or by
+promoting a name production code already shares across modules. Renames, no aliases:
+
+- **`threetears.datasources.drivers.sql_fragments`** (was `drivers._util`) and
+  **`threetears.datasources.drivers.sync_bridge`** (was `drivers._sync_bridge`): the drivers' shared
+  SQL helpers and sync-to-async bridge, called by every concrete driver and named in
+  `IMPLEMENTING_DRIVERS.md` as what a new driver uses. **`translate_placeholders`** (was
+  `_translate_placeholders`) and **`drivers.base.observed`** (was `_observed`) are public for the same
+  reason.
+- **`threetears.models.providers.claude_cli`** (was `providers._claude_cli`): the subscription
+  backend `providers.anthropic` routes an OAuth token to.
+- **`RedshiftDriver(cancel_timeout_seconds=)`**: the cancel path's wait, defaulting to the module's
+  5 s bound, so a test passes a short one instead of patching the constant.
+- `threetears.datasources.config`'s admissible access modes are DERIVED from
+  `DataSourceAccessMode` rather than a hand-kept copy that had drifted once.
+- The registry's registry->pod envelope builder no longer accepts an unresolved proxy wait
+  (`effective_timeout` is required); both production callers always passed one.
+
 ### L1 caches a JSON value holding a UUID, datetime or Decimal instead of failing a committed write
 
 `SQLiteBackend.serialize_value` encoded JSON columns with a bare `json.dumps`, so a dict or list

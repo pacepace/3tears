@@ -226,7 +226,7 @@ def _search_structure_of(message: ToolMessage) -> SearchResultsMetadata | None:
         return None
 
 
-def _provenance_of(structure: SearchResultsMetadata) -> dict[str, Any]:
+def _provenance_of(structure: SearchResultsMetadata, max_candidates: int) -> dict[str, Any]:
     """Project a search result into the facts worth storing beside the prose.
 
     Not the whole projection: candidate content slots can carry entire page
@@ -237,6 +237,8 @@ def _provenance_of(structure: SearchResultsMetadata) -> dict[str, Any]:
 
     :param structure: the typed projection read off the message
     :ptype structure: SearchResultsMetadata
+    :param max_candidates: how many candidate records the record keeps
+    :ptype max_candidates: int
     :return: a JSON-safe provenance record for ``save_tool_result``'s metadata
     :rtype: dict[str, Any]
     """
@@ -246,10 +248,10 @@ def _provenance_of(structure: SearchResultsMetadata) -> dict[str, Any]:
         "candidate_count": len(structure.candidates),
         "candidates": [
             {"identity": candidate.identity, "title": candidate.title}
-            for candidate in structure.candidates[:_MAX_SAVED_CANDIDATES]
+            for candidate in structure.candidates[:max_candidates]
         ],
     }
-    if len(structure.candidates) > _MAX_SAVED_CANDIDATES:
+    if len(structure.candidates) > max_candidates:
         record["candidates_truncated"] = True
     if structure.notices:
         record["notices"] = list(structure.notices)
@@ -267,6 +269,7 @@ def create_context_save_node(
     saveable_tools: frozenset[str] | None = None,
     saveable_suffixes: tuple[str, ...] = (),
     max_content: int = _MAX_SAVE_CONTENT,
+    max_saved_candidates: int = _MAX_SAVED_CANDIDATES,
     save_structured: bool = True,
 ) -> Any:
     """Create a post-response context save node.
@@ -291,6 +294,9 @@ def create_context_save_node(
     :ptype saveable_suffixes: tuple[str, ...]
     :param max_content: maximum content length before truncation
     :ptype max_content: int
+    :param max_saved_candidates: how many candidate records of a search result ride
+        the saved metadata; the rest are counted and marked truncated
+    :ptype max_saved_candidates: int
     :param save_structured: whether a result carrying typed search structure is
         saved regardless of its tool name. ``True`` is the C8 posture -- bind on
         what a result *is*, so a rename cannot silently change what is retained.
@@ -366,7 +372,7 @@ def create_context_save_node(
                 # deliberately: a literal here would be a second name for one
                 # payload, free to drift from the reader -- the defect class this
                 # whole change exists to close.
-                metadata = {SEARCH_RESULTS_METADATA_KEY: _provenance_of(structure)}
+                metadata = {SEARCH_RESULTS_METADATA_KEY: _provenance_of(structure, max_saved_candidates)}
                 # The query IS the input, so it is the honest dedup key: asking
                 # the same thing twice in one conversation refreshes the row
                 # rather than stacking a second copy of the same page.

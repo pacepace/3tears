@@ -452,7 +452,7 @@ called that way, or say so where the signature is read.
 **The one in-repo emitter of `ToolCompletedEvent` cannot populate the channel,
 for the reason [#318](https://github.com/pacepace/3tears/pull/318) already
 fixed elsewhere.** The Claude-CLI provider
-(`packages/models/src/threetears/models/providers/_claude_cli.py:374-390`)
+(`packages/models/src/threetears/models/providers/claude_cli.py:374-390`)
 invokes each wrapped tool as `tool.ainvoke(args)` — plain args, not the whole
 tool call — so LangChain never builds a `ToolMessage` and a
 `content_and_artifact` tool hands back the raw `(content, artifact)` tuple,

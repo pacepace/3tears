@@ -2,17 +2,17 @@
 
 three primitives live here:
 
-- :func:`_resolve_workspace` -- turn an optional ``workspace`` kwarg into
+- :func:`resolve_workspace` -- turn an optional ``workspace`` kwarg into
   a live :class:`Workspace` entity (explicit name, or the conversation's
   pin). raises typed exceptions so each tool's ``execute`` can translate
   them into ``ToolResult(success=False, ...)`` without its own glue.
-- :func:`_write_file_atomic` -- the three-row transaction (journal +
+- :func:`write_file_atomic` -- the three-row transaction (journal +
   head-state + workspace version pointer) that every byte-level write
   tool shares. enforces optimistic concurrency via ``expected_sha256``
   by reading the current head inside the same transaction the writes
   run in, so read-and-write share SERIALIZABLE semantics and a racing
   update is caught cleanly.
-- :func:`_resolve_ref` -- translate the history-tool ``ref`` vocabulary
+- :func:`resolve_ref` -- translate the history-tool ``ref`` vocabulary
   (``"head"``, integer version, checkpoint label) into a concrete journal
   row. returns a plain row ``dict`` (mirrors asyncpg's ``Record`` shape)
   rather than a hydrated entity so the caller already holds an open
@@ -42,7 +42,10 @@ __all__ = [
     "authorize_workspace",
     "authorize_workspace_file",
     "enrich_workspace_identity",
+    "resolve_ref",
+    "resolve_workspace",
     "workspace_audit_identity",
+    "write_file_atomic",
 ]
 
 
@@ -210,7 +213,7 @@ def _resolve_validators(
        ``.validators`` sequence).
 
     returns ``None`` when neither source is available so
-    :func:`_write_file_atomic` can short-circuit the dispatch step
+    :func:`write_file_atomic` can short-circuit the dispatch step
     entirely on workspaces that haven't declared any validators.
 
     :param deps: factory dependency bundle (``**kwargs`` passed to each
@@ -233,7 +236,7 @@ def _resolve_validators(
 
 
 class WorkspaceNotFound(ValueError):
-    """raised by :func:`_resolve_workspace` when no live workspace matches.
+    """raised by :func:`resolve_workspace` when no live workspace matches.
 
     fires for an explicit name lookup miss, a pin whose workspace_id no
     longer resolves under the agent, or a resolved row whose
@@ -243,13 +246,13 @@ class WorkspaceNotFound(ValueError):
 
 
 class NoWorkspacePinned(LookupError):
-    """raised by :func:`_resolve_workspace` when caller omitted ``workspace``
+    """raised by :func:`resolve_workspace` when caller omitted ``workspace``
     and no workspace is pinned to the current conversation.
     """
 
 
 class Sha256Mismatch(RuntimeError):
-    """raised inside :func:`_write_file_atomic` when OCC check fails.
+    """raised inside :func:`write_file_atomic` when OCC check fails.
 
     carries ``expected`` (the ``expected_sha256`` the caller supplied) and
     ``current`` (the sha256 actually present on the head row at read
@@ -298,7 +301,7 @@ async def authorize_workspace(
     """convenience wrapper: enrich identity then authorize via shared cache.
 
     every workspace tool's ``execute`` calls this once per dispatch,
-    immediately after :func:`_resolve_workspace`. both ``acl_cache``
+    immediately after :func:`resolve_workspace`. both ``acl_cache``
     and an installed :class:`ToolCallScope` are REQUIRED -- there is
     no "skip authorization" path (WS-ACL-05 is a hard requirement).
     tests must inject a real :class:`AclCache` wired with loader
@@ -327,7 +330,7 @@ async def authorize_workspace(
     :raises WorkspaceAccessDenied: on any denial path
     """
     # local imports keep this module cheap when tools only need
-    # _resolve_workspace or _write_file_atomic.
+    # resolve_workspace or write_file_atomic.
     from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 
     from threetears.agent.workspace.authorize import authorize_workspace_access
@@ -451,7 +454,7 @@ async def enrich_workspace_identity(
     so nothing here can mutate what it reads.
 
     ``db_pool`` must therefore accept ``namespace=`` -- the same
-    requirement :func:`_write_file_atomic` already places on the same
+    requirement :func:`write_file_atomic` already places on the same
     object through ``conn.transaction(namespace=...)``, and the
     production :class:`NatsProxyL3Backend` satisfies both.
 
@@ -475,7 +478,7 @@ async def enrich_workspace_identity(
     return workspace
 
 
-async def _resolve_workspace(
+async def resolve_workspace(
     workspace_arg: str | None,
     context: ToolContextManager,
     workspace_collection: WorkspaceCollection,
@@ -590,7 +593,7 @@ WHERE workspace_id = $3 AND agent_id = $4
 """
 
 
-async def _write_file_atomic(
+async def write_file_atomic(
     *,
     db_pool: Any,
     workspace: Workspace,
@@ -765,7 +768,7 @@ _SELECT_CHECKPOINT_ROW_SQL = (
 )
 
 
-async def _resolve_ref(
+async def resolve_ref(
     conn: Any,
     workspace_id: UUID,
     relative_path: str,
@@ -792,7 +795,7 @@ async def _resolve_ref(
     the row is returned as a plain ``dict[str, Any]`` (the callers
     already hold an open connection and need only the columns; hydrating
     an entity would force an extra cache path and make rollback's
-    ``_write_file_atomic`` call awkward when the row comes from a
+    ``write_file_atomic`` call awkward when the row comes from a
     checkpoint that never touched the head cache).
 
     WS-ACL-06: ``namespace_name`` routes the outside-tx lookups to the
