@@ -22,6 +22,9 @@ from typing import Any
 
 import pytest
 
+import threetears.scrape.tool as scrape_tool_module
+from threetears.scrape.robots import RobotsGate
+
 # This suite's shared test infrastructure is imported by its repo-root name::
 #
 #     from packages.scrape.tests._driver_log_helpers import driver_warnings
@@ -31,45 +34,38 @@ import pytest
 # be shadowed by, another suite's.
 
 
+async def _offline_robots_fetch(url: str) -> tuple[int, str]:
+    raise RuntimeError(f"no network in unit tests (robots fetch of {url})")
+
+
+class _OfflineDefaultRobotsGate(RobotsGate):
+    """The real gate, except that a gate built with no fetcher gets one that fails at once.
+
+    An unreachable ``robots.txt`` is already defined as "the site told us nothing", so a tool
+    built this way takes exactly the path it took before the default fetcher existed. A caller
+    that passes its own ``fetch`` gets it unchanged.
+    """
+
+    def __init__(self, *args: Any, fetch: Any = None, **kwargs: Any) -> None:
+        super().__init__(*args, fetch=fetch if fetch is not None else _offline_robots_fetch, **kwargs)
+
+
 @pytest.fixture(autouse=True)
 def _no_live_robots_fetch(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the default robots fetcher fail fast instead of reaching the network.
+    """Make the gate ``ScrapeTool`` builds by default read robots.txt offline.
+
+    Replaces the ``RobotsGate`` name ``threetears.scrape.tool`` builds its default gate from,
+    so a tool constructed without a ``robots`` argument -- most of this suite -- gets a gate
+    whose fetch fails fast instead of reaching ``https://<origin>/robots.txt``. Everything else
+    about that gate is the real one. A gate a test constructs itself is untouched: those pass
+    their own ``fetch``, or route the default fetcher through a recording exit.
 
     Opt out with ``@pytest.mark.real_robots_fetch`` when the REAL builder is the thing under
     test. That escape hatch is not a convenience: patching this suite-wide meant the actual
-    ``_default_fetch_via`` was never executed by anything, so the branch's one security fix --
+    default fetcher was never executed by anything, so the branch's one security fix --
     binding the robots read to the configured exit -- had no test that could fail when it
     regressed. A blanket patch that hides the code it is protecting is worse than no patch.
     """
     if request.node.get_closest_marker("real_robots_fetch") is not None:
         return
-
-    def _offline(_egress: Any = None) -> Any:
-        async def _fetch(url: str) -> tuple[int, str]:
-            raise RuntimeError(f"no network in unit tests (robots fetch of {url})")
-
-        return _fetch
-
-    monkeypatch.setattr("threetears.scrape.robots._default_fetch_via", _offline)
-
-
-@pytest.fixture(autouse=True)
-def _no_live_dns_in_ssrf_guard(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Neutralize ScrapeTool's SSRF guard so the unit suite stays off the network.
-
-    ``ScrapeTool`` fetches a caller-supplied URL, so (with ``block_private_hosts``
-    on by default) ``execute()`` resolves the target host via
-    ``socket.getaddrinfo`` -- a live DNS lookup. Most of this suite uses
-    non-resolvable test hosts (``a.example``, ``example.gov``), so on a
-    network-isolated unit runner that lookup hangs, and even locally it refuses
-    the fetch and breaks tests whose subject is robots/session, not SSRF. Same
-    "keep the unit suite off the network" rationale as ``_no_live_robots_fetch``.
-
-    Opt out with ``@pytest.mark.real_ssrf_guard`` when the guard itself is under
-    test -- ``test_tool.py``'s ``TestSsrfGuard`` does, and exercises the real
-    ``_ssrf_block_reason`` (its direct-function tests hold the imported reference
-    regardless of this patch).
-    """
-    if request.node.get_closest_marker("real_ssrf_guard") is not None:
-        return
-    monkeypatch.setattr("threetears.scrape.tool._ssrf_block_reason", lambda _url: None)
+    monkeypatch.setattr(scrape_tool_module, "RobotsGate", _OfflineDefaultRobotsGate)
