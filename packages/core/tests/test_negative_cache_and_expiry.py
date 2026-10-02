@@ -152,6 +152,12 @@ class _Expiring(_DenylistCollection):
     expires_at_column: ClassVar[str | None] = "expires_at"
 
 
+class _NegativeCachingSweepingInPairs(_NegativeCaching):
+    """a negative-caching collection whose sweep deletes two markers per query, so a backlog spans batches."""
+
+    negative_cache_sweep_batch: ClassVar[int] = 2
+
+
 class _NegativeCachingAndExpiring(_DenylistCollection):
     negative_cache_max_age: ClassVar[timedelta | None] = _MAX_AGE
     expires_at_column: ClassVar[str | None] = "expires_at"
@@ -341,14 +347,11 @@ class TestNegativeCaching:
     async def test_one_sweep_drains_a_backlog_larger_than_its_batch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # a sweep capped at one batch per interval falls behind any miss rate above batch/interval,
         # and the table then grows without bound.
-        import threetears.core.collections.base as base_module
-
         clock = [1_000.0]
         monkeypatch.setattr(time, "monotonic", lambda: clock[0])
-        monkeypatch.setattr(base_module, "_ABSENT_MARKER_SWEEP_BATCH", 2)
         nats, store, gens = _wire()
         l1 = SQLiteBackend(db_name=f"negcache_{uuid.uuid4().hex[:8]}")
-        coll = _replica(_NegativeCaching, nats, store, gens, l1=l1)
+        coll = _replica(_NegativeCachingSweepingInPairs, nats, store, gens, l1=l1)
         for n in range(7):
             assert await coll.get(f"token-{n}") is None
 
@@ -480,6 +483,13 @@ class TestUnsoundWiringIsRefused:
 
             class _TooShort(_DenylistCollection):
                 negative_cache_max_age: ClassVar[timedelta | None] = timedelta(milliseconds=500)
+
+    def test_a_sweep_batch_under_one_is_refused_at_class_definition(self) -> None:
+        """a batch of zero would select nothing, so no expired marker would ever be swept."""
+        with pytest.raises(TypeError, match="negative_cache_sweep_batch"):
+
+            class _NeverSweeps(_NegativeCaching):
+                negative_cache_sweep_batch: ClassVar[int] = 0
 
 
 class TestRowExpiry:

@@ -370,10 +370,9 @@ def composite_l1() -> SQLiteBackend:
     b = SQLiteBackend(db_name=f"test_comp_coll_{uuid.uuid4().hex[:8]}")
     b.initialize(_composite_metadata())
     yield b
-    from threetears.core._bridge import drain, shutdown
+    from threetears.core.testing.bridge import drain_and_shutdown_bridge
 
-    drain()
-    shutdown()
+    drain_and_shutdown_bridge()
     b.reset()
 
 

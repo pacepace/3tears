@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.core.testing import containers
-from threetears.core.testing.containers import stagger_container_start
+from threetears.core.testing.containers import ContainerStartStagger
 
 
 class _Clock:
@@ -24,60 +23,72 @@ class _Clock:
 
 
 @pytest.fixture(autouse=True)
-def _fresh_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Each test is a fresh worker process as far as the once-per-process flag is concerned."""
-    monkeypatch.setattr(containers, "_staggered", False)
+def _default_stagger(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test starts from the default stagger, whatever the environment running it sets."""
     monkeypatch.delenv("THREETEARS_TEST_CONTAINER_STAGGER_SECONDS", raising=False)
 
 
-def test_worker_n_waits_n_times_the_stagger_once(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def stagger() -> ContainerStartStagger:
+    """A fresh worker process's stagger: no first start taken yet."""
+    return ContainerStartStagger()
+
+
+def test_worker_n_waits_n_times_the_stagger_once(
+    stagger: ContainerStartStagger, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
     clock = _Clock()
-    stagger_container_start(sleep=clock)
-    stagger_container_start(sleep=clock)
+    stagger.wait_before_first_start(sleep=clock)
+    stagger.wait_before_first_start(sleep=clock)
     assert clock.slept == [6.0], "gw3 waits 3 x 2s before its FIRST container, and never again"
 
 
-def test_the_first_worker_never_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_first_worker_never_waits(stagger: ContainerStartStagger, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
     clock = _Clock()
-    stagger_container_start(sleep=clock)
+    stagger.wait_before_first_start(sleep=clock)
     assert clock.slept == []
 
 
-def test_without_xdist_nothing_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_without_xdist_nothing_waits(stagger: ContainerStartStagger, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     clock = _Clock()
-    stagger_container_start(sleep=clock)
+    stagger.wait_before_first_start(sleep=clock)
     assert clock.slept == []
 
 
-def test_the_stagger_is_configurable_and_zero_disables_it(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_stagger_is_configurable_and_zero_disables_it(
+    stagger: ContainerStartStagger, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw2")
     monkeypatch.setenv("THREETEARS_TEST_CONTAINER_STAGGER_SECONDS", "0.5")
     clock = _Clock()
-    stagger_container_start(sleep=clock)
+    stagger.wait_before_first_start(sleep=clock)
     assert clock.slept == [1.0]
 
-    monkeypatch.setattr(containers, "_staggered", False)
     monkeypatch.setenv("THREETEARS_TEST_CONTAINER_STAGGER_SECONDS", "0")
     clock = _Clock()
-    stagger_container_start(sleep=clock)
+    ContainerStartStagger().wait_before_first_start(sleep=clock)
     assert clock.slept == []
 
 
 @pytest.mark.parametrize("value", ["-1", "soon", "nan", "inf"])
-def test_an_invalid_stagger_fails_loudly(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+def test_an_invalid_stagger_fails_loudly(
+    stagger: ContainerStartStagger, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
     monkeypatch.setenv("THREETEARS_TEST_CONTAINER_STAGGER_SECONDS", value)
     with pytest.raises(ValueError, match="THREETEARS_TEST_CONTAINER_STAGGER_SECONDS"):
-        stagger_container_start(sleep=_Clock())
+        stagger.wait_before_first_start(sleep=_Clock())
 
 
-def test_an_unrecognised_worker_name_does_not_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_unrecognised_worker_name_does_not_wait(
+    stagger: ContainerStartStagger, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "master")
     clock = _Clock()
-    stagger_container_start(sleep=clock)
+    stagger.wait_before_first_start(sleep=clock)
     assert clock.slept == []
 
 

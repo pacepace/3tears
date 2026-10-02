@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -24,6 +23,7 @@ import pytest
 from threetears.core.coordination import ReplayGuard
 from threetears.core.coordination.lease import KVLease
 from threetears.nats import KvError, NatsClient, set_default_namespace
+from threetears.nats.kv import KvTimings
 
 pytestmark = pytest.mark.integration
 
@@ -115,8 +115,10 @@ async def test_a_pod_that_starts_before_the_hub_declares_binds_once_it_does(nats
 
 async def test_a_bucket_nobody_declares_fails_once_the_wait_is_spent(nats_container: str) -> None:
     set_default_namespace(_NAMESPACE)
+    # the bind waits one second for a declarer, not the production thirty
+    timings = KvTimings(bind_wait_for_declarer_seconds=1.0)
     async with await NatsClient.connect(
-        nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="pod"
+        nats_url=nats_container, nats_subject_namespace=_NAMESPACE, client_name="pod", kv_timings=timings
     ) as pod:
         guard = ReplayGuard(
             pod,
@@ -125,8 +127,5 @@ async def test_a_bucket_nobody_declares_fails_once_the_wait_is_spent(nats_contai
             verifier_future_tolerance=timedelta(0),
             create_if_missing=False,
         )
-        with (
-            patch("threetears.nats.kv._BIND_WAIT_FOR_DECLARER_SECONDS", 1.0),
-            pytest.raises(KvError, match="declar"),
-        ):
+        with pytest.raises(KvError, match="declar"):
             await guard.bind()

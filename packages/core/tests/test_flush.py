@@ -1,4 +1,4 @@
-"""Tests for WriteBuffer, _toposort_pending, and flush_pending."""
+"""Tests for WriteBuffer and flush_pending: its parent-first ordering and its FK-aware retry policy."""
 
 from __future__ import annotations
 
@@ -12,15 +12,43 @@ import uuid
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.flush import (
-    _FK_RETRY_LIMIT,
-    _MAX_FLUSH_RETRIES,
-    PendingWrite,
     WriteBuffer,
-    _is_fk_violation,
-    _toposort_pending,
     flush_pending,
 )
 from threetears.core.collections.registry import CollectionRegistry
+
+#: the flush retry policy, as documented on ``threetears.core.collections.flush``: a write that
+#: fails for any reason but a foreign-key violation is dropped after this many attempts.
+GENERAL_RETRY_BUDGET = 10
+
+#: the budget a foreign-key violation gets instead -- "my parent has not landed yet" -- sized so
+#: a child waits out ~50 minutes of flush cycles for a parent in another drain (the 2026-05-13
+#: orphaned-conversation incident). The tests below pin both values: changing either is a
+#: change to this policy, not an implementation detail.
+FK_RETRY_BUDGET = 100
+
+
+def _recording_registry(*tables: str) -> tuple[CollectionRegistry, list[tuple[str, object]]]:
+    """a registry whose collections persist successfully and record the order they were asked to.
+
+    :param tables: table names to register a collection for
+    :ptype tables: str
+    :return: the registry, and the ``(table, entity id)`` pairs in persist order
+    :rtype: tuple[CollectionRegistry, list[tuple[str, object]]]
+    """
+    registry = CollectionRegistry()
+    persisted: list[tuple[str, object]] = []
+    for table in tables:
+        coll = MagicMock()
+        coll.table_name = table
+
+        async def _persist(data: dict[str, object], *, _table: str = table) -> int:
+            persisted.append((_table, data["id"]))
+            return 1
+
+        coll.persist_to_store = AsyncMock(side_effect=_persist)
+        registry.register(coll)
+    return registry, persisted
 
 
 class TestWriteBuffer:
@@ -90,80 +118,90 @@ class TestWriteBuffer:
         assert items[0].data["name"] == "Alice Updated"
 
 
-class TestToposortPending:
-    """Tests for _toposort_pending."""
+class TestFlushOrdersParentsBeforeChildren:
+    """``flush_pending`` persists a parent before its children, whatever order they were buffered in."""
 
-    def test_no_deps_tables_come_first(self) -> None:
-        pending = [
-            PendingWrite("messages", "m1", {"id": "m1", "parent_message_id": None}),
-            PendingWrite("users", "u1", {"id": "u1"}),
-        ]
+    @pytest.mark.asyncio
+    async def test_no_deps_tables_come_first(self) -> None:
+        buf = WriteBuffer()
+        await buf.add("messages", "m1", {"id": "m1", "parent_message_id": None})
+        await buf.add("users", "u1", {"id": "u1"})
+        registry, persisted = _recording_registry("messages", "users")
 
-        result = _toposort_pending(pending)
+        await flush_pending(buf, registry)
 
-        # users has no deps so it should come before messages
-        assert result[0].table_name == "users"
+        # users has no deps so it is persisted before messages
+        assert persisted[0] == ("users", "u1")
 
-    def test_parents_before_children(self) -> None:
-        pending = [
-            PendingWrite("messages", "m2", {"id": "m2", "parent_message_id": "m1"}),
-            PendingWrite("messages", "m1", {"id": "m1", "parent_message_id": None}),
-        ]
+    @pytest.mark.asyncio
+    async def test_parents_before_children(self) -> None:
+        buf = WriteBuffer()
+        await buf.add("messages", "m2", {"id": "m2", "parent_message_id": "m1"})
+        await buf.add("messages", "m1", {"id": "m1", "parent_message_id": None})
+        registry, persisted = _recording_registry("messages")
 
-        result = _toposort_pending(pending)
+        await flush_pending(buf, registry)
 
-        ids = [pw.entity_id for pw in result]
+        ids = [entity_id for _table, entity_id in persisted]
         assert ids.index("m1") < ids.index("m2")
 
-    def test_chain_ordering(self) -> None:
+    @pytest.mark.asyncio
+    async def test_chain_ordering(self) -> None:
         """m1 -> m2 -> m3 should preserve order."""
-        pending = [
-            PendingWrite("messages", "m3", {"id": "m3", "parent_message_id": "m2"}),
-            PendingWrite("messages", "m1", {"id": "m1", "parent_message_id": None}),
-            PendingWrite("messages", "m2", {"id": "m2", "parent_message_id": "m1"}),
-        ]
+        buf = WriteBuffer()
+        await buf.add("messages", "m3", {"id": "m3", "parent_message_id": "m2"})
+        await buf.add("messages", "m1", {"id": "m1", "parent_message_id": None})
+        await buf.add("messages", "m2", {"id": "m2", "parent_message_id": "m1"})
+        registry, persisted = _recording_registry("messages")
 
-        result = _toposort_pending(pending)
+        await flush_pending(buf, registry)
 
-        ids = [pw.entity_id for pw in result]
+        ids = [entity_id for _table, entity_id in persisted]
         assert ids.index("m1") < ids.index("m2")
         assert ids.index("m2") < ids.index("m3")
 
-    def test_custom_parent_key_map(self) -> None:
-        pending = [
-            PendingWrite("replies", "r2", {"id": "r2", "reply_to": "r1"}),
-            PendingWrite("replies", "r1", {"id": "r1", "reply_to": None}),
-        ]
+    @pytest.mark.asyncio
+    async def test_custom_parent_key_map(self) -> None:
+        buf = WriteBuffer()
+        await buf.add("replies", "r2", {"id": "r2", "reply_to": "r1"})
+        await buf.add("replies", "r1", {"id": "r1", "reply_to": None})
+        registry, persisted = _recording_registry("replies")
 
-        result = _toposort_pending(pending, parent_key_map={"replies": "reply_to"})
+        await flush_pending(buf, registry, parent_key_map={"replies": "reply_to"})
 
-        ids = [pw.entity_id for pw in result]
+        ids = [entity_id for _table, entity_id in persisted]
         assert ids.index("r1") < ids.index("r2")
 
-    def test_no_pending_returns_empty(self) -> None:
-        result = _toposort_pending([])
-        assert result == []
+    @pytest.mark.asyncio
+    async def test_no_pending_persists_nothing(self) -> None:
+        registry, persisted = _recording_registry("messages")
 
-    def test_only_non_dep_tables(self) -> None:
-        pending = [
-            PendingWrite("users", "u1", {"id": "u1"}),
-            PendingWrite("settings", "s1", {"id": "s1"}),
-        ]
+        flushed = await flush_pending(WriteBuffer(), registry)
 
-        result = _toposort_pending(pending)
+        assert flushed == 0
+        assert persisted == []
 
-        assert len(result) == 2
+    @pytest.mark.asyncio
+    async def test_only_non_dep_tables(self) -> None:
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+        await buf.add("settings", "s1", {"id": "s1"})
+        registry, persisted = _recording_registry("users", "settings")
 
-    def test_parent_outside_pending_treated_as_root(self) -> None:
+        await flush_pending(buf, registry)
+
+        assert sorted(persisted) == [("settings", "s1"), ("users", "u1")]
+
+    @pytest.mark.asyncio
+    async def test_parent_outside_pending_treated_as_root(self) -> None:
         """If parent_message_id points to an ID not in pending, treat as root."""
-        pending = [
-            PendingWrite("messages", "m5", {"id": "m5", "parent_message_id": "m_external"}),
-        ]
+        buf = WriteBuffer()
+        await buf.add("messages", "m5", {"id": "m5", "parent_message_id": "m_external"})
+        registry, persisted = _recording_registry("messages")
 
-        result = _toposort_pending(pending)
+        await flush_pending(buf, registry)
 
-        assert len(result) == 1
-        assert result[0].entity_id == "m5"
+        assert persisted == [("messages", "m5")]
 
 
 class TestFlushPending:
@@ -208,7 +246,7 @@ class TestFlushPending:
     async def test_drops_after_max_retries(self) -> None:
         buf = WriteBuffer()
         # Add with retries already at max - 1
-        await buf.add("users", "u1", {"id": "u1"}, retries=9)
+        await buf.add("users", "u1", {"id": "u1"}, retries=GENERAL_RETRY_BUDGET - 1)
 
         registry = CollectionRegistry()
         mock_coll = MagicMock()
@@ -264,49 +302,58 @@ class TestFlushPending:
         assert flushed == 2
 
 
-class TestIsFkViolation:
-    """Tests for ``_is_fk_violation`` — detection of FK errors so the
-    retry policy can grant them the generous ``_FK_RETRY_LIMIT``
-    budget instead of dropping after ``_MAX_FLUSH_RETRIES``.
+class TestFkViolationClassification:
+    """which failures count as a foreign-key violation, observed through the budget they get.
+
+    A write sitting one failure short of the general budget is re-enqueued when its failure is
+    classified as an FK violation (the FK budget still has room) and dropped otherwise, so the
+    buffer's contents after one flush say which way the error was classified.
     """
 
-    def test_typed_asyncpg_exception_returns_true(self) -> None:
-        """asyncpg.exceptions.ForeignKeyViolationError is the canonical
-        match -- detected via isinstance, no string fallback needed.
-        """
-        exc = asyncpg.exceptions.ForeignKeyViolationError(
-            "insert or update on table violates foreign key constraint",
-        )
-        assert _is_fk_violation(exc) is True
+    @pytest.mark.parametrize(
+        ("error", "is_fk"),
+        [
+            # the canonical match, by type
+            (
+                asyncpg.exceptions.ForeignKeyViolationError(
+                    "insert or update on table violates foreign key constraint"
+                ),
+                True,
+            ),
+            # a wrapper or re-raise that lost the typed class but kept the message still counts
+            (
+                RuntimeError(
+                    'insert or update on table "messages" violates foreign key constraint '
+                    '"messages_parent_message_id_fkey"'
+                ),
+                True,
+            ),
+            # unrelated failures keep the general budget
+            (RuntimeError("db connection lost"), False),
+            (ValueError("bad input"), False),
+            # an exception with no message has nothing to match
+            (Exception(), False),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_classification_picks_the_retry_budget(self, error: BaseException, is_fk: bool) -> None:
+        buf = WriteBuffer()
+        await buf.add("messages", "m1", {"id": "m1"}, retries=GENERAL_RETRY_BUDGET - 1)
+        registry = CollectionRegistry()
+        mock_coll = MagicMock()
+        mock_coll.table_name = "messages"
+        mock_coll.persist_to_store = AsyncMock(side_effect=error)
+        registry.register(mock_coll)
 
-    def test_substring_match_in_generic_exception_returns_true(self) -> None:
-        """A non-asyncpg exception whose ``str()`` contains the marker
-        text still counts -- defense-in-depth for wrappers or re-raised
-        exceptions that lose the typed class but preserve the message.
-        """
-        exc = RuntimeError(
-            'insert or update on table "messages" violates foreign key constraint "messages_parent_message_id_fkey"',
-        )
-        assert _is_fk_violation(exc) is True
+        await flush_pending(buf, registry)
 
-    def test_unrelated_exception_returns_false(self) -> None:
-        """Generic exceptions whose message lacks the marker substring
-        are NOT FK violations -- the normal retry budget applies.
-        """
-        assert _is_fk_violation(RuntimeError("db connection lost")) is False
-        assert _is_fk_violation(ValueError("bad input")) is False
-
-    def test_empty_message_returns_false(self) -> None:
-        """An exception with no useful message string returns False (no
-        substring match) — exercises the substring branch's empty case.
-        """
-        assert _is_fk_violation(Exception()) is False
+        assert buf.pending_count() == (1 if is_fk else 0)
 
 
 class TestFkAwareRetryPolicy:
     """Tests for the FK-aware retry policy in ``flush_pending``: FK
-    violations use the generous ``_FK_RETRY_LIMIT`` budget while all
-    other failures use ``_MAX_FLUSH_RETRIES``. Critic 2026-05-13
+    violations use the generous FK budget (:data:`FK_RETRY_BUDGET`) budget while all
+    other failures use general budget (:data:`GENERAL_RETRY_BUDGET`). Critic 2026-05-13
     flagged the lack of direct coverage as block-worthy; this class
     closes the gap.
     """
@@ -314,8 +361,8 @@ class TestFkAwareRetryPolicy:
     @pytest.mark.asyncio
     async def test_fk_violation_uses_extended_retry_budget(self) -> None:
         """A pending write that fails with an FK violation re-enqueues
-        even when ``retries`` is at the GENERAL ``_MAX_FLUSH_RETRIES``
-        boundary -- because FK errors get the larger ``_FK_RETRY_LIMIT``
+        even when ``retries`` is at the GENERAL general budget (:data:`GENERAL_RETRY_BUDGET`)
+        boundary -- because FK errors get the larger FK budget (:data:`FK_RETRY_BUDGET`)
         budget. Otherwise a single Anthropic-class outage would orphan
         every descendant in the conversation tree (the 2026-05-13
         production incident fingerprint).
@@ -328,7 +375,7 @@ class TestFkAwareRetryPolicy:
             "messages",
             "m1",
             {"id": "m1"},
-            retries=_MAX_FLUSH_RETRIES - 1,
+            retries=GENERAL_RETRY_BUDGET - 1,
         )
 
         registry = CollectionRegistry()
@@ -345,10 +392,10 @@ class TestFkAwareRetryPolicy:
 
         assert flushed == 0
         # Re-enqueued, NOT dropped -- the FK budget hasn't been
-        # exhausted (still well below _FK_RETRY_LIMIT).
+        # exhausted (still well below FK_RETRY_BUDGET).
         assert buf.pending_count() == 1
         items = await buf.drain()
-        assert items[0].retries == _MAX_FLUSH_RETRIES
+        assert items[0].retries == GENERAL_RETRY_BUDGET
 
     @pytest.mark.asyncio
     async def test_fk_violation_drops_at_fk_retry_limit(self) -> None:
@@ -362,7 +409,7 @@ class TestFkAwareRetryPolicy:
             "messages",
             "m1",
             {"id": "m1"},
-            retries=_FK_RETRY_LIMIT - 1,
+            retries=FK_RETRY_BUDGET - 1,
         )
 
         registry = CollectionRegistry()
@@ -385,7 +432,7 @@ class TestFkAwareRetryPolicy:
         [
             (0, True, logging.WARNING),
             (1, True, logging.DEBUG),
-            (_FK_RETRY_LIMIT - 3, True, logging.DEBUG),
+            (FK_RETRY_BUDGET - 3, True, logging.DEBUG),
             (0, False, logging.WARNING),
             (1, False, logging.WARNING),
         ],
@@ -395,7 +442,7 @@ class TestFkAwareRetryPolicy:
         self, monkeypatch: pytest.MonkeyPatch, retries: int, fk: bool, level: int
     ) -> None:
         """A row whose parent was deleted re-deferred once per drain, each at
-        WARNING, up to ``_FK_RETRY_LIMIT`` lines for one row. The first deferral
+        WARNING, up to FK budget (:data:`FK_RETRY_BUDGET`) lines for one row. The first deferral
         is the event; its repeats are DEBUG. Any other failure still warns every time."""
         from threetears.core.collections import flush as flush_module
 
@@ -423,7 +470,7 @@ class TestFkAwareRetryPolicy:
     @pytest.mark.asyncio
     async def test_non_fk_violation_keeps_general_retry_budget(self) -> None:
         """A non-FK exception (e.g. connection lost) drops at the
-        existing ``_MAX_FLUSH_RETRIES`` boundary, NOT the extended FK
+        existing general budget (:data:`GENERAL_RETRY_BUDGET`) boundary, NOT the extended FK
         budget. Confirms the FK branch is narrow and doesn't accidentally
         grant unbounded retries to every transient failure class.
         """
@@ -433,7 +480,7 @@ class TestFkAwareRetryPolicy:
             "users",
             "u1",
             {"id": "u1"},
-            retries=_MAX_FLUSH_RETRIES - 1,
+            retries=GENERAL_RETRY_BUDGET - 1,
         )
 
         registry = CollectionRegistry()
@@ -447,7 +494,7 @@ class TestFkAwareRetryPolicy:
         flushed = await flush_pending(buf, registry)
 
         assert flushed == 0
-        assert buf.pending_count() == 0  # dropped at _MAX_FLUSH_RETRIES
+        assert buf.pending_count() == 0  # dropped at GENERAL_RETRY_BUDGET
 
 
 class TestWriteThroughDurability:
@@ -762,7 +809,7 @@ class TestFlushAtomicBatch:
 
         Regression for the orphan-poisons-the-batch fingerprint: an FK orphan
         (parent row deleted, never returning) keeps re-enqueuing under the
-        generous ``_FK_RETRY_LIMIT``. If it stayed in the atomic transaction it
+        generous FK budget (:data:`FK_RETRY_BUDGET`). If it stayed in the atomic transaction it
         would abort the batch every cycle for ~100 cycles, dragging every
         co-buffered fresh write into per-entity fallback. The fix routes any
         already-failed write straight to the per-entity loop, so the fresh write
