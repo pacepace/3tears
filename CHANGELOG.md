@@ -58,6 +58,61 @@ what ran before, so no caller changes:
   `per_document_deadline_seconds` (default 90) and `multi_row_vision_deadline_seconds`
   (default 150).
 
+### A datetime inside stored JSON has one form at every tier: `json_datetime`
+
+A datetime nested in a JSON value was stored three ways. L3's jsonb codec used `default=str`
+(`2026-10-01 12:30:00+00:00`); the L2 payload encoders and L1's cache used `isoformat()`
+(`2026-10-01T12:30:00+00:00`), which drops the fraction when it is zero, so even one tier wrote two
+widths. An agent's jsonb write through the broker took the `default=str` form too, from
+`NatsProxyL3Backend`'s request encoder. The same instant read back as a different string
+depending on which tier answered, and stored strings did not sort as instants.
+
+- **`threetears.core.serialization.json_datetime`** (new): ISO 8601 extended, `T` separator,
+  always six fraction digits, explicit UTC offset -- `2026-10-01T12:30:00.000000+00:00`. Fixed
+  width. An aware value in another zone is converted to UTC first.
+- **Every storage encoder writes it.** `schema_sql.json_default` (L2 payloads, L1 SQLite JSON
+  columns) and `serialize_to_json` (the entity codec) format datetimes through it.
+  `register_jsonb_text_codec` (L3) now encodes through `json_default` instead of `default=str`,
+  and so do `NatsProxyL3Backend`'s request encoder, the write buffer's L1 copy, the scan cache's
+  L1 payload, the DuckDB L1's JSON columns (which raised on a nested UUID, Decimal or datetime
+  before), and the L2 codecs of `ObjectResolutionCollection`, `HeartbeatCollection`, the presence
+  collections and the scrape collections.
+- **`json_default` encodes a `date`** as its ISO string, the same string `default=str` stored.
+
+**Behaviour change:** L3 jsonb and broker-bound values now refuse a type `json_default` does not
+cover (UUID, datetime, date, Decimal, bytes), as L2 and L1 already did, where `default=str` stored
+its `str()`; `bytes` nested in jsonb are stored base64, as L2 stores them, not as their `repr`.
+
+**Stored rows keep their strings.** Nothing is rewritten: every reader parses datetimes with
+`datetime.fromisoformat` (or Pydantic), which accepts the old space-separated and fraction-less
+forms as well as this one.
+
+**A naive datetime is still written**, fixed width without an offset
+(`2026-10-01T12:30:00.000000`). It names no instant and should be refused, but production writers
+still hand one to these encoders as a top-level column the L2 payload carries; refusing it here
+would fail their writes. Fixing those producers comes first.
+
+### A tool pod whose assertion replay ledger fails answers `TOOL_POP_LEDGER_UNAVAILABLE` instead of timing out
+
+`ToolServer` records every proxy assertion's nonce in a shared KV ledger before it runs the tool, and
+the ledger fails closed: when its bucket cannot be reached it raises `KvError` rather than answering
+"fresh". That exception escaped the dispatch with no reply published, so the registry waited its
+whole budget and the caller was told `TOOL_TIMEOUT` about a pod that had refused in milliseconds.
+
+**Behaviour change:** the pod now answers that outage `TOOL_POP_LEDGER_UNAVAILABLE`, the code the
+registry already answered its own pop ledger outage with, and the registry and the pod carry one
+message for it. Only the ledger's own failure (`threetears.nats.errors.NatsClientError`) is caught;
+the bucket, the error and what to check go to the pod's ERROR log.
+
+- **`TOOL_POP_LEDGER_UNAVAILABLE` / `TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE`** (new, in
+  `threetears.core.security`): one spelling for both hops. The registry's reply text changes from
+  `the replay ledger could not be reached (<ExceptionType>); the call was not checked, retry` to the
+  shared message; the exception type stays in its ERROR log.
+- **A JWKS provider that raises during the pod's assertion check** now refuses the call
+  `TOOL_PROXY_ASSERTION_UNVERIFIED` with a reply. The check read the provider directly, so a failure
+  there escaped the dispatch exactly as the ledger's did; it now reads through the same converting
+  loader the identity check uses.
+
 ### L1 caches a JSON value holding a UUID, datetime or Decimal instead of failing a committed write
 
 `SQLiteBackend.serialize_value` encoded JSON columns with a bare `json.dumps`, so a dict or list

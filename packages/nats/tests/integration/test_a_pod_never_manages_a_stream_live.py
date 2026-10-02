@@ -30,7 +30,6 @@ from collections.abc import Iterator
 from contextlib import aclosing
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import patch
 from uuid import UUID
 
 import nats
@@ -39,6 +38,7 @@ import pytest
 
 from threetears.core.testing.containers import check_docker_available
 from threetears.nats import KvError, NatsClient
+from threetears.nats.kv import KvTimings
 from threetears.nats.result_delivery import result_stream_name
 from threetears.nats.subject_permissions import (
     Principal,
@@ -200,6 +200,9 @@ async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream(tmp_pat
                 password=_POD_PW,
                 inbox_prefix=permissions.inbox_prefix,
                 startup_timeout=timedelta(seconds=10),
+                # a bind-only open waits for an absent bucket's declarer; shortened so the
+                # never-declared case below fails in a second rather than the production 30s.
+                kv_timings=KvTimings(bind_wait_for_declarer_seconds=1.0),
             )
 
             # === SUCCEEDS: every KV operation inside its own bucket, bind-only ======================
@@ -230,10 +233,7 @@ async def test_a_pod_works_inside_the_hubs_buckets_and_manages_no_stream(tmp_pat
             # until the hub re-declares), so the bound here is that wait, shortened for the test --
             # and the failure at its end names the bucket rather than arriving as a deadline.
             started = time.monotonic()
-            with (
-                patch("threetears.nats.kv._BIND_WAIT_FOR_DECLARER_SECONDS", 1.0),
-                pytest.raises(KvError, match=never_declared),
-            ):
+            with pytest.raises(KvError, match=never_declared):
                 await pod.kv_bucket(name=f"{scope}-{_NEVER_DECLARED}", create_if_missing=False)
             assert time.monotonic() - started < 5.0, "a missing bucket must fail loudly, not at a deadline"
 

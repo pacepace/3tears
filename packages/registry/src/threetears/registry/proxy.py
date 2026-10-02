@@ -37,6 +37,7 @@ from threetears.core.security.identity_token import (
     verify_identity_token,
 )
 from threetears.core.security.pop import access_token_hash, verify_pop_proof
+from threetears.core.security.proxy_assertion import TOOL_POP_LEDGER_UNAVAILABLE, TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE
 from threetears.nats import (
     RESULT_ACK_TIMEOUT_SECONDS,
     IncomingMessage,
@@ -1580,18 +1581,21 @@ class CallProxy:
 
         The ledger's contract says a failure MUST be a failed check, never fresh, so the call is
         denied -- but not as ``TOOL_POP_UNVERIFIED``, which tells the caller its proof is bad. The
-        proof was never judged; the ledger could not be reached. Logged once at ERROR with the cause.
+        proof was never judged; the ledger could not be reached. Logged once at ERROR with the cause;
+        the reply carries the one shared message, the same a tool pod answers its own ledger outage
+        with, and never the exception.
 
         :param request: the call request
         :ptype request: ProxyCallRequest
         :param exc: what the ledger raised
         :ptype exc: Exception
-        :return: the ``TOOL_POP_LEDGER_UNAVAILABLE`` refusal
+        :return: the :data:`~threetears.core.security.TOOL_POP_LEDGER_UNAVAILABLE` refusal
         :rtype: ProxyCallResponse
         """
         log.error(
             "tool call refused: the proof-of-possession replay ledger could not be reached, so the "
-            "proof could not be checked and the call is denied",
+            "proof could not be checked and the call is denied; check the registry's NATS connection "
+            "and its grant on the pop nonce bucket",
             extra={
                 "extra_data": {
                     "tool_name": request.tool_name,
@@ -1604,8 +1608,8 @@ class CallProxy:
         return ProxyCallResponse(
             success=False,
             content="",
-            error=f"the replay ledger could not be reached ({type(exc).__name__}); the call was not checked, retry",
-            error_code="TOOL_POP_LEDGER_UNAVAILABLE",
+            error=TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE,
+            error_code=TOOL_POP_LEDGER_UNAVAILABLE,
             context=request.context,
         )
 

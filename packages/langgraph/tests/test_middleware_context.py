@@ -25,10 +25,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables.config import var_child_runnable_config
 
-from threetears.langgraph.middleware_context import (
-    ContextMergeMiddleware,
-    _fold_context_into_system,
-)
+from threetears.langgraph.middleware_context import ContextMergeMiddleware
 
 
 class _Manager:
@@ -81,20 +78,35 @@ def _drive(request: ModelRequest, configurable: dict[str, Any]) -> ModelRequest:
     return captured["req"]
 
 
+def _fold(system: SystemMessage | None, context_text: str) -> SystemMessage:
+    """drive one model call with *context_text* injected and return the merged system message.
+
+    :param system: the request's system message
+    :ptype system: SystemMessage | None
+    :param context_text: the context the injected manager renders
+    :ptype context_text: str
+    :return: the system message the model received
+    :rtype: SystemMessage
+    """
+    seen = _drive(_request(system), {"context_manager": _Manager(context_text)})
+    assert seen.system_message is not None
+    return seen.system_message
+
+
 class TestFold:
     def test_appends_to_string_system(self) -> None:
-        out = _fold_context_into_system(SystemMessage(content="base"), "ctx")
+        out = _fold(SystemMessage(content="base"), "ctx")
         assert out.content == "base\n\nctx"
 
     def test_none_system_becomes_context(self) -> None:
-        out = _fold_context_into_system(None, "ctx")
+        out = _fold(None, "ctx")
         assert out.content == "ctx"
 
     def test_appends_text_part_to_structured_content(self) -> None:
         base = SystemMessage(
             content=[{"type": "text", "text": "base", "cache_control": {"type": "ephemeral"}}],
         )
-        out = _fold_context_into_system(base, "ctx")
+        out = _fold(base, "ctx")
         assert isinstance(out.content, list)
         assert out.content[-1] == {"type": "text", "text": "ctx"}
         # the pre-existing cache_control part is preserved untouched

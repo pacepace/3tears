@@ -378,20 +378,21 @@ class TestRefund:
         assert (await bucket.claim("never-claimed", tokens=5.0)).claimed
 
     @pytest.mark.asyncio
-    async def test_a_refund_never_raises_into_a_caller_that_is_unwinding(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_a_refund_never_raises_into_a_caller_that_is_unwinding(self) -> None:
         """It runs from an exception handler, so raising would lose the original error.
 
         A failed refund costs throughput that self-heals; an exception escaping here replaces a
-        recoverable dip with a lost traceback.
+        recoverable dip with a lost traceback. The KV is down at the client, so opening the
+        bucket is what fails.
         """
-        bucket = TokenBucket(FakeNatsClient(), bucket_name="b", refill_rate=1.0, capacity=5.0)
+        from unittest.mock import AsyncMock
 
-        async def _explode(*_a: object, **_k: object) -> object:
-            raise RuntimeError("kv is down")
-
-        monkeypatch.setattr(bucket, "_ensure_bucket", _explode)
+        client = AsyncMock()
+        client.kv_bucket = AsyncMock(side_effect=RuntimeError("kv is down"))
+        bucket = TokenBucket(client, bucket_name="b", refill_rate=1.0, capacity=5.0)
 
         assert await bucket.refund("k") == -1.0, "a broken refund must report failure, not raise"
+        client.kv_bucket.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_a_refund_retries_a_lost_cas_race(self, clock: _DrivenClock) -> None:

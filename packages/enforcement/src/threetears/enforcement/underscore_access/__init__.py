@@ -57,6 +57,7 @@ from threetears.enforcement.underscore_access.ledger import (
     blanket_noqa_offenders,
     carry_forward_rationales,
     enclosing_scopes,
+    import_bindings,
     ledger_entries,
     missing_files,
     orphan_rationales,
@@ -66,8 +67,12 @@ from threetears.enforcement.underscore_access.ledger import (
 )
 from threetears.enforcement.underscore_access.pragma_policy import (
     TEST_DIRECTORIES,
+    confinement_modules,
+    confinement_own_test_entries,
+    is_own_test_of,
     is_src_module,
     ledger_entries_outside_src,
+    own_test_name,
     scanned_python_files,
     slf001_ignored_files,
     slf001_ignores_outside_src,
@@ -76,13 +81,13 @@ from threetears.enforcement.underscore_access.pragma_policy import (
     slf001_pragma_offenders,
 )
 from threetears.enforcement.underscore_access.private_binding import (
+    DOCUMENTED_STDLIB_PRIVATES,
     PRIVATE_BINDING_CATEGORIES,
     SHAPE_G_MODULE,
     SHAPE_G_NAME,
     SHAPE_H_ATTRIBUTE,
     SHAPE_H_PATH,
     PrivateBindingScan,
-    confinement_modules,
     private_binding_findings,
     scan_private_bindings,
     undetected_planted_controls,
@@ -109,6 +114,7 @@ from threetears.enforcement.underscore_access.walkers import (
 )
 
 __all__ = [
+    "DOCUMENTED_STDLIB_PRIVATES",
     "MODULE_SCOPE",
     "PRIVATE_BINDING_CATEGORIES",
     "PrivateBindingScan",
@@ -118,6 +124,7 @@ __all__ = [
     "SHAPE_H_PATH",
     "TEST_DIRECTORIES",
     "confinement_modules",
+    "confinement_own_test_entries",
     "private_binding_findings",
     "scan_private_bindings",
     "undetected_planted_controls",
@@ -130,12 +137,15 @@ __all__ = [
     "carry_forward_rationales",
     "enclosing_scopes",
     "exempted_files",
+    "import_bindings",
+    "is_own_test_of",
     "is_src_module",
     "is_vendored",
     "ledger_entries",
     "ledger_entries_outside_src",
     "missing_files",
     "orphan_rationales",
+    "own_test_name",
     "package_id",
     "private_accesses",
     "ruff_configs",

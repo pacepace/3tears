@@ -231,12 +231,20 @@ async def test_sql_durable_store_generates_expected_sql() -> None:
     assert pool.calls[-1][0] == 'SELECT * FROM "widgets"'
 
 
-def test_sql_l3_backend_rejects_injecting_identifiers() -> None:
-    from threetears.core.backends.sql import _quote_ident
+@pytest.mark.asyncio
+async def test_sql_l3_backend_rejects_injecting_identifiers() -> None:
+    """a quote in a table or column name must not slip into generated SQL: the call refuses it unsent."""
+    pool = _RecordingPool()
+    await SqlL3Backend(pool).scan("widgets", {"name": "x"})
+    assert pool.calls[-1][0] == 'SELECT * FROM "widgets" WHERE "name" = $1'
 
-    assert _quote_ident("name") == '"name"'
-    with pytest.raises(ValueError):  # a quote in a column name must not slip into generated SQL
-        _quote_ident('id"; DROP TABLE x; --')
+    hostile = 'id"; DROP TABLE x; --'
+    pool = _RecordingPool()
+    with pytest.raises(ValueError):
+        await SqlL3Backend(pool).scan("widgets", {hostile: 1})
+    with pytest.raises(ValueError):
+        await SqlL3Backend(pool).delete(hostile, {"id": 1})
+    assert pool.calls == [], "a refused identifier reached the pool"
 
 
 class _InMemoryDurableStore:

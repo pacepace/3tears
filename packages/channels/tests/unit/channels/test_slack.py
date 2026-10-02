@@ -1483,7 +1483,6 @@ class TestSlackProfileCacheBound:
         overwritten, so an adapter in a busy workspace grew one entry per
         person who ever spoke and released none of them.
         """
-        from threetears.channels import slack as slack_mod
         from threetears.channels.slack import SlackAdapter
 
         mock_app = MagicMock()
@@ -1493,32 +1492,33 @@ class TestSlackProfileCacheBound:
         )
         mock_app_cls.return_value = mock_app
 
-        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=_MockRouter())
+        adapter = SlackAdapter(
+            bot_token="xoxb-t", app_token="xapp-t", router=_MockRouter(), user_profile_cache_max_entries=2
+        )
         lookups = mock_app.client.users_info
 
-        with patch.object(slack_mod, "_USER_PROFILE_CACHE_MAX_ENTRIES", 2):
-            await adapter.handle_message_event(event=_message_event(user="U1"), say=AsyncMock())
-            await adapter.handle_message_event(event=_message_event(user="U2"), say=AsyncMock())
-            assert lookups.await_count == 2
+        await adapter.handle_message_event(event=_message_event(user="U1"), say=AsyncMock())
+        await adapter.handle_message_event(event=_message_event(user="U2"), say=AsyncMock())
+        assert lookups.await_count == 2
 
-            # a cache HIT, which also makes U2 the least recently used.
-            await adapter.handle_message_event(event=_message_event(user="U1"), say=AsyncMock())
-            assert lookups.await_count == 2
+        # a cache HIT, which also makes U2 the least recently used.
+        await adapter.handle_message_event(event=_message_event(user="U1"), say=AsyncMock())
+        assert lookups.await_count == 2
 
-            # U3 overflows the cap of 2, so something must go.
-            await adapter.handle_message_event(event=_message_event(user="U3"), say=AsyncMock())
-            assert lookups.await_count == 3
+        # U3 overflows the cap of 2, so something must go.
+        await adapter.handle_message_event(event=_message_event(user="U3"), say=AsyncMock())
+        assert lookups.await_count == 3
 
-            # U1 survived, because USING it moved it off the LRU end. this is
-            # the assertion that separates an LRU from a plain drop-the-oldest-
-            # insert cache: under the latter U1 would have been the one evicted
-            # above, and this line would cost a fourth lookup.
-            await adapter.handle_message_event(event=_message_event(user="U1"), say=AsyncMock())
-            assert lookups.await_count == 3
+        # U1 survived, because USING it moved it off the LRU end. this is
+        # the assertion that separates an LRU from a plain drop-the-oldest-
+        # insert cache: under the latter U1 would have been the one evicted
+        # above, and this line would cost a fourth lookup.
+        await adapter.handle_message_event(event=_message_event(user="U1"), say=AsyncMock())
+        assert lookups.await_count == 3
 
-            # ...so U2 is the one that went, and it costs a re-fetch.
-            await adapter.handle_message_event(event=_message_event(user="U2"), say=AsyncMock())
-            assert lookups.await_count == 4
+        # ...so U2 is the one that went, and it costs a re-fetch.
+        await adapter.handle_message_event(event=_message_event(user="U2"), say=AsyncMock())
+        assert lookups.await_count == 4
 
     @patch("threetears.channels.slack.AsyncApp")
     async def test_expired_entry_is_refetched(self, mock_app_cls: MagicMock) -> None:

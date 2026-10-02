@@ -115,3 +115,9 @@ packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_TRACER_PROVIDER_SET_ONCE
 # rationale: opentelemetry Once._done: the flag that guard reads; clearing it is the only way to let the next set_tracer_provider take effect
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_done
+
+# rationale: owner ruling 1: test_nats_py_internals is the guard that fails, by name, when a nats-py release renames or retypes an attribute in PRIVATE_SURFACE; it must import the confinement module to read that declaration and to drive take_queued_messages against a real nats-py subscription
+packages/nats/tests/unit/test_nats_py_internals.py:<module>#0:_nats_py_internals
+
+# rationale: owner ruling 3: test_otel_internals is the guard that fails when an OpenTelemetry release moves the private logs modules (opentelemetry._logs, opentelemetry.sdk._logs, the OTLP _log_exporter) or changes how a record reaches the exporter; it imports the confinement module to drive start_log_export end to end
+packages/observe/tests/test_otel_internals.py:<module>#0:_otel_internals

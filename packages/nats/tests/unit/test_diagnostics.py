@@ -1,4 +1,4 @@
-"""unit tests for :mod:`threetears.nats._diagnostics`.
+"""unit tests for :mod:`threetears.nats.diagnostics`.
 
 The condition under test is the one that produces no useful signal on its own: a
 KV bucket the connection's user JWT does not grant. The server refuses the
@@ -24,7 +24,7 @@ from nats.aio.client import Client as NatsPyClient
 
 from threetears.nats import NatsClient
 
-from threetears.nats._diagnostics import (
+from threetears.nats.diagnostics import (
     kv_grant_remedy,
     kv_timeout_remedy,
     permissions_violation_remedy,

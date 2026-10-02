@@ -11,6 +11,7 @@ from typing import Any, NamedTuple, TYPE_CHECKING
 import asyncpg
 from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 
+from threetears.core.backends.schema_sql import json_default
 from threetears.core.collections.l2_order import l2_order_of
 from threetears.observe import get_logger
 
@@ -187,7 +188,7 @@ class WriteBuffer:
                     "key": l1_key,
                     "table_name": table_name,
                     "entity_id": str(entity_id),
-                    "data": json.dumps(data, default=str),
+                    "data": json.dumps(data, default=json_default),
                     "retries": retries,
                     "date_updated": datetime.now(UTC).isoformat(),
                 },

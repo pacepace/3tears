@@ -40,6 +40,8 @@ design notes
 - **rate-limited error logging**: identical errors within
   :data:`_ERROR_LOG_RATE_LIMIT_SECONDS` log at debug; distinct errors
   log at error. prevents the 60-DNS-error-per-minute incident pattern.
+  the window is kept per client (shared by its successor connections),
+  so one client's error never silences another client's first report.
   a PERMISSIONS VIOLATION gets its own line naming the subject, the
   refused operation, and the consequence -- it is the only error here
   that leaves the connection up and raises to nobody, so a refused
@@ -99,7 +101,7 @@ from nats.js.errors import NotFoundError as _NatsJsNotFoundError
 from pydantic import BaseModel, ValidationError
 from threetears.observe import get_logger, representative_exception
 
-from threetears.nats._diagnostics import permissions_violation_remedy
+from threetears.nats.diagnostics import permissions_violation_remedy
 from threetears.nats._nats_py_internals import (
     force_reconnect,
     pull_subscription_inbox,
@@ -108,7 +110,7 @@ from threetears.nats._nats_py_internals import (
     write_pending_then_ping,
 )
 from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
-from threetears.nats._receipt import ReceiptBacklog
+from threetears.nats.receipt import ReceiptBacklog
 from threetears.nats.credential_refusal import CredentialRefusal
 from threetears.nats.renewal_request import CredentialRenewalRequest
 from threetears.nats.credential_renewal import (
@@ -145,7 +147,7 @@ if TYPE_CHECKING:
     from nats.aio.client import Server as _NatsServer
     from nats.aio.msg import Msg as _NatsMsg
 
-    from threetears.nats.kv import NatsKvBucket
+    from threetears.nats.kv import KvTimings, NatsKvBucket
     from threetears.nats.transport import RawMessageCallback
 
 
@@ -163,6 +165,7 @@ __all__ = [
     "DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS",
     "RUNTIME_MAX_RECONNECT_ATTEMPTS",
     "STARTUP_MAX_RECONNECT_ATTEMPTS",
+    "ConnectionEstablisher",
     "JetStreamPullConsumer",
     "JetStreamPushConsumer",
     "JetStreamResultWaiter",
@@ -190,6 +193,14 @@ ReconnectCallback = Callable[[], Awaitable[None]]
 #: calls it un-awaited; back a network-fetched token with a holder a background task refreshes and
 #: return ``holder.get()``.
 TokenCallback = Callable[[], str]
+
+#: opens ONE nats-py connection: ``(servers, options, primary_url) -> connected client``. The
+#: client calls it for its first connection and again for every successor a credential renewal or a
+#: lame-duck move opens, always with the options :meth:`NatsClient.connect` built plus that
+#: connection's own callbacks. The default opens a real nats-py ``Client``; a host replaces it only
+#: to put a connection of its own under the wrapper (a test double, a recording proxy), and the
+#: replacement must raise :class:`~threetears.nats.errors.NatsClientError` when it cannot connect.
+ConnectionEstablisher = Callable[[list[str], dict[str, object], str], Awaitable[_NatsPyClient]]
 
 
 # ---------------------------------------------------------------------------
@@ -1057,6 +1068,8 @@ class JetStreamPullConsumer:
     :ptype current_connection: Callable[[], Any]
     :param resubscribe: binds the durable again on the client's current connection
     :ptype resubscribe: Callable[[], Awaitable[Any]]
+    :param error_backoff_seconds: pause after a failed fetch cycle before the next one
+    :ptype error_backoff_seconds: float
     """
 
     def __init__(
@@ -1073,6 +1086,7 @@ class JetStreamPullConsumer:
         bound_to: Any,
         current_connection: Callable[[], Any],
         resubscribe: Callable[[], Awaitable[Any]],
+        error_backoff_seconds: float = _PULL_CONSUMER_ERROR_BACKOFF_SECONDS,
     ) -> None:
         """initialize the pull consumer over its subscription + handlers.
 
@@ -1099,10 +1113,14 @@ class JetStreamPullConsumer:
         :ptype current_connection: Callable[[], Any]
         :param resubscribe: binds the durable again on the client's current connection
         :ptype resubscribe: Callable[[], Awaitable[Any]]
+        :param error_backoff_seconds: pause after a failed fetch cycle (a transport blip during a
+            reconnect) before the next, so a persistent failure does not spin
+        :ptype error_backoff_seconds: float
         :return: nothing
         :rtype: None
         """
         self._psub = psub
+        self._error_backoff_seconds = error_backoff_seconds
         self._cb = cb
         self._redeliver = redeliver
         self._durable = durable
@@ -1249,10 +1267,10 @@ class JetStreamPullConsumer:
                 log.warning(
                     "durable pull consumer cycle failed (durable=%s); retrying after %.1fs: %s",
                     self._durable,
-                    _PULL_CONSUMER_ERROR_BACKOFF_SECONDS,
+                    self._error_backoff_seconds,
                     failure,
                 )
-                await asyncio.sleep(_PULL_CONSUMER_ERROR_BACKOFF_SECONDS)
+                await asyncio.sleep(self._error_backoff_seconds)
 
     async def stop(self) -> None:
         """halt the fetch loop, release the inbox at the server, and handle whatever reached it first.
@@ -1425,6 +1443,8 @@ class JetStreamResultWaiter:
     :ptype poll_seconds: float
     :param heartbeat_seconds: the consumer's idle heartbeat
     :ptype heartbeat_seconds: float
+    :param rebuild_backoff_seconds: pause after a failed consumer replacement before the next try
+    :ptype rebuild_backoff_seconds: float
     """
 
     def __init__(
@@ -1437,6 +1457,7 @@ class JetStreamResultWaiter:
         inactive_threshold_seconds: float,
         poll_seconds: float,
         heartbeat_seconds: float = _RESULT_WAITER_HEARTBEAT_SECONDS,
+        rebuild_backoff_seconds: float = _RESULT_WAITER_REBUILD_BACKOFF_SECONDS,
     ) -> None:
         """bind the waiter to its subject; the consumer is created by :meth:`open`.
 
@@ -1454,10 +1475,14 @@ class JetStreamResultWaiter:
         :ptype poll_seconds: float
         :param heartbeat_seconds: the consumer's idle heartbeat, in seconds
         :ptype heartbeat_seconds: float
+        :param rebuild_backoff_seconds: pause after a failed consumer replacement (a broker still
+            coming back) before the wait tries again, so the retry does not spin
+        :ptype rebuild_backoff_seconds: float
         :return: nothing
         :rtype: None
         """
         self._connection = connection
+        self._rebuild_backoff_seconds = rebuild_backoff_seconds
         self._jetstream = jetstream
         self._subject = subject
         self._stream = stream
@@ -1621,7 +1646,7 @@ class JetStreamResultWaiter:
                 self._subject.path,
                 exc,
             )
-            await asyncio.sleep(_RESULT_WAITER_REBUILD_BACKOFF_SECONDS)
+            await asyncio.sleep(self._rebuild_backoff_seconds)
 
     async def close(self) -> None:
         """unsubscribe the inbox; idempotent and never raises.
@@ -2139,6 +2164,8 @@ class _ConnectionOpener:
     :ptype primary_url: str
     :param client_name: the client's name, for log lines
     :ptype client_name: str
+    :param establish: opens each connection; ``None`` opens a real nats-py connection
+    :ptype establish: ConnectionEstablisher | None
     """
 
     __slots__ = (
@@ -2146,12 +2173,22 @@ class _ConnectionOpener:
         "_options",
         "_primary_url",
         "_client_name",
+        "_establish",
+        "_error_log_times",
         "reconnect_callbacks",
         "health_state",
         "lame_duck_handler",
     )
 
-    def __init__(self, *, servers: list[str], options: dict[str, object], primary_url: str, client_name: str) -> None:
+    def __init__(
+        self,
+        *,
+        servers: list[str],
+        options: dict[str, object],
+        primary_url: str,
+        client_name: str,
+        establish: ConnectionEstablisher | None = None,
+    ) -> None:
         """hold what every connection is opened with.
 
         :param servers: the server URLs, primary first
@@ -2162,10 +2199,17 @@ class _ConnectionOpener:
         :ptype primary_url: str
         :param client_name: the client's name, for log lines
         :ptype client_name: str
+        :param establish: opens each connection, the first and every successor; ``None`` opens a
+            real nats-py connection
+        :ptype establish: ConnectionEstablisher | None
         :return: nothing
         :rtype: None
         """
         self._servers = servers
+        self._establish: ConnectionEstablisher = establish if establish is not None else _establish_connection
+        # rate-limit key -> when it was last logged at error, shared by every connection this opener
+        # opens: a successor repeating its predecessor's error is still the same repeat.
+        self._error_log_times: dict[str, float] = {}
         self._options = options
         self._primary_url = primary_url
         self._client_name = client_name
@@ -2197,7 +2241,7 @@ class _ConnectionOpener:
         options["disconnected_cb"] = self._disconnected_callback(state)
         options["error_cb"] = self._error_callback(state)
         options["lame_duck_mode_cb"] = self._lame_duck_callback(state)
-        raw = await _establish_connection(self._servers, options, self._primary_url)
+        raw = await self._establish(self._servers, options, self._primary_url)
         state.connected_at = time.monotonic()
         return raw
 
@@ -2312,6 +2356,7 @@ class _ConnectionOpener:
         :rtype: Callable[[Exception], Awaitable[None]]
         """
         health_state = self.health_state
+        error_log_times = self._error_log_times
 
         async def _dispatch_error(exc: Exception) -> None:
             """log via the rate-limited handler AND track a persistent auth violation for is_healthy."""
@@ -2324,7 +2369,7 @@ class _ConnectionOpener:
             # connection is still valid, and is kept until it expires.
             if state.role is _Role.CURRENT and _is_authorization_violation(exc):
                 health_state["auth_violations"] += 1
-            await _on_error(exc)
+            await _on_error(exc, error_log_times)
 
         return _dispatch_error
 
@@ -2529,6 +2574,9 @@ class NatsClient:
     :ptype namespace: str
     :param client_name: human-readable label used in nats-py connect options and logs
     :ptype client_name: str
+    :param kv_timings: the deadlines every KV bucket this client opens runs under; ``None`` is the
+        production default
+    :ptype kv_timings: KvTimings | None
     """
 
     __slots__ = (
@@ -2547,6 +2595,7 @@ class NatsClient:
         "_abandonment",
         "_successor_move",
         "_longest_request_seconds",
+        "_kv_timings",
     )
 
     def __init__(
@@ -2555,12 +2604,16 @@ class NatsClient:
         raw: _NatsPyClient,
         namespace: str,
         client_name: str,
+        kv_timings: KvTimings | None = None,
     ) -> None:
         # every connection this client holds, the role of each, and the client's phase: the one
         # model every lifecycle transition goes through (:class:`_ConnectionLifecycle`).
         self._lifecycle = _ConnectionLifecycle(raw, _ConnectionState())
         self._namespace = namespace
         self._client_name = client_name
+        # the deadlines every KV bucket this client opens runs under; ``None`` is the production
+        # default (:data:`threetears.nats.kv.DEFAULT_KV_TIMINGS`).
+        self._kv_timings = kv_timings
         # the credential-renewal loop, when the owner asked for one (:meth:`renew_credential`);
         # cancelled by :meth:`shutdown`.
         self._renewal_task: asyncio.Task[None] | None = None
@@ -2633,6 +2686,8 @@ class NatsClient:
         flusher_queue_size: int = DEFAULT_FLUSHER_QUEUE_SIZE,
         reconnect_backoff_base: float = DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS,
         reconnect_backoff_cap: float = DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS,
+        establish_connection: ConnectionEstablisher | None = None,
+        kv_timings: KvTimings | None = None,
     ) -> NatsClient:
         """connect to NATS and return a ready :class:`NatsClient`.
 
@@ -2698,6 +2753,16 @@ class NatsClient:
             (resilience-task-06). defaults to :data:`DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS` (30.0);
             bounds the exponential growth so a single agent still recovers promptly.
         :ptype reconnect_backoff_cap: float
+        :param establish_connection: opens each nats-py connection this client holds -- the first,
+            and every successor a credential renewal or lame-duck move opens -- from the servers,
+            the options built here and the primary URL. ``None`` (production) opens a real nats-py
+            ``Client``; see :data:`ConnectionEstablisher`.
+        :ptype establish_connection: ConnectionEstablisher | None
+        :param kv_timings: the deadlines every KV bucket this client opens runs under -- one
+            operation's ceiling, how often its timeout remedy is logged, and how long a bind-only
+            open waits for an absent bucket's declarer. ``None`` (production) uses
+            :data:`threetears.nats.kv.DEFAULT_KV_TIMINGS`.
+        :ptype kv_timings: KvTimings | None
         :return: connected and ready NATS client
         :rtype: NatsClient
         :raises NatsClientError: if connection fails, times out, or JetStream verification fails
@@ -2758,7 +2823,13 @@ class NatsClient:
             # inboxes never share the global `_INBOX` tree across principals.
             options["inbox_prefix"] = inbox_prefix.encode("ascii")
 
-        opener = _ConnectionOpener(servers=servers, options=options, primary_url=nats_url, client_name=client_name)
+        opener = _ConnectionOpener(
+            servers=servers,
+            options=options,
+            primary_url=nats_url,
+            client_name=client_name,
+            establish=establish_connection,
+        )
         state = _ConnectionState()
         started_at = time.monotonic()
         try:
@@ -2791,7 +2862,7 @@ class NatsClient:
             },
         )
 
-        client = cls(raw=raw_client, namespace=nats_subject_namespace, client_name=client_name)
+        client = cls(raw=raw_client, namespace=nats_subject_namespace, client_name=client_name, kv_timings=kv_timings)
         client._lifecycle = _ConnectionLifecycle(raw_client, state, opener=opener)
         # a server shutting down (a rolling restart) tells its clients first; this one moves to a
         # successor then, the way a renewal does, instead of losing what is in flight to a reconnect.
@@ -4610,7 +4681,7 @@ class NatsClient:
         :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
         """
         # local import avoids circular dependency between client.py and kv.py
-        from threetears.nats.kv import NatsKvBucket
+        from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket
 
         full_name = f"{self._namespace}-{name}"
         async with self._kv_lock:
@@ -4625,6 +4696,7 @@ class NatsClient:
                 create_if_missing=create_if_missing,
                 history=history,
                 direct=direct,
+                timings=self._kv_timings if self._kv_timings is not None else DEFAULT_KV_TIMINGS,
             )
             self._buckets[full_name] = bucket
         return bucket
@@ -4687,7 +4759,7 @@ class NatsClient:
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
         """
         # local import avoids circular dependency between client.py and kv.py
-        from threetears.nats.kv import NatsKvBucket
+        from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket
 
         full_name = f"{self._namespace}-{name}"
         async with self._kv_lock:
@@ -4699,6 +4771,7 @@ class NatsClient:
                 create_if_missing=create_if_missing,
                 history=history,
                 direct=direct,
+                timings=self._kv_timings if self._kv_timings is not None else DEFAULT_KV_TIMINGS,
             )
             self._buckets[full_name] = bucket
         return bucket
@@ -5112,6 +5185,7 @@ class NatsClient:
         stream: str | None = None,
         batch: int = 8,
         fetch_timeout_seconds: float = 5.0,
+        error_backoff_seconds: float = _PULL_CONSUMER_ERROR_BACKOFF_SECONDS,
     ) -> JetStreamPullConsumer:
         """create a SHARED durable PULL consumer with MANUAL ack + BOUNDED redelivery.
 
@@ -5157,6 +5231,9 @@ class NatsClient:
         :param fetch_timeout_seconds: how long one fetch waits for a message
             before returning empty (the idle poll cadence)
         :ptype fetch_timeout_seconds: float
+        :param error_backoff_seconds: how long the fetch loop pauses after a failed cycle (a
+            transport error during a reconnect) before retrying
+        :ptype error_backoff_seconds: float
         :return: a pull-consumer handle whose ``run`` loops fetch+dispatch
         :rtype: JetStreamPullConsumer
         :raises ValueError: when ``max_deliver`` < 1
@@ -5227,6 +5304,7 @@ class NatsClient:
             bound_to=bound_to,
             current_connection=lambda: self._raw,
             resubscribe=_bind,
+            error_backoff_seconds=error_backoff_seconds,
         )
         log.info(
             "jetstream pull consumer bound: subject=%s durable=%s stream=%s max_deliver=%d dlq=%s batch=%d",
@@ -5352,9 +5430,6 @@ class NatsClient:
 # ---------------------------------------------------------------------------
 # module helpers
 # ---------------------------------------------------------------------------
-
-
-_last_error_log: dict[str, float] = {}
 
 
 async def _establish_connection(
@@ -5548,7 +5623,7 @@ def _permissions_violation(exc: Exception) -> _ViolationDetail | None:
     return result
 
 
-async def _on_error(exc: Exception) -> None:
+async def _on_error(exc: Exception, last_logged: dict[str, float]) -> None:
     """nats-py error callback with rate-limited logging.
 
     A PERMISSIONS VIOLATION is singled out because it is otherwise INVISIBLE. It is the one
@@ -5561,7 +5636,7 @@ async def _on_error(exc: Exception) -> None:
 
     The line is therefore built from BOTH halves of that truth:
 
-    - the REMEDY, from :mod:`threetears.nats._diagnostics`, which recognises a ``$KV`` subject and
+    - the REMEDY, from :mod:`threetears.nats.diagnostics`, which recognises a ``$KV`` subject and
       names the grant declaration that is missing rather than only the wire subject; and
     - the DECOMPOSITION -- which operation was refused, on which subject, and what that costs --
       because a remedy alone does not say whether a publish was dropped or a subscription went
@@ -5577,6 +5652,9 @@ async def _on_error(exc: Exception) -> None:
 
     :param exc: exception from nats-py client
     :ptype exc: Exception
+    :param last_logged: rate-limit key -> when that key was last logged at error, owned by the
+        client whose connection raised; updated in place
+    :ptype last_logged: dict[str, float]
     :return: nothing
     :rtype: None
     """
@@ -5586,7 +5664,7 @@ async def _on_error(exc: Exception) -> None:
     else:
         key = f"{_PERMISSIONS_VIOLATION_PHRASE}:{violation.operation}:{violation.subject}"
     now = time.monotonic()
-    last = _last_error_log.get(key, 0.0)
+    last = last_logged.get(key, 0.0)
     if now - last >= _ERROR_LOG_RATE_LIMIT_SECONDS:
         if violation is None:
             log.error("NATS error: %s", exc)
@@ -5617,6 +5695,6 @@ async def _on_error(exc: Exception) -> None:
                     }
                 },
             )
-        _last_error_log[key] = now
+        last_logged[key] = now
     else:
         log.debug("NATS error (rate-limited duplicate): %s", exc)

@@ -26,6 +26,7 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
+from threetears.core.backends.schema_sql import json_default
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
     DataVersionNotReadyError,
@@ -937,15 +938,19 @@ class NatsProxyL3Backend:
 
         :param subject: NATS subject on which to publish the request
         :ptype subject: str
-        :param payload: request payload dict, will be JSON-encoded with
-            ``default=str`` so UUID, datetime, Decimal values serialize
+        :param payload: request payload dict, JSON-encoded with the storage handler
+            (:func:`~threetears.core.backends.schema_sql.json_default`). Top-level parameters are
+            already converted by ``_serialize_param``; what the handler still meets is a value
+            nested in a dict or list parameter bound for a jsonb column, which the broker stores
+            as it arrives -- so a nested datetime is written in
+            :func:`~threetears.core.serialization.json_datetime`'s one form, as every tier writes it
         :ptype payload: dict[str, Any]
         :return: parsed JSON response dict from broker
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
-        payload_bytes = json.dumps(payload, default=str).encode("utf-8")
+        payload_bytes = json.dumps(payload, default=json_default).encode("utf-8")
         nats_timeout = (self.timeout_ms / 1000) + 2
 
         try:

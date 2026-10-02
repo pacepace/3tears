@@ -12,9 +12,14 @@ from threetears.observe.logging import clear_context, get_context
 from threetears.observe.middleware import (
     CorrelationMiddleware,
     OTelMiddleware,
-    _CORRELATION_HEADER,
-    _MAX_CORRELATION_LENGTH,
 )
+
+#: the header a client sends and the response echoes: the module's locked wire contract
+#: (``X-Correlation-ID``), spelled here as a caller spells it, in ASGI's lower-cased bytes.
+CORRELATION_HEADER = b"x-correlation-id"
+
+#: the longest inbound correlation id honoured; a longer one is replaced, never echoed.
+MAX_CORRELATION_LENGTH = 128
 
 
 @pytest.fixture(autouse=True)
@@ -69,12 +74,12 @@ class TestCorrelationMiddlewareHeaderExtraction:
             sent.append(message)
 
         middleware = CorrelationMiddleware(app)
-        scope = _http_scope([(_CORRELATION_HEADER, b"abc-123-xyz")])
+        scope = _http_scope([(CORRELATION_HEADER, b"abc-123-xyz")])
         await middleware(scope, _noop_receive, send)
 
         assert observed_cid == ["abc-123-xyz"]
         start = next(m for m in sent if m["type"] == "http.response.start")
-        echo = dict(start["headers"]).get(_CORRELATION_HEADER)
+        echo = dict(start["headers"]).get(CORRELATION_HEADER)
         assert echo == b"abc-123-xyz"
 
     @pytest.mark.asyncio
@@ -108,7 +113,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
             pass
 
         middleware = CorrelationMiddleware(app)
-        scope = _http_scope([(_CORRELATION_HEADER, b"")])
+        scope = _http_scope([(CORRELATION_HEADER, b"")])
         await middleware(scope, _noop_receive, send)
 
         assert observed_cid[0] != ""
@@ -126,14 +131,14 @@ class TestCorrelationMiddlewareHeaderExtraction:
         async def send(_: dict[str, Any]) -> None:
             pass
 
-        long_value = b"x" * (_MAX_CORRELATION_LENGTH + 1)
+        long_value = b"x" * (MAX_CORRELATION_LENGTH + 1)
         middleware = CorrelationMiddleware(app)
-        scope = _http_scope([(_CORRELATION_HEADER, long_value)])
+        scope = _http_scope([(CORRELATION_HEADER, long_value)])
         await middleware(scope, _noop_receive, send)
 
         assert observed_cid[0] != long_value.decode("ascii")
         assert observed_cid[0] is not None
-        assert len(observed_cid[0]) <= _MAX_CORRELATION_LENGTH
+        assert len(observed_cid[0]) <= MAX_CORRELATION_LENGTH
 
     @pytest.mark.asyncio
     async def test_generates_uuid7_when_header_non_ascii(self):
@@ -148,7 +153,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
             pass
 
         middleware = CorrelationMiddleware(app)
-        scope = _http_scope([(_CORRELATION_HEADER, b"\xff\xfe\xc3")])
+        scope = _http_scope([(CORRELATION_HEADER, b"\xff\xfe\xc3")])
         await middleware(scope, _noop_receive, send)
 
         assert observed_cid[0] is not None
@@ -185,7 +190,7 @@ class TestCorrelationMiddlewareContextLifecycle:
             pass
 
         middleware = CorrelationMiddleware(app)
-        scope = _http_scope([(_CORRELATION_HEADER, b"abc")])
+        scope = _http_scope([(CORRELATION_HEADER, b"abc")])
         await middleware(scope, _noop_receive, send)
 
         assert "cid" not in get_context()
@@ -199,7 +204,7 @@ class TestCorrelationMiddlewareContextLifecycle:
             pass
 
         middleware = CorrelationMiddleware(app)
-        scope = _http_scope([(_CORRELATION_HEADER, b"abc")])
+        scope = _http_scope([(CORRELATION_HEADER, b"abc")])
         with pytest.raises(RuntimeError, match="boom"):
             await middleware(scope, _noop_receive, send)
 
@@ -218,7 +223,7 @@ class TestCorrelationMiddlewareContextLifecycle:
             pass
 
         middleware = CorrelationMiddleware(app)
-        scope = _http_scope([(_CORRELATION_HEADER, b"abc")])
+        scope = _http_scope([(CORRELATION_HEADER, b"abc")])
         await middleware(scope, _noop_receive, send)
 
         ctx = get_context()
@@ -242,12 +247,12 @@ class TestCorrelationMiddlewareScopeRouting:
             sent.append(message)
 
         middleware = CorrelationMiddleware(app)
-        scope = _websocket_scope(headers=[(_CORRELATION_HEADER, b"ws-id")])
+        scope = _websocket_scope(headers=[(CORRELATION_HEADER, b"ws-id")])
         await middleware(scope, _noop_receive, send)
 
         assert observed_cid == ["ws-id"]
         accept = next(m for m in sent if m["type"] == "websocket.accept")
-        assert _CORRELATION_HEADER not in dict(accept.get("headers", []))
+        assert CORRELATION_HEADER not in dict(accept.get("headers", []))
 
     @pytest.mark.asyncio
     async def test_lifespan_passes_through_unchanged(self):
@@ -291,7 +296,7 @@ class TestCorrelationMiddlewareIntegrationWithTraced:
             pass
 
         middleware = CorrelationMiddleware(app)
-        scope = _http_scope([(_CORRELATION_HEADER, b"trace-cid")])
+        scope = _http_scope([(CORRELATION_HEADER, b"trace-cid")])
         await middleware(scope, _noop_receive, send)
 
         assert observed == ["trace-cid"]

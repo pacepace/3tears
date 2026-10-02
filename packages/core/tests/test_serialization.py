@@ -34,10 +34,11 @@ class TestSerializeToJson:
         assert result["id"] == str(uid)
 
     def test_datetime(self):
+        """the one stored form every tier writes: ``T``, six fraction digits, UTC offset."""
         dt = datetime(2026, 1, 15, 12, 30, 0, tzinfo=timezone.utc)
         data = {"created": dt}
         result = json.loads(serialize_to_json(data))
-        assert result["created"] == dt.isoformat()
+        assert result["created"] == "2026-01-15T12:30:00.000000+00:00"
 
     def test_decimal(self):
         data = {"price": Decimal("19.99")}

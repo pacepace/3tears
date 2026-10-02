@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import sys
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -11,14 +13,25 @@ import pytest
 from threetears.observe.tracing import traced
 
 
-def test_traced_without_otel():
-    """When opentelemetry is not available, decorator is a pure passthrough."""
+def test_traced_without_otel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When opentelemetry is not available, decorator is a pure passthrough.
 
-    @traced
-    def add(a: int, b: int) -> int:
-        return a + b
+    The availability check runs once per process and remembers its answer, and OpenTelemetry is
+    installed here, so the module is imported afresh with the distribution unimportable -- the
+    state an install without it is in. ``patch.dict`` restores ``sys.modules`` on exit and
+    ``monkeypatch`` the package attribute the import rebinds, so nothing else sees this copy.
+    """
+    import threetears.observe as observe_pkg
 
-    with patch("threetears.observe.tracing._check_otel", return_value=False):
+    monkeypatch.setattr(observe_pkg, "tracing", importlib.import_module("threetears.observe.tracing"))
+    with patch.dict(sys.modules, {"opentelemetry": None, "opentelemetry.trace": None}):
+        sys.modules.pop("threetears.observe.tracing", None)
+        tracing = importlib.import_module("threetears.observe.tracing")
+
+        @tracing.traced
+        def add(a: int, b: int) -> int:
+            return a + b
+
         result = add(2, 3)
 
     assert result == 5
@@ -42,7 +55,6 @@ def test_traced_sync_function():
         return a * b
 
     with (
-        patch("threetears.observe.tracing._check_otel", return_value=True),
         patch("opentelemetry.trace.get_tracer", return_value=mock_tracer),
     ):
         result = multiply(3, 4)
@@ -62,7 +74,6 @@ def test_traced_async_function():
         return a + b
 
     with (
-        patch("threetears.observe.tracing._check_otel", return_value=True),
         patch("opentelemetry.trace.get_tracer", return_value=mock_tracer),
     ):
         result = asyncio.run(async_add(5, 6))
@@ -82,7 +93,6 @@ def test_sensitive_params_filtered():
         return "ok"
 
     with (
-        patch("threetears.observe.tracing._check_otel", return_value=True),
         patch("opentelemetry.trace.get_tracer", return_value=mock_tracer),
     ):
         login("alice", "s3cret", token="tok-123")
@@ -109,7 +119,6 @@ def test_traced_records_exception():
         raise ValueError("boom")
 
     with (
-        patch("threetears.observe.tracing._check_otel", return_value=True),
         patch("opentelemetry.trace.get_tracer", return_value=mock_tracer),
     ):
         with pytest.raises(ValueError, match="boom"):

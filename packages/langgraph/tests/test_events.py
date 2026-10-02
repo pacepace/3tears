@@ -179,10 +179,26 @@ class TestRegistryClearAndReset:
         # Use a fresh registry so we don't disturb the shared
         # default_registry's state across test runs.
         reg = FrameworkEventRegistry()
-        from threetears.langgraph.events import _register_langgraph_events
 
-        reg.add_framework_defaults_provider(_register_langgraph_events)
+        def provider(registry: FrameworkEventRegistry) -> None:
+            for cls in (
+                PromptBuiltEvent,
+                ToolDispatchedEvent,
+                ToolStartedEvent,
+                ToolCompletedEvent,
+                ReasoningStreamedEvent,
+                ResponseCompletedEvent,
+                ResponseFailedEvent,
+                WorkflowStartedEvent,
+                WorkflowStepCompletedEvent,
+                WorkflowCompletedEvent,
+                ImageGeneratedEvent,
+            ):
+                registry.register(cls)
+
+        reg.add_framework_defaults_provider(provider)
         baseline = reg.names()
+        assert len(baseline) == 11
 
         # Mutate the registry by adding a custom event.
         from typing import Literal as _Lit

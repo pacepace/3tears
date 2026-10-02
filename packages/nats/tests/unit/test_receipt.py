@@ -1,4 +1,4 @@
-"""unit tests for :mod:`threetears.nats._receipt`.
+"""unit tests for :mod:`threetears.nats.receipt`.
 
 A subscription takes each message off the connection the moment it arrives and dates
 it there, so a request/reply server can hold a request to the deadline its caller
@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-from threetears.nats._receipt import ReceiptBacklog
+from threetears.nats.receipt import ReceiptBacklog
 
 
 # parity-exempt: the backlog reads only ``.data`` off a nats-py Msg, so the stand-in carries only that

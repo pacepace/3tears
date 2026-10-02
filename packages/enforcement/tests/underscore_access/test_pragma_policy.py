@@ -182,9 +182,49 @@ class TestLedgerEntries:
             "# rationale: the vendor library has no public pending buffer\n"
             f"{_SRC_MODULE}:<module>#0:_pending\n"
         )
-        _, exemptions = _repo(tmp_path, ledger=ledger)
+        repo, exemptions = _repo(tmp_path, ledger=ledger)
 
-        assert ledger_entries_outside_src(exemptions) == ["packages/lib/tests/test_a.py"]
+        assert ledger_entries_outside_src(exemptions, repo) == ["packages/lib/tests/test_a.py"]
+
+    def test_a_confinement_modules_own_test_importing_it_is_not_a_finding(self, tmp_path: Path) -> None:
+        """owner ruling 1: the module's own test exists to catch the library changing, so it may import it."""
+        own_test = "packages/lib/tests/unit/test_vendor_internals.py"
+        ledger = (
+            "# rationale: the vendor library has no public pending buffer\n"
+            f"{_SRC_MODULE}:<module>#0:_pending\n"
+            "# rationale: pins that the vendor client still carries _pending, which the confinement module reads\n"
+            f"{own_test}:<module>#0:_vendor_internals\n"
+        )
+        repo, exemptions = _repo(tmp_path, ignores={_SRC_MODULE: '["SLF001"]'}, ledger=ledger)
+        _write(repo / _SRC_MODULE, _PRIVATE_READ)
+
+        assert ledger_entries_outside_src(exemptions, repo) == []
+
+    def test_any_other_test_entry_beside_a_confinement_module_is_still_a_finding(self, tmp_path: Path) -> None:
+        """only the own test, and only the import of the module itself: not a sibling test, not another name."""
+        own_test = "packages/lib/tests/unit/test_vendor_internals.py"
+        sibling = "packages/lib/tests/unit/test_driver.py"
+        ledger = (
+            "# rationale: the vendor library has no public pending buffer\n"
+            f"{_SRC_MODULE}:<module>#0:_pending\n"
+            "# rationale: the driver test wants the confinement module too\n"
+            f"{sibling}:<module>#0:_vendor_internals\n"
+            "# rationale: the own test reads a private member directly\n"
+            f"{own_test}:test_it#0:_pending\n"
+        )
+        repo, exemptions = _repo(tmp_path, ignores={_SRC_MODULE: '["SLF001"]'}, ledger=ledger)
+        _write(repo / _SRC_MODULE, _PRIVATE_READ)
+
+        assert ledger_entries_outside_src(exemptions, repo) == [sibling, own_test]
+
+    def test_an_own_test_entry_for_a_module_that_is_not_a_confinement_module_is_a_finding(self, tmp_path: Path) -> None:
+        """no per-file SLF001 ignore means no recorded confinement module, so nothing sanctions its test."""
+        own_test = "packages/lib/tests/unit/test_vendor_internals.py"
+        ledger = f"# rationale: pins the vendor members\n{own_test}:<module>#0:_vendor_internals\n"
+        repo, exemptions = _repo(tmp_path, ledger=ledger)
+        _write(repo / _SRC_MODULE, _PRIVATE_READ)
+
+        assert ledger_entries_outside_src(exemptions, repo) == [own_test]
 
 
 class TestSrcModuleClassification:

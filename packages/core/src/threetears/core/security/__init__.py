@@ -22,7 +22,9 @@ public surface:
   JWKS over NATS so a verifier's ``jwks_provider()`` returns it with no hot-path IO.
 - proxy assertions (``proxy_assertion``): :func:`mint_proxy_assertion` /
   :func:`verify_proxy_assertion` / :data:`TOOL_PROXY_ASSERTION_UNVERIFIED` (the code a tool pod
-  answers a call that could not show it came through the registry for this body and this pod).
+  answers a call that could not show it came through the registry for this body and this pod) /
+  :data:`TOOL_POP_LEDGER_UNAVAILABLE` (the code the registry and a tool pod both answer when the
+  replay ledger their single-use check depends on cannot be reached).
 """
 
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
@@ -50,6 +52,8 @@ from threetears.core.security.identity_token import (
 from threetears.core.security.jwks_provider import CachedHubJwksProvider
 from threetears.core.security.pop import access_token_hash, make_pop_proof, verify_pop_proof
 from threetears.core.security.proxy_assertion import (
+    TOOL_POP_LEDGER_UNAVAILABLE,
+    TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE,
     TOOL_PROXY_ASSERTION_UNVERIFIED,
     TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
     ProxyAssertionClaims,
@@ -94,6 +98,8 @@ __all__ = [
     "IDENTITY_REFUSED",
     "IDENTITY_REFUSED_MESSAGE",
     "PLATFORM_CUSTOMER_SENTINEL",
+    "TOOL_POP_LEDGER_UNAVAILABLE",
+    "TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE",
     "TOOL_PROXY_ASSERTION_UNVERIFIED",
     "TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE",
     "CachedHubJwksProvider",

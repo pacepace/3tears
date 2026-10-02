@@ -140,9 +140,10 @@ def _reset_default_namespace() -> None:
 
     test-isolation helper. the module global carries process-wide, so -- unlike
     the retired ContextVar, which reset itself as each test's task context went
-    out of scope -- it does NOT clear between tests on its own. autouse fixtures
-    call this to restore the unconfigured state so one test cannot leak a
-    namespace into the next.
+    out of scope -- it does NOT clear between tests on its own. host test suites
+    reach it through :func:`threetears.nats.testing.reset_default_namespace`,
+    from autouse fixtures, to restore the unconfigured state so one test cannot
+    leak a namespace into the next.
 
     :return: nothing
     :rtype: None

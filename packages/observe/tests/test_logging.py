@@ -10,8 +10,6 @@ import pytest
 from threetears.observe.logging import (
     ContextFormatter,
     ThreeTearsLogger,
-    _call_site_cache,
-    _shorten_path,
     clear_context,
     configure_logging,
     configure_third_party_logging,
@@ -25,12 +23,15 @@ from threetears.observe.logging import (
 
 @pytest.fixture(autouse=True)
 def _clean_context():
-    """Reset context and call-site cache between tests."""
+    """Reset context between tests.
+
+    The call-site cache is keyed by ``(file, line)``, so every logging call in this file is its own
+    entry and needs no reset: a test that changes how paths are shortened logs from a line no other
+    test logs from.
+    """
     clear_context()
-    _call_site_cache.clear()
     yield
     clear_context()
-    _call_site_cache.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -279,18 +280,43 @@ class TestThreeTearsLogger:
         logger.removeHandler(handler)
 
 
+def _records_of(logger: logging.Logger) -> list[logging.LogRecord]:
+    """attach a capturing handler to *logger* and return the list it fills.
+
+    :param logger: the logger to capture
+    :ptype logger: logging.Logger
+    :return: the records the logger emits from now on
+    :rtype: list[logging.LogRecord]
+    """
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    return records
+
+
 class TestPathShortening:
-    """File path shortening logic."""
+    """File path shortening, as the call-site file a ThreeTearsLogger record carries."""
 
     def test_strips_configured_prefix(self):
-        path_strip_prefixes.append("myapp/src/")
+        logger = get_logger("test.path_strip_prefix")
+        records = _records_of(logger)
+        path_strip_prefixes.append("packages/observe/")
         try:
-            assert _shorten_path("/home/user/myapp/src/handlers/ws.py") == "handlers/ws.py"
+            logger.info("from a prefixed path")
         finally:
-            path_strip_prefixes.remove("myapp/src/")
+            path_strip_prefixes.remove("packages/observe/")
+
+        assert records[0].call_site_file == "tests/test_logging.py"  # type: ignore[attr-defined]
 
     def test_falls_back_to_basename(self):
-        assert _shorten_path("/some/deep/path/module.py") == "module.py"
+        logger = get_logger("test.path_basename")
+        records = _records_of(logger)
+
+        logger.info("from an unprefixed path")
+
+        assert records[0].call_site_file == "test_logging.py"  # type: ignore[attr-defined]
 
 
 class TestConfigureLogging:

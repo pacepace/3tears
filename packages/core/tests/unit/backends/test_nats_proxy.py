@@ -11,12 +11,7 @@ from uuid import UUID
 import pytest
 from threetears.nats import Subject
 
-from threetears.core.backends.nats_proxy import (
-    NatsProxyL3Backend,
-    _deserialize_row,
-    _detect_operation,
-    _serialize_param,
-)
+from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.exceptions import DataLayerUnavailableError
 
 
@@ -56,85 +51,151 @@ def _make_proxy(mock_nc: MagicMock) -> NatsProxyL3Backend:
     )
 
 
+def _answering_proxy(reply: dict) -> tuple[NatsProxyL3Backend, AsyncMock]:  # type: ignore[type-arg]
+    """a proxy whose broker answers every request with ``reply``.
+
+    :param reply: the broker's response payload
+    :ptype reply: dict
+    :return: the proxy, and the ``request_raw`` mock that records what it sent
+    :rtype: tuple[NatsProxyL3Backend, AsyncMock]
+    """
+    mock_nc = MagicMock()
+    mock_nc.request_raw = AsyncMock(return_value=_make_reply(reply))
+    return _make_proxy(mock_nc), mock_nc.request_raw
+
+
+def _sent_payload(request_raw: AsyncMock) -> dict:  # type: ignore[type-arg]
+    """the JSON payload of the last request the proxy put on the wire.
+
+    :param request_raw: the recording ``request_raw`` mock
+    :ptype request_raw: AsyncMock
+    :return: the decoded request payload
+    :rtype: dict
+    """
+    return json.loads(request_raw.call_args.kwargs["payload"])  # type: ignore[no-any-return]
+
+
+async def _param_on_the_wire(value: object) -> object:
+    """how one query parameter is encoded in the request the proxy sends to the broker.
+
+    :param value: the parameter as a caller passes it to ``fetch``
+    :ptype value: object
+    :return: the parameter as it appears in the request payload
+    :rtype: object
+    """
+    proxy, request_raw = _answering_proxy({"success": True, "rows": []})
+    await proxy.fetch("SELECT $1", value)
+    return _sent_payload(request_raw)["params"][0]
+
+
+async def _operation_on_the_wire(query: str) -> str:
+    """the operation label ``execute`` sends to the broker for ``query``.
+
+    :param query: the statement
+    :ptype query: str
+    :return: the request's ``operation`` field
+    :rtype: str
+    """
+    proxy, request_raw = _answering_proxy({"success": True, "row_count": 0})
+    await proxy.execute(query)
+    return str(_sent_payload(request_raw)["operation"])
+
+
+async def _row_as_fetched(row: dict) -> dict:  # type: ignore[type-arg]
+    """the row ``fetch`` returns when the broker answers with ``row``.
+
+    :param row: the row as the broker JSON-encodes it
+    :ptype row: dict
+    :return: the row as the caller receives it
+    :rtype: dict
+    """
+    proxy, _request_raw = _answering_proxy({"success": True, "rows": [row]})
+    rows = await proxy.fetch("SELECT 1")
+    return rows[0]
+
+
 # ------------------------------------------------------------------
-# _serialize_param
+# parameter encoding on the wire
 # ------------------------------------------------------------------
 
 
 class TestSerializeParam:
-    def test_uuid(self) -> None:
+    async def test_uuid(self) -> None:
         uid = UUID("12345678-1234-5678-1234-567812345678")
-        assert _serialize_param(uid) == "12345678-1234-5678-1234-567812345678"
+        assert await _param_on_the_wire(uid) == "12345678-1234-5678-1234-567812345678"
 
-    def test_datetime(self) -> None:
+    async def test_datetime(self) -> None:
         dt = datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC)
-        assert _serialize_param(dt) == dt.isoformat()
+        assert await _param_on_the_wire(dt) == dt.isoformat()
 
-    def test_decimal(self) -> None:
+    async def test_decimal(self) -> None:
         d = Decimal("3.14")
-        assert _serialize_param(d) == "3.14"
+        assert await _param_on_the_wire(d) == "3.14"
 
-    def test_bytes(self) -> None:
+    async def test_bytes(self) -> None:
         b = b"\xde\xad\xbe\xef"
-        assert _serialize_param(b) == "\\xdeadbeef"
+        assert await _param_on_the_wire(b) == "\\xdeadbeef"
 
-    def test_string_passthrough(self) -> None:
-        assert _serialize_param("hello") == "hello"
+    async def test_string_passthrough(self) -> None:
+        assert await _param_on_the_wire("hello") == "hello"
 
-    def test_int_passthrough(self) -> None:
-        assert _serialize_param(42) == 42
+    async def test_int_passthrough(self) -> None:
+        assert await _param_on_the_wire(42) == 42
 
-    def test_none_passthrough(self) -> None:
-        assert _serialize_param(None) is None
+    async def test_none_passthrough(self) -> None:
+        assert await _param_on_the_wire(None) is None
 
-    def test_list_of_datetimes_serializes_each_element(self) -> None:
+    async def test_list_of_datetimes_serializes_each_element(self) -> None:
         """an array parameter (``unnest($1::timestamptz[])``) converts every element."""
         first = datetime(2026, 9, 2, 13, 0, 0, tzinfo=UTC)
         second = datetime(2026, 9, 2, 14, 0, 0, tzinfo=UTC)
-        assert _serialize_param([first, second]) == [first.isoformat(), second.isoformat()]
+        assert await _param_on_the_wire([first, second]) == [first.isoformat(), second.isoformat()]
 
-    def test_tuple_of_mixed_scalars_serializes_to_a_list(self) -> None:
+    async def test_tuple_of_mixed_scalars_serializes_to_a_list(self) -> None:
         """a tuple is an array parameter too; JSON has no tuple, so it leaves as a list."""
         uid = UUID("12345678-1234-5678-1234-567812345678")
-        assert _serialize_param((uid, Decimal("1.5"), b"\x01", None)) == [str(uid), "1.5", "\\x01", None]
+        assert await _param_on_the_wire((uid, Decimal("1.5"), b"\x01", None)) == [str(uid), "1.5", "\\x01", None]
 
-    def test_nested_list_serializes_every_level(self) -> None:
+    async def test_nested_list_serializes_every_level(self) -> None:
         """a multi-dimensional array converts its inner elements too."""
         uid = UUID("12345678-1234-5678-1234-567812345678")
-        assert _serialize_param([[uid], []]) == [[str(uid)], []]
+        assert await _param_on_the_wire([[uid], []]) == [[str(uid)], []]
 
-    def test_list_parameter_is_json_serializable(self) -> None:
+    async def test_list_parameter_is_json_serializable(self) -> None:
         """the whole converted array survives the JSON envelope."""
         stamps = [datetime(2026, 9, 2, 13, 0, 0, tzinfo=UTC)]
-        assert json.loads(json.dumps(_serialize_param(stamps))) == [stamps[0].isoformat()]
+        assert json.loads(json.dumps(await _param_on_the_wire(stamps))) == [stamps[0].isoformat()]
 
 
 # ------------------------------------------------------------------
-# _detect_operation
+# the operation label execute sends
 # ------------------------------------------------------------------
 
 
 class TestDetectOperation:
-    def test_select(self) -> None:
-        assert _detect_operation("SELECT * FROM foo") == "select"
+    async def test_select(self) -> None:
+        assert await _operation_on_the_wire("SELECT * FROM foo") == "select"
 
-    def test_select_with_whitespace(self) -> None:
-        assert _detect_operation("  SELECT * FROM foo") == "select"
+    async def test_select_with_whitespace(self) -> None:
+        assert await _operation_on_the_wire("  SELECT * FROM foo") == "select"
 
-    def test_insert(self) -> None:
-        assert _detect_operation("INSERT INTO foo (a) VALUES ($1)") == "insert"
+    async def test_insert(self) -> None:
+        assert await _operation_on_the_wire("INSERT INTO foo (a) VALUES ($1)") == "insert"
 
-    def test_insert_on_conflict_upsert(self) -> None:
-        assert _detect_operation("INSERT INTO foo (a) VALUES ($1) ON CONFLICT (a) DO UPDATE SET a = $1") == "upsert"
+    async def test_insert_on_conflict_upsert(self) -> None:
+        assert (
+            await _operation_on_the_wire("INSERT INTO foo (a) VALUES ($1) ON CONFLICT (a) DO UPDATE SET a = $1")
+            == "upsert"
+        )
 
-    def test_update(self) -> None:
-        assert _detect_operation("UPDATE foo SET a = $1 WHERE id = $2") == "update"
+    async def test_update(self) -> None:
+        assert await _operation_on_the_wire("UPDATE foo SET a = $1 WHERE id = $2") == "update"
 
-    def test_delete(self) -> None:
-        assert _detect_operation("DELETE FROM foo WHERE id = $1") == "delete"
+    async def test_delete(self) -> None:
+        assert await _operation_on_the_wire("DELETE FROM foo WHERE id = $1") == "delete"
 
-    def test_unknown_defaults_to_select(self) -> None:
-        assert _detect_operation("WITH cte AS (SELECT 1)") == "select"
+    async def test_unknown_defaults_to_select(self) -> None:
+        assert await _operation_on_the_wire("WITH cte AS (SELECT 1)") == "select"
 
     @pytest.mark.parametrize(
         ("query", "expected"),
@@ -178,7 +239,9 @@ class TestDetectOperation:
             ),
         ],
     )
-    def test_a_statement_led_by_a_with_clause_is_labelled_by_its_main_verb(self, query: str, expected: str) -> None:
+    async def test_a_statement_led_by_a_with_clause_is_labelled_by_its_main_verb(
+        self, query: str, expected: str
+    ) -> None:
         """the verb after the CTE list is the statement's, as Postgres's own command tag names it.
 
         A ``WITH ... INSERT`` used to be labelled ``select``, so ``execute`` sent it to
@@ -186,11 +249,11 @@ class TestDetectOperation:
         under a ``SELECT`` stays ``select``: Postgres tags it ``SELECT``, and the broker
         reads the write off the statement, never off this label.
         """
-        assert _detect_operation(query) == expected
+        assert await _operation_on_the_wire(query) == expected
 
-    def test_an_unterminated_with_clause_defaults_to_select(self) -> None:
+    async def test_an_unterminated_with_clause_defaults_to_select(self) -> None:
         """a WITH whose CTE list never closes names no main verb."""
-        assert _detect_operation("WITH s AS (SELECT 1") == "select"
+        assert await _operation_on_the_wire("WITH s AS (SELECT 1") == "select"
 
 
 # ------------------------------------------------------------------
@@ -910,39 +973,39 @@ class TestPayloadFormat:
 
 
 class TestDeserializeRow:
-    """tests for _deserialize_row hex bytes decoding."""
+    """fetched rows: hex-encoded bytes are decoded."""
 
-    def test_hex_string_decoded_to_bytes(self) -> None:
+    async def test_hex_string_decoded_to_bytes(self) -> None:
         """\\x-prefixed hex strings are decoded back to bytes."""
         row = {"id": "abc", "blob": "\\x800102ff"}
-        result = _deserialize_row(row)
+        result = await _row_as_fetched(row)
         assert result["blob"] == b"\x80\x01\x02\xff"
         assert result["id"] == "abc"
 
-    def test_non_hex_strings_unchanged(self) -> None:
+    async def test_non_hex_strings_unchanged(self) -> None:
         """regular strings without \\x prefix pass through unchanged."""
         row = {"name": "hello", "type": "msgpack"}
-        result = _deserialize_row(row)
+        result = await _row_as_fetched(row)
         assert result == row
 
-    def test_non_string_values_unchanged(self) -> None:
+    async def test_non_string_values_unchanged(self) -> None:
         """int, None, bool values pass through unchanged."""
         row = {"count": 42, "active": True, "nullable": None}
-        result = _deserialize_row(row)
+        result = await _row_as_fetched(row)
         assert result == row
 
-    def test_empty_hex_decoded_to_empty_bytes(self) -> None:
+    async def test_empty_hex_decoded_to_empty_bytes(self) -> None:
         """\\x with no hex digits decodes to empty bytes."""
         row = {"empty": "\\x"}
-        result = _deserialize_row(row)
+        result = await _row_as_fetched(row)
         assert result["empty"] == b""
 
-    def test_checkpoint_blob_round_trip(self) -> None:
+    async def test_checkpoint_blob_round_trip(self) -> None:
         """binary checkpoint data survives hex encode/decode round-trip."""
         original_blob = bytes(range(256))
         hex_encoded = "\\x" + original_blob.hex()
         row = {"checkpoint": hex_encoded, "metadata_": hex_encoded, "type": "msgpack"}
-        result = _deserialize_row(row)
+        result = await _row_as_fetched(row)
         assert result["checkpoint"] == original_blob
         assert result["metadata_"] == original_blob
         assert result["type"] == "msgpack"
@@ -1282,12 +1345,12 @@ async def test_transaction_commit_failure_raises() -> None:
 
 
 # ------------------------------------------------------------------
-# _deserialize_row datetime rehydration
+# fetched rows: datetime rehydration
 # ------------------------------------------------------------------
 
 
 class TestDeserializeRowDatetimes:
-    """pins the proxy's date_* -> datetime normalization.
+    """pins the proxy's date_* -> datetime normalization of fetched rows.
 
     broker JSON-encodes TIMESTAMP columns to iso strings; entities on
     the agent side call ``.isoformat()`` on those fields expecting
@@ -1296,55 +1359,43 @@ class TestDeserializeRowDatetimes:
     attribute 'isoformat'``.
     """
 
-    def test_aware_iso_string_rehydrates_to_datetime(self) -> None:
+    async def test_aware_iso_string_rehydrates_to_datetime(self) -> None:
         """explicit offsets round-trip without tz changes."""
-        from threetears.core.backends.nats_proxy import _deserialize_row
-
         row = {"date_updated": "2026-04-17T12:34:56+00:00"}
-        out = _deserialize_row(row)
+        out = await _row_as_fetched(row)
         assert isinstance(out["date_updated"], datetime)
         assert out["date_updated"].tzinfo is not None
         assert out["date_updated"].isoformat() == "2026-04-17T12:34:56+00:00"
 
-    def test_zulu_suffix_rehydrates_to_utc_datetime(self) -> None:
+    async def test_zulu_suffix_rehydrates_to_utc_datetime(self) -> None:
         """``...Z`` trailing marker normalizes to +00:00."""
-        from threetears.core.backends.nats_proxy import _deserialize_row
-
         row = {"date_created": "2026-04-17T12:34:56Z"}
-        out = _deserialize_row(row)
+        out = await _row_as_fetched(row)
         assert isinstance(out["date_created"], datetime)
         assert out["date_created"].tzinfo is not None
 
-    def test_naive_iso_string_gets_utc(self) -> None:
+    async def test_naive_iso_string_gets_utc(self) -> None:
         """naive iso strings gain UTC defensively so tz checks pass."""
-        from threetears.core.backends.nats_proxy import _deserialize_row
-
         row = {"date_created": "2026-04-17T12:34:56"}
-        out = _deserialize_row(row)
+        out = await _row_as_fetched(row)
         assert isinstance(out["date_created"], datetime)
         assert out["date_created"].tzinfo is not None
 
-    def test_non_date_columns_left_alone(self) -> None:
+    async def test_non_date_columns_left_alone(self) -> None:
         """the rehydrator only touches ``date_*`` column names."""
-        from threetears.core.backends.nats_proxy import _deserialize_row
-
         row = {"name": "2026-04-17T12:34:56", "id": "some-uuid"}
-        out = _deserialize_row(row)
+        out = await _row_as_fetched(row)
         assert out["name"] == "2026-04-17T12:34:56"
         assert out["id"] == "some-uuid"
 
-    def test_unparseable_date_string_passes_through(self) -> None:
+    async def test_unparseable_date_string_passes_through(self) -> None:
         """malformed date_* values survive so the caller sees them."""
-        from threetears.core.backends.nats_proxy import _deserialize_row
-
         row = {"date_created": "not an iso stamp"}
-        out = _deserialize_row(row)
+        out = await _row_as_fetched(row)
         assert out["date_created"] == "not an iso stamp"
 
-    def test_empty_date_string_not_parsed(self) -> None:
+    async def test_empty_date_string_not_parsed(self) -> None:
         """empty string does not produce a surprise datetime."""
-        from threetears.core.backends.nats_proxy import _deserialize_row
-
         row = {"date_created": ""}
-        out = _deserialize_row(row)
+        out = await _row_as_fetched(row)
         assert out["date_created"] == ""
