@@ -25,6 +25,7 @@ which a loaded machine spends between two claims.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -475,3 +476,30 @@ class TestOwnerScopedTokenBucketKeys:
                 capacity=2.0,
                 key_scope=scope,
             )
+
+
+class TestStoredForm:
+    """the bucket's state is stored with its instant in the one form every storage tier writes."""
+
+    @pytest.mark.asyncio
+    async def test_last_refill_is_stored_fixed_width_with_its_offset(
+        self, client: FakeNatsClient, clock: _DrivenClock
+    ) -> None:
+        await _bucket(client, clock, refill_rate=1.0, capacity=5.0).claim("k")
+
+        value = await (await client.kv_bucket(name="b")).get(key="k")
+
+        assert value is not None
+        assert json.loads(value)["last_refill"] == "2026-09-29T12:00:00.000000+00:00"
+
+    @pytest.mark.asyncio
+    async def test_a_naive_clock_is_refused_naming_the_field(self, client: FakeNatsClient) -> None:
+        naive = TokenBucket(
+            client,  # type: ignore[arg-type]
+            bucket_name="b",
+            refill_rate=1.0,
+            capacity=5.0,
+            clock=lambda: datetime(2026, 9, 29, 12, 0),
+        )
+        with pytest.raises(ValueError, match="naive datetime in 'last_refill'"):
+            await naive.claim("k")

@@ -22,7 +22,7 @@ from threetears.core.coordination.lease import (
     LeaseTimeout,
     LeaseUnavailable,
 )
-from threetears.core.serialization import deserialize_from_json, serialize_to_json
+from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
 
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
@@ -85,6 +85,17 @@ class TestAcquireEmpty:
         assert expires_at > acquired_at
         assert (expires_at - acquired_at) >= timedelta(seconds=29)
         assert acquired_at >= before - timedelta(seconds=1)
+
+    async def test_the_envelope_stores_both_instants_in_the_one_stored_form(self) -> None:
+        """``json_datetime``'s fixed-width form, as every storage tier writes it, not ``isoformat()``."""
+        lease, client = await _make_lease()
+        await lease.acquire("lock/a", ttl_seconds=30)
+        value = await (await _bucket_for(client, "test_leases")).get(key="lock/a")
+        assert value is not None
+        envelope = _decode_envelope(value)
+        for field in ("expires_at", "acquired_at"):
+            stored = envelope[field]
+            assert stored == json_datetime(datetime.fromisoformat(stored))
 
 
 class TestAcquireFailFast:

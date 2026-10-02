@@ -1561,8 +1561,15 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :raises PartitionEnforcementError: when a public subclass
             method violates the partition contract
         """
-        super().__init_subclass__(**kwargs)
         schema = cls.__dict__.get("schema")
+        if isinstance(schema, TableSchema):
+            # the schema already says which columns hold instants; restating them as
+            # ``datetime_columns`` is how one gets left out. derived before the base hook runs,
+            # which checks ``expires_at_column`` against this set.
+            cls.datetime_columns = cls.datetime_columns | frozenset(
+                column.name for column in schema.columns if column.column_type == DATETIMETZ_TYPE
+            )
+        super().__init_subclass__(**kwargs)
         if schema is None or not isinstance(schema, TableSchema):
             return None
         partition_column = schema.partition_column

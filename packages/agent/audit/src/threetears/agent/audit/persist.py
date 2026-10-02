@@ -45,6 +45,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
+from threetears.core.serialization import to_stored_json
 from threetears.nats import Subjects
 from threetears.observe import get_logger, spawn_background
 from threetears.observe.erasure import ANONYMIZED_MARKER
@@ -182,6 +183,7 @@ async def persist_audit_event(db: AuditStore, event: AuditEvent, *, ip_address: 
     :ptype ip_address: str | None
     :return: None
     :rtype: None
+    :raises ValueError: if ``details`` holds a naive datetime
     """
     await db.execute(
         _INSERT,
@@ -199,9 +201,9 @@ async def persist_audit_event(db: AuditStore, event: AuditEvent, *, ip_address: 
         event.resource_namespace_type,
         event.correlation_id,
         event.conversation_id,
-        # JSON-mode dump: details built in-process may hold UUIDs and datetimes; ensure_ascii off so text
-        # is stored as written
-        json.dumps(event.model_dump(mode="json")["details"], ensure_ascii=False),
+        # details built in-process may hold UUIDs and datetimes: stored as pydantic's JSON mode writes
+        # them, each datetime in the one stored form; ensure_ascii off so text is stored as written
+        json.dumps(to_stored_json(event.details, field="details"), ensure_ascii=False),
         ip_address,
     )
 
