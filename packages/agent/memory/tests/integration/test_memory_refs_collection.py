@@ -407,19 +407,10 @@ class TestMemoryRefsCollectionThreeTier:
                 )
                 assert before is not None
 
-                # pod A updates -> publishes ids: [conv_id, item_id]
-                updated_entity = coll_a.create(
-                    {
-                        "conversation_id": conv_id,
-                        "item_id": item_id,
-                        "item_type": "memory",
-                        "short_desc": "updated v2",
-                        "date_created": now,
-                        "date_updated": now,
-                    },
-                )
-                object.__setattr__(updated_entity, "_is_new", False)
-                updated_entity.original_date_updated = before.get("date_updated")
+                # pod A updates the row it loaded -> publishes ids: [conv_id, item_id]
+                updated_entity = await coll_a.get((conv_id, item_id))
+                assert updated_entity is not None
+                updated_entity.short_desc = "updated v2"
                 await coll_a.save_entity(updated_entity)
 
                 # pod B's L1 row is evicted by the invalidation signal

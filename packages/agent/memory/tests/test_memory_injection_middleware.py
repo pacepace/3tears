@@ -1,7 +1,7 @@
 """Behavioral tests for :class:`MemoryInjectionMiddleware`.
 
 Verifies the ``awrap_model_call`` seam: retrieved memories are FOLDED into
-``request.system_message`` under :data:`_MEMORY_CONTEXT_PREFIX` (never appended as a
+``request.system_message`` under the memory-context framing (never appended as a
 second, non-consecutive ``SystemMessage`` -- the pattern that crashes LangChain's
 Anthropic binding), the surfaced ids are deduped into the ``surfaced_memory_ids``
 metadata ledger and persisted via a returned
@@ -36,11 +36,19 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
 
 from threetears.agent.memory.middleware import (
-    _MEMORY_CONTEXT_PREFIX,
-    _SURFACED_MEMORY_IDS_KEY,
     MemoryInjectionMiddleware,
     MemoryInjectionState,
 )
+
+#: the framing the model reads ahead of the injected memories; model-visible text,
+#: so a change to it is a deliberate prompt change and lands here too.
+MEMORY_CONTEXT_PREFIX = (
+    "## Relevant memories about this user\nUse these memories to personalize your response when relevant.\n\n"
+)
+
+#: the state metadata key the surfaced-memory ledger rides on. the checkpoint
+#: anonymizer and the langgraph state read it by this name, so it is a contract.
+SURFACED_MEMORY_IDS_KEY = "surfaced_memory_ids"
 
 
 class _StubRetriever:
@@ -154,7 +162,7 @@ class TestInjection:
         content = req.system_message.content
         assert isinstance(content, str)
         # folded into the SINGLE system message, base first then the memory block.
-        assert content.startswith("base\n\n" + _MEMORY_CONTEXT_PREFIX)
+        assert content.startswith("base\n\n" + MEMORY_CONTEXT_PREFIX)
         assert "- user prefers dark mode" in content
 
     def test_returns_extended_response_with_surfaced_ids(self) -> None:
@@ -167,26 +175,26 @@ class TestInjection:
         assert out.command is not None
         update = out.command.update
         assert isinstance(update, dict)
-        assert update["metadata"][_SURFACED_MEMORY_IDS_KEY] == ["user prefers dark mode"]
+        assert update["metadata"][SURFACED_MEMORY_IDS_KEY] == ["user prefers dark mode"]
 
     def test_dedupes_already_surfaced_memory(self) -> None:
         # the memory was already surfaced on a prior turn (on request.state metadata) ->
         # the union keeps the ledger deduped.
         req = _request(
             SystemMessage(content="base"),
-            metadata={_SURFACED_MEMORY_IDS_KEY: ["user prefers dark mode"]},
+            metadata={SURFACED_MEMORY_IDS_KEY: ["user prefers dark mode"]},
         )
         _req, out = _drive(MemoryInjectionMiddleware(), req, _configurable("user prefers dark mode"))
         assert isinstance(out, ExtendedModelResponse)
         assert out.command is not None
-        assert out.command.update["metadata"][_SURFACED_MEMORY_IDS_KEY] == ["user prefers dark mode"]
+        assert out.command.update["metadata"][SURFACED_MEMORY_IDS_KEY] == ["user prefers dark mode"]
 
     def test_no_base_system_message_becomes_block(self) -> None:
         req, out = _drive(MemoryInjectionMiddleware(), _request(None), _configurable("user prefers dark mode"))
         assert isinstance(out, ExtendedModelResponse)
         assert req.system_message is not None
         assert isinstance(req.system_message.content, str)
-        assert req.system_message.content.startswith(_MEMORY_CONTEXT_PREFIX)
+        assert req.system_message.content.startswith(MEMORY_CONTEXT_PREFIX)
 
 
 class _QueryRecordingRetriever(_StubRetriever):
@@ -391,4 +399,4 @@ class TestRealAgentRegression:
         assert "Relevant memories about this user" in str(systems[0].content)
         assert "base prompt" in str(systems[0].content)
         # the ledger survived onto the metadata channel via the Command update.
-        assert final.get("metadata", {}).get(_SURFACED_MEMORY_IDS_KEY) == ["user prefers dark mode"]
+        assert final.get("metadata", {}).get(SURFACED_MEMORY_IDS_KEY) == ["user prefers dark mode"]
