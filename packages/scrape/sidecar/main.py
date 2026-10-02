@@ -25,18 +25,22 @@ import shutil
 import tempfile
 import time
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 import hitl
 import nodriver as uc
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 from nodriver.core.connection import ProtocolException
 from pydantic import BaseModel
 
 # What this module offers beyond its HTTP routes. `create_isolated_tab` and `execute_nav_steps`
 # are here because `hitl` -- the other half of this container -- opens an operator's tabs with
-# them; everything with a leading underscore stays this module's own.
+# them. `SidecarTimings` and `build_session_manager` are what the app's own state is built from
+# (`app.state.timings`, `app.state.sessions`), so the routes read their budgets and their session
+# manager from the app serving them rather than from module globals. Everything with a leading
+# underscore stays this module's own.
 __all__ = [
     "CHROMIUM_PATH",
     "EGRESS_NAME",
@@ -52,7 +56,9 @@ __all__ = [
     "NetworkCall",
     "RenderRequest",
     "RenderResponse",
+    "SidecarTimings",
     "app",
+    "build_session_manager",
     "create_isolated_tab",
     "execute_nav_steps",
 ]
@@ -688,13 +694,14 @@ async def create_isolated_tab(
     # this process-wide was true of the flag and wrong about contexts.
     context_id = await browser.send(uc.cdp.target.create_browser_context(proxy_server=proxy_server))
     target_id = await browser.send(uc.cdp.target.create_target(url, browser_context_id=context_id, new_window=True))
-    for attempt in range(_TAB_LOOKUP_ATTEMPTS):
+    timings: SidecarTimings = app.state.timings
+    for attempt in range(timings.tab_lookup_attempts):
         await browser.update_targets()
         tab = next((t for t in browser.targets if t.target.target_id == target_id), None)
         if tab is not None:
             return tab, context_id
-        if attempt < _TAB_LOOKUP_ATTEMPTS - 1:
-            await asyncio.sleep(_TAB_LOOKUP_DELAY_SECONDS)
+        if attempt < timings.tab_lookup_attempts - 1:
+            await asyncio.sleep(timings.tab_lookup_delay_seconds)
     raise RuntimeError(f"tab for target {target_id} never appeared in browser.targets")
 
 
@@ -721,6 +728,7 @@ async def _download(url: str, *, timeout: float = 30.0) -> _DownloadResult:
     :ptype timeout: float
     :raises DownloadError: no file appeared in the download directory within *timeout*
     """
+    timings: SidecarTimings = app.state.timings
     download_dir = tempfile.mkdtemp(prefix="nodriver-download-")
     tab, context_id = await create_isolated_tab(_browser, "about:blank")
     try:
@@ -740,7 +748,7 @@ async def _download(url: str, *, timeout: float = 30.0) -> _DownloadResult:
             if complete:
                 downloaded_path = os.path.join(download_dir, complete[0])
                 break
-            await asyncio.sleep(_DOWNLOAD_POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(timings.download_poll_interval_seconds)
         if downloaded_path is None:
             raise DownloadError(f"no download completed for {url} within {timeout}s")
         with open(downloaded_path, "rb") as f:
@@ -846,14 +854,15 @@ async def _wm_output(argv: list[str], *, display: str) -> str | None:
     except OSError as exc:
         log.warning("hitl: %s could not be started: %s", argv[0], exc)
         return None
+    timings: SidecarTimings = app.state.timings
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=_WM_CALL_TIMEOUT_SECONDS)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timings.wm_call_timeout_seconds)
     except TimeoutError:
         # KILLED, not just abandoned. `wait_for` cancels the `communicate()` await and leaves the
         # CHILD running, so a hung window-manager call would otherwise leak a process for the life
         # of a container that is meant to be long-lived and unattended. Reaped afterwards so it
         # does not sit as a zombie either.
-        log.warning("hitl: %s did not answer within %ss; killing it", argv[0], _WM_CALL_TIMEOUT_SECONDS)
+        log.warning("hitl: %s did not answer within %ss; killing it", argv[0], timings.wm_call_timeout_seconds)
         proc.kill()
         with suppress(
             Exception
@@ -885,18 +894,20 @@ async def _warm_up() -> None:
     of before this mitigation existed, not a new risk.
     """
     global _ready
-    for attempt in range(1, _WARMUP_ATTEMPTS + 1):
+    timings: SidecarTimings = app.state.timings
+    for attempt in range(1, timings.warmup_attempts + 1):
         try:
             await asyncio.wait_for(_render(_WARMUP_URL, None), timeout=_WARMUP_TIMEOUT_SECONDS)
-            log.info("warm-up render succeeded (attempt %d/%d)", attempt, _WARMUP_ATTEMPTS)
+            log.info("warm-up render succeeded (attempt %d/%d)", attempt, timings.warmup_attempts)
             break
         except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- warm-up must degrade (fail open), never block startup forever
-            log.warning("warm-up render failed (attempt %d/%d): %s", attempt, _WARMUP_ATTEMPTS, exc)
-            if attempt < _WARMUP_ATTEMPTS:
-                await asyncio.sleep(_WARMUP_RETRY_DELAY_SECONDS)
+            log.warning("warm-up render failed (attempt %d/%d): %s", attempt, timings.warmup_attempts, exc)
+            if attempt < timings.warmup_attempts:
+                await asyncio.sleep(timings.warmup_retry_delay_seconds)
     else:
         log.error(
-            "warm-up render never succeeded after %d attempts -- marking ready anyway (fail open)", _WARMUP_ATTEMPTS
+            "warm-up render never succeeded after %d attempts -- marking ready anyway (fail open)",
+            timings.warmup_attempts,
         )
     _ready = True
 
@@ -987,7 +998,7 @@ async def _relaunch_browser() -> None:
     log.info("hitl: the shared browser was relaunched and the render path is healthy again")
 
 
-async def _heal_render_path_after_hitl() -> None:
+async def _heal_render_path_after_hitl(sessions: hitl.SessionManager) -> None:
     """Confirm ``/v1/render`` still works after a HITL context was disposed, and relaunch if not.
 
     Wired onto :attr:`hitl.SessionManager.on_browser_dirtied`, so it runs after a tab completes,
@@ -1004,16 +1015,22 @@ async def _heal_render_path_after_hitl() -> None:
     holds tabs: nothing there is recoverable, but neither is it this healer's call to reap a
     session the operator has not finished with. On that path the wedge is logged and left for the
     session's own close (or the reaper) to heal once the tabs are gone.
+
+    :param sessions: the manager whose dispose triggered this, asked whether a live session
+        still holds tabs
+    :ptype sessions: hitl.SessionManager
     """
     async with _relaunch_lock:
         if _browser is None:
             return
         try:
-            await asyncio.wait_for(_render(_WARMUP_URL, None), timeout=_HITL_HEALTHCHECK_TIMEOUT_SECONDS)
+            await asyncio.wait_for(
+                _render(_WARMUP_URL, None), timeout=app.state.timings.hitl_healthcheck_timeout_seconds
+            )
             return
         except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any failure of the probe render (a timeout, a driver crash, a stale target) is the wedge this exists to catch; the specific class does not change the response, which is to relaunch
             log.warning("hitl: the render path did not answer after a HITL context was disposed: %s", exc)
-        session = _sessions.current()
+        session = sessions.current()
         if session is not None and session.tabs:
             log.error(
                 "hitl: the render path is wedged but a live session still holds %d tab(s); "
@@ -1024,8 +1041,56 @@ async def _heal_render_path_after_hitl() -> None:
         await _relaunch_browser()
 
 
+@dataclass(frozen=True)
+class SidecarTimings:
+    """Every wait and retry budget the container's browser paths run on.
+
+    One object rather than module constants, held on ``app.state.timings`` and read at the
+    moment each path needs it, so the container's own app carries its budgets the way it
+    carries its session manager. Every default is the production value documented beside the
+    constant it comes from; nothing in production constructs this with arguments.
+
+    :ivar download_poll_interval_seconds: how often ``/v1/download`` looks for a finished file
+    :ivar tab_lookup_attempts: how many target-list refreshes before a created tab is declared lost
+    :ivar tab_lookup_delay_seconds: pause between those refreshes
+    :ivar warmup_attempts: warm-up renders tried before failing open
+    :ivar warmup_retry_delay_seconds: pause between warm-up attempts
+    :ivar wm_call_timeout_seconds: ceiling on each window-manager call at startup
+    :ivar hitl_healthcheck_timeout_seconds: how long the post-HITL probe waits before calling the
+        render path wedged
+    """
+
+    download_poll_interval_seconds: float = _DOWNLOAD_POLL_INTERVAL_SECONDS
+    tab_lookup_attempts: int = _TAB_LOOKUP_ATTEMPTS
+    tab_lookup_delay_seconds: float = _TAB_LOOKUP_DELAY_SECONDS
+    warmup_attempts: int = _WARMUP_ATTEMPTS
+    warmup_retry_delay_seconds: float = _WARMUP_RETRY_DELAY_SECONDS
+    wm_call_timeout_seconds: float = _WM_CALL_TIMEOUT_SECONDS
+    hitl_healthcheck_timeout_seconds: float = _HITL_HEALTHCHECK_TIMEOUT_SECONDS
+
+
+def build_session_manager(vnc: hitl.VncLifecycle | None = None) -> hitl.SessionManager:
+    """The container's HITL session manager, wired to the shared browser and its render-path healer.
+
+    Disposing a HITL context can leave the shared browser unable to serve /v1/render (observed
+    live: every render times out until a container restart). The session manager cannot fix that
+    itself -- it holds no render path and imports nothing of one -- so it calls back here after any
+    dispose and :func:`_heal_render_path_after_hitl` heals it.
+
+    :param vnc: the display lifecycle the sessions open and close; ``None`` for the container's
+        one display on its production RFB port
+    :ptype vnc: hitl.VncLifecycle | None
+    :return: a manager reading the live browser at call time and healing the render path after
+        every dispose
+    :rtype: hitl.SessionManager
+    """
+    manager = hitl.SessionManager(vnc=vnc, browser_provider=lambda: _browser)
+    manager.on_browser_dirtied = lambda: _heal_render_path_after_hitl(manager)
+    return manager
+
+
 @asynccontextmanager
-async def _lifespan(_app: FastAPI):
+async def _lifespan(application: FastAPI):
     global _browser, _ready
     # Pinned user_data_dir (not nodriver's own auto-generated temp one) so this
     # Preferences file is guaranteed to be the ONE the persistent browser instance
@@ -1053,7 +1118,7 @@ async def _lifespan(_app: FastAPI):
     # Before the browser, because the VNC processes are children of this one and a
     # container stopping should not leave an x11vnc holding the RFB port for whatever
     # restarts into the same namespace.
-    await _sessions.shutdown()
+    await application.state.sessions.shutdown()
     if _browser is not None:
         _browser.stop()
     # A stopped browser is no browser. Left set, `/healthz` would go on answering "ok" and the
@@ -1064,6 +1129,8 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(lifespan=_lifespan)
+app.state.timings = SidecarTimings()
+app.state.sessions = build_session_manager()
 
 
 def _error(status_code: int, code: str, message: str) -> JSONResponse:
@@ -1211,14 +1278,10 @@ async def healthz() -> dict[str, str | None]:
 # that can evaluate a policy.
 # --------------------------------------------------------------------------
 
-_sessions = hitl.SessionManager(browser_provider=lambda: _browser)
-# Disposing a HITL context can leave the shared browser unable to serve /v1/render (observed
-# live: every render times out until a container restart). The session manager cannot fix that
-# itself -- it holds no render path and imports nothing of one -- so it calls back here after any
-# dispose and this heals it. Set after construction because the healer needs `_render`, defined
-# above, and the manager is built at import time.
-_sessions.on_browser_dirtied = _heal_render_path_after_hitl
-_vnc = _sessions.vnc
+
+def _sessions_of(request: Request) -> hitl.SessionManager:
+    """The session manager of the app serving *request* (``build_session_manager``'s, in production)."""
+    return request.app.state.sessions
 
 
 class HitlSessionRequest(BaseModel):
@@ -1247,13 +1310,14 @@ class HitlTabRequest(BaseModel):
 # field type, and FastAPI infers a response model from the annotation unless told not
 # to -- the same reason the render/download endpoints name theirs explicitly.
 @app.post("/v1/hitl/vnc", response_model=None)
-async def hitl_vnc_start() -> dict[str, Any] | JSONResponse:
+async def hitl_vnc_start(request: Request) -> dict[str, Any] | JSONResponse:
     """Start the VNC path, or return the one already running.
 
     Idempotent: a caller that retries gets the running session rather than a second
     ``x11vnc`` losing a race for the RFB port.
     """
-    if _sessions.owns_display():
+    sessions = _sessions_of(request)
+    if sessions.owns_display():
         return _error(
             409,
             "display_owned_by_session",
@@ -1261,7 +1325,7 @@ async def hitl_vnc_start() -> dict[str, Any] | JSONResponse:
             "or DELETE it before driving the display directly",
         )
     try:
-        session = await _vnc.start()
+        session = await sessions.vnc.start()
     except hitl.VncUnavailable as exc:
         log.warning("hitl: could not start the vnc path: %s", exc)
         return _error(503, "unavailable", str(exc))
@@ -1269,38 +1333,40 @@ async def hitl_vnc_start() -> dict[str, Any] | JSONResponse:
 
 
 @app.get("/v1/hitl/vnc")
-async def hitl_vnc_status() -> dict[str, Any]:
+async def hitl_vnc_status(request: Request) -> dict[str, Any]:
     """Whether the display is being served right now.
 
     Asks about the process that actually serves it: a readiness signal reporting healthy over a
     blank display is worse than none, because it is believed.
     """
-    return {"running": _vnc.health(), "display": _vnc.display}
+    sessions = _sessions_of(request)
+    return {"running": sessions.vnc.health(), "display": sessions.vnc.display}
 
 
 @app.delete("/v1/hitl/vnc", response_model=None)
-async def hitl_vnc_stop() -> dict[str, Any] | JSONResponse:
+async def hitl_vnc_stop(request: Request) -> dict[str, Any] | JSONResponse:
     """Stop both processes, leaving nothing listening.
 
     Refuses while a session owns the display: stopping it underneath one would leave a session
     reporting itself open with nothing for its operator to look at.
     """
+    sessions = _sessions_of(request)
     # `owns_display`, not `current`: an EXPIRED session is refused by `authorize`, so it cannot
     # be torn down through the session API -- and if it also blocked here, nothing but the
     # reaper could ever release the display. This is the escape hatch for exactly that, so it
     # closes the session too rather than stopping the display out from under a tracked one.
-    if _sessions.owns_display():
+    if sessions.owns_display():
         return _error(
             409,
             "display_owned_by_session",
             "a HITL session owns the display; DELETE /v1/hitl/session/{id} instead",
         )
-    if _sessions.current() is not None:
+    if sessions.current() is not None:
         log.info("hitl: releasing the display held by an expired session")
-        await _sessions.close()
-        return {"running": _vnc.health(), "released_expired_session": True}
-    await _vnc.stop()
-    return {"running": _vnc.health()}
+        await sessions.close()
+        return {"running": sessions.vnc.health(), "released_expired_session": True}
+    await sessions.vnc.stop()
+    return {"running": sessions.vnc.health()}
 
 
 # --------------------------------------------------------------------------
@@ -1322,16 +1388,17 @@ def _token_from(authorization: str | None, x_hitl_token: str | None) -> str:
 
 
 @app.post("/v1/hitl/session", response_model=None)
-async def hitl_session_open(req: HitlSessionRequest | None = None) -> dict[str, Any] | JSONResponse:
+async def hitl_session_open(request: Request, req: HitlSessionRequest | None = None) -> dict[str, Any] | JSONResponse:
     """Open the session and bring up the display.
 
     409 rather than a queue when one is already open. One display means one operator, and
     queueing would hold an HTTP request open for however long the first operator takes --
     minutes to hours, which is not a thing to do to a caller.
     """
+    sessions = _sessions_of(request)
     del req
     try:
-        session = await _sessions.open()
+        session = await sessions.open()
     except hitl.SessionUnavailable as exc:
         return _error(409, "conflict", str(exc))
     except hitl.VncUnavailable as exc:
@@ -1347,13 +1414,15 @@ async def hitl_session_open(req: HitlSessionRequest | None = None) -> dict[str, 
 
 @app.get("/v1/hitl/session/{session_id}", response_model=None)
 async def hitl_session_get(
+    request: Request,
     session_id: str,
     authorization: str | None = Header(default=None),
     x_hitl_token: str | None = Header(default=None),
 ) -> dict[str, Any] | JSONResponse:
     """Session state and the tabs currently open in it."""
+    sessions = _sessions_of(request)
     try:
-        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+        session = sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
     except hitl.SessionNotFound as exc:
         return _error(404, "not_found", str(exc))
     return {
@@ -1370,18 +1439,20 @@ async def hitl_session_get(
 
 @app.post("/v1/hitl/session/{session_id}/tab", response_model=None)
 async def hitl_tab_open(
+    request: Request,
     session_id: str,
     req: HitlTabRequest,
     authorization: str | None = Header(default=None),
     x_hitl_token: str | None = Header(default=None),
 ) -> dict[str, Any] | JSONResponse:
     """Bring one target into the session, in its own isolated context."""
+    sessions = _sessions_of(request)
     try:
-        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+        session = sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
     except hitl.SessionNotFound as exc:
         return _error(404, "not_found", str(exc))
     try:
-        tab = await _sessions.open_tab(
+        tab = await sessions.open_tab(
             session,
             target_id=req.target_id,
             url=req.url,
@@ -1404,6 +1475,7 @@ async def hitl_tab_open(
 
 @app.post("/v1/hitl/session/{session_id}/tab/{tab_id}/complete", response_model=None)
 async def hitl_tab_complete(
+    request: Request,
     session_id: str,
     tab_id: str,
     authorization: str | None = Header(default=None),
@@ -1414,12 +1486,13 @@ async def hitl_tab_complete(
     Exporting the context's cookies happens here because this is the last moment the context
     exists -- once it is disposed the human's work is gone.
     """
+    sessions = _sessions_of(request)
     try:
-        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+        session = sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
     except hitl.SessionNotFound as exc:
         return _error(404, "not_found", str(exc))
     try:
-        tab = await _sessions.complete_tab(session, tab_id)
+        tab = await sessions.complete_tab(session, tab_id)
     except hitl.SessionNotFound as exc:
         return _error(404, "not_found", str(exc))
     # `session_state` is the human's work, raw and unsealed. It is returned exactly once, to
@@ -1435,14 +1508,16 @@ async def hitl_tab_complete(
 
 @app.delete("/v1/hitl/session/{session_id}", response_model=None)
 async def hitl_session_close(
+    request: Request,
     session_id: str,
     authorization: str | None = Header(default=None),
     x_hitl_token: str | None = Header(default=None),
 ) -> dict[str, Any] | JSONResponse:
     """Tear the session down: drop every context, stop the display."""
+    sessions = _sessions_of(request)
     try:
-        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+        session = sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
     except hitl.SessionNotFound as exc:
         return _error(404, "not_found", str(exc))
-    await _sessions.close(session)
+    await sessions.close(session)
     return {"closed": True, "session_id": session_id}

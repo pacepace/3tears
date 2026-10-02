@@ -117,7 +117,12 @@ class CamoufoxDriver(ScrapeDriver):
     """
 
     def __init__(
-        self, *, headless: bool = True, browser: Any | None = None, egress: EgressDriver | None = None
+        self,
+        *,
+        headless: bool = True,
+        browser: Any | None = None,
+        egress: EgressDriver | None = None,
+        max_network_calls: int = _MAX_NETWORK_CALLS,
     ) -> None:
         """
         :param headless: launch Camoufox headless (default) or with a visible window.
@@ -135,12 +140,17 @@ class CamoufoxDriver(ScrapeDriver):
             used exactly as given, since its proxy was decided by whoever
             launched it.
         :ptype egress: EgressDriver | None
+        :param max_network_calls: how many captured API responses a ``capture_network`` render
+            returns at most. The default matches the nodriver sidecar's own bound, so a caller
+            that does not care which backend rendered the page sees the same cap from both
+        :ptype max_network_calls: int
         """
         self._headless = headless
         self._browser = browser
         self._owns_browser = browser is None
         self._camoufox: Any | None = None
         self._egress = egress
+        self._max_network_calls = max_network_calls
 
     @property
     def name(self) -> str:
@@ -260,7 +270,7 @@ class CamoufoxDriver(ScrapeDriver):
 
             html = await page.content()
             network_calls = []
-            for resp in captured_responses[:_MAX_NETWORK_CALLS]:
+            for resp in captured_responses[: self._max_network_calls]:
                 try:
                     try:
                         body = await resp.text()

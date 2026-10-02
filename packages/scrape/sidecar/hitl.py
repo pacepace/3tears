@@ -50,7 +50,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 # The names `main` (the other half of this container) and its tests may bind to. Everything
 # with a leading underscore stays this module's own. `apply_context_state` and
@@ -60,8 +60,10 @@ __all__ = [
     "DEFAULT_MAX_SLOTS",
     "DEFAULT_SESSION_TTL_SECONDS",
     "REAPER_INTERVAL_SECONDS",
+    "BrowserContexts",
     "HitlSession",
     "HitlTab",
+    "NodriverContexts",
     "SessionManager",
     "SessionNotFound",
     "SessionUnavailable",
@@ -143,13 +145,28 @@ class VncLifecycle:
     exactly what the capability check in front of the relay exists to prevent.
     """
 
-    def __init__(self, *, display_num: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        display_num: int | None = None,
+        rfb_port: int = _RFB_PORT,
+        start_timeout_seconds: float = _START_TIMEOUT_SECONDS,
+    ) -> None:
         """
         :param display_num: X display to share; defaults to ``DISPLAY_NUM``, then 99. The
             same display ``entrypoint.sh`` started Xvfb on and Chromium is drawing to
         :ptype display_num: int | None
+        :param rfb_port: loopback port ``x11vnc`` listens on. The default is the port the MIT
+            relay beside this container dials, so production never passes it; a lifecycle on
+            another port is one the relay cannot reach
+        :ptype rfb_port: int
+        :param start_timeout_seconds: how long ``start`` waits for the port to accept a
+            connection before calling the launch a failure
+        :ptype start_timeout_seconds: float
         """
         self._display_num = display_num if display_num is not None else int(os.environ.get("DISPLAY_NUM", "99"))
+        self._rfb_port = rfb_port
+        self._start_timeout_seconds = start_timeout_seconds
         self._x11vnc: asyncio.subprocess.Process | None = None
 
     @property
@@ -191,7 +208,7 @@ class VncLifecycle:
         # leave an x11vnc holding the RFB port behind a lifecycle reporting not-running.
         try:
             self._x11vnc = await self._spawn(self._x11vnc_argv(), what="x11vnc")
-            await self._await_port(_RFB_PORT, what="x11vnc")
+            await self._await_port(self._rfb_port, what="x11vnc")
         except BaseException:
             await self.stop()
             raise
@@ -240,7 +257,7 @@ class VncLifecycle:
             "-display",
             self.display,
             "-rfbport",
-            str(_RFB_PORT),
+            str(self._rfb_port),
             "-localhost",
             "-nopw",
             "-forever",
@@ -294,7 +311,7 @@ class VncLifecycle:
         state that makes the next ``start`` ambiguous.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + _START_TIMEOUT_SECONDS
+        deadline = loop.time() + self._start_timeout_seconds
         while loop.time() < deadline:
             try:
                 reader, writer = await asyncio.open_connection("127.0.0.1", port)
@@ -306,7 +323,7 @@ class VncLifecycle:
             del reader
             return
         await self.stop()
-        raise VncUnavailable(f"{what} did not start listening on port {port} within {_START_TIMEOUT_SECONDS:.0f}s")
+        raise VncUnavailable(f"{what} did not start listening on port {port} within {self._start_timeout_seconds:.0f}s")
 
     @staticmethod
     async def _close_quietly(writer: asyncio.StreamWriter) -> None:
@@ -477,6 +494,76 @@ class HitlSession:
         return self.max_slots - len(self.tabs)
 
 
+class BrowserContexts(Protocol):
+    """The three CDP operations a session performs on an operator tab's isolated context.
+
+    The session layer's whole contact with the browser, gathered behind one collaborator so
+    :class:`SessionManager` holds the slot, lock and TTL logic and nothing else. Production
+    uses :class:`NodriverContexts`; a manager is given another only to drive it without a real
+    Chromium.
+    """
+
+    async def open(
+        self, browser: Any, url: str, nav_steps: Any, session_state: dict[str, Any] | None = None
+    ) -> tuple[Any, Any]:
+        """Create an isolated context and tab at *url*, restoring *session_state* and replaying *nav_steps*.
+
+        :param browser: the live nodriver Browser
+        :ptype browser: Any
+        :param url: where the tab lands
+        :ptype url: str
+        :param nav_steps: steps replayed once the page is up, or None
+        :ptype nav_steps: Any
+        :param session_state: a previously exported state to restore first, or None
+        :ptype session_state: dict[str, Any] | None
+        :return: the tab, and its browser context's id
+        :rtype: tuple[Any, Any]
+        """
+        ...
+
+    async def dispose(self, browser: Any, context_id: Any) -> None:
+        """Dispose one isolated browser context.
+
+        :param browser: the live nodriver Browser
+        :ptype browser: Any
+        :param context_id: the context to drop
+        :ptype context_id: Any
+        """
+        ...
+
+    async def export_state(self, browser: Any, tab: Any, context_id: Any) -> dict[str, Any]:
+        """Read the cookies and origin storage out of one isolated context.
+
+        :param browser: the live nodriver Browser
+        :ptype browser: Any
+        :param tab: the tab sitting in that context
+        :ptype tab: Any
+        :param context_id: the context to read
+        :ptype context_id: Any
+        :return: the exported ``cookies`` and ``origins``
+        :rtype: dict[str, Any]
+        """
+        ...
+
+
+class NodriverContexts:
+    """:class:`BrowserContexts` over nodriver's CDP bindings: what every production manager uses."""
+
+    async def open(
+        self, browser: Any, url: str, nav_steps: Any, session_state: dict[str, Any] | None = None
+    ) -> tuple[Any, Any]:
+        """See :meth:`BrowserContexts.open`."""
+        return await _open_isolated(browser, url, nav_steps, session_state)
+
+    async def dispose(self, browser: Any, context_id: Any) -> None:
+        """See :meth:`BrowserContexts.dispose`."""
+        await _dispose_context(browser, context_id)
+
+    async def export_state(self, browser: Any, tab: Any, context_id: Any) -> dict[str, Any]:
+        """See :meth:`BrowserContexts.export_state`."""
+        return await _export_context_state(browser, tab, context_id)
+
+
 class SessionManager:
     """Creates, tracks and reaps the one live HITL session.
 
@@ -497,6 +584,8 @@ class SessionManager:
         max_slots: int = DEFAULT_MAX_SLOTS,
         ttl_seconds: float = DEFAULT_SESSION_TTL_SECONDS,
         on_browser_dirtied: Callable[[], Awaitable[None]] | None = None,
+        contexts: BrowserContexts | None = None,
+        complete_tab_timeout_seconds: float = _COMPLETE_TAB_TIMEOUT_SECONDS,
     ) -> None:
         """
         :param vnc: the display lifecycle a session opens and closes
@@ -516,8 +605,16 @@ class SessionManager:
             did not. Settable after construction too, since ``main`` builds this at import time
             and only has the healer once its own render helpers are defined.
         :ptype on_browser_dirtied: Callable[[], Awaitable[None]] | None
+        :param contexts: the CDP operations on an operator tab's isolated context; defaults to
+            :class:`NodriverContexts`, the real browser
+        :ptype contexts: BrowserContexts | None
+        :param complete_tab_timeout_seconds: ceiling on each CDP round-trip :meth:`complete_tab`
+            takes outside the lock (the export, then the dispose)
+        :ptype complete_tab_timeout_seconds: float
         """
         self._vnc = vnc if vnc is not None else VncLifecycle()
+        self._contexts: BrowserContexts = contexts if contexts is not None else NodriverContexts()
+        self._complete_tab_timeout_seconds = complete_tab_timeout_seconds
         self._browser_provider = browser_provider
         self._max_slots = max_slots
         self._ttl_seconds = ttl_seconds
@@ -692,7 +789,7 @@ class SessionManager:
             )
 
         try:
-            tab_obj, context_id = await _open_isolated(browser, url, nav_steps, session_state)
+            tab_obj, context_id = await self._contexts.open(browser, url, nav_steps, session_state)
         except BaseException:
             # The reservation must not outlive the attempt it was reserving for, or a target
             # that failed to open silently costs the operator a slot for the whole session.
@@ -746,7 +843,9 @@ class SessionManager:
                 raise SessionNotFound(f"no tab {tab_id} in this session")
 
         try:
-            tab.exported_state = await asyncio.wait_for(self._export_state(tab), timeout=_COMPLETE_TAB_TIMEOUT_SECONDS)
+            tab.exported_state = await asyncio.wait_for(
+                self._export_state(tab), timeout=self._complete_tab_timeout_seconds
+            )
         except TimeoutError:
             # Only a hang can reach here. `_export_state` catches its own failures and returns
             # None -- it promises never to raise into the completion -- so a broad catch here
@@ -755,13 +854,13 @@ class SessionManager:
             log.warning(
                 "hitl: exporting state for tab %s timed out after %.0fs; completing it without any",
                 tab_id,
-                _COMPLETE_TAB_TIMEOUT_SECONDS,
+                self._complete_tab_timeout_seconds,
                 extra={"extra_data": {"tab_id": tab_id, "session_id": session.session_id}},
             )
             tab.exported_state = None
 
         try:
-            await asyncio.wait_for(self._drop_tab(tab), timeout=_COMPLETE_TAB_TIMEOUT_SECONDS)
+            await asyncio.wait_for(self._drop_tab(tab), timeout=self._complete_tab_timeout_seconds)
         except TimeoutError:
             # `_drop_tab` already swallows its own errors; only a hang reaches here, and the
             # leaked context is bounded by the browser's lifetime exactly as it is there.
@@ -842,7 +941,7 @@ class SessionManager:
             # Its own error path drops it, and disposing nothing here is correct.
             return
         try:
-            await _dispose_context(browser, tab.context_id)
+            await self._contexts.dispose(browser, tab.context_id)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a context that will not dispose must not stop the other tabs being dropped or the display being stopped; the leak is bounded by the browser's own lifetime. Logged with its traceback below
             log.exception(
                 "hitl: could not dispose the browser context for tab %s",
@@ -882,7 +981,7 @@ class SessionManager:
         if tab.tab is None or tab.context_id is None or browser is None:
             return None
         try:
-            return await _export_context_state(browser, tab.tab, tab.context_id)
+            return await self._contexts.export_state(browser, tab.tab, tab.context_id)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an export that fails costs the reuse, where raising would additionally cost the operator their completed tab and its slot; the human's work is already done either way. Logged with its traceback below
             log.exception(
                 "hitl: could not export session state for tab %s; the solve will not be reusable",
@@ -898,7 +997,7 @@ class SessionManager:
     async def _dispose_quietly(self, browser: Any, context_id: Any, tab_id: str) -> None:
         """Drop an orphaned context, logging rather than raising."""
         try:
-            await _dispose_context(browser, context_id)
+            await self._contexts.dispose(browser, context_id)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this runs while already unwinding a torn-down session; the leak is bounded by the browser's lifetime and raising here would replace a clear error with a confusing one. Logged with its traceback below
             log.exception("hitl: could not dispose the orphaned context for tab %s", tab_id)
 
@@ -966,7 +1065,7 @@ async def _open_isolated(
 async def _export_context_state(browser: Any, tab: Any, context_id: Any) -> dict[str, Any]:
     """Read cookies and origin storage out of one isolated browser context.
 
-    Split out so tests can substitute it, and because the CDP surface is the part most likely
+    Reached through :class:`NodriverContexts`, and split out because the CDP surface is the part most likely
     to need revisiting: cookie handling has moved between the Network and Storage domains
     across Chrome versions, and this is the seam to change when it moves again.
 
@@ -1133,7 +1232,7 @@ def _same_origin(a: str, b: str) -> bool:
 
 
 async def _dispose_context(browser: Any, context_id: Any) -> None:
-    """Dispose a browser context. Split out so tests can substitute it."""
+    """Dispose a browser context. Reached through :class:`NodriverContexts`."""
     import nodriver as uc  # noqa: PLC0415 -- deliberate late import; see _open_isolated
 
     await browser.send(uc.cdp.target.dispose_browser_context(context_id))

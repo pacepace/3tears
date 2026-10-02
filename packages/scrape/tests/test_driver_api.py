@@ -1,4 +1,4 @@
-"""Unit tests for ApiDriver and _resolve_path.
+"""Unit tests for ApiDriver, including how it resolves ``results_path``.
 
 All tests are fully mocked -- no real network calls (httpx.MockTransport
 throughout). The real, live proof against Michigan's genuine Sitecore XA
@@ -26,38 +26,58 @@ from packages.scrape.tests._driver_log_helpers import driver_warnings
 from packages.scrape.tests._egress_fakes import FakeEgress
 
 from threetears.scrape.driver import NavStep, RenderedPage
-from threetears.scrape.drivers.api import ApiDriver, ApiDriverError, _resolve_path
+from threetears.scrape.drivers.api import ApiDriver, ApiDriverError
 
 # ===========================================================================
-# _resolve_path
+# results_path resolution, through render()
 # ===========================================================================
 
 
-class TestResolvePath:
-    def test_single_segment_path(self):
-        assert _resolve_path({"Results": [1, 2, 3]}, "Results") == [1, 2, 3]
+async def _render_records(body: object, results_path: str) -> str:
+    """Render *body* through ``ApiDriver`` with *results_path*, returning the page body.
 
-    def test_dotted_multi_segment_path(self):
-        assert _resolve_path({"data": {"records": ["a", "b"]}}, "data.records") == ["a", "b"]
+    The path walk is reached through ``render`` -- the driver's one public entry -- so these
+    tests pin what a caller sees for a given ``results_path``, not a helper's return value.
+    """
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
+    try:
+        page = await ApiDriver(client=client).render(
+            "https://example.gov/api/search", results_path=results_path, fragment_field="Html"
+        )
+    finally:
+        await client.aclose()
+    return page.html.removeprefix("<html><body>").removesuffix("</body></html>")
 
-    def test_missing_key_raises(self):
+
+def _records(*values: str) -> list[dict[str, str]]:
+    return [{"Html": value} for value in values]
+
+
+class TestResultsPath:
+    async def test_single_segment_path(self):
+        assert await _render_records({"Results": _records("1", "2", "3")}, "Results") == "1\n2\n3"
+
+    async def test_dotted_multi_segment_path(self):
+        assert await _render_records({"data": {"records": _records("a", "b")}}, "data.records") == "a\nb"
+
+    async def test_missing_key_raises(self):
         with pytest.raises(ApiDriverError) as exc_info:
-            _resolve_path({"Other": []}, "Results")
+            await _render_records({"Other": []}, "Results")
         assert exc_info.value.code == "bad_results_path"
 
-    def test_missing_nested_key_raises(self):
+    async def test_missing_nested_key_raises(self):
         with pytest.raises(ApiDriverError) as exc_info:
-            _resolve_path({"data": {}}, "data.records")
+            await _render_records({"data": {}}, "data.records")
         assert exc_info.value.code == "bad_results_path"
 
-    def test_non_list_terminal_value_raises(self):
+    async def test_non_list_terminal_value_raises(self):
         with pytest.raises(ApiDriverError) as exc_info:
-            _resolve_path({"Results": "not a list"}, "Results")
+            await _render_records({"Results": "not a list"}, "Results")
         assert exc_info.value.code == "bad_results_path"
 
-    def test_non_dict_intermediate_value_raises(self):
+    async def test_non_dict_intermediate_value_raises(self):
         with pytest.raises(ApiDriverError) as exc_info:
-            _resolve_path({"data": ["not", "a", "dict"]}, "data.records")
+            await _render_records({"data": ["not", "a", "dict"]}, "data.records")
         assert exc_info.value.code == "bad_results_path"
 
 

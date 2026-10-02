@@ -57,10 +57,15 @@ async def _call(method: str, path: str) -> httpx.Response:
         return await client.request(method, path)
 
 
+def _serve_display(monkeypatch: pytest.MonkeyPatch, vnc: _FakeLifecycle) -> None:
+    """Give the app the session manager production builds, over *vnc* instead of a real x11vnc."""
+    monkeypatch.setattr(main.app.state, "sessions", main.build_session_manager(vnc=vnc))  # type: ignore[arg-type]
+
+
 @pytest.fixture()
 def fake_vnc(monkeypatch: pytest.MonkeyPatch) -> _FakeLifecycle:
     fake = _FakeLifecycle()
-    monkeypatch.setattr(main, "_vnc", fake)
+    _serve_display(monkeypatch, fake)
     return fake
 
 
@@ -100,7 +105,7 @@ async def test_an_unavailable_vnc_path_is_a_503_not_a_traceback(monkeypatch: pyt
     tells a queue "the sidecar is broken" when the truth is "this container has no VNC
     support" -- a distinction that decides whether anyone gets paged.
     """
-    monkeypatch.setattr(main, "_vnc", _FakeLifecycle(explode=True))
+    _serve_display(monkeypatch, _FakeLifecycle(explode=True))
     r = await _call("POST", "/v1/hitl/vnc")
     assert r.status_code == 503
     assert "not installed" in r.json()["error"]["message"]
@@ -190,8 +195,7 @@ class _FakeSessions:
 @pytest.fixture()
 def fake_sessions(monkeypatch: pytest.MonkeyPatch) -> _FakeSessions:
     fake = _FakeSessions()
-    monkeypatch.setattr(main, "_sessions", fake)
-    monkeypatch.setattr(main, "_vnc", fake.vnc)
+    monkeypatch.setattr(main.app.state, "sessions", fake)
     return fake
 
 
@@ -358,8 +362,7 @@ async def test_an_expired_session_can_still_be_released(monkeypatch: pytest.Monk
     tracked session.
     """
     fake = _FakeSessions()
-    monkeypatch.setattr(main, "_sessions", fake)
-    monkeypatch.setattr(main, "_vnc", fake.vnc)
+    monkeypatch.setattr(main.app.state, "sessions", fake)
     await _call("POST", "/v1/hitl/session")
     assert fake.vnc.health()
 

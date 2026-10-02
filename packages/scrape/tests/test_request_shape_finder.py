@@ -20,7 +20,6 @@ from threetears.scrape.driver import NavStep, NetworkCall, RenderedPage
 from threetears.scrape.request_shape_finder import (
     CapturedRequestShape,
     RequestShapeResult,
-    _parse_body_shape,
     capture_request_shape,
 )
 
@@ -82,33 +81,41 @@ def _call(
     )
 
 
+async def _body_shape(body: str) -> object:
+    """The ``body_shape`` capture_request_shape reports for one call that answered *body*."""
+    result = await capture_request_shape(
+        "https://example.com/page", driver=_FakeDriver([_call("https://example.com/api", body)])
+    )
+    return result.calls[0].body_shape
+
+
 # ===========================================================================
-# _parse_body_shape
+# body_shape parsing, through capture_request_shape
 # ===========================================================================
 
 
 class TestParseBodyShape:
-    def test_plain_json_object_parses(self) -> None:
-        assert _parse_body_shape('{"a": 1}') == {"a": 1}
+    async def test_plain_json_object_parses(self) -> None:
+        assert await _body_shape('{"a": 1}') == {"a": 1}
 
-    def test_plain_json_array_parses(self) -> None:
-        assert _parse_body_shape("[1, 2, 3]") == [1, 2, 3]
+    async def test_plain_json_array_parses(self) -> None:
+        assert await _body_shape("[1, 2, 3]") == [1, 2, 3]
 
-    def test_xssi_prefixed_json_parses(self) -> None:
+    async def test_xssi_prefixed_json_parses(self) -> None:
         """A generic anti-hijacking-prefix convention, not a Google-specific one --
         this test's prefix is deliberately a different, made-up string from any
         real vendor's, proving the skip-to-first-brace logic doesn't hardcode
         Google's own )]}' string anywhere."""
-        assert _parse_body_shape(')]}\'\nSOME_OTHER_PREFIX{"a": 1}') == {"a": 1}
+        assert await _body_shape(')]}\'\nSOME_OTHER_PREFIX{"a": 1}') == {"a": 1}
 
-    def test_non_json_body_returns_none(self) -> None:
-        assert _parse_body_shape("<html>not json</html>") is None
+    async def test_non_json_body_returns_none(self) -> None:
+        assert await _body_shape("<html>not json</html>") is None
 
-    def test_empty_body_returns_none(self) -> None:
-        assert _parse_body_shape("") is None
+    async def test_empty_body_returns_none(self) -> None:
+        assert await _body_shape("") is None
 
-    def test_malformed_json_after_brace_returns_none(self) -> None:
-        assert _parse_body_shape("{not: valid, json}") is None
+    async def test_malformed_json_after_brace_returns_none(self) -> None:
+        assert await _body_shape("{not: valid, json}") is None
 
 
 # ===========================================================================
