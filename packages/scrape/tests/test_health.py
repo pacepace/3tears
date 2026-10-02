@@ -24,10 +24,11 @@ import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.models import LlmPurpose
 
 from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipeCollection
-from threetears.scrape.eval_loop import _stamp_fingerprint_if_validated, run_eval_loop, run_eval_loop_multi_row
+from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
     content_fingerprint,
@@ -42,11 +43,6 @@ _PAGE = """
   </table>
 </body></html>
 """
-
-
-def extractions_row(*, validation_status: str) -> ScrapeExtraction:
-    """A transient extraction carrying just the status the stamp helper branches on."""
-    return ScrapeExtraction({"target_id": "warn_oh", "validation_status": validation_status})
 
 
 @pytest.fixture()
@@ -313,24 +309,96 @@ async def test_a_validated_single_row_reuse_stamps_the_fingerprint(
     assert stored.content_fingerprint == content_fingerprint(_PAGE)
 
 
-async def test_needs_review_stamps_nothing(health: ScrapeTargetHealthCollection) -> None:
+def _structured_model(payload: dict[str, Any]) -> SimpleNamespace:
+    """A chat-model stand-in whose structured call answers *payload*, as the schema it was bound to.
+
+    Built from whatever schema the caller binds, so the test names no extraction or judge
+    model class: only the field names a real model's answer would carry.
+    """
+
+    def _bind(schema: Any, **_kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(ainvoke=AsyncMock(return_value=schema.model_validate(payload)))
+
+    return SimpleNamespace(with_structured_output=_bind)
+
+
+async def test_needs_review_stamps_nothing(
+    recipes: ScrapeRecipeCollection,
+    extractions: ScrapeExtractionCollection,
+    health: ScrapeTargetHealthCollection,
+) -> None:
     """``needs_review`` means nothing confirmed the extraction was right.
 
     That page is not a trustworthy "this is what the target looks like when it works"
-    reference, so it must not become the comparison value. Asserted directly against the
-    helper rather than through a full judge round: the rule is about the status, and
-    driving an LLM judge to produce it would test the judge instead.
+    reference, so it must not become the comparison value. Reached through a first run whose
+    judge confirms none of the structurally valid candidates -- the judge's answer is canned,
+    so what is under test is the status rule, not the judge.
     """
-    unconfirmed = extractions_row(validation_status="needs_review")
-    await _stamp_fingerprint_if_validated(health, unconfirmed, target_id="warn_oh", html=_PAGE)
-    assert await health.get("warn_oh") is None
+    extraction_model = _structured_model({"candidates": [{"selectors": {"employer": "td"}}]})
+    judge_model = _structured_model(
+        {"winning_candidate_index": None, "reasoning": "none match", "field_confidences": {}}
+    )
 
-    blocked = extractions_row(validation_status="blocked")
-    await _stamp_fingerprint_if_validated(health, blocked, target_id="warn_oh", html=_PAGE)
-    assert await health.get("warn_oh") is None
+    def _by_purpose(*_args: Any, purpose: Any = None, **_kwargs: Any) -> SimpleNamespace:
+        return extraction_model if purpose == LlmPurpose.EXTRACTION else judge_model
+
+    with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=_by_purpose):
+        result = await run_eval_loop(
+            "warn_oh",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="k",
+            health_collection=health,
+        )
+
+    assert result.validation_status == "needs_review"
+    assert await health.get("warn_oh") is None, "an unconfirmed read became the reference page"
+
+
+async def test_blocked_stamps_nothing(
+    recipes: ScrapeRecipeCollection,
+    extractions: ScrapeExtractionCollection,
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """A bot wall is the opposite of a reference page.
+
+    Reached the way production reaches it: a reused recipe finds nothing, and the classifier
+    reads the page as a wall. The verdict cache writes the row, so the assertion is on the
+    fingerprint columns rather than on the row's existence.
+    """
+    await _seed_working_recipe(
+        recipes, "warn_oh", {"row_selector": "table tr.nonexistent", "field_selectors": {"employer": "td.nope"}}
+    )
+    verdict = PageVerdict(kind="blocked", evidence="a challenge page", confidence="high")
+    fake_model = SimpleNamespace(
+        with_structured_output=lambda _schema, **_kw: SimpleNamespace(ainvoke=AsyncMock(return_value=verdict))
+    )
+
+    with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+        result = await run_eval_loop_multi_row(
+            "warn_oh",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="k",
+            health_collection=health,
+        )
+
+    assert result.validation_status == "blocked"
+    stored = await health.get("warn_oh")
+    assert stored is not None, "the verdict cache should have been written"
+    assert stored.content_fingerprint is None, "a bot wall became the reference page"
+    assert stored.fingerprint_updated_at is None
 
 
 async def test_a_health_write_failure_never_fails_the_scrape(
+    recipes: ScrapeRecipeCollection,
+    extractions: ScrapeExtractionCollection,
     health: ScrapeTargetHealthCollection,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -338,16 +406,26 @@ async def test_a_health_write_failure_never_fails_the_scrape(
 
     Losing real extracted data because a bookkeeping row could not be written would be a
     strictly worse outcome than having no fingerprint. The failure is logged with its
-    traceback, never silenced.
+    traceback, never silenced, and the caller still gets its validated extraction.
     """
-    validated = extractions_row(validation_status="validated")
+    await _seed_working_recipe(recipes, "warn_oh", {"row_selector": "table tr", "field_selectors": {"employer": "td"}})
 
     async def _boom(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("l3 is having a day")
 
     with patch("threetears.scrape.eval_loop.record_validated_fetch", side_effect=_boom):
-        await _stamp_fingerprint_if_validated(health, validated, target_id="warn_oh", html=_PAGE)
+        result = await run_eval_loop_multi_row(
+            "warn_oh",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="unused-no-llm-call-on-the-reuse-path",
+            health_collection=health,
+        )
 
+    assert result.validation_status == "validated"
     assert "fingerprint stamp failed" in caplog.text
 
 
