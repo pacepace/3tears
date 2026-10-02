@@ -22,7 +22,7 @@ import pytest
 from threetears.core.collections import bucket as bucket_module
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.bucket import COLLECTIONS_BIND_ATTEMPTS, bind_collections_bucket
-from threetears.nats.errors import KvConfigMismatch, KvError
+from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError
 
 
 class TestBindsRatherThanDeclares:
@@ -133,3 +133,41 @@ class TestAttemptBudgetIsCallerOverridable:
             await bind_collections_bucket(nc, attempts=3)
 
         assert nc.ensure_kv_bucket.await_count == 3
+
+
+class TestAnAbsentBucketIsReportedAsOne:
+    """when every attempt found the bucket ABSENT, the exhaustion says so by type and names the declarer."""
+
+    async def test_an_absent_bucket_raises_the_typed_error_once_the_budget_is_spent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        nc = MagicMock()
+        nc.ensure_kv_bucket = AsyncMock(
+            side_effect=KvBucketNotFoundError("bucket does not exist", bucket="3tears-collections")
+        )
+
+        with pytest.raises(KvBucketNotFoundError) as excinfo:
+            await bind_collections_bucket(nc, component="tool-pod", attempts=2)
+
+        message = str(excinfo.value)
+        assert "tool-pod" in message
+        assert "has not run" in message
+        assert "grant does not cover" not in message, "an answered absence is not a missing grant"
+        assert excinfo.value.bucket == "3tears-collections"
+
+    async def test_a_last_failure_that_is_not_an_absence_stays_a_plain_kv_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        nc = MagicMock()
+        nc.ensure_kv_bucket = AsyncMock(
+            side_effect=[KvBucketNotFoundError("absent", bucket="3tears-collections"), KvError("nats: timeout")]
+        )
+
+        with pytest.raises(KvError) as excinfo:
+            await bind_collections_bucket(nc, attempts=2)
+
+        assert not isinstance(excinfo.value, KvBucketNotFoundError)

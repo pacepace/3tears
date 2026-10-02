@@ -51,7 +51,7 @@ import asyncio
 from typing import TYPE_CHECKING, Final
 
 from threetears.core.collections.base import BaseCollection
-from threetears.nats.errors import KvError
+from threetears.nats.errors import KvBucketNotFoundError, KvError
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -111,8 +111,9 @@ async def bind_collections_bucket(
     :ptype max_backoff_seconds: float
     :return: the bound bucket handle, also installed in the client's bucket cache
     :rtype: KvBucketLike
-    :raises KvError: the bucket could not be bound within the attempt budget -- it does not exist
-        (nothing has declared it) or this principal is not granted it
+    :raises KvBucketNotFoundError: the last bind found the bucket absent -- nothing has declared it
+    :raises KvError: the bucket could not be bound within the attempt budget for another reason --
+        most often this principal is not granted it
     :raises KvConfigMismatch: the live bucket carries a configuration this process refuses; raised
         on the first attempt, because config drift does not heal
     """
@@ -140,6 +141,16 @@ async def bind_collections_bucket(
             )
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, max_backoff_seconds)
+    if isinstance(failure, KvBucketNotFoundError):
+        # the server answered every last bind with "absent": no grant would fix that, so the
+        # message names only the declarer, and the type says it to a caller that branches on it.
+        raise KvBucketNotFoundError(
+            f"collections KV bucket {COLLECTIONS_BUCKET_SUFFIX!r} could not be bound by "
+            f"{component or 'unnamed'} after {attempts} attempts: it does not exist. this process BINDS "
+            f"the bucket and never declares it, so the declaring identity (the hub, in its lifespan) "
+            f"has not run, or has not run since NATS lost the bucket. last error: {failure}",
+            bucket=failure.bucket,
+        ) from failure
     if failure is not None or bucket is None:
         raise KvError(
             f"collections KV bucket {COLLECTIONS_BUCKET_SUFFIX!r} could not be bound by "
