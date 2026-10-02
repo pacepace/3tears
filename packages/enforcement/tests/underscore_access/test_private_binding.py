@@ -311,6 +311,142 @@ class TestStringBindings:
         assert _found(repo) == set()
 
 
+_CONFINEMENT = "src/pkg/_vendor_internals.py"
+_CONFINEMENT_LEDGER = (
+    f"# rationale: vendor keeps the socket on Client._sock with no public accessor\n{_CONFINEMENT}:sock#0:_sock\n"
+)
+
+
+def _confinement_repo(tmp_path: Path, extra_ledger: str = "") -> tuple[Path, Path]:
+    """a repo whose ``src/pkg/_vendor_internals.py`` is a recorded confinement module.
+
+    :param tmp_path: pytest's temporary directory
+    :ptype tmp_path: Path
+    :param extra_ledger: ledger text appended after the confinement module's own entry
+    :ptype extra_ledger: str
+    :return: the repo root and the ledger path
+    :rtype: tuple[Path, Path]
+    """
+    repo, exemptions = _repo(tmp_path, ignores={_CONFINEMENT: '["SLF001"]'}, ledger=_CONFINEMENT_LEDGER + extra_ledger)
+    _write(repo / _CONFINEMENT, "def sock(client: object) -> object:\n    return client._sock\n")
+    return repo, exemptions
+
+
+class TestAConfinementModulesOwnTest:
+    """owner ruling 1 (2026-10-01): the own test of a recorded confinement module may import it.
+
+    That test exists to catch the library changing under the module, so it has to reach the module
+    itself. Each such import is recorded in the ledger with a specific rationale; anything else that
+    imports the module is still tested through its public callers.
+    """
+
+    _OWN = "tests/unit/test_vendor_internals.py"
+
+    def test_the_own_test_importing_it_with_a_ledger_entry_is_allowed(self, tmp_path: Path) -> None:
+        ledger = (
+            "# rationale: pins that the vendor Client still assigns _sock, which the module reads\n"
+            f"{self._OWN}:<module>#0:_vendor_internals\n"
+            "# rationale: the second spelling, through the package\n"
+            f"{self._OWN}:<module>#1:_vendor_internals\n"
+            "# rationale: a function-level import is keyed on its function\n"
+            f"{self._OWN}:test_late#0:_vendor_internals\n"
+        )
+        repo, exemptions = _confinement_repo(tmp_path, ledger)
+        _write(
+            repo / self._OWN,
+            "from pkg._vendor_internals import sock\n"
+            "from pkg import _vendor_internals\n"
+            "def test_late() -> None:\n"
+            "    import pkg._vendor_internals\n",
+        )
+
+        assert _found(repo, exemptions) == set()
+
+    def test_an_import_without_its_own_ledger_entry_is_a_violation(self, tmp_path: Path) -> None:
+        """one entry sanctions one binding: the second import of the same module needs its own."""
+        ledger = f"# rationale: pins the vendor members\n{self._OWN}:<module>#0:_vendor_internals\n"
+        repo, exemptions = _confinement_repo(tmp_path, ledger)
+        _write(repo / self._OWN, "from pkg._vendor_internals import sock\nfrom pkg import _vendor_internals\n")
+
+        assert _found(repo, exemptions) == {(SHAPE_G_MODULE, self._OWN, 2, "_vendor_internals")}
+
+    def test_another_test_importing_it_is_a_violation_even_with_an_entry(self, tmp_path: Path) -> None:
+        other = "tests/unit/test_driver.py"
+        ledger = f"# rationale: the driver test wants it too\n{other}:<module>#0:_vendor_internals\n"
+        repo, exemptions = _confinement_repo(tmp_path, ledger)
+        _write(repo / other, "from pkg._vendor_internals import sock\n")
+
+        assert _found(repo, exemptions) == {(SHAPE_G_MODULE, other, 1, "_vendor_internals")}
+
+    def test_a_private_name_from_the_confinement_module_is_still_a_violation(self, tmp_path: Path) -> None:
+        """the sanction covers binding the module, not the module's own private names."""
+        ledger = f"# rationale: pins the vendor members\n{self._OWN}:<module>#0:_vendor_internals\n"
+        repo, exemptions = _confinement_repo(tmp_path, ledger)
+        _write(repo / _CONFINEMENT, "_RETRIES = 3\ndef sock(client: object) -> object:\n    return client._sock\n")
+        _write(repo / self._OWN, "from pkg._vendor_internals import _RETRIES\n")
+
+        assert _found(repo, exemptions) == {(SHAPE_G_NAME, self._OWN, 1, "_RETRIES")}
+
+    def test_an_own_test_of_a_module_that_is_not_a_confinement_module_is_a_violation(self, tmp_path: Path) -> None:
+        """``_internals`` carries no SLF001 ignore, so it is not recorded and its test has no sanction."""
+        own = "tests/unit/test_internals.py"
+        ledger = f"# rationale: pins the internals\n{own}:<module>#0:_internals\n"
+        repo, exemptions = _confinement_repo(tmp_path, ledger)
+        _write(repo / own, "from pkg._internals import thing\n")
+
+        assert _found(repo, exemptions) == {(SHAPE_G_MODULE, own, 1, "_internals")}
+
+
+class TestDocumentedStdlibPrivates:
+    """owner ruling 2 (2026-10-01): ``os._exit`` and ``sys._getframe`` are documented public APIs.
+
+    The underscore there is CPython's naming, not a stability marker: both are in the standard
+    library reference with no deprecation, so binding them is binding a public API.
+    """
+
+    def test_os_exit_and_sys_getframe_are_allowed_in_every_spelling(self, tmp_path: Path) -> None:
+        repo, _ = _repo(tmp_path)
+        _write(
+            repo / "tests" / "test_a.py",
+            "import os\n"
+            "import sys\n"
+            "from os import _exit\n"
+            "from sys import _getframe\n"
+            "from unittest.mock import patch\n"
+            "from pkg import mod\n"
+            "def test_x(monkeypatch) -> None:\n"
+            '    monkeypatch.setattr(os, "_exit", lambda code: None)\n'
+            '    monkeypatch.setattr(mod.os, "_exit", lambda code: None)\n'
+            '    patch.object(sys, "_getframe")\n'
+            '    patch("os._exit")\n'
+            '    monkeypatch.setattr("pkg.mod.os._exit", lambda code: None)\n',
+        )
+
+        assert _found(repo) == set()
+
+    def test_other_privates_of_os_and_sys_and_the_same_names_elsewhere_are_violations(self, tmp_path: Path) -> None:
+        """allowed by (module, name) pair: neither the module nor the name alone is enough."""
+        repo, _ = _repo(tmp_path)
+        _write(
+            repo / "tests" / "test_b.py",
+            "import os\n"
+            "from os import _wrap_close\n"
+            "from sys import _exit\n"
+            "def test_x(monkeypatch, obj) -> None:\n"
+            '    monkeypatch.setattr(os, "_wrap_close", None)\n'
+            '    monkeypatch.setattr(obj, "_exit", None)\n'
+            '    monkeypatch.setattr("pkg.mod._hidden.os._exit", None)\n',
+        )
+
+        assert _found(repo) == {
+            (SHAPE_G_NAME, "tests/test_b.py", 2, "_wrap_close"),
+            (SHAPE_G_NAME, "tests/test_b.py", 3, "_exit"),
+            (SHAPE_H_ATTRIBUTE, "tests/test_b.py", 5, "_wrap_close"),
+            (SHAPE_H_ATTRIBUTE, "tests/test_b.py", 6, "_exit"),
+            (SHAPE_H_PATH, "tests/test_b.py", 7, "_hidden"),
+        }
+
+
 class TestTheScanReportsItsInputs:
     def test_files_imports_and_binding_calls_are_counted(self, tmp_path: Path) -> None:
         """the non-vacuity inputs a consumer's floor asserts on."""

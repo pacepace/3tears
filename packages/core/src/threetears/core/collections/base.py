@@ -94,9 +94,9 @@ Table(
 )
 
 
-#: how often a collection sweeps expired absent-markers from its pod's L1, and how many rows one
-#: sweep removes. Bounded both ways so the sweep never becomes a cost a lookup notices; a backlog
-#: larger than one batch drains over successive intervals.
+#: how often a collection sweeps expired absent-markers from its pod's L1, and the default number
+#: of rows one sweep query removes (:attr:`BaseCollection.negative_cache_sweep_batch`). Bounded so
+#: no single query is a cost a lookup notices; a sweep keeps querying until the backlog is gone.
 _ABSENT_MARKER_SWEEP_INTERVAL_SECONDS: Final = 60.0
 _ABSENT_MARKER_SWEEP_BATCH: Final = 500
 _GENERATION_WARNING_INTERVAL_SECONDS: Final = 60.0
@@ -396,6 +396,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: above.
     negative_cache_max_age: ClassVar[timedelta | None] = None
 
+    #: How many expired absent-markers one sweep step deletes from this pod's L1 before checking
+    #: for more. A sweep keeps taking steps until the backlog is gone, so this bounds the size of
+    #: one query, never how much a sweep removes. Only meaningful with
+    #: :attr:`negative_cache_max_age` set; must be at least one.
+    negative_cache_sweep_batch: ClassVar[int] = _ABSENT_MARKER_SWEEP_BATCH
+
     #: The column holding each row's expiry time, or ``None`` for rows that never expire.
     #:
     #: A row whose expiry has passed is absent to every read that answers "does this exist" --
@@ -423,7 +429,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: None
         :rtype: None
         :raises TypeError: when :attr:`expires_at_column` is not a declared datetime column, or
-            :attr:`negative_cache_max_age` is under one second
+            :attr:`negative_cache_max_age` is under one second, or
+            :attr:`negative_cache_sweep_batch` is under one
         """
         super().__init_subclass__(**kwargs)
         if cls.expires_at_column is not None and cls.expires_at_column not in cls.datetime_columns:
@@ -435,6 +442,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             raise TypeError(
                 f"{cls.__name__}.negative_cache_max_age must be at least one second, the finest "
                 f"server-side lifetime an L2 entry can carry; got {cls.negative_cache_max_age}"
+            )
+        if cls.negative_cache_sweep_batch < 1:
+            raise TypeError(
+                f"{cls.__name__}.negative_cache_sweep_batch must be at least 1, or a sweep could never "
+                f"remove an expired absent-marker; got {cls.negative_cache_sweep_batch}"
             )
 
     # datasource-task-06 DS-06-04: per-concrete-class memo of table
@@ -1363,7 +1375,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         a denylist checks -- one per token -- are rarely seen twice, so without this the table grows
         with every distinct key ever looked up. Runs from the marker write path at most once per
         :data:`_ABSENT_MARKER_SWEEP_INTERVAL_SECONDS` per collection and drains the backlog in
-        batches of :data:`_ABSENT_MARKER_SWEEP_BATCH`, so the table never holds more than the
+        batches of :attr:`negative_cache_sweep_batch`, so the table never holds more than the
         markers written within one max age plus one interval, whatever the miss rate.
 
         :param now: the monotonic time the caller already read
@@ -1373,14 +1385,15 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return
+        batch = type(self).negative_cache_sweep_batch
         while True:
             expired = self._l1.execute_query(
-                f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE deadline <= ? LIMIT {_ABSENT_MARKER_SWEEP_BATCH}",
+                f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE deadline <= ? LIMIT {batch:d}",
                 (now,),
             )
             for row in expired:
                 self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (row["key"],), ("key",))
-            if len(expired) < _ABSENT_MARKER_SWEEP_BATCH:
+            if len(expired) < batch:
                 return
 
     def _clear_l1_marker(self, entity_id: Any) -> None:

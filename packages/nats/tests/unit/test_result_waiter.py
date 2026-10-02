@@ -94,6 +94,17 @@ class _Raw:
         return self._subs.pop(0)
 
 
+class _RawWithJetStream(_Raw):
+    """a scripted nats-py client that also hands out one JetStream context, as a live one does."""
+
+    def __init__(self, subs: list[_Sub], js: _Js) -> None:
+        super().__init__(subs)
+        self._js = js
+
+    def jetstream(self) -> _Js:
+        return self._js
+
+
 class _Js:
     """a JetStream context recording every consumer create; each may be scripted to fail."""
 
@@ -114,7 +125,9 @@ class _Js:
         raise AssertionError("a pod may not pull: CONSUMER.MSG.NEXT reaches any consumer by name")
 
 
-def _waiter(raw: _Raw, js: _Js, *, poll: float = 0.01, heartbeat: float = 60.0) -> JetStreamResultWaiter:
+def _waiter(
+    raw: _Raw, js: _Js, *, poll: float = 0.01, heartbeat: float = 60.0, rebuild_backoff: float = 1.0
+) -> JetStreamResultWaiter:
     return JetStreamResultWaiter(
         connection=lambda: raw,
         jetstream=lambda: js,
@@ -123,6 +136,7 @@ def _waiter(raw: _Raw, js: _Js, *, poll: float = 0.01, heartbeat: float = 60.0) 
         inactive_threshold_seconds=600.0,
         poll_seconds=poll,
         heartbeat_seconds=heartbeat,
+        rebuild_backoff_seconds=rebuild_backoff,
     )
 
 
@@ -211,23 +225,20 @@ async def test_the_consumer_outlives_the_call_it_is_waiting_for() -> None:
 
     a threshold shorter than the call means the server reaps the consumer mid-tool and the answer
     arrives with nothing bound to receive it -- the original bug, re-created on the consumer side.
+
+    Driven through :meth:`NatsClient.jetstream_result_waiter`, the method that derives the
+    keepalive from the wait budget, so the margin it adds is what is checked.
     """
-    from threetears.nats.client import NatsClient, _RESULT_WAITER_KEEPALIVE_MARGIN_SECONDS
+    from threetears.nats.client import NatsClient
 
     js = _Js()
-    raw = _Raw([_Sub([])])
-    waiter = JetStreamResultWaiter(
-        connection=lambda: raw,
-        jetstream=lambda: js,
-        subject=_SUBJECT,
-        stream=_STREAM,
-        inactive_threshold_seconds=1200.0 + _RESULT_WAITER_KEEPALIVE_MARGIN_SECONDS,
-        poll_seconds=5.0,
-    )
-    await waiter.open()
+    raw = _RawWithJetStream([_Sub([])], js)
+    client = NatsClient(raw=raw, namespace="3tears", client_name="t")  # type: ignore[arg-type]
+
+    waiter = await client.jetstream_result_waiter(subject=_SUBJECT, stream=_STREAM, wait_budget=timedelta(seconds=1200))
+    await waiter.close()
 
     assert js.creates[0][1].inactive_threshold > 1200.0
-    assert callable(NatsClient.jetstream_result_waiter)
 
 
 async def test_a_refused_create_leaves_no_subscription_behind() -> None:
@@ -297,12 +308,11 @@ async def test_a_failed_delivery_replaces_the_consumer() -> None:
     assert broken.unsubscribed
 
 
-async def test_a_failed_rebuild_is_retried_rather_than_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_failed_rebuild_is_retried_rather_than_fatal() -> None:
     """a broker still coming back must not end the wait on the first failed rebuild."""
-    monkeypatch.setattr("threetears.nats.client._RESULT_WAITER_REBUILD_BACKOFF_SECONDS", 0.0)
     js = _Js([None, RuntimeError("broker still down"), None])
     raw = _Raw([_Sub([RuntimeError("consumer gone")]), _Sub([]), _Sub([_Msg(b"eventually")])])
-    waiter = _waiter(raw, js)
+    waiter = _waiter(raw, js, rebuild_backoff=0.0)
     await waiter.open()
 
     payload = await waiter.wait(timeout=timedelta(seconds=5))

@@ -30,6 +30,7 @@ cheap to import from non-test code).
 
 from __future__ import annotations
 
+from threetears.core.testing.bridge import drain_and_shutdown_bridge
 from threetears.core.testing.containers import (
     CONTAINER_STAGGER_ENV,
     check_docker_available,
@@ -54,6 +55,7 @@ __all__ = [
     "assert_tables_equivalent",
     "check_docker_available",
     "column_signature",
+    "drain_and_shutdown_bridge",
     "entity_collection_stub",
     "fk_constraint_signature",
     "index_signature",

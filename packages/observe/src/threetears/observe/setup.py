@@ -19,8 +19,10 @@ from typing import TYPE_CHECKING
 from threetears.observe.logging import get_logger
 
 if TYPE_CHECKING:
-    from opentelemetry.sdk._logs import LoggerProvider
+    from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
+
+    from threetears.observe._otel_internals import OtelLogExport
 
 __all__ = [
     "TelemetryConfig",
@@ -65,7 +67,7 @@ class TelemetryConfig:
 # ---------------------------------------------------------------------------
 
 _tracer_provider: TracerProvider | None = None
-_log_provider: LoggerProvider | None = None
+_log_export: OtelLogExport | None = None
 _log_handler: logging.Handler | None = None
 _shutdown_called: bool = False
 
@@ -196,32 +198,23 @@ def init_telemetry(config: TelemetryConfig) -> bool:
     return True
 
 
-def _init_log_export(config: TelemetryConfig, resource: object) -> None:
+def _init_log_export(config: TelemetryConfig, resource: Resource) -> None:
     """Initialize OTel log export (Python logging -> OTLP -> Loki).
 
     Attaches a LoggingHandler to the root logger so every log record is exported
     as an OTel log record with trace context (trace_id, span_id) attached.
     The handler is wrapped to enrich OTel records with call-site info.
     """
-    global _log_provider, _log_handler  # noqa: PLW0603
+    global _log_export, _log_handler  # noqa: PLW0603
 
-    from opentelemetry._logs import set_logger_provider
-    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-    from opentelemetry.sdk._logs import LoggerProvider
-    from opentelemetry.sdk._logs import LoggingHandler
-    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    # OpenTelemetry's logs API exists only as private modules; _otel_internals is their one owner.
+    from threetears.observe._otel_internals import start_log_export
 
-    log_provider = LoggerProvider(resource=resource)  # type: ignore[arg-type]
-    loki_otlp_url = f"http://{config.loki_endpoint}/otlp/v1/logs"
-    log_exporter = OTLPLogExporter(endpoint=loki_otlp_url)
-    log_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
-    set_logger_provider(log_provider)
-
-    otel_handler = LoggingHandler(level=logging.DEBUG, logger_provider=log_provider)
-    handler = _CallSiteEnrichingHandler(otel_handler)
+    log_export = start_log_export(resource, f"http://{config.loki_endpoint}/otlp/v1/logs")
+    handler = _CallSiteEnrichingHandler(log_export.handler)
     logging.root.addHandler(handler)
 
-    _log_provider = log_provider
+    _log_export = log_export
     _log_handler = handler
 
     logger.info(
@@ -241,7 +234,7 @@ def shutdown_telemetry() -> None:
 
     Safe to call multiple times -- second and subsequent calls are no-ops.
     """
-    global _shutdown_called, _tracer_provider, _log_provider, _log_handler  # noqa: PLW0603
+    global _shutdown_called, _tracer_provider, _log_export, _log_handler  # noqa: PLW0603
 
     if _shutdown_called:
         return
@@ -253,7 +246,7 @@ def shutdown_telemetry() -> None:
         logging.root.removeHandler(_log_handler)
         _log_handler = None
 
-    if _log_provider is not None:
+    if _log_export is not None:
         # Broad on purpose -- a vendor exporter can raise anything on teardown, and neither
         # failure may stop the shutdown that follows it or prevent ``init_telemetry()``
         # being called again. NOT silent, though: an earlier version swallowed both with
@@ -263,14 +256,14 @@ def shutdown_telemetry() -> None:
         # installed (console, file) is still attached and still receiving. All the silence
         # bought was an unexportable telemetry backend failing invisibly at every shutdown.
         try:
-            _log_provider.force_flush(timeout_millis=2000)
+            _log_export.force_flush(timeout_millis=2000)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not stop the shutdown that follows; logged, not silenced
             logger.warning("telemetry shutdown: log provider flush failed", exc_info=True)
         try:
-            _log_provider.shutdown()
+            _log_export.shutdown()
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not prevent init_telemetry() being callable again; logged, not silenced
             logger.warning("telemetry shutdown: log provider shutdown failed", exc_info=True)
-        _log_provider = None
+        _log_export = None
 
     if _tracer_provider is None:
         return

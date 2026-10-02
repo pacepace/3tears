@@ -13,7 +13,6 @@ from unittest.mock import patch
 import pytest
 
 from threetears.observe.metrics import (
-    _sanitize_metric_name,
     counter,
     gauge,
     histogram,
@@ -59,7 +58,7 @@ class TestPrometheusCheck:
         name = _unique("test.check.available")
         counter(name).inc()
 
-        assert REGISTRY.get_sample_value(f"{_sanitize_metric_name(name)}_total") == 1.0
+        assert REGISTRY.get_sample_value(f"{name.replace('.', '_')}_total") == 1.0
 
     def test_prometheus_cached_after_first_check(self, monkeypatch: pytest.MonkeyPatch):
         """the first check decides for the process: prometheus_client arriving later does not change it."""
@@ -71,20 +70,44 @@ class TestPrometheusCheck:
         name = _unique("test.check.after")
         metrics.counter(name).inc()  # prometheus_client importable again
 
-        assert REGISTRY.get_sample_value(f"{_sanitize_metric_name(name)}_total") is None
+        assert REGISTRY.get_sample_value(f"{name.replace('.', '_')}_total") is None
+
+
+def _registered_as(name: str) -> str:
+    """the prometheus family name a counter registered under *name* records into.
+
+    :param name: the raw name given to :func:`counter`
+    :ptype name: str
+    :return: the family name whose ``_total`` sample is 1.0 after one increment
+    :rtype: str
+    """
+    from prometheus_client import REGISTRY
+
+    counter(name).inc()
+    families = [
+        family.name
+        for family in REGISTRY.collect()
+        if any(sample.name == f"{family.name}_total" and sample.value == 1.0 for sample in family.samples)
+        and family.name.endswith(name.rsplit(".", 1)[-1].translate(str.maketrans("<>", "__")))
+    ]
+    assert len(families) == 1, f"expected one family for {name!r}, found {families}"
+    return families[0]
 
 
 class TestSanitizeMetricName:
-    """metric name sanitization."""
+    """metric name sanitization, observed as the name the registry records under."""
 
     def test_dots_replaced(self):
-        assert _sanitize_metric_name("my.module.func") == "my_module_func"
+        suffix = uuid.uuid4().hex[:8]
+        assert _registered_as(f"my.module.func{suffix}") == f"my_module_func{suffix}"
 
     def test_angle_brackets_replaced(self):
-        assert _sanitize_metric_name("my.module.<locals>.func") == "my_module__locals__func"
+        suffix = uuid.uuid4().hex[:8]
+        assert _registered_as(f"my.module.<locals>.func{suffix}") == f"my_module__locals__func{suffix}"
 
     def test_already_clean_name_unchanged(self):
-        assert _sanitize_metric_name("already_clean") == "already_clean"
+        name = f"already_clean_{uuid.uuid4().hex[:8]}"
+        assert _registered_as(name) == name
 
 
 class TestAccessors:

@@ -947,19 +947,19 @@ async def test_every_spelling_of_loopback_is_refused_through_a_proxy(
 
 
 async def test_a_name_that_resolves_locally_is_checked_even_through_a_proxy(
-    no_proxy_env: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch
+    no_proxy_env: pytest.MonkeyPatch,
 ) -> None:
     """Skipping resolution is for a host that CANNOT resolve, not for every proxied request."""
-    from threetears.search import standalone
 
     async def resolves_to_loopback(host: str) -> tuple[str, ...]:
         return ("127.0.0.1",)
 
-    monkeypatch.setattr(standalone, "_resolve", resolves_to_loopback)
     async with LocalHttpServer() as proxy:
         no_proxy_env.setenv("HTTP_PROXY", proxy.base_url)
         with pytest.raises(TransportFailed, match="non-public address"):
-            await StandaloneTransport(max_attempts=1).request("GET", "http://rebinds-to-loopback.example/admin")
+            await StandaloneTransport(max_attempts=1, resolve=resolves_to_loopback).request(
+                "GET", "http://rebinds-to-loopback.example/admin"
+            )
 
     assert proxy.requests == []
 

@@ -54,7 +54,12 @@ import re
 import tokenize
 from pathlib import Path
 
-from threetears.enforcement.underscore_access.ledger import ledger_paths, private_accesses
+from threetears.enforcement.underscore_access.ledger import (
+    ledger_entries,
+    ledger_paths,
+    ledger_scope_entries,
+    private_accesses,
+)
 from threetears.enforcement.underscore_access.ruff_config import (
     exempted_files,
     is_vendored,
@@ -64,8 +69,12 @@ from threetears.enforcement.underscore_access.ruff_config import (
 
 __all__ = [
     "TEST_DIRECTORIES",
+    "confinement_modules",
+    "confinement_own_test_entries",
+    "is_own_test_of",
     "is_src_module",
     "ledger_entries_outside_src",
+    "own_test_name",
     "scanned_python_files",
     "slf001_ignored_files",
     "slf001_ignores_outside_src",
@@ -218,15 +227,121 @@ def slf001_ignores_without_a_ledger_entry(repo_root: Path, exemptions_path: Path
     ]
 
 
-def ledger_entries_outside_src(exemptions_path: Path) -> list[str]:
+def confinement_modules(repo_root: Path, exemptions_path: Path | None) -> frozenset[str]:
+    """the recorded third-party confinement modules: src, SLF001-ignored, and in the ledger.
+
+    :param repo_root: the repo's root
+    :ptype repo_root: Path
+    :param exemptions_path: the underscore-access exemptions ledger, or ``None`` for none
+    :ptype exemptions_path: Path | None
+    :return: repo-relative posix paths
+    :rtype: frozenset[str]
+    """
+    confined: frozenset[str] = frozenset()
+    # no ledger records nothing, so nothing is sanctioned and the ruff configs need not be read
+    if exemptions_path is not None and exemptions_path.is_file():
+        recorded = set(ledger_paths(exemptions_path))
+        ignored = {path for _config, _key, path in slf001_ignored_files(repo_root)}
+        confined = frozenset(path for path in ignored & recorded if is_src_module(path))
+    return confined
+
+
+def own_test_name(module_path: str) -> str:
+    """the file name of a confinement module's own test: ``_nats_py_internals.py`` -> ``test_nats_py_internals.py``.
+
+    :param module_path: a module's repo-relative path
+    :ptype module_path: str
+    :return: the test file's name
+    :rtype: str
+    """
+    return f"test_{Path(module_path).stem.lstrip('_')}.py"
+
+
+def is_own_test_of(test_path: str, module_path: str) -> bool:
+    """whether *test_path* is *module_path*'s own test: its name, in the same distribution.
+
+    The same distribution is the directory holding the module's ``src`` tree, so
+    ``packages/nats/tests/unit/test_x.py`` is the own test of ``packages/nats/src/.../_x.py`` and a
+    same-named test in another package is not.
+
+    :param test_path: a repo-relative test path
+    :ptype test_path: str
+    :param module_path: a confinement module's repo-relative path
+    :ptype module_path: str
+    :return: whether it is that module's own test
+    :rtype: bool
+    """
+    module_parts = Path(module_path).parts
+    distribution = Path(*module_parts[: module_parts.index("src")]) if "src" in module_parts else None
+    test = Path(test_path)
+    inside = distribution is not None and (distribution == Path() or distribution in test.parents)
+    return inside and test.name == own_test_name(module_path)
+
+
+def confinement_own_test_entries(repo_root: Path, exemptions_path: Path | None) -> frozenset[tuple[str, str, str, int]]:
+    """the ledger entries owner ruling 1 sanctions: a confinement module's own test importing it.
+
+    Owner ruling, 2026-10-01: a recorded third-party confinement module's OWN test may import it,
+    because that test exists to catch the library changing under the module. Each such import is
+    recorded as a ledger entry keyed ``<test path>:<scope>#N:<module's private segment>`` with a
+    specific rationale. An entry qualifies only when its symbol is the module's own private name
+    (``_nats_py_internals``), the test is named for it (:func:`own_test_name`), and the test sits
+    in the module's own distribution. Any other private module is tested through its public
+    callers, or promoted when it is genuinely a unit of its own with a production caller.
+
+    :param repo_root: the repo's root
+    :ptype repo_root: Path
+    :param exemptions_path: the underscore-access exemptions ledger, or ``None`` for none
+    :ptype exemptions_path: Path | None
+    :return: the qualifying ``(path, scope, symbol, occurrence)`` entries
+    :rtype: frozenset[tuple[str, str, str, int]]
+    """
+    entries: frozenset[tuple[str, str, str, int]] = frozenset()
+    confined = confinement_modules(repo_root, exemptions_path)
+    if confined and exemptions_path is not None:
+        entries = frozenset(
+            entry
+            for entry in ledger_scope_entries(exemptions_path)
+            if not is_src_module(entry[0])
+            and any(Path(module).stem == entry[2] and is_own_test_of(entry[0], module) for module in confined)
+        )
+    return entries
+
+
+def ledger_entries_outside_src(exemptions_path: Path, repo_root: Path) -> list[str]:
     """exemptions-ledger paths that are not ``src`` modules: a test's private access, recorded.
+
+    The one exception is owner ruling 1's record of a confinement module's own test importing it
+    (:func:`confinement_own_test_entries`); a test path with any other entry is still reported.
 
     :param exemptions_path: the underscore-access exemptions ledger
     :ptype exemptions_path: Path
+    :param repo_root: the repo's root, for the confinement modules ruling 1 reads
+    :ptype repo_root: Path
     :return: each offending path once, sorted
     :rtype: list[str]
     """
-    return sorted({path for path in ledger_paths(exemptions_path) if not is_src_module(path)})
+    sanctioned = confinement_own_test_entries(repo_root, exemptions_path)
+    return sorted(
+        {
+            path
+            for path, scope, symbol, occurrence in _all_entries(exemptions_path)
+            if not is_src_module(path) and (path, scope, symbol, occurrence) not in sanctioned
+        }
+    )
+
+
+def _all_entries(exemptions_path: Path) -> list[tuple[str, str, str, int]]:
+    """every entry as ``(path, scope, symbol, occurrence)``; a line-keyed entry carries its line as scope.
+
+    :param exemptions_path: the underscore-access exemptions ledger
+    :ptype exemptions_path: Path
+    :return: the entries in file order
+    :rtype: list[tuple[str, str, str, int]]
+    """
+    scoped = ledger_scope_entries(exemptions_path)
+    lined = [(path, str(line), symbol, 0) for path, line, symbol in ledger_entries(exemptions_path)]
+    return [*scoped, *lined]
 
 
 def slf001_policy_findings(repo_root: Path, exemptions_path: Path) -> list[str]:
@@ -257,6 +372,6 @@ def slf001_policy_findings(repo_root: Path, exemptions_path: Path) -> list[str]:
     findings += [
         f"exemptions-ledger entry for a test file: {path}. A test reaches what it asserts through "
         "the front door; delete the entry with the access."
-        for path in ledger_entries_outside_src(exemptions_path)
+        for path in ledger_entries_outside_src(exemptions_path, repo_root)
     ]
     return findings

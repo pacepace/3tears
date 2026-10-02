@@ -26,7 +26,7 @@ from threetears.agent.acl import AccessDenied
 from threetears.channels.frames import Frame, OpResult, RoomAccessRequest
 from threetears.channels.websocket import UNAUTHENTICATED, WebSocketAuthRefused, WebSocketHandler
 
-from .test_websocket import _EchoRouter
+from .websocket_support import EchoRouter
 
 ROOM = "cust:story:main:private-draft.md"
 _HANG_UP = object()
@@ -180,7 +180,7 @@ class _Pod:
             return {"user_id": identity[0], "customer_id": identity[1]}
 
         self.handler = WebSocketHandler(
-            router=_EchoRouter(),
+            router=EchoRouter(),
             auth_validator=_auth,
             room_state=self.rooms,  # type: ignore[arg-type]
             room_fanout=self.rooms,  # type: ignore[arg-type]

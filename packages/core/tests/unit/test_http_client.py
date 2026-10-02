@@ -330,8 +330,6 @@ async def test_span_emitted_and_no_header_leak() -> None:
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    import threetears.observe.tracing as tracing_mod
-
     provider = TracerProvider()
     exporter = InMemorySpanExporter()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -341,10 +339,8 @@ async def test_span_emitted_and_no_header_leak() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="ok")
 
-    with (
-        patch.object(tracing_mod, "_otel_available", True),
-        patch("opentelemetry.trace.get_tracer", provider.get_tracer),
-    ):
+    # OpenTelemetry is a dev dependency, so tracing is live here; only the tracer is redirected
+    with patch("opentelemetry.trace.get_tracer", provider.get_tracer):
         async with _client(httpx.MockTransport(handler)) as client:
             await client.request("GET", "/thing", headers={"Authorization": secret})
 

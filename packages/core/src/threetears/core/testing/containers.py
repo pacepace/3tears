@@ -42,6 +42,7 @@ from threetears.observe import BuildOnce
 
 __all__ = [
     "CONTAINER_STAGGER_ENV",
+    "ContainerStartStagger",
     "check_docker_available",
     "nats_reachable",
     "skip_without_docker_marker",
@@ -60,42 +61,66 @@ _DOCKER = "docker"
 #: seconds between xdist workers' first container starts; ``0`` disables the stagger.
 CONTAINER_STAGGER_ENV = "THREETEARS_TEST_CONTAINER_STAGGER_SECONDS"
 _DEFAULT_STAGGER_SECONDS = 2.0
-#: once per process: a worker waits before its FIRST container only.
-_staggered = False
 
 
-def stagger_container_start(*, sleep: Callable[[float], None] = time.sleep) -> None:
-    """delay this xdist worker's first container start by its index times the stagger.
+class ContainerStartStagger:
+    """the once-per-process wait an xdist worker takes before its first container start.
 
     several workers starting their first container in the same instant is a burst the Docker
     daemon does not always survive -- on ZFS-backed storage it leaves half-created containers
     (``zfs destroy ... dataset does not exist``) and the session fixture errors. worker ``gwN``
-    therefore waits ``N * stagger`` seconds before its first start, once per process: ``gw0``
+    therefore waits ``N * stagger`` seconds before its first start, once per instance: ``gw0``
     never waits, a worker that never starts a container pays nothing, and without xdist nothing
     changes. the stagger is ``THREETEARS_TEST_CONTAINER_STAGGER_SECONDS`` (default 2.0; ``0``
     disables it).
 
-    :param sleep: the blocking sleep (injected by tests)
-    :ptype sleep: Callable[[float], None]
+    the process holds one instance, which :func:`stagger_container_start` uses; a separate
+    instance is a separate "first start", which is what a test of the rule needs.
+    """
+
+    def __init__(self) -> None:
+        """start with no wait taken."""
+        self._waited = False
+
+    def wait_before_first_start(self, *, sleep: Callable[[float], None] = time.sleep) -> None:
+        """wait this worker's share of the stagger, the first time only.
+
+        :param sleep: the blocking sleep
+        :ptype sleep: Callable[[float], None]
+        :return: None
+        :rtype: None
+        :raises ValueError: the stagger is not a finite, non-negative number
+        """
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+        if self._waited or not worker.startswith("gw") or not worker[2:].isdigit():
+            return
+        raw = os.environ.get(CONTAINER_STAGGER_ENV, str(_DEFAULT_STAGGER_SECONDS))
+        try:
+            stagger = float(raw)
+        except ValueError:
+            stagger = -1.0
+        if not math.isfinite(stagger) or stagger < 0:
+            raise ValueError(f"{CONTAINER_STAGGER_ENV} must be a finite, non-negative number of seconds, got {raw!r}")
+        self._waited = True
+        delay = int(worker[2:]) * stagger
+        if delay > 0:
+            sleep(delay)
+
+
+#: the process's stagger: a worker waits before its FIRST container only.
+_PROCESS_STAGGER = ContainerStartStagger()
+
+
+def stagger_container_start() -> None:
+    """delay this xdist worker's first container start by its index times the stagger.
+
+    once per process, through the process's :class:`ContainerStartStagger`; see it for the rule.
+
     :return: None
     :rtype: None
     :raises ValueError: the stagger is not a finite, non-negative number
     """
-    global _staggered  # noqa: PLW0603 -- the once-per-process flag IS module state
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "")
-    if _staggered or not worker.startswith("gw") or not worker[2:].isdigit():
-        return
-    raw = os.environ.get(CONTAINER_STAGGER_ENV, str(_DEFAULT_STAGGER_SECONDS))
-    try:
-        stagger = float(raw)
-    except ValueError:
-        stagger = -1.0
-    if not math.isfinite(stagger) or stagger < 0:
-        raise ValueError(f"{CONTAINER_STAGGER_ENV} must be a finite, non-negative number of seconds, got {raw!r}")
-    _staggered = True
-    delay = int(worker[2:]) * stagger
-    if delay > 0:
-        sleep(delay)
+    _PROCESS_STAGGER.wait_before_first_start()
 
 
 def check_docker_available() -> bool:

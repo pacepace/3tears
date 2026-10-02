@@ -9,18 +9,29 @@ tests against a real JetStream KV bucket live in tests/integration/.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import uuid
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 
 from threetears.nats import KvError, NatsKvBucket
 from threetears.nats.errors import PublishTimeoutError
+from threetears.nats.kv import KvTimings
+
+#: a bucket whose operations give up after 50ms, so a test of a wedged broker spends milliseconds.
+_FAST_OPS = KvTimings(op_timeout_seconds=0.05)
+
+#: a bind wait shrunk so a test that waits for a declarer spends milliseconds, not seconds.
+_FAST_REBIND = KvTimings(
+    bind_retry_first_delay_seconds=0.001,
+    bind_retry_max_delay_seconds=0.004,
+    bind_wait_for_declarer_seconds=0.5,
+)
 
 
 # parity-exempt: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
@@ -392,14 +403,15 @@ async def test_persistent_failure_after_reopen_surfaces_kverror() -> None:
         await bucket.put(key="k", value=b"v")
 
 
-# parity-exempt: minimal JetStream stand-in exposing only stream_info for the date_created read; the full JetStreamContext surface is unrelated to it
+# parity-exempt: minimal JetStream stand-in exposing stream_info for the date_created read, plus the add_stream/key_value pair a self-heal re-open declares and binds through; the full JetStreamContext surface is unrelated to it
 class _StreamInfoJetStream:
-    """Answers stream_info with a fixed object, or raises what it was given."""
+    """Answers stream_info with a fixed object, or raises what it was given; records re-opens."""
 
     def __init__(self, *, info: Any = None, error: BaseException | None = None) -> None:
         self._info = info
         self._error = error
         self.asked: list[str] = []
+        self.reopened: list[str] = []
 
     async def stream_info(self, name: str) -> Any:
         self.asked.append(name)
@@ -407,11 +419,20 @@ class _StreamInfoJetStream:
             raise self._error
         return self._info
 
+    async def add_stream(self, config: Any) -> Any:
+        return MagicMock()
 
-# parity-exempt: minimal NatsClient stand-in exposing only jetstream_context() for the date_created read; full NatsClient parity would be over-mocking
+    async def key_value(self, name: str) -> _FakeKv:
+        self.reopened.append(name)
+        return _FakeKv()
+
+
+# parity-exempt: minimal NatsClient stand-in exposing only jetstream_context() and the connection a re-open records, for the date_created read; full NatsClient parity would be over-mocking
 class _StreamInfoClient:
     def __init__(self, js: _StreamInfoJetStream) -> None:
         self._js = js
+        # the connection a re-opened bucket records, and follows across a credential renewal
+        self.raw = object()
 
     def jetstream_context(self) -> _StreamInfoJetStream:
         return self._js
@@ -448,11 +469,10 @@ class TestDateCreated:
     async def test_a_failing_stream_info_raises_kverror_after_one_reopen(self) -> None:
         js = _StreamInfoJetStream(error=RuntimeError("nats: no response from stream"))
         bucket = _bucket_over(js)
-        with patch.object(NatsKvBucket, "_reopen", autospec=True) as reopen:
-            with pytest.raises(KvError, match="stream info failed"):
-                await bucket.date_created()
-        reopen.assert_awaited_once()
-        assert len(js.asked) == 2  # the self-heal retried once before surfacing
+        with pytest.raises(KvError, match="stream info failed"):
+            await bucket.date_created()
+        assert js.reopened == ["3tears-tests"]  # the self-heal re-opened the bucket exactly once
+        assert len(js.asked) == 2  # and retried once before surfacing
 
 
 @pytest.mark.asyncio
@@ -536,11 +556,16 @@ class TestAKvOperationThatNeverAnswers:
             await asyncio.sleep(3600)
 
         kv.put = _never_answers
-        bucket = NatsKvBucket(client=None, full_name=_unique_bucket("itest-b"), kv=kv, ttl=None)  # type: ignore[arg-type]
+        bucket = NatsKvBucket(
+            client=None,  # type: ignore[arg-type]
+            full_name=_unique_bucket("itest-b"),
+            kv=kv,
+            ttl=None,
+            timings=_FAST_OPS,
+        )
 
-        with patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
-            with pytest.raises((PublishTimeoutError, KvError)):
-                await bucket.put(key="k", value=b"v")
+        with pytest.raises((PublishTimeoutError, KvError)):
+            await bucket.put(key="k", value=b"v")
 
         assert attempts == 1, f"the wedged operation was retried {attempts} times through reopen"
 
@@ -566,9 +591,9 @@ class TestAKvOperationThatNeverAnswers:
 
         kv.put = _never_answers
         name = _unique_bucket("prod-epochs")
-        bucket = NatsKvBucket(client=None, full_name=name, kv=kv, ttl=None)  # type: ignore[arg-type]
+        bucket = NatsKvBucket(client=None, full_name=name, kv=kv, ttl=None, timings=_FAST_OPS)  # type: ignore[arg-type]
 
-        with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
+        with caplog.at_level(logging.ERROR):
             with pytest.raises((PublishTimeoutError, KvError)):
                 await bucket.put(key="k", value=b"v")
 
@@ -598,9 +623,9 @@ class TestAKvOperationThatNeverAnswers:
 
         kv.put = _never_answers
         name = _unique_bucket("throttle-probe")
-        bucket = NatsKvBucket(client=None, full_name=name, kv=kv, ttl=None)  # type: ignore[arg-type]
+        bucket = NatsKvBucket(client=None, full_name=name, kv=kv, ttl=None, timings=_FAST_OPS)  # type: ignore[arg-type]
 
-        with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
+        with caplog.at_level(logging.ERROR):
             for _ in range(3):
                 with pytest.raises((PublishTimeoutError, KvError)):
                     await bucket.put(key="k", value=b"v")
@@ -722,15 +747,17 @@ class TestTheRemedyIsNotSuppressedOnAFreshlyBootedMachine:
 
         kv.put = _never_answers
         name = _unique_bucket("fresh-boot")
-        bucket = NatsKvBucket(client=None, full_name=name, kv=kv, ttl=None)  # type: ignore[arg-type]
-
-        with (
-            caplog.at_level(logging.ERROR),
-            patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05),
-            # Larger than any real uptime, so `now - 0.0` is inside the window and the
+        bucket = NatsKvBucket(
+            client=None,  # type: ignore[arg-type]
+            full_name=name,
+            kv=kv,
+            ttl=None,
+            # The remedy window larger than any real uptime, so `now - 0.0` is inside it and the
             # old `0.0` sentinel suppresses. Absence must still mean "never logged".
-            patch("threetears.nats.kv._TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS", 1e12),
-        ):
+            timings=KvTimings(op_timeout_seconds=0.05, timeout_remedy_log_interval_seconds=1e12),
+        )
+
+        with caplog.at_level(logging.ERROR):
             with pytest.raises((PublishTimeoutError, KvError)):
                 await bucket.put(key="k", value=b"v")
 
@@ -848,17 +875,6 @@ def _client_over(js: Any) -> MagicMock:
     return client
 
 
-@pytest.fixture
-def _fast_rebind() -> Iterator[None]:
-    """shrink the bind wait so a test that waits for a declarer spends milliseconds, not seconds."""
-    with (
-        patch("threetears.nats.kv._BIND_RETRY_FIRST_DELAY_SECONDS", 0.001),
-        patch("threetears.nats.kv._BIND_RETRY_MAX_DELAY_SECONDS", 0.004),
-        patch("threetears.nats.kv._BIND_WAIT_FOR_DECLARER_SECONDS", 0.5),
-    ):
-        yield
-
-
 class TestABindOnlyOpenWaitsForItsDeclarer:
     """a pod never creates a bucket, so one missing right now is one its declarer has not declared YET.
 
@@ -871,7 +887,7 @@ class TestABindOnlyOpenWaitsForItsDeclarer:
     """
 
     @pytest.mark.asyncio
-    async def test_a_bucket_declared_while_the_pod_waits_is_bound(self, _fast_rebind: None) -> None:
+    async def test_a_bucket_declared_while_the_pod_waits_is_bound(self) -> None:
         js = _DeclaredLateJs(absent_for=3, healed=_FakeKv())
         bucket = await NatsKvBucket.open(
             client=_client_over(js),
@@ -880,17 +896,15 @@ class TestABindOnlyOpenWaitsForItsDeclarer:
             storage="memory",
             create_if_missing=False,
             history=1,
+            timings=_FAST_REBIND,
         )
         assert js.binds == 4
         assert bucket.name == "ns-proxy_assertion_nonces"
 
     @pytest.mark.asyncio
-    async def test_a_bucket_never_declared_fails_once_the_wait_is_spent(self, _fast_rebind: None) -> None:
+    async def test_a_bucket_never_declared_fails_once_the_wait_is_spent(self) -> None:
         js = _DeclaredLateJs(absent_for=10_000, healed=_FakeKv())
-        with (
-            patch("threetears.nats.kv._BIND_WAIT_FOR_DECLARER_SECONDS", 0.05),
-            pytest.raises(KvError, match="declar"),
-        ):
+        with pytest.raises(KvError, match="declar"):
             await NatsKvBucket.open(
                 client=_client_over(js),
                 full_name="ns-ratelimits",
@@ -898,11 +912,12 @@ class TestABindOnlyOpenWaitsForItsDeclarer:
                 storage="memory",
                 create_if_missing=False,
                 history=1,
+                timings=dataclasses.replace(_FAST_REBIND, bind_wait_for_declarer_seconds=0.05),
             )
         assert js.binds > 1
 
     @pytest.mark.asyncio
-    async def test_a_refused_bind_is_not_retried(self, _fast_rebind: None) -> None:
+    async def test_a_refused_bind_is_not_retried(self) -> None:
         calls = 0
 
         async def _refused(*_args: object, **_kwargs: object) -> None:
@@ -920,11 +935,12 @@ class TestABindOnlyOpenWaitsForItsDeclarer:
                 storage="memory",
                 create_if_missing=False,
                 history=1,
+                timings=_FAST_REBIND,
             )
         assert calls == 1, "an ungranted bucket was retried as if waiting could grant it"
 
     @pytest.mark.asyncio
-    async def test_a_handle_whose_bucket_was_wiped_recovers_once_the_declarer_is_back(self, _fast_rebind: None) -> None:
+    async def test_a_handle_whose_bucket_was_wiped_recovers_once_the_declarer_is_back(self) -> None:
         """the handle a primitive holds outlives the wipe; its next operation re-binds and succeeds."""
         stale = _FakeKv()
 
@@ -941,6 +957,7 @@ class TestABindOnlyOpenWaitsForItsDeclarer:
             kv=stale,  # type: ignore[arg-type]
             ttl=None,
             create_if_missing=False,
+            timings=_FAST_REBIND,
         )
         assert await bucket.get(key="nonce") == b"1"
         assert js.binds == 3

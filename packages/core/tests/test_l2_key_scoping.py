@@ -320,11 +320,17 @@ class TestConfigureRefusesAnUnscopedL2Client:
         with pytest.raises(InvalidL2ScopeError):
             registry.configure(kv_key_scope=bad)
 
-    def test_the_scope_grammar_is_stricter_than_the_key_grammar(self) -> None:
-        """``_KV_KEY_GRAMMAR`` admits ``.`` and ``/``; reusing it here would validate nothing."""
-        from threetears.core.collections.base import _KV_KEY_GRAMMAR  # noqa: PLC0415
+    def test_the_scope_grammar_is_stricter_than_the_key_grammar(self, config_always: DefaultCoreConfig) -> None:
+        """a key body may hold ``.``: ``l2_key`` keeps ``hub.replica`` verbatim rather than hashing it.
 
-        assert _KV_KEY_GRAMMAR.match("hub.replica")
+        So the KV key grammar admits exactly the value the scope must refuse, and reusing it for
+        the scope would validate nothing.
+        """
+        keyed = CollectionRegistry()
+        keyed.configure(kv_key_scope=_HUB_SCOPE, l1_backend=_make_l1())
+        collection = StubCollection(keyed, config_always, nats_client=_SharedNatsBus())
+        assert collection.l2_key("hub.replica").endswith(".hub.replica")
+
         registry = CollectionRegistry()
         with pytest.raises(InvalidL2ScopeError):
             registry.configure(kv_key_scope="hub.replica")

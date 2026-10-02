@@ -370,17 +370,12 @@ class TestCompositePkThreeTier:
             assert before is not None
 
             # pod A updates -> publishes ids: ["conv-xp", "item-xp"]
-            updated = coll_a.create(
-                {
-                    "conversation_id": "conv-xp",
-                    "item_id": "item-xp",
-                    "score": 999,
-                    "note": "v2",
-                }
-            )
-            # mark as existing so save_entity takes the UPSERT path
-            object.__setattr__(updated, "_is_new", False)
-            updated.original_date_updated = before.get("date_updated")
+            # loaded rather than created, so save_entity takes the update path a real edit takes
+            updated = await coll_a.get(("conv-xp", "item-xp"))
+            assert updated is not None
+            assert updated.original_date_updated == before.get("date_updated")
+            updated.score = 999
+            updated.note = "v2"
             await coll_a.save_entity(updated)
 
             # pod B's L1 MUST have been evicted by the invalidation signal

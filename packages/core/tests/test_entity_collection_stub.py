@@ -180,10 +180,9 @@ def l1_backend() -> SQLiteBackend:
     backend = SQLiteBackend(db_name=f"test_stub_parity_{uuid.uuid4().hex[:8]}")
     backend.initialize(_make_metadata())
     yield backend
-    from threetears.core._bridge import drain, shutdown
+    from threetears.core.testing.bridge import drain_and_shutdown_bridge
 
-    drain()
-    shutdown()
+    drain_and_shutdown_bridge()
     backend.reset()
 
 
