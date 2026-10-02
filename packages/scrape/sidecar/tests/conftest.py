@@ -91,8 +91,11 @@ while True:
 
 @pytest.fixture()
 def x11vnc_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> X11vncStub:
-    """Put a working ``x11vnc`` stub at the front of PATH, on a free RFB port."""
-    monkeypatch.setattr(hitl, "_RFB_PORT", RFB_TEST_PORT)
+    """Put a working ``x11vnc`` stub at the front of PATH.
+
+    It binds whatever port its argv names, so a lifecycle under test is built with
+    ``rfb_port=RFB_TEST_PORT`` (see :func:`lifecycle_on_test_port`) rather than on the production port.
+    """
     stub = _write_stub(tmp_path)
     monkeypatch.setenv("PATH", str(tmp_path), prepend=":")
     return stub
@@ -101,8 +104,26 @@ def x11vnc_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> X11vncStub:
 @pytest.fixture()
 def dead_x11vnc_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> X11vncStub:
     """Put an ``x11vnc`` stub on PATH that exits 1 without ever listening."""
-    monkeypatch.setattr(hitl, "_RFB_PORT", RFB_TEST_PORT)
-    monkeypatch.setattr(hitl, "_START_TIMEOUT_SECONDS", 1.0)
     stub = _write_stub(tmp_path, listens=False, exit_code=1)
     monkeypatch.setenv("PATH", str(tmp_path), prepend=":")
     return stub
+
+
+def lifecycle_on_test_port(*, start_timeout_seconds: float | None = None) -> hitl.VncLifecycle:
+    """A lifecycle on the test RFB port, for the display the stubs above stand in for.
+
+    Constructed with the port the stubs bind rather than the production one, which a Mac's own
+    Screen Sharing holds. The start budget stays the production one unless a test shortens it:
+    a stub that never listens is the started-then-died case, and how long the real budget is
+    is not what that test asserts, while a stub that does listen needs the real budget to
+    start its interpreter on a loaded machine.
+
+    :param start_timeout_seconds: how long ``start`` waits for the port; ``None`` for the
+        production budget
+    :ptype start_timeout_seconds: float | None
+    :return: a lifecycle for display ``:99`` on :data:`RFB_TEST_PORT`
+    :rtype: hitl.VncLifecycle
+    """
+    if start_timeout_seconds is None:
+        return hitl.VncLifecycle(display_num=99, rfb_port=RFB_TEST_PORT)
+    return hitl.VncLifecycle(display_num=99, rfb_port=RFB_TEST_PORT, start_timeout_seconds=start_timeout_seconds)
