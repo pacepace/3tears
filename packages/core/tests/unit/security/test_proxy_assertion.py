@@ -101,3 +101,21 @@ class TestProxyAssertion:
         )
         with pytest.raises(IdentityTokenError):
             verify_proxy_assertion(forged, jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1")
+
+
+class TestTheRefusalCodeIsSpelledOnce:
+    """the code a pod answers a failed assertion with is exported from core, where the pod and
+    the hub's error faces both read it, and its message names no check."""
+
+    def test_the_code_and_message_are_exported_from_the_security_package(self) -> None:
+        from threetears.core import security
+
+        assert security.TOOL_PROXY_ASSERTION_UNVERIFIED == "TOOL_PROXY_ASSERTION_UNVERIFIED"
+        assert "TOOL_PROXY_ASSERTION_UNVERIFIED" in security.__all__
+        assert "TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE" in security.__all__
+
+    def test_the_message_does_not_say_which_check_refused(self) -> None:
+        from threetears.core.security import TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE
+
+        for discriminator in ("absent", "missing", "replay", "nonce", "body", "guard", "kid", "Error"):
+            assert discriminator not in TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE

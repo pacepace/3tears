@@ -34,6 +34,7 @@ from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.tools.server import CallRequest, ToolServer
 from threetears.core.security import (
     PLATFORM_CUSTOMER_SENTINEL,
+    TOOL_PROXY_ASSERTION_UNVERIFIED,
     IdentityClaims,
     ProxyAssertionSigner,
     access_token_hash,
@@ -271,6 +272,6 @@ class TestTheComposedPath:
         with pytest.raises(ToolCallError) as excinfo:
             await client.call(_TOOL, _VERSION, {"text": "hi"})
 
-        assert "proxy assertion verification failed" in str(excinfo.value)
+        assert excinfo.value.error_code == TOOL_PROXY_ASSERTION_UNVERIFIED
         assert hop.forwarded[0].proxy_assertion is None
         assert tool.contexts == []  # the tool never ran

@@ -20,6 +20,9 @@ public surface:
   identity, verified against the Hub JWKS before RBAC (platform-auth Option B).
   :class:`~threetears.core.security.jwks_provider.CachedHubJwksProvider` fetches + caches that
   JWKS over NATS so a verifier's ``jwks_provider()`` returns it with no hot-path IO.
+- proxy assertions (``proxy_assertion``): :func:`mint_proxy_assertion` /
+  :func:`verify_proxy_assertion` / :data:`TOOL_PROXY_ASSERTION_UNVERIFIED` (the code a tool pod
+  answers a call that could not show it came through the registry for this body and this pod).
 """
 
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
@@ -47,6 +50,8 @@ from threetears.core.security.identity_token import (
 from threetears.core.security.jwks_provider import CachedHubJwksProvider
 from threetears.core.security.pop import access_token_hash, make_pop_proof, verify_pop_proof
 from threetears.core.security.proxy_assertion import (
+    TOOL_PROXY_ASSERTION_UNVERIFIED,
+    TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
     ProxyAssertionClaims,
     mint_proxy_assertion,
     verify_proxy_assertion,
@@ -89,6 +94,8 @@ __all__ = [
     "IDENTITY_REFUSED",
     "IDENTITY_REFUSED_MESSAGE",
     "PLATFORM_CUSTOMER_SENTINEL",
+    "TOOL_PROXY_ASSERTION_UNVERIFIED",
+    "TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE",
     "CachedHubJwksProvider",
     "IdentityClaims",
     "IdentityKeyNotFoundError",
