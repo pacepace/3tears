@@ -6,6 +6,42 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### NATS: what a restart wipes from memory storage comes back after the reconnect
+
+Found live in the devx bring-up. The tool registry declared its memory-backed result stream
+(`{ns}-tools-results`) only at startup; a single-node NATS restart deleted it, and every tool call
+after that failed with `stream not found` until someone restarted the registry by hand. Every
+memory-storage stream declared through `NatsClient` had the same hole.
+
+- **Fixed: `NatsClient` re-declares every memory-storage stream it declared, after every
+  reconnect.** `ensure_jetstream_stream(storage="memory")` (the default) remembers the exact config
+  and creates the stream again with it. Create only, never update: a stream still live (a network
+  blip, or another declarer changed it since) is left exactly as it is, including one the server
+  refuses with "stream name already in use". File-storage streams survive a restart and are not
+  re-declared.
+- **Fixed: the same for memory KV buckets.** `ensure_kv_bucket(create_if_missing=True)` on memory
+  storage remembers the bucket's backing-stream config and creates it again after a reconnect, so a
+  bucket's binders get it back even when nothing in the declaring process touches it. A bind-only
+  open (`create_if_missing=False`, or `kv_bucket`) is never re-declared: only the declarer may
+  create it.
+- **Fixed: durable consumers on a wiped stream are bound again.** A durable lives on its stream, so
+  the restart takes it too, and nothing delivered to it afterwards. After the streams, each
+  durable this client bound (`jetstream_subscribe_durable`, `jetstream_pull_subscribe`) is looked
+  up; one the server no longer has is bound again with its original config -- a push consumer at
+  once, a pull consumer at its next fetch. A durable that survived is not touched.
+- The restoration runs in the background from the reconnect callback, first in line, so it never
+  holds up the reconnect path or later hooks. A failure is logged at ERROR naming the stream or
+  durable and retried with capped exponential backoff (0.5s doubling to 30s) until it succeeds. A
+  later reconnect replaces a restoration still retrying; `shutdown` and `abandon` stop it.
+- New on the consumer handles: `JetStreamPushConsumer.recreate(js, connection)` and `.stream`;
+  `JetStreamPullConsumer.rebind_on_next_fetch()`, `.stream`, `.subject`, `.durable` and
+  `.is_stopped`.
+- Durable result waiters (`jetstream_result_waiter`) needed nothing: each call creates its own
+  consumer and replaces it when it goes quiet.
+- **Consumer action:** none required. A service that registered its own reconnect hook only to
+  re-declare a memory stream or bucket it declares through `NatsClient` may drop it; keeping it is
+  harmless (the re-declaration is idempotent).
+
 ### Channels: a server heartbeat, and a connection ends when its credential expires
 
 Owner ruling, 2026-10-01. `WebSocketHandler.heartbeat_interval` was documented and assigned but

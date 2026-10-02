@@ -65,6 +65,7 @@ design notes
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import math
 import random
@@ -87,6 +88,7 @@ from nats.js.api import (
     AckPolicy as _NatsAckPolicy,
     ConsumerConfig as _NatsConsumerConfig,
     DeliverPolicy as _NatsDeliverPolicy,
+    StreamConfig as _NatsStreamConfig,
 )
 from nats.errors import (
     AuthorizationError as _NatsAuthorizationError,
@@ -142,6 +144,24 @@ from threetears.nats.subjects import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER, Subjec
 # use" -- the two are conflated by a naive create-or-update. see
 # ensure_jetstream_stream.
 _JS_ERR_SUBJECTS_OVERLAP = 10065
+
+# JetStream API error code for "stream name already in use with a different configuration". The
+# server answers it only when it looked at the create and found a live stream of that name carrying
+# something else: on a re-declaration after a reconnect that is a stream that SURVIVED (or that
+# another declarer already brought back and has since changed), so it is left exactly as it is.
+_JS_ERR_STREAM_NAME_IN_USE = 10058
+
+#: first pause before a restoration after a reconnect tries again, when something it had to put back
+#: (a memory-storage stream or KV bucket this client declared, a durable consumer it bound) could not
+#: be. doubles each failed round up to :data:`_RESTORE_RETRY_MAX_DELAY_SECONDS`. a broker that has
+#: just come back can refuse the first JetStream calls while it recovers, and a stream declared by
+#: ANOTHER process is back only once that process has reconnected too.
+_RESTORE_RETRY_FIRST_DELAY_SECONDS: Final[float] = 0.5
+
+#: longest pause between two rounds of a restoration that keeps failing. it never gives up: what it
+#: restores is something every caller of this client depends on, and each failed round is logged at
+#: ERROR naming what is still missing.
+_RESTORE_RETRY_MAX_DELAY_SECONDS: Final[float] = 30.0
 
 if TYPE_CHECKING:
     from nats.aio.client import Server as _NatsServer
@@ -919,9 +939,11 @@ class JetStreamPushConsumer:
     :ptype resubscribe: Callable[[Any], Awaitable[Any]]
     :param connection: the nats-py connection ``raw_subscription`` is on
     :ptype connection: Any
+    :param stream: the backing stream the durable was bound on, or ``None`` when it was found by subject
+    :ptype stream: str | None
     """
 
-    __slots__ = ("raw_subscription", "_subject", "_durable", "_closed", "_resubscribe", "_connection")
+    __slots__ = ("raw_subscription", "_subject", "_durable", "_closed", "_resubscribe", "_connection", "_stream")
 
     def __init__(
         self,
@@ -931,6 +953,7 @@ class JetStreamPushConsumer:
         durable: str,
         resubscribe: Callable[[Any], Awaitable[Any]],
         connection: Any,
+        stream: str | None = None,
     ) -> None:
         self.raw_subscription = raw_subscription
         self._subject = subject
@@ -938,6 +961,42 @@ class JetStreamPushConsumer:
         self._closed = False
         self._resubscribe = resubscribe
         self._connection = connection
+        self._stream = stream
+
+    async def recreate(self, js: Any, connection: Any) -> None:
+        """bind the durable again after the server lost it, in one attempt.
+
+        a memory-storage stream wiped by a NATS restart takes its durables with it. nats-py replays
+        this handle's subscription on the reconnect, but nothing delivers to it until the durable
+        exists again, and nothing says so. the old subscription's durable is gone, so there is
+        nothing in flight to drain: it is dropped, and the bind creates the durable afresh with the
+        config it was first bound with. one attempt; the client's restoration retries a failure.
+
+        :param js: a JetStream context on the client's current connection
+        :ptype js: Any
+        :param connection: the nats-py connection ``js`` is on
+        :ptype connection: Any
+        :return: nothing
+        :rtype: None
+        :raises Exception: when the bind fails -- the stream is not back yet, or the broker refuses
+        """
+        await _unsubscribe_quietly(self.raw_subscription, subject=self._subject)
+        bound = await self._resubscribe(js)
+        if self._closed:
+            # stopped while it was being bound: release what was just bound.
+            await _unsubscribe_quietly(bound, subject=self._subject)
+        else:
+            self.raw_subscription = bound
+            self._connection = connection
+
+    @property
+    def stream(self) -> str | None:
+        """backing stream the durable was bound on.
+
+        :return: the stream name, or ``None`` when the bind found it by subject
+        :rtype: str | None
+        """
+        return self._stream
 
     async def move_to(self, js: Any, connection: Any) -> None:
         """release the durable on its current connection and bind it again through ``js``.
@@ -1070,6 +1129,8 @@ class JetStreamPullConsumer:
     :ptype resubscribe: Callable[[], Awaitable[Any]]
     :param error_backoff_seconds: pause after a failed fetch cycle before the next one
     :ptype error_backoff_seconds: float
+    :param stream: the backing stream the durable was bound on, or ``None`` when it was found by subject
+    :ptype stream: str | None
     """
 
     def __init__(
@@ -1087,6 +1148,7 @@ class JetStreamPullConsumer:
         current_connection: Callable[[], Any],
         resubscribe: Callable[[], Awaitable[Any]],
         error_backoff_seconds: float = _PULL_CONSUMER_ERROR_BACKOFF_SECONDS,
+        stream: str | None = None,
     ) -> None:
         """initialize the pull consumer over its subscription + handlers.
 
@@ -1116,9 +1178,15 @@ class JetStreamPullConsumer:
         :param error_backoff_seconds: pause after a failed fetch cycle (a transport blip during a
             reconnect) before the next, so a persistent failure does not spin
         :ptype error_backoff_seconds: float
+        :param stream: the backing stream the durable was bound on, or ``None`` when found by subject
+        :ptype stream: str | None
         :return: nothing
         :rtype: None
         """
+        self._stream = stream
+        # set when the server lost the durable (a memory-storage stream wiped by a NATS restart):
+        # the next cycle binds again, which creates the durable, rather than fetching from nothing.
+        self._rebind_requested = False
         self._psub = psub
         self._error_backoff_seconds = error_backoff_seconds
         self._cb = cb
@@ -1149,15 +1217,71 @@ class JetStreamPullConsumer:
         :raises Exception: when the rebind fails; :meth:`run` logs it and retries
         """
         current = self._current_connection()
-        if current is self._bound_to:
+        if current is self._bound_to and not self._rebind_requested:
             return
+        recreating = self._rebind_requested
         previous = self._psub
         self._psub = await self._resubscribe()
         self._bound_to = current
+        self._rebind_requested = False
         await _unsubscribe_quietly(previous, subject=self._subject)
-        log.info(
-            "durable pull consumer followed a credential renewal to the successor connection: durable=%s", self._durable
-        )
+        if recreating:
+            log.info("durable pull consumer bound again after the server lost its durable: durable=%s", self._durable)
+        else:
+            log.info(
+                "durable pull consumer followed a credential renewal to the successor connection: durable=%s",
+                self._durable,
+            )
+
+    def rebind_on_next_fetch(self) -> None:
+        """bind the durable again before the next fetch, because the server no longer has it.
+
+        a memory-storage stream wiped by a NATS restart takes its durables with it, and a fetch
+        against a durable that is gone delivers nothing. the bind made at the next cycle creates the
+        durable afresh with the config it was first bound with; a bind that fails (the stream is not
+        back yet) is retried by :meth:`run` on the cycle after. the fetch loop owns the subscription,
+        so the rebind happens there rather than under it.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._rebind_requested = True
+
+    @property
+    def stream(self) -> str | None:
+        """backing stream the durable was bound on.
+
+        :return: the stream name, or ``None`` when the bind found it by subject
+        :rtype: str | None
+        """
+        return self._stream
+
+    @property
+    def subject(self) -> Subject:
+        """subject this consumer drains.
+
+        :return: the consumed subject
+        :rtype: Subject
+        """
+        return self._subject
+
+    @property
+    def durable(self) -> str:
+        """durable consumer name this consumer binds.
+
+        :return: durable consumer name
+        :rtype: str
+        """
+        return self._durable
+
+    @property
+    def is_stopped(self) -> bool:
+        """whether :meth:`stop` has been called.
+
+        :return: True once stopped
+        :rtype: bool
+        """
+        return self._stopped
 
     async def fetch_and_process(self) -> int:
         """pull one batch and dispatch each message; return the count processed.
@@ -1662,6 +1786,26 @@ class JetStreamResultWaiter:
         self._sub = None
         if sub is not None:
             await _unsubscribe_quietly(sub, subject=self._subject)
+
+
+async def _retry_until_restored(restore_once: Callable[[], Awaitable[list[str]]]) -> int:
+    """run restoration rounds, with capped exponential backoff, until one reports nothing left.
+
+    a module-level function rather than a loop on the client because it holds no state of its own:
+    each round re-reads what the client still has to restore.
+
+    :param restore_once: one round; returns what could not be restored, empty when done
+    :ptype restore_once: Callable[[], Awaitable[list[str]]]
+    :return: how many rounds it took
+    :rtype: int
+    """
+    delay = _RESTORE_RETRY_FIRST_DELAY_SECONDS
+    rounds = 1
+    while await restore_once():
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _RESTORE_RETRY_MAX_DELAY_SECONDS)
+        rounds += 1
+    return rounds
 
 
 async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SECONDS) -> None:
@@ -2596,6 +2740,9 @@ class NatsClient:
         "_successor_move",
         "_longest_request_seconds",
         "_kv_timings",
+        "_memory_declarations",
+        "_pull_consumers",
+        "_restoration",
     )
 
     def __init__(
@@ -2628,6 +2775,19 @@ class NatsClient:
         self._reply_routes: dict[str, tuple[_NatsPyClient, float]] = {}
         # durable push consumers, which a handover moves by rebinding the durable on the successor.
         self._push_consumers: list[JetStreamPushConsumer] = []
+        # durable pull consumers, which a restoration after a reconnect binds again when the server
+        # lost their durable (:meth:`_restore_once`). a handover needs no list of them: each follows
+        # the current connection at its next fetch.
+        self._pull_consumers: list[JetStreamPullConsumer] = []
+        # every memory-storage stream this client DECLARED -- through :meth:`ensure_jetstream_stream`,
+        # and the backing stream of every bucket declared through :meth:`ensure_kv_bucket` -- keyed by
+        # stream name, carrying the exact config it was declared with. a NATS restart deletes memory
+        # storage, and nothing but the declarer can put it back; :meth:`_restore_once` re-creates each
+        # after every reconnect. a file-storage stream survives a restart and is never recorded.
+        self._memory_declarations: dict[str, _NatsStreamConfig] = {}
+        # the restoration a reconnect started (:meth:`_restore_after_reconnect`), held so it is not
+        # collected mid-flight and so a later reconnect, :meth:`shutdown` and :meth:`abandon` stop it.
+        self._restoration: asyncio.Task[None] | None = None
         # the abandonment a deliberate credential refusal started (:meth:`abandon_on_refusal`), held so
         # the task is not collected mid-flight.
         self._abandonment: asyncio.Task[None] | None = None
@@ -2872,13 +3032,21 @@ class NatsClient:
         # :attr:`is_healthy` reads the live counts.
         client._reconnect_callbacks = opener.reconnect_callbacks
         client._health_state = opener.health_state
+        # FIRST in the list, ahead of every consumer hook: what a NATS restart wiped is put back
+        # before anything registered later runs against it. it only starts a task, so it never
+        # holds up the hooks after it.
+        client._reconnect_callbacks.insert(0, client._restore_after_reconnect)
         return client
 
     def add_reconnect_callback(self, callback: ReconnectCallback) -> None:
         """register an async callback invoked after each successful NATS reconnect.
 
         the wrapper rides out an outage of any duration (unbounded runtime reconnect) and replays
-        subscriptions automatically, but state the BROKER holds for this connection -- e.g. a
+        subscriptions automatically, and it starts putting back the JetStream state a NATS restart
+        wipes and it declared itself -- memory-storage streams from :meth:`ensure_jetstream_stream`,
+        buckets from :meth:`ensure_kv_bucket`, and the durables it bound on them -- before any hook
+        registered here runs. that runs in the background and retries until it succeeds, so a hook
+        must not assume it has finished. other state the BROKER holds for this connection -- e.g. a
         Hub-side session backing a short-lived credential -- may have been dropped meanwhile. a
         consumer registers a hook here to re-establish such state (re-handshake, re-mint a token)
         once the connection is back. callbacks run in registration order; one raising is logged and
@@ -2890,6 +3058,176 @@ class NatsClient:
         :rtype: None
         """
         self._reconnect_callbacks.append(callback)
+
+    async def _restore_after_reconnect(self) -> None:
+        """start putting back what a NATS restart may have wiped; registered first by :meth:`connect`.
+
+        A single-node NATS restart deletes every memory-storage stream, every KV bucket on memory
+        storage, and every durable consumer on one of those streams. nats-py replays this client's
+        subscriptions on the reconnect, but it knows nothing of JetStream state, so before this every
+        service that declared a memory stream at startup -- the tool registry's result stream, found
+        in the devx bring-up -- failed every call against it with ``stream not found`` until the
+        process was restarted by hand.
+
+        This only STARTS the work, as a task, so the reconnect path and the hooks after this one are
+        never held up by a broker that is still recovering. A reconnect that lands while an earlier
+        restoration is still retrying replaces it: whatever the first had put back, the second
+        restart may have taken again.
+
+        :return: nothing
+        :rtype: None
+        """
+        if not self._memory_declarations and not self._push_consumers and not self._pull_consumers:
+            return
+        previous = self._restoration
+        if previous is not None:
+            previous.cancel()
+        self._restoration = asyncio.create_task(
+            self._restore_until_complete(), name=f"nats-restore-after-reconnect:{self._client_name}"
+        )
+
+    async def _restore_until_complete(self) -> None:
+        """run restoration rounds, with capped exponential backoff, until one has nothing left to do.
+
+        it never gives up on its own: each failed round has already been logged at ERROR naming what
+        is still missing, and what is missing is something every caller of this client depends on.
+        only a later reconnect, :meth:`shutdown` or :meth:`abandon` ends it early.
+
+        :return: nothing
+        :rtype: None
+        """
+        rounds = await _retry_until_restored(self._restore_once)
+        log.info(
+            "NATS JetStream state this client declared is in place after the reconnect",
+            extra={
+                "extra_data": {
+                    "client_name": self._client_name,
+                    "streams": sorted(self._memory_declarations),
+                    "rounds": rounds,
+                }
+            },
+        )
+
+    async def _restore_once(self) -> list[str]:
+        """one restoration round: every memory declaration, then every durable consumer.
+
+        Streams first, because a durable lives on its stream. Each item is attempted whatever
+        happened to the one before it, and each failure is logged at ERROR, naming it and why.
+
+        :return: what could not be restored this round, empty when nothing is left to do
+        :rtype: list[str]
+        """
+        failures: list[str] = []
+        js = self.jetstream_context()
+        for name, config in list(self._memory_declarations.items()):
+            try:
+                await self._redeclare_stream(js, config)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- logged at ERROR and retried by the next round
+                log.error(
+                    "re-declaring memory-storage stream %s after a NATS reconnect failed: %s: %s -- every "
+                    "publish to and consumer of it fails until it is back; retrying",
+                    name,
+                    type(exc).__name__,
+                    exc,
+                    extra={"extra_data": {"stream": name, "client_name": self._client_name, "error": str(exc)}},
+                )
+                failures.append(f"stream {name}")
+        self._push_consumers = [consumer for consumer in self._push_consumers if not consumer.is_closed]
+        self._pull_consumers = [consumer for consumer in self._pull_consumers if not consumer.is_stopped]
+        durables: list[JetStreamPushConsumer | JetStreamPullConsumer] = [*self._push_consumers, *self._pull_consumers]
+        for consumer in durables:
+            try:
+                await self._restore_durable(consumer)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- logged at ERROR and retried by the next round
+                log.error(
+                    "binding durable consumer %s again after a NATS reconnect failed: %s: %s -- it receives "
+                    "nothing until it is back; retrying",
+                    consumer.durable,
+                    type(exc).__name__,
+                    exc,
+                    extra={
+                        "extra_data": {
+                            "durable": consumer.durable,
+                            "stream": consumer.stream,
+                            "subject": consumer.subject.path,
+                            "client_name": self._client_name,
+                            "error": str(exc),
+                        }
+                    },
+                )
+                failures.append(f"durable {consumer.durable}")
+        return failures
+
+    async def _redeclare_stream(self, js: Any, config: _NatsStreamConfig) -> None:
+        """create one declared stream again, exactly as declared, and never change a live one.
+
+        A create, never an update: JetStream's create is idempotent for an identical config, so a
+        stream that survived (the reconnect was a network blip, or another replica already put it
+        back) is untouched. One that is live with a DIFFERENT config is refused by the server with
+        "stream name already in use"; that is a stream another declarer changed, and it is left as
+        it is rather than reconciled back -- this restores what a restart took, it does not fight
+        over a stream that is still there.
+
+        :param js: a JetStream context on the current connection
+        :ptype js: Any
+        :param config: the config the stream was declared with
+        :ptype config: nats.js.api.StreamConfig
+        :return: nothing
+        :rtype: None
+        :raises Exception: any other refusal or failure; the round logs it and retries
+        """
+        outcome = "re-declared after a NATS reconnect (created if a restart had wiped it)"
+        try:
+            await js.add_stream(dataclasses.replace(config))
+        except Exception as exc:
+            if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
+                raise
+            outcome = "live with a configuration other than the one declared here after a NATS reconnect; left as it is"
+        log.info(
+            "memory-storage stream %s %s",
+            config.name,
+            outcome,
+            extra={"extra_data": {"stream": config.name, "client_name": self._client_name}},
+        )
+
+    async def _restore_durable(self, consumer: JetStreamPushConsumer | JetStreamPullConsumer) -> None:
+        """bind a durable consumer again when the server no longer has it.
+
+        A durable on a file-storage stream, or one that rode out a network blip, is still there and
+        is left alone: rebinding it would only churn its push binding. One that is gone is created
+        again from the config it was first bound with -- by the push handle at once, under the
+        handover lock so a credential renewal cannot move it at the same moment, and by the pull
+        handle at its next fetch, since its fetch loop owns its subscription.
+
+        :param consumer: the durable consumer this client bound
+        :ptype consumer: JetStreamPushConsumer | JetStreamPullConsumer
+        :return: nothing
+        :rtype: None
+        :raises Exception: when the lookup or the push bind fails; the round logs it and retries
+        """
+        js = self.jetstream_context()
+        missing = False
+        try:
+            stream = consumer.stream
+            if stream is None:
+                stream = await js.find_stream_name_by_subject(consumer.subject.path)
+            await js.consumer_info(stream, consumer.durable)
+        except _NatsJsNotFoundError:
+            missing = True
+        if missing and isinstance(consumer, JetStreamPushConsumer):
+            async with self._handover_lock:
+                await consumer.recreate(self.jetstream_context(), self._raw)
+            log.info(
+                "durable push consumer bound again after the server lost it: durable=%s stream=%s",
+                consumer.durable,
+                consumer.stream,
+            )
+        elif missing and isinstance(consumer, JetStreamPullConsumer):
+            consumer.rebind_on_next_fetch()
 
     @property
     def namespace(self) -> str:
@@ -3593,6 +3931,22 @@ class NatsClient:
                 # NOSILENT: this IS the cancellation requested on the line above
                 pass
 
+    async def _stop_restoration(self) -> None:
+        """cancel a restoration after a reconnect, if one runs, and wait for it to end.
+
+        :return: nothing
+        :rtype: None
+        """
+        task = self._restoration
+        self._restoration = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                # NOSILENT: this IS the cancellation requested on the line above
+                pass
+
     async def _stop_renewal(self) -> None:
         """cancel the credential-renewal loop, if one runs, and wait for it to end.
 
@@ -3635,6 +3989,10 @@ class NatsClient:
         self._successor_move = None
         if move is not None and move is not asyncio.current_task():
             move.cancel()
+        restoration = self._restoration
+        self._restoration = None
+        if restoration is not None and restoration is not asyncio.current_task():
+            restoration.cancel()
         for connection in connections:
             await _close_quietly(connection)
 
@@ -3742,6 +4100,7 @@ class NatsClient:
         self._lifecycle.close()
         await self._stop_renewal()
         await self._stop_successor_move()
+        await self._stop_restoration()
         await self._close_replaced_connections()
         if self._raw.is_closed:
             return
@@ -4729,6 +5088,14 @@ class NatsClient:
         cache first -- a declaration is idempotent and re-running it after a
         reconnect is exactly how a wiped bucket comes back.
 
+        a memory-storage declaration (``create_if_missing=True``) is remembered,
+        and its backing stream is created again with the same config after every
+        reconnect, exactly as :meth:`ensure_jetstream_stream` does for a stream --
+        so a bucket wiped by a NATS restart is back for its binders whether or not
+        anything in this process uses it. a declarer needs no reconnect hook of its
+        own for that. a bind-only open is never remembered: only the declarer may
+        create the bucket.
+
         ``direct`` defaults to ``True`` here and to ``None`` on
         :meth:`kv_bucket`, and the asymmetry is the point: a declaration states
         the value, an ordinary open accepts whatever the declarer established.
@@ -4759,7 +5126,8 @@ class NatsClient:
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
         """
         # local import avoids circular dependency between client.py and kv.py
-        from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket
+        from nats.js.api import StorageType  # noqa: PLC0415
+        from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket, build_kv_stream_config
 
         full_name = f"{self._namespace}-{name}"
         async with self._kv_lock:
@@ -4774,6 +5142,18 @@ class NatsClient:
                 timings=self._kv_timings if self._kv_timings is not None else DEFAULT_KV_TIMINGS,
             )
             self._buckets[full_name] = bucket
+        if create_if_missing and storage != "file":
+            # a DECLARATION on memory storage: a NATS restart deletes the bucket, and a process that
+            # only binds it waits for its declarer -- so the declarer puts it back after every
+            # reconnect (:meth:`_restore_once`), with the same backing-stream config created here.
+            declared = build_kv_stream_config(
+                bucket=full_name,
+                ttl_seconds=int(ttl.total_seconds()) if ttl is not None else 0,
+                history=history,
+                storage_type=StorageType.MEMORY,
+                direct=direct,
+            )
+            self._memory_declarations[declared.name or full_name] = declared
         return bucket
 
     async def ensure_jetstream_stream(
@@ -4794,6 +5174,17 @@ class NatsClient:
         durability rides JetStream R3 replication + the consumer's real L3).
         Pass ``"file"`` only as a deliberate opt-in when a stream genuinely
         needs on-disk durability.
+
+        **a memory-storage stream declared here comes back after a NATS restart
+        on its own.** the restart deletes it (and every durable on it); this
+        client remembers the exact config it was declared with and creates it
+        again after every reconnect, then binds again every durable consumer it
+        holds that the server lost. the re-declaration only CREATES: a stream
+        that is still live -- the reconnect was a network blip, or another
+        declarer changed it since -- is left exactly as it is. a failure is
+        logged at ERROR naming the stream and retried with backoff until it
+        succeeds. a file-storage stream survives a restart and is not
+        re-declared. the latest declaration of a name is the one restored.
 
         :param name: stream name suffix (namespace-prefixed)
         :ptype name: str
@@ -4849,6 +5240,10 @@ class NatsClient:
                     f"namespace."
                 ) from exc
             await js.update_stream(config)
+        if storage_type == StorageType.MEMORY:
+            self._memory_declarations[full_name] = dataclasses.replace(config)
+        else:
+            self._memory_declarations.pop(full_name, None)
         log.info(
             "jetstream stream ensured: stream=%s subjects=%s storage=%s",
             full_name,
@@ -5032,6 +5427,7 @@ class NatsClient:
                 durable=durable,
                 resubscribe=_bind,
                 connection=connection,
+                stream=stream,
             )
             self._push_consumers.append(consumer)
         log.info(
@@ -5305,7 +5701,12 @@ class NatsClient:
             current_connection=lambda: self._raw,
             resubscribe=_bind,
             error_backoff_seconds=error_backoff_seconds,
+            stream=stream,
         )
+        # stopped handles leave as new ones arrive, so a process that binds and stops consumers for
+        # its whole life without ever reconnecting does not keep every one it ever made.
+        self._pull_consumers = [held for held in self._pull_consumers if not held.is_stopped]
+        self._pull_consumers.append(consumer)
         log.info(
             "jetstream pull consumer bound: subject=%s durable=%s stream=%s max_deliver=%d dlq=%s batch=%d",
             subject.path,

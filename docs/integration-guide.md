@@ -657,8 +657,11 @@ id.
 - **One process must DECLARE `{namespace}-collections`; every other process BINDS it.**
   Pick the declaring identity deliberately -- it is whichever process starts first and
   owns the bucket's canonical configuration (in this platform, the hub, in its own
-  lifespan). It declares with `ensure_kv_bucket(...)` and re-declares on every NATS
-  reconnect, because a bucket on memory storage is DELETED by a NATS restart. Everyone
+  lifespan). It declares with `ensure_kv_bucket(...)`. A bucket on memory storage is
+  DELETED by a NATS restart; the declaring `NatsClient` creates it again, with the config
+  it was declared with, after every reconnect (it does the same for every memory-storage
+  stream declared through `ensure_jetstream_stream` and every durable consumer it bound
+  on one), so the declarer needs no reconnect hook of its own for this. Everyone
   else calls `bind_collections_bucket(...)`, which is `create_if_missing=False` and will
   NOT create it -- so if nothing declares it, every pod dies at wiring, by design.
 - App counterpart: `nats = await NatsClient.connect(nats_url=URL,

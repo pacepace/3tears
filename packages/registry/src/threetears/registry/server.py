@@ -703,6 +703,11 @@ class RegistryServer:
         call and answered once, so a retried delivery must replace its predecessor rather than leave a
         stale first answer for the waiter to collect.
 
+        The stream is on memory storage, so a NATS restart deletes it. It is declared once, here, and
+        the NATS client re-creates it with this same config after every reconnect
+        (:meth:`threetears.nats.NatsClient.ensure_jetstream_stream`); before it did, every tool call
+        after a broker restart failed with ``stream not found`` until the registry was restarted.
+
         :return: nothing
         :rtype: None
         :raises RuntimeError: when invoked before NATS is connected
