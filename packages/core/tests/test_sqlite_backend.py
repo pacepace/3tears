@@ -208,6 +208,42 @@ class TestSerializationRoundTrip:
         assert result is not None
         assert result["data"] == data
 
+    def test_json_values_encode_as_l2_encodes_them(self, backend: SQLiteBackend) -> None:
+        """A JSON column holding a UUID, datetime or Decimal caches as L2 caches it, never raising.
+
+        L2's payload encoder (``schema_sql.json_default``) writes such a value as
+        its string, and L3's jsonb codec (``json.dumps(default=str)``) stores one
+        too. L1 used a bare ``json.dumps`` and RAISED -- and it runs after the L3
+        commit, so a write both other tiers had taken was reported to its caller
+        as a failure, and the invalidation broadcast after it never ran.
+        """
+        entity_id = str(uuid.uuid4())
+        nested_id = uuid.uuid4()
+        when = datetime(2026, 10, 1, 12, 30, tzinfo=timezone.utc)
+        data = {"answers": {"q1": {"session_id": nested_id, "date_answered": when, "score": Decimal("2.50")}}}
+        backend.upsert(
+            "test_entities",
+            {
+                "id": entity_id,
+                "name": "json platform types",
+                "age": 1,
+                "active": False,
+                "data": data,
+                "created_at": None,
+                "raw_bytes": None,
+            },
+        )
+        result = backend.select_by_id("test_entities", entity_id)
+        assert result is not None
+        assert result["data"] == {
+            "answers": {"q1": {"session_id": str(nested_id), "date_answered": when.isoformat(), "score": "2.50"}}
+        }
+
+    def test_json_values_of_no_platform_type_still_refuse(self, backend: SQLiteBackend) -> None:
+        """Anything the other tiers' encoder refuses, L1 refuses too: the parity is exact, not a catch-all."""
+        with pytest.raises(TypeError):
+            backend.serialize_value({"opaque": object()}, "TEXT_JSON")
+
     def test_bool_round_trip(self, backend: SQLiteBackend) -> None:
         entity_id = str(uuid.uuid4())
         backend.upsert(

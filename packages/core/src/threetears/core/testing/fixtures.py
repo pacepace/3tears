@@ -42,6 +42,7 @@ __all__ = [
     "db_image",
     "nats_container",
     "nats_jetstream",
+    "nats_system_account",
     "s3_container",
     "s3_credentials",
     "searxng_container",
@@ -107,6 +108,27 @@ def nats_jetstream() -> bool:
     override this fixture in their own conftest.
 
     :return: JetStream enable flag
+    :rtype: bool
+    """
+    return True
+
+
+@pytest.fixture(scope="session")
+def nats_system_account() -> bool:
+    """whether the session-scoped NATS container declares the SYSTEM account.
+
+    defaults to True: a control plane under test closes connections and pings
+    servers through that account, as on every platform bus. **declaring it
+    changes which clients the server admits.** nats-server then admits the
+    global account through a hidden no-auth user, and applies a no-auth user
+    only to a client presenting NO credential; a client presenting a connect
+    token is checked against token auth nobody configured and refused with
+    ``Authorization Violation``. a suite whose code under test opens its own
+    connection with a token -- a tool pod does -- overrides this to False in
+    its conftest, and the server, declaring no auth at all, admits every
+    client and ignores the token, as this bus verifies none.
+
+    :return: SYSTEM account flag
     :rtype: bool
     """
     return True
@@ -179,7 +201,9 @@ def db_container(db_image: str) -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
-def nats_container(nats_jetstream: bool, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+def nats_container(
+    nats_jetstream: bool, nats_system_account: bool, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[str]:
     """session-scoped NATS testcontainer.
 
     yields the ``nats://`` connection URI from the container.
@@ -187,13 +211,18 @@ def nats_container(nats_jetstream: bool, tmp_path_factory: pytest.TempPathFactor
     discipline as :func:`db_container`.
 
     JetStream is enabled by default; override ``nats_jetstream``
-    in your conftest to disable it. The server declares a SYSTEM account
+    in your conftest to disable it. Unless ``nats_system_account`` is
+    overridden to False, the server declares a SYSTEM account
     (:data:`NATS_TEST_SYSTEM_ACCOUNT`) whose one user is
     :data:`NATS_TEST_SYSTEM_USER` / :data:`NATS_TEST_SYSTEM_PASSWORD`; a client
-    presenting no credentials is admitted to the global account as before.
+    presenting no credentials is admitted to the global account, and a client
+    presenting a connect token is REFUSED (see :func:`nats_system_account`).
+    Without it the server declares no auth and admits every client.
 
     :param nats_jetstream: whether to enable JetStream
     :ptype nats_jetstream: bool
+    :param nats_system_account: whether to declare the SYSTEM account
+    :ptype nats_system_account: bool
     :param tmp_path_factory: where the server's configuration is written
     :ptype tmp_path_factory: pytest.TempPathFactory
     :yield: NATS connection URI
@@ -214,7 +243,9 @@ def nats_container(nats_jetstream: bool, tmp_path_factory: pytest.TempPathFactor
     from testcontainers.nats import NatsContainer  # noqa: PLC0415
 
     conf_dir = tmp_path_factory.mktemp("nats-conf")
-    (conf_dir / "nats.conf").write_text(_nats_container_config(jetstream=nats_jetstream), encoding="utf-8")
+    (conf_dir / "nats.conf").write_text(
+        _nats_container_config(jetstream=nats_jetstream, system_account=nats_system_account), encoding="utf-8"
+    )
     container = (
         NatsContainer(jetstream=False)
         .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
@@ -224,21 +255,26 @@ def nats_container(nats_jetstream: bool, tmp_path_factory: pytest.TempPathFactor
         yield container.nats_uri()
 
 
-def _nats_container_config(*, jetstream: bool) -> str:
-    """the session NATS server's configuration: an open global account beside a SYSTEM account.
+def _nats_container_config(*, jetstream: bool, system_account: bool) -> str:
+    """the session NATS server's configuration: an open global account, beside a SYSTEM account if asked.
 
     :param jetstream: whether to enable JetStream
     :ptype jetstream: bool
+    :param system_account: whether to declare the SYSTEM account and its one user
+    :ptype system_account: bool
     :return: the server configuration
     :rtype: str
     """
+    system = [
+        f"system_account: {NATS_TEST_SYSTEM_ACCOUNT}",
+        f"accounts {{ {NATS_TEST_SYSTEM_ACCOUNT} {{ users: [ "
+        f'{{ user: "{NATS_TEST_SYSTEM_USER}", password: "{NATS_TEST_SYSTEM_PASSWORD}" }} ] }} }}',
+    ]
     lines = [
         "port: 4222",
         "http: 8222",
         *(["jetstream {}"] if jetstream else []),
-        f"system_account: {NATS_TEST_SYSTEM_ACCOUNT}",
-        f"accounts {{ {NATS_TEST_SYSTEM_ACCOUNT} {{ users: [ "
-        f'{{ user: "{NATS_TEST_SYSTEM_USER}", password: "{NATS_TEST_SYSTEM_PASSWORD}" }} ] }} }}',
+        *(system if system_account else []),
     ]
     return "\n".join(lines) + "\n"
 
