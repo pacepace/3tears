@@ -211,11 +211,12 @@ class TestSerializationRoundTrip:
     def test_json_values_encode_as_l2_encodes_them(self, backend: SQLiteBackend) -> None:
         """A JSON column holding a UUID, datetime or Decimal caches as L2 caches it, never raising.
 
-        L2's payload encoder (``schema_sql.json_default``) writes such a value as
-        its string, and L3's jsonb codec (``json.dumps(default=str)``) stores one
-        too. L1 used a bare ``json.dumps`` and RAISED -- and it runs after the L3
-        commit, so a write both other tiers had taken was reported to its caller
-        as a failure, and the invalidation broadcast after it never ran.
+        L2's payload encoder and L3's jsonb codec both write such a value as its
+        string through ``schema_sql.json_default``. L1 used a bare ``json.dumps``
+        and RAISED -- and it runs after the L3 commit, so a write both other tiers
+        had taken was reported to its caller as a failure, and the invalidation
+        broadcast after it never ran. A datetime is stored in the one form every
+        tier writes (``serialization.json_datetime``).
         """
         entity_id = str(uuid.uuid4())
         nested_id = uuid.uuid4()
@@ -236,7 +237,13 @@ class TestSerializationRoundTrip:
         result = backend.select_by_id("test_entities", entity_id)
         assert result is not None
         assert result["data"] == {
-            "answers": {"q1": {"session_id": str(nested_id), "date_answered": when.isoformat(), "score": "2.50"}}
+            "answers": {
+                "q1": {
+                    "session_id": str(nested_id),
+                    "date_answered": "2026-10-01T12:30:00.000000+00:00",
+                    "score": "2.50",
+                }
+            }
         }
 
     def test_json_values_of_no_platform_type_still_refuse(self, backend: SQLiteBackend) -> None:
