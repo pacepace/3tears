@@ -78,8 +78,8 @@ class TestPrivateImports:
 
         assert _found(repo) == {(SHAPE_G_NAME, "tests/test_b.py", 1, "_valid_auth")}
 
-    def test_a_private_support_module_in_the_same_tests_tree_is_allowed(self, tmp_path: Path) -> None:
-        """an underscore on a test-support module marks it non-collected support, not another owner's API."""
+    def test_a_private_support_module_imported_in_the_same_tests_tree_is_a_violation(self, tmp_path: Path) -> None:
+        """owner ruling 2026-10-01: shared test support has a plain name; the underscore earns nothing."""
         repo, _ = _repo(tmp_path)
         _write(repo / "tests" / "__init__.py", "")
         _write(repo / "tests" / "support" / "__init__.py", "")
@@ -90,12 +90,72 @@ class TestPrivateImports:
         )
         _write(repo / "tests" / "support" / "test_d.py", "from ._pod_auth import make_auth\nfrom . import _pod_auth\n")
 
+        assert _found(repo) == {
+            (SHAPE_G_MODULE, "tests/unit/test_c.py", 1, "_pod_auth"),
+            (SHAPE_G_MODULE, "tests/unit/test_c.py", 2, "_pod_auth"),
+            (SHAPE_G_MODULE, "tests/support/test_d.py", 1, "_pod_auth"),
+            (SHAPE_G_MODULE, "tests/support/test_d.py", 2, "_pod_auth"),
+        }
+
+    def test_a_private_support_package_in_a_tests_tree_is_a_violation(self, tmp_path: Path) -> None:
+        """the underscore on a package segment is the same claim as on a module, at any depth."""
+        repo, _ = _repo(tmp_path)
+        _write(repo / "packages" / "core" / "tests" / "_support" / "__init__.py", "")
+        _write(repo / "packages" / "core" / "tests" / "_support" / "fakes.py", "class FakeKv:\n    pass\n")
+        _write(
+            repo / "packages" / "core" / "tests" / "unit" / "test_kv.py",
+            "from _support.fakes import FakeKv\nfrom tests._support import fakes\n",
+        )
+
+        assert _found(repo) == {
+            (SHAPE_G_MODULE, "packages/core/tests/unit/test_kv.py", 1, "_support"),
+            (SHAPE_G_MODULE, "packages/core/tests/unit/test_kv.py", 2, "_support"),
+        }
+
+    def test_a_plainly_named_support_module_is_allowed(self, tmp_path: Path) -> None:
+        repo, _ = _repo(tmp_path)
+        _write(repo / "tests" / "__init__.py", "")
+        _write(repo / "tests" / "support" / "__init__.py", "")
+        _write(repo / "tests" / "support" / "pod_auth.py", "def make_auth() -> None:\n    pass\n")
+        _write(
+            repo / "tests" / "unit" / "test_c.py",
+            "from tests.support.pod_auth import make_auth\nimport tests.support.pod_auth\n",
+        )
+        _write(repo / "tests" / "support" / "test_d.py", "from .pod_auth import make_auth\nfrom . import pod_auth\n")
+
         assert _found(repo) == set()
 
-    def test_a_private_name_from_a_private_support_module_is_still_a_violation(self, tmp_path: Path) -> None:
+    def test_conftest_init_dunders_data_files_and_unimported_modules_are_not_findings(self, tmp_path: Path) -> None:
+        """the rule is about a private module another module binds, nothing else under a tests tree."""
         repo, _ = _repo(tmp_path)
-        _write(repo / "tests" / "support" / "_pod_auth.py", "def _sign() -> None:\n    pass\n")
-        _write(repo / "tests" / "support" / "test_e.py", "from ._pod_auth import _sign\n")
+        _write(repo / "tests" / "__init__.py", "")
+        _write(repo / "tests" / "conftest.py", "import pytest\n")
+        _write(repo / "tests" / "__helpers__.py", "def make() -> None:\n    pass\n")
+        _write(repo / "tests" / "_fixtures" / "rows.json", "[]\n")
+        _write(repo / "tests" / "_unimported.py", "value = 1\n")
+        _write(
+            repo / "tests" / "test_x.py",
+            "from pathlib import Path\n"
+            "from tests import conftest\n"
+            "from tests.__helpers__ import make\n"
+            "import tests\n"
+            'ROWS = Path(__file__).parent / "_fixtures" / "rows.json"\n',
+        )
+
+        assert _found(repo) == set()
+
+    def test_a_private_module_outside_any_tests_tree_keeps_its_directory_as_owner(self, tmp_path: Path) -> None:
+        """the ruling is scoped to tests trees: a script's private helper module is its directory's."""
+        repo, _ = _repo(tmp_path)
+        _write(repo / "scripts" / "_common.py", "def run() -> None:\n    pass\n")
+        _write(repo / "scripts" / "release.py", "from _common import run\nimport _common\n")
+
+        assert _found(repo) == set()
+
+    def test_a_private_name_from_a_support_module_is_a_violation(self, tmp_path: Path) -> None:
+        repo, _ = _repo(tmp_path)
+        _write(repo / "tests" / "support" / "pod_auth.py", "def _sign() -> None:\n    pass\n")
+        _write(repo / "tests" / "support" / "test_e.py", "from .pod_auth import _sign\n")
 
         assert _found(repo) == {(SHAPE_G_NAME, "tests/support/test_e.py", 1, "_sign")}
 
@@ -244,6 +304,28 @@ class TestStringBindings:
             (SHAPE_H_PATH, "tests/test_d.py", 4, "_astream"),
         }
 
+    def test_binding_through_a_private_test_support_module_by_string_is_a_violation(self, tmp_path: Path) -> None:
+        """a string names the private support module where the import rule cannot see it."""
+        repo, _ = _repo(tmp_path)
+        _write(repo / "tests" / "__init__.py", "")
+        _write(repo / "tests" / "support" / "__init__.py", "")
+        _write(repo / "tests" / "support" / "_clock.py", "def now() -> int:\n    return 0\n")
+        _write(
+            repo / "tests" / "test_h.py",
+            "import importlib\n"
+            "from unittest.mock import patch\n"
+            "def test_x(monkeypatch):\n"
+            '    patch("tests.support._clock.now")\n'
+            '    monkeypatch.setattr("tests.support._clock.now", lambda: 1)\n'
+            '    importlib.import_module("tests.support._clock")\n',
+        )
+
+        assert _found(repo) == {
+            (SHAPE_H_PATH, "tests/test_h.py", 4, "_clock"),
+            (SHAPE_H_PATH, "tests/test_h.py", 5, "_clock"),
+            (SHAPE_H_PATH, "tests/test_h.py", 6, "_clock"),
+        }
+
     def test_import_module_by_private_path(self, tmp_path: Path) -> None:
         repo, _ = _repo(tmp_path)
         _write(repo / "tests" / "test_e.py", 'import importlib\nimportlib.import_module("pkg._internals")\n')
@@ -255,7 +337,7 @@ class TestStringBindings:
         repo, _ = _repo(tmp_path)
         _write(repo / "tests" / "__init__.py", "")
         _write(repo / "tests" / "support" / "__init__.py", "")
-        _write(repo / "tests" / "support" / "_clock.py", "def now() -> int:\n    return 0\n")
+        _write(repo / "tests" / "support" / "clock.py", "def now() -> int:\n    return 0\n")
         _write(
             repo / "tests" / "test_f.py",
             "from unittest.mock import patch\n"
@@ -266,7 +348,7 @@ class TestStringBindings:
             '        monkeypatch.setattr(self, "_seen", 1)\n'
             '        monkeypatch.setattr(FakeThing, "_state", 1)\n'
             '        patch("pkg.mod.public")\n'
-            '        patch("tests.support._clock.now")\n'
+            '        patch("tests.support.clock.now")\n'
             '        patch("tests.test_f._own_helper")\n'
             '        client.patch("/api/v1/_x")\n'
             '        monkeypatch.setattr(obj, "__init__", None)\n'

@@ -28,13 +28,17 @@ binding names a private when any module-path segment or the bound name itself is
   the test module that defines ``_valid_auth`` is its owner, and a sibling test is outside it.
 - **G.module** -- an import whose module path has a private segment (``from pkg._internals import
   thing``, ``import pkg._internals``, ``from pkg import _internals``). Allowed when the module
-  resolves inside the importer's own boundary: for a ``src`` module, its own package; for anything
-  else, its own tests tree (the nearest ``tests``/``test`` ancestor directory, or the file's own
-  directory when it has none) and never a ``src`` module. So a ``tests/support/_pod_auth.py``
-  imported by tests in the same tree is allowed -- the underscore on a test-support module marks it
-  as support pytest does not collect, and the tests package is its owner -- while a test importing
-  through the private module of the code under test is not: the contract is about the stability
-  boundary of the code under test, and a test is outside that boundary.
+  resolves inside the importer's own boundary: for a ``src`` module, its own package; for a file
+  outside every ``src`` and tests tree (a script), its own directory tree. Never a ``src`` module
+  from outside it, and never a module under a tests tree (the nearest ``tests``/``test`` ancestor
+  directory): owner ruling, 2026-10-01, shared test-support modules and packages have plain names,
+  so ``tests/support/_pod_auth.py`` or ``tests/_support/`` imported by any other module -- a test
+  in the same tree included -- is a violation. A test-support module is shared API between the test
+  modules that import it, and pytest collects only ``test_*.py``, so the underscore marks nothing a
+  plain name does not. ``conftest.py``, ``__init__.py`` and other dunders are not private, a data
+  file is never imported, and an underscore module nothing imports binds nothing. A test importing
+  through the private module of the code under test is a violation for the original reason: the
+  contract is about the stability boundary of the code under test, and a test is outside it.
 - **H.attribute** -- a binder call naming a private attribute of an object by string. Allowed only
   when the object is ``self``/``cls`` or a name the same file defines by ``def``/``class`` and binds
   no other way (a test's own fake), mirroring shape F.
@@ -717,8 +721,10 @@ def _package_of(path: Path) -> tuple[Path, str] | None:
 def _inside_boundary(target: Path, context: _FileContext) -> bool:
     """whether *target* lies inside the binding file's own boundary.
 
-    For a src file the boundary is its package; for anything else it is its tests tree (or its own
-    directory), never reaching a src module.
+    For a src file the boundary is its package. For anything else it is its own directory tree
+    (:attr:`_FileContext.home`), never reaching a src module and never reaching a module under a
+    tests tree: owner ruling, 2026-10-01, shared test support has a plain name, so a private module
+    or package under a tests tree belongs to no file that binds it.
 
     :param target: the resolved module file
     :ptype target: Path
@@ -737,6 +743,7 @@ def _inside_boundary(target: Path, context: _FileContext) -> bool:
             and context.repo_root in target.parents
             and home in target.parents
             and not is_src_module(target.relative_to(context.repo_root).as_posix())
+            and _nearest_ancestor_named(target, context.repo_root, TEST_DIRECTORIES) is None
         )
     return inside
 
