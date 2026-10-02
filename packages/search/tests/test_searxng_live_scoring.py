@@ -43,7 +43,7 @@ from typing import Any
 
 import pytest
 
-from ._searxng_payloads import searx_score
+from .searxng_payloads import searx_score
 
 pytestmark = pytest.mark.integration
 

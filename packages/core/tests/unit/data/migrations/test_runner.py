@@ -35,7 +35,7 @@ from threetears.core.data.migrations.errors import (
 from threetears.core.data.schema import ColumnDef, IndexDef, TableDef
 from threetears.core.data.store import DataStore
 
-from ._fake_store import FakeDataStore, FakeLockingPool
+from .fake_store import FakeDataStore, FakeLockingPool
 
 
 async def _noop(store: object) -> None:

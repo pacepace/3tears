@@ -31,8 +31,8 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from ._dispatch_auth import make_authed_request
-from ._forwarding import PROXY_TIMEOUT_SECONDS, forwarded_envelope
+from .dispatch_auth import make_authed_request
+from .forwarding import PROXY_TIMEOUT_SECONDS, forwarded_envelope
 
 
 async def _forwarded(*, deadline_seconds: float | None = None, tool_timeout: float | None) -> dict[str, Any]:

@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Tests: shared test-support modules carry plain names
+
+Owner ruling, 2026-10-01: shared test support is public, so its modules are not underscored. Every
+non-test module or package under a `tests/` tree that other test modules import loses its leading
+underscore, and every importer is updated. No aliases; `conftest.py` and `__init__.py` are untouched.
+Test-only, so nothing installed changes.
+
+- agent/acl `fake_loaders`; agent/memory and conversations `rbac_rows`; agent/tools `pod_auth`;
+  agent/workspace `helpers/` and `integration/strict_validator`; core `migrations/fake_store`;
+  datasources `unit/helpers/`; enforcement `release/scratch_repos` (was `_scratch`); models
+  `provider_wire`, `claude_cli_recorder`, `translation_helpers`; nats `wire_server`; registry
+  `copy_entries` (was `_copies`), `forwarding`, `dispatch_auth`; scrape `scrape_tool_support`,
+  `egress_fakes`, `pacer_fakes`, `bus_shims`, `kv_shims`, `camoufox_fakes`, `driver_log_helpers`;
+  search `tavily_payloads`, `searxng_payloads`, `search_instances`.
+- `web_fetch`'s whole-run refusal test now pins the remediation text exactly --
+  `install 3tears-search[extract]`, the extra that installs the loader -- in both the typed record
+  and the prose the model reads, rather than checking for a substring.
+
 ### Enforcement: a private name bound by an import or by a string is a violation, in tests too
 
 Owner ruling, 2026-10-01. The underscore walkers A-F, SLF001 and the suppression policy all passed

@@ -13,7 +13,7 @@ from threetears.agent.acl import evict_after_rbac_write
 from threetears.agent.acl.cache import ActorMembershipKey, GroupNamespaceKey
 from threetears.agent.acl.invalidation import AssignmentInvalidatePayload, MembershipInvalidatePayload
 
-from ._fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeStore, make_cache
 
 
 class _RecordingPublisher:

@@ -19,9 +19,9 @@ from unittest.mock import AsyncMock, patch
 import textwrap
 
 import pytest
-from packages.scrape.tests._scrape_tool_support import derived_target_id
-from packages.scrape.tests._egress_fakes import FakeEgress
-from packages.scrape.tests._pacer_fakes import FakeDelayPacer
+from packages.scrape.tests.scrape_tool_support import derived_target_id
+from packages.scrape.tests.egress_fakes import FakeEgress
+from packages.scrape.tests.pacer_fakes import FakeDelayPacer
 from pydantic import SecretStr
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitState
 from threetears.scrape.challenge import PageVerdict

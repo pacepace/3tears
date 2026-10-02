@@ -34,7 +34,7 @@ from threetears.agent.tools.server import (
 from threetears.core.testing.replay_guard import FakeReplayGuard
 from threetears.nats import IncomingMessage
 
-from packages.agent.tools.tests.unit.tools._pod_auth import (
+from packages.agent.tools.tests.unit.tools.pod_auth import (
     RecordingNatsClient,
     jwks_provider,
     recording_tool_server,

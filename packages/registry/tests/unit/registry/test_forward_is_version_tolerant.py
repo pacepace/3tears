@@ -21,8 +21,8 @@ from pydantic import BaseModel, ConfigDict
 
 from threetears.nats import SYNC_REPLY_BUDGET_SECONDS
 
-from ._dispatch_auth import make_authed_request
-from ._forwarding import forwarded_envelope
+from .dispatch_auth import make_authed_request
+from .forwarding import forwarded_envelope
 
 #: a declared timeout the reply inbox cannot outlive, so the call takes the durable path and the
 #: proxy names a ``result_subject`` in what it forwards.

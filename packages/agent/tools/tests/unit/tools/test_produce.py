@@ -26,7 +26,7 @@ from threetears.agent.tools.produce import (
 from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle, ObjectListing
 from threetears.core.testing.replay_guard import FakeReplayGuard
 
-from packages.agent.tools.tests.unit.tools._pod_auth import (
+from packages.agent.tools.tests.unit.tools.pod_auth import (
     ScopeRecordingTool,
     deliver_call,
     jwks_provider,

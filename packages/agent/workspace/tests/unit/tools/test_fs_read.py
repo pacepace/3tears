@@ -16,7 +16,7 @@ from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools import helpers as helpers_module
 from threetears.agent.workspace.tools.fs_read import FsReadTool
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,

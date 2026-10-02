@@ -27,7 +27,7 @@ from threetears.scrape.robots import RobotsGate
 
 # This suite's shared test infrastructure is imported by its repo-root name::
 #
-#     from packages.scrape.tests._driver_log_helpers import driver_warnings
+#     from packages.scrape.tests.driver_log_helpers import driver_warnings
 #
 # A sibling module rather than `from conftest import ...`: a root-level `conftest.py` exists and
 # shadows this one. The directory is not put on `sys.path`, so none of its names can shadow, or

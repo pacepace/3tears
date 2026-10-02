@@ -10,13 +10,13 @@ lives in test_driver_contract.py, not here.
 from __future__ import annotations
 
 import pytest
-from packages.scrape.tests._camoufox_fakes import (
+from packages.scrape.tests.camoufox_fakes import (
     FakeCamoufoxBrowser,
     FakeCamoufoxNetworkResponse,
     FakeCamoufoxPage,
     FakeCamoufoxResponse,
 )
-from packages.scrape.tests._driver_log_helpers import driver_warnings
+from packages.scrape.tests.driver_log_helpers import driver_warnings
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 

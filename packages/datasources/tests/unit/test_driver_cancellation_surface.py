@@ -44,8 +44,8 @@ from threetears.datasources.drivers import base as driver_base_module
 from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
 from threetears.datasources.entities import DataSourceType
 
-from ._helpers.driver_shims import PoolAcquireHandle
-from ._helpers.fake_driver import FakeDriver
+from .helpers.driver_shims import PoolAcquireHandle
+from .helpers.fake_driver import FakeDriver
 
 #: attribute names that would mean "this driver cancels an in-flight
 #: statement itself". the public one does not exist on

@@ -19,7 +19,7 @@ pytest.importorskip("claude_agent_sdk")
 from threetears.models import DEFAULT_CHAT_MODEL
 from threetears.models.providers.claude_cli import create_subscription_chat
 
-from ._claude_cli_recorder import advertised_tools, call_tool, subscription_model
+from .claude_cli_recorder import advertised_tools, call_tool, subscription_model
 
 #: What the CLI's handler answers for every bound tool call: the call belongs to the caller.
 _HANDED_BACK = "This tool call was handed to the caller."

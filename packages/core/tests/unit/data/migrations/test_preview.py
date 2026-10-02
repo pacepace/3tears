@@ -30,7 +30,7 @@ from threetears.core.data.migrations import (
     PreviewStore,
 )
 
-from ._fake_store import FakeDataStore
+from .fake_store import FakeDataStore
 
 
 async def _create_widgets(store: object) -> None:

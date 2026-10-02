@@ -25,7 +25,7 @@ from threetears.search.contracts import (
     SearchResultsMetadata,
     Spend,
 )
-from packages.search.tests._search_instances import ALL_INSTANCES, METADATA, SPEND
+from packages.search.tests.search_instances import ALL_INSTANCES, METADATA, SPEND
 
 OCCURRED_AT = datetime(2026, 8, 10, 12, 30, 0, tzinfo=UTC)
 

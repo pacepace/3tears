@@ -34,7 +34,7 @@ from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
 from threetears.datasources.drivers.base import Driver
 from threetears.datasources.entities import DataSourceType
 
-from ..unit._helpers.cancellation_contract import (
+from ..unit.helpers.cancellation_contract import (
     DriverCancellationContractTest,
 )
 

@@ -13,7 +13,7 @@ which protected a finished ``ainvoke`` and nothing else that streams:
   ``on_chat_model_end`` all see chunks before the public ``astream`` does.
 
 Every answer here comes from a scripted provider API through the real provider SDK
-(:mod:`._provider_wire`), and every assertion is on what a consumer receives.
+(:mod:`.provider_wire`), and every assertion is on what a consumer receives.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import pytest
 from langchain_core.callbacks import AsyncCallbackHandler, BaseCallbackHandler
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
-from ._provider_wire import (
+from .provider_wire import (
     AnthropicMessagesWire,
     ChatCompletionsWire,
     TextBlock,
@@ -36,7 +36,7 @@ from ._provider_wire import (
     text_deltas,
     tool_call_delta,
 )
-from ._translation_helpers import DottedTool
+from .translation_helpers import DottedTool
 
 #: the XML-attribute-leak tool name from the 2026-05-19 prod incident
 _JUNK_NAME = 'memory_recall" name="memory_recall'

@@ -18,7 +18,7 @@ import redshift_connector
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.entities import DataSourceType
 
-from ._helpers.redshift_live_gate import central_reporting, gated
+from .helpers.redshift_live_gate import central_reporting, gated
 
 _CONNECT = "threetears.datasources.drivers.redshift_driver.redshift_connector.connect"
 _PASSWORD_ENV = "LIVE_GATE_TEST_PASSWORD"

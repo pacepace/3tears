@@ -3,7 +3,7 @@
 The subscription backend turns each of the model's ``tool_use`` blocks into a ``tool_calls`` entry
 under the name the caller bound. A block whose name is not a tool name (the 2026-05-19 XML leak,
 ``memory_recall" name="memory_recall``) became a call too, and the caller dispatched it. The CLI's
-answer is scripted at its door (:mod:`._claude_cli_recorder`); everything after it is the model's
+answer is scripted at its door (:mod:`.claude_cli_recorder`); everything after it is the model's
 own code.
 """
 
@@ -20,8 +20,8 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUse
 
 from threetears.models import DEFAULT_CHAT_MODEL  # noqa: E402
 
-from ._claude_cli_recorder import recording_cli, subscription_model  # noqa: E402
-from ._translation_helpers import DottedTool  # noqa: E402
+from .claude_cli_recorder import recording_cli, subscription_model  # noqa: E402
+from .translation_helpers import DottedTool  # noqa: E402
 
 #: the XML-attribute-leak tool name from the 2026-05-19 prod incident
 _JUNK_NAME = 'memory_recall" name="memory_recall'

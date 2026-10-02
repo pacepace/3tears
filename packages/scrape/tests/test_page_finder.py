@@ -571,7 +571,7 @@ class TestFindTargetPageReadsStructure:
 def _searxng_body(*urls: str) -> bytes:
     """A minimal real-shaped SearXNG ``format=json`` envelope.
 
-    Written here rather than imported: `packages/search/tests/_searxng_payloads.py`
+    Written here rather than imported: `packages/search/tests/searxng_payloads.py`
     is that package's own test module, not published surface this one may reach
     into. Only the fields the adapter needs to build a Candidate appear.
     """

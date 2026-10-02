@@ -34,9 +34,9 @@ from threetears.registry.auth import (
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallResponse
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
-from ._dispatch_auth import make_authed_request, make_proxy
+from .dispatch_auth import make_authed_request, make_proxy
 
 pytestmark = pytest.mark.asyncio
 

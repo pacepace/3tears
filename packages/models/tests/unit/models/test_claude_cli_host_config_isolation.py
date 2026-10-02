@@ -31,7 +31,7 @@ pytest.importorskip("claude_agent_sdk")
 
 from langchain_core.messages import HumanMessage
 
-from ._claude_cli_recorder import sent_to_cli, subscription_model
+from .claude_cli_recorder import sent_to_cli, subscription_model
 
 _TOKEN_A = "sk-ant-oat01-faketokenfortest-aaaa"
 _TOKEN_B = "sk-ant-oat01-faketokenfortest-bbbb"

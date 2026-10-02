@@ -36,7 +36,7 @@ from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 from threetears.models import DEFAULT_CHAT_MODEL, claude_cli_pool  # noqa: E402
 from threetears.models.factory import create_chat_model  # noqa: E402
 
-from ._provider_wire import serve_http_handler  # noqa: E402
+from .provider_wire import serve_http_handler  # noqa: E402
 
 API_KEY = "sk-ant-api03-faketestkey"
 TOKEN = "sk-ant-oat01-faketokenfortest"

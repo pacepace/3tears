@@ -26,7 +26,7 @@ pytest.importorskip("claude_agent_sdk")
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage  # noqa: E402
 
-from ._claude_cli_recorder import sent_to_cli  # noqa: E402
+from .claude_cli_recorder import sent_to_cli  # noqa: E402
 
 _CURRENT_HEADING = "The person's current message:"
 _CURRENT_OPEN = "<prompt-current-message>"

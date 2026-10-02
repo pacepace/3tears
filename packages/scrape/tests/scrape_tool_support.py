@@ -1,8 +1,8 @@
 """Shared ways of asking a :class:`ScrapeTool` what it would do, through its own front door.
 
-Imported by its repo-root name (``packages.scrape.tests._scrape_tool_support``), like the other
-support modules here: an underscored module pytest does not collect, holding public names its
-sibling test modules share.
+Imported by its repo-root name (``packages.scrape.tests.scrape_tool_support``), like the other
+support modules here: not a ``test_*`` module, so pytest does not collect it, and public because
+its sibling test modules share it.
 """
 
 from __future__ import annotations

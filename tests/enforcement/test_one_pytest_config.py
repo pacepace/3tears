@@ -7,7 +7,7 @@ is given that carries a ``[tool.pytest.ini_options]`` table. A package whose own
 package -- ``./scripts/test.sh agent/acl`` -- and the root's settings silently
 stop applying: ``--import-mode=importlib``, ``pythonpath = ["."]``, namespace
 packages, the marker list. Test modules then lose their ``packages.<pkg>...``
-names and every relative helper import (``from ._fake_loaders import ...``)
+names and every relative helper import (``from .fake_loaders import ...``)
 fails at collection, while the whole-workspace run, rooted at the repo, stays
 green and hides it.
 

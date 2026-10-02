@@ -44,7 +44,7 @@ from threetears.agent.acl.cache import ActorMembershipKey
 
 from threetears.core.namespaces import build_agent_namespace_name
 
-from ._fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeStore, make_cache
 
 
 # ---------------------------------------------------------------------------

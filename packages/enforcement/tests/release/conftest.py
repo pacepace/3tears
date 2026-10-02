@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.enforcement.tests.release._scratch import SCRATCH_ROOTS, commit_all, git
+from packages.enforcement.tests.release.scratch_repos import SCRATCH_ROOTS, commit_all, git
 
 _UVX_STUB = """#!/bin/sh
 # the release tool calls: uvx uv@latest lock --directory DIR --quiet

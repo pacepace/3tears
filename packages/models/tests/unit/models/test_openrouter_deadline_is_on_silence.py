@@ -22,7 +22,7 @@ from langchain_core.messages import HumanMessage
 from threetears.models.errors import ModelCallTimeout
 from threetears.models.providers.openrouter import create_openrouter_chat
 
-from ._provider_wire import ChatCompletionsWire, openrouter_model, text_deltas
+from .provider_wire import ChatCompletionsWire, openrouter_model, text_deltas
 
 _MODEL = "deepseek/deepseek-v4-pro"
 _SERVED_BY = "DeepInfra"

@@ -23,7 +23,7 @@ from threetears.models.claude_cli_pool import ClaudeCliPoolExhausted, ClaudeCliS
 from threetears.models.providers import claude_cli
 from threetears.models.providers.claude_cli import create_subscription_chat
 
-from ._claude_cli_recorder import pooled_launch, sent_to_cli
+from .claude_cli_recorder import pooled_launch, sent_to_cli
 
 TOKEN = "sk-ant-oat01-faketokenfortest"
 

@@ -30,7 +30,7 @@ from threetears.agent.acl import (
     evaluate_decision,
 )
 
-from ._fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeStore, make_cache
 
 CUSTOMER = UUID("11111111-1111-4111-8111-111111111111")
 TOOL_CALL = "tool.call"

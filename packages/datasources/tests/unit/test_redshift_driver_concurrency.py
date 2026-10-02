@@ -33,7 +33,7 @@ from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 
-from ._helpers.driver_shims import (
+from .helpers.driver_shims import (
     REDSHIFT_TEST_PASSWORD,
     REDSHIFT_TEST_PASSWORD_ENV,
     REDSHIFT_TEST_PASSWORD_REF,

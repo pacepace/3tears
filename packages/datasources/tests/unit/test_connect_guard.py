@@ -58,7 +58,7 @@ from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 from threetears.nats import KvError
 
-from ._helpers.driver_shims import PoolAcquireHandle, RedshiftConnectionWithSocket
+from .helpers.driver_shims import PoolAcquireHandle, RedshiftConnectionWithSocket
 
 _PASSWORD_ENV = "TEST_CONNECT_GUARD_PW"
 _REVISION = "rev-1"

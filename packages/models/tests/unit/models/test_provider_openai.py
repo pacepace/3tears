@@ -23,8 +23,8 @@ from threetears.models.providers.openai import (
     create_openai_embedding,
 )
 
-from ._provider_wire import ChatCompletionsWire, openai_model, text_deltas, tool_call_delta
-from ._translation_helpers import DottedTool
+from .provider_wire import ChatCompletionsWire, openai_model, text_deltas, tool_call_delta
+from .translation_helpers import DottedTool
 
 #: the XML-attribute-leak tool name from the 2026-05-19 prod incident
 _JUNK_NAME = 'memory_recall" name="memory_recall'

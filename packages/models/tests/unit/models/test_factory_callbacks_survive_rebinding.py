@@ -33,7 +33,7 @@ from threetears.models.circuit_breaker import CircuitBreaker
 from threetears.models.factory import create_chat_model
 from threetears.models.tracking import UsageAuditSink, UsageRecord, UsageTracker
 
-from ._provider_wire import serve_http_handler
+from .provider_wire import serve_http_handler
 
 API_KEY = "sk-ant-api03-faketestkey"
 

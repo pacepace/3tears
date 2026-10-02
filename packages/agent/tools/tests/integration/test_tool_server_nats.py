@@ -24,8 +24,8 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-from packages.agent.tools.tests.unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
-from packages.agent.tools.tests.unit.tools._pod_auth import signed_call_payload as _signed_call_payload
+from packages.agent.tools.tests.unit.tools.pod_auth import jwks_provider as _pod_jwks_provider
+from packages.agent.tools.tests.unit.tools.pod_auth import signed_call_payload as _signed_call_payload
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer

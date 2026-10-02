@@ -19,7 +19,7 @@ from langchain_core.messages import HumanMessage
 
 from threetears.models import DEFAULT_CHAT_MODEL
 
-from ._claude_cli_recorder import TOKEN, sent_to_cli, subscription_model
+from .claude_cli_recorder import TOKEN, sent_to_cli, subscription_model
 
 
 def _launched_with(**model_kwargs: object) -> object:

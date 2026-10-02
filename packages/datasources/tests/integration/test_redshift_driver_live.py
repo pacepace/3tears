@@ -7,7 +7,7 @@ on the ``reporting_prod`` schema in under 60s -- the call that
 production).
 
 gated by the ``redshift_config`` fixture in this directory's conftest
-(``tests/unit/_helpers/redshift_live_gate.py``):
+(``tests/unit/helpers/redshift_live_gate.py``):
 
 - ``OTS_REDSHIFT_PASSWORD`` MUST be set. when ``CI=1`` the tests
   :func:`pytest.fail` (not skip) because the whole point of this
@@ -47,7 +47,7 @@ from threetears.datasources.drivers import redshift_driver as redshift_driver_mo
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.introspection import compute_column_hash
 
-from ..unit._helpers.cancellation_contract import (
+from ..unit.helpers.cancellation_contract import (
     DriverCancellationContractTest,
 )
 

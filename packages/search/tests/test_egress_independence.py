@@ -39,8 +39,8 @@ from threetears.search.call import search
 from threetears.search.contracts import EGRESS_DIRECT, CandidateSet, SearchRequest
 from threetears.search.testing import ScriptedTransport, TransportScript
 from threetears.search.testing.fakes import FakeRateLimiterPort
-from packages.search.tests._searxng_payloads import TWO_RESULTS_BODY as SEARXNG_BODY
-from packages.search.tests._tavily_payloads import TWO_RESULTS_BODY as TAVILY_BODY
+from packages.search.tests.searxng_payloads import TWO_RESULTS_BODY as SEARXNG_BODY
+from packages.search.tests.tavily_payloads import TWO_RESULTS_BODY as TAVILY_BODY
 
 #: The two exits, named so neither is the default. A test where one side is
 #: ``direct`` cannot tell "the second exit was carried" from "the second exit

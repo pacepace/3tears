@@ -23,7 +23,7 @@ import json
 
 import httpx
 import pytest
-from packages.scrape.tests._driver_log_helpers import driver_warnings
+from packages.scrape.tests.driver_log_helpers import driver_warnings
 
 from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
 from threetears.scrape.drivers.api import ApiDriver, ApiDriverError
@@ -373,7 +373,7 @@ async def _render_camoufox_driver(egress):
     # Reusing the camoufox suite's own browser/page doubles rather than growing a second
     # pair here: two hand-written stand-ins for one Playwright surface drift, and this file
     # already imports a sibling test helper the same way.
-    from packages.scrape.tests._camoufox_fakes import FakeCamoufoxBrowser, FakeCamoufoxPage
+    from packages.scrape.tests.camoufox_fakes import FakeCamoufoxBrowser, FakeCamoufoxPage
 
     return await CamoufoxDriver(browser=FakeCamoufoxBrowser(FakeCamoufoxPage()), egress=egress).render(
         "https://example.gov/x"

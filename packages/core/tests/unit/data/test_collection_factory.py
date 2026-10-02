@@ -32,7 +32,7 @@ from threetears.core.data.schema import ColumnDef, TableDef
 from threetears.core.data.store import DataStore
 from threetears.core.testing.kv import FakeNatsClient
 
-from .migrations._fake_store import FakeLockingPool
+from .migrations.fake_store import FakeLockingPool
 
 
 # parity-with: asyncpg.Record

@@ -52,7 +52,7 @@ from threetears.registry.catalog import ToolCatalog, ToolEndpoint
 from threetears.registry.client import ToolCallClient, ToolCallError
 from threetears.registry.proxy import CallProxy, ProxyCallResponse
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
 _NS = "test"
 _SERVING_POD = "serving-pod"

@@ -53,7 +53,7 @@ from threetears.registry.auth import AllowAllAuthorizer, AllowAllLimitGuard
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
 _ISS = "hub"
 _KID = "kid-1"

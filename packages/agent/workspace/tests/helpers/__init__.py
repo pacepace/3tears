@@ -11,7 +11,7 @@ per shell type.
 
 import sites use::
 
-    from tests._helpers.asyncpg_shims import (
+    from tests.helpers.asyncpg_shims import (
         FakeAsyncpgPool,
         FakeAsyncpgConnection,
         FakeAsyncpgTransaction,

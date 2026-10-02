@@ -46,7 +46,7 @@ from threetears.nats.subject_permissions import WORKSPACE_LOCKS_BUCKET_SUFFIX, a
 from threetears.agent.workspace.materialize import bind
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.fs_read import FsReadTool
-from packages.agent.workspace.tests._helpers.scripted_watch import ScriptedWatch
+from packages.agent.workspace.tests.helpers.scripted_watch import ScriptedWatch
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]

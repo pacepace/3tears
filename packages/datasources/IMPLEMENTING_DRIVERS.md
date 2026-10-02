@@ -72,7 +72,7 @@ Anti-patterns the enforcement tests catch:
   that for you -- pass the callable directly.
 
 Use the `DriverCancellationContractTest` mixin in
-`tests/unit/_helpers/cancellation_contract.py` to prove your driver
+`tests/unit/helpers/cancellation_contract.py` to prove your driver
 propagates correctly. Subclass the mixin in your concrete-driver test
 module, supply `make_slow_driver()` and `slow_sql()`, and the mixin
 runs the canonical cancellation assertions.

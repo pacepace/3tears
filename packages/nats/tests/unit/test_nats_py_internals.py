@@ -19,7 +19,7 @@ from threetears.nats._nats_py_internals import (
     take_queued_messages,
 )
 
-from ._wire_server import wire_server
+from .wire_server import wire_server
 
 
 def test_the_installed_nats_py_has_every_private_attribute_the_wrapper_uses() -> None:

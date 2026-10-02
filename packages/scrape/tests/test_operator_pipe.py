@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator
 from datetime import timedelta
 
 import pytest
-from packages.scrape.tests._bus_shims import FakeBus
+from packages.scrape.tests.bus_shims import FakeBus
 from threetears.nats import NoOwnerError, PipeEndpoint, PipeRemoteError, Subjects, attach_pipe, open_pipe
 from threetears.scrape.operator import DisplayEndpoint
 from threetears.scrape.operator_pipe import serve_display

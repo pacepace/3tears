@@ -27,7 +27,7 @@ from threetears.agent.tools.engagement_resolver import (
 )
 from threetears.core.testing.replay_guard import FakeReplayGuard
 
-from packages.agent.tools.tests.unit.tools._pod_auth import (
+from packages.agent.tools.tests.unit.tools.pod_auth import (
     ScopeRecordingTool,
     deliver_call,
     jwks_provider,

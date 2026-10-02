@@ -70,7 +70,7 @@ from threetears.agent.tools.call_scope import (
     enter_call_scope,
 )
 from threetears.agent.tools.context_envelope import CallContext
-from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
     FakeAsyncpgPool,

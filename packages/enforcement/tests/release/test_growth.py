@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.enforcement.tests.release._scratch import commit_all, git, release
+from packages.enforcement.tests.release.scratch_repos import commit_all, git, release
 from threetears.enforcement.release import ApiGrowthConfig, api_growth_findings, http_routes
 
 
