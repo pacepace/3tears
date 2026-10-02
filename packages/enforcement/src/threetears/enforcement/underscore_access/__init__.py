@@ -35,6 +35,15 @@ cannot answer that differently.
 the SLF001 suppression policy itself: no inline ``noqa`` for SLF001, and
 a per-file ignore only on a ``src`` module the ledger records. Its
 module docstring shows the thin shell a consumer repo adds to enable it.
+
+:mod:`~threetears.enforcement.underscore_access.private_binding` holds the
+two spellings every check above passed, over src, tests and scripts alike:
+
+- shape G: a private name or module bound by an import
+- shape H: a private name bound by a string -- ``patch``, ``patch.object``,
+  ``monkeypatch.setattr``/``delattr``, ``mocker.spy``, ``import_module``
+
+its module docstring states the rules and shows the consumer's thin shell.
 """
 
 from threetears.enforcement.underscore_access.config import (
@@ -56,6 +65,7 @@ from threetears.enforcement.underscore_access.ledger import (
     unresolved_entries,
 )
 from threetears.enforcement.underscore_access.pragma_policy import (
+    TEST_DIRECTORIES,
     is_src_module,
     ledger_entries_outside_src,
     scanned_python_files,
@@ -64,6 +74,18 @@ from threetears.enforcement.underscore_access.pragma_policy import (
     slf001_ignores_without_a_ledger_entry,
     slf001_policy_findings,
     slf001_pragma_offenders,
+)
+from threetears.enforcement.underscore_access.private_binding import (
+    PRIVATE_BINDING_CATEGORIES,
+    SHAPE_G_MODULE,
+    SHAPE_G_NAME,
+    SHAPE_H_ATTRIBUTE,
+    SHAPE_H_PATH,
+    PrivateBindingScan,
+    confinement_modules,
+    private_binding_findings,
+    scan_private_bindings,
+    undetected_planted_controls,
 )
 from threetears.enforcement.underscore_access.ruff_config import (
     all_exempted_files,
@@ -88,6 +110,17 @@ from threetears.enforcement.underscore_access.walkers import (
 
 __all__ = [
     "MODULE_SCOPE",
+    "PRIVATE_BINDING_CATEGORIES",
+    "PrivateBindingScan",
+    "SHAPE_G_MODULE",
+    "SHAPE_G_NAME",
+    "SHAPE_H_ATTRIBUTE",
+    "SHAPE_H_PATH",
+    "TEST_DIRECTORIES",
+    "confinement_modules",
+    "private_binding_findings",
+    "scan_private_bindings",
+    "undetected_planted_controls",
     "ledger_paths",
     "ledger_scope_entries",
     "scoped_accesses",

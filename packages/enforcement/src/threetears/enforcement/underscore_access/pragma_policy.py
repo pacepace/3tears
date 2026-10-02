@@ -63,6 +63,7 @@ from threetears.enforcement.underscore_access.ruff_config import (
 )
 
 __all__ = [
+    "TEST_DIRECTORIES",
     "is_src_module",
     "ledger_entries_outside_src",
     "scanned_python_files",
@@ -86,7 +87,7 @@ _BARE_LINE_PRAGMA = re.compile(r"#\s*noqa(?!\s*:)")
 _BARE_FILE_PRAGMA = re.compile(r"#\s*ruff\s*:\s*noqa(?!\s*:)")
 
 #: path segments that make a file a test file wherever they appear.
-_TEST_DIRECTORIES = frozenset({"tests", "test"})
+TEST_DIRECTORIES: frozenset[str] = frozenset({"tests", "test"})
 
 
 def is_src_module(relative_path: str) -> bool:
@@ -101,7 +102,7 @@ def is_src_module(relative_path: str) -> bool:
     parts = Path(relative_path).parts
     name = parts[-1] if parts else ""
     in_src = "src" in parts[:-1]
-    in_tests = any(part in _TEST_DIRECTORIES for part in parts[:-1])
+    in_tests = any(part in TEST_DIRECTORIES for part in parts[:-1])
     is_test_file = name.startswith("test_") or name == "conftest.py"
     return in_src and not in_tests and not is_test_file
 
