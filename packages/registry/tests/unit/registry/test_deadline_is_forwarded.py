@@ -26,38 +26,24 @@ was passed.
 
 from __future__ import annotations
 
-import json
 from typing import Any
-from uuid import uuid7
 
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from threetears.agent.tools.context_envelope import CallContext
-from threetears.registry.proxy import (
-    ProxyCallRequest,
-    _build_internal_payload,
-    _forwarded_deadline,
-)
+from ._dispatch_auth import make_authed_request
+from ._forwarding import PROXY_TIMEOUT_SECONDS, forwarded_envelope
 
 
-def _request(**overrides: Any) -> ProxyCallRequest:
-    """A minimal well-formed proxy request."""
-    fields: dict[str, Any] = {
-        "tool_name": "threetears.web_search",
-        "tool_version": "1.0",
-        "arguments": {"query": "capybara"},
-        "context": CallContext(agent_id=uuid7(), correlation_id=uuid7()),
-    }
-    fields.update(overrides)
-    return ProxyCallRequest(**fields)
+async def _forwarded(*, deadline_seconds: float | None = None, tool_timeout: float | None) -> dict[str, Any]:
+    """The envelope the pod actually receives for one call routed through the proxy.
 
-
-def _forwarded(request: ProxyCallRequest, *, effective_timeout: float | None) -> dict[str, Any]:
-    """The envelope the pod actually receives, decoded from the wire bytes."""
-    payload = _build_internal_payload(request, None, effective_timeout=effective_timeout)
-    decoded: dict[str, Any] = json.loads(payload)
-    return decoded
+    ``tool_timeout`` is the timeout the routed tool declares, which is the proxy's own wait for the
+    pod; ``None`` leaves the proxy on its default.
+    """
+    return await forwarded_envelope(
+        make_authed_request(deadline_seconds=deadline_seconds), tool_timeout_seconds=tool_timeout
+    )
 
 
 class _LaggingPodCallRequest(BaseModel):
@@ -81,8 +67,9 @@ class _LaggingPodCallRequest(BaseModel):
 class TestACallerThatSaysNothingChangesNothing:
     """The no-deadline path must be byte-compatible with every live pod."""
 
-    def test_the_key_is_absent_not_null(self) -> None:
-        envelope = _forwarded(_request(), effective_timeout=30.0)
+    @pytest.mark.asyncio
+    async def test_the_key_is_absent_not_null(self) -> None:
+        envelope = await _forwarded(tool_timeout=30.0)
 
         assert "deadline_seconds" not in envelope, (
             "an unset deadline reached the wire as an explicit null. A pod predating the "
@@ -90,15 +77,17 @@ class TestACallerThatSaysNothingChangesNothing:
             "the exact shape of the three-day cobalt-dev outage."
         )
 
-    def test_a_pod_predating_the_field_still_parses_the_envelope(self) -> None:
+    @pytest.mark.asyncio
+    async def test_a_pod_predating_the_field_still_parses_the_envelope(self) -> None:
         """The guarantee stated as the lagging reader experiences it."""
-        envelope = _forwarded(_request(), effective_timeout=30.0)
+        envelope = await _forwarded(tool_timeout=30.0)
 
         parsed = _LaggingPodCallRequest.model_validate(envelope)
 
-        assert parsed.tool_name == "threetears.web_search"
+        assert parsed.tool_name == "threetears.calculator"
 
-    def test_a_pod_predating_the_field_refuses_when_a_deadline_is_set(self) -> None:
+    @pytest.mark.asyncio
+    async def test_a_pod_predating_the_field_refuses_when_a_deadline_is_set(self) -> None:
         """The rollout constraint, pinned rather than left as prose.
 
         This is not a defect -- it is why no agent may be taught to populate the
@@ -106,7 +95,7 @@ class TestACallerThatSaysNothingChangesNothing:
         means the constraint is discovered by a test rather than by an outage,
         and it documents the ordering for whoever writes hop one's sender.
         """
-        envelope = _forwarded(_request(deadline_seconds=5.0), effective_timeout=30.0)
+        envelope = await _forwarded(deadline_seconds=5.0, tool_timeout=30.0)
 
         assert "deadline_seconds" in envelope
         with pytest.raises(Exception):
@@ -114,54 +103,68 @@ class TestACallerThatSaysNothingChangesNothing:
 
 
 class TestTheDeadlineReachesThePod:
-    def test_a_declared_deadline_is_forwarded(self) -> None:
-        envelope = _forwarded(_request(deadline_seconds=5.0), effective_timeout=30.0)
+    @pytest.mark.asyncio
+    async def test_a_declared_deadline_is_forwarded(self) -> None:
+        envelope = await _forwarded(deadline_seconds=5.0, tool_timeout=30.0)
 
         assert envelope["deadline_seconds"] == 5.0
 
-    def test_a_caller_may_ask_for_less_than_the_tool_allows(self) -> None:
+    @pytest.mark.asyncio
+    async def test_a_caller_may_ask_for_less_than_the_tool_allows(self) -> None:
         """The point of the field: a short-patience caller shortens the call."""
-        envelope = _forwarded(_request(deadline_seconds=4.0), effective_timeout=30.0)
+        envelope = await _forwarded(deadline_seconds=4.0, tool_timeout=30.0)
 
         assert envelope["deadline_seconds"] < 30.0
 
-    def test_a_caller_cannot_buy_more_time_than_the_proxy_will_wait(self) -> None:
+    @pytest.mark.asyncio
+    async def test_a_caller_cannot_buy_more_time_than_the_proxy_will_wait(self) -> None:
         """Clamped, because the proxy stops listening at its own timeout.
 
         Forwarding the larger number would license the pod to work past the
         moment its answer becomes unreadable.
         """
-        envelope = _forwarded(_request(deadline_seconds=300.0), effective_timeout=30.0)
+        envelope = await _forwarded(deadline_seconds=300.0, tool_timeout=30.0)
 
         assert envelope["deadline_seconds"] == 30.0
 
 
-class TestTheClampItself:
-    """``_forwarded_deadline`` in isolation, including its boundaries."""
+class TestTheClamp:
+    """The clamp at its boundaries, as the pod receives it.
 
+    The proxy always resolves its own wait before it forwards -- the routed copy's declared
+    timeout, else the proxy default -- so the clamp is exercised against both sources of that
+    wait, never against an unresolved one.
+    """
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("caller", "timeout", "expected"),
+        ("caller", "tool_timeout", "expected"),
         [
-            (None, 30.0, None),
-            (None, None, None),
             (5.0, 30.0, 5.0),
             (300.0, 30.0, 30.0),
             (30.0, 30.0, 30.0),
             (7.5, None, 7.5),
+            (PROXY_TIMEOUT_SECONDS + 100.0, None, PROXY_TIMEOUT_SECONDS),
         ],
     )
-    def test_the_clamp_is_the_minimum_of_what_is_known(
-        self, caller: float | None, timeout: float | None, expected: float | None
+    async def test_the_clamp_is_the_minimum_of_the_caller_and_the_proxys_wait(
+        self, caller: float, tool_timeout: float | None, expected: float
     ) -> None:
-        assert _forwarded_deadline(caller, timeout) == expected
+        envelope = await _forwarded(deadline_seconds=caller, tool_timeout=tool_timeout)
 
-    def test_no_caller_deadline_survives_a_missing_timeout(self) -> None:
-        """``None`` in both positions must not become ``0`` or an exception.
+        assert envelope["deadline_seconds"] == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_timeout", [30.0, None])
+    async def test_no_caller_deadline_never_becomes_one(self, tool_timeout: float | None) -> None:
+        """No caller deadline must not become ``0`` or any other value, whichever wait applies.
 
         A zero deadline would tell the pod it has no time at all, which is a
         refusal dressed as a budget.
         """
-        assert _forwarded_deadline(None, None) is None
+        envelope = await _forwarded(tool_timeout=tool_timeout)
+
+        assert "deadline_seconds" not in envelope
 
 
 class TestTheseAssertionsCanFail:
@@ -172,17 +175,19 @@ class TestTheseAssertionsCanFail:
     two are actually told apart.
     """
 
-    def test_absent_and_null_are_not_the_same_assertion(self) -> None:
-        absent = _forwarded(_request(), effective_timeout=30.0)
+    @pytest.mark.asyncio
+    async def test_absent_and_null_are_not_the_same_assertion(self) -> None:
+        absent = await _forwarded(tool_timeout=30.0)
         explicit_null = {**absent, "deadline_seconds": None}
 
         assert "deadline_seconds" not in absent
         assert "deadline_seconds" in explicit_null
         assert absent.get("deadline_seconds") == explicit_null.get("deadline_seconds")
 
-    def test_a_lagging_reader_refuses_the_null_shape(self) -> None:
+    @pytest.mark.asyncio
+    async def test_a_lagging_reader_refuses_the_null_shape(self) -> None:
         """The regression this file exists to prevent, reproduced deliberately."""
-        absent = _forwarded(_request(), effective_timeout=30.0)
+        absent = await _forwarded(tool_timeout=30.0)
         explicit_null = {**absent, "deadline_seconds": None}
 
         _LaggingPodCallRequest.model_validate(absent)

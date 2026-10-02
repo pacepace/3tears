@@ -69,6 +69,34 @@ from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
 from threetears.registry.server import RegistryServer
 
 
+def _entrypoint_server_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """run ``python -m threetears.registry`` and return the keywords it built the server with.
+
+    the plugin factories are resolved from env at the entry point a deployment runs, so the
+    resolution is asserted there: on what the server is handed, not on the resolver in isolation.
+    the server itself is replaced by a recorder whose ``serve`` returns at once.
+
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the server's constructor keywords
+    :rtype: dict[str, Any]
+    """
+    monkeypatch.delenv("THREETEARS_REGISTRY_FORCE_DENY_ALL", raising=False)
+    monkeypatch.setenv("THREETEARS_REGISTRY_ALLOW_ALL_TOOLS", "true")
+    captured: dict[str, Any] = {}
+
+    class _CapturingServer:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def serve(self) -> None:
+            return None
+
+    monkeypatch.setattr(server_module, "RegistryServer", _CapturingServer)
+    runpy.run_module("threetears.registry", run_name="__main__")
+    return captured
+
+
 def _identity_token_provider(token: str = "registry.identity.token") -> "Callable[[], str | None]":
     """a stand-in for the host-minted identity token provider the stack now requires.
 
@@ -526,36 +554,26 @@ class TestResolvePodAuthenticatorFactory:
     ``module:callable`` plugin path, keeping 3tears host-agnostic (the aibots Hub points it at its
     own factory)."""
 
-    @pytest.mark.asyncio
-    async def test_unset_env_is_open_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unset_env_is_open_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """no env var -> None -> open registration (pure-3tears / dev default)."""
-        from threetears.registry.server import _resolve_pod_authenticator_factory
-
         monkeypatch.delenv("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", raising=False)
-        assert _resolve_pod_authenticator_factory() is None
+        assert _entrypoint_server_kwargs(monkeypatch)["pod_authenticator_factory"] is None
 
-    @pytest.mark.asyncio
-    async def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """a valid ``module:callable`` path resolves to that exact object."""
-        from threetears.registry.server import _resolve_pod_authenticator_factory
+    def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a valid ``module:callable`` path hands the server that exact object."""
+        from threetears.registry.auth import AllowAllAuthorizer
 
         # point at a real importable callable to prove resolution (any module attr works).
         monkeypatch.setenv(
-            "THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY",
-            "threetears.registry.auth:AllowAllAuthorizer",
+            "THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", "threetears.registry.auth:AllowAllAuthorizer"
         )
-        from threetears.registry.auth import AllowAllAuthorizer
+        assert _entrypoint_server_kwargs(monkeypatch)["pod_authenticator_factory"] is AllowAllAuthorizer
 
-        assert _resolve_pod_authenticator_factory() is AllowAllAuthorizer
-
-    @pytest.mark.asyncio
-    async def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a path without the ``module:callable`` shape crashes startup (never silent open mode)."""
-        from threetears.registry.server import _resolve_pod_authenticator_factory
-
         monkeypatch.setenv("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", "no_colon_here")
         with pytest.raises(ValueError, match="module:callable"):
-            _resolve_pod_authenticator_factory()
+            _entrypoint_server_kwargs(monkeypatch)
 
 
 class TestRegistryServerLimitGuardFactory:
@@ -622,35 +640,24 @@ class TestResolveLimitGuardFactory:
     ``module:callable`` plugin path, keeping 3tears host-agnostic (the aibots Hub points it at its
     NATS-proxy-backed ``KvCallLimitGuard`` factory)."""
 
-    @pytest.mark.asyncio
-    async def test_unset_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unset_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """no env var -> None -> constructor default AllowAllLimitGuard (pure-3tears / dev)."""
-        from threetears.registry.server import _resolve_limit_guard_factory
-
         monkeypatch.delenv("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", raising=False)
-        assert _resolve_limit_guard_factory() is None
+        assert _entrypoint_server_kwargs(monkeypatch)["limit_guard_factory"] is None
 
-    @pytest.mark.asyncio
-    async def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """a valid ``module:callable`` path resolves to that exact object."""
-        from threetears.registry.server import _resolve_limit_guard_factory
-
-        monkeypatch.setenv(
-            "THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY",
-            "threetears.registry.auth:AllowAllLimitGuard",
-        )
+    def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a valid ``module:callable`` path hands the server that exact object."""
         from threetears.registry.auth import AllowAllLimitGuard
 
-        assert _resolve_limit_guard_factory() is AllowAllLimitGuard
+        # point at a real importable callable to prove resolution (any module attr works).
+        monkeypatch.setenv("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "threetears.registry.auth:AllowAllLimitGuard")
+        assert _entrypoint_server_kwargs(monkeypatch)["limit_guard_factory"] is AllowAllLimitGuard
 
-    @pytest.mark.asyncio
-    async def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a path without the ``module:callable`` shape crashes startup (never silent allow-all)."""
-        from threetears.registry.server import _resolve_limit_guard_factory
-
         monkeypatch.setenv("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "no_colon_here")
         with pytest.raises(ValueError, match="module:callable"):
-            _resolve_limit_guard_factory()
+            _entrypoint_server_kwargs(monkeypatch)
 
 
 class TestRegistryServerUsageEmitterFactory:
@@ -699,35 +706,24 @@ class TestResolveUsageEmitterFactory:
     ``module:callable`` plugin path, keeping 3tears host-agnostic (the aibots Hub points it at its
     metering-publish factory)."""
 
-    @pytest.mark.asyncio
-    async def test_unset_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unset_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """no env var -> None -> emit disabled (pure-3tears / dev default)."""
-        from threetears.registry.server import _resolve_usage_emitter_factory
-
         monkeypatch.delenv("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", raising=False)
-        assert _resolve_usage_emitter_factory() is None
+        assert _entrypoint_server_kwargs(monkeypatch)["usage_emitter_factory"] is None
 
-    @pytest.mark.asyncio
-    async def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """a valid ``module:callable`` path resolves to that exact object."""
-        from threetears.registry.server import _resolve_usage_emitter_factory
-
-        monkeypatch.setenv(
-            "THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY",
-            "threetears.registry.auth:AllowAllLimitGuard",
-        )
+    def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a valid ``module:callable`` path hands the server that exact object."""
         from threetears.registry.auth import AllowAllLimitGuard
 
-        assert _resolve_usage_emitter_factory() is AllowAllLimitGuard
+        # point at a real importable callable to prove resolution (any module attr works).
+        monkeypatch.setenv("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "threetears.registry.auth:AllowAllLimitGuard")
+        assert _entrypoint_server_kwargs(monkeypatch)["usage_emitter_factory"] is AllowAllLimitGuard
 
-    @pytest.mark.asyncio
-    async def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a path without the ``module:callable`` shape crashes startup (never silent drop)."""
-        from threetears.registry.server import _resolve_usage_emitter_factory
-
         monkeypatch.setenv("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "no_colon_here")
         with pytest.raises(ValueError, match="module:callable"):
-            _resolve_usage_emitter_factory()
+            _entrypoint_server_kwargs(monkeypatch)
 
 
 class TestTheStackRefusesWithoutAnIdentity:

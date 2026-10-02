@@ -14,12 +14,19 @@ for three days. These pin the property that makes the receiver-first rollout act
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
+import pytest
 from pydantic import BaseModel, ConfigDict
 
-from threetears.registry.proxy import ProxyCallRequest, _build_internal_payload
+from threetears.nats import SYNC_REPLY_BUDGET_SECONDS
+
+from ._dispatch_auth import make_authed_request
+from ._forwarding import forwarded_envelope
+
+#: a declared timeout the reply inbox cannot outlive, so the call takes the durable path and the
+#: proxy names a ``result_subject`` in what it forwards.
+_DURABLE_TIMEOUT = SYNC_REPLY_BUDGET_SECONDS * 4
 
 
 class _PodPredatingTheField(BaseModel):
@@ -40,29 +47,32 @@ class _PodPredatingTheField(BaseModel):
     result_subject: str | None = None
 
 
-def _forwarded(**kwargs: Any) -> bytes:
-    request = ProxyCallRequest(tool_name="pentest.whatweb", tool_version="1.0", arguments={"target": "x"})
-    return _build_internal_payload(request, None, **kwargs)
+async def _forwarded(*, tool_timeout: float | None = 5.0) -> dict[str, Any]:
+    """the envelope a pod receives for one call the proxy forwards, unsigned and with no deadline."""
+    return await forwarded_envelope(make_authed_request(arguments={"target": "x"}), tool_timeout_seconds=tool_timeout)
 
 
 class TestForwardedEnvelopeIsVersionTolerant:
-    def test_an_older_pod_can_parse_the_forwarded_envelope(self) -> None:
+    @pytest.mark.asyncio
+    async def test_an_older_pod_can_parse_the_forwarded_envelope(self) -> None:
         """the whole point: a pod predating the newest field still accepts the call."""
-        _PodPredatingTheField.model_validate_json(_forwarded())
+        _PodPredatingTheField.model_validate(await _forwarded())
 
-    def test_unset_optionals_are_absent_rather_than_null(self) -> None:
+    @pytest.mark.asyncio
+    async def test_unset_optionals_are_absent_rather_than_null(self) -> None:
         """an unset optional must not reach the wire at all -- a null key is as fatal to a
         forbidding model as a populated one."""
-        wire = json.loads(_forwarded())
+        wire = await _forwarded()
         assert "deadline_seconds" not in wire
         assert "result_subject" not in wire
         assert "proxy_assertion" not in wire
 
-    def test_the_fields_that_carry_the_call_still_travel(self) -> None:
+    @pytest.mark.asyncio
+    async def test_the_fields_that_carry_the_call_still_travel(self) -> None:
         """tolerance must not be bought by dropping payload: required fields and a SET
         optional both survive."""
-        wire = json.loads(_forwarded(result_subject="aibots.tools.result.pod-1.abc"))
-        assert wire["tool_name"] == "pentest.whatweb"
-        assert wire["tool_version"] == "1.0"
+        wire = await _forwarded(tool_timeout=_DURABLE_TIMEOUT)
+        assert wire["tool_name"] == "threetears.calculator"
+        assert wire["tool_version"] == "1.0.0"
         assert wire["arguments"] == {"target": "x"}
-        assert wire["result_subject"] == "aibots.tools.result.pod-1.abc"
+        assert wire["result_subject"].startswith("test.tools.result.pod-1.")
