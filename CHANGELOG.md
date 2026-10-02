@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.58.0 -- unreleased
+## v0.58.0 -- 2026-10-02
 
 ### Testing: `FakeNatsClient` declares, and models a broker restart
 
