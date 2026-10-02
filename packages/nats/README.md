@@ -11,7 +11,8 @@ Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives 
 - `forward` / `serve_owner` -- payload-agnostic owner-routed request/reply: send a request to whichever pod currently serves a key and get its reply back. A separate election mechanism decides who owns the key; this only carries the message.
 - `attach_pipe` / `serve_pipe` / `open_pipe` -- a payload-agnostic byte pipe to whichever pod owns a key, for reaching a process that has no inbound network path. Rendezvous rides `forward`; the stream then moves to its own subjects with a sequenced framing (a lost frame raises rather than being skipped) and a credit window that stops the producer reading its source when the consumer falls behind.
 - `StreamTransport` -- narrow Protocol used by streaming consumers; lets test fakes substitute for the live client.
-- Errors -- `NatsClientError`, `SubscribeError`, `PublishError`, `RequestError`, `KvError`.
+- Errors -- `NatsClientError`, `SubscribeError`, `PublishError`, `RequestError`, `KvError`, and `KvBucketNotFoundError` (a `KvError`). See [KV errors](#kv-errors).
+- `is_bucket_not_found` / `is_key_not_found` / `is_nats_error` -- classify the failures of a RAW nats-py handle by type, so a consumer that keeps `nats.*` imports out of its code never matches nats-py class names as strings.
 
 ## Why a separate package
 
@@ -90,6 +91,38 @@ except LockHeld:
 ```
 
 `client=None` is a graceful no-op that yields immediately. Single-pod dev environments without NATS work unchanged. `LockHeld` is distinct from `KvError` (transport / bucket failures); callers should treat the former as the expected "another pod is running" branch and surface the latter separately.
+
+## KV errors
+
+Every KV failure the wrapper raises is a `KvError`. One kind has its own type, because it needs a different response from the rest:
+
+| Raised | Means | Respond by |
+|---|---|---|
+| `KvBucketNotFoundError` (a `KvError`; `.bucket` names it) | The server answered that the bucket's stream does not exist. | Waiting for the declarer, which has not declared it yet or not since a NATS restart wiped it. |
+| any other `KvError` | The call failed for another reason. A request this principal is not granted is never answered, so a missing grant and an unreachable broker both arrive here as a deadline. | Checking the grant the message names, or the broker. |
+| `KvConfigMismatch` (NOT a `KvError`) | A bind-only open found the live bucket carrying a configuration it refuses. | Running the declarer, which reconciles it. |
+
+`KvBucketNotFoundError` is raised by a bind-only open (`kv_bucket` / `ensure_kv_bucket` with `create_if_missing=False`) once its wait for the declarer is spent, by a declaring open whose create went unanswered and whose bind found nothing, and by an operation on a bound handle whose stream vanished and could not be bound again. An existing `except KvError` still catches it.
+
+A consumer holding a RAW nats-py handle (a `KeyValue` reached through `jetstream_context()`) gets nats-py's own exceptions. Classify them with the predicates instead of importing nats-py:
+
+```python
+from threetears.nats import is_bucket_not_found, is_key_not_found, is_nats_error
+
+try:
+    entry = await raw_kv.get(key)
+except Exception as exc:
+    if is_key_not_found(exc):
+        entry = None          # the bucket exists; the key does not
+    elif is_bucket_not_found(exc):
+        ...                   # the bucket's stream is gone: wait for, or ask, its declarer
+    elif is_nats_error(exc):
+        ...                   # any other failure the bus reported
+    else:
+        raise
+```
+
+`is_bucket_not_found` is also true of `KvBucketNotFoundError`, so one predicate serves a consumer holding both kinds of handle. None of the three reads message text.
 
 
 ## Enforcement

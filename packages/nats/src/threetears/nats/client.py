@@ -5037,7 +5037,9 @@ class NatsClient:
         :ptype direct: bool | None
         :return: ready KV bucket handle
         :rtype: NatsKvBucket
-        :raises KvError: if bucket creation or binding fails
+        :raises KvBucketNotFoundError: if ``create_if_missing`` is ``False`` and the bucket does not
+            exist once the wait for its declarer is spent (a ``KvError``)
+        :raises KvError: if bucket creation or binding fails for any other reason
         :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
         """
         # local import avoids circular dependency between client.py and kv.py
@@ -5122,7 +5124,10 @@ class NatsClient:
         :ptype create_if_missing: bool
         :return: ready KV bucket handle, also installed in the client's cache
         :rtype: NatsKvBucket
-        :raises KvError: if bucket creation or binding fails
+        :raises KvBucketNotFoundError: if the bucket does not exist and this call could not create it --
+            a bind (``create_if_missing=False``) once the wait for its declarer is spent, or a
+            declaration whose create was not answered (a ``KvError``)
+        :raises KvError: if bucket creation or binding fails for any other reason
         :raises KvConfigMismatch: if ``create_if_missing=False`` and the live bucket differs
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
         """
