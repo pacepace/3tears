@@ -27,6 +27,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Final
 
+from threetears.enforcement.common import is_private_name, parse_python_file
 from threetears.enforcement.underscore_access.ruff_config import all_exempted_files
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "carry_forward_rationales",
     "MODULE_SCOPE",
     "enclosing_scopes",
+    "import_bindings",
     "ledger_paths",
     "ledger_scope_entries",
     "scoped_accesses",
@@ -382,6 +384,50 @@ def scoped_accesses(path: Path) -> dict[tuple[str, str, int], int]:
     return found
 
 
+def import_bindings(path: Path) -> dict[tuple[str, str, int], int]:
+    """every private segment *path* binds by an import, keyed the way a ledger entry keys it.
+
+    ``(scope, symbol, occurrence) -> line``, numbered exactly like :func:`scoped_accesses`. Exists
+    for owner ruling 1 (2026-10-01): a recorded third-party confinement module's own test may
+    import that module, and each such import is recorded as a ledger entry whose symbol is the
+    module's private segment. An import is not an attribute read, so :func:`scoped_accesses` cannot
+    resolve that entry; this is the population it resolves against.
+
+    One binding per unit the private-binding gate reports: for ``import a._b`` the first private
+    segment; for ``from M import n, ...`` the first private segment of ``M`` once, then each
+    private ``n``. The gate matches its findings against these same keys, so this is the one
+    numbering source for an import-keyed entry.
+
+    :param path: source file to scan
+    :ptype path: Path
+    :return: binding key to the line it was found on; empty for a file that does not parse
+    :rtype: dict[tuple[str, str, int], int]
+    """
+    tree = parse_python_file(path)
+    units: list[tuple[int, int, int, str]] = []
+    for node in ast.walk(tree) if tree is not None else ():
+        if isinstance(node, ast.Import):
+            for index, alias in enumerate(node.names):
+                segment = next((part for part in alias.name.split(".") if is_private_name(part)), "")
+                if segment:
+                    units.append((node.lineno, node.col_offset, index, segment))
+        elif isinstance(node, ast.ImportFrom):
+            module_segment = next((part for part in (node.module or "").split(".") if is_private_name(part)), "")
+            if module_segment:
+                units.append((node.lineno, node.col_offset, -1, module_segment))
+            for index, alias in enumerate(node.names):
+                if is_private_name(alias.name):
+                    units.append((node.lineno, node.col_offset, index, alias.name))
+    scopes = enclosing_scopes(path) if units else {}
+    counters: Counter[tuple[str, str]] = Counter()
+    found: dict[tuple[str, str, int], int] = {}
+    for line, _column, _index, symbol in sorted(units):
+        scope = scopes.get(line, MODULE_SCOPE)
+        found[(scope, symbol, counters[scope, symbol])] = line
+        counters[scope, symbol] += 1
+    return found
+
+
 def ledger_scope_entries(exemptions_path: Path) -> list[tuple[str, str, str, int]]:
     """every SCOPE-keyed entry as ``(path, scope, symbol, occurrence)``.
 
@@ -424,6 +470,10 @@ def unresolved_entries(exemptions_path: Path, repo_root: Path) -> list[str]:
     was removed, renamed, or moved to another function shows up here. Files that do
     not exist at all are skipped, so :func:`missing_files` reports them once instead
     of both checks counting the same entry.
+
+    An entry resolves against the file's attribute reads (:func:`scoped_accesses`) or
+    its private import bindings (:func:`import_bindings`), the record owner ruling 1
+    keeps for a confinement module's own test.
     """
     unresolved: list[str] = []
     by_path: dict[str, dict[tuple[str, str, int], int]] = {}
@@ -432,7 +482,7 @@ def unresolved_entries(exemptions_path: Path, repo_root: Path) -> list[str]:
         if not source.exists():
             continue
         if path not in by_path:
-            by_path[path] = scoped_accesses(source)
+            by_path[path] = {**import_bindings(source), **scoped_accesses(source)}
         if (scope, symbol, occurrence) not in by_path[path]:
             unresolved.append(f"{path}:{scope}#{occurrence}:{symbol}")
     return unresolved

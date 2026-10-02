@@ -56,6 +56,19 @@ private (``patch.object(ChatAnthropic, "_astream")``) is a violation whichever l
 test that needs that seam calls a public function of the confinement module, or drives the library
 through its own public surface.
 
+**A confinement module's own test may import it** (owner ruling 1, 2026-10-01). That test exists to
+catch the library changing under the module, so it has to bind the module itself. It is sanctioned
+binding by binding: the test is named for the module (``test_nats_py_internals.py`` for
+``_nats_py_internals.py``) in the module's own distribution, and each import is a ledger entry keyed
+``<test path>:<scope>#N:<module's private segment>`` with a specific rationale, numbered by
+:func:`.ledger.import_bindings` (:func:`.pragma_policy.confinement_own_test_entries`). A private
+NAME of the module is still a violation, and so is any other test importing it: those are tested
+through the module's public callers.
+
+**Two standard-library names are public despite the underscore** (owner ruling 2, 2026-10-01):
+``os._exit`` and ``sys._getframe`` are documented, undeprecated stdlib APIs with no public
+alternative, so binding them is allowed in every spelling (:data:`DOCUMENTED_STDLIB_PRIVATES`).
+
 **What is scanned** is every python file that is the repo's own, exactly what
 :func:`~threetears.enforcement.underscore_access.pragma_policy.scanned_python_files` returns. Both
 inputs can come back empty for a reason that is not "clean", so :class:`PrivateBindingScan` carries
@@ -111,12 +124,13 @@ from pathlib import Path
 
 from threetears.enforcement.common import Violation, is_private_name, parse_python_file
 from threetears.enforcement.common.repo_layout import find_local_src_roots
-from threetears.enforcement.underscore_access.ledger import ledger_paths
+from threetears.enforcement.underscore_access.ledger import import_bindings
 from threetears.enforcement.underscore_access.pragma_policy import (
     TEST_DIRECTORIES,
+    confinement_modules,
+    confinement_own_test_entries,
     is_src_module,
     scanned_python_files,
-    slf001_ignored_files,
 )
 
 __all__ = [
@@ -125,8 +139,8 @@ __all__ = [
     "SHAPE_G_NAME",
     "SHAPE_H_ATTRIBUTE",
     "SHAPE_H_PATH",
+    "DOCUMENTED_STDLIB_PRIVATES",
     "PrivateBindingScan",
-    "confinement_modules",
     "private_binding_findings",
     "scan_private_bindings",
     "undetected_planted_controls",
@@ -143,6 +157,19 @@ SHAPE_H_PATH = "underscore_access.H.path"
 
 #: every category this gate reports, in report order.
 PRIVATE_BINDING_CATEGORIES: tuple[str, ...] = (SHAPE_G_NAME, SHAPE_G_MODULE, SHAPE_H_ATTRIBUTE, SHAPE_H_PATH)
+
+#: standard-library names with a leading underscore that are documented public APIs, by module.
+#: Owner ruling, 2026-10-01: ``os._exit`` ("exit the process ... without calling cleanup handlers")
+#: and ``sys._getframe`` are in the Python standard library reference, undeprecated, with no public
+#: alternative -- the underscore is CPython's naming, not a stability marker. Binding one is binding
+#: a public API, so it is allowed by (module, name) pair in every spelling: ``from os import
+#: _exit``, ``monkeypatch.setattr(os, "_exit", ...)`` (any receiver whose last segment is the
+#: module), ``patch("os._exit")`` and ``patch("pkg.mod.os._exit")``. Neither the module nor the
+#: name alone is enough: ``os._wrap_close`` and ``obj._exit`` are still somebody's private.
+DOCUMENTED_STDLIB_PRIVATES: dict[str, frozenset[str]] = {
+    "os": frozenset({"_exit"}),
+    "sys": frozenset({"_getframe"}),
+}
 
 #: a string that can only be a dotted python target: two or more identifiers joined by dots. a URL
 #: (``client.patch("/api/v1/x")``) or a bare word never matches, which is what keeps an HTTP client's
@@ -221,6 +248,9 @@ class _FileContext:
     :ivar home: the file's tests tree, or its own directory, for a file that is not src
     :ivar search_roots: directories an absolute module name resolves against, in order
     :ivar confinement: whether the file is a recorded third-party confinement module
+    :ivar confined: resolved paths of every recorded confinement module
+    :ivar own_test_imports: ``(line, private module segment)`` of each import owner ruling 1
+        sanctions in this file: a confinement module's own test importing it, ledger-recorded
     :ivar patch_names: local names bound to ``unittest.mock.patch`` / ``mock.patch``
     :ivar own_objects: names the file defines by ``def``/``class`` and binds no other way
     :ivar violations: accumulated findings
@@ -235,30 +265,13 @@ class _FileContext:
     home: Path | None
     search_roots: tuple[Path, ...]
     confinement: bool
+    confined: frozenset[Path] = frozenset()
+    own_test_imports: frozenset[tuple[int, str]] = frozenset()
     patch_names: frozenset[str] = frozenset()
     own_objects: frozenset[str] = frozenset()
     violations: list[Violation] = field(default_factory=list)
     imports_examined: int = 0
     binding_calls_examined: int = 0
-
-
-def confinement_modules(repo_root: Path, exemptions_path: Path | None) -> frozenset[str]:
-    """the recorded third-party confinement modules: src, SLF001-ignored, and in the ledger.
-
-    :param repo_root: the repo's root
-    :ptype repo_root: Path
-    :param exemptions_path: the underscore-access exemptions ledger, or ``None`` for none
-    :ptype exemptions_path: Path | None
-    :return: repo-relative posix paths
-    :rtype: frozenset[str]
-    """
-    confined: frozenset[str] = frozenset()
-    # no ledger records nothing, so nothing is sanctioned and the ruff configs need not be read
-    if exemptions_path is not None and exemptions_path.is_file():
-        recorded = set(ledger_paths(exemptions_path))
-        ignored = {path for _config, _key, path in slf001_ignored_files(repo_root)}
-        confined = frozenset(path for path in ignored & recorded if is_src_module(path))
-    return confined
 
 
 def scan_private_bindings(repo_root: Path, exemptions_path: Path | None) -> PrivateBindingScan:
@@ -275,6 +288,9 @@ def scan_private_bindings(repo_root: Path, exemptions_path: Path | None) -> Priv
     repo_root = repo_root.resolve()
     src_roots = find_local_src_roots(repo_root)
     confined = confinement_modules(repo_root, exemptions_path)
+    own_test_entries: dict[str, list[tuple[str, str, int]]] = {}
+    for test_path, scope, symbol, occurrence in confinement_own_test_entries(repo_root, exemptions_path):
+        own_test_entries.setdefault(test_path, []).append((scope, symbol, occurrence))
     files = 0
     imports = 0
     calls = 0
@@ -284,7 +300,7 @@ def scan_private_bindings(repo_root: Path, exemptions_path: Path | None) -> Priv
         if tree is None:
             continue
         files += 1
-        context = _context_for(path.resolve(), repo_root, src_roots, confined, tree)
+        context = _context_for(path.resolve(), repo_root, src_roots, confined, tree, own_test_entries)
         _scan_tree(tree, context)
         imports += context.imports_examined
         calls += context.binding_calls_examined
@@ -356,6 +372,7 @@ def _context_for(
     src_roots: tuple[Path, ...],
     confined: frozenset[str],
     tree: ast.Module,
+    own_test_entries: dict[str, list[tuple[str, str, int]]],
 ) -> _FileContext:
     """build the per-file context: where the file sits, what it may reach, what it defines.
 
@@ -369,6 +386,9 @@ def _context_for(
     :ptype confined: frozenset[str]
     :param tree: the file's parsed module
     :ptype tree: ast.Module
+    :param own_test_entries: owner ruling 1's ledger entries, ``(scope, symbol, occurrence)`` by
+        repo-relative test path (:func:`.pragma_policy.confinement_own_test_entries`)
+    :ptype own_test_entries: dict[str, list[tuple[str, str, int]]]
     :return: the context
     :rtype: _FileContext
     """
@@ -385,6 +405,12 @@ def _context_for(
         home = tree_root
         leading = (path.parent, tree_root, tree_root.parent)
     search_roots = tuple(dict.fromkeys((*leading, *src_roots, repo_root)))
+    own_test_imports: frozenset[tuple[int, str]] = frozenset()
+    if relative in own_test_entries:
+        bindings = import_bindings(path)
+        own_test_imports = frozenset(
+            (bindings[entry], entry[1]) for entry in own_test_entries[relative] if entry in bindings
+        )
     return _FileContext(
         repo_root=repo_root,
         path=path,
@@ -393,6 +419,8 @@ def _context_for(
         home=home,
         search_roots=search_roots,
         confinement=relative in confined,
+        confined=frozenset((repo_root / module).resolve() for module in confined),
+        own_test_imports=own_test_imports,
         patch_names=_patch_names(tree),
         own_objects=_own_objects(tree),
     )
@@ -713,19 +741,27 @@ def _inside_boundary(target: Path, context: _FileContext) -> bool:
     return inside
 
 
-def _module_allowed(target: Path | None, context: _FileContext) -> bool:
+def _module_allowed(target: Path | None, context: _FileContext, line: int, segment: str) -> bool:
     """whether binding through a private module segment of *target* is allowed.
+
+    Beyond the boundary rule, owner ruling 1: a recorded confinement module's own test may import
+    that module, binding by binding, where the ledger records the import.
 
     :param target: the resolved module, or ``None`` for a library's
     :ptype target: Path | None
     :param context: the file's context
     :ptype context: _FileContext
+    :param line: the import's line
+    :ptype line: int
+    :param segment: the private module segment the import binds
+    :ptype segment: str
     :return: whether it is allowed
     :rtype: bool
     """
     if target is None:
         return context.confinement
-    return _inside_boundary(target, context)
+    own_test_import = (line, segment) in context.own_test_imports and target.resolve() in context.confined
+    return own_test_import or _inside_boundary(target, context)
 
 
 def _name_allowed(target: Path | None, context: _FileContext) -> bool:
@@ -753,7 +789,7 @@ def _check_import(node: ast.Import, context: _FileContext) -> None:
     """
     for alias in node.names:
         private = _first_private(alias.name.split("."))
-        if private and not _module_allowed(_resolve_absolute(alias.name, context), context):
+        if private and not _module_allowed(_resolve_absolute(alias.name, context), context, node.lineno, private):
             _report(
                 context, SHAPE_G_MODULE, node.lineno, private, f"imports private module '{alias.name}'; {_FIX_G_MODULE}"
             )
@@ -774,7 +810,7 @@ def _check_import_from(node: ast.ImportFrom, context: _FileContext) -> None:
     else:
         target = _resolve_absolute(module_text, context)
     private_segment = _first_private(module_text.split(".")) if module_text else ""
-    if private_segment and not _module_allowed(target, context):
+    if private_segment and not _module_allowed(target, context, node.lineno, private_segment):
         _report(
             context,
             SHAPE_G_MODULE,
@@ -787,10 +823,10 @@ def _check_import_from(node: ast.ImportFrom, context: _FileContext) -> None:
             continue
         submodule = _submodule(target, alias.name)
         if submodule is not None:
-            if not _module_allowed(submodule, context):
+            if not _module_allowed(submodule, context, node.lineno, alias.name):
                 reason = f"imports private module '{alias.name}' from '{label}'; {_FIX_G_MODULE}"
                 _report(context, SHAPE_G_MODULE, node.lineno, alias.name, reason)
-        elif not _name_allowed(target, context):
+        elif not _name_allowed(target, context) and not _documented_stdlib(module_text, alias.name, node.level):
             reason = f"imports private name '{alias.name}' from '{label}'; {_FIX_G_NAME}"
             _report(context, SHAPE_G_NAME, node.lineno, alias.name, reason)
 
@@ -955,7 +991,10 @@ def _check_attribute(receiver: ast.expr, name: str, line: int, spelling: str, co
     if not is_private_name(name):
         return
     owned = isinstance(receiver, ast.Name) and (receiver.id in _OWNER_RECEIVERS or receiver.id in context.own_objects)
-    if not owned:
+    receiver_tail = (
+        receiver.id if isinstance(receiver, ast.Name) else receiver.attr if isinstance(receiver, ast.Attribute) else ""
+    )
+    if not owned and not _documented_stdlib(receiver_tail, name, 0):
         reason = f"{spelling} names private attribute '{name}' of {ast.unparse(receiver)} by string; {_FIX_H}"
         _report(context, SHAPE_H_ATTRIBUTE, line, name, reason)
 
@@ -974,7 +1013,8 @@ def _check_dotted(dotted: str, line: int, spelling: str, context: _FileContext) 
     """
     segments = dotted.split(".")
     private = _first_private(segments)
-    if not private:
+    stdlib = len(segments) > 1 and _documented_stdlib(segments[-2], segments[-1], 0)
+    if not private or (stdlib and not _first_private(segments[:-1])):
         return
     target: Path | None = None
     split = 0
@@ -997,3 +1037,19 @@ def _check_dotted(dotted: str, line: int, spelling: str, context: _FileContext) 
         private = module_private if not module_ok else attribute_private
     if not allowed:
         _report(context, SHAPE_H_PATH, line, private, f"{spelling} binds private '{private}' by string; {_FIX_H}")
+
+
+def _documented_stdlib(module: str, name: str, level: int) -> bool:
+    """whether *module*.*name* is one of :data:`DOCUMENTED_STDLIB_PRIVATES`.
+
+    :param module: the module's name as spelled: an absolute import's module, or the last segment
+        of a receiver or dotted target
+    :ptype module: str
+    :param name: the private name bound
+    :ptype name: str
+    :param level: an import's relative level; a relative import is never the standard library
+    :ptype level: int
+    :return: whether it is a documented standard-library API
+    :rtype: bool
+    """
+    return level == 0 and name in DOCUMENTED_STDLIB_PRIVATES.get(module, frozenset())

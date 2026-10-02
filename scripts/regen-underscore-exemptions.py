@@ -29,9 +29,13 @@ from pathlib import Path
 from threetears.enforcement.underscore_access import (
     all_exempted_files,
     carry_forward_rationales,
+    confinement_modules,
     MODULE_SCOPE,
     enclosing_scopes,
+    import_bindings,
+    is_own_test_of,
     private_accesses,
+    scanned_python_files,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +94,8 @@ def main() -> int:
             out.append(f"# rationale: {reason}")
             out.append(f"{rel}:{scope}#{occurrence}:{symbol}")
 
+    out += _own_test_import_entries(rationales, unmapped)
+
     _LEDGER.write_text("\n".join(out) + "\n")
     entries = sum(1 for line in out if line and not line.startswith("#"))
     print(f"wrote {entries} entries across {len(paths)} exempted files")
@@ -99,6 +105,41 @@ def main() -> int:
             print(f"  {item}")
         return 1
     return 0
+
+
+def _own_test_import_entries(rationales: dict[tuple[str, str, str, int], str], unmapped: list[str]) -> list[str]:
+    """Owner ruling 1's entries: each import of a confinement module by its own test.
+
+    The loop above writes entries for attribute reads on SLF001-exempted files, and a confinement
+    module's own test is neither, so without this every ruling-1 record would be dropped on the
+    next run and the private-binding gate would then report the import it sanctioned. Numbered by
+    `import_bindings`, the same source the gate matches against.
+
+    :param rationales: carried-forward rationales by ledger key
+    :ptype rationales: dict[tuple[str, str, str, int], str]
+    :param unmapped: accumulates the entries that had no rationale to carry
+    :ptype unmapped: list[str]
+    :return: ledger lines, rationale before each entry
+    :rtype: list[str]
+    """
+    lines: list[str] = []
+    modules = sorted(confinement_modules(_REPO_ROOT, _LEDGER))
+    for source in scanned_python_files(_REPO_ROOT):
+        rel = source.relative_to(_REPO_ROOT).as_posix()
+        owned = [Path(module).stem for module in modules if is_own_test_of(rel, module)]
+        bindings = sorted(
+            (line, key) for key, line in import_bindings(source).items() if owned and key[1] in owned
+        )
+        if bindings:
+            lines.append("")
+        for line, (scope, symbol, occurrence) in bindings:
+            reason = rationales.get((rel, scope, symbol, occurrence))
+            if reason is None:
+                unmapped.append(f"{rel}:{line}:{symbol}")
+                reason = _PLACEHOLDER
+            lines.append(f"# rationale: {reason}")
+            lines.append(f"{rel}:{scope}#{occurrence}:{symbol}")
+    return lines
 
 
 if __name__ == "__main__":
