@@ -323,9 +323,9 @@ class TestSubtreeRowsPartitionWithTheCustomerlessShapes:
         # written through the other.
         from threetears.agent.acl.collections import RoleAssignmentCollection
 
-        from .test_collections import _make_collection
+        from .collection_support import make_collection
 
-        collection = _make_collection(RoleAssignmentCollection)
+        collection = make_collection(RoleAssignmentCollection)
         entity = collection.create(
             {
                 "assignment_id": uuid4(),

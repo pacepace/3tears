@@ -41,7 +41,6 @@ from threetears.agent.acl import (
     evaluate_with_trail,
 )
 from threetears.agent.acl.cache import ActorMembershipKey
-from threetears.agent.acl.evaluator import _agent_owns_namespace
 
 from threetears.core.namespaces import build_agent_namespace_name
 
@@ -81,6 +80,27 @@ def _ns(
         # asking the question they always asked.
         owner_namespace=build_agent_namespace_name(owner_agent_id),
     )
+
+
+async def _owner_short_circuits(namespace: Namespace, agent_id: UUID) -> bool:
+    """report whether evaluating ``agent_id`` against ``namespace`` takes the owner shortcut.
+
+    asked through :func:`evaluate_with_trail` against an empty store, so the
+    only way the agent side can come back short-circuited is the ownership
+    check itself: no grant exists that could stand in for it.
+
+    :param namespace: namespace under evaluation
+    :ptype namespace: Namespace
+    :param agent_id: calling agent
+    :ptype agent_id: UUID
+    :return: whether the evaluator treated the agent as the namespace owner
+    :rtype: bool
+    """
+    result = await evaluate_with_trail(
+        EvaluationContext(namespace=namespace, action="read", agent_id=agent_id),
+        cache=make_cache(FakeStore()),
+    )
+    return result.agent_owner_short_circuited
 
 
 def _role(
@@ -1392,10 +1412,10 @@ class TestOwnershipIsANamespace:
             owner_agent_id=None,
             owner_namespace=None,
         )
-        assert _agent_owns_namespace(namespace, uuid4()) is False
+        assert await _owner_short_circuits(namespace, uuid4()) is False
         # and the same row denies every caller, not merely this one
         for _ in range(5):
-            assert _agent_owns_namespace(namespace, uuid4()) is False
+            assert await _owner_short_circuits(namespace, uuid4()) is False
 
     @pytest.mark.asyncio
     async def test_owner_agent_id_alone_no_longer_grants(self) -> None:
@@ -1442,7 +1462,7 @@ class TestOwnershipIsANamespace:
                 owner_agent_id=agent,
                 owner_namespace=spelled,
             )
-            assert _agent_owns_namespace(namespace, agent) is False
+            assert await _owner_short_circuits(namespace, agent) is False
 
     @pytest.mark.asyncio
     async def test_ownership_survives_a_deleted_and_recreated_owner_only_as_identity(
@@ -1477,7 +1497,7 @@ class TestOwnershipIsANamespace:
         # every agent-shaped caller is refused, because an agent's own
         # namespace name can never equal an interior provider node
         for _ in range(5):
-            assert _agent_owns_namespace(namespace, uuid4()) is False
+            assert await _owner_short_circuits(namespace, uuid4()) is False
 
 
 class TestGroupInGroupMembership:
