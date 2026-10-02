@@ -13,15 +13,37 @@ while every other epoch positively benefits from one that does.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.epoch.client import _IDENTITY_ATTEMPTS, _KV_KEY_GRAMMAR, EpochClient, _key_for
+from threetears.epoch.client import EpochClient
 from threetears.epoch.wire import EpochBumpMessage
 from threetears.nats.errors import PublishError
 from threetears.nats.subjects import Subject, Subjects
+
+
+#: the key grammar ``nats-server`` enforces on a KV key, written out here rather than read from the
+#: client: the test checks the client's keys against the BROKER's rule, not against itself.
+_NATS_KV_KEY_GRAMMAR = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
+
+
+async def _counter_key(subject: Subject) -> str:
+    """bump *subject* on a fresh client and return the one counter key it wrote.
+
+    :param subject: the epoch subject to bump
+    :ptype subject: Subject
+    :return: the key the epoch bucket now holds
+    :rtype: str
+    """
+    fake = FakeNatsClient()
+    nats = _nats_mock()
+    nats.kv_bucket = fake.kv_bucket
+    await EpochClient(_pool_with_bump(returning_epoch=99), nats).bump(subject)
+    (key,) = (await fake.kv_bucket(name="epochs")).keys()
+    return key
 
 
 def _subject(path: str = "app.capabilities.epoch") -> Subject:
@@ -299,25 +321,32 @@ class TestEpochClientKeyDerivation:
     production. The grammar here is the one ``nats-server`` enforces.
     """
 
-    def test_a_legal_path_is_used_verbatim(self) -> None:
+    @pytest.mark.asyncio
+    async def test_a_legal_path_is_used_verbatim(self) -> None:
         """A readable key is worth having when someone is reading a bucket."""
-        assert _key_for(_subject("app.capabilities.epoch")) == "app.capabilities.epoch"
+        assert await _counter_key(_subject("app.capabilities.epoch")) == "app.capabilities.epoch"
 
-    def test_an_illegal_path_is_digested_into_a_legal_key(self) -> None:
-        key = _key_for(Subject(path="app.census tracts.epoch", kind="point"))
+    @pytest.mark.asyncio
+    async def test_an_illegal_path_is_digested_into_a_legal_key(self) -> None:
+        key = await _counter_key(Subject(path="app.census tracts.epoch", kind="point"))
 
         assert " " not in key
-        assert _KV_KEY_GRAMMAR.match(key), f"{key!r} is not a legal KV key"
+        assert _NATS_KV_KEY_GRAMMAR.match(key), f"{key!r} is not a legal KV key"
 
-    def test_the_digest_is_deterministic_across_processes(self) -> None:
-        """Every pod must derive the same key, or they count different things."""
+    @pytest.mark.asyncio
+    async def test_the_digest_is_deterministic_across_processes(self) -> None:
+        """Every pod must derive the same key, or they count different things.
+
+        Two clients over two separate buckets stand in for two pods.
+        """
         subject = Subject(path="app.census tracts.epoch", kind="point")
 
-        assert _key_for(subject) == _key_for(subject)
+        assert await _counter_key(subject) == await _counter_key(subject)
 
-    def test_two_illegal_paths_derive_different_keys(self) -> None:
-        a = _key_for(Subject(path="app.a b.epoch", kind="point"))
-        b = _key_for(Subject(path="app.c d.epoch", kind="point"))
+    @pytest.mark.asyncio
+    async def test_two_illegal_paths_derive_different_keys(self) -> None:
+        a = await _counter_key(Subject(path="app.a b.epoch", kind="point"))
+        b = await _counter_key(Subject(path="app.c d.epoch", kind="point"))
 
         assert a != b
 
@@ -433,4 +462,6 @@ class TestBucketIdentityFailsSafe:
         client = EpochClient(_pool_with_bump(returning_epoch=1), nats)
 
         assert await client.bucket_identity() is None
-        assert bucket.create.await_count == _IDENTITY_ATTEMPTS
+        # three attempts: the documented bound on the create/read retry, asserted as a number so a
+        # change to the bound is a visible decision here rather than one the test follows silently.
+        assert bucket.create.await_count == 3

@@ -38,7 +38,7 @@ from threetears.channels.frames import Frame, OpResult
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
 from threetears.channels.websocket import UNAUTHENTICATED, WebSocketAuthRefused
 
-from .test_websocket import MockWebSocket, _EchoRouter, _valid_auth
+from .websocket_support import EchoRouter, MockWebSocket, valid_auth
 
 
 # -- fakes for the injected seams ------------------------------------------
@@ -145,7 +145,7 @@ def _room_seam_handler(
     *,
     deny_actions: set[str] | None = None,
     op_handler: _FakeOpHandler | None = None,
-    auth_validator: Any = _valid_auth,
+    auth_validator: Any = valid_auth,
 ) -> tuple[Any, _FakeRoomState, _FakeFanout, list[tuple[str, Any]]]:
     """build a WebSocketHandler with all room seams injected + patched authz.
 
@@ -159,7 +159,7 @@ def _room_seam_handler(
     fanout = _FakeFanout()
     recorded = _capture_authz(monkeypatch, deny_actions=deny_actions)
     handler = WebSocketHandler(
-        router=_EchoRouter(),
+        router=EchoRouter(),
         auth_validator=auth_validator,
         room_state=state,
         room_fanout=fanout,
@@ -194,7 +194,7 @@ class TestNoSeamIsChatPath:
         """a ``message`` frame hits the chat router and echoes, unchanged."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(messages=[user_msg], query_params={"token": "valid-token"})
         await handler.handle_connection(ws)
@@ -208,7 +208,7 @@ class TestNoSeamIsChatPath:
         """an unknown type now yields an ``error`` frame (old silent continue is gone)."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         weird = json.dumps({"type": "totally-unknown", "content": "x"})
         ws = MockWebSocket(messages=[weird], query_params={"token": "valid-token"})
         await handler.handle_connection(ws)
@@ -228,7 +228,7 @@ class TestNoSeamIsChatPath:
         """
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         typeless = json.dumps({"content": "no type here"})
         good = json.dumps({"type": "message", "content": "hi", "metadata": {}})
         ws = MockWebSocket(messages=[typeless, good], query_params={"token": "valid-token"})
@@ -516,8 +516,8 @@ class TestAuthzWiringInvariant:
 
         with pytest.raises(ValueError, match="acl_cache and ns_resolver"):
             WebSocketHandler(
-                router=_EchoRouter(),
-                auth_validator=_valid_auth,
+                router=EchoRouter(),
+                auth_validator=valid_auth,
                 acl_cache=acl_cache,
                 ns_resolver=ns_resolver,  # type: ignore[arg-type]
             )
@@ -526,15 +526,15 @@ class TestAuthzWiringInvariant:
         """no authz seams → the deliberate chat config, constructs fine."""
         from threetears.channels.websocket import WebSocketHandler
 
-        WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
 
     def test_both_present_is_allowed(self) -> None:
         """both authz seams → an authorized config, constructs fine."""
         from threetears.channels.websocket import WebSocketHandler
 
         WebSocketHandler(
-            router=_EchoRouter(),
-            auth_validator=_valid_auth,
+            router=EchoRouter(),
+            auth_validator=valid_auth,
             acl_cache=object(),  # type: ignore[arg-type]
             ns_resolver=_AllowAuthorizer(),  # type: ignore[arg-type]
         )
@@ -560,7 +560,7 @@ class TestChatPathUnaffectedByTypedFields:
         """
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         # room as int, payload as object, seq as a non-numeric string — all would
         # fail strict Frame validation, but this is a chat ``message``.
         msg = json.dumps(
@@ -630,8 +630,8 @@ class TestResumeFrame:
                 yield json.dumps({"type": "editor.op", "room": room_id, "seq": seq})
 
         handler = WebSocketHandler(
-            router=_EchoRouter(),
-            auth_validator=_valid_auth,
+            router=EchoRouter(),
+            auth_validator=valid_auth,
             replay_source=_replay,  # type: ignore[arg-type]
         )
         room = "cust:story:main:scene.md"
@@ -663,8 +663,8 @@ class TestAppFrameHandlers:
             await send(json.dumps({"type": "committed", "op_seq": 42}))
 
         handler = WebSocketHandler(
-            router=_EchoRouter(),
-            auth_validator=_valid_auth,
+            router=EchoRouter(),
+            auth_validator=valid_auth,
             frame_handlers={"commit": _commit},
         )
         ws = MockWebSocket(
@@ -686,7 +686,7 @@ class TestAppFrameHandlers:
 
         async def _noop(frame: Frame, **_: Any) -> None: ...
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _noop})
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth, frame_handlers={"commit": _noop})
         ws = MockWebSocket(messages=[json.dumps({"type": "no-such"})], query_params={"token": "valid-token"})
         await handler.handle_connection(ws)
 
@@ -701,8 +701,8 @@ class TestAppFrameHandlers:
 
         with pytest.raises(ValueError, match="reserved"):
             WebSocketHandler(
-                router=_EchoRouter(),
-                auth_validator=_valid_auth,
+                router=EchoRouter(),
+                auth_validator=valid_auth,
                 frame_handlers={"editor.op": _h},
             )
 
@@ -723,7 +723,7 @@ class TestFrameDispatchIsCrashSafe:
         async def _boom(frame: Frame, **_: Any) -> None:
             raise RuntimeError("kaboom from the app handler")
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _boom})
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth, frame_handlers={"commit": _boom})
         msgs = [json.dumps({"type": "commit", "room": "r"}), json.dumps({"type": "unknown-x"})]
         ws = MockWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise
@@ -788,7 +788,7 @@ class TestChatMessageDispatchIsCrashSafe:
         """a chat router that raises -> one error frame, loop keeps serving the next message."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_BoomRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=_BoomRouter(), auth_validator=valid_auth)
         msgs = [
             json.dumps({"type": "message", "content": "hi"}),
             json.dumps({"type": "unknown-x"}),
@@ -849,7 +849,7 @@ class TestMessageLoopSurvivesDeadSocketOnReply:
         """a guard-rejected message whose error reply fails to send -> loop still serves the next one."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         msgs = [bad_message, json.dumps({"type": "message", "content": "hi"})]
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise
@@ -861,7 +861,7 @@ class TestMessageLoopSurvivesDeadSocketOnReply:
         """the rate-limit guard's reply failing must not crash the loop either (separate window/counter path)."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, config={"rate_limit_messages": 1})
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth, config={"rate_limit_messages": 1})
         msgs = [json.dumps({"type": "message", "content": "one"})] * 3
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise
@@ -880,7 +880,7 @@ class TestFrameDispatchSurvivesDeadSocketOnErrorNotify:
         async def _boom(frame: Frame, **_: Any) -> None:
             raise RuntimeError("kaboom from the app handler")
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _boom})
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth, frame_handlers={"commit": _boom})
         msgs = [json.dumps({"type": "commit", "room": "r"}), json.dumps({"type": "message", "content": "hi"})]
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise -- this is the exact prod crash shape
@@ -892,7 +892,7 @@ class TestFrameDispatchSurvivesDeadSocketOnErrorNotify:
         """the ``_route_frame`` fallback's own error send failing must not crash the socket."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         msgs = [json.dumps({"type": "no-such-type"}), json.dumps({"type": "message", "content": "hi"})]
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise
@@ -914,7 +914,7 @@ class TestFrameDispatchSurvivesDeadSocketOnErrorNotify:
             await send(json.dumps({"type": "app-reply"}))  # not wrapped in its own try/except
 
         handler = WebSocketHandler(
-            router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _uses_raw_send}
+            router=EchoRouter(), auth_validator=valid_auth, frame_handlers={"commit": _uses_raw_send}
         )
         msgs = [json.dumps({"type": "commit", "room": "r"}), json.dumps({"type": "message", "content": "hi"})]
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
@@ -933,7 +933,7 @@ class TestChatMessageDispatchSurvivesDeadSocketOnErrorNotify:
         """the chat router raises, AND the resulting error-frame send ALSO fails -> socket survives."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_BoomRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=_BoomRouter(), auth_validator=valid_auth)
         msgs = [json.dumps({"type": "message", "content": "hi"}), json.dumps({"type": "message", "content": "again"})]
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise -- this is THE prod crash shape
@@ -1007,8 +1007,8 @@ class TestReplaySendSurvivesDeadSocket:
                 yield json.dumps({"type": "editor.op", "room": room_id, "seq": seq})
 
         handler = WebSocketHandler(
-            router=_EchoRouter(),
-            auth_validator=_valid_auth,
+            router=EchoRouter(),
+            auth_validator=valid_auth,
             replay_source=_replay,  # type: ignore[arg-type]
         )
         room = "cust:story:main:scene.md"

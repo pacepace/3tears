@@ -27,11 +27,15 @@ real-agent test passes it via ``ainvoke``'s ``config``.
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from random import Random
 from types import SimpleNamespace
 from typing import Any, cast
+
+import pytest
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRequest
@@ -41,16 +45,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
 
-from threetears.langgraph.middleware_schema import (
-    _SCHEMA_PRIMING_TOKEN_CEILING,
-    _SCHEMA_PRIMING_TOKEN_FLOOR,
-    _SCHEMA_PRIMING_TOKENS_PER_TABLE,
-    SchemaPrimingMiddleware,
-    SchemaPrimingState,
-    _HONESTY_PREAMBLE,
-    _render_schema_block,
-    _scaled_budget,
-)
+from threetears.langgraph.middleware_schema import SchemaPrimingMiddleware, SchemaPrimingState
 
 
 class _StubIntegration:
@@ -117,6 +112,42 @@ def _drive(
     return captured["req"], out
 
 
+def _block(tables: list[Any], *, budget: int | None = None) -> str:
+    """the documented-schema block one primed call stashes on ``metadata``.
+
+    :param tables: the documented tables the integration hands over
+    :ptype tables: list[Any]
+    :param budget: the middleware's ``token_budget``; ``None`` derives it
+    :ptype budget: int | None
+    :return: the stashed block (honesty rule excluded)
+    :rtype: str
+    """
+    integration = _StubIntegration(["ds-1"], tables)
+    _req, out = _drive(
+        SchemaPrimingMiddleware(token_budget=budget), _request(None), {"schema_priming_integration": integration}
+    )
+    assert isinstance(out, ExtendedModelResponse)
+    assert out.command is not None
+    block = out.command.update["metadata"]["documented_schema_block"]
+    assert isinstance(block, str)
+    return block
+
+
+def _honesty_rule() -> str:
+    """the honesty rule alone: what a datasource agent whose digests document nothing receives.
+
+    :return: the folded system prompt for a request that carried none
+    :rtype: str
+    """
+    req, _out = _drive(
+        SchemaPrimingMiddleware(), _request(None), {"schema_priming_integration": _StubIntegration(["ds-1"], [])}
+    )
+    assert req.system_message is not None
+    content = req.system_message.content
+    assert isinstance(content, str)
+    return content
+
+
 _TABLE = {
     "schema": "public",
     "table": "orders",
@@ -137,7 +168,7 @@ class TestInjection:
         content = req.system_message.content
         assert isinstance(content, str)
         # folded into the SINGLE system message, base first then the honesty + schema.
-        assert content.startswith("base\n\n" + _HONESTY_PREAMBLE)
+        assert content.startswith("base\n\n" + _honesty_rule())
         assert "# Documented schema" in content
         assert "public.orders" in content
 
@@ -155,7 +186,7 @@ class TestInjection:
         block = update["metadata"]["documented_schema_block"]
         # the stash carries the schema block WITHOUT the honesty preamble.
         assert "# Documented schema" in block
-        assert _HONESTY_PREAMBLE not in block
+        assert _honesty_rule() not in block
 
     def test_honesty_ships_when_no_digest_documents_tables(self) -> None:
         # datasource resolves but no digest entity exists -> schema block empty, but
@@ -164,7 +195,11 @@ class TestInjection:
         req, out = _drive(SchemaPrimingMiddleware(), _request(None), {"schema_priming_integration": integration})
         assert isinstance(out, ExtendedModelResponse)
         assert req.system_message is not None
-        assert req.system_message.content == _HONESTY_PREAMBLE
+        content = req.system_message.content
+        assert isinstance(content, str)
+        assert content.startswith("# Ground every answer in tool results\n")
+        assert "`imperatives` block" in content
+        assert "# Documented schema" not in content
         assert out.command is not None
         assert out.command.update["metadata"]["documented_schema_block"] == ""
 
@@ -173,7 +208,7 @@ class TestInjection:
         req, out = _drive(SchemaPrimingMiddleware(), _request(None), {"schema_priming_integration": integration})
         assert isinstance(out, ExtendedModelResponse)
         assert req.system_message is not None
-        assert req.system_message.content == _HONESTY_PREAMBLE
+        assert req.system_message.content == _honesty_rule()
         assert out.command is not None
         assert out.command.update["metadata"]["documented_schema_block"] == ""
 
@@ -245,23 +280,23 @@ def _rendered_names(block: str) -> list[str]:
 class TestBudget:
     def test_tail_dropped_with_footer(self) -> None:
         tables = [{"schema": "public", "table": f"t{i}", "description": "x" * 200, "columns": []} for i in range(10)]
-        block = _render_schema_block(tables, budget=120)
+        block = _block(tables, budget=120)
         assert "not shown here" in block
         # at least one table always renders even under a tight budget.
         assert "public.t0" in block
 
     def test_empty_when_no_tables(self) -> None:
-        assert _render_schema_block([], budget=1500) == ""
+        assert _block([], budget=1500) == ""
 
     def test_single_oversized_table_still_renders(self) -> None:
         # the at-least-one rule: a budget smaller than one table still primes that table.
-        block = _render_schema_block([_rich("only", columns=20)], budget=10)
+        block = _block([_rich("only", columns=20)], budget=10)
         assert _rendered_names(block) == ["public.only"]
         assert "not shown here" not in block
 
     def test_footer_count_matches_tables_dropped(self) -> None:
         tables = [_rich(f"t{i:02d}") for i in range(20)]
-        block = _render_schema_block(tables, budget=400)
+        block = _block(tables, budget=400)
         dropped = len(tables) - len(_rendered_names(block))
         assert dropped > 0
         assert f"_{dropped} more documented table(s) not shown here" in block
@@ -269,32 +304,61 @@ class TestBudget:
     def test_footer_states_the_selection_rule(self) -> None:
         # a table missing from the block must read as a stated decision, not a fault.
         tables = [_rich(f"t{i:02d}") for i in range(20)]
-        block = _render_schema_block(tables, budget=400)
+        block = _block(tables, budget=400)
         assert "keeps the tables carrying the most documentation" in block
 
 
+def _effective_budget(caplog: pytest.LogCaptureFixture, table_count: int) -> int:
+    """the budget the derived default applied to *table_count* tables, read off the truncation log.
+
+    every table is far larger than any budget, so the block always truncates and the operator
+    line reports the budget it truncated against.
+
+    :param caplog: pytest's log capture
+    :ptype caplog: pytest.LogCaptureFixture
+    :param table_count: documented tables to prime
+    :ptype table_count: int
+    :return: the reported budget
+    :rtype: int
+    """
+    tables = [
+        {"schema": "public", "table": f"t{i:04d}", "description": "x" * 80_000, "columns": []}
+        for i in range(table_count)
+    ]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="threetears.langgraph.middleware_schema"):
+        _block(tables)
+    budgets = [
+        int(match.group(1))
+        for record in caplog.records
+        if (match := re.search(r"budget=(\d+) tokens", record.getMessage())) is not None
+    ]
+    assert len(budgets) == 1, f"expected one truncation line, got {budgets}"
+    return budgets[0]
+
+
 class TestScaledBudget:
-    def test_budget_scales_with_table_count(self) -> None:
-        assert _scaled_budget(10) == 10 * _SCHEMA_PRIMING_TOKENS_PER_TABLE
-        assert _scaled_budget(20) > _scaled_budget(10)
+    def test_budget_scales_with_table_count(self, caplog: pytest.LogCaptureFixture) -> None:
+        assert _effective_budget(caplog, 10) == 10 * 500
+        assert _effective_budget(caplog, 20) > _effective_budget(caplog, 10)
 
-    def test_floor_holds_for_a_small_corpus(self) -> None:
-        assert _scaled_budget(0) == _SCHEMA_PRIMING_TOKEN_FLOOR
-        assert _scaled_budget(1) == _SCHEMA_PRIMING_TOKEN_FLOOR
-        assert _scaled_budget(2) == _SCHEMA_PRIMING_TOKEN_FLOOR
+    def test_floor_holds_for_a_small_corpus(self, caplog: pytest.LogCaptureFixture) -> None:
+        # one table always renders whole, so the smallest corpus that can truncate is two.
+        assert _effective_budget(caplog, 2) == 1500
+        assert _effective_budget(caplog, 3) == 1500
 
-    def test_ceiling_holds_for_a_huge_corpus(self) -> None:
-        assert _scaled_budget(1000) == _SCHEMA_PRIMING_TOKEN_CEILING
-        assert _scaled_budget(100_000) == _SCHEMA_PRIMING_TOKEN_CEILING
+    def test_ceiling_holds_for_a_huge_corpus(self, caplog: pytest.LogCaptureFixture) -> None:
+        assert _effective_budget(caplog, 40) == 16000
+        assert _effective_budget(caplog, 400) == 16000
 
     def test_wide_corpus_renders_whole_where_the_old_constant_truncated(self) -> None:
         # the measured regression: 35 documented tables, of which the fixed 1500-token
         # budget primed 3. the derived budget primes all 35.
         tables = [_rich(f"t{i:02d}", columns=12) for i in range(35)]
-        scaled = _render_schema_block(tables)
+        scaled = _block(tables)
         assert len(_rendered_names(scaled)) == 35
         assert "not shown here" not in scaled
-        fixed = _render_schema_block(tables, budget=_SCHEMA_PRIMING_TOKEN_FLOOR)
+        fixed = _block(tables, budget=1500)  # the floor: the old fixed budget
         assert len(_rendered_names(fixed)) < 10
 
     def test_middleware_defaults_to_the_derived_budget(self) -> None:
@@ -306,7 +370,7 @@ class TestPriority:
         # the lottery this replaces: the bare tables led the input, so they used to be
         # the ones that survived. selection is by documentation now, not by position.
         tables = [_bare(f"b{i:02d}") for i in range(20)] + [_rich(f"r{i}") for i in range(3)]
-        block = _render_schema_block(tables, budget=300)
+        block = _block(tables, budget=300)
         names = _rendered_names(block)
         assert names, "at least one table must always render"
         assert all(name.startswith("public.r") for name in names)
@@ -314,9 +378,9 @@ class TestPriority:
 
     def test_selection_is_independent_of_input_order(self) -> None:
         tables = [_bare(f"b{i:02d}") for i in range(20)] + [_rich(f"r{i}") for i in range(3)]
-        forward = _render_schema_block(list(tables), budget=300)
-        backward = _render_schema_block(list(reversed(tables)), budget=300)
-        rotated = _render_schema_block(tables[7:] + tables[:7], budget=300)
+        forward = _block(list(tables), budget=300)
+        backward = _block(list(reversed(tables)), budget=300)
+        rotated = _block(tables[7:] + tables[:7], budget=300)
         assert forward == backward == rotated
 
     def test_output_is_byte_stable_across_shuffled_input(self) -> None:
@@ -326,33 +390,33 @@ class TestPriority:
         for _ in range(5):
             permutation = list(tables)
             shuffled.shuffle(permutation)
-            orders.append(_render_schema_block(permutation))
+            orders.append(_block(permutation))
         assert len(set(orders)) == 1
 
     def test_hazard_tables_outrank_richer_documentation(self) -> None:
         # an unloaded column reads as a measured 0; nothing in the live catalog says
         # otherwise, so that warning outranks even a heavily documented table.
         tables = [_rich("r0"), _rich("r1"), _hazardous("h0")]
-        names = _rendered_names(_render_schema_block(tables))
+        names = _rendered_names(_block(tables))
         assert names[0] == "public.h0"
 
     def test_caveats_count_as_hazard_documentation(self) -> None:
         # forward-compatible: the projection carries no caveats today, but when it does
         # they rank with the unloaded-column overlay rather than falling to the tail.
         with_caveats = _bare("c0") | {"caveats": "never sum across geo_level"}
-        names = _rendered_names(_render_schema_block([_rich("r0"), with_caveats]))
+        names = _rendered_names(_block([_rich("r0"), with_caveats]))
         assert names[0] == "public.c0"
 
     def test_equal_documentation_is_tie_broken_by_name(self) -> None:
         tables = [_rich("zebra"), _rich("alpha"), _rich("mango")]
-        names = _rendered_names(_render_schema_block(tables))
+        names = _rendered_names(_block(tables))
         assert names == ["public.alpha", "public.mango", "public.zebra"]
 
     def test_tables_from_every_datasource_are_ranked_together(self) -> None:
         # ranking spans datasources: a rich table from the second datasource beats a
         # bare one from the first, which per-datasource ordering would have preferred.
         # the integration hands over ONE flattened list precisely so this holds.
-        block = _render_schema_block([_bare("b0"), _rich("r0")])
+        block = _block([_bare("b0"), _rich("r0")])
         assert _rendered_names(block) == ["public.r0", "public.b0"]
 
 

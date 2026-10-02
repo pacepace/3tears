@@ -8,7 +8,7 @@ Pure-logic, no infra: a stub chat model drives the contracts the summarizer must
   conversation's narrative cannot tell a stand-in sentence from a real summary, and a consumer
   stored "The earlier part of this conversation could not be summarized." as exactly that;
 * a cancellation is not a failure and propagates untouched;
-* an over-long summary is truncated to :data:`_MAX_SUMMARY_LENGTH`.
+* an over-long summary is truncated to the 2000-character cap.
 """
 
 from __future__ import annotations
@@ -23,10 +23,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from threetears.langgraph import SummarizationFailedError as ExportedSummarizationFailedError
 from threetears.langgraph.summarize import (
-    _MAX_SUMMARY_LENGTH,
     SummarizationFailedError,
     summarize_older_messages,
 )
+
+#: the documented summary cap, asserted as a number so a change to it is a decision made here.
+_SUMMARY_CAP = 2000
 
 
 class _StubModel(BaseChatModel):
@@ -144,9 +146,9 @@ def test_the_failure_is_exported_from_the_package() -> None:
 
 async def test_long_summary_is_truncated() -> None:
     """A summary longer than the cap is truncated to exactly the cap with an ellipsis."""
-    model = _StubModel(reply="x" * (_MAX_SUMMARY_LENGTH + 500))
+    model = _StubModel(reply="x" * (_SUMMARY_CAP + 500))
     summary = await summarize_older_messages(_OLDER, model)
-    assert len(summary) == _MAX_SUMMARY_LENGTH
+    assert len(summary) == _SUMMARY_CAP
     assert summary.endswith("...")
 
 
@@ -157,12 +159,34 @@ async def test_custom_prompt_is_accepted() -> None:
     assert summary == "custom summary"
 
 
-async def test_message_text_handles_multipart_content() -> None:
-    """The transcript path coalesces LangChain multipart content (the mypy-strict fix the
-    `_message_text` helper exists for): text parts joined, non-text parts ignored."""
-    from threetears.langgraph.summarize import _message_text
+class _MultipartModel(BaseChatModel):
+    """A chat model that answers with multipart content and records the prompt it was sent."""
 
-    msg = AIMessage(
-        content=[{"type": "text", "text": "hello"}, {"type": "image_url", "image_url": {"url": "x"}}, "world"]
-    )
-    assert _message_text(msg) == "helloworld"
+    reply_parts: list[Any] = []
+    received: list[list[BaseMessage]] = []
+
+    @property
+    def _llm_type(self) -> str:
+        return "stub-multipart"
+
+    def _generate(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - unused
+        raise NotImplementedError
+
+    async def ainvoke(self, messages: Any, *args: Any, **kwargs: Any) -> AIMessage:
+        self.received.append(list(messages))
+        return AIMessage(content=self.reply_parts)
+
+
+_MULTIPART = [{"type": "text", "text": "hello"}, {"type": "image_url", "image_url": {"url": "x"}}, "world"]
+
+
+async def test_message_text_handles_multipart_content() -> None:
+    """Multipart content is coalesced on both paths -- the model's reply and the transcript it
+    is sent: text parts joined, non-text parts ignored."""
+    model = _MultipartModel(reply_parts=_MULTIPART, received=[])
+
+    summary = await summarize_older_messages([AIMessage(content=_MULTIPART)], model)
+
+    assert summary == "helloworld"
+    (prompt,) = model.received
+    assert prompt[-1].content == "Assistant: helloworld"

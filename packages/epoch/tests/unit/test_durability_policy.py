@@ -98,7 +98,7 @@ def _namespace() -> None:
     """Bind a namespace so the builders render.
 
     No teardown, deliberately. The root ``conftest.py``'s autouse
-    ``_bind_test_subject_namespace`` calls ``_reset_default_namespace()`` both
+    ``_bind_test_subject_namespace`` calls ``reset_default_namespace()`` both
     before and after every test in the workspace, precisely so a test that sets
     the process-wide global cannot shadow its neighbours. Restoring here would
     duplicate that, and an earlier attempt to do so was worse than nothing: it
