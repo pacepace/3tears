@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### NATS: a broker restart the client rides out is a WARNING, not an ERROR
+
+Found live in the devx bring-up: every service logged `NATS error: nats: unexpected EOF` at ERROR
+when the broker restarted, and again for each refused attempt before it was back, although every
+one of them reconnected on its own seconds later.
+
+- **Changed: a connection loss is logged at WARNING** as
+  `NATS connection lost, reconnecting: <type>: <detail>`. That covers the read loop's EOF or stale
+  connection, an `OSError` from a reconnect attempt (`Connect call failed`, a reset) and a bare
+  `TimeoutError` from one. The type is named because a timeout carries no text; before, it logged
+  as `NATS error: ` and nothing else. Repeats are still collapsed per 10-second window.
+- Unchanged: every other error stays at ERROR as `NATS error: <detail>`, including a refused
+  credential while reconnecting, nats-py's own flush and request timeouts, and a server `-ERR`.
+  A permissions violation keeps its decomposed ERROR line.
+
 ### NATS: what a restart wipes from memory storage comes back after the reconnect
 
 Found live in the devx bring-up. The tool registry declared its memory-backed result stream
