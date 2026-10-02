@@ -2779,22 +2779,149 @@ async def test_permissions_violation_of_an_unrecognised_shape_still_says_permiss
 async def test_non_permissions_errors_keep_their_existing_shape_and_rate_limiting(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """every other error path is untouched: same "NATS error: %s" line, same collapse of duplicates.
+    """every other non-transient error keeps its shape: same "NATS error: %s" line, same collapse of duplicates.
 
     Reconnect and degrade paths depend on this callback logging and CONTINUING; nothing here may
-    start raising or change what an ordinary transport error looks like.
+    start raising or change what an ordinary server error looks like. The error used is one the
+    server CLOSES the connection for (nats-py's ``_process_err``), so it is a real failure, not a
+    connection loss the client is already recovering from.
     """
 
     _client, on_error = await _connect_capturing_error_callback()
 
     with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
-        await on_error(OSError("connection reset by peer"))
-        await on_error(OSError("connection reset by peer"))
+        await on_error(_server_error("maximum payload violation"))
+        await on_error(_server_error("maximum payload violation"))
 
     errors = [rec.getMessage() for rec in _client_records(caplog, logging.ERROR)]
     debugs = [rec.getMessage() for rec in _client_records(caplog, logging.DEBUG)]
-    assert errors == ["NATS error: connection reset by peer"]
+    assert errors == ["NATS error: nats: maximum payload violation"]
     assert any("rate-limited duplicate" in line for line in debugs)
+
+
+def _server_error(text: str) -> Exception:
+    """the exception nats-py hands ``error_cb`` for a server ``-ERR`` it closes the connection over.
+
+    :param text: the server's error text, without the ``nats: `` prefix nats-py adds
+    :ptype text: str
+    :return: the error as nats-py raises it
+    :rtype: Exception
+    """
+    from nats.errors import Error as NatsError
+
+    return NatsError(f"nats: {text}")
+
+
+# ---------------------------------------------------------------------------
+# connection loss the client is reconnecting from
+# ---------------------------------------------------------------------------
+#
+# Every NatsClient connection reconnects forever (RUNTIME_MAX_RECONNECT_ATTEMPTS = -1), so a
+# broker restart -- the read loop's "unexpected EOF", then each refused attempt's "Connect call
+# failed" until the broker is back -- is an outage the client is already recovering from. nats-py
+# reports each one through error_cb BEFORE it starts reconnecting, and logging them at ERROR made
+# every service in a stack page on a routine broker restart that healed itself seconds later.
+
+
+@pytest.mark.asyncio
+async def test_a_broker_closing_the_connection_is_a_warning_naming_the_reconnect(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the read loop's EOF when the broker restarts is logged at WARNING, with its detail, never ERROR."""
+    from nats.errors import UnexpectedEOF
+
+    _client, on_error = await _connect_capturing_error_callback()
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(UnexpectedEOF())
+
+    assert _client_records(caplog, logging.ERROR) == []
+    warnings = _client_records(caplog, logging.WARNING)
+    assert len(warnings) == 1
+    line = warnings[0].getMessage()
+    assert "unexpected eof" in line.lower(), "the error's own detail must survive"
+    assert "reconnect" in line.lower(), "the line must say the client is reconnecting"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_reconnect_attempt_is_a_warning_naming_the_refusal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """each attempt the broker is not yet back for is part of the same recovery, so WARNING too."""
+
+    _client, on_error = await _connect_capturing_error_callback()
+    refused = ConnectionRefusedError(61, "Connect call failed ('127.0.0.1', 4222)")
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(refused)
+
+    assert _client_records(caplog, logging.ERROR) == []
+    line = _client_records(caplog, logging.WARNING)[0].getMessage()
+    assert "Connect call failed ('127.0.0.1', 4222)" in line
+    assert "ConnectionRefusedError" in line, "the error's type must be named; some carry no text at all"
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_attempt_timing_out_is_a_warning_naming_the_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a connect attempt timing out carries no text, so the line must name its type to say anything."""
+
+    _client, on_error = await _connect_capturing_error_callback()
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(TimeoutError())
+
+    assert _client_records(caplog, logging.ERROR) == []
+    assert "TimeoutError" in _client_records(caplog, logging.WARNING)[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_connection_loss_is_collapsed_like_any_other_repeat(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a broker down for a minute refuses an attempt every few seconds: one line per window, not one per try."""
+
+    _client, on_error = await _connect_capturing_error_callback()
+    refused = ConnectionRefusedError(61, "Connect call failed ('127.0.0.1', 4222)")
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(refused)
+        await on_error(refused)
+
+    assert len(_client_records(caplog, logging.WARNING)) == 1
+    assert any("rate-limited duplicate" in rec.getMessage() for rec in _client_records(caplog, logging.DEBUG))
+
+
+@pytest.mark.asyncio
+async def test_an_authorization_violation_while_reconnecting_stays_an_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a refused credential is not an outage that heals: reconnecting cannot fix it, so it stays ERROR."""
+
+    _client, on_error = await _connect_capturing_error_callback()
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(_server_error("'authorization violation'"))
+
+    assert _client_records(caplog, logging.WARNING) == []
+    assert _client_records(caplog, logging.ERROR)[0].getMessage() == "NATS error: nats: 'authorization violation'"
+
+
+@pytest.mark.asyncio
+async def test_a_flush_timeout_is_not_mistaken_for_a_connection_loss(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """nats-py's own timeouts are TimeoutErrors too, but they report a stalled connection, not a lost one."""
+    from nats.errors import FlushTimeoutError
+
+    _client, on_error = await _connect_capturing_error_callback()
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(FlushTimeoutError())
+
+    assert _client_records(caplog, logging.WARNING) == []
+    assert len(_client_records(caplog, logging.ERROR)) == 1
 
 
 def _extra_data(record: logging.LogRecord) -> dict[str, Any] | None:
@@ -2936,10 +3063,10 @@ async def test_non_permissions_errors_gain_no_structured_payload(
     _client, on_error = await _connect_capturing_error_callback()
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await on_error(OSError("connection reset by peer"))
+        await on_error(_server_error("maximum payload violation"))
 
     record = _client_records(caplog, logging.ERROR)[0]
-    assert record.getMessage() == "NATS error: connection reset by peer"
+    assert record.getMessage() == "NATS error: nats: maximum payload violation"
     assert _extra_data(record) is None
 
 

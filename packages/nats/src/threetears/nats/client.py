@@ -93,6 +93,7 @@ from nats.js.api import (
 from nats.errors import (
     AuthorizationError as _NatsAuthorizationError,
     ConnectionClosedError as _NatsConnectionClosedError,
+    Error as _NatsError,
     FlushTimeoutError as _NatsFlushTimeoutError,
     NoRespondersError as _NatsNoRespondersError,
     OutboundBufferLimitError as _NatsOutboundBufferLimitError,
@@ -6024,8 +6025,41 @@ def _permissions_violation(exc: Exception) -> _ViolationDetail | None:
     return result
 
 
+def _is_connection_loss(exc: Exception) -> bool:
+    """whether ``exc`` reports the transport going away, which the client is reconnecting from.
+
+    nats-py hands ``error_cb`` three shapes while a broker restarts: the read loop's
+    :class:`nats.errors.UnexpectedEOF` (a :class:`nats.errors.StaleConnectionError`, as is a missed
+    ping) as the old connection dies, then an :class:`OSError` (``Connect call failed``, a reset) or
+    a bare :class:`TimeoutError` for each attempt made before the broker is back. Every
+    :class:`NatsClient` connection reconnects forever (:data:`RUNTIME_MAX_RECONNECT_ATTEMPTS`), so
+    each of these is an outage being recovered from, not a failure.
+
+    nats-py's OWN timeouts (a flush, a request) also derive from :class:`TimeoutError`, through
+    :class:`nats.errors.Error`; they report a connection that is up but stalled, so every
+    :class:`nats.errors.Error` other than a stale connection is excluded. So is a server ``-ERR``
+    (an authorization or permissions refusal, a payload violation), which reconnecting cannot fix.
+
+    :param exc: the exception nats-py surfaced to the error callback
+    :ptype exc: Exception
+    :return: ``True`` when it is a transport loss the client is reconnecting from
+    :rtype: bool
+    """
+    if isinstance(exc, _NatsStaleConnectionError):
+        return True
+    return isinstance(exc, (OSError, TimeoutError)) and not isinstance(exc, _NatsError)
+
+
 async def _on_error(exc: Exception, last_logged: dict[str, float]) -> None:
     """nats-py error callback with rate-limited logging.
+
+    A CONNECTION LOSS (:func:`_is_connection_loss`) is logged at WARNING, naming the error's type
+    and its text: the client is already reconnecting, and a broker restart that heals itself in
+    seconds is not an error in any service that rode it out. Logging it at ERROR made every
+    service in a stack report one on a routine broker restart. Should reconnecting fail for a
+    reason that will not heal -- a refused credential -- that reason arrives as its own server
+    error, which stays at ERROR. The client never gives up reconnecting on its own; a connect
+    that never succeeds raises :class:`NatsClientError` to the caller instead.
 
     A PERMISSIONS VIOLATION is singled out because it is otherwise INVISIBLE. It is the one
     condition here that arrives with the connection still UP -- ``nats-py``'s ``_process_err``
@@ -6067,7 +6101,9 @@ async def _on_error(exc: Exception, last_logged: dict[str, float]) -> None:
     now = time.monotonic()
     last = last_logged.get(key, 0.0)
     if now - last >= _ERROR_LOG_RATE_LIMIT_SECONDS:
-        if violation is None:
+        if violation is None and _is_connection_loss(exc):
+            log.warning("NATS connection lost, reconnecting: %s: %s", type(exc).__name__, exc)
+        elif violation is None:
             log.error("NATS error: %s", exc)
         else:
             operation = violation.operation or _UNKNOWN_OPERATION
