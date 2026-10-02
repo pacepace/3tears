@@ -5,11 +5,6 @@ No private name or module bound by an import (shape G) or by a string -- ``patch
 -- outside its owner, in src, tests and scripts alike. Owner ruling, 2026-10-01; ``CLAUDE.md``
 ("Leading underscores are a stability contract").
 
-**Expected to fail until this repo's findings are fixed.** The gate landed with the findings it
-reports still in the tree, on purpose: they are fixed in follow-up work rather than exempted, and
-nothing here exempts any of them. ``test_no_private_binding_outside_its_owner`` is red until then;
-the two non-vacuity tests are green.
-
 The floors below are this repo's, which is why they live here rather than in the package: a scan
 of nothing, and recognisers that matched nothing, both report what a compliant repo reports.
 """
