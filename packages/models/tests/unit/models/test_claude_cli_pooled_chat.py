@@ -20,8 +20,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from threetears.models import DEFAULT_CHAT_MODEL, claude_cli_pool
 from threetears.models.claude_cli_pool import ClaudeCliPoolExhausted, ClaudeCliSessionError
-from threetears.models.providers import _claude_cli
-from threetears.models.providers._claude_cli import create_subscription_chat
+from threetears.models.providers import claude_cli
+from threetears.models.providers.claude_cli import create_subscription_chat
 
 from ._claude_cli_recorder import pooled_launch, sent_to_cli
 
@@ -160,7 +160,7 @@ class TestACallIsNeverRefused:
         :return: the answer's text, which names the CLI that gave it
         :rtype: str
         """
-        monkeypatch.setattr(_claude_cli, "claude_cli_pool", lambda: pool)
+        monkeypatch.setattr(claude_cli, "claude_cli_pool", lambda: pool)
         model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
         result = await model.ainvoke([HumanMessage(content="hi")], **call_kwargs)
         return str(result.content)
@@ -251,7 +251,7 @@ class TestTheModelIsWiredToThePool:
                 state["system_prompt"] = options.system_prompt
                 yield state["client"]
 
-        monkeypatch.setattr(_claude_cli, "claude_cli_pool", lambda: _Serving())
+        monkeypatch.setattr(claude_cli, "claude_cli_pool", lambda: _Serving())
 
         def _never(*args: Any, **kwargs: Any) -> Any:
             raise AssertionError("a CLI of the call's own was started although the pool served the call")

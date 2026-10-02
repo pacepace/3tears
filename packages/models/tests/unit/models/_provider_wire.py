@@ -13,6 +13,8 @@ parsed by the SDK and LangChain exactly as a live one would be.
 - :class:`AnthropicMessagesWire` speaks the Anthropic Messages protocol. ``ChatAnthropic`` builds
   its own HTTP client and accepts no transport, so this one is served on a loopback socket and
   reached through the public ``base_url``.
+- :func:`serve_http_handler` serves any ``httpx`` handler the same way, for a suite that scripts
+  the answers itself -- a server error, then a success -- rather than describing one answer.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ import contextlib
 import http.server
 import json
 import threading
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,6 +38,7 @@ __all__ = [
     "anthropic_model",
     "openai_model",
     "openrouter_model",
+    "serve_http_handler",
     "text_deltas",
     "tool_call_delta",
 ]
@@ -388,3 +391,46 @@ def anthropic_model(base_url: str, model_name: str | None = None, **settings: An
     return create_anthropic_chat(
         model_name or DEFAULT_CHAT_MODEL, "sk-ant-api03-test", base_url=base_url, max_retries=0, **settings
     )
+
+
+@contextlib.contextmanager
+def serve_http_handler(handler: Callable[[httpx.Request], httpx.Response]) -> Iterator[str]:
+    """serve an ``httpx`` request handler on a loopback port for as long as the block runs.
+
+    For a provider that accepts no transport (``ChatAnthropic``): the model is pointed at the
+    yielded URL through its public ``base_url``, the SDK sends the request it really would, and
+    each POST is handed to ``handler`` as an :class:`httpx.Request` whose answer is written back
+    verbatim -- status, content type and body.
+
+    :param handler: answers one request
+    :ptype handler: Callable[[httpx.Request], httpx.Response]
+    :return: the base URL to hand the provider factory
+    :rtype: Iterator[str]
+    """
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 -- the stdlib's dispatch name
+            content = self.rfile.read(int(self.headers["content-length"]))
+            request = httpx.Request(
+                "POST", f"http://127.0.0.1{self.path}", headers=dict(self.headers.items()), content=content
+            )
+            response = handler(request)
+            payload = response.read()
+            self.send_response(response.status_code)
+            self.send_header("content-type", response.headers.get("content-type", "application/json"))
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            del format, args
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

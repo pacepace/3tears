@@ -1,7 +1,7 @@
 """A subscription model hands tool calls back, and the caller's graph runs them.
 
 Under a subscription the CLI used to run bound tools itself, so a caller's graph never saw a call:
-no approval, no ledger, no shaping, no loading tools mid-turn (see ``_claude_cli``'s module
+no approval, no ledger, no shaping, no loading tools mid-turn (see ``claude_cli``'s module
 docstring). These pin the standard contract against a REAL compiled LangGraph graph with a real
 ``ToolNode`` -- the model asks, the graph's tool node runs the tool, an approval ``interrupt()`` in
 the tool pauses the graph and a ``Command(resume=...)`` continues it, and the next model call reads
@@ -41,7 +41,7 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUse
 
 from threetears.models import DEFAULT_CHAT_MODEL  # noqa: E402
 from threetears.models.errors import ModelProviderError  # noqa: E402
-from threetears.models.providers._claude_cli import create_subscription_chat  # noqa: E402
+from threetears.models.providers.claude_cli import create_subscription_chat  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

@@ -34,7 +34,7 @@ from threetears.models import DEFAULT_CHAT_MODEL, claude_cli_pool  # noqa: E402
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitState  # noqa: E402
 from threetears.models.errors import ModelProviderError, ModelRateLimitError  # noqa: E402
 from threetears.models.factory import create_chat_model  # noqa: E402
-from threetears.models.providers._claude_cli import create_subscription_chat  # noqa: E402
+from threetears.models.providers.claude_cli import create_subscription_chat  # noqa: E402
 
 TOKEN = "sk-ant-oat01-faketokenfortest"
 _NOTICE = "You've hit your session limit · resets 1:10am (UTC)"

@@ -157,7 +157,7 @@ def subscription_model(token: str = TOKEN, **model_kwargs: Any) -> BaseChatModel
     :return: the model
     :rtype: BaseChatModel
     """
-    from threetears.models.providers._claude_cli import create_subscription_chat  # noqa: PLC0415
+    from threetears.models.providers.claude_cli import create_subscription_chat  # noqa: PLC0415
 
     return create_subscription_chat(DEFAULT_CHAT_MODEL, token, **model_kwargs)
 
@@ -289,9 +289,9 @@ def pooled_launch(
             raise ClaudeCliPoolExhausted("every Claude CLI session is busy")
             yield  # pragma: no cover
 
-    from threetears.models.providers import _claude_cli  # noqa: PLC0415
+    from threetears.models.providers import claude_cli  # noqa: PLC0415
 
-    with recording_cli() as received, patch.object(_claude_cli, "claude_cli_pool", lambda: _RefusingPool()):
+    with recording_cli() as received, patch.object(claude_cli, "claude_cli_pool", lambda: _RefusingPool()):
         model = build()
         asyncio.run(model.ainvoke(messages, **call_kwargs))
     [launch] = asked
