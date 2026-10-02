@@ -1,7 +1,9 @@
 """JSON serialization helpers and pluggable format-handler registry.
 
 Provides a custom JSON encoder and type-aware deserializer that handles
-UUID, datetime, Decimal, bytes, and Enum round-trips through JSON, plus
+UUID, datetime, Decimal, bytes, and Enum round-trips through JSON, the one
+stored form of a datetime inside JSON (:func:`json_datetime`) that every
+storage encoder writes, plus
 a runtime-checkable :class:`FormatHandler` Protocol and extension-keyed
 registry that external packages use to plug in YAML, TOML, .env, or any
 other structural document format.
@@ -13,7 +15,7 @@ package and self-registers on module import.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
@@ -25,9 +27,43 @@ __all__ = [
     "UnknownFormatError",
     "deserialize_from_json",
     "handler_for",
+    "json_datetime",
     "register_handler",
     "serialize_to_json",
 ]
+
+
+def json_datetime(value: datetime) -> str:
+    """the one stored form of a datetime inside JSON, at every tier.
+
+    ISO 8601 extended format with the ``T`` separator, always six fraction digits, and an
+    explicit UTC offset: ``2026-10-01T12:30:00.000000+00:00``. Fixed width, so stored strings
+    compare and sort as the instants they name. An aware value in another zone is converted to
+    UTC first, so one instant has one spelling.
+
+    Every storage encoder's handler -- L3's jsonb codec and L2's payload encoders through
+    :func:`threetears.core.backends.schema_sql.json_default`, the entity codec through
+    :func:`serialize_to_json`, L1's caches -- writes this form, so a nested datetime reads back
+    as the same string whichever tier answered. Readers parse it with
+    :meth:`datetime.fromisoformat`, which also accepts every form stored before this existed
+    (``str(dt)``'s space separator, ``isoformat()`` without a fraction).
+
+    **A naive value is still written, without an offset**, in the same fixed-width form
+    (``2026-10-01T12:30:00.000000``). It names no instant and should be refused, but production
+    writers still hand one to these encoders -- a top-level column the L2 payload carries --
+    and refusing here would fail those writes. The producers are the fix; once none remains,
+    this branch becomes a refusal.
+
+    :param value: the datetime to store
+    :ptype value: datetime
+    :return: the canonical text
+    :rtype: str
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        result = value.isoformat(timespec="microseconds")
+    else:
+        result = value.astimezone(UTC).isoformat(timespec="microseconds")
+    return result
 
 
 def _json_serializer(obj: object) -> str | int | float | bool | None:
@@ -38,7 +74,7 @@ def _json_serializer(obj: object) -> str | int | float | bool | None:
     if isinstance(obj, UUID):
         return str(obj)
     if isinstance(obj, datetime):
-        return obj.isoformat()
+        return json_datetime(obj)
     if isinstance(obj, Decimal):
         return str(obj)
     if isinstance(obj, bytes):
@@ -49,7 +85,15 @@ def _json_serializer(obj: object) -> str | int | float | bool | None:
 
 
 def serialize_to_json(data: dict[str, Any]) -> bytes:
-    """Serialize entity data dictionary to JSON bytes for cache storage."""
+    """serialize entity data dictionary to JSON bytes for cache storage.
+
+    a datetime is written in :func:`json_datetime`'s form, as every storage tier writes it.
+
+    :param data: row dict keyed by column name
+    :ptype data: dict[str, Any]
+    :return: UTF-8 JSON bytes
+    :rtype: bytes
+    """
     return json.dumps(data, default=_json_serializer).encode("utf-8")
 
 

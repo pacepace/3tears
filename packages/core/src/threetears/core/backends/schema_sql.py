@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+from threetears.core.serialization import json_datetime
 
 if TYPE_CHECKING:
     from threetears.core.collections.schema_backed import Column, TableSchema
@@ -263,7 +265,12 @@ def decode_jsonb(value: Any) -> Any:
 
 
 def json_default(obj: object) -> Any:
-    """default handler for :func:`json.dumps` covering platform types.
+    """default handler for :func:`json.dumps` covering platform types, for storage.
+
+    The handler every tier's storage encoder shares: L3's jsonb codec, the L2 payload encoder,
+    and L1's caches. A datetime is written in
+    :func:`~threetears.core.serialization.json_datetime`'s one form, so a nested datetime stores
+    the same string whichever tier wrote it.
 
     :param obj: value that :func:`json.dumps` cannot encode natively
     :ptype obj: object
@@ -274,6 +281,10 @@ def json_default(obj: object) -> Any:
     if isinstance(obj, UUID):
         result: Any = str(obj)
     elif isinstance(obj, datetime):
+        result = json_datetime(obj)
+    elif isinstance(obj, date):
+        # a calendar date, not an instant: ``2026-10-01``, the string ``default=str`` gave L3
+        # before this handler did, so a stored date reads the same either side of the change.
         result = obj.isoformat()
     elif isinstance(obj, bytes):
         result = base64.b64encode(obj).decode("ascii")

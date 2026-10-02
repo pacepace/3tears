@@ -32,6 +32,7 @@ from datetime import datetime
 from typing import Any, ClassVar, Literal, cast, get_args
 
 from threetears.core.backends.protocol import DurableStore
+from threetears.core.backends.schema_sql import json_default
 from threetears.core.collections.base import (
     NATS_CLIENT_FROM_REGISTRY,
     BaseCollection,
@@ -820,13 +821,14 @@ class ScrapeCollection(BaseCollection[EntityT]):
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         """Serialize a row dict to JSON bytes for the L2 (NATS KV) cache tier."""
-        return json.dumps(data, default=str).encode()
+        return json.dumps(data, default=json_default).encode()
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
         """Deserialize JSON bytes from the L2 cache tier back into a row dict.
 
-        Rehydrates :attr:`datetime_columns` from the ISO strings :meth:`serialize`'s
-        ``default=str`` produced. ``BaseCollection.deserialize``'s contract names this as
+        Rehydrates :attr:`datetime_columns` from the ISO strings :meth:`serialize` produced --
+        :func:`~threetears.core.serialization.json_datetime`'s form now, ``default=str``'s
+        space-separated form in payloads written before it, both of which parse. ``BaseCollection.deserialize``'s contract names this as
         the place subclasses restore typed fields, and until this did so, a row that
         happened to be read through L2 differed in TYPE from the identical row read
         through L1 or L3 -- strings where the others hold ``datetime``.

@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Column, MetaData, String, Table, Text
 from threetears.observe import get_logger
 
+from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import _entry_is_fresh
 
 if TYPE_CHECKING:
@@ -256,7 +257,7 @@ class ScanCache:
                     "key": key.as_string(),
                     "owner_table": key.owner_table,
                     "depends_on": json.dumps(list(token.depends_on)),
-                    "payload": json.dumps(rows, default=str),
+                    "payload": json.dumps(rows, default=json_default),
                     "stored_at_monotonic": str(now_monotonic),
                 },
                 "key",

@@ -35,6 +35,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
+from threetears.core.backends.schema_sql import json_default
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
@@ -248,7 +249,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         :return: JSON-encoded bytes
         :rtype: bytes
         """
-        return json.dumps(data, default=str).encode("utf-8")
+        return json.dumps(data, default=json_default).encode("utf-8")
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
         """deserialize JSON bytes from L2 back into a row dict.
