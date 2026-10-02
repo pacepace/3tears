@@ -19,12 +19,7 @@ import json
 import pytest
 
 from threetears.scrape.driver import NavStep, NetworkCall, RenderedPage
-from threetears.scrape.drivers.network_capture import (
-    NetworkCaptureDriver,
-    NetworkCaptureDriverError,
-    _find_largest_record_list,
-    _records_to_html,
-)
+from threetears.scrape.drivers.network_capture import NetworkCaptureDriver, NetworkCaptureDriverError
 
 
 # parity-with: threetears.scrape.driver.ScrapeDriver
@@ -68,69 +63,83 @@ def _call(body: dict, url: str = "https://example.gov/api", content_type: str = 
     return NetworkCall(url=url, method="POST", status=200, content_type=content_type, body=json.dumps(body))
 
 
+async def _render_body(body: object) -> str:
+    """Render a page whose only captured call answered *body*, returning the synthetic html."""
+    page = await NetworkCaptureDriver(_FakeInnerDriver([_call(body)])).render("https://example.gov/warn")
+    return page.html
+
+
+def _table_records(html: str) -> list[dict[str, str]]:
+    """One ``{column: cell}`` dict per data row of the synthetic table."""
+    from bs4 import BeautifulSoup
+
+    rows = BeautifulSoup(html, "html.parser").find_all("tr")
+    header = [th.get_text() for th in rows[0].find_all("th")]
+    return [dict(zip(header, (td.get_text() for td in row.find_all("td")), strict=True)) for row in rows[1:]]
+
+
+async def _assert_no_record_list(body: object) -> None:
+    with pytest.raises(NetworkCaptureDriverError) as exc_info:
+        await _render_body(body)
+    assert exc_info.value.code == "no_record_list_found"
+
+
 # ===========================================================================
-# _find_largest_record_list
+# which captured list becomes the table, through render()
 # ===========================================================================
 
 
-class TestFindLargestRecordList:
-    def test_top_level_list_of_dicts(self):
-        data = {"Results": [{"a": 1}, {"a": 2}]}
-        assert _find_largest_record_list(data) == [{"a": 1}, {"a": 2}]
+class TestFindsTheRecordList:
+    async def test_top_level_list_of_dicts(self):
+        assert _table_records(await _render_body({"Results": [{"a": 1}, {"a": 2}]})) == [{"a": "1"}, {"a": "2"}]
 
-    def test_deeply_nested_list_is_found(self):
+    async def test_deeply_nested_list_is_found(self):
         data = {"actions": [{"returnValue": {"returnValue": [{"a": 1}, {"a": 2}, {"a": 3}]}}]}
-        assert _find_largest_record_list(data) == [{"a": 1}, {"a": 2}, {"a": 3}]
+        assert _table_records(await _render_body(data)) == [{"a": "1"}, {"a": "2"}, {"a": "3"}]
 
-    def test_picks_the_largest_among_multiple_candidate_lists(self):
+    async def test_picks_the_largest_among_multiple_candidate_lists(self):
         # A small nav-menu-shaped dict-list alongside the real, much larger data table --
         # exactly Oklahoma's own Aura response shape (several small decoy lists, one real one).
         data = {
             "menu": [{"LinkName": "About"}, {"LinkName": "Contact"}],
             "actions": [{"returnValue": {"returnValue": [{"employer": f"Co{i}"} for i in range(50)]}}],
         }
-        result = _find_largest_record_list(data)
-        assert result is not None
-        assert len(result) == 50
+        records = _table_records(await _render_body(data))
+        assert records == [{"employer": f"Co{i}"} for i in range(50)]
 
-    def test_list_of_scalars_is_not_a_record_list(self):
-        data = {"names": ["Employ Oklahoma", "Policies", "Partner Agencies", "Contact Us"]}
-        assert _find_largest_record_list(data) is None
+    async def test_list_of_scalars_is_not_a_record_list(self):
+        await _assert_no_record_list({"names": ["Employ Oklahoma", "Policies", "Partner Agencies", "Contact Us"]})
 
-    def test_list_below_minimum_size_is_ignored(self):
-        data = {"tiny": [{"a": 1}]}
-        assert _find_largest_record_list(data) is None
+    async def test_list_below_minimum_size_is_ignored(self):
+        await _assert_no_record_list({"tiny": [{"a": 1}]})
 
-    def test_no_list_anywhere_returns_none(self):
-        assert _find_largest_record_list({"a": {"b": {"c": 1}}}) is None
+    async def test_no_list_anywhere_returns_none(self):
+        await _assert_no_record_list({"a": {"b": {"c": 1}}})
 
-    def test_mixed_list_with_a_non_dict_item_is_not_a_record_list(self):
-        data = {"mixed": [{"a": 1}, "not a dict", {"a": 2}]}
-        assert _find_largest_record_list(data) is None
+    async def test_mixed_list_with_a_non_dict_item_is_not_a_record_list(self):
+        await _assert_no_record_list({"mixed": [{"a": 1}, "not a dict", {"a": 2}]})
 
 
 # ===========================================================================
-# _records_to_html
+# the synthetic table, through render()
 # ===========================================================================
 
 
-class TestRecordsToHtml:
-    def test_builds_a_real_table_with_union_of_keys_as_columns(self):
-        records = [{"employer": "Acme", "county": "Oakland"}, {"employer": "Widgets"}]
-        html = _records_to_html(records)
+class TestSyntheticTable:
+    async def test_builds_a_real_table_with_union_of_keys_as_columns(self):
+        html = await _render_body({"data": [{"employer": "Acme", "county": "Oakland"}, {"employer": "Widgets"}]})
         assert "<th>employer</th><th>county</th>" in html
         assert "<td>Acme</td><td>Oakland</td>" in html
         # missing key on the second record renders an empty cell, not a dropped column
         assert "<td>Widgets</td><td></td>" in html
 
-    def test_values_are_html_escaped(self):
-        records = [{"employer": "Macy's & <Co>"}]
-        html = _records_to_html(records)
+    async def test_values_are_html_escaped(self):
+        html = await _render_body({"data": [{"employer": "Macy's & <Co>"}, {"employer": "Widgets"}]})
         assert "Macy&#x27;s &amp; &lt;Co&gt;" in html
 
-    def test_empty_records_list_produces_an_empty_table(self):
-        html = _records_to_html([])
-        assert html == "<html><body><table><tr></tr></table></body></html>"
+    async def test_records_with_no_keys_produce_a_table_with_an_empty_header(self):
+        html = await _render_body({"data": [{}, {}]})
+        assert html == "<html><body><table><tr></tr><tr></tr><tr></tr></table></body></html>"
 
 
 # ===========================================================================

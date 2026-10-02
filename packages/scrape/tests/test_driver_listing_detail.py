@@ -14,12 +14,7 @@ import httpx
 import pytest
 from packages.scrape.tests._driver_log_helpers import driver_warnings
 
-from threetears.scrape.drivers.listing_detail import (
-    ListingDetailDriver,
-    ListingDetailDriverError,
-    _extract_listing_row_fields,
-    _parse_definition_list,
-)
+from threetears.scrape.drivers.listing_detail import ListingDetailDriver, ListingDetailDriverError
 
 _LISTING_FIELD_COLUMNS = {0: "employer", 1: "city", 2: "notice_date"}
 _DETAIL_LINK_COLUMN = 0
@@ -59,59 +54,116 @@ def _driver(handler, **kwargs) -> ListingDetailDriver:
     )
 
 
+def _rendered_table(html: str) -> tuple[list[str], list[dict[str, str]]]:
+    """The synthetic table's header and one ``{column: cell}`` dict per data row.
+
+    The header is the union of the fields the driver kept, so a field it treated as absent
+    (rather than as an empty string) has no column at all when no other record carries it.
+    """
+    from bs4 import BeautifulSoup
+
+    table_rows = BeautifulSoup(html, "html.parser").find_all("tr")
+    header = [th.get_text() for th in table_rows[0].find_all("th")]
+    records = [dict(zip(header, (td.get_text() for td in row.find_all("td")), strict=True)) for row in table_rows[1:]]
+    return header, records
+
+
+async def _render_listing_only(row_html: str, columns: dict[int, str]) -> tuple[list[str], list[dict[str, str]]]:
+    """Render one listing row with no detail page to resolve, so the record is the row's own cells."""
+    listing = f"<html><body><table><tbody>{row_html}</tbody></table></body></html>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=listing.encode())
+
+    driver = ListingDetailDriver(
+        row_selector="table tr",
+        listing_field_columns=columns,
+        detail_link_column=99,
+        detail_field_labels={},
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        pace_delay_seconds=0.0,
+    )
+    page = await driver.render("https://example.gov/warn")
+    return _rendered_table(page.html)
+
+
+async def _render_detail_only(detail_html: str, labels: dict[str, str]) -> tuple[list[str], list[dict[str, str]]]:
+    """Render one listing row whose fields all come from its detail page."""
+    listing = _listing_html([("Acme Corp", "/notices/1", "Springfield", "Jun 1, 2026")])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/notices/1"):
+            return httpx.Response(200, content=detail_html.encode())
+        return httpx.Response(200, content=listing.encode())
+
+    driver = ListingDetailDriver(
+        row_selector="table tr",
+        listing_field_columns={},
+        detail_link_column=_DETAIL_LINK_COLUMN,
+        detail_field_labels=labels,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        pace_delay_seconds=0.0,
+    )
+    page = await driver.render("https://example.gov/warn")
+    return _rendered_table(page.html)
+
+
 # ===========================================================================
-# _extract_listing_row_fields
+# listing-row fields, through render()
 # ===========================================================================
 
 
-class TestExtractListingRowFields:
-    def test_reads_requested_column_indices(self):
-        from bs4 import BeautifulSoup
+class TestListingRowFields:
+    async def test_reads_requested_column_indices(self):
+        _, records = await _render_listing_only(
+            "<tr><td>Acme Corp</td><td>Springfield</td><td>Jun 1, 2026</td></tr>",
+            {0: "employer", 1: "city", 2: "notice_date"},
+        )
+        assert records == [{"employer": "Acme Corp", "city": "Springfield", "notice_date": "Jun 1, 2026"}]
 
-        row = BeautifulSoup("<tr><td>Acme Corp</td><td>Springfield</td><td>Jun 1, 2026</td></tr>", "html.parser").tr
-        result = _extract_listing_row_fields(row, {0: "employer", 1: "city", 2: "notice_date"})
-        assert result == {"employer": "Acme Corp", "city": "Springfield", "notice_date": "Jun 1, 2026"}
+    async def test_an_empty_cell_is_absent_not_an_empty_string(self):
+        header, records = await _render_listing_only("<tr><td>Acme Corp</td><td></td></tr>", {0: "employer", 1: "city"})
+        assert header == ["employer"], "an empty cell became a field holding an empty string"
+        assert records == [{"employer": "Acme Corp"}]
 
-    def test_an_empty_cell_is_absent_not_an_empty_string(self):
-        from bs4 import BeautifulSoup
-
-        row = BeautifulSoup("<tr><td>Acme Corp</td><td></td></tr>", "html.parser").tr
-        result = _extract_listing_row_fields(row, {0: "employer", 1: "city"})
-        assert result == {"employer": "Acme Corp"}
-
-    def test_an_out_of_range_column_index_is_skipped_not_a_crash(self):
-        from bs4 import BeautifulSoup
-
-        row = BeautifulSoup("<tr><td>Acme Corp</td></tr>", "html.parser").tr
-        result = _extract_listing_row_fields(row, {0: "employer", 5: "county"})
-        assert result == {"employer": "Acme Corp"}
+    async def test_an_out_of_range_column_index_is_skipped_not_a_crash(self):
+        header, records = await _render_listing_only("<tr><td>Acme Corp</td></tr>", {0: "employer", 5: "county"})
+        assert header == ["employer"]
+        assert records == [{"employer": "Acme Corp"}]
 
 
 # ===========================================================================
-# _parse_definition_list
+# detail-page definition lists, through render()
 # ===========================================================================
 
 
-class TestParseDefinitionList:
-    def test_reads_labeled_fields_by_exact_label_text(self):
-        html = _detail_html(notice_date="Jun 17, 2026", affected_count="81")
-        result = _parse_definition_list(html, _DETAIL_FIELD_LABELS)
-        assert result == {"notice_date": "Jun 17, 2026", "affected_count": "81"}
+class TestDetailDefinitionList:
+    async def test_reads_labeled_fields_by_exact_label_text(self):
+        _, records = await _render_detail_only(
+            _detail_html(notice_date="Jun 17, 2026", affected_count="81"), _DETAIL_FIELD_LABELS
+        )
+        assert records == [{"notice_date": "Jun 17, 2026", "affected_count": "81"}]
 
-    def test_a_blank_value_is_absent_not_an_empty_string(self):
-        html = _detail_html(notice_date="", affected_count="81")
-        result = _parse_definition_list(html, _DETAIL_FIELD_LABELS)
-        assert result == {"affected_count": "81"}
+    async def test_a_blank_value_is_absent_not_an_empty_string(self):
+        header, records = await _render_detail_only(
+            _detail_html(notice_date="", affected_count="81"), _DETAIL_FIELD_LABELS
+        )
+        assert header == ["affected_count"], "a blank definition became a field holding an empty string"
+        assert records == [{"affected_count": "81"}]
 
-    def test_a_label_not_present_at_all_is_absent(self):
-        html = "<html><body><div class='definition-list'></div></body></html>"
-        result = _parse_definition_list(html, _DETAIL_FIELD_LABELS)
-        assert result == {}
+    async def test_a_label_not_present_at_all_is_absent(self):
+        header, records = await _render_detail_only(
+            "<html><body><div class='definition-list'></div></body></html>", _DETAIL_FIELD_LABELS
+        )
+        assert header == []
+        assert records == [{}]
 
-    def test_a_requested_label_with_no_matching_field_name_is_ignored(self):
-        html = _detail_html(notice_date="Jun 17, 2026")
-        result = _parse_definition_list(html, {"notice_date": "Notice Date", "reason": "Reason -- Comments"})
-        assert result == {"notice_date": "Jun 17, 2026"}
+    async def test_a_requested_label_with_no_matching_field_name_is_ignored(self):
+        header, records = await _render_detail_only(
+            _detail_html(notice_date="Jun 17, 2026"), {"notice_date": "Notice Date", "reason": "Reason -- Comments"}
+        )
+        assert header == ["notice_date"]
+        assert records == [{"notice_date": "Jun 17, 2026"}]
 
 
 # ===========================================================================

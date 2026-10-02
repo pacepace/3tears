@@ -373,9 +373,9 @@ async def _render_camoufox_driver(egress):
     # Reusing the camoufox suite's own browser/page doubles rather than growing a second
     # pair here: two hand-written stand-ins for one Playwright surface drift, and this file
     # already imports a sibling test helper the same way.
-    from packages.scrape.tests.test_driver_camoufox import _FakeCamoufoxBrowser, _FakeCamoufoxPage
+    from packages.scrape.tests._camoufox_fakes import FakeCamoufoxBrowser, FakeCamoufoxPage
 
-    return await CamoufoxDriver(browser=_FakeCamoufoxBrowser(_FakeCamoufoxPage()), egress=egress).render(
+    return await CamoufoxDriver(browser=FakeCamoufoxBrowser(FakeCamoufoxPage()), egress=egress).render(
         "https://example.gov/x"
     )
 
@@ -633,24 +633,29 @@ async def test_the_dropped_solve_memory_does_not_grow_without_bound(caplog) -> N
     )
 
 
-def test_urls_with_no_parseable_origin_stay_distinct() -> None:
-    """The fallback branch the docstring's whole design argument rests on, and it had no test.
+async def test_urls_with_no_parseable_origin_stay_distinct(caplog) -> None:
+    """The fallback branch the docstring's whole design argument rests on, asserted by what is reported.
 
     `robots._origin_of` returns None for these, deliberately, so it can decline to apply a
     site's rules to something that is not a site. Here the value is only ever a dedupe key, so
     None would collapse every unparseable url into ONE bucket -- the first would be reported
     and the rest silenced. Falling back to the url keeps them distinct, which is what makes the
-    two helpers' different return types a decision rather than an accident.
+    two helpers' different return types a decision rather than an accident. The ordinary case
+    still keys on the origin rather than the path: two paths on one site report once.
     """
-    from threetears.scrape.driver import _origin_of
+    driver = ApiDriver(client=_unavailable_client())
 
-    assert _origin_of("not a url at all") == "not a url at all"
-    assert _origin_of("file.pdf") != _origin_of("other.pdf"), (
-        "two unparseable urls collapsed to one dedupe key, so only the first would be reported"
-    )
-    assert _origin_of("https://example.gov/a") == _origin_of("https://example.gov/b"), (
-        "the ordinary case still keys on the origin rather than the path"
-    )
+    with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
+        await _render_with_solve(driver, "file.pdf", ApiDriverError)
+        await _render_with_solve(driver, "other.pdf", ApiDriverError)
+        unparseable = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
+        caplog.clear()
+        await _render_with_solve(driver, "https://example.gov/a", ApiDriverError)
+        await _render_with_solve(driver, "https://example.gov/b", ApiDriverError)
+        one_site = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
+
+    assert len(unparseable) == 2, "two unparseable urls collapsed to one dedupe key, so only the first was reported"
+    assert len(one_site) == 1, "two paths on one origin were each reported; the key is the path, not the origin"
 
 
 async def test_two_unparseable_urls_are_each_reported(caplog) -> None:
