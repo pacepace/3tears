@@ -88,7 +88,7 @@ class _FakeFileCollection(FakeWorkspaceFileCollection):
 
 
 class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
-    """placeholder -- rollback delegates writes to _write_file_atomic."""
+    """placeholder -- rollback delegates writes to write_file_atomic."""
 
 
 class _RecordingSandbox:
@@ -115,10 +115,10 @@ class _FakeAcquireCM(FakeAsyncpgAcquireCM):
 
 @dataclass
 class _FakePool(FakeAsyncpgPool):
-    """pool with a single long-lived conn that scripts _resolve_ref lookups.
+    """pool with a single long-lived conn that scripts resolve_ref lookups.
 
     scripts match by (relative_path, selector); selector is the last
-    positional arg _resolve_ref passes (int for numeric ref, label str for
+    positional arg resolve_ref passes (int for numeric ref, label str for
     checkpoint label, "head" implied by two-arg call shape).
     """
 
@@ -175,14 +175,14 @@ def _build_tool(
 def _install_atomic_recorder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> list[dict[str, Any]]:
-    """replace _write_file_atomic in rollback module with a recorder."""
+    """replace write_file_atomic in rollback module with a recorder."""
     calls: list[dict[str, Any]] = []
 
     async def _recorder(**kwargs: Any) -> tuple[int, str]:
         calls.append(kwargs)
         return 99, "r" * 64
 
-    monkeypatch.setattr(workspace_rollback_module, "_write_file_atomic", _recorder)
+    monkeypatch.setattr(workspace_rollback_module, "write_file_atomic", _recorder)
     return calls
 
 
@@ -196,7 +196,7 @@ async def test_rollback_whole_workspace_reverts_each_file(
     monkeypatch: pytest.MonkeyPatch,
     permissive_acl_cache: MagicMock,
 ) -> None:
-    """ref=1 across all head files -> _write_file_atomic called per file with action=revert."""
+    """ref=1 across all head files -> write_file_atomic called per file with action=revert."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     files = [
         _FakeFileEntity(relative_path="a.txt"),

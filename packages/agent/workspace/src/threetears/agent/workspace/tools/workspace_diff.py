@@ -1,6 +1,6 @@
 """``threetears.workspace.diff`` -- unified-diff between two refs of a file.
 
-refs follow the ``_resolve_ref`` vocabulary: ``"head"``, integer version,
+refs follow the ``resolve_ref`` vocabulary: ``"head"``, integer version,
 digit-string version, or checkpoint label. the ref-pair is resolved
 inside a single acquired connection so both rows come from a consistent
 read snapshot; the connection is not kept in a transaction (diff is
@@ -38,8 +38,8 @@ from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
-    _resolve_ref,
-    _resolve_workspace,
+    resolve_ref,
+    resolve_workspace,
     authorize_workspace,
     authorize_workspace_file,
 )
@@ -80,7 +80,7 @@ class WorkspaceDiffTool(TearsTool):
     """emit a unified diff between two refs of a workspace file.
 
     resolves workspace, enforces sandbox read, resolves both refs via
-    :func:`_resolve_ref` under a single acquired connection, decodes
+    :func:`resolve_ref` under a single acquired connection, decodes
     both contents as UTF-8, and returns the plain :func:`difflib.
     unified_diff` text. no diff flags are applied (plain unified form
     is the least-surprise result for an LLM).
@@ -154,7 +154,7 @@ class WorkspaceDiffTool(TearsTool):
 
         result: ToolResult
         try:
-            workspace = await _resolve_workspace(
+            workspace = await resolve_workspace(
                 workspace_arg,
                 self._context_provider(),
                 self._workspaces,
@@ -177,14 +177,14 @@ class WorkspaceDiffTool(TearsTool):
             # WS-ACL-06: thread namespace= so outside-tx reads resolve
             # against the owner agent's schema on grantee diffs.
             async with self._db_pool.acquire() as conn:
-                from_row = await _resolve_ref(
+                from_row = await resolve_ref(
                     conn,
                     workspace.id,
                     relative_path,
                     from_ref,
                     namespace_name=workspace.namespace_name,
                 )
-                to_row = await _resolve_ref(
+                to_row = await resolve_ref(
                     conn,
                     workspace.id,
                     relative_path,

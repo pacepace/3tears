@@ -2,12 +2,12 @@
 
 covers all three primitives:
 
-- :func:`_resolve_workspace` -- explicit name, pin-fallback, no-pin,
+- :func:`resolve_workspace` -- explicit name, pin-fallback, no-pin,
   unknown name, unknown pin, soft-deleted.
-- :func:`_write_file_atomic` -- new file (create), existing file
+- :func:`write_file_atomic` -- new file (create), existing file
   (update), OCC success, OCC failure, three-row transaction ordering,
   GREATEST-style workspace version update.
-- :func:`_resolve_ref` -- ``"head"``, int, digit-string, checkpoint
+- :func:`resolve_ref` -- ``"head"``, int, digit-string, checkpoint
   label, and miss.
 """
 
@@ -25,9 +25,9 @@ from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     Sha256Mismatch,
     WorkspaceNotFound,
-    _resolve_ref,
-    _resolve_workspace,
-    _write_file_atomic,
+    resolve_ref,
+    resolve_workspace,
+    write_file_atomic,
 )
 from packages.agent.workspace.tests._helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
@@ -89,7 +89,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
 
 
 class _FakeContext(FakeWorkspaceContext):
-    """sentinel context object passed into _resolve_workspace."""
+    """sentinel context object passed into resolve_workspace."""
 
 
 @dataclass
@@ -100,7 +100,7 @@ class _FakePin:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_workspace
+# resolve_workspace
 # ---------------------------------------------------------------------------
 
 
@@ -111,7 +111,7 @@ async def test_resolve_workspace_explicit_name_hits() -> None:
     target = _FakeWorkspaceEntity(id=uuid4(), name="alpha")
     workspaces = _FakeWorkspaceCollection([target])
 
-    result = await _resolve_workspace("alpha", _FakeContext(), workspaces, agent_id)
+    result = await resolve_workspace("alpha", _FakeContext(), workspaces, agent_id)
 
     assert result is target
     assert workspaces.by_name_calls == [(agent_id, "alpha")]
@@ -123,7 +123,7 @@ async def test_resolve_workspace_explicit_name_miss_raises() -> None:
     """unknown workspace_arg raises WorkspaceNotFound."""
     workspaces = _FakeWorkspaceCollection([])
     with pytest.raises(WorkspaceNotFound) as excinfo:
-        await _resolve_workspace("ghost", _FakeContext(), workspaces, uuid4())
+        await resolve_workspace("ghost", _FakeContext(), workspaces, uuid4())
     assert "ghost" in str(excinfo.value)
 
 
@@ -139,7 +139,7 @@ async def test_resolve_workspace_no_arg_no_pin_raises(
     monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
     workspaces = _FakeWorkspaceCollection([])
     with pytest.raises(NoWorkspacePinned):
-        await _resolve_workspace(None, _FakeContext(), workspaces, uuid4())
+        await resolve_workspace(None, _FakeContext(), workspaces, uuid4())
 
 
 @pytest.mark.asyncio
@@ -156,7 +156,7 @@ async def test_resolve_workspace_pin_fallback_hits(
 
     monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
 
-    result = await _resolve_workspace(None, _FakeContext(), workspaces, agent_id)
+    result = await resolve_workspace(None, _FakeContext(), workspaces, agent_id)
 
     assert result is pinned
     assert workspaces.by_id_calls == [(pinned.id, agent_id)]
@@ -176,7 +176,7 @@ async def test_resolve_workspace_pin_stale_raises(
     monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
 
     with pytest.raises(WorkspaceNotFound) as excinfo:
-        await _resolve_workspace(None, _FakeContext(), workspaces, uuid4())
+        await resolve_workspace(None, _FakeContext(), workspaces, uuid4())
     assert "gone" in str(excinfo.value)
 
 
@@ -187,12 +187,12 @@ async def test_resolve_workspace_soft_deleted_raises() -> None:
     workspaces = _FakeWorkspaceCollection([deleted])
 
     with pytest.raises(WorkspaceNotFound) as excinfo:
-        await _resolve_workspace("rip", _FakeContext(), workspaces, uuid4())
+        await resolve_workspace("rip", _FakeContext(), workspaces, uuid4())
     assert "rip" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
-# _write_file_atomic -- fake pool/conn
+# write_file_atomic -- fake pool/conn
 # ---------------------------------------------------------------------------
 
 
@@ -277,7 +277,7 @@ async def test_write_file_atomic_new_file_inserts_at_version_one() -> None:
     actor = uuid4()
     corr = uuid4()
 
-    new_version, new_sha = await _write_file_atomic(
+    new_version, new_sha = await write_file_atomic(
         db_pool=pool,
         workspace=ws,
         relative_path="a/b.txt",
@@ -324,7 +324,7 @@ async def test_write_file_atomic_existing_file_bumps_version() -> None:
     }
     pool.conn.journal_max_version = 3
     ws = _fake_workspace()
-    new_version, _new_sha = await _write_file_atomic(
+    new_version, _new_sha = await write_file_atomic(
         db_pool=pool,
         workspace=ws,
         relative_path="doc.md",
@@ -358,7 +358,7 @@ async def test_write_file_atomic_occ_success_passes_sha() -> None:
     }
     pool.conn.journal_max_version = 7
     ws = _fake_workspace()
-    new_version, _ = await _write_file_atomic(
+    new_version, _ = await write_file_atomic(
         db_pool=pool,
         workspace=ws,
         relative_path="c.txt",
@@ -386,7 +386,7 @@ async def test_write_file_atomic_occ_mismatch_raises_and_aborts_tx() -> None:
     }
     ws = _fake_workspace()
     with pytest.raises(Sha256Mismatch) as excinfo:
-        await _write_file_atomic(
+        await write_file_atomic(
             db_pool=pool,
             workspace=ws,
             relative_path="c.txt",
@@ -416,7 +416,7 @@ async def test_write_file_atomic_occ_mismatch_absent_reports_none_current() -> N
     pool = _FakePool()  # head_row = None
     ws = _fake_workspace()
     with pytest.raises(Sha256Mismatch) as excinfo:
-        await _write_file_atomic(
+        await write_file_atomic(
             db_pool=pool,
             workspace=ws,
             relative_path="absent.txt",
@@ -438,7 +438,7 @@ async def test_write_file_atomic_workspace_update_uses_greatest_semantics() -> N
     """workspace UPDATE SQL advances current_version via GREATEST."""
     pool = _FakePool()
     ws = _fake_workspace()
-    await _write_file_atomic(
+    await write_file_atomic(
         db_pool=pool,
         workspace=ws,
         relative_path="x",
@@ -469,12 +469,12 @@ def test_sha256_mismatch_exposes_expected_and_current_attrs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_ref
+# resolve_ref
 # ---------------------------------------------------------------------------
 
 
 class _RefQueryConnection:
-    """records SQL issued by _resolve_ref and returns a scripted row."""
+    """records SQL issued by resolve_ref and returns a scripted row."""
 
     def __init__(self, row: dict[str, Any] | None) -> None:
         self._row = row
@@ -491,7 +491,7 @@ async def test_resolve_ref_head_selects_newest_version_row() -> None:
     workspace_id = uuid4()
     row = {"version": 5, "content": b"latest", "action": "update"}
     conn = _RefQueryConnection(row)
-    result = await _resolve_ref(conn, workspace_id, "a.txt", "head")
+    result = await resolve_ref(conn, workspace_id, "a.txt", "head")
     assert result == row
     assert len(conn.calls) == 1
     sql, args = conn.calls[0]
@@ -506,7 +506,7 @@ async def test_resolve_ref_integer_selects_by_exact_version() -> None:
     workspace_id = uuid4()
     row = {"version": 3, "content": b"v3"}
     conn = _RefQueryConnection(row)
-    result = await _resolve_ref(conn, workspace_id, "a.txt", 3)
+    result = await resolve_ref(conn, workspace_id, "a.txt", 3)
     assert result == row
     sql, args = conn.calls[0]
     assert "AND version = $3" in sql
@@ -519,7 +519,7 @@ async def test_resolve_ref_digit_string_treated_as_int() -> None:
     workspace_id = uuid4()
     row = {"version": 7, "content": b"v7"}
     conn = _RefQueryConnection(row)
-    result = await _resolve_ref(conn, workspace_id, "a.txt", "7")
+    result = await resolve_ref(conn, workspace_id, "a.txt", "7")
     assert result == row
     sql, args = conn.calls[0]
     assert "AND version = $3" in sql
@@ -532,7 +532,7 @@ async def test_resolve_ref_non_numeric_string_treated_as_checkpoint_label() -> N
     workspace_id = uuid4()
     row = {"version": 2, "content": b"cp", "action": "checkpoint", "label": "v1-release"}
     conn = _RefQueryConnection(row)
-    result = await _resolve_ref(conn, workspace_id, "a.txt", "v1-release")
+    result = await resolve_ref(conn, workspace_id, "a.txt", "v1-release")
     assert result == row
     sql, args = conn.calls[0]
     assert "action = 'checkpoint'" in sql
@@ -544,5 +544,5 @@ async def test_resolve_ref_non_numeric_string_treated_as_checkpoint_label() -> N
 async def test_resolve_ref_missing_returns_none() -> None:
     """no matching row returns None (caller treats as skip or clean error)."""
     conn = _RefQueryConnection(None)
-    result = await _resolve_ref(conn, uuid4(), "missing.txt", 99)
+    result = await resolve_ref(conn, uuid4(), "missing.txt", 99)
     assert result is None

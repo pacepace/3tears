@@ -1,7 +1,7 @@
 """enforcement: every per-file write-class tool authorizes before mutating file content.
 
 scope is the set of write-class tools that mutate file content through
-:func:`_write_file_atomic`: ``fs_write``, ``fs_edit``, ``doc_set``,
+:func:`write_file_atomic`: ``fs_write``, ``fs_edit``, ``doc_set``,
 ``doc_merge``, and ``workspace_rollback``. lifecycle tools
 (``workspace_create``, ``workspace_reset``, ``workspace_delete``) are
 excluded deliberately -- lifecycle ops are NOT gated by per-file
@@ -16,12 +16,12 @@ path check) followed by ``authorize_workspace_file(...)`` (unified
 rbac evaluator with path-glob-bearing custom action types). this
 enforcement test now pins the new ordering: each write-class tool's
 ``execute`` must call ``authorize_workspace_file(...)`` strictly
-before any ``_write_file_atomic(...)``. validate_syntax is a
+before any ``write_file_atomic(...)``. validate_syntax is a
 preceding syntactic guard that is paired with authorize_workspace_file
 in every site; the authorize call is the gating one we enforce.
 
 ordering is enforced per function via ``lineno``; the authorize
-call must appear before every ``_write_file_atomic`` in the same
+call must appear before every ``write_file_atomic`` in the same
 ``execute``. for ``workspace_rollback`` the pre-sweep authorize
 loop runs before the second-phase write loop, matching the
 same-function ordering rule.
@@ -39,7 +39,7 @@ _TOOLS_ROOT = _SRC_ROOT / "tools"
 
 # per-file write-class tools. each of these tools runs
 # ``authorize_workspace_file("write", ...)`` on exactly one path before
-# calling ``_write_file_atomic`` on that same path.
+# calling ``write_file_atomic`` on that same path.
 _WRITE_CLASS_TOOL_MODULES: tuple[str, ...] = (
     "fs_write",
     "fs_edit",
@@ -125,15 +125,15 @@ def _is_authorize_call(call: ast.Call) -> bool:
 
 def _is_write_file_atomic_call(call: ast.Call) -> bool:
     """
-    true iff call is ``_write_file_atomic(...)`` (bare or module-qualified).
+    true iff call is ``write_file_atomic(...)`` (bare or module-qualified).
 
     :param call: AST Call node
     :ptype call: ast.Call
-    :return: True for a _write_file_atomic call
+    :return: True for a write_file_atomic call
     :rtype: bool
     """
     chain = _attribute_chain(call.func)
-    return chain[-1:] == ["_write_file_atomic"]
+    return chain[-1:] == ["write_file_atomic"]
 
 
 class TestAuthorizeCalledBeforeWrite:
@@ -143,7 +143,7 @@ class TestAuthorizeCalledBeforeWrite:
         """
         AST-walk each write-class tool's ``execute``; the
         ``authorize_workspace_file`` call's lineno must strictly
-        precede every ``_write_file_atomic`` call.
+        precede every ``write_file_atomic`` call.
 
         :return: None
         :rtype: None
@@ -178,7 +178,7 @@ class TestAuthorizeCalledBeforeWrite:
             offending = [ln for ln in write_lines if ln < first_authorize]
             if offending:
                 violations.append(
-                    f"{module_name}: _write_file_atomic at line(s) "
+                    f"{module_name}: write_file_atomic at line(s) "
                     f"{offending} precedes first authorize_workspace_file "
                     f"at line {first_authorize}",
                 )
@@ -186,5 +186,5 @@ class TestAuthorizeCalledBeforeWrite:
             f"{len(violations)} authorize-before-write ordering violation(s):\n"
             + "\n".join(violations)
             + "\n\nwrite-class tools must authorize_workspace_file(..., 'write', ...) "
-            "before any _write_file_atomic(...)."
+            "before any write_file_atomic(...)."
         )

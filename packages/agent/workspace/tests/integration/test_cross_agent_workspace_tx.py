@@ -13,11 +13,11 @@ real request-reply) and wires:
   the namespace's schema, pins a real asyncpg connection for the tx
   session, runs DML + SELECT against the session's pinned connection,
   commits / rolls back on completion.
-- the real :func:`_write_file_atomic` helper
+- the real :func:`write_file_atomic` helper
 
 the test exercises:
 
-- agent B (grantee) runs :func:`_write_file_atomic` for a workspace
+- agent B (grantee) runs :func:`write_file_atomic` for a workspace
   owned by agent A through the proxy; the journal + head-state rows
   land in agent A's schema (not agent B's default schema)
 - concurrent writes on two different workspaces do not cross-
