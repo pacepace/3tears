@@ -25,7 +25,7 @@ design contract (datasource-task-10):
   ``tests/enforcement/test_no_hardcoded_pool_params.py`` walks this
   module and fails the build on banned-kwarg literals.
 - DS-10-04: callers pass ``$1``-style placeholders; asyncpg uses ``$N``
-  natively. :func:`_translate_placeholders` is called with target
+  natively. :func:`translate_placeholders` is called with target
   ``"asyncpg"`` (no-op) anyway -- the consistent surface across
   drivers makes the contract enforceable.
 - DS-10-08 (superseded by dsd-task-02; see "cancellation" below):
@@ -42,7 +42,7 @@ design contract (datasource-task-10):
   ``from None`` to break the cause chain. raw asyncpg errors
   sometimes carry the password value in nested context; sanitizing
   here keeps logs / tracebacks clean.
-- DS-10-12: :func:`_observed` decorator on every query-emitting
+- DS-10-12: :func:`observed` decorator on every query-emitting
   method emits :data:`datasource.driver.query.duration` histogram
   + :data:`datasource.driver.error` counter automatically. the
   manual :data:`datasource.driver.cancellation.fired` counter is
@@ -159,8 +159,8 @@ from threetears.datasources.config import (
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
-from threetears.datasources.drivers._util import (
-    _translate_placeholders,
+from threetears.datasources.drivers.sql_fragments import (
+    translate_placeholders,
     build_relation_key_expression,
     build_reset_statement_timeout_sql,
     build_search_path_value,
@@ -175,7 +175,7 @@ from threetears.datasources.drivers.base import (
     Transaction,
     _check_otel_metrics,
     _instrument_cache,
-    _observed,
+    observed,
 )
 from pydantic import SecretStr
 
@@ -327,7 +327,7 @@ class _Checkout:
 def _get_cancellation_fired_counter() -> Any:
     """fetch or create the ``datasource.driver.cancellation.fired`` counter.
 
-    backend-specific counter (not auto-emitted by :func:`_observed`).
+    backend-specific counter (not auto-emitted by :func:`observed`).
     bumped from :meth:`AsyncpgDriver._observe_cancellation`, so it ticks
     only when the cancel callback actually fires -- i.e. the awaiting
     coroutine was cancelled while a backend call was in flight -- and
@@ -398,7 +398,7 @@ class AsyncpgDriver(Driver):
         driver instance serves (``DatasourceConfig.name`` from
         agent.yaml or :class:`CapabilitySourceEntity.name` from the Hub
         admin row). surfaced as the ``datasource_name`` attribute on
-        every OTel metric emitted by :func:`_observed`. defaults to
+        every OTel metric emitted by :func:`observed`. defaults to
         ``"unknown"`` when callers can't supply one; the Hub broker /
         tool-pod / introspector (shards 13-14) thread the name through
     :ptype datasource_name: str
@@ -441,7 +441,7 @@ class AsyncpgDriver(Driver):
         # every pool but the last was never closed.
         self._pool_lock = asyncio.Lock()
         self._closed = False
-        # read by :func:`_observed` as the ``datasource_name`` attribute
+        # read by :func:`observed` as the ``datasource_name`` attribute
         # on every emitted metric. the Hub-side caller (shards 13/14)
         # passes the name through ``create_driver``; tests pass an
         # explicit value or accept the ``"unknown"`` default.
@@ -773,7 +773,7 @@ class AsyncpgDriver(Driver):
         of statements proven to have stopped; a postgres CancelRequest
         is advisory. full reasoning in the module docstring.
 
-        manual emission per DS-10-12: :func:`_observed` does not bump it
+        manual emission per DS-10-12: :func:`observed` does not bump it
         for us because the per-driver semantics differ.
 
         :return: nothing
@@ -788,7 +788,7 @@ class AsyncpgDriver(Driver):
     # -------------------------------------------------------------------
 
     @traced
-    @_observed(driver_type="asyncpg")
+    @observed(driver_type="asyncpg")
     async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         """run a SELECT statement; materialize all rows in memory.
 
@@ -819,7 +819,7 @@ class AsyncpgDriver(Driver):
         # placeholder translation is a no-op for asyncpg (it uses $N
         # natively); calling the helper anyway keeps the contract
         # consistent across drivers.
-        translated = _translate_placeholders(sql, "asyncpg")
+        translated = translate_placeholders(sql, "asyncpg")
         records = await self._acquire_and_run(
             lambda conn: conn.fetch(translated, *params),
             timeout_seconds=timeout_seconds,
@@ -828,7 +828,7 @@ class AsyncpgDriver(Driver):
         return result
 
     @traced
-    @_observed(driver_type="asyncpg")
+    @observed(driver_type="asyncpg")
     async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         """run a DML / DDL statement; discard any returned rows.
 
@@ -850,7 +850,7 @@ class AsyncpgDriver(Driver):
             raise RuntimeError("AsyncpgDriver is closed")
         if timeout_seconds is not None:
             build_set_local_statement_timeout_sql(timeout_seconds)
-        translated = _translate_placeholders(sql, "asyncpg")
+        translated = translate_placeholders(sql, "asyncpg")
         await self._acquire_and_run(
             lambda conn: conn.execute(translated, *params),
             timeout_seconds=timeout_seconds,
@@ -919,7 +919,7 @@ class AsyncpgDriver(Driver):
             backend statement is NOT guaranteed to have stopped
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
-        translated = _translate_placeholders(sql, "asyncpg")
+        translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
         records = await self._with_cancellation(
             lambda: checkout.conn.fetch(translated, *params),
@@ -951,7 +951,7 @@ class AsyncpgDriver(Driver):
             backend statement is NOT guaranteed to have stopped
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
-        translated = _translate_placeholders(sql, "asyncpg")
+        translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
         await self._with_cancellation(
             lambda: checkout.conn.execute(translated, *params),
@@ -1036,7 +1036,7 @@ class AsyncpgDriver(Driver):
         """
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
-        translated = _translate_placeholders(sql, "asyncpg")
+        translated = translate_placeholders(sql, "asyncpg")
         pool = await self._ensure_pool()
         async with pool.acquire() as conn:
             await self._scope_borrowed_connection(conn)
@@ -1051,7 +1051,7 @@ class AsyncpgDriver(Driver):
     # -------------------------------------------------------------------
 
     @traced
-    @_observed(driver_type="asyncpg")
+    @observed(driver_type="asyncpg")
     async def list_tables(self, schemas: list[str]) -> list[TableRow]:
         """list tables in the schema allow-list using postgres-flavored SQL.
 
@@ -1076,7 +1076,7 @@ class AsyncpgDriver(Driver):
         return result
 
     @traced
-    @_observed(driver_type="asyncpg")
+    @observed(driver_type="asyncpg")
     async def list_columns(self, schemas: list[str]) -> list[ColumnRow]:
         """list columns for every table in the schema allow-list.
 
@@ -1110,7 +1110,7 @@ class AsyncpgDriver(Driver):
         return result
 
     @traced
-    @_observed(driver_type="asyncpg")
+    @observed(driver_type="asyncpg")
     async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
         """count and fingerprint ``relation`` over ``key``, in one statement.
 
@@ -1145,7 +1145,7 @@ class AsyncpgDriver(Driver):
         return RelationFingerprint(row_count=int(record["row_count"]), digest=str(record["digest"]))
 
     @traced
-    @_observed(driver_type="asyncpg")
+    @observed(driver_type="asyncpg")
     async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """compute per-table MD5 over the column shape (Tier-2 change-probe).
 
@@ -1176,7 +1176,7 @@ class AsyncpgDriver(Driver):
     # -------------------------------------------------------------------
 
     @traced
-    @_observed(driver_type="asyncpg")
+    @observed(driver_type="asyncpg")
     async def test_connection(self) -> None:
         """cheapest possible round-trip; verifies credentials + reachability.
 

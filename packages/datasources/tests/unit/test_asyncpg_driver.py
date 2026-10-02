@@ -29,13 +29,31 @@ from threetears.datasources.drivers import (
     DriverConnectError,
     DriverMissingCredentialError,
 )
-from threetears.datasources.drivers.asyncpg_driver import (
-    AsyncpgDriver,
-    _POSTGRES_COLUMNS_SQL,
-    _POSTGRES_TABLE_HASHES_SQL,
-    _POSTGRES_TABLES_SQL,
-)
+from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
 from threetears.datasources.entities import DataSourceType
+
+
+def _single_catalog_query(pool: MagicMock, schemas: list[str]) -> str:
+    """the one catalog query the driver issued, after checking the allow-list was bound as ``$1``.
+
+    the statement text is the driver's own; what the unit tier pins is that exactly one
+    statement ran, that it filters on ``table_schema = ANY($1)`` and that the caller's
+    allow-list is the bound value. the statement's result against a real engine is
+    ``tests/integration/test_asyncpg_driver_live.py``'s.
+
+    :param pool: the mocked pool the driver owns
+    :ptype pool: MagicMock
+    :param schemas: the allow-list the caller passed
+    :ptype schemas: list[str]
+    :return: the SQL text issued
+    :rtype: str
+    """
+    pool.recorded_conn.fetch.assert_awaited_once()
+    sql, bound = pool.recorded_conn.fetch.await_args.args
+    assert bound == schemas
+    assert "table_schema = ANY($1)" in sql
+    result: str = sql
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -340,12 +358,14 @@ class TestIntrospectionRouting:
     async def test_list_tables_uses_tables_sql(
         self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """:meth:`list_tables` calls fetch with :data:`_POSTGRES_TABLES_SQL`."""
+        """:meth:`list_tables` reads base tables from ``information_schema`` with the allow-list bound."""
         pool = _build_mock_pool(fetch_records=[{"table_schema": "s1", "table_name": "t1"}])
         driver = _driver_owning(pool, postgres_config, monkeypatch)
         rows = await driver.list_tables(["s1"])
         assert rows == [{"table_schema": "s1", "table_name": "t1"}]
-        pool.recorded_conn.fetch.assert_awaited_once_with(_POSTGRES_TABLES_SQL, ["s1"])
+        sql = _single_catalog_query(pool, ["s1"])
+        assert "FROM information_schema.tables" in sql
+        assert "table_type = 'BASE TABLE'" in sql
 
     @pytest.mark.asyncio
     async def test_list_columns_uses_columns_sql_and_preserves_is_nullable(
@@ -368,7 +388,9 @@ class TestIntrospectionRouting:
         rows = await driver.list_columns(["s1"])
         assert rows[0]["is_nullable"] == "NO"  # raw string, NOT bool
         assert isinstance(rows[0]["is_nullable"], str)
-        pool.recorded_conn.fetch.assert_awaited_once_with(_POSTGRES_COLUMNS_SQL, ["s1"])
+        sql = _single_catalog_query(pool, ["s1"])
+        assert "FROM information_schema.columns" in sql
+        assert "is_nullable" in sql
 
     @pytest.mark.asyncio
     async def test_table_hashes_returns_dict_keyed_by_schema_table(
@@ -387,7 +409,9 @@ class TestIntrospectionRouting:
         driver = _driver_owning(pool, postgres_config, monkeypatch)
         hashes = await driver.table_hashes(["s1"])
         assert hashes == {("s1", "t1"): "abc123"}
-        pool.recorded_conn.fetch.assert_awaited_once_with(_POSTGRES_TABLE_HASHES_SQL, ["s1"])
+        sql = _single_catalog_query(pool, ["s1"])
+        assert "FROM information_schema.columns" in sql
+        assert "AS column_hash" in sql
 
 
 # ---------------------------------------------------------------------------

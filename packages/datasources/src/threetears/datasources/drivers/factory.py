@@ -72,7 +72,7 @@ def create_driver(
     :ptype hub_l3_pool: asyncpg.Pool | None
     :param datasource_name: human-readable name of the datasource the
         constructed driver serves; surfaces on every OTel metric
-        emitted by :func:`_observed` as the ``datasource_name``
+        emitted by :func:`observed` as the ``datasource_name``
         attribute. defaults to ``"unknown"`` so callers that don't
         know the name (or don't care about per-datasource metrics)
         can omit. the Hub broker / tool-pod / introspector (shards

@@ -28,6 +28,7 @@ __all__ = [
     "REDSHIFT_TEST_PASSWORD_ENV",
     "REDSHIFT_TEST_PASSWORD_REF",
     "PoolAcquireHandle",
+    "RedshiftConnectionWithSocket",
     "build_mock_redshift_connection",
     "build_transaction_capable_pool",
     "is_open_setup_stmt",
@@ -147,6 +148,44 @@ def build_mock_redshift_connection(
     # surface the cursor so tests can assert against it directly
     conn.recorded_cursor = cursor
     return conn
+
+
+class RedshiftConnectionWithSocket:
+    """a ``redshift_connector.Connection`` stand-in whose socket a test can name.
+
+    the driver reaches a connection's socket the way the library lays it out, on the instance
+    attribute ``Connection.__init__`` assigns, through the one module that owns that access.
+    this double lays itself out the same way in its OWN constructor, so the driver finds the
+    socket exactly where it would on a real connection, and hands the same object to the test
+    as the public :attr:`socket` -- the test asserts on what the driver did to the socket
+    without reading a private name of anything. every other attribute (``cursor``,
+    ``commit``, ``close``...) is the wrapped mock's.
+    """
+
+    def __init__(self, inner: MagicMock, sock: MagicMock | None = None) -> None:
+        """
+        lays the socket out where the library keeps it and wraps ``inner`` for the rest.
+
+        :param inner: the connection mock answering everything but the socket
+        :ptype inner: MagicMock
+        :param sock: the socket double; a fresh mock when omitted
+        :ptype sock: MagicMock | None
+        """
+        self.inner = inner
+        self.socket = sock if sock is not None else MagicMock(name="MockRedshiftSocket")
+        # redshift_connector 2.1.7 Connection.__init__ keeps its socket here; the driver reads it there.
+        self._usock = self.socket
+
+    def __getattr__(self, name: str) -> Any:
+        """
+        answers every attribute this double does not lay out itself from the wrapped mock.
+
+        :param name: attribute name
+        :ptype name: str
+        :return: the wrapped mock's attribute
+        :rtype: Any
+        """
+        return getattr(self.inner, name)
 
 
 class _TransactionHandle:
