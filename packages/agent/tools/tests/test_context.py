@@ -21,10 +21,9 @@ def l1_backend() -> SQLiteBackend:
     b = SQLiteBackend(db_name=f"test_mgr_{uuid.uuid4().hex[:8]}")
     b.initialize(make_context_metadata())
     yield b
-    from threetears.core._bridge import drain, shutdown
+    from threetears.core.testing import drain_and_shutdown_bridge
 
-    drain()
-    shutdown()
+    drain_and_shutdown_bridge()
     b.reset()
 
 
