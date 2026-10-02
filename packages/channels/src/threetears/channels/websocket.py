@@ -170,6 +170,9 @@ class _RoomConnection:
     :ivar heard_from_peer: whether any frame arrived since the last heartbeat ping
     :ivar handling_frame: whether the message loop is busy with a frame rather than reading; the
         peer's silence proves nothing while it is
+    :ivar ending: whether the handler has already begun ending this connection. the message loop
+        and the heartbeat run side by side and can both find a reason in one turn; only the first
+        sends the refusal and closes
     """
 
     websocket: Any
@@ -180,6 +183,19 @@ class _RoomConnection:
     expires_at: float | None = None
     heard_from_peer: bool = True
     handling_frame: bool = False
+    ending: bool = False
+
+    def begin_ending(self) -> bool:
+        """claim the ending of this connection; only the first caller gets it.
+
+        no await between the read and the write, so the claim is atomic on the event loop.
+
+        :return: ``True`` for the first caller, ``False`` once the connection is already ending
+        :rtype: bool
+        """
+        first = not self.ending
+        self.ending = True
+        return first
 
 
 async def _safe_send(websocket: Any, payload: str, *, context: str) -> bool:
@@ -704,6 +720,8 @@ class WebSocketHandler:
 
         each tick, in order:
 
+        - a connection the message loop is already ending is left to it: this task
+          is cancelled once the loop's refusal and close have finished.
         - a credential past its ``exp`` ends the connection ``UNAUTHENTICATED``,
           even mid-turn: the credential no longer holds, whatever the socket is doing.
         - a connection busy with a frame is left alone. the loop is not reading
@@ -727,9 +745,13 @@ class WebSocketHandler:
         ended = False
         while not ended:
             await self._heartbeat_sleep(self.heartbeat_interval)
-            if self._credential_expired(connection):
-                await self._end_expired(websocket, connection_id, connection)
-                ended = True
+            if connection.ending:
+                log.debug(
+                    "heartbeat tick skipped: connection already ending",
+                    extra={"extra_data": {"connection_id": connection_id}},
+                )
+            elif self._credential_expired(connection):
+                ended = await self._end_expired(websocket, connection_id, connection)
             elif connection.handling_frame:
                 log.debug(
                     "heartbeat tick skipped: connection busy with a frame",
@@ -746,8 +768,7 @@ class WebSocketHandler:
                         }
                     },
                 )
-                await self._close_unresponsive(websocket)
-                ended = True
+                ended = await self._close_unresponsive(websocket, connection)
             else:
                 connection.heard_from_peer = False
                 await self._refresh_presence(connection_id, connection)
@@ -756,8 +777,7 @@ class WebSocketHandler:
                         "websocket heartbeat ping could not be delivered; closing",
                         extra={"extra_data": {"connection_id": connection_id, "user_id": connection.user_id}},
                     )
-                    await self._close_unresponsive(websocket)
-                    ended = True
+                    ended = await self._close_unresponsive(websocket, connection)
 
     def _credential_expired(self, connection: _RoomConnection) -> bool:
         """whether the credential this connection authenticated with has expired.
@@ -769,10 +789,11 @@ class WebSocketHandler:
         """
         return connection.expires_at is not None and self._wall_clock() >= connection.expires_at
 
-    async def _end_expired(self, websocket: Any, connection_id: str, connection: _RoomConnection) -> None:
+    async def _end_expired(self, websocket: Any, connection_id: str, connection: _RoomConnection) -> bool:
         """close a connection whose credential expired, the way an unauthenticated one is refused.
 
-        the client reads ``UNAUTHENTICATED`` as "obtain a fresh credential and reconnect".
+        the client reads ``UNAUTHENTICATED`` as "obtain a fresh credential and reconnect". does
+        nothing when the connection is already being ended.
 
         :param websocket: the socket
         :ptype websocket: Any
@@ -780,20 +801,23 @@ class WebSocketHandler:
         :ptype connection_id: str
         :param connection: the connection
         :ptype connection: _RoomConnection
-        :return: nothing
-        :rtype: None
+        :return: ``True`` when this call ended the connection, ``False`` when it was already ending
+        :rtype: bool
         """
-        log.info(
-            "websocket credential expired; closing the connection",
-            extra={
-                "extra_data": {
-                    "connection_id": connection_id,
-                    "user_id": connection.user_id,
-                    "expires_at": connection.expires_at,
-                }
-            },
-        )
-        await self._close_with_error(websocket, UNAUTHENTICATED, _CREDENTIAL_EXPIRED_MESSAGE)
+        claimed = connection.begin_ending()
+        if claimed:
+            log.info(
+                "websocket credential expired; closing the connection",
+                extra={
+                    "extra_data": {
+                        "connection_id": connection_id,
+                        "user_id": connection.user_id,
+                        "expires_at": connection.expires_at,
+                    }
+                },
+            )
+            await self._close_with_error(websocket, UNAUTHENTICATED, _CREDENTIAL_EXPIRED_MESSAGE)
+        return claimed
 
     async def _refresh_presence(self, connection_id: str, connection: _RoomConnection) -> None:
         """refresh this connection's presence heartbeat when it is in any room.
@@ -835,21 +859,28 @@ class WebSocketHandler:
             delivered = False
         return delivered
 
-    async def _close_unresponsive(self, websocket: Any) -> None:
+    async def _close_unresponsive(self, websocket: Any, connection: _RoomConnection) -> bool:
         """close a connection whose peer stopped answering, bounded by one interval.
+
+        does nothing when the connection is already being ended.
 
         :param websocket: the socket
         :ptype websocket: Any
-        :return: nothing
-        :rtype: None
+        :param connection: the connection
+        :ptype connection: _RoomConnection
+        :return: ``True`` when this call ended the connection, ``False`` when it was already ending
+        :rtype: bool
         """
-        try:
-            await asyncio.wait_for(websocket.close(code=_UNRESPONSIVE_CLOSE_CODE), timeout=self.heartbeat_interval)
-        except Exception as exc:  # noqa: BLE001 -- the peer is gone; ending the connection does not depend on the close
-            log.debug(
-                "closing an unresponsive websocket failed",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+        claimed = connection.begin_ending()
+        if claimed:
+            try:
+                await asyncio.wait_for(websocket.close(code=_UNRESPONSIVE_CLOSE_CODE), timeout=self.heartbeat_interval)
+            except Exception as exc:  # noqa: BLE001 -- the peer is gone; ending the connection does not depend on the close
+                log.debug(
+                    "closing an unresponsive websocket failed",
+                    extra={"extra_data": {"error": str(exc)}},
+                )
+        return claimed
 
     async def _authenticate(self, websocket: Any) -> dict[str, Any] | None:
         """authenticate websocket connection via query param or first message.
@@ -965,6 +996,11 @@ class WebSocketHandler:
             connection.heard_from_peer = True
             connection.handling_frame = True
 
+            if connection.ending:
+                # the heartbeat is already ending this connection: a frame that raced it is not
+                # handled, and the loop keeps reading rather than returning, which would cancel
+                # the refusal and close still in flight.
+                continue
             if self._credential_expired(connection):
                 # the frame is not handled: the credential it would be acted on under has expired.
                 await self._end_expired(websocket, connection_id, connection)

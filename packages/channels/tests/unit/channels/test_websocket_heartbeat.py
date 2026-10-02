@@ -109,6 +109,27 @@ class _PeerSocket:
         return [json.loads(raw) for raw in self.sent]
 
 
+class _SlowClosingPeer(_PeerSocket):
+    """a peer whose close stays in progress until the test lets it finish."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.closing = asyncio.Event()
+        self.let_close_finish = asyncio.Event()
+        self.close_completed = False
+
+    async def close(self, code: int = 1000) -> None:
+        """record the code, then hold the close open until released.
+
+        :param code: the close code
+        :ptype code: int
+        """
+        self.close_codes.append(code)
+        self.closing.set()
+        await self.let_close_finish.wait()
+        self.close_completed = True
+
+
 class _ManualTicker:
     """the heartbeat's wait, released one tick at a time by the test."""
 
@@ -440,6 +461,30 @@ class TestServerHeartbeat:
         assert handler.registry.get_connections("user-123") == []
 
     @pytest.mark.asyncio
+    async def test_a_frame_that_races_the_heartbeat_close_is_not_handled(self) -> None:
+        """once the heartbeat has begun closing a silent peer, a late frame is not routed."""
+        ticker = _ManualTicker()
+        router = _RecordingRouter()
+        handler = _handler(ticker, router=router)
+        peer = _SlowClosingPeer()
+
+        task = asyncio.create_task(handler.handle_connection(peer))
+        await ticker.armed()
+        await ticker.tick()
+        ticker.release()
+        await asyncio.wait_for(peer.closing.wait(), _STEP_TIMEOUT)
+
+        # the loop drops the late frame and goes back to reading, leaving the close to finish
+        await peer.feed(json.dumps({"type": "message", "content": "too late"}))
+        peer.let_close_finish.set()
+        await _finished(task)
+
+        assert router.routed == []
+        assert peer.close_codes == [1011]
+        # the late frame did not end the connection out from under the close in progress
+        assert peer.close_completed
+
+    @pytest.mark.asyncio
     async def test_an_answering_member_of_a_room_keeps_its_presence_fresh(self) -> None:
         """the presence sweeper evicts a connection whose heartbeat goes stale; a live one must not go stale."""
         ticker = _ManualTicker()
@@ -582,6 +627,50 @@ class TestCredentialExpiry:
 
         assert peer.frames()[-1]["code"] == UNAUTHENTICATED
         assert peer.close_codes == [1008]
+
+    @pytest.mark.asyncio
+    async def test_a_frame_and_a_tick_that_both_find_it_expired_end_the_connection_once(self) -> None:
+        """the loop and the heartbeat run side by side; both may see the expiry in one turn."""
+        ticker = _ManualTicker()
+        clock = _Clock(999.0)
+        handler = _handler(ticker, auth=_auth_with_exp(1000), clock=clock)
+        peer = _PeerSocket()
+
+        task = asyncio.create_task(handler.handle_connection(peer))
+        await ticker.armed()
+        clock.now = 1001.0
+        peer.push(_PONG)
+        ticker.release()
+        await _finished(task)
+
+        assert [frame for frame in peer.frames() if frame.get("type") == "error"] == [
+            {"type": "error", "code": UNAUTHENTICATED, "message": "access token expired"}
+        ]
+        assert peer.close_codes == [1008]
+
+    @pytest.mark.asyncio
+    async def test_a_tick_during_the_loops_expiry_close_leaves_that_close_to_finish(self) -> None:
+        """the heartbeat must not end the connection, and so cancel the loop, while its close is in flight."""
+        ticker = _ManualTicker()
+        clock = _Clock(999.0)
+        handler = _handler(ticker, auth=_auth_with_exp(1000), clock=clock)
+        peer = _SlowClosingPeer()
+
+        task = asyncio.create_task(handler.handle_connection(peer))
+        await ticker.armed()
+        clock.now = 1001.0
+        peer.push(json.dumps({"type": "message", "content": "too late"}))
+        await asyncio.wait_for(peer.closing.wait(), _STEP_TIMEOUT)
+
+        await ticker.tick()
+        peer.let_close_finish.set()
+        await _finished(task)
+
+        assert peer.close_completed
+        assert peer.close_codes == [1008]
+        assert [frame for frame in peer.frames() if frame.get("type") == "error"] == [
+            {"type": "error", "code": UNAUTHENTICATED, "message": "access token expired"}
+        ]
 
     @pytest.mark.asyncio
     async def test_claims_without_exp_never_expire(self) -> None:
