@@ -16,7 +16,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from threetears.core.collections import REAPPLY_BACKOFF_SECONDS, REAPPLY_MAX_ATTEMPTS, reapply_on_lost_race
+from threetears.core.collections import (
+    REAPPLY_BACKOFF_SECONDS,
+    REAPPLY_MAX_ATTEMPTS,
+    ExponentialBackoff,
+    full_jitter_backoff,
+    reapply_on_lost_race,
+)
 from threetears.core.exceptions import ConcurrentModificationError
 
 
@@ -170,3 +176,84 @@ async def test_a_budget_below_one_is_refused_before_anything_runs() -> None:
         await reapply_on_lost_race(attempt, what="row update", max_attempts=0)
 
     assert runs == []
+
+
+async def test_a_callers_backoff_schedule_sets_every_pause_from_the_attempt_that_lost() -> None:
+    """the schedule is asked once per lost race, with that attempt's number, and its answer is slept."""
+    pauses = RecordedPauses()
+    asked: list[int] = []
+
+    def schedule(lost_attempt: int) -> float:
+        asked.append(lost_attempt)
+        return lost_attempt * 0.5
+
+    async def attempt() -> None:
+        raise refusal()
+
+    with pytest.raises(ConcurrentModificationError):
+        await reapply_on_lost_race(attempt, what="row update", max_attempts=4, backoff=schedule, pause=pauses)
+
+    assert asked == [1, 2, 3]
+    assert pauses.seconds == [0.5, 1.0, 1.5]
+
+
+def test_the_default_schedule_is_full_jitter_under_the_shared_ceiling() -> None:
+    """today's behaviour is the default: a uniform pause between zero and the ceiling, whatever the attempt."""
+    for lost_attempt in (1, 2, 29):
+        for _ in range(50):
+            assert 0 <= full_jitter_backoff(lost_attempt) <= REAPPLY_BACKOFF_SECONDS
+
+
+def test_exponential_backoff_doubles_from_its_base_up_to_its_cap_with_jitter_around_each_step() -> None:
+    """each pause is base * 2**(n-1), capped, times a jitter in [0.5, 1.5)."""
+    schedule = ExponentialBackoff(base_seconds=0.05, cap_seconds=2.0)
+    expected_steps = [0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 2.0, 2.0, 2.0]
+    for lost_attempt, step in enumerate(expected_steps, start=1):
+        for _ in range(50):
+            pause = schedule(lost_attempt)
+            assert step * 0.5 <= pause < step * 1.5, (lost_attempt, pause)
+
+
+async def test_an_eight_attempt_exponential_budget_waits_between_about_two_and_a_half_and_eight_seconds() -> None:
+    """eight attempts on a 50ms base capped at 2s sleep seven times: 5.15s of steps, jittered to [2.575, 7.725)."""
+    pauses = RecordedPauses()
+    runs: list[int] = []
+
+    async def attempt() -> None:
+        runs.append(1)
+        raise refusal()
+
+    with pytest.raises(ConcurrentModificationError):
+        await reapply_on_lost_race(
+            attempt,
+            what="row update",
+            max_attempts=8,
+            backoff=ExponentialBackoff(base_seconds=0.05, cap_seconds=2.0),
+            pause=pauses,
+        )
+
+    assert len(runs) == 8
+    assert len(pauses.seconds) == 7
+    assert 5.15 * 0.5 <= sum(pauses.seconds) < 5.15 * 1.5
+
+
+@pytest.mark.parametrize(
+    ("base_seconds", "cap_seconds", "match"),
+    [
+        (0.0, 1.0, "base_seconds must be positive"),
+        (-0.1, 1.0, "base_seconds must be positive"),
+        (0.5, 0.1, "cap_seconds must be at least base_seconds"),
+    ],
+)
+def test_an_exponential_schedule_that_cannot_back_off_is_refused(
+    base_seconds: float, cap_seconds: float, match: str
+) -> None:
+    """a zero or negative base never backs off, and a cap below the base is a schedule that contradicts itself."""
+    with pytest.raises(ValueError, match=match):
+        ExponentialBackoff(base_seconds=base_seconds, cap_seconds=cap_seconds)
+
+
+def test_an_exponential_schedule_refuses_an_attempt_number_below_one() -> None:
+    """attempts are numbered from one; a zero is a caller bug, not a pause of half the base."""
+    with pytest.raises(ValueError, match="lost_attempt must be at least 1"):
+        ExponentialBackoff(base_seconds=0.05, cap_seconds=2.0)(0)

@@ -20,16 +20,23 @@ private modules -- ``opentelemetry._logs``, ``opentelemetry.sdk._logs``,
 ``opentelemetry.sdk._logs.export`` -- and the OTLP HTTP log exporter only as
 ``opentelemetry.exporter.otlp.proto.http._log_exporter``. There is no public spelling of any of
 them. So this module is also the only place that imports them: :func:`start_log_export` builds
-the provider, batch processor, exporter and ``LoggingHandler`` that ``setup.py`` installs, and
+the provider, batch processor, exporter and handler that ``setup.py`` installs, and
 :class:`OtelLogExport` is what ``setup.py`` holds to flush and shut it down. When an upgrade moves
 those modules, importing this module fails naming the one that moved, and
 ``tests/test_otel_internals.py`` -- the guard -- fails with it; when it keeps the names but
 changes how a record travels to the exporter, the guard's round trip fails.
 
-The names imported here set the ``otel`` extra's floor: ``LogRecordExporter`` first shipped in
-opentelemetry-sdk 1.39.0, so api, sdk and exporter are declared ``>=1.39``.
-``scripts/test-otel-floor.sh`` runs the guard at exactly that floor in CI; raising the code past
-it without raising the floor goes red there rather than in a consumer.
+**The handler** is ``opentelemetry-instrumentation-logging``'s ``LoggingHandler``, a public module;
+the SDK's own ``opentelemetry.sdk._logs.LoggingHandler`` is deprecated in its favour and warns on
+every construction. The replacement exports the ``code.*`` call-site attributes only when built with
+``log_code_attributes=True``, which this module passes: the call-site enrichment in ``setup.py``
+rewrites exactly the fields those attributes carry.
+
+The names imported here set the ``otel`` extra's floor: the replacement handler first shipped in
+opentelemetry-instrumentation-logging 0.61b0, which pins opentelemetry-api 1.40.0, so api, sdk and
+exporter are declared ``>=1.40`` beside it (``LogRecordExporter``, which set the earlier floor,
+shipped in 1.39.0). ``scripts/test-otel-floor.sh`` runs the guard at exactly that floor in CI;
+raising the code past it without raising the floor goes red there rather than in a consumer.
 
 Consumers never import these modules: a host app gets log export through
 :func:`threetears.observe.init_telemetry` with ``loki_endpoint`` set.
@@ -44,7 +51,8 @@ from typing import Protocol, cast
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.instrumentation.logging.handler import LoggingHandler
+from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk._logs.export import LogRecordExporter as SdkLogRecordExporter
 from opentelemetry.sdk.resources import Resource
@@ -86,7 +94,8 @@ class LogRecordExporter(Protocol):
 class OtelLogExport:
     """one running log export: the handler to attach, and the provider behind it.
 
-    :ivar handler: the OpenTelemetry ``LoggingHandler``; attach it (or a wrapper) to a logger
+    :ivar handler: opentelemetry-instrumentation-logging's ``LoggingHandler``; attach it (or a wrapper)
+        to a logger
     """
 
     def __init__(self, provider: LoggerProvider, handler: logging.Handler) -> None:
@@ -139,6 +148,9 @@ def start_log_export(
 ) -> OtelLogExport:
     """build and install OpenTelemetry log export: provider, batch processor, exporter, handler.
 
+    The handler is opentelemetry-instrumentation-logging's, exporting the ``code.*`` call-site
+    attributes with every record.
+
     The provider is also installed as OpenTelemetry's global logger provider, so the logs API
     reaches it too.
 
@@ -157,5 +169,7 @@ def start_log_export(
     # the SDK's exporter base is nominal; anything meeting the protocol above is what it drives
     provider.add_log_record_processor(BatchLogRecordProcessor(cast(SdkLogRecordExporter, chosen)))
     set_logger_provider(provider)
-    handler = LoggingHandler(level=logging.DEBUG, logger_provider=provider)
+    # code attributes on: the SDK handler this replaced always exported them, and setup.py's
+    # call-site enrichment exists to fill them
+    handler = LoggingHandler(level=logging.DEBUG, logger_provider=provider, log_code_attributes=True)
     return OtelLogExport(provider, handler)

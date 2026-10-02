@@ -25,15 +25,23 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-# The floor is what `_otel_internals` imports, not what shipped last: opentelemetry-sdk 1.39.0 is
-# the first release with `opentelemetry.sdk._logs.export.LogRecordExporter`. api, sdk and the
-# exporter release in lockstep (each sdk pins its api exactly, each exporter its sdk minor), so
-# all three move together. scripts/test-otel-floor.sh runs the OpenTelemetry tests at exactly
-# these floors, and CI runs it, so a floor that falls behind the code goes red here.
+# The floor is what `_otel_internals` imports, not what shipped last. Its log handler is
+# opentelemetry-instrumentation-logging's (the SDK's own `LoggingHandler` is deprecated in its
+# favour), which first shipped in 0.61b0; that release pins opentelemetry-api 1.40.0 through
+# its semantic-conventions, so api, sdk and the exporter cannot sit below 1.40 beside it.
+# (opentelemetry-sdk 1.39.0 was the floor before: the first with
+# `opentelemetry.sdk._logs.export.LogRecordExporter`.) api, sdk and the exporter release in
+# lockstep (each sdk pins its api exactly, each exporter its sdk minor), and each contrib
+# 0.(N+21)b0 ships with core 1.N, so all four move together. Every one is capped below its
+# next major: a major may drop the private logs modules `_otel_internals` imports, and no
+# consumer should resolve one before this code is tested against it.
+# scripts/test-otel-floor.sh runs the OpenTelemetry tests at exactly these floors, and CI runs
+# it, so a floor that falls behind the code goes red here.
 otel = [
-    "opentelemetry-api>=1.39",
-    "opentelemetry-sdk>=1.39",
-    "opentelemetry-exporter-otlp>=1.39",
+    "opentelemetry-api>=1.40,<2",
+    "opentelemetry-sdk>=1.40,<2",
+    "opentelemetry-exporter-otlp>=1.40,<2",
+    "opentelemetry-instrumentation-logging>=0.61b0,<1",
 ]
 asgi = [
     "uuid-utils",

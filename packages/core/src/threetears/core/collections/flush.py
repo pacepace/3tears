@@ -14,6 +14,7 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.collections.l2_order import l2_order_of
+from threetears.core.exceptions import CorruptCacheEntry
 from threetears.observe import get_logger
 
 __all__ = [
@@ -216,7 +217,7 @@ class WriteBuffer:
         process's next drain as well as after a crash -- so its UUIDs, instants, Decimals and
         bytes arrive as the strings the encoder wrote. ``decode`` turns that text back into the
         typed row the write was made with; :func:`flush_pending` passes one that rehydrates
-        through the owning collection's schema. a row ``decode`` cannot read is handed on as
+        through the owning collection's ``decode_row``. a row ``decode`` cannot read is handed on as
         parsed JSON and logged, so the flush's retry budget decides its fate instead of one
         unreadable row stopping every drain.
 
@@ -348,11 +349,11 @@ def _decoded_row(
     if decode is not None:
         try:
             result = decode(table_name, text)
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, CorruptCacheEntry) as exc:
             # the flush retry budget governs it from here: its L3 write fails on the untyped
             # values, is retried, and is dropped with a permanent-failure log if it never lands
             log.error(
-                "buffered write could not be rehydrated by its table's schema; flushing it as "
+                "buffered write could not be rehydrated by its table's collection; flushing it as "
                 "parsed JSON. inspect the write_buffer row for a value its column type cannot hold",
                 extra={"extra_data": {"table": table_name, "entity_id": entity_id, "error": str(exc)}},
             )
@@ -361,37 +362,39 @@ def _decoded_row(
     return result
 
 
-def _schema_decoder(registry: CollectionRegistry) -> Callable[[str, str], dict[str, Any]]:
-    """the decoder :func:`flush_pending` hands :meth:`WriteBuffer.drain`: rehydrate by schema.
+def _collection_decoder(registry: CollectionRegistry) -> Callable[[str, str], dict[str, Any]]:
+    """the decoder :func:`flush_pending` hands :meth:`WriteBuffer.drain`: the owning collection's own decode.
 
-    A :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection` decodes the text
-    with its own L2 codec, which types every declared column -- an instant comes back aware, a
-    legacy naive or ``str(dt)`` spelling read as UTC -- the codec the row was encoded compatibly
-    with (both use :func:`~threetears.core.backends.schema_sql.json_default`). Any other table
-    gets the parsed JSON, as before: without a schema there is nothing to type it by.
+    Every registered collection decodes the text through
+    :meth:`~threetears.core.collections.base.BaseCollection.decode_row`: its codec, then its
+    declared instants rehydrated aware (a legacy naive or ``str(dt)`` spelling read as UTC). A
+    :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection`'s codec types every
+    declared column besides; a durable-store, dynamic or hand-written collection gets at least its
+    instants back typed. Both encoders the text could have come from write the one stored form
+    (:func:`~threetears.core.backends.schema_sql.json_default`). A table with no registered
+    collection gets the parsed JSON: without a collection there is nothing to type it by.
 
     :param registry: the registry resolving a table to its collection
     :ptype registry: CollectionRegistry
     :return: ``(table_name, json_text) -> row``
     :rtype: Callable[[str, str], dict[str, Any]]
     """
-    # imported here: schema_backed imports this module
-    from threetears.core.collections.schema_backed import SchemaBackedCollection
 
     def decode(table_name: str, text: str) -> dict[str, Any]:
-        """rehydrate one buffered row by its table's schema.
+        """rehydrate one buffered row through its table's collection.
 
         :param table_name: the row's destination table
         :ptype table_name: str
         :param text: the stored JSON text
         :ptype text: str
-        :return: the typed row, or the parsed JSON when the table has no schema
+        :return: the typed row, or the parsed JSON when the table has no collection
         :rtype: dict[str, Any]
+        :raises CorruptCacheEntry: when a declared instant will not parse
         """
         collection = registry.get_collection(table_name)
         result: dict[str, Any]
-        if isinstance(collection, SchemaBackedCollection):
-            result = collection.deserialize(text.encode("utf-8"))
+        if collection is not None:
+            result = collection.decode_row(text.encode("utf-8"))
         else:
             result = json.loads(text)
         return result
@@ -784,7 +787,7 @@ async def flush_pending(
     :return: number of entities successfully persisted (both paths summed).
     :rtype: int
     """
-    pending = await write_buffer.drain(decode=_schema_decoder(registry))
+    pending = await write_buffer.drain(decode=_collection_decoder(registry))
     if not pending:
         return 0
 

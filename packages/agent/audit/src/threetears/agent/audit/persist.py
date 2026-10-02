@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -45,7 +46,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
-from threetears.core.serialization import to_stored_json
+from threetears.core.serialization import json_datetime, to_stored_json
 from threetears.nats import Subjects
 from threetears.observe import get_logger, spawn_background
 from threetears.observe.erasure import ANONYMIZED_MARKER
@@ -118,6 +119,34 @@ AUDIT_EVENTS_DDL: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events (actor_user_id)",
 )
 
+#: an instant as JSON text: a full date-time with a ``T``, an optional fraction and an explicit offset or ``Z``.
+#: pydantic's wire spelling (``2026-10-01T12:30:00Z``) and the stored one both match; a date, a naive
+#: date-time, a space-separated one and prose around an instant do not, so they are kept verbatim.
+_WIRE_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})")
+
+
+def _respell_instants(value: Any) -> Any:  # noqa: ANN401 -- any JSON value
+    """``value`` with every string naming an instant re-spelled in the one stored form.
+
+    the translation point for details that arrived as JSON text: a producer's ``model_dump_json`` writes
+    pydantic's ``...Z`` form, and the stored form is :func:`~threetears.core.serialization.json_datetime`'s.
+    only a string that is wholly an aware ISO date-time is touched; mappings and lists are walked.
+
+    :param value: a JSON-native value (the output of ``to_stored_json``)
+    :ptype value: Any
+    :return: the same shape, instants re-spelled
+    :rtype: Any
+    """
+    result: Any = value
+    if isinstance(value, str) and _WIRE_INSTANT.fullmatch(value):
+        result = json_datetime(datetime.fromisoformat(value))
+    elif isinstance(value, Mapping):
+        result = {key: _respell_instants(item) for key, item in value.items()}
+    elif isinstance(value, list):
+        result = [_respell_instants(item) for item in value]
+    return result
+
+
 _INSERT = (
     "INSERT INTO audit_events ("
     "id, timestamp, event_type, action, outcome, actor_user_id, acting_as_principal_id, calling_agent_id, "
@@ -172,7 +201,8 @@ async def persist_audit_event(db: AuditStore, event: AuditEvent, *, ip_address: 
     """insert one event; a redelivery, or a re-emission under a new id, is a no-op.
 
     details are written as ``$n::text::jsonb`` from ``json.dumps``, so the value is parsed once whatever
-    JSONB codec the pool carries.
+    JSONB codec the pool carries. every instant in them is stored in one form: a ``datetime`` built
+    in-process, and an instant that arrived over the wire as pydantic's ``...Z`` text, alike.
 
     :param db: the deployment's database
     :ptype db: AuditStore
@@ -202,8 +232,10 @@ async def persist_audit_event(db: AuditStore, event: AuditEvent, *, ip_address: 
         event.correlation_id,
         event.conversation_id,
         # details built in-process may hold UUIDs and datetimes: stored as pydantic's JSON mode writes
-        # them, each datetime in the one stored form; ensure_ascii off so text is stored as written
-        json.dumps(to_stored_json(event.details, field="details"), ensure_ascii=False),
+        # them, each datetime in the one stored form. details that arrived over the wire hold instants
+        # as pydantic's `...Z` text, re-spelled here -- the one point wire text becomes stored data.
+        # ensure_ascii off so text is stored as written
+        json.dumps(_respell_instants(to_stored_json(event.details, field="details")), ensure_ascii=False),
         ip_address,
     )
 

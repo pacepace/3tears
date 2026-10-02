@@ -132,18 +132,9 @@ async def _take_over(client: FakeNatsClient, key: str) -> None:
     assert await bucket.update(key=key, value=value.replace(b"pod-a", b"pod-b"), revision=revision) is not None
 
 
-def _make_unreachable(bucket: FakeKvBucket, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Make every read of ``bucket`` raise while ``state["down"]`` is true."""
-    state: dict[str, Any] = {"down": False}
-    real = bucket.get_entry
-
-    async def get_entry(*, key: str) -> tuple[bytes, int] | None:
-        if state["down"]:
-            raise ConnectionError("kv is unreachable")
-        return await real(key=key)
-
-    monkeypatch.setattr(bucket, "get_entry", get_entry)
-    return state
+def _outage() -> ConnectionError:
+    """the error every operation raises while the bucket is unreachable, as a lost broker answers."""
+    return ConnectionError("kv is unreachable")
 
 
 @_in_virtual_time
@@ -184,14 +175,14 @@ async def test_releasing_a_lost_lease_leaves_the_new_owners_entry() -> None:
 
 
 @_in_virtual_time
-async def test_a_brief_transport_failure_is_not_a_lost_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_brief_transport_failure_is_not_a_lost_lease() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
+    bucket = await _bucket(client)
     try:
-        state = _make_unreachable(await _bucket(client), monkeypatch)
-        state["down"] = True
+        bucket.become_unreachable(_outage())
         await asyncio.sleep(_RENEW.total_seconds() * 4)
-        state["down"] = False
+        bucket.become_reachable()
         assert held.held, "a transient renewal failure was treated as losing the lease"
         await asyncio.sleep(_RENEW.total_seconds() * 3)
         assert held.held, "renewal did not resume once the bucket came back"
@@ -200,11 +191,11 @@ async def test_a_brief_transport_failure_is_not_a_lost_lease(monkeypatch: pytest
 
 
 @_in_virtual_time
-async def test_a_failure_lasting_past_the_ttl_gives_the_lease_up(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_failure_lasting_past_the_ttl_gives_the_lease_up() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
     try:
-        _make_unreachable(await _bucket(client), monkeypatch)["down"] = True
+        (await _bucket(client)).become_unreachable(_outage())
         await asyncio.wait_for(held.until_lost(), timeout=5)
         assert not held.held
     finally:
@@ -242,10 +233,10 @@ async def test_as_a_context_manager_it_releases_on_exit_even_when_the_body_fails
 
 
 @_in_virtual_time
-async def test_a_release_that_cannot_reach_the_bucket_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_release_that_cannot_reach_the_bucket_does_not_raise() -> None:
     client = FakeNatsClient()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=_RENEW)
-    _make_unreachable(await _bucket(client), monkeypatch)["down"] = True
+    (await _bucket(client)).become_unreachable(_outage())
     await held.release()  # the TTL frees the entry; a cleanup error must not replace the caller's outcome
 
 
@@ -275,7 +266,7 @@ async def test_configuration_that_cannot_hold_is_refused(ttl: timedelta, renew_e
 
 
 @_in_virtual_time
-async def test_loss_is_reported_no_later_than_the_entry_could_expire(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_loss_is_reported_no_later_than_the_entry_could_expire() -> None:
     """Another pod may take the key the moment the entry expires, so ``lost`` must be set by then --
     not up to a renewal interval later."""
     client = FakeNatsClient()
@@ -283,7 +274,7 @@ async def test_loss_is_reported_no_later_than_the_entry_could_expire(monkeypatch
     started = loop.time()
     held = await _lease(client, "pod-a").hold("job", ttl=_TTL, renew_every=timedelta(seconds=0.4))
     try:
-        _make_unreachable(await _bucket(client), monkeypatch)["down"] = True
+        (await _bucket(client)).become_unreachable(_outage())
         await asyncio.wait_for(held.until_lost(), timeout=5)
         assert loop.time() - started <= _TTL.total_seconds() + 0.05
         assert held.lost.is_set()

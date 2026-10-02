@@ -138,3 +138,24 @@ def test_a_manifest_written_before_the_flag_existed_reads_as_unsynchronized() ->
     reread = BackupManifest.from_json(json.dumps(stripped).encode("utf-8"))
 
     assert not any(d.inventory_snapshot_consistent for d in reread.databases)
+
+
+def test_created_at_is_stored_in_the_one_stored_form() -> None:
+    """the manifest is stored JSON, so its instant takes the form every other stored instant takes."""
+    raw = json.loads(_manifest().to_json())
+    assert raw["created_at"] == "2026-09-01T04:00:00.000000+00:00"
+
+
+def test_a_manifest_written_with_isoformat_still_reads() -> None:
+    """every manifest stored before the one form spelled the instant as ``isoformat()`` wrote it."""
+    raw = json.loads(_manifest().to_json())
+    raw["created_at"] = "2026-09-01T04:00:00+00:00"
+    parsed = BackupManifest.from_json(json.dumps(raw).encode("utf-8"))
+    assert parsed.created_at == datetime(2026, 9, 1, 4, 0, tzinfo=UTC)
+
+
+def test_a_naive_created_at_is_refused_at_write_naming_it() -> None:
+    """a naive instant names no moment; a set's timestamp must say when, so writing one is refused."""
+    naive = replace(_manifest(), created_at=datetime(2026, 9, 1, 4, 0))
+    with pytest.raises(ValueError, match="naive datetime in 'created_at'"):
+        naive.to_json()

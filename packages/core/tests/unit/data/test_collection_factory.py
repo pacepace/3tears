@@ -422,6 +422,68 @@ class TestTimestamptzColumns:
         assert restored["date_created"] == aware
 
 
+def _clock_table() -> TableDef:
+    return TableDef(
+        name="clocks",
+        columns=[
+            ColumnDef(name="id", column_type="text", primary_key=True),
+            ColumnDef(name="date_happened", column_type="timestamptz"),
+            ColumnDef(name="wall_clock", column_type="timestamp"),
+        ],
+    )
+
+
+class TestANaiveInstantNeverReachesL3:
+    """a naive value in a ``timestamptz`` column is refused at the L3 write, as the L2 encoder refuses it.
+
+    asyncpg's codec reads a naive datetime bound to ``timestamptz`` as the HOST's local time, so it
+    would land shifted by the writer's offset: right on a UTC CI runner and production, hours off
+    on a developer's machine, and authoritative-looking either way.
+    """
+
+    def _collection(self, pool: FakeAsyncpgPool) -> Any:
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=pool)
+        return create_dynamic_collection(
+            table_def=_clock_table(),
+            registry=registry,
+            config=DefaultCoreConfig(collection_flush="ALWAYS"),
+        )
+
+    async def test_a_naive_instant_is_refused_naming_its_table_and_column(self) -> None:
+        from datetime import datetime
+
+        pool = FakeAsyncpgPool()
+        collection = self._collection(pool)
+
+        with pytest.raises(ValueError, match=r"naive datetime in 'clocks\.date_happened'"):
+            await collection.save_to_store({"id": "c1", "date_happened": datetime(2026, 10, 1, 12, 30)})
+
+        assert pool.executed == [], "the naive value reached the database"
+
+    async def test_an_aware_instant_and_a_naive_wall_clock_are_bound_as_they_are(self) -> None:
+        from datetime import UTC, datetime
+
+        pool = FakeAsyncpgPool()
+        collection = self._collection(pool)
+        instant = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
+        wall_clock = datetime(2026, 10, 1, 9, 0)
+
+        await collection.save_to_store({"id": "c1", "date_happened": instant, "wall_clock": wall_clock})
+
+        ((_sql, bound),) = pool.executed
+        assert bound == ("c1", instant, wall_clock)
+
+    def test_the_l2_encoder_refuses_the_same_value(self) -> None:
+        """the two tiers agree: what L3 refuses, the L2 codec refuses too."""
+        from datetime import datetime
+
+        collection = self._collection(FakeAsyncpgPool())
+
+        with pytest.raises(ValueError, match="naive datetime"):
+            collection.serialize({"id": "c1", "date_happened": datetime(2026, 10, 1, 12, 30)})
+
+
 class _TaggingPool(FakeAsyncpgPool):
     """A pool whose ``execute`` returns a caller-chosen asyncpg status tag."""
 

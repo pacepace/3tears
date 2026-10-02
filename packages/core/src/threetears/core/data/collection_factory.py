@@ -39,6 +39,34 @@ _COLUMN_TYPE_TO_PYTHON: dict[str, type] = {
 }
 
 
+def _refuse_naive_instants(table_name: str, data: dict[str, Any], instant_columns: frozenset[str]) -> None:
+    """refuse a row whose ``timestamptz`` column holds a naive datetime, before it reaches L3.
+
+    asyncpg's codec reads a naive datetime bound to ``timestamptz`` as the HOST's local time, so the
+    stored instant would shift by the writer's offset -- invisible on a UTC host, hours off on any
+    other, and authoritative-looking either way. The L2 encoder refuses the same value
+    (:func:`~threetears.core.serialization.json_datetime`), so both tiers answer it alike.
+
+    :param table_name: the table, named in the refusal
+    :ptype table_name: str
+    :param data: the row about to be written
+    :ptype data: dict[str, Any]
+    :param instant_columns: the table's ``timestamptz`` columns
+    :ptype instant_columns: frozenset[str]
+    :return: None
+    :rtype: None
+    :raises ValueError: naming the first column holding a naive value
+    """
+    for column in sorted(instant_columns):
+        value = data.get(column)
+        if isinstance(value, datetime) and value.utcoffset() is None:
+            raise ValueError(
+                f"refusing to store a naive datetime in '{table_name}.{column}' ({value.isoformat()}): a "
+                f"timestamptz column names an instant, and the driver would read this one as the host's local "
+                f"time. produce it timezone-aware -- datetime.now(UTC), or attach the zone it was measured in"
+            )
+
+
 def _build_field_types(table_def: TableDef) -> dict[str, type]:
     """build field_types mapping from TableDef columns for deserialization.
 
@@ -360,7 +388,9 @@ def create_dynamic_collection(
             :ptype conn: Any
             :return: number of rows affected, ``0`` when no L3 backend is wired
             :rtype: int
+            :raises ValueError: when a ``timestamptz`` column holds a naive datetime
             """
+            _refuse_naive_instants(tbl_name, data, instant_columns)
             executor: Any = conn if conn is not None else self.l3_pool
             if executor is None:
                 return 0
