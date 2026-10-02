@@ -127,9 +127,7 @@ def _own_test_import_entries(rationales: dict[tuple[str, str, str, int], str], u
     for source in scanned_python_files(_REPO_ROOT):
         rel = source.relative_to(_REPO_ROOT).as_posix()
         owned = [Path(module).stem for module in modules if is_own_test_of(rel, module)]
-        bindings = sorted(
-            (line, key) for key, line in import_bindings(source).items() if owned and key[1] in owned
-        )
+        bindings = sorted((line, key) for key, line in import_bindings(source).items() if owned and key[1] in owned)
         if bindings:
             lines.append("")
         for line, (scope, symbol, occurrence) in bindings:
