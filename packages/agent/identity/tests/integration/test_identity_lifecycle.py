@@ -284,3 +284,34 @@ async def test_reject_leaves_active_untouched(pg_schema: tuple[str, str]) -> Non
         assert await coll.find_pending(agent_id=_AGENT, user_id=_USER) == []
     finally:
         await pool.close()
+
+
+async def test_consent_refuses_a_sibling_made_against_a_superseded_head(pg_schema: tuple[str, str]) -> None:
+    """Two proposals made from the same version: once one is consented, the other would undo it."""
+    coll, pool = await _stack(pg_schema)
+    authz = _authorizer()
+    try:
+        await lifecycle.seed_active(
+            coll, authz, agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK, content="as written"
+        )
+        first, second = [
+            await lifecycle.propose(
+                coll, authz, block_key=_BLOCK, content=text, rationale="r", proposer_agent_id=_AGENT, **_kw()
+            )
+            for text in ("first rewrite", "second rewrite")
+        ]
+        assert first is not None and second is not None
+        assert first.parent_version_id == second.parent_version_id
+
+        await lifecycle.consent(coll, authz, version_id=first.version_id, consenter_user_id=_USER, **_kw())
+        with pytest.raises(lifecycle.IdentityProposalOutOfDate):
+            await lifecycle.consent(coll, authz, version_id=second.version_id, consenter_user_id=_USER, **_kw())
+
+        active = await coll.resolve_active(agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK)
+        assert active is not None and active.content == "first rewrite"
+        assert await _count_active(pool, _BLOCK) == 1
+        # It stays answerable, by rejecting it.
+        rejected = await lifecycle.reject(coll, authz, version_id=second.version_id, **_kw())
+        assert rejected is not None and rejected.status == "rejected"
+    finally:
+        await pool.close()
