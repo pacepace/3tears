@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Enforcement: a private name bound by an import or by a string is a violation, in tests too
+
+Owner ruling, 2026-10-01. The underscore walkers A-F, SLF001 and the suppression policy all passed
+two spellings: a test importing a private name (`from ...redshift_driver import
+_CANCEL_TIMEOUT_SECONDS`, `from .test_websocket import _valid_auth`) or importing through a
+private module path, and a private name bound by a string (`monkeypatch.setattr(obj, "_x", v)`,
+`patch("pkg.mod._x")`, `patch.object(Client, "_astream")`, `mocker.spy`, `import_module`).
+
+- **New: `threetears.enforcement.underscore_access.private_binding`** -- `scan_private_bindings`,
+  `private_binding_findings`, `confinement_modules`, `undetected_planted_controls`,
+  `PrivateBindingScan`, and the four categories `SHAPE_G_NAME`, `SHAPE_G_MODULE`,
+  `SHAPE_H_ATTRIBUTE`, `SHAPE_H_PATH` (`PRIVATE_BINDING_CATEGORIES`). Scans every python file of
+  the repo. The rules -- what counts as private, the src package boundary, the tests-tree
+  boundary for private test-support modules, the confinement-module sanction -- are in the module
+  docstring, with the thin shell a consumer repo adds to enable it.
+- **`pragma_policy.TEST_DIRECTORIES`** is public (was `_TEST_DIRECTORIES`), so the new module reads
+  the same answer to "is this a tests directory".
+- **3tears' own gate, `tests/enforcement/test_private_binding.py`, is red** until this repo's
+  findings are fixed. Nothing is exempted.
+
 ### L1 caches a JSON value holding a UUID, datetime or Decimal instead of failing a committed write
 
 `SQLiteBackend.serialize_value` encoded JSON columns with a bare `json.dumps`, so a dict or list
