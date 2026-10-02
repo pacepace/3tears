@@ -25,6 +25,7 @@ from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
 from threetears.core.collections.merge import repoint_user_rows
+from threetears.core.collections.reapply import REAPPLY_BACKOFF_SECONDS, REAPPLY_MAX_ATTEMPTS, reapply_on_lost_race
 from threetears.core.collections.registry import (
     CacheInvalidationMessage,
     CollectionRegistry,
@@ -87,6 +88,8 @@ __all__ = [
     "INT_TYPE",
     "JSONB_TYPE",
     "PartitionEnforcementError",
+    "REAPPLY_BACKOFF_SECONDS",
+    "REAPPLY_MAX_ATTEMPTS",
     "STRING_TYPE",
     "SchemaBackedCollection",
     "TableSchema",
@@ -99,6 +102,7 @@ __all__ = [
     "encode_jsonb",
     "flush_pending",
     "init_connection",
+    "reapply_on_lost_race",
     "register_jsonb_text_codec",
     "repoint_user_rows",
     "serialize_to_json",
