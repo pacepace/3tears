@@ -157,11 +157,9 @@ def _namespace() -> None:
     set_default_namespace("3tears")
 
 
-async def _connected(monkeypatch: pytest.MonkeyPatch, *connections: _Conn | BaseException) -> NatsClient:
+async def _connected(*connections: _Conn | BaseException) -> NatsClient:
     """a client opened through :meth:`NatsClient.connect` whose connections come from ``connections``.
 
-    :param monkeypatch: pytest's patcher
-    :ptype monkeypatch: pytest.MonkeyPatch
     :param connections: each connection the client opens, in order; an exception is raised instead
     :ptype connections: _Conn | BaseException
     :return: the connected client
@@ -175,8 +173,8 @@ async def _connected(monkeypatch: pytest.MonkeyPatch, *connections: _Conn | Base
             raise step
         return step
 
-    monkeypatch.setattr(client_module, "_establish_connection", _establish)
     return await NatsClient.connect(
+        establish_connection=_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="handover-test",
@@ -222,9 +220,9 @@ async def test_a_client_that_did_not_open_its_connection_cannot_renew_it() -> No
         await client.renew_connection(retire_after=timedelta(seconds=1))
 
 
-async def test_a_successor_that_cannot_open_changes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_successor_that_cannot_open_changes_nothing() -> None:
     current = _Conn("current")
-    client = await _connected(monkeypatch, current, RuntimeError("callout denied"))
+    client = await _connected(current, RuntimeError("callout denied"))
 
     with pytest.raises(RuntimeError, match="callout denied"):
         await client.renew_connection(retire_after=timedelta(seconds=1))
@@ -233,11 +231,9 @@ async def test_a_successor_that_cannot_open_changes_nothing(monkeypatch: pytest.
     assert not current.is_closed
 
 
-async def test_a_successor_that_cannot_take_the_subscriptions_is_closed_and_changes_nothing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_successor_that_cannot_take_the_subscriptions_is_closed_and_changes_nothing() -> None:
     current, successor = _Conn("current"), _Conn("successor", subscribe_fails=True)
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     received: list[bytes] = []
 
     async def _cb(msg: IncomingMessage) -> None:
@@ -257,16 +253,14 @@ async def test_a_successor_that_cannot_take_the_subscriptions_is_closed_and_chan
     await client.unsubscribe(sub)
 
 
-async def test_the_handover_moves_every_subscription_before_the_old_half_is_released(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_the_handover_moves_every_subscription_before_the_old_half_is_released() -> None:
     """subscribe the successor in the same group, make it current, THEN drain the old half.
 
     a message the server routed to the old connection before its UNSUB still reaches the callback,
     and so does one routed to the successor: both connections feed the one subscription.
     """
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     received: list[bytes] = []
 
     async def _cb(msg: IncomingMessage) -> None:
@@ -297,9 +291,9 @@ async def test_the_handover_moves_every_subscription_before_the_old_half_is_rele
     await client.shutdown()
 
 
-async def test_the_replaced_connection_is_drained_after_the_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_replaced_connection_is_drained_after_the_hold() -> None:
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
 
     await client.renew_connection(retire_after=timedelta(seconds=0.05))
     for _ in range(100):
@@ -312,9 +306,9 @@ async def test_the_replaced_connection_is_drained_after_the_hold(monkeypatch: py
     await client.shutdown()
 
 
-async def test_shutdown_closes_a_connection_still_being_held(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_shutdown_closes_a_connection_still_being_held() -> None:
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     await client.renew_connection(retire_after=timedelta(seconds=3600))
 
     await client.shutdown()
@@ -329,7 +323,7 @@ async def test_a_reply_owed_across_a_renewal_leaves_on_the_connection_that_recei
     """NATS lets only the receiving connection answer; the successor's publish would be refused."""
     monkeypatch.setattr(client_module, "seconds_until_reauth", lambda _ttl, **_kw: 3600.0)
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     client.renew_credential(ttl_seconds=lambda: 300, longest_request_seconds=30.0)
     owed: list[IncomingMessage] = []
 
@@ -375,7 +369,7 @@ async def test_without_a_renewal_a_reply_simply_uses_the_current_connection() ->
 
 async def test_a_subscription_dropped_during_the_handover_is_not_revived(monkeypatch: pytest.MonkeyPatch) -> None:
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
 
     async def _cb(msg: IncomingMessage) -> None:
         return None
@@ -517,16 +511,14 @@ async def test_a_push_consumer_stopped_during_the_move_is_not_bound_again() -> N
     assert consumer.is_closed
 
 
-async def test_nothing_is_published_on_the_successor_before_the_old_connection_settles(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_nothing_is_published_on_the_successor_before_the_old_connection_settles() -> None:
     """a publisher's A on the old connection must reach the server before its B on the successor.
 
     they travel on two sockets, so without the settle B can be routed first -- a streamed answer's
     tokens arriving out of order.
     """
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     settle = asyncio.Event()
     current.pong_gate = settle
     await client.publish_raw(subject=Subject.raw("tokens"), payload=b"A")
@@ -545,9 +537,7 @@ async def test_nothing_is_published_on_the_successor_before_the_old_connection_s
     await client.shutdown()
 
 
-async def test_refused_renewals_do_not_count_against_the_connection_still_in_use(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_refused_renewals_do_not_count_against_the_connection_still_in_use() -> None:
     """a refused renewal leaves the current connection valid, and it is kept until it expires (Q16).
 
     only a DELIBERATE refusal the auth-callout names this runner in stops it
@@ -565,8 +555,8 @@ async def test_refused_renewals_do_not_count_against_the_connection_still_in_use
             raise RuntimeError("renewal refused")
         return opened
 
-    monkeypatch.setattr(client_module, "_establish_connection", _establish)
     client = await NatsClient.connect(
+        establish_connection=_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="handover-test",
@@ -583,11 +573,9 @@ async def test_refused_renewals_do_not_count_against_the_connection_still_in_use
     await client.shutdown()
 
 
-async def test_an_abandoned_client_closes_every_connection_and_never_renews(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_an_abandoned_client_closes_every_connection_and_never_renews() -> None:
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     await client.renew_connection(retire_after=timedelta(seconds=3600))
 
     await client.abandon(reason="credential refused: superseded")
@@ -598,9 +586,7 @@ async def test_an_abandoned_client_closes_every_connection_and_never_renews(
         await client.renew_connection(retire_after=timedelta(seconds=30))
 
 
-async def test_a_renewal_cancelled_while_it_waits_for_the_handover_lock_closes_its_successor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_renewal_cancelled_while_it_waits_for_the_handover_lock_closes_its_successor() -> None:
     """the successor is owned from the moment it opens, so no cancellation can orphan it.
 
     a subscribe holds the handover lock across the server's SUB; a renewal whose successor is open
@@ -608,7 +594,7 @@ async def test_a_renewal_cancelled_while_it_waits_for_the_handover_lock_closes_i
     shutdown and retirement all walk the client's registry -- and forever-reconnect on its own.
     """
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
 
     async def _cb(msg: IncomingMessage) -> None:
         return None
@@ -638,7 +624,7 @@ async def test_shutdown_during_a_renewal_waiting_for_the_handover_lock_closes_it
     monkeypatch.setattr(client_module, "seconds_until_reauth", lambda _ttl, **_kw: 0.0)
     monkeypatch.setattr(client_module, "REAUTH_MIN_SLEEP_SECONDS", 0.0)
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
 
     async def _cb(msg: IncomingMessage) -> None:
         return None
@@ -658,7 +644,7 @@ async def test_shutdown_during_a_renewal_waiting_for_the_handover_lock_closes_it
     await subscribing
 
 
-async def test_a_client_abandoned_during_a_direct_renewal_stays_abandoned(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_client_abandoned_during_a_direct_renewal_stays_abandoned() -> None:
     """abandon lands while a renewal it did not start is subscribing its successor.
 
     the successor was not yet registered, so abandon's sweep missed it, and the handover then made
@@ -666,7 +652,7 @@ async def test_a_client_abandoned_during_a_direct_renewal_stays_abandoned(monkey
     supervisor restarts -- the zombie a deliberate refusal exists to stop.
     """
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     successor.pong_gate = asyncio.Event()
     renewal = asyncio.create_task(client.renew_connection(retire_after=timedelta(seconds=30)))
     await _settle()  # the successor's round trip waits for its PONG
@@ -688,7 +674,7 @@ async def test_a_refusal_abandons_only_the_runner_it_names_and_only_once(monkeyp
     closes every connection at once, and a duplicate delivery of it starts no second abandonment.
     """
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     await client.renew_connection(retire_after=timedelta(seconds=3600))  # two connections held
     abandonments: list[str] = []
     original_abandon = NatsClient.abandon
@@ -729,10 +715,10 @@ async def test_a_refusal_abandons_only_the_runner_it_names_and_only_once(monkeyp
     assert current.is_closed and successor.is_closed and client.is_closed
 
 
-async def test_one_renewal_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_one_renewal_at_a_time() -> None:
     """a second renewal while one is handing over is refused and opens nothing."""
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     successor.pong_gate = asyncio.Event()
     first = asyncio.create_task(client.renew_connection(retire_after=timedelta(seconds=30)))
     await _settle()
@@ -746,10 +732,10 @@ async def test_one_renewal_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
     await client.shutdown()
 
 
-async def test_an_abandoned_or_shut_down_client_arms_no_renewal(monkeypatch: pytest.MonkeyPatch) -> None:
-    abandoned = await _connected(monkeypatch, _Conn("abandoned"))
+async def test_an_abandoned_or_shut_down_client_arms_no_renewal() -> None:
+    abandoned = await _connected(_Conn("abandoned"))
     await abandoned.abandon(reason="credential refused: superseded")
-    shut_down = await _connected(monkeypatch, _Conn("shut-down"))
+    shut_down = await _connected(_Conn("shut-down"))
     await shut_down.shutdown()
 
     for client in (abandoned, shut_down):
@@ -767,7 +753,7 @@ async def test_every_reply_path_leaves_on_the_receiving_connection_and_forgets_i
     """
     monkeypatch.setattr(client_module, "seconds_until_reauth", lambda _ttl, **_kw: 3600.0)
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     client.renew_credential(ttl_seconds=lambda: 300, longest_request_seconds=30.0)
     owed: list[IncomingMessage] = []
 
@@ -794,12 +780,10 @@ async def test_every_reply_path_leaves_on_the_receiving_connection_and_forgets_i
 
 
 async def _connected_capturing(
-    monkeypatch: pytest.MonkeyPatch, *connections: _Conn | BaseException
+    *connections: _Conn | BaseException,
 ) -> tuple[NatsClient, dict[_Conn, dict[str, Any]]]:
     """like :func:`_connected`, also returning the nats-py options each connection was opened with.
 
-    :param monkeypatch: pytest's patcher
-    :ptype monkeypatch: pytest.MonkeyPatch
     :param connections: each connection the client opens, in order; an exception is raised instead
     :ptype connections: _Conn | BaseException
     :return: the connected client, and each opened connection's options
@@ -815,8 +799,8 @@ async def _connected_capturing(
         options_of[step] = options
         return step
 
-    monkeypatch.setattr(client_module, "_establish_connection", _establish)
     client = await NatsClient.connect(
+        establish_connection=_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="lame-duck-test",
@@ -842,10 +826,10 @@ async def _until(condition: Any, *, seconds: float = 2.0) -> None:
     raise AssertionError("the condition never held")
 
 
-async def test_a_server_in_lame_duck_mode_moves_the_client_to_a_successor(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_server_in_lame_duck_mode_moves_the_client_to_a_successor() -> None:
     """a rolling restart is a handover, not a reconnect: the old connection keeps its work."""
     current, successor = _Conn("current"), _Conn("successor")
-    client, options_of = await _connected_capturing(monkeypatch, current, successor)
+    client, options_of = await _connected_capturing(current, successor)
     received: list[bytes] = []
 
     async def _cb(msg: IncomingMessage) -> None:
@@ -865,16 +849,14 @@ async def test_a_server_in_lame_duck_mode_moves_the_client_to_a_successor(monkey
     await client.shutdown()
 
 
-async def test_a_reply_owed_across_a_lame_duck_move_leaves_on_the_connection_that_received_the_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_reply_owed_across_a_lame_duck_move_leaves_on_the_connection_that_received_the_request() -> None:
     """a client that never armed a renewal still hands over in a rolling restart, and owes replies across it.
 
     a static-credential service answering through allow_responses: the reply sent from the
     successor would be refused as a permissions violation while the publish reports success.
     """
     current, successor = _Conn("current"), _Conn("successor")
-    client, options_of = await _connected_capturing(monkeypatch, current, successor)
+    client, options_of = await _connected_capturing(current, successor)
     owed: list[IncomingMessage] = []
 
     async def _cb(msg: IncomingMessage) -> None:
@@ -894,14 +876,12 @@ async def test_a_reply_owed_across_a_lame_duck_move_leaves_on_the_connection_tha
     await client.shutdown()
 
 
-async def test_a_reply_owed_across_a_requested_renewal_leaves_on_the_connection_that_received_the_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_reply_owed_across_a_requested_renewal_leaves_on_the_connection_that_received_the_request() -> None:
     """renew_on_request hands over with no renewal loop running; the reply still leaves on the receiver."""
     from threetears.nats import CredentialRenewalReason, CredentialRenewalRequest
 
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     owed: list[IncomingMessage] = []
 
     async def _cb(msg: IncomingMessage) -> None:
@@ -928,7 +908,7 @@ async def test_a_reply_never_sent_is_not_remembered_past_the_longest_request(mon
     """the route map is bounded: a request older than the longest request has no requester waiting."""
     monkeypatch.setattr(client_module, "seconds_until_reauth", lambda _ttl, **_kw: 3600.0)
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     client.renew_credential(ttl_seconds=lambda: 300, longest_request_seconds=0.05)
     owed: list[IncomingMessage] = []
 
@@ -958,7 +938,7 @@ async def test_a_reply_never_sent_is_not_remembered_past_the_longest_request(mon
 async def test_a_move_that_cannot_open_a_successor_is_retried_until_it_lands(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(client_module, "REAUTH_RETRY_SECONDS", 0.01)
     current, successor = _Conn("current"), _Conn("successor")
-    client, options_of = await _connected_capturing(monkeypatch, current, RuntimeError("no server free"), successor)
+    client, options_of = await _connected_capturing(current, RuntimeError("no server free"), successor)
 
     await options_of[current]["lame_duck_mode_cb"]()
     await _until(lambda: client.raw is successor)
@@ -971,7 +951,7 @@ async def test_a_move_ends_once_the_server_closed_the_connection_first(monkeypat
     """once nats-py's own reconnect owns the connection there is nothing left to move."""
     monkeypatch.setattr(client_module, "REAUTH_RETRY_SECONDS", 0.01)
     current = _Conn("current")
-    client, options_of = await _connected_capturing(monkeypatch, current, RuntimeError("no server free"))
+    client, options_of = await _connected_capturing(current, RuntimeError("no server free"))
 
     await options_of[current]["lame_duck_mode_cb"]()
     current.is_closed = True
@@ -981,9 +961,9 @@ async def test_a_move_ends_once_the_server_closed_the_connection_first(monkeypat
     await client.shutdown()
 
 
-async def test_lame_duck_under_a_connection_already_replaced_moves_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_lame_duck_under_a_connection_already_replaced_moves_nothing() -> None:
     current, successor = _Conn("current"), _Conn("successor")
-    client, options_of = await _connected_capturing(monkeypatch, current, successor)
+    client, options_of = await _connected_capturing(current, successor)
     await client.renew_connection(retire_after=timedelta(seconds=30))
 
     await options_of[current]["lame_duck_mode_cb"]()
@@ -996,7 +976,7 @@ async def test_lame_duck_under_a_connection_already_replaced_moves_nothing(monke
 async def test_shutdown_stops_a_move_under_way(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(client_module, "REAUTH_RETRY_SECONDS", 3600.0)
     current = _Conn("current")
-    client, options_of = await _connected_capturing(monkeypatch, current, RuntimeError("no server free"))
+    client, options_of = await _connected_capturing(current, RuntimeError("no server free"))
 
     await options_of[current]["lame_duck_mode_cb"]()
     await _settle()
@@ -1005,10 +985,10 @@ async def test_shutdown_stops_a_move_under_way(monkeypatch: pytest.MonkeyPatch) 
     assert current.is_closed
 
 
-async def test_a_pinned_run_stays_on_the_connection_it_started_on(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_pinned_run_stays_on_the_connection_it_started_on() -> None:
     """two connections are two publishers: a run split across them can arrive out of order."""
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     pin = client.publish_pin()
     stream = Subject.raw("hub.stream.agent.corr")
 
@@ -1022,9 +1002,9 @@ async def test_a_pinned_run_stays_on_the_connection_it_started_on(monkeypatch: p
     await client.shutdown()
 
 
-async def test_a_run_pinned_after_the_handover_starts_on_the_successor(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_run_pinned_after_the_handover_starts_on_the_successor() -> None:
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     await client.renew_connection(retire_after=timedelta(seconds=30))
     pin = client.publish_pin()
 
@@ -1035,9 +1015,9 @@ async def test_a_run_pinned_after_the_handover_starts_on_the_successor(monkeypat
     await client.shutdown()
 
 
-async def test_a_run_that_outlives_its_connection_continues_on_the_current_one(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_run_that_outlives_its_connection_continues_on_the_current_one() -> None:
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     pin = client.publish_pin()
     await client.publish_raw(subject=Subject.raw("s"), payload=b"t1", pin=pin)
 
@@ -1050,12 +1030,12 @@ async def test_a_run_that_outlives_its_connection_continues_on_the_current_one(m
     await client.shutdown()
 
 
-async def test_a_renewal_request_for_this_runner_moves_it_to_a_successor(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_renewal_request_for_this_runner_moves_it_to_a_successor() -> None:
     """a changed grant reaches a live connection by a lossless renewal, not a day later."""
     from threetears.nats import CredentialRenewalReason, CredentialRenewalRequest, Subjects
 
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     await client.renew_on_request(inbox_prefix="_INBOX_pod", is_mine=lambda request: request.pod_id in (None, "pod-a"))
     [notice_sub] = current.subs
     assert notice_sub.subject == Subjects.credential_renewal_request("_INBOX_pod").path
@@ -1068,11 +1048,11 @@ async def test_a_renewal_request_for_this_runner_moves_it_to_a_successor(monkeyp
     await client.shutdown()
 
 
-async def test_a_renewal_request_for_another_runner_moves_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_renewal_request_for_another_runner_moves_nothing() -> None:
     from threetears.nats import CredentialRenewalReason, CredentialRenewalRequest
 
     current, successor = _Conn("current"), _Conn("successor")
-    client = await _connected(monkeypatch, current, successor)
+    client = await _connected(current, successor)
     await client.renew_on_request(inbox_prefix="_INBOX_pod", is_mine=lambda request: request.pod_id in (None, "pod-a"))
     [notice_sub] = current.subs
 

@@ -27,7 +27,6 @@ from threetears.nats import NatsClient, PublishError, Subject
 from threetears.nats.client import (
     DEFAULT_FLUSHER_QUEUE_SIZE,
     DEFAULT_PENDING_SIZE_BYTES,
-    _is_outbound_overflow,
 )
 
 
@@ -63,11 +62,8 @@ def _client(raw: Any) -> NatsClient:
 
 
 @pytest.mark.asyncio
-async def test_options_carry_explicit_pending_and_flusher_bounds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_options_carry_explicit_pending_and_flusher_bounds() -> None:
     """the connect options reaching nats-py carry the explicit pending/flusher bounds."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -75,9 +71,8 @@ async def test_options_carry_explicit_pending_and_flusher_bounds(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -97,11 +92,8 @@ def test_pending_bound_is_explicit_not_library_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_accepts_custom_buffer_bounds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_connect_accepts_custom_buffer_bounds() -> None:
     """caller-supplied buffer bounds (SDK pass-through) reach the connect options."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -109,9 +101,8 @@ async def test_connect_accepts_custom_buffer_bounds(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -129,11 +120,50 @@ async def test_connect_accepts_custom_buffer_bounds(
 # ---------------------------------------------------------------------------
 
 
-def test_is_outbound_overflow_detects_typed_and_text() -> None:
-    """the classifier matches the typed error AND its -ERR text, robust across nats-py versions."""
-    assert _is_outbound_overflow(_NatsOutboundBufferLimitError())
-    assert _is_outbound_overflow(Exception("nats: outbound buffer limit exceeded"))
-    assert not _is_outbound_overflow(OSError("connection reset by peer"))
+class _RaisingRaw:
+    """fake nats-py client whose every publish raises one given error.
+
+    :param error: what each publish raises
+    :ptype error: Exception
+    """
+
+    def __init__(self, error: Exception) -> None:
+        self.is_connected = True
+        self.is_closed = False
+        self._error = error
+
+    async def publish(self, *args: Any, **kwargs: Any) -> None:
+        raise self._error
+
+
+async def _wedges_health(error: Exception) -> bool:
+    """whether three publishes that each raise ``error`` leave a fresh client unhealthy.
+
+    Three is the overflow threshold the health signal trips at, so a recognised overflow flips the
+    client and anything else leaves it healthy.
+
+    :param error: what nats-py's publish raises
+    :ptype error: Exception
+    :return: ``True`` when the client is unhealthy afterwards
+    :rtype: bool
+    """
+    client = _client(_RaisingRaw(error))
+    for _ in range(3):
+        with pytest.raises(PublishError):
+            await client.publish_raw(subject=Subject.raw("agents.x.heartbeat"), payload=b"beat")
+    return not client.is_healthy
+
+
+@pytest.mark.asyncio
+async def test_outbound_overflow_is_recognised_by_type_and_by_text() -> None:
+    """the classifier matches the typed error AND its -ERR text, robust across nats-py versions.
+
+    Driven at the publish boundary it guards: a recognised overflow counts toward the wedged-buffer
+    health signal, and an ordinary transport error does not.
+    """
+    assert await _wedges_health(_NatsOutboundBufferLimitError())
+    assert await _wedges_health(Exception("nats: outbound buffer limit exceeded"))
+    assert not await _wedges_health(OSError("connection reset by peer"))
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +228,8 @@ async def test_successful_publish_resets_overflow_counter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reconnect_resets_overflow_counter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_reconnect_resets_overflow_counter() -> None:
     """a successful reconnect clears the wedged-buffer signal (mirrors the auth-violation reset)."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -214,9 +241,8 @@ async def test_reconnect_resets_overflow_counter(
         raw.publish = AsyncMock(side_effect=_NatsOutboundBufferLimitError)
         return raw
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     client = await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",

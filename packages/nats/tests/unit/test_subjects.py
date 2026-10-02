@@ -26,20 +26,20 @@ def _reset_namespace(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     ContextVar that reset itself per test), so this fixture clears it after each
     test to keep tests isolated from one another.
     """
-    from threetears.nats.subjects import _reset_default_namespace
+    from threetears.nats.testing import reset_default_namespace
 
     monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
     set_default_namespace(_TEST_NAMESPACE)
     yield
-    _reset_default_namespace()
+    reset_default_namespace()
 
 
 def test_get_default_namespace_raises_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
     """with no env var and no explicit set, resolution raises."""
-    from threetears.nats.subjects import _reset_default_namespace
+    from threetears.nats.testing import reset_default_namespace
 
     monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
-    _reset_default_namespace()
+    reset_default_namespace()
     with pytest.raises(NamespaceNotConfiguredError):
         get_default_namespace()
 
@@ -49,9 +49,9 @@ def test_namespace_overridable_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "prod14")
     # set_default_namespace was called in fixture so env wins only after we reset
     # the explicit process-wide value; verify the fallback path by clearing it.
-    from threetears.nats.subjects import _reset_default_namespace
+    from threetears.nats.testing import reset_default_namespace
 
-    _reset_default_namespace()
+    reset_default_namespace()
     assert get_default_namespace() == "prod14"
 
 

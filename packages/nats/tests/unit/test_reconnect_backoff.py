@@ -1,17 +1,22 @@
 """unit tests for the jittered reconnect backoff (resilience-task-06, thundering-herd defense).
 
-these tests exercise the pure full-jitter helper, the ``reconnect_to_server_handler`` factory, and
-the connect-options wiring WITHOUT a live broker. they assert what the shard requires:
+these tests exercise the ``reconnect_to_server_handler`` :meth:`NatsClient.connect` hands nats-py,
+read straight out of the connect options, WITHOUT a live broker. they assert what the shard requires:
 
 * the reconnect delay is FULL jitter within ``[0, min(cap, base * 2**attempt)]`` and its ceiling
   GROWS with the per-attempt count (``Server.reconnects``) until ``cap`` clamps it;
 * the connect options carry the jittered handler -- a jitter FUNCTION, not a fixed reconnect interval;
 * two independent draws de-synchronize (a mass reconnect spreads instead of thundering-herd-ing).
+
+The draw comes from the stdlib ``random.uniform``; a test that needs one end of the jitter window
+pins it there with :func:`_pin_draw` instead of sampling and hoping.
 """
 
 from __future__ import annotations
 
+import asyncio
 import random
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock
 from urllib.parse import urlparse
@@ -23,27 +28,62 @@ from threetears.nats import NatsClient
 from threetears.nats.client import (
     DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS,
     DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS,
-    _full_jitter_backoff,
-    _make_reconnect_to_server_handler,
-    _RECONNECT_BACKOFF_FALLBACK_SECONDS,
-    _RECONNECT_BACKOFF_MIN_SECONDS,
 )
 
+#: the floor the handler never returns below, so a near-zero jitter draw cannot hot-spin nats-py's
+#: reconnect path. The observable value the client promises, restated so a change to it is a decision.
+_FLOOR_SECONDS = 0.05
 
-class _FixedRng(random.Random):
-    """random source whose ``uniform(a, b)`` returns a fixed fraction of the range.
+#: the whole-second pace the handler returns when computing a delay raises, so nats-py always has a
+#: delay to sleep instead of busy-spinning.
+_FALLBACK_SECONDS = 1.0
 
-    subclasses :class:`random.Random` (so it is a drop-in for the helper's ``rng`` parameter) and lets
-    a test pin the draw to the LOW end (``fraction=0.0``) or HIGH end (``fraction=1.0``) of the
-    full-jitter window so the ceiling math is checked deterministically without flakiness.
+_Handler = Callable[[list[Server], dict[str, Any]], tuple[Server | None, float]]
+
+
+def _handler(*, base: float, cap: float) -> _Handler:
+    """the reconnect handler a client connected with ``base``/``cap`` hands nats-py.
+
+    :param base: the ``reconnect_backoff_base`` passed to :meth:`NatsClient.connect`
+    :ptype base: float
+    :param cap: the ``reconnect_backoff_cap`` passed to :meth:`NatsClient.connect`
+    :ptype cap: float
+    :return: the ``reconnect_to_server_handler`` that reached the connect options
+    :rtype: _Handler
     """
+    captured: dict[str, Any] = {}
 
-    def __init__(self, fraction: float) -> None:
-        super().__init__()
-        self._fraction = fraction
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
 
-    def uniform(self, a: float, b: float) -> float:
-        return a + (b - a) * self._fraction
+    async def _connect() -> None:
+        await NatsClient.connect(
+            establish_connection=_fake_establish,
+            nats_url="nats://localhost:4222",
+            nats_subject_namespace="3tears",
+            client_name="agent-x",
+            verify_jetstream=False,
+            reconnect_backoff_base=base,
+            reconnect_backoff_cap=cap,
+        )
+
+    asyncio.run(_connect())
+    handler: _Handler = captured["options"]["reconnect_to_server_handler"]
+    return handler
+
+
+def _pin_draw(monkeypatch: pytest.MonkeyPatch, fraction: float) -> None:
+    """make every jitter draw land at ``fraction`` of its window: 0.0 is the low end, 1.0 the high.
+
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :param fraction: where in ``[a, b]`` each ``random.uniform(a, b)`` lands
+    :ptype fraction: float
+    :return: nothing
+    :rtype: None
+    """
+    monkeypatch.setattr(random, "uniform", lambda a, b: a + (b - a) * fraction)
 
 
 def _server(reconnects: int) -> Server:
@@ -57,27 +97,41 @@ def _server(reconnects: int) -> Server:
     return Server(uri=urlparse("nats://localhost:4222"), reconnects=reconnects)
 
 
+def _delay(handler: _Handler, attempt: int) -> float:
+    """the delay ``handler`` returns for a server on its ``attempt``-th reconnect.
+
+    :param handler: the reconnect handler
+    :ptype handler: _Handler
+    :param attempt: the server's reconnect count
+    :ptype attempt: int
+    :return: the delay nats-py would sleep
+    :rtype: float
+    """
+    return handler([_server(attempt)], {})[1]
+
+
 # ---------------------------------------------------------------------------
-# pure helper: full-jitter ceiling + growth
+# full-jitter ceiling + growth
 # ---------------------------------------------------------------------------
 
 
 def test_full_jitter_delay_stays_within_ceiling() -> None:
-    """every draw lands within ``[0, min(cap, base * 2**attempt)]`` across a range of attempts."""
+    """every draw lands within ``[floor, min(cap, base * 2**attempt)]`` across a range of attempts."""
     base, cap = 1.0, 30.0
-    rng = random.Random(1234)
+    handler = _handler(base=base, cap=cap)
     for attempt in range(0, 12):
         ceiling = min(cap, base * (2**attempt))
         for _ in range(50):
-            delay = _full_jitter_backoff(attempt, base=base, cap=cap, rng=rng)
-            assert 0.0 <= delay <= ceiling
+            delay = _delay(handler, attempt)
+            assert _FLOOR_SECONDS <= delay <= ceiling
 
 
-def test_full_jitter_ceiling_grows_with_attempt_until_cap() -> None:
+def test_full_jitter_ceiling_grows_with_attempt_until_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     """pinned to the HIGH end, the delay equals the ceiling and grows with attempt until the cap clamps."""
     base, cap = 1.0, 30.0
-    high = _FixedRng(1.0)
-    delays = [_full_jitter_backoff(attempt, base=base, cap=cap, rng=high) for attempt in range(0, 8)]
+    handler = _handler(base=base, cap=cap)
+    _pin_draw(monkeypatch, 1.0)
+    delays = [_delay(handler, attempt) for attempt in range(0, 8)]
     # strictly increasing while below the cap: 1, 2, 4, 8, 16, then clamped at 30, 30, 30.
     assert delays[0] == pytest.approx(1.0)
     assert delays[1] == pytest.approx(2.0)
@@ -89,53 +143,62 @@ def test_full_jitter_ceiling_grows_with_attempt_until_cap() -> None:
     assert all(delays[i] <= delays[i + 1] for i in range(len(delays) - 1))
 
 
-def test_full_jitter_spans_full_range_low_and_high() -> None:
-    """FULL jitter: the low end is 0 and the high end is the ceiling (not an equal-jitter floor)."""
-    base, cap = 1.0, 30.0
-    assert _full_jitter_backoff(3, base=base, cap=cap, rng=_FixedRng(0.0)) == pytest.approx(0.0)
-    assert _full_jitter_backoff(3, base=base, cap=cap, rng=_FixedRng(1.0)) == pytest.approx(8.0)
+def test_full_jitter_spans_full_range_low_and_high(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FULL jitter: the low end is 0 (floored) and the high end is the ceiling, not an equal-jitter floor.
+
+    Equal jitter would keep the low end at half the ceiling (4s at attempt 3); full jitter lets it
+    reach zero, which the handler's hot-spin floor then lifts to the floor and no further.
+    """
+    handler = _handler(base=1.0, cap=30.0)
+    _pin_draw(monkeypatch, 0.0)
+    assert _delay(handler, 3) == pytest.approx(_FLOOR_SECONDS)
+    _pin_draw(monkeypatch, 1.0)
+    assert _delay(handler, 3) == pytest.approx(8.0)
 
 
 def test_full_jitter_caps_high_attempt() -> None:
     """a large attempt count never exceeds the cap -- single-agent recovery stays prompt."""
-    delay = _full_jitter_backoff(100, base=1.0, cap=30.0, rng=random.Random(7))
+    delay = _delay(_handler(base=1.0, cap=30.0), 100)
     assert 0.0 <= delay <= 30.0
 
 
 def test_full_jitter_two_instances_desynchronize() -> None:
     """independent draws produce spread (no synchronization) -- the whole point of jitter."""
-    draws = {_full_jitter_backoff(5, base=1.0, cap=30.0) for _ in range(200)}
+    handler = _handler(base=1.0, cap=30.0)
+    draws = {_delay(handler, 5) for _ in range(200)}
     # a constant delay would collapse to a single value; jitter yields many distinct draws.
     assert len(draws) > 100
 
 
-def test_full_jitter_does_not_overflow_on_huge_attempt() -> None:
+def test_full_jitter_does_not_overflow_on_huge_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
     """REGRESSION: a long-running reconnect (attempt past ~1024) must NOT raise OverflowError.
 
     with an unclamped exponent, ``base * 2**attempt`` for a large attempt is a >308-digit int, so the
     float multiply raised ``OverflowError`` ("int too large to convert to float"), which escaped the
     reconnect handler, broke every reconnect attempt, and busy-spun the client at 100% CPU while its
-    tools silently deregistered. the exponent clamp keeps the delay bounded by the cap, no exception.
+    tools silently deregistered. the exponent clamp keeps the delay bounded by the cap, no exception
+    -- and pinned to the high end, the delay is the cap itself rather than the handler's fallback.
     """
+    handler = _handler(base=1.0, cap=30.0)
+    _pin_draw(monkeypatch, 1.0)
     for attempt in (1024, 5000, 100_000):
-        delay = _full_jitter_backoff(attempt, base=1.0, cap=30.0, rng=_FixedRng(1.0))
-        assert delay == pytest.approx(30.0)  # clamped to cap, never overflow
+        assert _delay(handler, attempt) == pytest.approx(30.0)  # clamped to cap, never overflow
 
 
 def test_handler_survives_huge_reconnect_count() -> None:
     """the handler keyed on a huge ``Server.reconnects`` returns a bounded, floored delay -- no raise."""
-    handler = _make_reconnect_to_server_handler(base=1.0, cap=30.0)
+    handler = _handler(base=1.0, cap=30.0)
     selected, delay = handler([_server(50_000)], {})
     assert selected is not None
-    assert _RECONNECT_BACKOFF_MIN_SECONDS <= delay <= 30.0
+    assert _FLOOR_SECONDS <= delay <= 30.0
 
 
 def test_handler_floors_delay_to_prevent_hot_spin() -> None:
     """every handler delay is >= the floor, so a near-zero jitter draw can never let nats-py hot-spin."""
-    handler = _make_reconnect_to_server_handler(base=1.0, cap=30.0)
+    handler = _handler(base=1.0, cap=30.0)
     # attempt 0 has ceiling == base == 1.0, so raw draws land in [0, 1] and many fall below the floor;
     # every returned delay must still be floored, never 0.
-    assert all(handler([_server(0)], {})[1] >= _RECONNECT_BACKOFF_MIN_SECONDS for _ in range(500))
+    assert all(_delay(handler, 0) >= _FLOOR_SECONDS for _ in range(500))
 
 
 def test_handler_never_raises_fails_safe_to_fallback() -> None:
@@ -152,19 +215,19 @@ def test_handler_never_raises_fails_safe_to_fallback() -> None:
         def reconnects(self) -> int:
             raise ValueError("boom")
 
-    handler = _make_reconnect_to_server_handler(base=1.0, cap=30.0)
+    handler = _handler(base=1.0, cap=30.0)
     selected, delay = handler([_BadServer()], {})  # type: ignore[list-item]
-    assert delay == pytest.approx(_RECONNECT_BACKOFF_FALLBACK_SECONDS)
+    assert delay == pytest.approx(_FALLBACK_SECONDS)
 
 
 # ---------------------------------------------------------------------------
-# reconnect_to_server_handler factory
+# reconnect_to_server_handler
 # ---------------------------------------------------------------------------
 
 
 def test_handler_selects_first_server_and_jitters_on_its_reconnects() -> None:
     """the handler picks the first eligible server and returns a jittered delay keyed on its reconnects."""
-    handler = _make_reconnect_to_server_handler(base=1.0, cap=30.0)
+    handler = _handler(base=1.0, cap=30.0)
     servers = [_server(4), _server(0)]
     selected, delay = handler(servers, {})
     assert selected is servers[0]
@@ -174,16 +237,16 @@ def test_handler_selects_first_server_and_jitters_on_its_reconnects() -> None:
 
 def test_handler_delay_grows_with_reconnect_count() -> None:
     """higher ``Server.reconnects`` widens the jitter window (backoff grows per attempt)."""
-    handler = _make_reconnect_to_server_handler(base=1.0, cap=30.0)
+    handler = _handler(base=1.0, cap=30.0)
     # sample the max draw at each reconnect level; the achievable ceiling must grow.
-    low_ceiling = max(handler([_server(1)], {})[1] for _ in range(500))
-    high_ceiling = max(handler([_server(5)], {})[1] for _ in range(500))
+    low_ceiling = max(_delay(handler, 1) for _ in range(500))
+    high_ceiling = max(_delay(handler, 5) for _ in range(500))
     assert high_ceiling > low_ceiling
 
 
 def test_handler_empty_snapshot_returns_none_without_raising() -> None:
     """a defensive empty snapshot yields ``(None, delay)`` rather than an IndexError."""
-    handler = _make_reconnect_to_server_handler(base=1.0, cap=30.0)
+    handler = _handler(base=1.0, cap=30.0)
     selected, delay = handler([], {})
     assert selected is None
     assert 0.0 <= delay <= 1.0
@@ -191,8 +254,8 @@ def test_handler_empty_snapshot_returns_none_without_raising() -> None:
 
 def test_handler_delays_are_not_constant() -> None:
     """repeated handler invocations for the SAME server produce varied delays (a jitter fn, not a constant)."""
-    handler = _make_reconnect_to_server_handler(base=1.0, cap=30.0)
-    draws = {handler([_server(5)], {})[1] for _ in range(200)}
+    handler = _handler(base=1.0, cap=30.0)
+    draws = {_delay(handler, 5) for _ in range(200)}
     assert len(draws) > 100
 
 
@@ -202,11 +265,8 @@ def test_handler_delays_are_not_constant() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_options_carry_jittered_reconnect_handler(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_connect_options_carry_jittered_reconnect_handler() -> None:
     """the options reaching nats-py carry a callable ``reconnect_to_server_handler`` (jittered, not fixed)."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -214,9 +274,8 @@ async def test_connect_options_carry_jittered_reconnect_handler(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -233,11 +292,8 @@ async def test_connect_options_carry_jittered_reconnect_handler(
 
 
 @pytest.mark.asyncio
-async def test_connect_accepts_custom_backoff_params(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_connect_accepts_custom_backoff_params() -> None:
     """caller-supplied backoff base/cap (SDK pass-through) reach the handler's jitter window."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -245,9 +301,8 @@ async def test_connect_accepts_custom_backoff_params(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
