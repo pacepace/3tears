@@ -55,6 +55,21 @@ Test-only, so nothing installed changes.
   `install 3tears-search[extract]`, the extra that installs the loader -- in both the typed record
   and the prose the model reads, rather than checking for a substring.
 
+### Enforcement: the private-binding gate enforces plain names on shared test support
+
+Owner ruling, 2026-10-01. `scan_private_bindings` used to allow a private module under a tests tree
+to be imported within that tree, on the theory that the underscore marked support pytest does not
+collect. It no longer does: shape G.module (and H.path, for the same module named by a string)
+reports every import of an underscore-prefixed module or package under a `tests`/`test` tree, from
+the same tree included. `conftest.py`, `__init__.py` and other dunders are not private, data files
+are never imported, and an underscore module nothing imports binds nothing, so none of those is a
+finding. A script's private helper module outside every `src` and tests tree is still its own
+directory's. No API changes; a consumer repo's gate reports any test-support module it still
+underscores.
+
+- **scrape's tests use the shared KV fake.** `packages/scrape/tests/kv_shims.py` is gone; scrape's
+  tests use `threetears.core.testing.kv` like every other package.
+
 ### Enforcement: a private name bound by an import or by a string is a violation, in tests too
 
 Owner ruling, 2026-10-01. The underscore walkers A-F, SLF001 and the suppression policy all passed
@@ -67,8 +82,8 @@ private module path, and a private name bound by a string (`monkeypatch.setattr(
   `private_binding_findings`, `confinement_modules`, `undetected_planted_controls`,
   `PrivateBindingScan`, and the four categories `SHAPE_G_NAME`, `SHAPE_G_MODULE`,
   `SHAPE_H_ATTRIBUTE`, `SHAPE_H_PATH` (`PRIVATE_BINDING_CATEGORIES`). Scans every python file of
-  the repo. The rules -- what counts as private, the src package boundary, the tests-tree
-  boundary for private test-support modules, the confinement-module sanction -- are in the module
+  the repo. The rules -- what counts as private, the src package boundary, the plain-name rule
+  for test-support modules under a tests tree, the confinement-module sanction -- are in the module
   docstring, with the thin shell a consumer repo adds to enable it.
 - **`pragma_policy.TEST_DIRECTORIES`** is public (was `_TEST_DIRECTORIES`), so the new module reads
   the same answer to "is this a tests directory".

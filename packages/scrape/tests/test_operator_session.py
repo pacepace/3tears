@@ -16,8 +16,8 @@ import logging
 from datetime import timedelta
 
 import pytest
-from packages.scrape.tests.kv_shims import FakeNatsClient
 from threetears.core.coordination import KVLease, LeaseUnavailable
+from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 from threetears.scrape.operator_session import (
     SESSION_CLAIM_REFRESH,
     SESSION_CLAIM_TTL,
@@ -37,13 +37,18 @@ def _lease(client: FakeNatsClient, pod: str) -> KVLease:
     return KVLease(client, bucket_name="hitl-claims", pod_id=pod)  # type: ignore[arg-type]
 
 
+async def _claims(client: FakeNatsClient) -> FakeKvBucket:
+    """The claims bucket, the same instance every lease on this client writes to."""
+    return await client.kv_bucket(name="hitl-claims")
+
+
 async def _take_over(client: FakeNatsClient, session_id: str, *, by: bytes = b"pod-b") -> None:
     """Rewrite the claim entry's holder, as a stale reclaim by another pod leaves it.
 
     A compare-and-swap on the real bucket surface, not a back door: this is the same write
     ``KVLease`` itself performs when it reclaims an entry whose holder let it expire.
     """
-    bucket = client.buckets["hitl-claims"]
+    bucket = await _claims(client)
     entry = await bucket.get_entry(key=session_claim_key(session_id))
     assert entry is not None, "the claim wrote no entry to take over"
     value, revision = entry
@@ -115,7 +120,7 @@ class TestLosingTheClaimIsNoticed:
             await _take_over(client, "session-1")
             await asyncio.wait_for(claim.until_lost(), timeout=5)
 
-        surviving = await client.buckets["hitl-claims"].get_entry(key=key)
+        surviving = await (await _claims(client)).get_entry(key=key)
         assert surviving is not None, "releasing a lost claim deleted the new owner's entry"
         assert b"pod-b" in surviving[0], "the surviving entry is not the new owner's"
 
@@ -132,10 +137,10 @@ class TestATransportBlipIsNotALostClaim:
         """
         client = FakeNatsClient()
         async with claim_session(_lease(client, "pod-a"), "session-1", ttl=_TTL, refresh=_REFRESH) as claim:
-            bucket = client.buckets["hitl-claims"]
-            bucket.unreachable = ConnectionError("kv is briefly unreachable")
+            bucket = await _claims(client)
+            bucket.become_unreachable(ConnectionError("kv is briefly unreachable"))
             await asyncio.sleep(_REFRESH.total_seconds() * 4)
-            bucket.unreachable = None
+            bucket.become_reachable()
             assert claim.held, "a transient renewal failure was treated as losing the claim"
 
             # And the claim recovers rather than merely surviving: renewal resumes.
@@ -150,7 +155,7 @@ class TestATransportBlipIsNotALostClaim:
         """
         client = FakeNatsClient()
         async with claim_session(_lease(client, "pod-a"), "session-1", ttl=_TTL, refresh=_REFRESH) as claim:
-            client.buckets["hitl-claims"].unreachable = ConnectionError("kv is gone")
+            (await _claims(client)).become_unreachable(ConnectionError("kv is gone"))
             await asyncio.wait_for(claim.until_lost(), timeout=5)
             assert not claim.held, "a claim was kept alive past its own TTL by failing renewals"
 
@@ -169,14 +174,14 @@ class TestCleanupNeverReplacesTheOutcome:
         client = FakeNatsClient()
         with pytest.raises(RuntimeError, match="what actually went wrong"):
             async with claim_session(_lease(client, "pod-a"), "session-1", ttl=_TTL, refresh=_REFRESH):
-                client.buckets["hitl-claims"].unreachable = ConnectionError("kv is gone")
+                (await _claims(client)).become_unreachable(ConnectionError("kv is gone"))
                 raise RuntimeError("what actually went wrong")
 
     async def test_a_clean_exit_is_not_turned_into_a_failure_by_cleanup(self) -> None:
         """A session that ended fine must still end fine when the bucket has gone away."""
         client = FakeNatsClient()
         async with claim_session(_lease(client, "pod-a"), "session-1", ttl=_TTL, refresh=_REFRESH):
-            client.buckets["hitl-claims"].unreachable = ConnectionError("kv is gone")
+            (await _claims(client)).become_unreachable(ConnectionError("kv is gone"))
 
 
 class TestTheContractRefusesWhatItCannotHonour:
@@ -267,28 +272,25 @@ class TestAPodBindsTheLeaseBucketItNeverCreates:
     """
 
     def test_the_lease_opens_the_bucket_a_tool_pod_is_granted(self) -> None:
-        from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
         from threetears.scrape.operator_session import operator_session_lease
 
-        lease = operator_session_lease(DeclaringFake(), key_scope=_SCOPE, pod_id="pod-a")
+        lease = operator_session_lease(FakeNatsClient(), key_scope=_SCOPE, pod_id="pod-a")
         # ``kv_bucket`` layers ``{ns}-`` on, so this is ``{ns}-leases``: the tool pod's grant
         assert lease.bucket_name == "leases"
         assert lease.pod_id == "pod-a"
 
     async def test_a_claim_works_inside_the_bucket_the_hub_declared(self) -> None:
-        from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
         from threetears.scrape.operator_session import operator_session_lease
 
-        lease = operator_session_lease(DeclaringFake(declared_buckets=("leases",)), key_scope=_SCOPE, pod_id="pod-a")
+        lease = operator_session_lease(FakeNatsClient(declared_buckets=("leases",)), key_scope=_SCOPE, pod_id="pod-a")
         async with claim_session(lease, "session-1", ttl=_TTL, refresh=_REFRESH) as claim:
             assert claim.held
 
     async def test_the_claim_is_keyed_under_the_pods_own_scope(self) -> None:
         """every tool pod binds the one ``leases`` bucket and is granted only its own scope's keys."""
-        from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
         from threetears.scrape.operator_session import operator_session_lease
 
-        client = DeclaringFake(declared_buckets=("leases",))
+        client = FakeNatsClient(declared_buckets=("leases",))
         lease = operator_session_lease(client, key_scope=_SCOPE, pod_id="pod-a")
         bucket = await client.kv_bucket(name="leases", create_if_missing=False)
         async with claim_session(lease, "session-1", ttl=_TTL, refresh=_REFRESH):
@@ -296,10 +298,9 @@ class TestAPodBindsTheLeaseBucketItNeverCreates:
             assert await bucket.get(key=session_claim_key("session-1")) is None
 
     async def test_a_bucket_nobody_declared_is_refused_not_created(self) -> None:
-        from threetears.core.testing.kv import FakeNatsClient as DeclaringFake
         from threetears.scrape.operator_session import operator_session_lease
 
-        client = DeclaringFake()
+        client = FakeNatsClient()
         lease = operator_session_lease(client, key_scope=_SCOPE, pod_id="pod-a")
         with pytest.raises(KeyError):
             async with claim_session(lease, "session-1", ttl=_TTL, refresh=_REFRESH):

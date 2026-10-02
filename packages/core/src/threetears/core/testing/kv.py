@@ -33,6 +33,9 @@ use:
   bucket once something has recreated it; :meth:`FakeKvBucket.vanish` leaves
   it absent until the next operation recreates it, as the real wrapper's
   self-heal does.
+- :meth:`FakeKvBucket.become_unreachable` makes every operation raise a given
+  error, before it touches state, until :meth:`FakeKvBucket.become_reachable`:
+  an outage that loses nothing, as distinct from a vanished bucket.
 - :meth:`FakeKvBucket.watch_key` yields the key's latest message -- a value,
   or a deletion marker with ``value=None`` -- then every later write or
   delete of that key, as :meth:`threetears.nats.NatsKvBucket.watch_key`
@@ -139,6 +142,8 @@ class FakeKvBucket:
         self._date_created = datetime.now(UTC)
         # set by vanish(): the stream is gone until the next operation recreates it.
         self._vanished = False
+        # set by become_unreachable(): every operation raises it until become_reachable().
+        self._unreachable_error: Exception | None = None
         # a clock only this bucket reads, moved by advance_clock, so a test can make a per-entry
         # TTL lapse without sleeping.
         self._elapsed = timedelta(0)
@@ -146,16 +151,20 @@ class FakeKvBucket:
         self._key_watchers: dict[str, list[asyncio.Queue[KvKeyUpdate]]] = {}
 
     async def _arrive(self) -> None:
-        """what every operation does first: yield to the loop, then heal a vanished bucket.
+        """what every operation does first: yield to the loop, fail if unreachable, heal if vanished.
 
-        The yield is so ``gather()`` genuinely interleaves. The heal mirrors the real wrapper,
-        which recreates a vanished stream on the next operation through any handle, so the
-        recreated bucket's creation time is the moment of that operation.
+        The yield is so ``gather()`` genuinely interleaves. An unreachable bucket raises before it
+        touches any state, so nothing lands and nothing heals while it is down. The heal mirrors
+        the real wrapper, which recreates a vanished stream on the next operation through any
+        handle, so the recreated bucket's creation time is the moment of that operation.
 
         :return: None
         :rtype: None
+        :raises Exception: the error :meth:`become_unreachable` was given, while it is set
         """
         await _YieldOnce()
+        if self._unreachable_error is not None:
+            raise self._unreachable_error
         if self._vanished:
             self._vanished = False
             self._date_created = datetime.now(UTC)
@@ -389,6 +398,41 @@ class FakeKvBucket:
         self._entries.clear()
         self._markers.clear()
         self._vanished = True
+
+    def become_unreachable(self, error: Exception) -> None:
+        """make every operation raise ``error`` until :meth:`become_reachable`, as a lost broker does.
+
+        Unlike :meth:`vanish`, nothing is lost: the bucket cannot be reached, so no write lands
+        and no read answers, and when it is reachable again its entries and revisions are exactly
+        as they were. This is the outage a coordination primitive must ride out -- a lease that
+        gives up a claim over one failed renewal, or keeps one past its TTL because its renewals
+        keep failing, is wrong in opposite directions, and only a bucket that fails on demand
+        lets a test hold either.
+
+        :param error: what each operation raises, as the real client would: a
+            ``ConnectionError``, ``TimeoutError`` or the client's own error type
+        :ptype error: Exception
+        :return: None
+        :rtype: None
+        """
+        self._unreachable_error = error
+
+    def become_reachable(self) -> None:
+        """end :meth:`become_unreachable`: operations reach the bucket again, its state intact.
+
+        :return: None
+        :rtype: None
+        """
+        self._unreachable_error = None
+
+    @property
+    def unreachable_error(self) -> Exception | None:
+        """the error every operation raises while the bucket is unreachable; ``None`` when reachable.
+
+        :return: the error, or ``None``
+        :rtype: Exception | None
+        """
+        return self._unreachable_error
 
     @property
     def ttl(self) -> timedelta | None:
