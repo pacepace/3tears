@@ -220,8 +220,8 @@ class TestSeedActive:
 
 class TestConsent:
     async def test_consent_activates_and_supersedes(self) -> None:
-        proposed = _version(status="proposed")
         prior = _version(content="old")
+        proposed = _version(status="proposed", parent_version_id=prior.version_id)
         coll = _collection(active=prior, get_result=proposed)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
             out = await lifecycle.consent(
@@ -263,6 +263,51 @@ class TestConsent:
                 **_kwargs(),
             )
         assert out is None
+
+    async def test_consent_first_proposal_with_no_active_applies(self) -> None:
+        proposed = _version(status="proposed", parent_version_id=None)
+        coll = _collection(active=None, get_result=proposed)
+        with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
+            out = await lifecycle.consent(
+                coll,
+                _authorizer(),
+                version_id=proposed.version_id,
+                consenter_user_id=_USER,
+                **_kwargs(),
+            )
+        assert out is proposed and proposed.status == "active"
+
+    @pytest.mark.parametrize("made_against", ["an_older_version", "no_version"])
+    async def test_consent_out_of_date_raises_and_writes_nothing(self, made_against: str) -> None:
+        current = _version(content="the block as it is now")
+        parent = uuid4() if made_against == "an_older_version" else None
+        stale = _version(status="proposed", content="the block as it was", parent_version_id=parent)
+        coll = _collection(active=current, get_result=stale)
+        with (
+            patch(_AUTHZ, new_callable=AsyncMock),
+            patch(_DISPATCH, new_callable=AsyncMock) as ev,
+            pytest.raises(lifecycle.IdentityProposalOutOfDate) as raised,
+        ):
+            await lifecycle.consent(
+                coll,
+                _authorizer(),
+                version_id=stale.version_id,
+                consenter_user_id=_USER,
+                **_kwargs(),
+            )
+        assert raised.value.version is stale
+        assert stale.status == "proposed" and current.status == "active"
+        coll.save_entity.assert_not_awaited()
+        ev.assert_not_awaited()
+
+
+class TestIsOutOfDate:
+    async def test_reads_the_parent_against_the_active_head(self) -> None:
+        head = _version()
+        assert not lifecycle.is_out_of_date(_version(status="proposed", parent_version_id=head.version_id), head)
+        assert lifecycle.is_out_of_date(_version(status="proposed", parent_version_id=uuid4()), head)
+        assert lifecycle.is_out_of_date(_version(status="proposed", parent_version_id=None), head)
+        assert not lifecycle.is_out_of_date(_version(status="proposed", parent_version_id=uuid4()), None)
 
 
 class TestReject:
