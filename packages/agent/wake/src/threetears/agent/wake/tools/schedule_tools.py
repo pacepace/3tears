@@ -60,7 +60,7 @@ from threetears.core.exceptions import ConcurrentModificationError
 from threetears.scheduled_jobs import compute_next_fire_at
 from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_schedule_id
 from threetears.agent.wake.tools.validators import (
-    _ChainNode,
+    ChainNode,
     validate_context_from_chain,
     validate_schedule_config,
 )
@@ -416,11 +416,11 @@ def _make_chain_resolver(
     a chain can never reach outside the agent.
     """
 
-    async def resolver(schedule_id: UUID) -> _ChainNode | None:
+    async def resolver(schedule_id: UUID) -> ChainNode | None:
         entity = await schedules_collection.find_for_agent(agent_id, schedule_id)
         if entity is None:
             return None
-        return _ChainNode(
+        return ChainNode(
             agent_id=entity.agent_id,
             context_from_schedule_id=entity.context_from_schedule_id,
         )
