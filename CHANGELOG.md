@@ -4,6 +4,63 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### An absent KV bucket raises its own typed error, and a raw nats-py handle's failures classify without importing nats-py
+
+Every KV path raised a plain `KvError` whether the bucket did not exist or the call failed for any
+other reason. The two need different responses: an absent bucket is ANSWERED by the server and
+means its declarer has not declared it yet (wait for it), while a refused one is never answered and
+means a missing grant (fix it). Consumers told them apart by matching nats-py's exception class
+NAMES on `__cause__`, because their enforcement keeps `nats.*` imports out of production code.
+
+- **Added, in `threetears.nats` (module `errors`): `KvBucketNotFoundError(KvError)`**, carrying
+  `.bucket`, the fully-qualified name of the absent bucket. Raised by every 3tears KV path that
+  finds the bucket absent:
+  - a bind-only open -- `NatsClient.kv_bucket` / `NatsClient.ensure_kv_bucket` with
+    `create_if_missing=False`, and `NatsKvBucket.open` -- once its wait for the declarer is spent;
+  - a declaring open whose create went unanswered and whose bind found nothing;
+  - a bind that succeeded and whose stream was gone by the live-config read that follows it;
+  - an operation on a bound handle (`get`, `get_entry`, `get_latest`, `put`, `create`, `update`,
+    `delete`, `date_created`, `list_keys`, and the per-entry-TTL `put` / `update`) whose stream
+    vanished and could not be bound again;
+  - `threetears.core.collections.bucket.bind_collections_bucket` once its attempt budget is spent
+    and the last bind found the bucket absent; its message then names the declarer, not the grant.
+
+  It is still a `KvError`, so every existing `except KvError` keeps catching it unchanged. A
+  refused or unreachable bucket stays a plain `KvError`. Classification is by type, never by
+  message text.
+- **Added, in `threetears.nats` (module `raw_errors`), for a consumer holding a RAW nats-py KV
+  handle:**
+  - **`is_bucket_not_found(exc) -> bool`**: true for nats-py's `BucketNotFoundError`, its
+    `NoStreamResponseError` (a KV write no stream captures), its `NotFoundError` carrying
+    JetStream's stream-not-found code, and for `KvBucketNotFoundError`. False for a missing key,
+    a deadline, and a core no-responders error.
+  - **`is_key_not_found(exc) -> bool`**: true for nats-py's `KeyNotFoundError` and
+    `KeyDeletedError`; false for an absent bucket, though nats-py raises both through
+    `NotFoundError`.
+  - **`is_nats_error(exc) -> bool`**: true for any `nats.errors.Error`; false for a 3tears wrapper
+    error, which is already translated.
+  - **`JS_ERR_STREAM_NOT_FOUND`** (`10059`): the JetStream error code the stream-not-found
+    classification reads.
+
+  Resolved lazily like every other nats-py-backed name in `threetears.nats`, so importing the
+  package still does not load the client.
+- **Changed: the shipped fakes raise what the real client raises.** `FakeNatsClient.kv_bucket` and
+  `FakeNatsClient.ensure_kv_bucket` with `create_if_missing=False` raise `KvBucketNotFoundError` for
+  an absent bucket instead of `KeyError`; `ensure_kv_bucket` treats a vanished bucket as absent. A
+  `FakeKvBucket` operation through a bind-only handle (a bucket named in `declared_buckets`, or
+  bound through `ensure_kv_bucket(create_if_missing=False)`) on a vanished bucket raises
+  `KvBucketNotFoundError` and leaves the bucket absent, where it used to recreate it; a handle
+  that may create still heals. A declaring `ensure_kv_bucket` recreates a vanished bucket. New
+  `FakeKvBucket(..., may_create=True)`, `FakeKvBucket.may_create` and
+  `FakeKvBucket.set_may_create()` carry the handle's mode.
+
+  **Consumer action:** a test that asserted `pytest.raises(KeyError)` around a bind-only open of
+  an absent bucket over `FakeNatsClient` now gets `KvBucketNotFoundError`; assert that instead. A
+  test that vanished a bucket named in `declared_buckets` and expected the next operation to heal
+  it now has to declare it again (`ensure_kv_bucket`), as the real declarer does.
+
 ## v0.58.0 -- 2026-10-02
 
 ### Security: a pod-signed proof's issue time may be 5 seconds ahead, not 60 -- a broker restart costs tool calls 10 seconds, not 65
