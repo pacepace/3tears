@@ -72,6 +72,51 @@ whose self-heal re-bound or recreated its bucket and met one wrapped it into a p
 the refusal was downgraded to a per-operation warning and the process ran on against a bucket it
 refuses. Those operations now raise both as themselves.
 
+### NATS: what a restart that lost its storage takes comes back after the reconnect, file storage too
+
+On Kubernetes a restarted NATS pod can come back without its JetStream volume, so a restart can
+delete FILE-storage streams and buckets as well as memory ones. v0.58.0 put back only the memory
+ones. Found live in a cold-start validation: after such a restart the hub's file-storage turn,
+delivery and audit streams were gone, the agent-router's durable turn consumer logged `stream not
+found` on every rebind, a tool-call turn spanning the restart failed after 122 s, and the registry
+answered `CATALOG_UNAVAILABLE` to every registration, so a restarted agent could not register its
+tools.
+
+- `NatsClient` now remembers every stream declared through `ensure_jetstream_stream` and every
+  bucket declared through `ensure_kv_bucket(create_if_missing=True)`, whatever its storage, and
+  creates each again with the config it was declared with after every reconnect. The same
+  create-only rule holds: a stream that survived (a plain restart keeps file storage) is a no-op,
+  and one live with a different config is left alone and logged. Durables the client bound on them
+  are bound again, as before. What comes back is EMPTY: messages and entries the restart took are
+  their owner's to write again.
+- A `kv_bucket()` open is still not remembered, even one that may create: it declares nothing, and
+  remembering it would let a process that is not the bucket's declarer create it after a restart
+  with a config (`allow_direct` unset) the declarer's create-only restoration then leaves in place.
+  Its own self-heal recreates it on first use, as before.
+- Registry: the catalog bucket (`tool_catalog`) has an owner, `CatalogPersistence`, which
+  `RegistryServer.serve` starts. It declares the bucket and warm-loads the catalog at start, and
+  after every reconnect declares it again and writes the in-memory catalog back into it
+  (`ToolCatalog.restore_to_kv`), in the background, retried with capped backoff and logged at ERROR
+  until it lands. It does not go through `ensure_kv_bucket` because that path names the bucket
+  `{namespace}-tool_catalog`, which would orphan the persisted catalog and break every
+  deployment's `$KV.tool_catalog.>` grant, and because a bucket the client re-creates comes back
+  empty. The bind now creates only when the server answered that the bucket is absent; a timeout
+  or refusal is retried instead of answered with a create. The registry's result stream was
+  already restored (memory storage, since v0.58.0) and still is.
+- `FakeNatsClient.remembered_declarations` and `restart_broker` follow: a file-storage declaration
+  is remembered and put back, empty, like a memory one.
+
+**Consumer action:** a stream or bucket created through a raw `jetstream_context()` call
+(`add_stream`, `create_key_value`) is not remembered. Declare it through `ensure_jetstream_stream`
+/ `ensure_kv_bucket`, or re-declare it from an `add_reconnect_callback` hook. A test asserting that
+a file-storage declaration is NOT remembered (`remembered_declarations`) now sees it remembered.
+
+### Enforcement: `threetears.nats.raw_errors` is part of the wrapper
+
+`raw_errors` classifies a raw nats-py handle's exceptions by their nats-py type, so it imports
+nats-py by design. The wrapper-usage gate now lists it with the other wrapper modules rather than
+failing on it; a nats-py import in any module outside that list still fails.
+
 ## v0.58.0 -- 2026-10-02
 
 ### Security: a pod-signed proof's issue time may be 5 seconds ahead, not 60 -- a broker restart costs tool calls 10 seconds, not 65

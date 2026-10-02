@@ -309,15 +309,34 @@ async def test_a_declaration_brings_a_vanished_bucket_back_for_its_binders() -> 
 
 
 @pytest.mark.asyncio
-async def test_only_a_memory_declaration_that_may_create_is_remembered() -> None:
-    # the real client remembers exactly these and creates them again after every reconnect; an
-    # ordinary open, a bind-only declaration and a file-backed one are never remembered.
+async def test_only_a_declaration_that_may_create_is_remembered_whatever_its_storage() -> None:
+    # the real client remembers exactly these and creates them again after every reconnect: a
+    # restart can lose file storage as well as memory (on Kubernetes the volume goes with the pod).
+    # an ordinary open and a bind-only declaration are never remembered.
     client = FakeNatsClient(declared_buckets=["hub-owned"])
     await client.ensure_kv_bucket(name="declared")
     await client.ensure_kv_bucket(name="durable", storage="file")
     await client.ensure_kv_bucket(name="hub-owned", create_if_missing=False)
     await client.kv_bucket(name="opened")
-    assert client.remembered_declarations == frozenset({"declared"})
+    assert client.remembered_declarations == frozenset({"declared", "durable"})
+
+
+@pytest.mark.asyncio
+async def test_a_file_declaration_comes_back_empty_after_a_restart_that_lost_its_storage() -> None:
+    client = FakeNatsClient()
+    durable = await client.ensure_kv_bucket(name="durable", storage="file")
+    await durable.put(key="k", value=b"v")
+    seen_by_hook: list[bool] = []
+
+    async def _hook() -> None:
+        seen_by_hook.append(client.bucket_exists("durable"))
+
+    client.add_reconnect_callback(_hook)
+    await client.restart_broker()
+
+    assert seen_by_hook == [True]
+    assert durable.keys() == ()
+    assert durable.storage == "file"
 
 
 @pytest.mark.asyncio

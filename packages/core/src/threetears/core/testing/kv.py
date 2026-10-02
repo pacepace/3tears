@@ -52,8 +52,8 @@ use:
 - :meth:`FakeNatsClient.add_reconnect_callback` registers a hook and
   :meth:`FakeNatsClient.reconnect` runs every hook, as a real reconnect does.
 - :meth:`FakeNatsClient.ensure_kv_bucket` declares as the real client does, and remembers a
-  memory-storage declaration that may create; :meth:`FakeNatsClient.restart_broker` loses every
-  bucket, puts back only the remembered ones, then runs the reconnect hooks.
+  declaration that may create, on memory or file storage; :meth:`FakeNatsClient.restart_broker`
+  loses every bucket, puts back only the remembered ones, then runs the reconnect hooks.
 
 the fake stores data in a plain dict keyed by bucket name so multiple
 buckets created from the same client share no state. revision counter
@@ -725,8 +725,8 @@ class FakeNatsClient:
         self.published: list[Any] = []
         self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
         self._reconnect_callbacks: list[Callable[[], Awaitable[None]]] = []
-        # what the real client's ``_memory_declarations`` holds: every memory-storage bucket this
-        # client declared through :meth:`ensure_kv_bucket` with a create, and so puts back after a
+        # what the real client remembers: every bucket this client declared through
+        # :meth:`ensure_kv_bucket` with a create, on memory or file storage, and so puts back after a
         # reconnect. names only -- the fake bucket carries its own config.
         self._remembered: set[str] = set()
 
@@ -734,10 +734,11 @@ class FakeNatsClient:
     def remembered_declarations(self) -> frozenset[str]:
         """every bucket this client would create again after a reconnect, as the real client does.
 
-        Exactly the memory-storage buckets declared through :meth:`ensure_kv_bucket` with
-        ``create_if_missing=True``. An ordinary :meth:`kv_bucket` open, a bind-only declaration
-        and a file-backed one are never remembered, so a test can assert which form a declarer
-        used rather than only that the bucket exists.
+        Exactly the buckets declared through :meth:`ensure_kv_bucket` with
+        ``create_if_missing=True``, whatever their storage: a restart can lose file storage as well
+        as memory (on Kubernetes the volume goes with the pod). An ordinary :meth:`kv_bucket` open
+        and a bind-only declaration are never remembered, so a test can assert which form a
+        declarer used rather than only that the bucket exists.
 
         :return: the remembered bucket names
         :rtype: frozenset[str]
@@ -758,7 +759,9 @@ class FakeNatsClient:
     async def restart_broker(self) -> None:
         """lose every bucket to a broker restart, put back the remembered ones, then run the reconnect hooks.
 
-        The real sequence on memory storage: every bucket loses its entries; the client creates
+        The real sequence on a restart that lost the broker's storage -- memory storage always, and
+        file storage too when the volume went with the pod, as it can on Kubernetes, so the fake
+        loses both: every bucket loses its entries; the client creates
         each declaration it remembers again, empty, before any hook it was given runs; every other
         bucket stays absent until an operation through a handle that may create it recreates it
         (the wrapper's self-heal, :meth:`FakeKvBucket.vanish`) -- through a bind-only handle the
@@ -918,8 +921,8 @@ class FakeNatsClient:
 
         Mirrors :meth:`threetears.nats.NatsClient.ensure_kv_bucket`: a declaration shares the one
         handle :meth:`kv_bucket` hands out, a declaration of a live bucket takes the declared TTL
-        and ``direct`` with its entries kept, and a memory-storage declaration that may create is
-        remembered (:attr:`remembered_declarations`) and put back by :meth:`restart_broker`.
+        and ``direct`` with its entries kept, and a declaration that may create, whatever its
+        storage, is remembered (:attr:`remembered_declarations`) and put back by :meth:`restart_broker`.
 
         :param name: bucket suffix; the fake skips the namespace prefix
         :ptype name: str
@@ -956,7 +959,7 @@ class FakeNatsClient:
             bucket.reconcile(ttl=ttl, direct=direct)
         # the real declaration replaces the client's one cached handle with one opened as it asked
         bucket.set_may_create(create_if_missing)
-        if create_if_missing and storage != "file":
+        if create_if_missing:
             self._remembered.add(name)
         return bucket
 

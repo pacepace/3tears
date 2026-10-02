@@ -858,6 +858,36 @@ class ToolCatalog:
             extra={"extra_data": {"entry_count": len(self._entries)}},
         )
 
+    async def restore_to_kv(self, kv: Any) -> list[str]:
+        """bind ``kv`` for every later write and write every entry this catalog holds into it.
+
+        what a bucket that came back empty after a NATS restart needs: the in-memory catalog is the
+        one the registry routes from, and the bucket is its persisted copy, read only to warm-load a
+        starting registry. each entry is written the way a registration writes it; one that fails
+        is logged and named in the result, and the rest are still written.
+
+        :param kv: raw nats-py KeyValue handle of the declared bucket
+        :ptype kv: Any
+        :return: the full names of the entries that could not be written; empty when all were
+        :rtype: list[str]
+        """
+        self._kv = kv
+        failed: list[str] = []
+        for full_name, entry in list(self._entries.items()):
+            try:
+                await self._persist(entry)
+            except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one entry's write must not strand the rest; each failure is logged and returned, and the caller retries
+                failed.append(full_name)
+                _logger.warning(
+                    "writing a catalog entry back into its bucket failed",
+                    extra={"extra_data": {"full_name": full_name, "error": f"{type(exc).__name__}: {exc}"}},
+                )
+        _logger.info(
+            "catalog written back into its bucket",
+            extra={"extra_data": {"entry_count": len(self._entries), "failed": len(failed)}},
+        )
+        return failed
+
     async def _persist(self, entry: CatalogEntry) -> None:
         """write one entry to KV when a bucket is bound.
 
