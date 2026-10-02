@@ -46,7 +46,7 @@ from sqlalchemy import Column, MetaData, String, Table, Text
 from threetears.observe import get_logger
 
 from threetears.core.backends.schema_sql import json_default
-from threetears.core.cache.base import _entry_is_fresh
+from threetears.core.cache.base import entry_is_fresh
 
 if TYPE_CHECKING:
     from threetears.core.cache.base import L1Backend
@@ -175,7 +175,7 @@ class ScanCache:
                 # the column is NOT NULL and written as text, so the parse
                 # always succeeds and the shared predicate never sees None.
                 stored_at = float(row["stored_at_monotonic"])
-                if _entry_is_fresh(stored_at, now_monotonic=now_monotonic, max_age_seconds=self._ttl_seconds):
+                if entry_is_fresh(stored_at, now_monotonic=now_monotonic, max_age_seconds=self._ttl_seconds):
                     hit = json.loads(row["payload"])
                 else:
                     # expired: drop it now rather than leave a tombstone that

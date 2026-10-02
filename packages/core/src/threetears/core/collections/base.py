@@ -32,7 +32,7 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
-from threetears.core.cache.base import _CACHED_AT_COLUMN
+from threetears.core.cache.base import CACHED_AT_COLUMN
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
@@ -2121,7 +2121,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         A copy, because the caller's dict is returned to the caller and becomes
         entity data. The stamp is storage bookkeeping and must not ride along.
         """
-        return {**data, _CACHED_AT_COLUMN: time.monotonic()}
+        return {**data, CACHED_AT_COLUMN: time.monotonic()}
 
     def _resolve_row(self, entity_id: Any) -> dict[str, Any]:
         """Get row from L1, pulling through L2/L3 on miss. Raises KeyError if not found.

@@ -13,7 +13,7 @@ import uuid
 import pytest
 from sqlalchemy import Column, Integer, MetaData, String, Table
 
-from threetears.core.cache.base import _CACHED_AT_COLUMN
+from threetears.core.cache.base import CACHED_AT_COLUMN
 from threetears.core.cache.sqlite import SQLiteBackend
 
 
@@ -25,7 +25,7 @@ def _metadata(table: str = "widgets", *, with_reserved_column: bool = False) -> 
         Column("size", Integer),
     ]
     if with_reserved_column:
-        columns.append(Column(_CACHED_AT_COLUMN, Integer))
+        columns.append(Column(CACHED_AT_COLUMN, Integer))
     Table(table, metadata, *columns)
     return metadata
 
@@ -52,7 +52,7 @@ class TestTheColumnLandsInBothPlaces:
 
     def test_the_table_has_the_column(self) -> None:
         b = _backend(_metadata())
-        assert _CACHED_AT_COLUMN in _declared_columns(b, "widgets")
+        assert CACHED_AT_COLUMN in _declared_columns(b, "widgets")
 
     def test_the_registry_has_it_too_or_this_write_would_vanish(self) -> None:
         """The registry half, asserted through behaviour rather than by reaching in.
@@ -63,28 +63,28 @@ class TestTheColumnLandsInBothPlaces:
         fact while proving less.
         """
         b = _backend(_metadata())
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 1234.5}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 1234.5}, "id")
         conn = b.get_connection()
-        stored = conn.execute(f'SELECT "{_CACHED_AT_COLUMN}" FROM widgets WHERE id = ?', ("w1",)).fetchone()
+        stored = conn.execute(f'SELECT "{CACHED_AT_COLUMN}" FROM widgets WHERE id = ?', ("w1",)).fetchone()
         assert stored[0] == 1234.5
 
 
 class TestTheStampIsInvisibleToCallers:
     def test_select_by_id_does_not_return_it(self) -> None:
         b = _backend(_metadata())
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 1234.5}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 1234.5}, "id")
         row = b.select_by_id("widgets", "w1", "id")
         assert row is not None
-        assert _CACHED_AT_COLUMN not in row
+        assert CACHED_AT_COLUMN not in row
         assert row["name"] == "one"
 
     def test_select_batch_does_not_return_it(self) -> None:
         b = _backend(_metadata())
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 1.0}, "id")
-        b.upsert("widgets", {"id": "w2", "name": "two", _CACHED_AT_COLUMN: 2.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 1.0}, "id")
+        b.upsert("widgets", {"id": "w2", "name": "two", CACHED_AT_COLUMN: 2.0}, "id")
         rows = b.select_batch("widgets", ["w1", "w2"], "id")
         assert len(rows) == 2
-        assert all(_CACHED_AT_COLUMN not in r for r in rows)
+        assert all(CACHED_AT_COLUMN not in r for r in rows)
 
     def test_a_caller_naming_it_explicitly_still_does_not_get_it(self) -> None:
         """No projection reaches past the strip.
@@ -94,10 +94,10 @@ class TestTheStampIsInvisibleToCallers:
         has to be at the deserialize funnel and not at the projection.
         """
         b = _backend(_metadata())
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 1234.5}, "id")
-        row = b.select_by_id("widgets", "w1", "id", columns=["name", _CACHED_AT_COLUMN])
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 1234.5}, "id")
+        row = b.select_by_id("widgets", "w1", "id", columns=["name", CACHED_AT_COLUMN])
         assert row is not None
-        assert _CACHED_AT_COLUMN not in row
+        assert CACHED_AT_COLUMN not in row
         assert row["name"] == "one"
 
 
@@ -107,7 +107,7 @@ class TestLocallyAuthoredRows:
         b = _backend(_metadata())
         b.upsert("widgets", {"id": "w1", "name": "one"}, "id")
         conn = b.get_connection()
-        stored = conn.execute(f'SELECT "{_CACHED_AT_COLUMN}" FROM widgets WHERE id = ?', ("w1",)).fetchone()
+        stored = conn.execute(f'SELECT "{CACHED_AT_COLUMN}" FROM widgets WHERE id = ?', ("w1",)).fetchone()
         assert stored[0] is None
 
     def test_read_modify_write_does_not_clear_an_existing_stamp(self) -> None:
@@ -121,7 +121,7 @@ class TestLocallyAuthoredRows:
         the rows most likely to be touched.
         """
         b = _backend(_metadata())
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 1234.5}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 1234.5}, "id")
 
         round_tripped = b.select_by_id("widgets", "w1", "id")
         assert round_tripped is not None
@@ -129,7 +129,7 @@ class TestLocallyAuthoredRows:
         b.upsert("widgets", round_tripped, "id")
 
         conn = b.get_connection()
-        row = conn.execute(f'SELECT name, "{_CACHED_AT_COLUMN}" FROM widgets WHERE id = ?', ("w1",)).fetchone()
+        row = conn.execute(f'SELECT name, "{CACHED_AT_COLUMN}" FROM widgets WHERE id = ?', ("w1",)).fetchone()
         assert row[0] == "edited"
         assert row[1] == 1234.5
 
@@ -140,7 +140,7 @@ class TestExemptTables:
     @pytest.mark.parametrize("table", ["collection_scan_cache", "write_buffer"])
     def test_no_stamp_column_is_injected(self, table: str) -> None:
         b = _backend(_metadata(table))
-        assert _CACHED_AT_COLUMN not in _declared_columns(b, table)
+        assert CACHED_AT_COLUMN not in _declared_columns(b, table)
 
     @pytest.mark.parametrize("table", ["collection_scan_cache", "write_buffer"])
     def test_a_stray_stamp_key_is_filtered_rather_than_erroring(self, table: str) -> None:
@@ -151,7 +151,7 @@ class TestExemptTables:
         raising is the proof the registry excludes it.
         """
         b = _backend(_metadata(table))
-        b.upsert(table, {"id": "x1", "name": "one", _CACHED_AT_COLUMN: 1.0}, "id")
+        b.upsert(table, {"id": "x1", "name": "one", CACHED_AT_COLUMN: 1.0}, "id")
         row = b.select_by_id(table, "x1", "id")
         assert row is not None
         assert row["name"] == "one"
@@ -160,5 +160,5 @@ class TestExemptTables:
 class TestTheNameIsReserved:
     def test_a_table_declaring_the_column_is_rejected(self) -> None:
         """A collision is an error, not a silent duplicate-column DDL failure."""
-        with pytest.raises(ValueError, match=_CACHED_AT_COLUMN):
+        with pytest.raises(ValueError, match=CACHED_AT_COLUMN):
             _backend(_metadata(with_reserved_column=True))
