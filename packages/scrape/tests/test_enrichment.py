@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -21,9 +20,11 @@ import pytest
 from threetears.scrape.collections import ENRICHMENT_STATUSES, ScrapeExtractionCollection
 from threetears.scrape.migrations import LEGACY_EMPTY_ENRICHMENT_FAILURE
 from uuid_utils import uuid7
-from threetears.scrape.enrichment import EnrichmentFailedError, _EnrichmentResult, enrich_extraction, run_enrichment
+from threetears.scrape.enrichment import EnrichmentFailedError, enrich_extraction, run_enrichment
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+
+from packages.scrape.tests.structured_output_fakes import fake_structured_model
 
 _test_registry = CollectionRegistry()
 _test_config = DefaultCoreConfig()
@@ -39,12 +40,6 @@ def get_config() -> DefaultCoreConfig:
 
 _PAGE_HTML = "<html><body><p>Acme Corp is closing its plant in Q3.</p></body></html>"
 _STRUCTURED_FIELDS = {"employer": "Acme Corp", "affected_count": 42}
-
-
-def _fake_structured_model(result=None, *, side_effect=None):
-    ainvoke_mock = AsyncMock(return_value=result, side_effect=side_effect)
-    structured = SimpleNamespace(ainvoke=ainvoke_mock)
-    return SimpleNamespace(with_structured_output=lambda schema, **kwargs: structured), ainvoke_mock
 
 
 async def _persisted_extraction(collection: ScrapeExtractionCollection):
@@ -65,16 +60,16 @@ def _errors(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 class TestRunEnrichment:
     async def test_success_returns_notes(self):
-        parsed = _EnrichmentResult(notes={"context": "closure tied to Q3 restructuring"})
-        fake_model, ainvoke_mock = _fake_structured_model(parsed)
+        parsed = {"notes": {"context": "closure tied to Q3 restructuring"}}
+        fake_model, ainvoke_mock = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             notes = await run_enrichment(_PAGE_HTML, _STRUCTURED_FIELDS, api_key="k")
         assert notes == {"context": "closure tied to Q3 restructuring"}
         assert ainvoke_mock.await_count == 1
 
     async def test_retries_before_succeeding(self):
-        parsed = _EnrichmentResult(notes={"note": "ok"})
-        fake_model, ainvoke_mock = _fake_structured_model(side_effect=[RuntimeError("transient"), parsed])
+        parsed = {"notes": {"note": "ok"}}
+        fake_model, ainvoke_mock = fake_structured_model(side_effect=[RuntimeError("transient"), parsed])
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
@@ -85,7 +80,7 @@ class TestRunEnrichment:
 
     async def test_total_failure_raises_with_the_reason_never_returns_empty_notes(self):
         boom = RuntimeError("boom")
-        fake_model, ainvoke_mock = _fake_structured_model(side_effect=boom)
+        fake_model, ainvoke_mock = fake_structured_model(side_effect=boom)
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
@@ -98,7 +93,7 @@ class TestRunEnrichment:
         assert exc_info.value.__cause__ is boom
 
     async def test_total_failure_is_logged_once_with_its_cause(self, caplog: pytest.LogCaptureFixture):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("provider down"))
+        fake_model, _ = fake_structured_model(side_effect=RuntimeError("provider down"))
         with (
             caplog.at_level(logging.WARNING),
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
@@ -115,7 +110,7 @@ class TestRunEnrichment:
         assert "RuntimeError: provider down" in errors[0].getMessage()
 
     async def test_cancellation_propagates_and_is_not_retried(self):
-        fake_model, ainvoke_mock = _fake_structured_model(side_effect=asyncio.CancelledError())
+        fake_model, ainvoke_mock = fake_structured_model(side_effect=asyncio.CancelledError())
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
@@ -125,8 +120,8 @@ class TestRunEnrichment:
         assert ainvoke_mock.await_count == 1
 
     async def test_genuinely_nothing_noteworthy_returns_empty_dict(self):
-        parsed = _EnrichmentResult(notes={})
-        fake_model, _ = _fake_structured_model(parsed)
+        parsed = {"notes": {}}
+        fake_model, _ = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             notes = await run_enrichment(_PAGE_HTML, _STRUCTURED_FIELDS, api_key="k")
         assert notes == {}
@@ -144,8 +139,8 @@ class TestEnrichExtraction:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
 
-        parsed = _EnrichmentResult(notes={"context": "closure tied to Q3 restructuring"})
-        fake_model, _ = _fake_structured_model(parsed)
+        parsed = {"notes": {"context": "closure tied to Q3 restructuring"}}
+        fake_model, _ = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             enriched = await enrich_extraction(
                 original,
@@ -174,7 +169,7 @@ class TestEnrichExtraction:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
 
-        fake_model, _ = _fake_structured_model(_EnrichmentResult(notes={}))
+        fake_model, _ = fake_structured_model({"notes": {}})
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             enriched = await enrich_extraction(
                 original, _PAGE_HTML, extraction_collection=extraction_collection, api_key="k"
@@ -188,7 +183,7 @@ class TestEnrichExtraction:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
 
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        fake_model, _ = fake_structured_model(side_effect=RuntimeError("boom"))
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
@@ -216,7 +211,7 @@ class TestEnrichExtraction:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
 
-        failing_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        failing_model, _ = fake_structured_model(side_effect=RuntimeError("boom"))
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=failing_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
@@ -226,7 +221,7 @@ class TestEnrichExtraction:
             )
         assert failed.enrichment_status == "failed"
 
-        working_model, _ = _fake_structured_model(_EnrichmentResult(notes={"context": "second try"}))
+        working_model, _ = fake_structured_model({"notes": {"context": "second try"}})
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=working_model):
             retried = await enrich_extraction(
                 failed, _PAGE_HTML, extraction_collection=extraction_collection, api_key="k"
@@ -241,7 +236,7 @@ class TestEnrichExtraction:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
 
-        fake_model, _ = _fake_structured_model(side_effect=asyncio.CancelledError())
+        fake_model, _ = fake_structured_model(side_effect=asyncio.CancelledError())
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             pytest.raises(asyncio.CancelledError),
