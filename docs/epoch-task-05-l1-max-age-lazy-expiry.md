@@ -254,7 +254,7 @@ buffered.
 
 That is survivable rather than safe-by-construction: the pull-through reads L2, which the
 same save already wrote, so the new value comes back and nothing reverts. Without L2 wired
-it reads L3 and serves the pre-write value. The code comment at `_entry_is_fresh` states
+it reads L3 and serves the pre-write value. The code comment at `entry_is_fresh` states
 the same limit, because one rule being load-bearing for another is not obvious from either.
 
 ## Expiry applies only where a miss repairs (added after the cumulative review)

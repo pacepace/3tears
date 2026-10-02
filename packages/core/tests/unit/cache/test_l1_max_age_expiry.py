@@ -13,7 +13,7 @@ import uuid
 import pytest
 from sqlalchemy import Column, Integer, MetaData, String, Table
 
-from threetears.core.cache.base import _CACHED_AT_COLUMN
+from threetears.core.cache.base import CACHED_AT_COLUMN
 from threetears.core.cache.duckdb import DuckDBBackend
 from threetears.core.cache.sqlite import SQLiteBackend
 
@@ -44,12 +44,12 @@ def _row_count(backend: SQLiteBackend, table: str = "widgets") -> int:
 class TestExpiryIsOffUnlessAsked:
     def test_no_bound_serves_an_ancient_row(self) -> None:
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 0.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 0.0}, "id")
         assert b.select_by_id("widgets", "w1", "id", now_monotonic=1_000_000.0) is not None
 
     def test_no_bound_deletes_nothing(self) -> None:
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 0.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 0.0}, "id")
         b.select_by_id("widgets", "w1", "id", now_monotonic=1_000_000.0)
         assert _row_count(b) == 1
 
@@ -57,14 +57,14 @@ class TestExpiryIsOffUnlessAsked:
 class TestExpiryOnRead:
     def test_a_row_inside_the_window_is_served(self) -> None:
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 100.0}, "id")
         row = b.select_by_id("widgets", "w1", "id", max_age_seconds=30.0, now_monotonic=129.0)
         assert row is not None
         assert row["name"] == "one"
 
     def test_a_row_past_the_window_reads_as_a_miss(self) -> None:
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 100.0}, "id")
         assert b.select_by_id("widgets", "w1", "id", max_age_seconds=30.0, now_monotonic=131.0) is None
 
     def test_an_expired_row_is_deleted_not_left_as_a_tombstone(self) -> None:
@@ -75,13 +75,13 @@ class TestExpiryOnRead:
         there being re-judged forever.
         """
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 100.0}, "id")
         b.select_by_id("widgets", "w1", "id", max_age_seconds=30.0, now_monotonic=131.0)
         assert _row_count(b) == 0
 
     def test_an_hour_long_window_is_exercised_without_waiting_an_hour(self) -> None:
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 0.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 0.0}, "id")
         assert b.select_by_id("widgets", "w1", "id", max_age_seconds=3600.0, now_monotonic=3599.0) is not None
         assert b.select_by_id("widgets", "w1", "id", max_age_seconds=3600.0, now_monotonic=3601.0) is None
 
@@ -110,13 +110,13 @@ class TestProjectionCannotBypassExpiry:
         rather than trusted.
         """
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 100.0}, "id")
         row = b.select_by_id("widgets", "w1", "id", columns=["name"], max_age_seconds=30.0, now_monotonic=131.0)
         assert row is None
 
     def test_the_widened_projection_is_still_stripped(self) -> None:
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 100.0}, "id")
         row = b.select_by_id("widgets", "w1", "id", columns=["name"], max_age_seconds=30.0, now_monotonic=101.0)
         assert row == {"name": "one"}
 
@@ -124,22 +124,22 @@ class TestProjectionCannotBypassExpiry:
 class TestSelectBatchAppliesTheSamePredicate:
     def test_expired_rows_are_omitted_and_fresh_ones_kept(self) -> None:
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "old", _CACHED_AT_COLUMN: 0.0}, "id")
-        b.upsert("widgets", {"id": "w2", "name": "new", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "old", CACHED_AT_COLUMN: 0.0}, "id")
+        b.upsert("widgets", {"id": "w2", "name": "new", CACHED_AT_COLUMN: 100.0}, "id")
         rows = b.select_batch("widgets", ["w1", "w2"], "id", max_age_seconds=30.0, now_monotonic=110.0)
         assert [r["name"] for r in rows] == ["new"]
 
     def test_expired_rows_are_deleted_by_the_batch_path_too(self) -> None:
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "old", _CACHED_AT_COLUMN: 0.0}, "id")
-        b.upsert("widgets", {"id": "w2", "name": "new", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "old", CACHED_AT_COLUMN: 0.0}, "id")
+        b.upsert("widgets", {"id": "w2", "name": "new", CACHED_AT_COLUMN: 100.0}, "id")
         b.select_batch("widgets", ["w1", "w2"], "id", max_age_seconds=30.0, now_monotonic=110.0)
         assert _row_count(b) == 1
 
     def test_no_bound_keeps_everything(self) -> None:
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "old", _CACHED_AT_COLUMN: 0.0}, "id")
-        b.upsert("widgets", {"id": "w2", "name": "new", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "old", CACHED_AT_COLUMN: 0.0}, "id")
+        b.upsert("widgets", {"id": "w2", "name": "new", CACHED_AT_COLUMN: 100.0}, "id")
         rows = b.select_batch("widgets", ["w1", "w2"], "id", now_monotonic=1_000_000.0)
         assert len(rows) == 2
 
@@ -194,16 +194,32 @@ class TestExemptionsMatchTheirDeclarations:
     """
 
     def test_exempt_tables_match_their_declarations(self) -> None:
-        from threetears.core.cache.base import _TABLES_WITHOUT_CACHE_STAMP
-        from threetears.core.collections.flush import _write_buffer_table
-        from threetears.core.collections.scan_cache import _scan_cache_table
+        """the owners create exactly the exempt tables, and none of them carries the stamp.
 
-        declared = {_scan_cache_table.name, _write_buffer_table.name}
-        assert declared == set(_TABLES_WITHOUT_CACHE_STAMP)
+        Driven through the owners' constructors: ``WriteBuffer`` and ``ScanCache`` each
+        create their table in the L1 backend they are handed. A renamed declaration leaves
+        the exemption naming a table nobody creates, and the renamed table is then stamped
+        -- both fail here.
+        """
+        from threetears.core.cache.base import TABLES_WITHOUT_CACHE_STAMP
+        from threetears.core.collections.flush import WriteBuffer
+        from threetears.core.collections.scan_cache import ScanCache
+
+        backend = SQLiteBackend(db_name=f"exempt_{uuid.uuid4().hex[:8]}")
+        WriteBuffer(backend)
+        ScanCache(backend)
+        conn = backend.get_connection()
+        created = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+
+        assert created == set(TABLES_WITHOUT_CACHE_STAMP)
+        for table in created:
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            assert columns, f"{table} reports no columns"
+            assert CACHED_AT_COLUMN not in columns, f"{table} is exempt but was stamped"
 
 
 class TestTheStampNeverEscapes:
-    """`_CACHED_AT_COLUMN` promises it is stripped from every row a read returns.
+    """`CACHED_AT_COLUMN` promises it is stripped from every row a read returns.
 
     `_deserialize_row` covers the keyed reads. `execute_query` is an `L1Backend`
     protocol member too, and a `SELECT *` through it was handing the caller the
@@ -217,11 +233,11 @@ class TestTheStampNeverEscapes:
         :rtype: None
         """
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 100.0}, "id")
 
         rows = b.execute_query("SELECT * FROM widgets")
 
-        assert rows and _CACHED_AT_COLUMN not in rows[0]
+        assert rows and CACHED_AT_COLUMN not in rows[0]
         assert rows[0]["name"] == "one"
 
     def test_the_keyed_read_still_does_not_leak_it_either(self) -> None:
@@ -231,11 +247,11 @@ class TestTheStampNeverEscapes:
         :rtype: None
         """
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 100.0}, "id")
 
         row = b.select_by_id("widgets", "w1", "id")
 
-        assert row is not None and _CACHED_AT_COLUMN not in row
+        assert row is not None and CACHED_AT_COLUMN not in row
 
 
 class TestAFailedExpiryDeleteDoesNotBreakTheRead:
@@ -261,7 +277,7 @@ class TestAFailedExpiryDeleteDoesNotBreakTheRead:
         :rtype: None
         """
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "one", CACHED_AT_COLUMN: 100.0}, "id")
         self._refuse_deletes(b)
 
         assert b.select_by_id("widgets", "w1", "id", max_age_seconds=30.0, now_monotonic=200.0) is None
@@ -273,8 +289,8 @@ class TestAFailedExpiryDeleteDoesNotBreakTheRead:
         :rtype: None
         """
         b = _backend()
-        b.upsert("widgets", {"id": "w1", "name": "stale", _CACHED_AT_COLUMN: 100.0}, "id")
-        b.upsert("widgets", {"id": "w2", "name": "fresh", _CACHED_AT_COLUMN: 190.0}, "id")
+        b.upsert("widgets", {"id": "w1", "name": "stale", CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w2", "name": "fresh", CACHED_AT_COLUMN: 190.0}, "id")
         self._refuse_deletes(b)
 
         rows = b.select_batch("widgets", ["w1", "w2"], "id", max_age_seconds=30.0, now_monotonic=200.0)

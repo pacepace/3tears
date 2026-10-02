@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
 
 from threetears.core.backends.sql import SqlL3Backend
-from threetears.core.cache.base import _CACHED_AT_COLUMN
+from threetears.core.cache.base import CACHED_AT_COLUMN
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
@@ -1466,7 +1466,7 @@ class TestCacheAgeStampOnLowerTierReads:
         """Read the stamp straight from SQLite, since every read strips it."""
         conn = backend.get_connection()
         row = conn.execute(
-            f'SELECT "{_CACHED_AT_COLUMN}" FROM test_entities WHERE id = ?',
+            f'SELECT "{CACHED_AT_COLUMN}" FROM test_entities WHERE id = ?',
             (entity_id,),
         ).fetchone()
         return None if row is None else row[0]
@@ -1536,15 +1536,15 @@ class TestCacheAgeStampOnLowerTierReads:
 
         entity = await coll.get("p4")
         assert entity is not None
-        assert _CACHED_AT_COLUMN not in entity.to_dict()
+        assert CACHED_AT_COLUMN not in entity.to_dict()
 
         row = coll.get_row_sync("p4")
         assert row is not None
-        assert _CACHED_AT_COLUMN not in row
+        assert CACHED_AT_COLUMN not in row
 
         ensured = await coll.ensure("p4")
         assert ensured is not None
-        assert _CACHED_AT_COLUMN not in ensured
+        assert CACHED_AT_COLUMN not in ensured
 
 
 class TestL1MaxAgePolicy:
@@ -1611,7 +1611,7 @@ class TestL1MaxAgePolicy:
             {"id": "m1", "name": "PeerWrote", "score": 2}
         ).encode()
         conn = l1_backend.get_connection()
-        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m1"))
+        conn.execute(f'UPDATE test_entities SET "{CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m1"))
 
         entity = await coll.get("m1")
 
@@ -1640,7 +1640,7 @@ class TestL1MaxAgePolicy:
             {"id": "m2", "name": "PeerWrote", "score": 2}
         ).encode()
         conn = l1_backend.get_connection()
-        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m2"))
+        conn.execute(f'UPDATE test_entities SET "{CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m2"))
 
         entity = await coll.get("m2")
 
@@ -1660,7 +1660,7 @@ class TestExpiryDoesNotBreakNonRepairingReads:
     @staticmethod
     def _age_out(backend: SQLiteBackend, entity_id: str) -> None:
         conn = backend.get_connection()
-        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
+        conn.execute(f'UPDATE test_entities SET "{CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
 
     @pytest.mark.asyncio
     async def test_a_field_write_survives_an_aged_out_row(
@@ -1829,7 +1829,7 @@ class TestTheBoundReachesTheSubscriptReadPath:
     @staticmethod
     def _age_out(backend: SQLiteBackend, entity_id: str) -> None:
         conn = backend.get_connection()
-        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
+        conn.execute(f'UPDATE test_entities SET "{CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
 
     @pytest.mark.asyncio
     async def test_the_entity_subscript_expires_and_pulls_through(
