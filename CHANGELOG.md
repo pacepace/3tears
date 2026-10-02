@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.59.0 -- 2026-10-02
+
 ### An absent KV bucket raises its own typed error, and a raw nats-py handle's failures classify without importing nats-py
 
 Every KV path raised a plain `KvError` whether the bucket did not exist or the call failed for any
