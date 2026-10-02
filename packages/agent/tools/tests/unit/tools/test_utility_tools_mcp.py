@@ -8,13 +8,28 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.agent.tools.builtin.timezone_converter import (
-    TimezoneConverterTool,
-    _convert_timezone,
-)
+from threetears.agent.tools.builtin.timezone_converter import TimezoneConverterTool
 from threetears.agent.tools.builtin.unit_converter import UnitConverterTool
 from threetears.agent.tools.builtin.analyze_media import AnalyzeMediaTool
 from threetears.agent.tools.document import ParseDocumentTool
+
+
+def _converted(time_str: str, from_timezone: str, to_timezone: str) -> str:
+    """the content the timezone converter answers for one conversion.
+
+    :param time_str: the time to convert
+    :ptype time_str: str
+    :param from_timezone: the source IANA zone
+    :ptype from_timezone: str
+    :param to_timezone: the target IANA zone
+    :ptype to_timezone: str
+    :return: the tool's content, ``[TOOL ERROR]``-prefixed on a failure
+    :rtype: str
+    """
+    result = asyncio.run(
+        TimezoneConverterTool().execute(time_str=time_str, from_timezone=from_timezone, to_timezone=to_timezone)
+    )
+    return result.content
 
 
 # -- Fake MediaStorage for AnalyzeMediaTool --
@@ -107,7 +122,7 @@ class TestTimezoneConverterTool:
         """
         target = "Asia/Tokyo"
         expected_date = datetime.now(ZoneInfo(target)).strftime("%A, %B %d, %Y")
-        result = _convert_timezone("now", "America/Los_Angeles", target)
+        result = _converted("now", "America/Los_Angeles", target)
         assert not result.startswith("[TOOL ERROR]")
         # output is "<source> = <target>"; the target side carries the real date
         assert expected_date in result.split("=", 1)[1]
@@ -115,7 +130,7 @@ class TestTimezoneConverterTool:
     def test_now_sentinels_all_resolve_to_clock(self) -> None:
         """'now', 'current', 'right now', and empty all resolve to the clock."""
         for token in ("now", "Now", "current", "right now", ""):
-            result = _convert_timezone(token, "UTC", "UTC")
+            result = _converted(token, "UTC", "UTC")
             assert not result.startswith("[TOOL ERROR]"), token
             # same zone, same instant -> both sides identical
             source, target = (part.strip() for part in result.split("=", 1))

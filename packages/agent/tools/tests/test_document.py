@@ -7,6 +7,7 @@ import sys
 from types import ModuleType
 from typing import Any
 
+import fitz  # PyMuPDF
 import pytest
 
 from threetears.agent.tools.document import (
@@ -15,9 +16,6 @@ from threetears.agent.tools.document import (
     OcrConfig,
     ParseDocumentInput,
     ParseDocumentTool,
-    _extract_pdf_tables,
-    _merge_wrapped_table_rows,
-    _ocr_page,
     can_parse_document,
     create_parse_document_tool,
     detect_mime_from_filename,
@@ -43,15 +41,55 @@ class TestOcrConfig:
         assert cfg.psm == 3
 
 
-# -- _ocr_page -----------------------------------------------------------------
-# pytesseract/pdf2image are lazily imported inside _ocr_page (an optional "ocr"
-# extra, not installed in this package's own default test env) -- fake modules
-# injected via sys.modules so this test runs regardless of whether the real
-# packages happen to be installed, matching how the function itself resolves them.
+# -- OCR fallback ----------------------------------------------------------------
+# pytesseract/pdf2image are lazily imported by the PDF parser's OCR fallback (an optional
+# "ocr" extra, not installed in this package's own default test env) -- fake modules
+# injected via sys.modules so these tests run regardless of whether the real packages
+# happen to be installed, matching how the parser itself resolves them. the PDF is a real
+# one-page blank document, so the page carries no text and the fallback engages.
 
 
-class TestOcrPage:
-    def test_passes_the_given_psm_to_pytesseract(self, monkeypatch):
+def _blank_pdf() -> bytes:
+    """a real one-page PDF with no text on it.
+
+    :return: the document's bytes
+    :rtype: bytes
+    """
+    doc = fitz.open()
+    try:
+        doc.new_page()
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
+def _install_fake_ocr(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> None:
+    """install fake pdf2image/pytesseract modules that record the OCR call.
+
+    :param monkeypatch: pytest's monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :param captured: filled with the image, language and config pytesseract was handed
+    :ptype captured: dict[str, Any]
+    """
+    fake_pdf2image = ModuleType("pdf2image")
+    fake_pdf2image.convert_from_bytes = lambda *a, **kw: ["fake-image"]  # type: ignore[attr-defined]
+
+    fake_pytesseract = ModuleType("pytesseract")
+
+    def fake_image_to_string(image, lang=None, config=None):
+        captured["image"] = image
+        captured["lang"] = lang
+        captured["config"] = config
+        return "extracted text"
+
+    fake_pytesseract.image_to_string = fake_image_to_string  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+    monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
+
+
+class TestOcrFallback:
+    async def test_passes_the_given_psm_to_pytesseract(self, monkeypatch):
         """scrape-task-06, 2026-07-16: psm is caller-configurable (OcrConfig.psm),
         not a hardcoded module constant -- one target's own PSM 4 evidence
         (scrape-task-05: PSM 3 can drop a narrow numeric table column entirely,
@@ -61,47 +99,22 @@ class TestOcrPage:
         OCR accuracy itself (that needs the real Tesseract binary, proven
         separately against real live documents)."""
         captured: dict[str, Any] = {}
+        _install_fake_ocr(monkeypatch, captured)
 
-        fake_pdf2image = ModuleType("pdf2image")
-        fake_pdf2image.convert_from_bytes = lambda *a, **kw: ["fake-image"]  # type: ignore[attr-defined]
+        result = await parse_document(
+            _blank_pdf(), "application/pdf", ocr_config=OcrConfig(enabled=True, language="eng", psm=4)
+        )
 
-        fake_pytesseract = ModuleType("pytesseract")
-
-        def fake_image_to_string(image, lang=None, config=None):
-            captured["image"] = image
-            captured["lang"] = lang
-            captured["config"] = config
-            return "extracted text"
-
-        fake_pytesseract.image_to_string = fake_image_to_string  # type: ignore[attr-defined]
-
-        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
-        monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
-
-        result = _ocr_page(b"fake-pdf-bytes", page_num=0, language="eng", psm=4)
-
-        assert result == "extracted text"
+        assert result.text == "extracted text"
+        assert result.was_ocr is True
         assert captured["config"] == "--psm 4"
         assert captured["lang"] == "eng"
 
-    def test_a_different_psm_is_passed_through_unchanged(self, monkeypatch):
+    async def test_a_different_psm_is_passed_through_unchanged(self, monkeypatch):
         captured: dict[str, Any] = {}
+        _install_fake_ocr(monkeypatch, captured)
 
-        fake_pdf2image = ModuleType("pdf2image")
-        fake_pdf2image.convert_from_bytes = lambda *a, **kw: ["fake-image"]  # type: ignore[attr-defined]
-
-        fake_pytesseract = ModuleType("pytesseract")
-
-        def fake_image_to_string(image, lang=None, config=None):
-            captured["config"] = config
-            return "extracted text"
-
-        fake_pytesseract.image_to_string = fake_image_to_string  # type: ignore[attr-defined]
-
-        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
-        monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
-
-        _ocr_page(b"fake-pdf-bytes", page_num=0, language="eng", psm=3)
+        await parse_document(_blank_pdf(), "application/pdf", ocr_config=OcrConfig(enabled=True, language="eng", psm=3))
 
         assert captured["config"] == "--psm 3"
 
@@ -470,24 +483,127 @@ class TestParseDocumentInput:
         assert inp.filename == "test.pdf"
 
 
-# -- _merge_wrapped_table_rows / _extract_pdf_tables --------------------------
+# -- PDF tables: wrapped-row merging ------------------------------------------
 # scrape-task-07 follow-up (2026-07-16): find_tables() gets column boundaries
 # right, but a long-text cell that word-wraps inside one logical PDF table row
 # becomes its OWN separate row in table.extract()'s output -- live-found against
 # Mississippi's real quarterly WARN Act PDF, confirmed before/after against the
 # real file (git-stashed the fix, re-ran, saw the fragmented rows this fixes).
+#
+# driven through parse_document: PyMuPDF is imported lazily by the PDF parser, so
+# a fake ``fitz`` module in sys.modules hands it a page whose find_tables() answers
+# exactly the rows under test, and the table comes back as the markdown the parser
+# appends to the page's text.
+
+#: the text every fake page carries, ahead of its tables in the parsed result.
+_PAGE_TEXT = "page body"
+
+
+# parity-exempt: hand-rolled subset stub of PyMuPDF's third-party Table (only extract(), the only method the table path calls)
+class _FakeExtractedTable:
+    def __init__(self, rows: list[list[Any]]) -> None:
+        self.rows = rows
+
+    def extract(self) -> list[list[Any]]:
+        return self.rows
+
+
+# parity-exempt: hand-rolled subset stub of PyMuPDF's third-party TableFinder (only the .tables attribute, the only surface read)
+class _FakeTables:
+    def __init__(self, tables: list[_FakeExtractedTable]) -> None:
+        self.tables = tables
+
+
+# parity-exempt: hand-rolled subset stub of PyMuPDF's third-party Page (get_text() and find_tables(), the only surfaces the PDF parser reads)
+class _FakePdfPage:
+    def __init__(self, tables: list[_FakeExtractedTable], *, tables_raise: bool = False) -> None:
+        self.tables = tables
+        self.tables_raise = tables_raise
+
+    def get_text(self, option: str = "text") -> Any:
+        return {"blocks": []} if option == "dict" else _PAGE_TEXT
+
+    def find_tables(self) -> _FakeTables:
+        if self.tables_raise:
+            raise RuntimeError("boom")
+        return _FakeTables(self.tables)
+
+
+# parity-exempt: hand-rolled subset stub of PyMuPDF's third-party Document (metadata, len, indexing and close(), the only surfaces the PDF parser reads)
+class _FakePdfDocument:
+    def __init__(self, page: _FakePdfPage) -> None:
+        self.metadata: dict[str, str] = {}
+        self.page = page
+
+    def __len__(self) -> int:
+        return 1
+
+    def __getitem__(self, index: int) -> _FakePdfPage:
+        return self.page
+
+    def close(self) -> None:
+        return None
+
+
+async def _parse_pdf_page(monkeypatch: pytest.MonkeyPatch, page: _FakePdfPage, *, merge: bool) -> str:
+    """parse a one-page PDF whose page is *page*, answering the tables' markdown.
+
+    :param monkeypatch: pytest's monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :param page: the page PyMuPDF hands the parser
+    :ptype page: _FakePdfPage
+    :param merge: the ``merge_wrapped_table_rows`` opt-in
+    :ptype merge: bool
+    :return: the markdown the parser appended for the page's tables, ``""`` for none
+    :rtype: str
+    """
+    fake_fitz = ModuleType("fitz")
+    fake_fitz.open = lambda *a, **kw: _FakePdfDocument(page)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+    result = await parse_document(b"%PDF-stub", "application/pdf", merge_wrapped_table_rows=merge)
+    assert result.text.startswith(_PAGE_TEXT)
+    return result.text[len(_PAGE_TEXT) :].removeprefix("\n\n")
+
+
+async def _table_markdown(monkeypatch: pytest.MonkeyPatch, rows: list[list[Any]], *, merge: bool = True) -> str:
+    """the markdown the PDF parser renders for one table extracted as *rows*.
+
+    :param monkeypatch: pytest's monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :param rows: what ``table.extract()`` answers, header first
+    :ptype rows: list[list[Any]]
+    :param merge: the ``merge_wrapped_table_rows`` opt-in
+    :ptype merge: bool
+    :return: the table as markdown
+    :rtype: str
+    """
+    return await _parse_pdf_page(monkeypatch, _FakePdfPage([_FakeExtractedTable(rows)]), merge=merge)
+
+
+def _markdown(rows: list[list[Any]]) -> str:
+    """the markdown table *rows* render to, header first.
+
+    :param rows: the expected rows after any merge
+    :ptype rows: list[list[Any]]
+    :return: the markdown table
+    :rtype: str
+    """
+    lines = ["| " + " | ".join(str(c) if c else "" for c in rows[0]) + " |"]
+    lines.append("| " + " | ".join("---" for _ in rows[0]) + " |")
+    lines += ["| " + " | ".join(str(c) if c else "" for c in row) + " |" for row in rows[1:]]
+    return "\n".join(lines)
 
 
 class TestMergeWrappedTableRows:
-    def test_a_table_with_no_wrapped_cells_round_trips_unchanged(self):
+    async def test_a_table_with_no_wrapped_cells_round_trips_unchanged(self, monkeypatch):
         rows = [
             ["Date", "Employer", "Count"],
             ["1/1/2026", "Acme Corp", "42"],
             ["2/2/2026", "Beta LLC", "7"],
         ]
-        assert _merge_wrapped_table_rows(rows) == rows
+        assert await _table_markdown(monkeypatch, rows) == _markdown(rows)
 
-    def test_a_continuation_row_with_empty_first_column_merges_into_the_row_above(self):
+    async def test_a_continuation_row_with_empty_first_column_merges_into_the_row_above(self, monkeypatch):
         rows = [
             ["Date of Notice", "Company", "NAICS Description"],
             ["4/14/2026", "Greenwood Leflore Hospital", "622110 – General"],
@@ -495,48 +611,51 @@ class TestMergeWrappedTableRows:
             ["", "", "Surgical Hospital"],
             ["2/20/2026", "Stanley Black & Decker", "333991 – Power Tools"],
         ]
-        result = _merge_wrapped_table_rows(rows)
-        assert result == [
-            ["Date of Notice", "Company", "NAICS Description"],
-            ["4/14/2026", "Greenwood Leflore Hospital", "622110 – General Medical and Surgical Hospital"],
-            ["2/20/2026", "Stanley Black & Decker", "333991 – Power Tools"],
-        ]
+        assert await _table_markdown(monkeypatch, rows) == _markdown(
+            [
+                ["Date of Notice", "Company", "NAICS Description"],
+                ["4/14/2026", "Greenwood Leflore Hospital", "622110 – General Medical and Surgical Hospital"],
+                ["2/20/2026", "Stanley Black & Decker", "333991 – Power Tools"],
+            ]
+        )
 
-    def test_multiple_wrapped_columns_on_the_same_continuation_row_all_merge(self):
+    async def test_multiple_wrapped_columns_on_the_same_continuation_row_all_merge(self, monkeypatch):
         rows = [
             ["Date of Notice", "Company", "Event Number", "Reason"],
             ["4/17/2026", "Aramark Services, Inc", "RR-MS-", "WARN – Due"],
             ["", "", "2025-0020", "Businesses Circumstances"],
         ]
-        result = _merge_wrapped_table_rows(rows)
-        assert result == [
-            ["Date of Notice", "Company", "Event Number", "Reason"],
-            ["4/17/2026", "Aramark Services, Inc", "RR-MS- 2025-0020", "WARN – Due Businesses Circumstances"],
-        ]
+        assert await _table_markdown(monkeypatch, rows) == _markdown(
+            [
+                ["Date of Notice", "Company", "Event Number", "Reason"],
+                ["4/17/2026", "Aramark Services, Inc", "RR-MS- 2025-0020", "WARN – Due Businesses Circumstances"],
+            ]
+        )
 
-    def test_none_cells_are_treated_the_same_as_empty_strings(self):
+    async def test_none_cells_are_treated_the_same_as_empty_strings(self, monkeypatch):
         rows = [
             ["Date", "Company", "Notes"],
             ["1/1/2026", "Acme Corp", "first part"],
             [None, None, "second part"],
         ]
-        result = _merge_wrapped_table_rows(rows)
-        assert result == [
-            ["Date", "Company", "Notes"],
-            ["1/1/2026", "Acme Corp", "first part second part"],
-        ]
+        assert await _table_markdown(monkeypatch, rows) == _markdown(
+            [
+                ["Date", "Company", "Notes"],
+                ["1/1/2026", "Acme Corp", "first part second part"],
+            ]
+        )
 
-    def test_header_row_is_never_merged_even_if_its_own_first_cell_is_empty(self):
+    async def test_header_row_is_never_merged_even_if_its_own_first_cell_is_empty(self, monkeypatch):
         rows = [["", "Company"], ["1/1/2026", "Acme Corp"]]
-        assert _merge_wrapped_table_rows(rows) == rows
+        assert await _table_markdown(monkeypatch, rows) == _markdown(rows)
 
-    def test_first_data_row_is_never_merged_even_if_its_own_first_cell_is_empty(self):
+    async def test_first_data_row_is_never_merged_even_if_its_own_first_cell_is_empty(self, monkeypatch):
         """No parent row exists yet for the very first data row to merge into --
         treated as a normal (if malformed) row rather than silently dropped."""
         rows = [["Date", "Company"], ["", "Orphan Row"]]
-        assert _merge_wrapped_table_rows(rows) == [["Date", "Company"], ["", "Orphan Row"]]
+        assert await _table_markdown(monkeypatch, rows) == _markdown([["Date", "Company"], ["", "Orphan Row"]])
 
-    def test_header_and_first_row_protection_holds_when_the_merge_loop_actually_runs(self):
+    async def test_header_and_first_row_protection_holds_when_the_merge_loop_actually_runs(self, monkeypatch):
         """The two tests above only exercise the len(rows)<=2 short-circuit --
         this one has a genuine continuation row present, forcing the merge loop
         itself to run, and still proves the header is untouched and row 1 (also
@@ -547,29 +666,32 @@ class TestMergeWrappedTableRows:
             ["1/1/2026", "Acme Corp", "fragment one"],
             ["", "", "fragment two"],
         ]
-        result = _merge_wrapped_table_rows(rows)
-        assert result[0] == ["", "Company"]  # header untouched
-        assert result[1] == ["", "Orphan Row"]  # not silently merged into the header
-        assert result[2] == ["1/1/2026", "Acme Corp", "fragment one fragment two"]
+        assert await _table_markdown(monkeypatch, rows) == _markdown(
+            [
+                ["", "Company"],  # header untouched
+                ["", "Orphan Row"],  # not silently merged into the header
+                ["1/1/2026", "Acme Corp", "fragment one fragment two"],
+            ]
+        )
 
-    def test_header_plus_one_data_row_is_a_no_op_short_circuit(self):
+    async def test_header_plus_one_data_row_is_a_no_op_short_circuit(self, monkeypatch):
         rows = [["Date", "Company"], ["1/1/2026", "Acme Corp"]]
-        assert _merge_wrapped_table_rows(rows) == rows
+        assert await _table_markdown(monkeypatch, rows) == _markdown(rows)
 
-    def test_empty_rows_list_is_a_no_op(self):
-        assert _merge_wrapped_table_rows([]) == []
+    async def test_empty_rows_list_is_a_no_op(self, monkeypatch):
+        assert await _table_markdown(monkeypatch, []) == ""
 
-    def test_does_not_mutate_the_caller_supplied_rows(self):
+    async def test_does_not_mutate_the_caller_supplied_rows(self, monkeypatch):
         rows = [
             ["Date", "Company"],
             ["1/1/2026", "Acme"],
             ["", "Corp"],
         ]
         original = [list(r) for r in rows]
-        _merge_wrapped_table_rows(rows)
+        await _table_markdown(monkeypatch, rows)
         assert rows == original
 
-    def test_a_continuation_column_wider_than_the_parent_row_does_not_crash(self, caplog):
+    async def test_a_continuation_column_wider_than_the_parent_row_does_not_crash(self, monkeypatch, caplog):
         """An independent review flagged the original version of this test as
         constructing exactly this scenario but never checking what happened to
         the out-of-bounds cell -- it was silently dropped with no trace. Fixed
@@ -584,73 +706,42 @@ class TestMergeWrappedTableRows:
         # has called configure_logging() leaves an explicit INFO level on "threetears",
         # which filters this DEBUG record before caplog's root handler ever sees it.
         with caplog.at_level("DEBUG", logger="threetears"):
-            result = _merge_wrapped_table_rows(rows)
-        assert result[1] == ["1/1/2026", "Acme extra"]
-        assert not any("wildly out of bounds" in str(row) for row in result)
+            md = await _table_markdown(monkeypatch, rows)
+        assert md == _markdown([["Date", "Company"], ["1/1/2026", "Acme extra"]])
+        assert "wildly out of bounds" not in md
         assert "wildly out of bounds" in caplog.text
 
 
-# parity-exempt: hand-rolled subset stub of pdfplumber's third-party Table (only extract(), the only method the table-merge path calls)
-class _FakeExtractedTable:
-    def __init__(self, rows: list[list[Any]]) -> None:
-        self._rows = rows
+class TestPdfTables:
+    async def test_no_tables_found_appends_nothing_to_the_page(self, monkeypatch):
+        assert await _parse_pdf_page(monkeypatch, _FakePdfPage([]), merge=False) == ""
 
-    def extract(self) -> list[list[Any]]:
-        return self._rows
+    _WRAPPED_ROWS = [
+        ["Date of Notice", "Company", "NAICS Description"],
+        ["4/14/2026", "Greenwood Leflore Hospital", "622110 – General"],
+        ["", "", "Medical and Surgical Hospital"],
+    ]
 
-
-# parity-exempt: hand-rolled subset stub of pdfplumber's third-party TableFinder (only the .tables attribute, the only surface read)
-class _FakeTables:
-    def __init__(self, tables: list[_FakeExtractedTable]) -> None:
-        self.tables = tables
-
-
-# parity-exempt: hand-rolled subset stub of pdfplumber's third-party Page (only find_tables(), the only method the table-merge path calls)
-class _FakePage:
-    def __init__(self, tables: list[_FakeExtractedTable]) -> None:
-        self._tables = tables
-
-    def find_tables(self) -> _FakeTables:
-        return _FakeTables(self._tables)
-
-
-class TestExtractPdfTables:
-    def test_no_tables_found_returns_empty_string(self):
-        assert _extract_pdf_tables(_FakePage([])) == ""
-
-    def _wrapped_page(self) -> _FakePage:
-        return _FakePage(
-            [
-                _FakeExtractedTable(
-                    [
-                        ["Date of Notice", "Company", "NAICS Description"],
-                        ["4/14/2026", "Greenwood Leflore Hospital", "622110 – General"],
-                        ["", "", "Medical and Surgical Hospital"],
-                    ]
-                )
-            ]
-        )
-
-    def test_wrapped_rows_are_merged_when_opted_in(self):
-        md = _extract_pdf_tables(self._wrapped_page(), merge_wrapped_rows=True)
+    async def test_wrapped_rows_are_merged_when_opted_in(self, monkeypatch):
+        md = await _table_markdown(monkeypatch, [list(r) for r in self._WRAPPED_ROWS], merge=True)
         assert "| 4/14/2026 | Greenwood Leflore Hospital | 622110 – General Medical and Surgical Hospital |" in md
         # the continuation fragment must never appear as its own markdown row
         assert "|  |  | Medical and Surgical Hospital |" not in md
 
-    def test_wrapped_rows_are_left_unmerged_by_default(self):
-        """merge_wrapped_rows defaults False -- an independent review correctly
+    async def test_wrapped_rows_are_left_unmerged_by_default(self, monkeypatch):
+        """merge_wrapped_table_rows defaults False -- an independent review correctly
         flagged the merge heuristic as unsafe to apply unconditionally to every
         document-backed target sharing this general-purpose tool (a table with a
         legitimately blank first column on an independent row would get silently
         fused into its neighbor). Only a caller that already knows its own table
         needs this opts in."""
-        md = _extract_pdf_tables(self._wrapped_page())
-        assert "| 4/14/2026 | Greenwood Leflore Hospital | 622110 – General |" in md
-        assert "|  |  | Medical and Surgical Hospital |" in md
+        fake_fitz = ModuleType("fitz")
+        page = _FakePdfPage([_FakeExtractedTable([list(r) for r in self._WRAPPED_ROWS])])
+        fake_fitz.open = lambda *a, **kw: _FakePdfDocument(page)  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        result = await parse_document(b"%PDF-stub", "application/pdf")
+        assert "| 4/14/2026 | Greenwood Leflore Hospital | 622110 – General |" in result.text
+        assert "|  |  | Medical and Surgical Hospital |" in result.text
 
-    def test_a_table_extraction_exception_degrades_to_empty_string(self):
-        class _RaisingPage:
-            def find_tables(self):
-                raise RuntimeError("boom")
-
-        assert _extract_pdf_tables(_RaisingPage()) == ""
+    async def test_a_table_extraction_exception_degrades_to_the_page_text(self, monkeypatch):
+        assert await _parse_pdf_page(monkeypatch, _FakePdfPage([], tables_raise=True), merge=False) == ""

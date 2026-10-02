@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import io
 
-from threetears.agent.tools.builtin.image_prep import (
-    _MAX_DIMENSION,
-    _SIZE_THRESHOLD,
-    prepare_image_for_vision,
-)
+from threetears.agent.tools.builtin.image_prep import prepare_image_for_vision
+
+#: the long-edge limit the module documents for every image it re-encodes -- under
+#: Anthropic's 8192px cap with room for a base64 payload under 5MB.
+MAX_DIMENSION = 4096
+
+#: the byte size the module documents as its passthrough bound: a web-safe image at
+#: or under it is returned untouched.
+SIZE_THRESHOLD = 512 * 1024
 
 
 def _make_jpeg(width: int, height: int, quality: int = 95) -> bytes:
@@ -49,14 +53,14 @@ class TestPassthrough:
 
     def test_small_jpeg_passthrough(self):
         data = _make_jpeg(100, 100)
-        assert len(data) < _SIZE_THRESHOLD
+        assert len(data) < SIZE_THRESHOLD
         result, mime = prepare_image_for_vision(data, "image/jpeg")
         assert result is data  # exact same object
         assert mime == "image/jpeg"
 
     def test_small_png_passthrough(self):
         data = _make_png(100, 100)
-        assert len(data) < _SIZE_THRESHOLD
+        assert len(data) < SIZE_THRESHOLD
         result, mime = prepare_image_for_vision(data, "image/png")
         assert result is data
         assert mime == "image/png"
@@ -69,36 +73,36 @@ class TestResize:
         """A large JPEG (over SIZE_THRESHOLD) with oversized dimensions gets resized."""
         data = _make_jpeg(8000, 4000, quality=100)
         # Ensure it's over threshold — pad if needed
-        if len(data) <= _SIZE_THRESHOLD:
+        if len(data) <= SIZE_THRESHOLD:
             # Solid-color compresses too well; use random noise
             data = _make_noisy_jpeg(8000, 4000)
-        assert len(data) > _SIZE_THRESHOLD
+        assert len(data) > SIZE_THRESHOLD
         result, mime = prepare_image_for_vision(data, "image/jpeg")
         assert mime == "image/jpeg"
 
         from PIL import Image
 
         img = Image.open(io.BytesIO(result))
-        assert img.size[0] <= _MAX_DIMENSION
-        assert img.size[1] <= _MAX_DIMENSION
+        assert img.size[0] <= MAX_DIMENSION
+        assert img.size[1] <= MAX_DIMENSION
 
     def test_oversized_height_resized(self):
         data = _make_noisy_jpeg(2000, 6000)
-        assert len(data) > _SIZE_THRESHOLD
+        assert len(data) > SIZE_THRESHOLD
         result, mime = prepare_image_for_vision(data, "image/jpeg")
 
         from PIL import Image
 
         img = Image.open(io.BytesIO(result))
-        assert max(img.size) <= _MAX_DIMENSION
+        assert max(img.size) <= MAX_DIMENSION
 
     def test_within_limits_but_large_bytes_reencoded(self):
         """Image within dimension limits but over SIZE_THRESHOLD gets re-encoded."""
         # Create a large-ish JPEG by using high quality on a moderately sized image
         data = _make_jpeg(2000, 2000, quality=100)
-        if len(data) <= _SIZE_THRESHOLD:
+        if len(data) <= SIZE_THRESHOLD:
             # Force it over threshold by padding (unlikely but defensive)
-            data = data + b"\x00" * (_SIZE_THRESHOLD + 1)
+            data = data + b"\x00" * (SIZE_THRESHOLD + 1)
         result, mime = prepare_image_for_vision(data, "image/jpeg")
         assert mime == "image/jpeg"
         # Should be re-encoded (different bytes)
@@ -111,7 +115,7 @@ class TestFormatConversion:
     def test_rgba_png_converted_to_jpeg(self):
         data = _make_png(100, 100, rgba=True)
         # Make it larger than threshold so it triggers processing
-        big_data = data + b"\x00" * (_SIZE_THRESHOLD + 1)
+        big_data = data + b"\x00" * (SIZE_THRESHOLD + 1)
         result, mime = prepare_image_for_vision(big_data, "image/png")
         assert mime == "image/jpeg"
 

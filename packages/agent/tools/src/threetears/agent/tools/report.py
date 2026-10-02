@@ -176,7 +176,7 @@ def _strip_emoji(text: str) -> str:
     return _EMOJI_PATTERN.sub("", text)
 
 
-def _render_markdown_to_pdf_bytes(markdown: str) -> bytes:
+def _render_markdown_to_pdf_bytes(markdown: str, renderer: PdfRenderer) -> bytes:
     """Render Markdown to PDF bytes via the Pandoc renderer.
 
     Strips emoji (pdflatex cannot render them), renders to a temp file, and
@@ -185,6 +185,8 @@ def _render_markdown_to_pdf_bytes(markdown: str) -> bytes:
 
     :param markdown: Markdown report body
     :ptype markdown: str
+    :param renderer: the renderer that writes the PDF
+    :ptype renderer: PdfRenderer
     :return: rendered PDF bytes
     :rtype: bytes
     :raises PandocNotFoundError: when pandoc is not installed on the pod
@@ -194,7 +196,7 @@ def _render_markdown_to_pdf_bytes(markdown: str) -> bytes:
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         output_path = tmp.name
     try:
-        PdfRenderer().render(markdown_content=cleaned, output_path=output_path)
+        renderer.render(markdown_content=cleaned, output_path=output_path)
         with open(output_path, "rb") as handle:
             return handle.read()
     finally:
@@ -338,16 +340,23 @@ class ReportTool(TearsTool):
     :param name: the registered MCP tool name; defaults to ``threetears.report``.
         A consuming pod passes its own namespace (e.g. ``pentest.report``).
     :ptype name: str
+    :param pdf_renderer: renders a PDF report; defaults to the Pandoc/pdflatex
+        :class:`PdfRenderer`
+    :ptype pdf_renderer: PdfRenderer | None
     """
 
-    def __init__(self, name: str = _DEFAULT_NAME) -> None:
-        """Initialize the tool with its registered name.
+    def __init__(self, name: str = _DEFAULT_NAME, *, pdf_renderer: PdfRenderer | None = None) -> None:
+        """Initialize the tool with its registered name and PDF renderer.
 
         :param name: registered MCP tool name (namespace-qualified)
         :ptype name: str
+        :param pdf_renderer: renders a PDF report; ``None`` uses the Pandoc/pdflatex
+            :class:`PdfRenderer`
+        :ptype pdf_renderer: PdfRenderer | None
         """
         super().__init__()
         self._name = name
+        self._pdf_renderer = pdf_renderer if pdf_renderer is not None else PdfRenderer()
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Render, store, and deliver a report.
@@ -476,7 +485,7 @@ class ReportTool(TearsTool):
         :raises RuntimeError: when PDF rendering fails
         """
         if report_format == "pdf":
-            body_bytes = await asyncio.to_thread(_render_markdown_to_pdf_bytes, markdown)
+            body_bytes = await asyncio.to_thread(_render_markdown_to_pdf_bytes, markdown, self._pdf_renderer)
             return body_bytes, _build_filename(title, "pdf"), "application/pdf"
         return markdown.encode("utf-8"), _build_filename(title, "md"), "text/markdown"
 

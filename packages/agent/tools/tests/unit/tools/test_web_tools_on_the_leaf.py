@@ -28,6 +28,7 @@ closes that seam by injecting nothing and answering over a socket.
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Mapping
 from typing import Any
 
@@ -41,9 +42,7 @@ from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE, EXTRACTION_ST
 from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
     EGRESS_DIRECT,
-    LocalCapExceeded,
     SearchResultsMetadata,
-    Spend,
     TransportResponse,
 )
 from threetears.search.extract import (
@@ -155,20 +154,6 @@ class _StubFetchTransport:
             elapsed_seconds=0.01,
             headers={"content-type": "text/plain" if is_robots else "text/html"},
         )
-
-
-def _no_extractor_installed() -> Any:
-    """stand in for ``_load_extractor`` on a host without the ``[fetch]`` extra.
-
-    Raises exactly what the real loader raises there, so the refusal under
-    test is the shipped one rather than a test's idea of it.
-    """
-    raise LocalCapExceeded(
-        "no HTML extractor is installed",
-        spend=Spend(),
-        remediation="install 3tears-agent-tools[fetch] to extract page content",
-        scope=EXTRACTOR_UNAVAILABLE_SCOPE,
-    )
 
 
 def _projection(result: Any) -> SearchResultsMetadata:
@@ -471,15 +456,13 @@ class TestWebFetchFailsTyped:
         """The refusal this tool's own docstring is about, read as a consumer reads it.
 
         ``extract`` raises for a refusal that applies to the whole run --
-        today, a missing ``[fetch]`` extra. That is precisely the case a
+        today, a missing extractor extra. That is precisely the case a
         structure-reading consumer must not have to parse prose for, and it
         was the one path with no test: the projection was built from an empty
         candidate set, which never populates ``failure``.
         """
-        monkeypatch.setattr(
-            "threetears.search.extract._load_extractor",
-            _no_extractor_installed,
-        )
+        # a host without the extra: trafilatura cannot be imported, so the shipped loader refuses.
+        monkeypatch.setitem(sys.modules, "trafilatura", None)
         tool = WebFetchTool(transport=_StubFetchTransport())
 
         result = await tool.execute(url=_PAGE_URL)
@@ -489,7 +472,10 @@ class TestWebFetchFailsTyped:
         assert projection.failure is not None, "a refusal must reach the border as a record"
         assert projection.failure.failure_class
         assert projection.failure.scope == EXTRACTOR_UNAVAILABLE_SCOPE
-        assert "fetch" in (projection.failure.remediation or "")
+        # the shipped loader names the extra that installs the extractor. The stand-in this test
+        # used to patch over it said "[fetch]" instead, so the assertion pinned the stand-in's
+        # wording rather than what a host without the extractor is actually told.
+        assert "3tears-search[extract]" in (projection.failure.remediation or "")
 
     @pytest.mark.asyncio
     async def test_a_missing_url_also_answers_with_a_readable_projection(self) -> None:
