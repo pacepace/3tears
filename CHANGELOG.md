@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: a naive datetime is refused at every storage encoder; one stored form everywhere
+
+Owner ruling, 2026-10-01: one stored form for a datetime inside JSON -- ISO 8601, aware UTC, six
+fraction digits (`json_datetime`).
+
+- **Behaviour change: `json_datetime` raises `ValueError` on a naive datetime** (and on a `tzinfo`
+  whose `utcoffset()` is `None`), naming the field when the caller knows it
+  (`json_datetime(value, field="last_refill")`). Every storage encoder routes through it --
+  `schema_sql.json_default` (L3 jsonb codec, L2 payloads, L1 JSON columns, the broker's nested
+  params, the scan cache, the write buffer) and `serialize_to_json` -- so a naive datetime nested
+  in a stored document now fails the write instead of being stored without an offset.
+- **New: `threetears.core.serialization.to_stored_json(value, *, field=None)`** -- exactly what
+  `model_dump(mode="json")` writes, except every datetime takes the one stored form (pydantic
+  writes `...Z` and drops a zero fraction). Accepts a model or any structure of mappings,
+  sequences and models; a naive datetime is refused naming its path (`runs[0].date_started`).
+- A collection's own timestamp columns are not refused: `SchemaBackedCollection` now derives
+  `datetime_columns` from its schema's `DATETIMETZ_TYPE` columns, so a naive value there is stamped
+  UTC (and logged) before the L2 payload is written -- the same reading its L3 write coercion
+  already made. A dynamic collection declares its `timestamptz` columns the same way, and caches a
+  `timestamp` column's naive value (naive by declaration) as its wall-clock text
+  (`2026-10-01T12:30:00.000000`). The write buffer receives the normalised row too.
+- `WriteBuffer`: an L1-backed buffer reads every row back from its JSON text, so a UUID, instant,
+  Decimal or bytes reached L3 as a string and the write failed through its retry budget.
+  `flush_pending` now rehydrates each row through its `SchemaBackedCollection`'s schema
+  (`WriteBuffer.drain(decode=...)`); a legacy `str(dt)`, fraction-less or naive instant reads as
+  UTC. Tables with no schema get the parsed JSON, as before.
+- Stored writers moved to the one form: `KVLease` envelopes, `TokenBucket` state, the tool
+  registry's KV catalogue (`registry.catalog`), the workspace pin's `date_pinned`, and the audit
+  persister's `details` (`3tears-agent-audit` now depends on `3tears`). Every reader parses the
+  older spellings unchanged.
+
 ### Tests: shared test-support modules carry plain names
 
 Owner ruling, 2026-10-01: shared test support is public, so its modules are not underscored. Every

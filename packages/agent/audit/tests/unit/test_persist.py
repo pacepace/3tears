@@ -15,7 +15,12 @@ from typing import Any
 import pytest
 
 from threetears.agent.audit import AuditEvent
-from threetears.agent.audit.persist import AUDIT_STREAM_NAME, handle_audit_message, start_audit_persister
+from threetears.agent.audit.persist import (
+    AUDIT_STREAM_NAME,
+    handle_audit_message,
+    persist_audit_event,
+    start_audit_persister,
+)
 
 
 class _Msg:
@@ -63,6 +68,70 @@ async def test_an_event_that_will_never_parse_is_acked_and_dropped() -> None:
     db, msg = _Db(), _Msg(b"not an envelope")
     await handle_audit_message(db, msg)
     assert db.executed == [] and msg.acked
+
+
+def _stored_details(db: _Db) -> dict[str, Any]:
+    """the ``details`` text the insert bound, parsed.
+
+    :param db: the recording database after one insert
+    :ptype db: _Db
+    :return: the stored details
+    :rtype: dict[str, Any]
+    """
+    ((_sql, *args),) = db.executed
+    (details,) = [arg for arg in args if isinstance(arg, str) and arg.startswith("{")]
+    stored: dict[str, Any] = json.loads(details)
+    return stored
+
+
+async def test_a_datetime_in_details_is_stored_in_the_one_form() -> None:
+    """a direct caller's in-process details store the instant as every tier does, not pydantic's ``Z``."""
+    db = _Db()
+    when = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
+    event = AuditEvent(
+        id=uuid.uuid7(),
+        timestamp=when,
+        event_type="admin.user.create",
+        action="user.create",
+        correlation_id=uuid.uuid4(),
+        details={"date_expires": when, "nested": [{"at": when}], "user_id": uuid.UUID(int=7)},
+    )
+
+    await persist_audit_event(db, event)
+
+    assert _stored_details(db) == {
+        "date_expires": "2026-10-01T12:30:00.000000+00:00",
+        "nested": [{"at": "2026-10-01T12:30:00.000000+00:00"}],
+        "user_id": str(uuid.UUID(int=7)),
+    }
+
+
+async def test_a_naive_datetime_in_details_is_refused_naming_it() -> None:
+    event = AuditEvent(
+        id=uuid.uuid7(),
+        timestamp=datetime.now(UTC),
+        event_type="admin.user.create",
+        action="user.create",
+        correlation_id=uuid.uuid4(),
+        details={"date_expires": datetime(2026, 10, 1, 12, 30)},
+    )
+    with pytest.raises(ValueError, match="naive datetime in 'details.date_expires'"):
+        await persist_audit_event(_Db(), event)
+
+
+async def test_details_that_arrived_over_the_wire_store_as_they_arrived() -> None:
+    """the consumer path's details are already JSON text values; an older ``Z`` spelling is kept."""
+    db = _Db()
+    event = AuditEvent(
+        id=uuid.uuid7(),
+        timestamp=datetime.now(UTC),
+        event_type="admin.user.create",
+        action="user.create",
+        correlation_id=uuid.uuid4(),
+        details={"date_expires": "2026-10-01T12:30:00Z"},
+    )
+    await handle_audit_message(db, _Msg(event.model_dump_json().encode()))
+    assert _stored_details(db) == {"date_expires": "2026-10-01T12:30:00Z"}
 
 
 async def test_a_database_fault_raises_so_the_consumer_retries() -> None:

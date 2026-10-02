@@ -23,6 +23,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    # the persister stores ``details`` through threetears.core.serialization.to_stored_json, the
+    # one stored form of a datetime every storage tier writes
+    "3tears>=0.57.0,<0.58.0",
     # [client]: this package uses the NATS client at runtime, and nats-py is an
     # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
     "3tears-nats[client]>=0.57.0,<0.58.0",
@@ -37,6 +40,7 @@ Repository = "https://github.com/pacepace/3tears"
 packages = ["src/threetears"]
 
 [tool.uv.sources]
+3tears = { workspace = true }
 3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }
 

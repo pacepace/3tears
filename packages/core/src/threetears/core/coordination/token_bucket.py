@@ -38,7 +38,7 @@ from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Final
 
-from threetears.core.serialization import deserialize_from_json, serialize_to_json
+from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
 from threetears.observe import get_logger
 
 from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
@@ -148,10 +148,12 @@ def _encode_state(tokens: float, last_refill: datetime) -> bytes:
     :ptype tokens: float
     :param last_refill: timezone-aware datetime this token count is as-of
     :ptype last_refill: datetime
-    :return: JSON-encoded bytes suitable for a KV value
+    :return: JSON-encoded bytes suitable for a KV value, the instant in
+        :func:`~threetears.core.serialization.json_datetime`'s one stored form
     :rtype: bytes
+    :raises ValueError: if ``last_refill`` is naive (a naive ``clock``)
     """
-    payload: dict[str, Any] = {"tokens": tokens, "last_refill": last_refill.isoformat()}
+    payload: dict[str, Any] = {"tokens": tokens, "last_refill": json_datetime(last_refill, field="last_refill")}
     return serialize_to_json(payload)
 
 

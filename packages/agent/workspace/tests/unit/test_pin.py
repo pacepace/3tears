@@ -19,6 +19,7 @@ from threetears.agent.workspace.pin import (
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.serialization import json_datetime
 
 # the agent-tools test utilities, shared, named from the repo root like every test module.
 from packages.agent.tools.tests.testing_utils import FakePool, make_context_metadata, make_nats_mock
@@ -231,8 +232,10 @@ async def test_stored_content_is_string_at_border(ctx: ToolContextManager) -> No
     assert isinstance(item["metadata"]["pinned_by_actor_id"], str)
     assert item["metadata"]["pinned_by_actor_id"] == str(actor_id)
     assert isinstance(item["metadata"]["date_pinned"], str)
-    # parseable as ISO
-    datetime.fromisoformat(item["metadata"]["date_pinned"])
+    # parseable as ISO, and spelled in the one stored form every storage tier writes
+    stored = item["metadata"]["date_pinned"]
+    assert stored == json_datetime(datetime.fromisoformat(stored))
+    assert len(stored) == len("2026-10-01T12:30:00.000000+00:00")
 
 
 # ---------------------------------------------------------------------------

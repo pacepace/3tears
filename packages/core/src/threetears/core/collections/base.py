@@ -2296,7 +2296,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 self._l1.upsert(self.table_name, data, self.primary_key_columns)
             await self._save_to_l2(entity_id, data)
             await self._publish_invalidation(entity_id)
-            await self._write_buffer.add(self.table_name, entity_id, data)
+            await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(data))
             return
 
         with self._l1_fence.watching(self._fence_key(entity_id), writing=True) as ticket:
@@ -2648,7 +2648,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 self._l1.upsert(self.table_name, data, self.primary_key_columns)
             await self._save_to_l2(entity_id, data)
             assert self._write_buffer is not None
-            await self._write_buffer.add(self.table_name, entity_id, data)
+            await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(data))
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
             # a saved handle answers from the row it saved, never from L1's copy of the key, which
@@ -3573,7 +3573,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         assert new_row is not None  # narrow: "upsert" always carries a row
         if self._defers_l3_writes:
             assert self._write_buffer is not None  # narrow: deferral requires one
-            await self._write_buffer.add(self.table_name, entity_id, new_row)
+            await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(new_row))
             return None
         if await self.save_ordered_to_store(new_row) == 0:
             await self._confirm_superseded(entity_id, new_row)
