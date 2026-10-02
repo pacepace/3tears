@@ -43,6 +43,9 @@ use:
   type, so a consumer's test runs the code path production runs.
 - :meth:`FakeNatsClient.add_reconnect_callback` registers a hook and
   :meth:`FakeNatsClient.reconnect` runs every hook, as a real reconnect does.
+- :meth:`FakeNatsClient.ensure_kv_bucket` declares as the real client does, and remembers a
+  memory-storage declaration that may create; :meth:`FakeNatsClient.restart_broker` loses every
+  bucket, puts back only the remembered ones, then runs the reconnect hooks.
 
 the fake stores data in a plain dict keyed by bucket name so multiple
 buckets created from the same client share no state. revision counter
@@ -399,6 +402,28 @@ class FakeKvBucket:
         self._markers.clear()
         self._vanished = True
 
+    @property
+    def is_vanished(self) -> bool:
+        """whether the bucket is absent, lost to :meth:`vanish` and not yet recreated by an operation.
+
+        :return: ``True`` while the bucket does not exist on the broker
+        :rtype: bool
+        """
+        return self._vanished
+
+    def reconcile(self, *, ttl: timedelta | None, direct: bool) -> None:
+        """take a declaration's reconciled fields in place, entries kept, as a real declaration does.
+
+        :param ttl: the declared bucket TTL; ``None`` means no expiry
+        :ptype ttl: timedelta | None
+        :param direct: the declared ``allow_direct`` value
+        :ptype direct: bool
+        :return: None
+        :rtype: None
+        """
+        self._ttl = ttl
+        self._direct = direct
+
     def become_unreachable(self, error: Exception) -> None:
         """make every operation raise ``error`` until :meth:`become_reachable`, as a lost broker does.
 
@@ -650,6 +675,54 @@ class FakeNatsClient:
         self.published: list[Any] = []
         self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
         self._reconnect_callbacks: list[Callable[[], Awaitable[None]]] = []
+        # what the real client's ``_memory_declarations`` holds: every memory-storage bucket this
+        # client declared through :meth:`ensure_kv_bucket` with a create, and so puts back after a
+        # reconnect. names only -- the fake bucket carries its own config.
+        self._remembered: set[str] = set()
+
+    @property
+    def remembered_declarations(self) -> frozenset[str]:
+        """every bucket this client would create again after a reconnect, as the real client does.
+
+        Exactly the memory-storage buckets declared through :meth:`ensure_kv_bucket` with
+        ``create_if_missing=True``. An ordinary :meth:`kv_bucket` open, a bind-only declaration
+        and a file-backed one are never remembered, so a test can assert which form a declarer
+        used rather than only that the bucket exists.
+
+        :return: the remembered bucket names
+        :rtype: frozenset[str]
+        """
+        return frozenset(self._remembered)
+
+    def bucket_exists(self, name: str) -> bool:
+        """whether the broker holds this bucket right now: created, and not lost to a restart since.
+
+        :param name: bucket suffix, as passed to :meth:`kv_bucket`
+        :ptype name: str
+        :return: ``True`` when the bucket exists
+        :rtype: bool
+        """
+        bucket = self._buckets.get(name)
+        return bucket is not None and not bucket.is_vanished
+
+    async def restart_broker(self) -> None:
+        """lose every bucket to a broker restart, put back the remembered ones, then run the reconnect hooks.
+
+        The real sequence on memory storage: every bucket loses its entries; the client creates
+        each declaration it remembers again, empty, before any hook it was given runs; every other
+        bucket stays absent until an operation through a handle recreates it (the wrapper's
+        self-heal, :meth:`FakeKvBucket.vanish`). Entries are never put back -- republishing them
+        is the declarer's job, and a test of that job runs it from a reconnect hook.
+
+        :return: None
+        :rtype: None
+        """
+        for name, bucket in self._buckets.items():
+            if name in self._remembered:
+                bucket.wipe()
+            else:
+                bucket.vanish()
+        await self.reconnect()
 
     def add_reconnect_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
         """register an async hook run after each reconnect, as the real client does.
@@ -774,6 +847,52 @@ class FakeNatsClient:
                 name=name, ttl=ttl if isinstance(ttl, timedelta) else None, storage=storage, direct=direct
             )
             self._buckets[name] = bucket
+        return bucket
+
+    async def ensure_kv_bucket(
+        self,
+        *,
+        name: str,
+        ttl: timedelta | None = None,
+        storage: str = "memory",
+        history: int = 1,
+        direct: bool = True,
+        create_if_missing: bool = True,
+    ) -> FakeKvBucket:
+        """declare a bucket -- create it, or reconcile a live one in place -- or bind one somebody declared.
+
+        Mirrors :meth:`threetears.nats.NatsClient.ensure_kv_bucket`: a declaration shares the one
+        handle :meth:`kv_bucket` hands out, a declaration of a live bucket takes the declared TTL
+        and ``direct`` with its entries kept, and a memory-storage declaration that may create is
+        remembered (:attr:`remembered_declarations`) and put back by :meth:`restart_broker`.
+
+        :param name: bucket suffix; the fake skips the namespace prefix
+        :ptype name: str
+        :param ttl: the declared bucket TTL; recorded, not applied
+        :ptype ttl: timedelta | None
+        :param storage: ``"memory"`` or ``"file"``; recorded on a bucket this call creates
+        :ptype storage: str
+        :param history: ignored by fake
+        :ptype history: int
+        :param direct: the declared ``allow_direct`` value; recorded
+        :ptype direct: bool
+        :param create_if_missing: ``True`` declares; ``False`` binds and raises when the bucket is absent
+        :ptype create_if_missing: bool
+        :return: the bucket, the same instance every later open receives
+        :rtype: FakeKvBucket
+        :raises KeyError: when ``create_if_missing=False`` and the bucket is absent
+        """
+        del history
+        bucket = self._buckets.get(name)
+        if bucket is None and not create_if_missing:
+            raise KeyError(f"bucket {name!r} not found")
+        if bucket is None:
+            bucket = self._new_bucket(name=name, ttl=ttl, storage=storage, direct=direct)
+            self._buckets[name] = bucket
+        elif create_if_missing:
+            bucket.reconcile(ttl=ttl, direct=direct)
+        if create_if_missing and storage != "file":
+            self._remembered.add(name)
         return bucket
 
     def _new_bucket(self, *, name: str, ttl: timedelta | None, storage: str, direct: bool | None) -> FakeKvBucket:
