@@ -1695,6 +1695,7 @@ class TestBoundedRegexSurvivesInterruptionAndFailure:
         assert exit_codes == [0] * 12, f"forked children hung or failed: {exit_codes}"
 
     @pytest.mark.timeout(120)
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     def test_an_orphaned_worker_is_stopped_by_its_own_cpu_cap(self):
         """If the parent dies mid-match nobody kills the worker; its per-request CPU cap (the
         caller's timeout plus a 10s margin) must stop a runaway match on its own. A child process
