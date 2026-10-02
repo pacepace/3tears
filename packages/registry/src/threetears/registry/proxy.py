@@ -25,6 +25,7 @@ from pydantic import (
 )
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
+from threetears.core.security.freshness import DEFAULT_PROOF_MAX_AGE, ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.security.identity_token import (
     IDENTITY_REFUSED,
     IDENTITY_REFUSED_MESSAGE,
@@ -55,14 +56,16 @@ from threetears.registry.catalog import ToolCatalog, ToolDefinition
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
 
 # the issuer the Hub stamps on identity tokens, and the clock-skew tolerance the proxy allows
-# on exp/iat + the pop iat freshness window. constants for now; promote to config if operations
-# need to tune them.
+# on the identity token's exp/iat. a constant for now; promote to config if operations need to
+# tune it. the identity token is not single-use and feeds no replay guard.
+#
+# the POP proof's freshness window is not set here: how old a proof may be is
+# `DEFAULT_PROOF_MAX_AGE`, and how far ahead of the proxy's clock its `iat` may be is
+# `ISSUE_TIME_FUTURE_TOLERANCE`, both owned by `threetears.core.security.freshness`. whoever
+# constructs the pop replay guard sizes it for that future tolerance, and :class:`CallProxy`
+# refuses a guard that does not cover it.
 _IDENTITY_ISSUER = "hub"
 _IDENTITY_LEEWAY_SECONDS = 60
-#: how far either side of the proxy's clock a pop proof's ``iat`` may fall. public because the pop
-#: replay guard must be sized for its future half: whoever constructs that guard reads it here, and
-#: :class:`CallProxy` refuses a guard that does not cover it.
-POP_LEEWAY_SECONDS = 60
 
 # how many times a durable result publish to the caller is retried before the answer is declared
 # lost. by that point the tool has already run, so a transport blip must not cost the work; the
@@ -77,7 +80,6 @@ if TYPE_CHECKING:
     from threetears.nats import NatsClient, Subscription
 
 __all__ = [
-    "POP_LEEWAY_SECONDS",
     "CallProxy",
     "ProxyCallAccepted",
     "ProxyCallRequest",
@@ -347,7 +349,9 @@ class CallProxy:
         :param pop_replay_guard: records each pop nonce for single-use enforcement; REQUIRED.
             without it a captured pop could be replayed verbatim for the same call body within the
             iat freshness window, so the enforce-only proxy must always carry one. It must be
-            sized for a verifier future tolerance of at least :data:`POP_LEEWAY_SECONDS`
+            sized for a verifier future tolerance of at least
+            :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`, which is how far ahead
+            of its clock the proxy accepts a pop ``iat``
         :ptype pop_replay_guard: ReplayGuard
         :param limit_guard: pre-call spend gate; REQUIRED. every tool dispatch is
             gated through the limit guard after the pop check and before catalog
@@ -403,7 +407,7 @@ class CallProxy:
             gauge so the bracket is always live
         :ptype inflight_gauge: InflightRequestsGauge | None
         :raises ValueError: when ``pop_replay_guard`` is sized for a smaller verifier future
-            tolerance than :data:`POP_LEEWAY_SECONDS`
+            tolerance than :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`
         """
         from threetears.registry.config import get_call_timeout
 
@@ -419,7 +423,7 @@ class CallProxy:
         self._proxy_signer = proxy_signer
         # a guard sized for a smaller future tolerance than this proxy accepts would let a replayed
         # proof stamped at the edge through its wipe check; refuse it here, at startup.
-        pop_replay_guard.require_covers(timedelta(seconds=POP_LEEWAY_SECONDS))
+        pop_replay_guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)
         self._pop_replay_guard = pop_replay_guard
         self._inflight_gauge = inflight_gauge or InflightRequestsGauge("threetears_registry_inflight_requests")
         self._nc: "NatsClient | None" = None
@@ -851,7 +855,11 @@ class CallProxy:
                 expected_jkt=claims.cnf,
                 access_token_hash=access_token_hash(token),
                 body_hash=body_hash,
-                leeway_seconds=POP_LEEWAY_SECONDS,
+                max_age=DEFAULT_PROOF_MAX_AGE,
+                # the SAME value the constructor checked the replay guard against: a proof
+                # accepted from further ahead than the guard was sized for could be replayed
+                # past its wipe check.
+                future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE,
             )
             try:
                 fresh = await self._pop_replay_guard.record_unique(proof.jti, issued_at=proof.issued_at)

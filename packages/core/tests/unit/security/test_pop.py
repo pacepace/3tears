@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import inspect
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from freezegun import freeze_time
 
+from threetears.core.security import DEFAULT_PROOF_MAX_AGE, ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.security.identity_token import IdentityTokenError, jwk_thumbprint
 from threetears.core.security.pop import access_token_hash, make_pop_proof, verify_pop_proof
+
+# a fixed verifier clock for the tests whose subject is an exact edge of the freshness window.
+_FROZEN = "2026-10-02T12:00:00+00:00"
 
 
 def _proof(
@@ -75,16 +81,38 @@ class TestProofOfPossession:
     def test_stale_iat_rejected(self) -> None:
         holder = Ed25519PrivateKey.generate()
         jkt = jwk_thumbprint(holder.public_key())
-        with pytest.raises(IdentityTokenError):
+        with pytest.raises(IdentityTokenError, match="freshness"):
             verify_pop_proof(
                 _proof(holder, iat=int(time.time()) - 3600),  # an hour old
                 expected_jkt=jkt,
                 access_token_hash="ath-1",
                 body_hash="bh-1",
-                leeway_seconds=60,
             )
 
-    def test_future_iat_beyond_the_leeway_rejected(self) -> None:
+    @freeze_time(_FROZEN)
+    def test_an_old_proof_inside_the_window_is_still_accepted(self) -> None:
+        """Separating the two directions must not shorten how long a slow call has to arrive."""
+        holder = Ed25519PrivateKey.generate()
+        jkt = jwk_thumbprint(holder.public_key())
+        for behind in (55, 60):
+            assert (
+                verify_pop_proof(
+                    _proof(holder, nonce=f"behind-{behind}", iat=int(time.time()) - behind),
+                    expected_jkt=jkt,
+                    access_token_hash="ath-1",
+                    body_hash="bh-1",
+                ).jti
+                == f"behind-{behind}"
+            )
+        with pytest.raises(IdentityTokenError, match="freshness"):
+            verify_pop_proof(
+                _proof(holder, iat=int(time.time()) - 61),
+                expected_jkt=jkt,
+                access_token_hash="ath-1",
+                body_hash="bh-1",
+            )
+
+    def test_future_iat_far_ahead_rejected(self) -> None:
         """The window is two-sided: an unbounded future iat lets an attacker mint proofs
         today for use after a key rotation.
 
@@ -101,30 +129,77 @@ class TestProofOfPossession:
                 expected_jkt=jkt,
                 access_token_hash="ath-1",
                 body_hash="bh-1",
-                leeway_seconds=60,
             )
 
-    def test_iat_a_second_or_two_ahead_of_the_verifier_is_accepted(self) -> None:
+    @freeze_time(_FROZEN)
+    def test_iat_six_seconds_ahead_of_the_verifier_is_rejected(self) -> None:
+        """The future side is its own, small number -- not the minute the past side allows.
+
+        A replay guard must refuse, after a wipe of its bucket, for as far ahead as its verifier
+        accepts an issue time. A verifier that accepted a minute ahead cost a minute of refused
+        calls after every broker restart. The clock is frozen so the edge is exact.
+        """
+        holder = Ed25519PrivateKey.generate()
+        jkt = jwk_thumbprint(holder.public_key())
+        for ahead in (6, 55, 60):
+            with pytest.raises(IdentityTokenError, match="freshness"):
+                verify_pop_proof(
+                    _proof(holder, nonce=f"ahead-{ahead}", iat=int(time.time()) + ahead),
+                    expected_jkt=jkt,
+                    access_token_hash="ath-1",
+                    body_hash="bh-1",
+                )
+
+    @freeze_time(_FROZEN)
+    def test_iat_a_few_seconds_ahead_of_the_verifier_is_accepted(self) -> None:
         """The admitted twin, and the case the agent->proxy hop actually hits.
 
         The two ends are different machines, so the signer's clock leads the verifier's as
         often as it lags. ``iat`` is an integer, so a lead of a fraction of a second still
         stamps ``verifier_now + 1``; refusing that makes a call succeed or fail on sub-second
-        timing. Absorbing it is what ``leeway_seconds`` is for, and it is symmetric.
+        timing. Absorbing it is what the future tolerance is for, up to its edge.
         """
         holder = Ed25519PrivateKey.generate()
         jkt = jwk_thumbprint(holder.public_key())
-        for ahead in (1, 2, 55):
+        for ahead in (1, 2, 4, 5):
             assert (
                 verify_pop_proof(
                     _proof(holder, nonce=f"ahead-{ahead}", iat=int(time.time()) + ahead),
                     expected_jkt=jkt,
                     access_token_hash="ath-1",
                     body_hash="bh-1",
-                    leeway_seconds=60,
                 ).jti
                 == f"ahead-{ahead}"
             )
+
+    @freeze_time(_FROZEN)
+    def test_each_direction_is_the_callers_to_set_and_neither_sets_the_other(self) -> None:
+        holder = Ed25519PrivateKey.generate()
+        jkt = jwk_thumbprint(holder.public_key())
+        with pytest.raises(IdentityTokenError, match="freshness"):
+            # a wide past window buys nothing on the future side.
+            verify_pop_proof(
+                _proof(holder, iat=int(time.time()) + 6),
+                expected_jkt=jkt,
+                access_token_hash="ath-1",
+                body_hash="bh-1",
+                max_age=timedelta(hours=1),
+            )
+        with pytest.raises(IdentityTokenError, match="freshness"):
+            verify_pop_proof(
+                _proof(holder, iat=int(time.time()) + 1),
+                expected_jkt=jkt,
+                access_token_hash="ath-1",
+                body_hash="bh-1",
+                future_tolerance=timedelta(0),
+            )
+
+    def test_the_defaults_are_the_platform_numbers(self) -> None:
+        # a verifier that leaves the windows alone gets the one owned tolerance, not a local copy.
+        signature = inspect.signature(verify_pop_proof)
+        assert signature.parameters["max_age"].default is DEFAULT_PROOF_MAX_AGE
+        assert signature.parameters["future_tolerance"].default is ISSUE_TIME_FUTURE_TOLERANCE
+        assert "leeway_seconds" not in signature.parameters
 
     def test_non_eddsa_alg_rejected(self) -> None:
         # an HS256 proof must be rejected at the alg pin, before signature handling.

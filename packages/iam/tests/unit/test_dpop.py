@@ -13,6 +13,7 @@ so an otherwise-invalid proof cannot burn a nonce.
 
 from __future__ import annotations
 
+import inspect
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -27,15 +28,37 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     generate_private_key,
 )
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from freezegun import freeze_time
 from jwt.algorithms import ECAlgorithm
 
 from threetears.core.coordination import ReplayGuard
 from threetears.core.security.identity_token import jwk_thumbprint
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.iam.dpop import DEFAULT_IAT_WINDOW, DpopError, validate_dpop_proof
+from threetears.core.security import (
+    CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
+    DEFAULT_PROOF_MAX_AGE,
+    ISSUE_TIME_FUTURE_TOLERANCE,
+)
+from threetears.iam.dpop import DpopError, validate_dpop_proof
 
 _HTM = "POST"
 _HTU = "https://issuer.example/v1/token"
+
+
+def _frozen_clock() -> Any:
+    """Stop the server's clock at this instant, for a test whose subject is an exact edge of a window.
+
+    Frozen at NOW rather than at a fixed date, because the ``guard`` fixture's bucket is aged
+    from the real clock and a proof stamped before that bucket's creation is refused as a
+    possible replay. Frozen on a whole second, because ``iat`` is one: a clock stopped mid-second
+    would put a proof's truncated issue time up to a second behind the moment it was minted, and
+    an edge measured in whole seconds would land on the wrong side. The event loop keeps its
+    real clock.
+
+    :return: the freezer, a context manager whose value can ``tick`` the frozen clock forward
+    :rtype: Any
+    """
+    return freeze_time(datetime.now(UTC).replace(microsecond=0), real_asyncio=True)
 
 
 @pytest.fixture
@@ -55,7 +78,12 @@ async def guard(kv: FakeNatsClient) -> ReplayGuard:
     """
     bucket = await kv.kv_bucket(name="dpop-nonces")
     bucket.wipe(date_created=datetime.now(UTC) - timedelta(hours=1))
-    return ReplayGuard(kv, bucket_name="dpop-nonces", ttl_seconds=300, verifier_future_tolerance=DEFAULT_IAT_WINDOW)
+    return ReplayGuard(
+        kv,
+        bucket_name="dpop-nonces",
+        ttl_seconds=300,
+        verifier_future_tolerance=CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
+    )
 
 
 def _key() -> EllipticCurvePrivateKey:
@@ -263,7 +291,7 @@ class TestBoundClaims:
 class TestFreshness:
     async def test_a_stale_iat_is_refused(self, guard: ReplayGuard) -> None:
         key = _key()
-        stale = int(time.time() - DEFAULT_IAT_WINDOW.total_seconds() - 30)
+        stale = int(time.time() - DEFAULT_PROOF_MAX_AGE.total_seconds() - 30)
         with pytest.raises(DpopError, match="freshness"):
             await validate_dpop_proof(_proof(key, iat=stale), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
 
@@ -277,42 +305,104 @@ class TestFreshness:
         zero-leeway check got here first and refused EVERY future proof, one second included.
         """
         key = _key()
-        future = int(time.time() + DEFAULT_IAT_WINDOW.total_seconds() + 30)
+        future = int(time.time() + DEFAULT_PROOF_MAX_AGE.total_seconds() + 30)
         with pytest.raises(DpopError, match="freshness"):
             await validate_dpop_proof(_proof(key, iat=future), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
 
-    async def test_an_iat_inside_the_window_is_accepted(self, guard: ReplayGuard) -> None:
+    async def test_an_old_iat_inside_the_window_is_still_accepted(self, guard: ReplayGuard) -> None:
+        """Separating the two directions must not shorten how long a slow request has to arrive."""
         key = _key()
-        recent = int(time.time() - DEFAULT_IAT_WINDOW.total_seconds() + 5)
-        assert await validate_dpop_proof(
-            _proof(key, iat=recent), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard
-        )
+        with _frozen_clock():
+            for behind in (55, 60):
+                assert await validate_dpop_proof(
+                    _proof(key, jti=f"behind-{behind}", iat=int(time.time()) - behind),
+                    expected_htm=_HTM,
+                    expected_htu=_HTU,
+                    replay_guard=guard,
+                )
+            with pytest.raises(DpopError, match="freshness"):
+                await validate_dpop_proof(
+                    _proof(key, jti="behind-61", iat=int(time.time()) - 61),
+                    expected_htm=_HTM,
+                    expected_htu=_HTU,
+                    replay_guard=guard,
+                )
 
-    async def test_an_iat_a_second_or_two_ahead_of_the_server_is_accepted(self, guard: ReplayGuard) -> None:
-        """The admitted twin of the refusal above, and the case a real login actually hits.
+    async def test_an_iat_ahead_of_the_server_is_accepted_up_to_the_client_tolerance(self, guard: ReplayGuard) -> None:
+        """The admitted twin of the refusal below, and the case a real login actually hits.
 
         ``iat`` is required to be an integer, so a client whose clock leads the server's by a
         fraction of a second still stamps ``server_now + 1``. Refusing that makes whether a
-        login succeeds depend on sub-second timing between minting the proof and receiving it
-        -- rejected once, working on the retry. Absorbing exactly that is what the window is
-        for, and the window is symmetric.
+        login succeeds depend on sub-second timing between minting the proof and receiving it.
+
+        And the lead is not always a fraction of a second: the signer is a user's browser or a
+        developer's laptop, whose clock the platform does not keep. So the client-signed proof
+        keeps a full minute on the future side, where a pod-signed one gets five seconds. All
+        of it is usable, to its last second. The clock is frozen so the edge is exact.
         """
         key = _key()
-        for ahead in (1, 2):
-            assert await validate_dpop_proof(
-                _proof(key, jti=f"ahead-{ahead}", iat=int(time.time()) + ahead),
+        with _frozen_clock():
+            for ahead in (1, 2, 6, 55, 60):
+                assert await validate_dpop_proof(
+                    _proof(key, jti=f"ahead-{ahead}", iat=int(time.time()) + ahead),
+                    expected_htm=_HTM,
+                    expected_htu=_HTU,
+                    replay_guard=guard,
+                )
+
+    async def test_an_iat_sixty_one_seconds_ahead_of_the_server_is_refused(self, guard: ReplayGuard) -> None:
+        """The future side is bounded, by its own number, whatever the past side allows."""
+        key = _key()
+        with _frozen_clock():
+            for ahead in (61, 90):
+                with pytest.raises(DpopError, match="freshness"):
+                    await validate_dpop_proof(
+                        _proof(key, jti=f"ahead-{ahead}", iat=int(time.time()) + ahead),
+                        expected_htm=_HTM,
+                        expected_htu=_HTU,
+                        replay_guard=guard,
+                    )
+
+    async def test_a_wide_past_window_does_not_widen_the_future(self, guard: ReplayGuard) -> None:
+        key = _key()
+        with _frozen_clock(), pytest.raises(DpopError, match="freshness"):
+            await validate_dpop_proof(
+                _proof(key, iat=int(time.time()) + 61),
                 expected_htm=_HTM,
                 expected_htu=_HTU,
                 replay_guard=guard,
+                max_age=timedelta(hours=1),
             )
 
-    async def test_an_iat_just_inside_the_future_edge_of_the_window_is_accepted(self, guard: ReplayGuard) -> None:
-        # The whole documented tolerance is usable on the future side, not just its first second.
+    async def test_a_caller_may_choose_the_pod_tolerance_and_then_six_seconds_ahead_is_refused(
+        self, guard: ReplayGuard
+    ) -> None:
+        # the future bound is the caller's to set, separately from the past one: a surface whose
+        # signer is a platform host passes the small number, and gets the small window.
         key = _key()
-        near_edge = int(time.time() + DEFAULT_IAT_WINDOW.total_seconds() - 5)
-        assert await validate_dpop_proof(
-            _proof(key, iat=near_edge), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard
-        )
+        with _frozen_clock():
+            assert await validate_dpop_proof(
+                _proof(key, jti="ahead-4", iat=int(time.time()) + 4),
+                expected_htm=_HTM,
+                expected_htu=_HTU,
+                replay_guard=guard,
+                future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE,
+            )
+            with pytest.raises(DpopError, match="freshness"):
+                await validate_dpop_proof(
+                    _proof(key, jti="ahead-6", iat=int(time.time()) + 6),
+                    expected_htm=_HTM,
+                    expected_htu=_HTU,
+                    replay_guard=guard,
+                    future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE,
+                )
+
+    def test_the_default_future_tolerance_is_the_client_constant_and_the_past_window_its_own(self) -> None:
+        signature = inspect.signature(validate_dpop_proof)
+        assert signature.parameters["future_tolerance"].default is CLIENT_ISSUE_TIME_FUTURE_TOLERANCE
+        assert signature.parameters["max_age"].default is DEFAULT_PROOF_MAX_AGE
+        assert timedelta(seconds=60) == CLIENT_ISSUE_TIME_FUTURE_TOLERANCE
+        assert "iat_window" not in signature.parameters
 
     async def test_an_iat_of_an_unconvertible_type_is_refused_rather_than_raising(self, guard: ReplayGuard) -> None:
         """A token endpoint is reachable unauthenticated, so the payload's TYPES are attacker-chosen.
@@ -371,10 +461,47 @@ class TestSingleUse:
         with pytest.raises(DpopError, match="replay"):
             await validate_dpop_proof(proof, expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
 
-    async def test_a_window_wider_than_the_guard_was_sized_for_is_refused_before_the_proof(
+    async def test_after_a_broker_restart_a_client_sized_guard_refuses_for_sixty_five_seconds(
+        self, kv: FakeNatsClient
+    ) -> None:
+        """What the client tolerance costs: the reach after a wipe is the minute plus the drift allowance.
+
+        The guard is bound, as a service binds it at startup, so the restart's reconnect hook
+        recreates the bucket at the moment the broker comes back. A proof minted 64 seconds
+        later is still inside the reach and refused; one minted 65 seconds later is accepted.
+        ``refusing_until`` names that same moment, so a surface can say "try again shortly"
+        instead.
+        """
+        key = _key()
+        guard = ReplayGuard(
+            kv,
+            bucket_name="dpop-nonces",
+            ttl_seconds=300,
+            verifier_future_tolerance=CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
+        )
+        with _frozen_clock() as clock:
+            await guard.bind()
+            await kv.restart_broker()
+            restarted = datetime.now(UTC)
+            clock.tick(timedelta(seconds=64))
+            assert await guard.refusing_until() == restarted + timedelta(seconds=65)
+            with pytest.raises(DpopError, match="replay"):
+                await validate_dpop_proof(
+                    _proof(key, jti="sixty-four-seconds-after"),
+                    expected_htm=_HTM,
+                    expected_htu=_HTU,
+                    replay_guard=guard,
+                )
+            clock.tick(timedelta(seconds=1))
+            assert await guard.refusing_until() is None
+            assert await validate_dpop_proof(
+                _proof(key, jti="sixty-five-seconds-after"), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard
+            )
+
+    async def test_a_future_tolerance_wider_than_the_guard_was_sized_for_is_refused_before_the_proof(
         self, guard: ReplayGuard
     ) -> None:
-        """Widening iat_window alone would let a replay stamped at the new edge past the wipe check.
+        """Widening the future tolerance alone would let a replay stamped at the new edge past the wipe check.
 
         So it is a wiring error, raised whatever the proof -- never a quiet reopening of the hole.
         """
@@ -385,8 +512,29 @@ class TestSingleUse:
                 expected_htm=_HTM,
                 expected_htu=_HTU,
                 replay_guard=guard,
-                iat_window=DEFAULT_IAT_WINDOW + timedelta(seconds=1),
+                future_tolerance=CLIENT_ISSUE_TIME_FUTURE_TOLERANCE + timedelta(seconds=1),
             )
+
+    async def test_a_guard_sized_for_the_pod_tolerance_is_refused_by_the_default(self, kv: FakeNatsClient) -> None:
+        # the mistake this split makes possible: sizing a DPoP guard with the pod constant. It
+        # would let a replay stamped up to a minute ahead past the wipe check, so it fails loudly.
+        key = _key()
+        undersized = ReplayGuard(
+            kv, bucket_name="dpop-nonces", ttl_seconds=300, verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE
+        )
+        with pytest.raises(ValueError, match="verifier_future_tolerance"):
+            await validate_dpop_proof(_proof(key), expected_htm=_HTM, expected_htu=_HTU, replay_guard=undersized)
+
+    async def test_widening_the_past_window_needs_no_bigger_guard(self, guard: ReplayGuard) -> None:
+        # the guard's reach follows the FUTURE tolerance only; how old a proof may be is not its concern.
+        key = _key()
+        assert await validate_dpop_proof(
+            _proof(key, iat=int(time.time()) - 120),
+            expected_htm=_HTM,
+            expected_htu=_HTU,
+            replay_guard=guard,
+            max_age=timedelta(minutes=5),
+        )
 
     async def test_an_empty_jti_is_refused(self, guard: ReplayGuard) -> None:
         key = _key()

@@ -6,6 +6,72 @@ packages (bumped in lock-step).
 
 ## v0.58.0 -- 2026-10-02
 
+### Security: a pod-signed proof's issue time may be 5 seconds ahead, not 60 -- a broker restart costs tool calls 10 seconds, not 65
+
+Found live: after a NATS broker restart, logins and tool calls were refused for about 65 seconds.
+A `ReplayGuard` keeps nonces in memory-backed KV, the restart wipes it, and the guard then refuses
+anything issued before `bucket creation + verifier future tolerance + CLOCK_DRIFT_ALLOWANCE (5s)`.
+Every proof verifier used one symmetric leeway for both directions, so it accepted an issue time a
+full minute AHEAD of its clock, and every guard had to be sized for that minute.
+
+The two directions are now separate on every proof verifier, and the future one depends on who
+signs. A proof may still be up to 60 seconds OLD.
+
+| Artifact | Signer | May be ahead by | Reach after a wipe |
+|---|---|---|---|
+| PoP proof (`verify_pop_proof`) | an agent pod | 5s (was 60s) | 10s (was 65s) |
+| DPoP proof (`validate_dpop_proof`) | a browser or a laptop | 60s (unchanged) | 65s (unchanged) |
+| Proxy assertion (`verify_proxy_assertion`) | the registry | 0s (unchanged) | 5s (unchanged) |
+
+- **Added, in `threetears.core.security` (module `freshness`):**
+  - **`ISSUE_TIME_FUTURE_TOLERANCE`** (`timedelta(seconds=5)`): how far ahead of a verifier's
+    clock a POD-signed issue time is accepted.
+  - **`CLIENT_ISSUE_TIME_FUTURE_TOLERANCE`** (`timedelta(seconds=60)`): the same for a proof a
+    user's device signs. The platform does not keep that clock, so it keeps the minute and pays
+    the 65-second reach.
+  - **`DEFAULT_PROOF_MAX_AGE`** (`timedelta(seconds=60)`): how old a proof may be.
+  - **`issue_time_is_fresh(issued_at, *, now, max_age, future_tolerance)`**: the check both
+    proof formats share.
+- **Added: `ReplayGuard.refusing_until() -> datetime | None`.** Whether the guard is inside its
+  post-wipe refusal window now, and until when, from the bucket's creation time, the reach and the
+  anchor alone -- never an artifact. One computation with `record_unique`'s wipe rule: an artifact
+  issued before the returned moment is refused. A surface asks it before it reads a credential,
+  to answer every request in the window with one retryable reply. Raises `KvError` when the bucket
+  cannot be read; that must not be taken as "not refusing". One broker round trip per call.
+- **Added: `FakeReplayGuard(refusing_until=)`** and `FakeReplayGuard.refusing_until()`, which put
+  the double inside the window for a test of such a gate; `refusal_window_checks` counts the
+  question, and `"refusing_until"` joins the `events` log. A remembering double (`fresh=None`)
+  refuses an artifact issued before that moment.
+- **BREAKING: `verify_pop_proof(leeway_seconds=)` is gone.** It takes `max_age: timedelta` and
+  `future_tolerance: timedelta`, defaulting to `DEFAULT_PROOF_MAX_AGE` and
+  `ISSUE_TIME_FUTURE_TOLERANCE`. A caller that passed `leeway_seconds` gets a `TypeError`; one that
+  relied on the default needs no change and now refuses a proof stamped more than 5 seconds ahead.
+- **BREAKING: `validate_dpop_proof(iat_window=)` is gone**, replaced by `max_age` and
+  `future_tolerance`, the second defaulting to `CLIENT_ISSUE_TIME_FUTURE_TOLERANCE`. What it
+  accepts is unchanged. It calls `replay_guard.require_covers(future_tolerance)`, so a guard only
+  has to cover the future bound; widening `max_age` needs no bigger guard.
+- **BREAKING: `threetears.iam.dpop.DEFAULT_IAT_WINDOW` is removed**, and so is
+  **`threetears.registry.proxy.POP_LEEWAY_SECONDS`**. Each was one name for both directions, read
+  to size a replay guard; a consumer now chooses the future tolerance for its signer explicitly.
+- **Changed: the registry's `pop_nonces` guard is sized for `ISSUE_TIME_FUTURE_TOLERANCE`**, and
+  `CallProxy` requires its `pop_replay_guard` to cover that rather than 60 seconds.
+- Unchanged, deliberately: the proxy assertion accepts nothing ahead of the pod's clock. The
+  identity token's 60-second leeway stays; it is not single-use and feeds no replay guard.
+  `ReplayGuard`'s wipe rule still compares with a strict `<`.
+
+**What it requires:** every pod that signs a PoP proof must agree with the registry to within 5
+seconds. One whose clock leads by more is refused outright, as a freshness failure, on every call.
+On a live cluster sixteen pods and all three brokers agreed to within about one second.
+
+**Consumers:** the hub (`aibots/hub/app.py`, `aibots/hub/security/dpop_binding.py`) and
+identity-core (`identity_core/server.py`, `tokens/mint_binding.py`, `tokens/rotation.py`) import
+`DEFAULT_IAT_WINDOW` and pass `iat_window=`. Each builds its DPoP guard with
+`verifier_future_tolerance=CLIENT_ISSUE_TIME_FUTURE_TOLERANCE`, passes `max_age=` /
+`future_tolerance=`, and sizes its DPoP nonce TTL to cover
+`DEFAULT_PROOF_MAX_AGE + CLIENT_ISSUE_TIME_FUTURE_TOLERANCE` (120s; both use 300s today). Until
+they do, they fail at import, not at runtime. A DPoP guard sized with the pod constant by mistake
+is refused by `require_covers`.
+
 ### Testing: `FakeNatsClient` declares, and models a broker restart
 
 The shipped double had `kv_bucket` only, so a consumer that declares its bucket through

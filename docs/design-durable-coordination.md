@@ -70,15 +70,38 @@ HMAC-signed issue time, and for an OAuth client assertion whose `iat` is optiona
 ahead of its own clock, and the creation time is the broker's clock. So the refusal reaches
 the verifier's future tolerance, passed at construction with no default, plus a single
 named drift allowance between those hosts, added by the guard. Each verifier calls
-`require_covers` with its own leeway, so widening a leeway later fails loudly instead of
+`require_covers` with its own future tolerance, so widening one later fails loudly instead of
 silently reopening the hole: at construction for the registry proxy and the tool server, and
 on every request for `validate_dpop_proof`, which is a function with no construction step.
+
+**The future tolerance is not the past window, and it depends on who signs.** A proof may be up
+to 60s old when it arrives (`DEFAULT_PROOF_MAX_AGE`). How far AHEAD of the verifier's clock it may
+be is a separate number, and only that number sets the reach. All three live in
+`threetears.core.security.freshness`.
+
+| Artifact | Signer | Future tolerance | Reach after a wipe |
+|---|---|---|---|
+| PoP proof (`verify_pop_proof`, registry `pop_nonces`) | an agent pod | `ISSUE_TIME_FUTURE_TOLERANCE`, 5s | 10s |
+| DPoP proof (`validate_dpop_proof`, hub and identity guards) | a browser or a laptop | `CLIENT_ISSUE_TIME_FUTURE_TOLERANCE`, 60s | 65s |
+| Proxy assertion (`verify_proxy_assertion`, tool pod) | the registry | 0s | 5s |
+
+Until v0.58.0 the two directions were one symmetric 60s leeway and the PoP guard was sized for the
+whole of it, so a broker restart cost 65s of refused tool calls. The price of the 5s is a
+requirement: every pod that signs a PoP proof must agree with the registry to within 5s, and one
+that does not is refused outright. The DPoP side keeps the minute because its signer's clock is
+not the platform's to keep; it pays the 65s.
+
+**Asking before refusing.** `ReplayGuard.refusing_until()` answers, with no artifact, whether the
+guard is inside that window now and until when. It is the same computation `record_unique`
+refuses with. A login surface asks it before it reads a credential and answers every request in
+the window with one account-independent retryable reply; `FakeReplayGuard(refusing_until=...)`
+puts the double inside the window for a test of that gate.
 
 **Bind at start, or the first call after a bucket is created is itself refused.** The bucket is
 created by whichever call opens it first. A guard left to open it in its first `record_unique`
 creates it there and then compares that call's artifact against a creation time of a moment ago
 -- inside the window by construction, however long after the service started the artifact was
-issued. On 2026-09-25, after a Docker restart, that refused a login with a 65s reach (surfacing as
+issued. On 2026-09-25, after a Docker restart, that refused a login with what was then a 65s reach (surfacing as
 "invalid username or password") and a tool call with a 5s reach (surfacing as "proxy assertion
 nonce replay"). So a service calls `ReplayGuard.bind()` at startup, before it serves anything:
 the bucket is then created before any artifact the process could issue or accept, and after a
@@ -378,7 +401,8 @@ The primitives keep their public surfaces apart from `ReplayGuard.record_unique`
   identity-edge holds no database by design, so its fail-open route throttles run the same
   collection without an L3 pool.
 - **hub**: its DPoP guard (`hub-dpop-nonces`, built in `aibots/hub/app.py`) gains
-  `verifier_future_tolerance` covering the `iat_window` it validates with. Without it the hub
+  `verifier_future_tolerance` covering the future tolerance it validates with
+  (`CLIENT_ISSUE_TIME_FUTURE_TOLERANCE` since v0.58.0; the whole `iat_window` before). Without it the hub
   fails at startup on this release. `validate_dpop_proof` passes `issued_at` itself.
 - **identity's refresh-token jti ledger is not a nonce guard.** It was a `ReplayGuard` over a
   30-day TTL in a bucket of its own. Watermarked, a broker wipe would refuse every outstanding

@@ -15,7 +15,6 @@ import importlib.metadata
 import os
 import signal
 from collections.abc import Awaitable, Callable
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -27,6 +26,7 @@ from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.security import (
+    ISSUE_TIME_FUTURE_TOLERANCE,
     CachedHubJwksProvider,
     ProxyAssertionSigner,
     resolve_secret,
@@ -46,7 +46,7 @@ from threetears.registry.discovery import DiscoveryHandler
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
-from threetears.registry.proxy import POP_LEEWAY_SECONDS, CallProxy
+from threetears.registry.proxy import CallProxy
 from threetears.registry.auth import (
     AgentToolAuthorizer,
     AllowAllLimitGuard,
@@ -79,8 +79,10 @@ IdentityTokenProvider = Callable[[], str | None]
 
 _logger = get_logger(__name__)
 
-# a pop nonce must be remembered at least as long as a proof stays valid: the iat freshness
-# window is +/- the pop leeway, so a captured proof is acceptable across twice that span.
+# a pop nonce must be remembered at least as long as a proof stays valid. a proof is acceptable
+# from `ISSUE_TIME_FUTURE_TOLERANCE` before its iat to `DEFAULT_PROOF_MAX_AGE` after it -- 65s --
+# so this covers it with room to spare. it is not the wipe-refusal reach, which follows the
+# future tolerance alone.
 _POP_NONCE_TTL_SECONDS = 120
 
 
@@ -826,11 +828,14 @@ class RegistryServer:
             nc,
             bucket_name="pop_nonces",
             ttl_seconds=_POP_NONCE_TTL_SECONDS,
-            # the proxy accepts a pop iat up to its leeway ahead of its clock; the guard's wipe check
-            # is sized for exactly that, and CallProxy refuses a guard that is not.
-            verifier_future_tolerance=timedelta(seconds=POP_LEEWAY_SECONDS),
-            # ANCHORED, and without this EVERY TOOL CALL IS REFUSED for the leeway window after
-            # any NATS restart. `pop_nonces` is memory-backed on purpose -- a nonce is burned on
+            # the proxy accepts a pop iat up to the platform's future tolerance ahead of its clock;
+            # the guard's wipe check is sized for exactly that, and CallProxy refuses a guard that
+            # is not. FIVE seconds, so after a broker restart wipes this bucket the guard refuses
+            # for ten (the tolerance plus its drift allowance). It was the proof's whole
+            # sixty-second leeway once, and a restart cost 65 seconds of refused tool calls.
+            verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE,
+            # ANCHORED, and without this EVERY TOOL CALL IS REFUSED for that reach after a FIRST
+            # start too, not only after a restart. `pop_nonces` is memory-backed on purpose -- a nonce is burned on
             # every proof-carrying call, so a durable write would sit on the hottest path there
             # is -- which means the bucket dies with the broker. A guard with no anchor cannot
             # tell a bucket it never had from one it lost, so it assumes the worse and applies
@@ -838,8 +843,8 @@ class RegistryServer:
             # recorded and no replay is possible, every proof issued before the bucket existed
             # is refused as `pop nonce replay`.
             #
-            # Observed, not reasoned: a proof issued 0.4s before creation, refused against a
-            # 65s reach, surfacing as `pop verification failed (IdentityTokenError)` with the
+            # Observed, not reasoned: a proof issued 0.4s before creation, refused against what
+            # was then a 65s reach, surfacing as `pop verification failed (IdentityTokenError)` with the
             # real cause visible only in a log line the default formatter drops. The hub's DPoP
             # guard was given an anchor for exactly this; this one was the twin left behind, and
             # `tests/integration/test_tool_server_registry.py` and `test_timeout_chain.py` in

@@ -218,6 +218,13 @@ _ASSERTION_NONCE_TTL_SECONDS = 60
 # how far past the pod's clock a proxy assertion's iat and exp may fall. zero: the registry mints
 # and the pod verifies on NTP-synchronised hosts, and the assertion lives only 30s. the assertion
 # replay guard is sized for exactly this future tolerance, so the one value feeds both.
+#
+# PyJWT applies this one number to iat AND exp, so it is this surface's whole future tolerance.
+# it is stricter than the platform's `ISSUE_TIME_FUTURE_TOLERANCE` (5s), which every other proof
+# verifier accepts; it must never exceed it, and the guard below refuses to be built for less
+# than what is passed here. raising it to the platform value would stop a registry whose clock
+# leads this pod's by a fraction of a second being refused, and lengthen this pod's refusal
+# after a broker restart from 5s to 10s.
 _ASSERTION_LEEWAY_SECONDS = 0
 # how many times a durable result publish is retried before the answer is declared lost. the tool has
 # already run by then, so a transport blip must not cost the work; but the caller has a deadline, so
@@ -1927,8 +1934,8 @@ class ToolServer:
             # 5s clock-drift allowance alone -- but it is not nothing: for five seconds after any
             # NATS restart this pod refuses every proxied call, and the refusal names replay,
             # which is the one thing that did not happen. The registry's own guard had the same
-            # defect with a 65s reach; both are the twin of the bug the hub's DPoP guard was
-            # given an anchor to fix.
+            # defect with a longer reach (65s then, 10s now); both are the twin of the bug the
+            # hub's DPoP guard was given an anchor to fix.
             #
             # `anchor` stays None for a pod that supplied no registry, because such a pod has
             # nowhere to record first-existence. That is a real remaining window, recorded
