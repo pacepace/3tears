@@ -19,6 +19,7 @@ from uuid import UUID
 
 __all__ = [
     "CONTEXT_FROM_MAX_DEPTH",
+    "ChainNode",
     "SUPPORTED_SCHEDULE_TYPES",
     "validate_context_from_chain",
     "validate_schedule_config",
@@ -229,10 +230,10 @@ def _validate_interval(config: dict[str, Any]) -> str | None:
 # wraps WakeScheduleCollection.find_for_agent(agent_id, schedule_id) so
 # this validator stays pure / DB-agnostic and the same surface can be
 # stubbed in unit tests.
-ContextFromResolver = Callable[[UUID], Awaitable["_ChainNode | None"]]
+ContextFromResolver = Callable[[UUID], Awaitable["ChainNode | None"]]
 
 
-class _ChainNode:
+class ChainNode:
     """Lightweight result row the resolver returns for one chain hop.
 
     Carries the upstream schedule's ``context_from_schedule_id`` (the
@@ -282,7 +283,7 @@ async def validate_context_from_chain(
     :ptype proposed_context_from: UUID
     :param agent_id: the new schedule's agent; chain hops must match
     :ptype agent_id: UUID
-    :param resolver: async callable mapping ``schedule_id -> _ChainNode``
+    :param resolver: async callable mapping ``schedule_id -> ChainNode``
         (or ``None`` when the schedule is missing)
     :ptype resolver: ContextFromResolver
     :param max_depth: max hops the walker visits before refusing

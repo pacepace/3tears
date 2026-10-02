@@ -42,7 +42,7 @@ from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
-    _resolve_workspace,
+    resolve_workspace,
     authorize_workspace,
     authorize_workspace_file,
 )
@@ -138,7 +138,7 @@ class DocGetTool(TearsTool):
 
         result: ToolResult
         try:
-            workspace = await _resolve_workspace(
+            workspace = await resolve_workspace(
                 workspace_arg,
                 self._context_provider(),
                 self._workspaces,

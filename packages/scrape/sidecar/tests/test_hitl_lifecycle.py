@@ -21,7 +21,7 @@ from pathlib import Path
 
 import hitl
 import pytest
-from tests.conftest import RFB_TEST_PORT, X11vncStub
+from tests.conftest import RFB_TEST_PORT, X11vncStub, lifecycle_on_test_port
 from hitl import VncLifecycle, VncUnavailable
 
 
@@ -36,7 +36,7 @@ def _free_port_is_free(port: int) -> bool:
 async def lifecycle(x11vnc_stub: X11vncStub):
     """A lifecycle on test ports, always torn down even when the test fails."""
     del x11vnc_stub
-    vnc = VncLifecycle(display_num=99)
+    vnc = lifecycle_on_test_port()
     try:
         yield vnc
     finally:
@@ -128,7 +128,7 @@ async def test_a_process_that_never_listens_fails_loudly_and_leaves_nothing_runn
     instead of leaving a half-up pair for the next caller to find.
     """
     del dead_x11vnc_stub
-    vnc = VncLifecycle(display_num=99)
+    vnc = lifecycle_on_test_port(start_timeout_seconds=1.0)
     with pytest.raises(VncUnavailable, match="x11vnc"):
         await vnc.start()
 
@@ -210,3 +210,29 @@ async def test_the_child_never_gets_an_undrained_pipe(x11vnc_stub: X11vncStub, m
     assert captured.get("stderr") is not asyncio.subprocess.PIPE, (
         "stderr is a pipe nobody reads, which caps the child's life at 64 KiB of output"
     )
+
+
+async def test_the_production_rfb_port_is_the_one_the_relay_dials(
+    x11vnc_stub: X11vncStub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lifecycle built the way production builds it serves the display on 5900.
+
+    The MIT container beside this one relays RFB from that loopback port, so a default that
+    drifted would leave every operator looking at a relay with nothing behind it while this
+    container reported the display healthy. Every other test here runs on a test port, so this
+    is the one that pins what production launches. Read from the argv ``start`` hands the
+    spawn, captured before anything binds, so the real 5900 is never touched.
+    """
+    del x11vnc_stub
+    captured: list[str] = []
+
+    async def _fake_exec(*argv: str, **_kwargs: object) -> object:
+        captured.extend(argv)
+        raise OSError("not actually spawning")
+
+    monkeypatch.setattr(hitl.asyncio, "create_subprocess_exec", _fake_exec)
+    with pytest.raises(VncUnavailable):
+        await VncLifecycle(display_num=99).start()
+
+    assert "-rfbport" in captured, "start never reached the spawn, so nothing below asserts anything"
+    assert captured[captured.index("-rfbport") + 1] == "5900"

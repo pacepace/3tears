@@ -4,11 +4,11 @@ REALISM
 -------
 
 - **real bind context manager** including seed-on-enter and watcher
-  spawn. the production :func:`_handle_watch_batch` helper is driven
-  directly with a synthesized batch (awatch cadence on Darwin FSEvents
-  is too unreliable for tight-timed tests; the production watcher
-  forwards each awatch batch into the same helper so coverage is
-  faithful to the runtime path).
+  spawn. the window's watcher is handed a scripted change source
+  (``bind(watch_changes=...)``) and a synthesized batch is delivered
+  through it (awatch cadence on Darwin FSEvents is too unreliable for
+  tight-timed tests); the production watcher task and batch handler
+  apply it.
 - **real WorkspaceFileLease + real KVLease** over the fake NATS KV.
 - **real FsReadTool** exercising the L3 read surface agents use.
 - **fake DB pool**: shared :class:`_FakePool` from ``conftest.py``.
@@ -29,7 +29,6 @@ two tests lock in the policy contract:
 
 from __future__ import annotations
 
-from collections import deque
 from pathlib import Path
 from typing import Any
 from uuid import uuid7
@@ -44,12 +43,10 @@ from threetears.agent.workspace.config import (
 )
 from threetears.agent.workspace.lease import WorkspaceFileLease
 from threetears.nats.subject_permissions import WORKSPACE_LOCKS_BUCKET_SUFFIX, agent_platform_bucket_suffix
-from threetears.agent.workspace.materialize import (
-    _handle_watch_batch,
-    bind,
-)
+from threetears.agent.workspace.materialize import bind
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.fs_read import FsReadTool
+from packages.agent.workspace.tests._helpers.scripted_watch import ScriptedWatch
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -69,8 +66,8 @@ async def _run_policy_scenario(
 
     constructs a fresh bind root under ``tmp_path``, enters :func:`bind`
     with the given policy, writes ``_EXTERNAL_PAYLOAD`` onto disk for
-    ``_TARGET_REL``, synthesizes the awatch ``modified`` batch the OS
-    would deliver, invokes :func:`_handle_watch_batch` directly, and
+    ``_TARGET_REL``, delivers the awatch ``modified`` batch the OS
+    would deliver through the window's scripted change source, and
     reads the file back through :class:`FsReadTool`. returns the
     ``fs_read`` content observed DURING the bind window (before any
     capture-back runs) alongside the in-L3 bytes observed at the same
@@ -104,6 +101,7 @@ async def _run_policy_scenario(
 
     result_content: str = ""
     in_window_l3_bytes: bytes = b""
+    watch = ScriptedWatch()
     async with bind(
         agent_id=fx.agent_id,
         workspace_id=fx.workspace_id,
@@ -120,29 +118,14 @@ async def _run_policy_scenario(
         nats_client=fx.nats,
         namespace="threetears-test",
         on_conflict=on_conflict,
+        watch_changes=watch,
     ) as disk_root:
         # external process overwrites the target file on disk.
         target = disk_root / _TARGET_REL
         target.write_bytes(_EXTERNAL_PAYLOAD)
 
-        # synthesize the awatch batch the OS would deliver.
-        workspace = await fx.workspace_collection.find_by_id(
-            fx.agent_id,
-            fx.workspace_id,
-        )
-        assert workspace is not None
-        just_wrote: deque[tuple[str, str]] = deque(maxlen=256)
-        await _handle_watch_batch(
-            batch={(Change.modified, str(target))},
-            workspace=workspace,
-            disk_root=disk_root,
-            resolved_root=disk_root.resolve(),
-            db_pool=fx.pool,
-            actor_id=fx.agent_id,
-            correlation_id=uuid7(),
-            just_wrote=just_wrote,
-            on_conflict=on_conflict,
-        )
+        # deliver the awatch batch the OS would; the window's watcher applies it.
+        await watch.deliver({(Change.modified, str(target))})
 
         # pin the workspace so fs_read resolves it without explicit arg.
         from threetears.agent.workspace import pin as pin_module

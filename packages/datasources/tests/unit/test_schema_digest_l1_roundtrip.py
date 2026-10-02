@@ -58,10 +58,8 @@ def l1_backend() -> Iterator[SQLiteBackend]:
     backend = SQLiteBackend(db_name=f"test_digest_{uuid.uuid4().hex[:8]}")
     backend.initialize(_digest_metadata())
     yield backend
-    from threetears.core._bridge import drain, shutdown
-
-    drain()
-    shutdown()
+    # every write and read here is awaited on the test's own loop (``collection_flush="ALWAYS"``),
+    # so nothing is left on core's background bridge loop to drain before the reset.
     backend.reset()
 
 

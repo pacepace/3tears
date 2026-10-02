@@ -62,7 +62,7 @@ principal at all. those need the full ``namespaces`` view, so they
 belong to the Hub-side serving shard, which refuses on collision.
 
 **scalar coercion is a known, open gap, and it is NOT closed here.**
-:mod:`threetears.agent.tools._coercion` engages only for declared types
+:mod:`threetears.agent.tools.coercion` engages only for declared types
 ``object`` and ``array``; every other field passes through untouched, and
 ``run`` performs no schema validation. URL segments are always strings, so a
 tool declaring ``{"page": {"type": "integer"}}`` would receive ``"5"`` over
@@ -70,7 +70,7 @@ REST and ``5`` over a JSON body -- a per-face divergence inside one tool,
 which is precisely what "one tool, one set of code" exists to prevent.
 
 The gap is assigned to the SERVING shard, not to this one, deliberately:
-widening ``_coercion`` to scalars changes the arguments every existing tool
+widening ``coercion`` to scalars changes the arguments every existing tool
 receives on every existing face, and a declaration-only shard that ships
 inert must not carry a behaviour change for code nothing has called yet. The
 serving shard parses path and query segments against the declared schema

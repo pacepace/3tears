@@ -1045,10 +1045,18 @@ class TestTheTimeoutHolds:
 
 
 def test_the_other_wrappers_keep_no_extra_deadline() -> None:
-    """OpenAI's and Anthropic's SDKs were not reported to stall; only OpenRouter sets one."""
-    from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
+    """OpenAI's and Anthropic's SDKs were not reported to stall; only OpenRouter sets one.
 
-    assert NameTranslatingChatMixin.call_deadline_s(object()) is None  # type: ignore[arg-type]
+    Asked of the models their public factories build, with a request timeout set on each, so a
+    wrapper that started deriving a deadline from it would show here.
+    """
+    from ._provider_wire import anthropic_model, openai_model
+
+    openai = openai_model(ChatCompletionsWire(), request_timeout=30)
+    anthropic = anthropic_model("http://127.0.0.1:9", default_request_timeout=30)
+
+    assert openai.call_deadline_s() is None
+    assert anthropic.call_deadline_s() is None
 
 
 class TestAProviderFailureIsNamedAsOne:

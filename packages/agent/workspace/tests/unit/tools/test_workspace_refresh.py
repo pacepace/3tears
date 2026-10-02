@@ -69,7 +69,7 @@ class _FakeWorkspaceEntity(FakeWorkspaceEntity):
 
 
 class _FakeWorkspaceCollection(FakeWorkspaceCollection):
-    """fake workspace collection serving _resolve_workspace."""
+    """fake workspace collection serving resolve_workspace."""
 
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         """capture entities.

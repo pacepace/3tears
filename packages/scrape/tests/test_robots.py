@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from packages.scrape.tests._scrape_tool_support import derived_target_id
 from packages.scrape.tests._egress_fakes import FakeEgress
 from packages.scrape.tests._pacer_fakes import FakeDelayPacer
 from threetears.scrape.robots import DEFAULT_USER_AGENT, RobotsGate, RobotsPolicy
@@ -138,6 +139,11 @@ async def test_an_unusable_robots_file_never_blocks_the_work(status: int, body: 
     assert decision.needs_human is False
 
 
+def _refuse_connection(request: httpx.Request) -> httpx.Response:
+    """An exit whose every connection is refused, as a dead proxy or an offline host answers."""
+    raise httpx.ConnectError("connection refused", request=request)
+
+
 async def test_a_fetcher_that_raises_does_not_raise_out_of_check() -> None:
     async def _explode(_url: str) -> tuple[int, str]:
         raise RuntimeError("dns is down")
@@ -147,8 +153,14 @@ async def test_a_fetcher_that_raises_does_not_raise_out_of_check() -> None:
 
 
 async def test_no_fetcher_at_all_is_permissive() -> None:
-    """A caller that never wired one gets today's behaviour rather than a silent stop."""
-    assert (await RobotsGate().check("https://example.gov/x")).allowed is True
+    """A caller that never wired one gets today's behaviour rather than a silent stop.
+
+    The default fetcher is routed through an exit that cannot connect, so the file is
+    unreachable without this test reaching the network.
+    """
+    unreachable = FakeEgress("down", respond=_refuse_connection)
+
+    assert (await RobotsGate(egress=unreachable).check("https://example.gov/x")).allowed is True
 
 
 async def test_robots_is_read_once_per_origin_not_once_per_target() -> None:
@@ -318,6 +330,7 @@ async def _tool_with_robots(driver, gate, *, target_id: str):
         drivers={"nodriver": driver},
         robots=gate,
         api_key="k",
+        block_private_hosts=False,
     )
 
 
@@ -329,13 +342,12 @@ async def test_a_disallowed_target_is_never_fetched_and_asks_for_a_human() -> No
     would have shown it. The driver's call list is the assertion, because "we did not fetch"
     is the claim.
     """
-    from threetears.scrape.tool import _derive_target_id
 
     url = "https://example.gov/private/list"
     schema = {"employer": "str", "affected_count": "int"}
     driver = _RecordingDriver()
     gate = RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW))
-    tool = await _tool_with_robots(driver, gate, target_id=_derive_target_id(url, schema))
+    tool = await _tool_with_robots(driver, gate, target_id=await derived_target_id(url, schema))
 
     result = await tool.execute(url=url, field_schema=schema)
 
@@ -347,13 +359,12 @@ async def test_a_disallowed_target_is_never_fetched_and_asks_for_a_human() -> No
 
 async def test_an_allowed_target_is_fetched_normally() -> None:
     """A Disallow on one path must not stop the rest of a site."""
-    from threetears.scrape.tool import _derive_target_id
 
     url = "https://example.gov/public/list"
     schema = {"employer": "str", "affected_count": "int"}
     driver = _RecordingDriver()
     gate = RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW))
-    tool = await _tool_with_robots(driver, gate, target_id=_derive_target_id(url, schema))
+    tool = await _tool_with_robots(driver, gate, target_id=await derived_target_id(url, schema))
 
     await tool.execute(url=url, field_schema=schema)
 
@@ -369,13 +380,11 @@ async def test_a_crawl_delay_actually_delays_a_second_fetch() -> None:
     """
     from unittest.mock import AsyncMock, patch
 
-    from threetears.scrape.tool import _derive_target_id
-
     url = "https://example.gov/list"
     schema = {"employer": "str", "affected_count": "int"}
     driver = _RecordingDriver()
     gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY))
-    tool = await _tool_with_robots(driver, gate, target_id=_derive_target_id(url, schema))
+    tool = await _tool_with_robots(driver, gate, target_id=await derived_target_id(url, schema))
 
     with patch("threetears.scrape.tool.asyncio.sleep", new=AsyncMock()) as slept:
         await tool.execute(url=url, field_schema=schema)
@@ -396,18 +405,18 @@ async def test_passing_none_explicitly_consults_nothing() -> None:
     Previously this was what every caller got by omission, so a documented on-by-default
     setting was off in every deployment while the configuration looked correct.
     """
-    from threetears.scrape.tool import _derive_target_id
 
     url = "https://example.gov/private/list"
     schema = {"employer": "str", "affected_count": "int"}
     driver = _RecordingDriver()
-    tool = await _tool_with_robots(driver, None, target_id=_derive_target_id(url, schema))
+    tool = await _tool_with_robots(driver, None, target_id=await derived_target_id(url, schema))
 
     await tool.execute(url=url, field_schema=schema)
 
     assert driver.fetched == [url]
 
 
+@pytest.mark.real_robots_fetch
 async def test_a_tool_built_without_mentioning_robots_still_consults_one() -> None:
     """The default has to be provable without the test supplying the thing it is proving.
 
@@ -416,31 +425,29 @@ async def test_a_tool_built_without_mentioning_robots_still_consults_one() -> No
     installed. The inline comment claimed it substituted only the FETCHER; the line replaced
     the whole gate.
 
-    Patching the default FETCHER BUILDER instead leaves the tool's own wiring untouched: if
-    `ScrapeTool` stops building a gate, nothing consults the stub and the disallowed path is
-    fetched.
+    The tool is given only an EXIT, whose transport serves a disallowing file. That leaves
+    the tool's own wiring untouched: the gate, and the real default fetcher inside it, are
+    whatever the constructor decides to build. If `ScrapeTool` stops building a gate, nothing
+    reads the file and the disallowed path is fetched. (Marked so the suite's offline default
+    does not stand in for the real one.)
     """
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
     from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-    from threetears.scrape.tool import ScrapeTool, _derive_target_id
+    from threetears.scrape.tool import ScrapeTool
 
     url = "https://example.gov/private/list"
     schema = {"employer": "str", "affected_count": "int"}
     driver = _RecordingDriver()
 
-    def _disallowing(_egress=None):
-        async def _fetch(_url: str) -> tuple[int, str]:
-            return 200, _ROBOTS_DISALLOW
-
-        return _fetch
+    exit_ = FakeEgress("exit", respond=lambda _request: httpx.Response(200, text=_ROBOTS_DISALLOW))
 
     reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
     recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
     await recipes.save_entity(
         recipes.create(
             {
-                "target_id": _derive_target_id(url, schema),
+                "target_id": await derived_target_id(url, schema),
                 "extraction_strategy": {"employer": "td:nth-child(1)", "affected_count": "td:nth-child(2)"},
                 "won_at": None,
                 "last_validated_at": None,
@@ -449,42 +456,38 @@ async def test_a_tool_built_without_mentioning_robots_still_consults_one() -> No
         )
     )
 
-    with patch("threetears.scrape.robots._default_fetch_via", _disallowing):
-        # Built AFTER the patch and never touched again: the gate under test is the one the
-        # constructor decides to make, which is the whole claim.
-        tool = ScrapeTool(
-            recipe_collection=recipes,
-            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
-            drivers={"nodriver": driver},
-            api_key="k",
-        )
-        result = await tool.execute(url=url, field_schema=schema)
+    # Never touched after construction: the gate under test is the one the constructor
+    # decides to make, which is the whole claim.
+    tool = ScrapeTool(
+        recipe_collection=recipes,
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={"nodriver": driver},
+        api_key="k",
+        egress=exit_,
+        block_private_hosts=False,
+    )
+    result = await tool.execute(url=url, field_schema=schema)
 
+    assert [str(r.url) for r in exit_.requests] == ["https://example.gov/robots.txt"]
     assert driver.fetched == [], "a tool that never mentioned robots fetched a disallowed path"
     assert result.metadata["needs_human"] is True
 
 
-async def test_a_gate_with_no_arguments_actually_reaches_for_a_file() -> None:
+async def test_a_gate_with_no_fetcher_actually_reaches_for_a_file() -> None:
     """The other half of the same failure, also asserted behaviourally.
 
     A default gate with no fetcher reads nothing, so "both behaviours on by default" would be
-    true of a policy object and false of every deployment. The conftest replaces the default
-    fetcher with one that raises, so what this proves is that a bare gate CALLS it -- reaching
-    the "site told us nothing" path rather than skipping the read entirely.
+    true of a policy object and false of every deployment. The gate is given no fetcher, only
+    an exit that records what reaches it and cannot connect -- so what this proves is that a
+    gate left to its default CALLS the default fetcher, reaching the "site told us nothing"
+    path rather than skipping the read entirely.
     """
-    reached: list[str] = []
+    unreachable = FakeEgress("down", respond=_refuse_connection)
 
-    def _offline(_egress=None):
-        async def _fetch(url: str) -> tuple[int, str]:
-            reached.append(url)
-            raise RuntimeError("no network")
+    decision = await RobotsGate(egress=unreachable).check("https://example.gov/x")
 
-        return _fetch
-
-    with patch("threetears.scrape.robots._default_fetch_via", _offline):
-        decision = await RobotsGate().check("https://example.gov/x")
-
-    assert reached == ["https://example.gov/robots.txt"], "a bare gate never went looking for a file"
+    reached = [str(r.url) for r in unreachable.requests]
+    assert reached == ["https://example.gov/robots.txt"], "a gate with no fetcher never went looking for a file"
     assert decision.allowed is True, "an unreachable file must not block the work"
 
 
@@ -547,11 +550,11 @@ async def test_a_suppressed_fetch_does_not_pay_the_crawl_delay() -> None:
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
     from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-    from threetears.scrape.tool import ScrapeTool, _derive_target_id
+    from threetears.scrape.tool import ScrapeTool
 
     url = "https://example.gov/list"
     schema = {"employer": "str", "affected_count": "int"}
-    target_id = _derive_target_id(url, schema)
+    target_id = await derived_target_id(url, schema)
 
     reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
     health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
@@ -570,6 +573,7 @@ async def test_a_suppressed_fetch_does_not_pay_the_crawl_delay() -> None:
         drivers={"nodriver": driver},
         robots=gate,
         api_key="k",
+        block_private_hosts=False,
     )
 
     with patch("threetears.scrape.tool.asyncio.sleep", new=AsyncMock()) as slept:
@@ -591,11 +595,11 @@ async def test_a_fetch_of_an_unblocked_target_writes_nothing() -> None:
     from threetears.core.config import DefaultCoreConfig
     from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
     from threetears.scrape.health import ScrapeTargetHealthCollection
-    from threetears.scrape.tool import ScrapeTool, _derive_target_id
+    from threetears.scrape.tool import ScrapeTool
 
     url = "https://example.gov/public/list"
     schema = {"employer": "str", "affected_count": "int"}
-    target_id = _derive_target_id(url, schema)
+    target_id = await derived_target_id(url, schema)
 
     reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
     health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
@@ -619,6 +623,7 @@ async def test_a_fetch_of_an_unblocked_target_writes_nothing() -> None:
         drivers={"nodriver": driver},
         robots=RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW)),
         api_key="k",
+        block_private_hosts=False,
     )
 
     # Asserted on the WRITE, not on the resulting row. The row-shape version could not fail:
@@ -653,11 +658,11 @@ async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
     from threetears.core.config import DefaultCoreConfig
     from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
     from threetears.scrape.health import ScrapeTargetHealthCollection, record_robots_block
-    from threetears.scrape.tool import ScrapeTool, _derive_target_id
+    from threetears.scrape.tool import ScrapeTool
 
     url = "https://example.gov/public/list"
     schema = {"employer": "str", "affected_count": "int"}
-    target_id = _derive_target_id(url, schema)
+    target_id = await derived_target_id(url, schema)
 
     reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
     health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
@@ -682,6 +687,7 @@ async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
         drivers={"nodriver": driver},
         robots=RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW)),
         api_key="k",
+        block_private_hosts=False,
     )
 
     clear = AsyncMock(side_effect=RuntimeError("health store is gone"))
@@ -887,6 +893,7 @@ async def test_the_declared_timeout_covers_the_longest_wait_the_gate_can_ask_for
         drivers={},
         api_key="k",
         robots=gate,
+        block_private_hosts=False,
     )
 
     declared = tool.mcp_schema().timeout_seconds
@@ -927,6 +934,7 @@ async def test_a_health_store_failure_does_not_escape_the_escalation() -> None:
         api_key="k",
         health_collection=health,
         robots=RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW)),
+        block_private_hosts=False,
     )
 
     with _patch("threetears.scrape.tool.record_robots_block", side_effect=RuntimeError("store down")):
@@ -959,12 +967,12 @@ async def test_a_circuit_probe_is_not_exempt_from_the_crawl_delay() -> None:
     from threetears.scrape.circuit import TargetCircuit
     from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
     from threetears.scrape.health import ScrapeTargetHealthCollection, record_circuit_state
-    from threetears.scrape.tool import ScrapeTool, _derive_target_id
+    from threetears.scrape.tool import ScrapeTool
 
     reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
     health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
     url, schema = "https://example.gov/probed", {"a": "str"}
-    target_id = _derive_target_id(url, schema)
+    target_id = await derived_target_id(url, schema)
 
     # An OPEN circuit whose window has already elapsed: the next check promotes it and admits
     # the single probe. That is the state the rule is about.
@@ -997,6 +1005,7 @@ async def test_a_circuit_probe_is_not_exempt_from_the_crawl_delay() -> None:
         health_collection=health,
         circuit=_SpyCircuit(health),
         robots=gate,
+        block_private_hosts=False,
     )
 
     slept: list[float] = []

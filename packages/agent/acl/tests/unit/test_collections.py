@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid7
 
 import pytest
@@ -27,31 +27,7 @@ from threetears.agent.acl import (
     ScopeType,
 )
 
-
-def _make_collection(
-    cls: type,
-    *,
-    l3_pool: AsyncMock | None = None,
-) -> Any:
-    """build a Collection instance with mocked registry + config.
-
-    :param cls: Collection class to instantiate
-    :ptype cls: type
-    :param l3_pool: optional mocked pool
-    :ptype l3_pool: AsyncMock | None
-    :return: Collection instance with mocks wired in
-    :rtype: Any
-    """
-    mock_registry = MagicMock()
-    mock_registry.get_l1_backend.return_value = None
-    mock_registry.get_l3_pool.return_value = l3_pool
-    mock_registry.register.return_value = None
-
-    mock_config = MagicMock()
-    mock_config.collection_flush = "ALWAYS"
-    mock_config.collection_flush_tables = ""
-
-    return cls(registry=mock_registry, config=mock_config)
+from .collection_support import make_collection
 
 
 def _group_row(
@@ -175,7 +151,7 @@ class TestGroupCollectionListByCustomer:
         ]
         pool = AsyncMock()
         pool.fetch.return_value = rows
-        coll = _make_collection(GroupCollection, l3_pool=pool)
+        coll = make_collection(GroupCollection, l3_pool=pool)
 
         result = await coll.list_by_customer(customer_id)
 
@@ -191,7 +167,7 @@ class TestGroupCollectionListByCustomer:
         """empty fetch returns empty list (not None)."""
         pool = AsyncMock()
         pool.fetch.return_value = []
-        coll = _make_collection(GroupCollection, l3_pool=pool)
+        coll = make_collection(GroupCollection, l3_pool=pool)
         result = await coll.list_by_customer(uuid7())
         assert result == []
 
@@ -203,7 +179,7 @@ class TestGroupCollectionGetMany:
     async def test_empty_input_no_round_trip(self) -> None:
         """empty input short-circuits without a SQL call."""
         pool = AsyncMock()
-        coll = _make_collection(GroupCollection, l3_pool=pool)
+        coll = make_collection(GroupCollection, l3_pool=pool)
         result = await coll.get_many([])
         assert result == []
         pool.fetch.assert_not_awaited()
@@ -219,7 +195,7 @@ class TestGroupCollectionGetMany:
         row_b["group_id"] = gid_b
         pool = AsyncMock()
         pool.fetch.return_value = [row_a, row_b]
-        coll = _make_collection(GroupCollection, l3_pool=pool)
+        coll = make_collection(GroupCollection, l3_pool=pool)
         result = await coll.get_many([gid_a, gid_b])
         assert {e.id for e in result} == {gid_a, gid_b}
 
@@ -233,7 +209,7 @@ class TestGroupCollectionGetMany:
         row["customer_id"] = str(cid)
         pool = AsyncMock()
         pool.fetch.return_value = [row]
-        coll = _make_collection(GroupCollection, l3_pool=pool)
+        coll = make_collection(GroupCollection, l3_pool=pool)
         result = await coll.get_many([gid])
         assert len(result) == 1
         assert isinstance(result[0].id, UUID)
@@ -256,7 +232,7 @@ class TestGroupGetByName:
         row = _group_row(customer_id=cid, name="Tenant administrators")
         pool = AsyncMock()
         pool.fetchrow.return_value = row
-        coll = _make_collection(GroupCollection, l3_pool=pool)
+        coll = make_collection(GroupCollection, l3_pool=pool)
         result = await coll.get_by_name("Tenant administrators", cid)
         assert result is not None
         assert result.name == "Tenant administrators"
@@ -280,7 +256,7 @@ class TestGroupGetByName:
         row["row_scope"] = "platform"
         pool = AsyncMock()
         pool.fetchrow.return_value = row
-        coll = _make_collection(GroupCollection, l3_pool=pool)
+        coll = make_collection(GroupCollection, l3_pool=pool)
         result = await coll.get_by_name("Platform administrators", None)
         assert result is not None
         assert result.name == "Platform administrators"
@@ -291,7 +267,7 @@ class TestGroupGetByName:
         """no matching group yields ``None`` rather than raising."""
         pool = AsyncMock()
         pool.fetchrow.return_value = None
-        coll = _make_collection(GroupCollection, l3_pool=pool)
+        coll = make_collection(GroupCollection, l3_pool=pool)
         result = await coll.get_by_name("does-not-exist", uuid7())
         assert result is None
 
@@ -315,7 +291,7 @@ class TestGroupMemberLoadForUser:
         ]
         pool = AsyncMock()
         pool.fetch.return_value = rows
-        coll = _make_collection(GroupMemberCollection, l3_pool=pool)
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
         result = await coll.load_for_user(user_id)
         assert len(result) == 1
         assert isinstance(result[0], GroupMembership)
@@ -328,7 +304,7 @@ class TestGroupMemberLoadForUser:
         """SQL filters on ``member_type='user'`` exactly."""
         pool = AsyncMock()
         pool.fetch.return_value = []
-        coll = _make_collection(GroupMemberCollection, l3_pool=pool)
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
         await coll.load_for_user(uuid7())
         sql = pool.fetch.await_args.args[0]
         assert "member_type = 'user'" in sql
@@ -351,7 +327,7 @@ class TestGroupMemberLoadForAgent:
         ]
         pool = AsyncMock()
         pool.fetch.return_value = rows
-        coll = _make_collection(GroupMemberCollection, l3_pool=pool)
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
         result = await coll.load_for_agent(agent_id)
         assert len(result) == 1
         assert result[0].member_type == MemberType.AGENT
@@ -365,7 +341,7 @@ class TestRoleListBuiltin:
         rows = [_role_row(name="Reader"), _role_row(name="Writer")]
         pool = AsyncMock()
         pool.fetch.return_value = rows
-        coll = _make_collection(RoleCollection, l3_pool=pool)
+        coll = make_collection(RoleCollection, l3_pool=pool)
         result = await coll.list_builtin()
         assert len(result) == 2
         sql = pool.fetch.await_args.args[0]
@@ -378,7 +354,7 @@ class TestRoleGetMany:
     @pytest.mark.asyncio
     async def test_empty_input_no_round_trip(self) -> None:
         pool = AsyncMock()
-        coll = _make_collection(RoleCollection, l3_pool=pool)
+        coll = make_collection(RoleCollection, l3_pool=pool)
         result = await coll.get_many([])
         assert result == []
         pool.fetch.assert_not_awaited()
@@ -398,7 +374,7 @@ class TestRoleGetMany:
         ]
         pool = AsyncMock()
         pool.fetch.return_value = rows
-        coll = _make_collection(RoleCollection, l3_pool=pool)
+        coll = make_collection(RoleCollection, l3_pool=pool)
         result = await coll.get_many([role_id])
         assert len(result) == 1
         role = result[0]
@@ -430,7 +406,7 @@ class TestRoleGetMany:
         ]
         pool = AsyncMock()
         pool.fetch.return_value = rows
-        coll = _make_collection(RoleCollection, l3_pool=pool)
+        coll = make_collection(RoleCollection, l3_pool=pool)
         result = await coll.get_many([role_id])
         assert result[0].customer_id == customer_id
         assert "customer_id" in pool.fetch.await_args.args[0]
@@ -442,7 +418,7 @@ class TestRoleAssignmentLoadForGroups:
     @pytest.mark.asyncio
     async def test_empty_input_no_round_trip(self) -> None:
         pool = AsyncMock()
-        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         result = await coll.load_for_groups([])
         assert result == []
         pool.fetch.assert_not_awaited()
@@ -466,7 +442,7 @@ class TestRoleAssignmentLoadForGroups:
         ]
         pool = AsyncMock()
         pool.fetch.return_value = rows
-        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         result = await coll.load_for_groups([group_id])
         assert len(result) == 1
         ra = result[0]
@@ -495,7 +471,7 @@ class TestRoleAssignmentLoadForGroups:
         ]
         pool = AsyncMock()
         pool.fetch.return_value = rows
-        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         result = await coll.load_for_groups([group_id])
         assert len(result) == 1
         ra = result[0]
@@ -523,14 +499,14 @@ class TestNamespaceListIdsUnderName:
             {"namespace_id": imposter_id, "name": "tools.pentestimposter.sqlmap"},
             {"namespace_id": unrelated_id, "name": "tools.dipp.thing"},
         ]
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.list_ids_under_name("tools.pentest")
         assert result == [node_id, child_id]
 
     @pytest.mark.asyncio
     async def test_an_empty_node_expands_to_nothing(self) -> None:
         pool = AsyncMock()
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         assert await coll.list_ids_under_name("") == []
         pool.fetch.assert_not_awaited()
 
@@ -551,7 +527,7 @@ class TestNamespaceListOwnedBy:
                 "owner_namespace": "agents.owner",
             },
         ]
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         owned = await coll.list_owned_by("agents.owner")
         assert [entity.id for entity in owned] == [child_id]
         assert pool.fetch.await_args.args[1] == "agents.owner"
@@ -560,14 +536,14 @@ class TestNamespaceListOwnedBy:
     async def test_an_empty_owner_owns_nothing_and_asks_nothing(self) -> None:
         """an empty name must never reach the query, where it would match every row owned by ``''``."""
         pool = AsyncMock()
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         assert await coll.list_owned_by("") == []
         pool.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_pool_refuses_rather_than_answering_nothing_is_owned(self) -> None:
         """an empty list tells a teardown walker the owner is a leaf; with no pool that is a guess."""
-        coll = _make_collection(NamespaceCollection, l3_pool=None)
+        coll = make_collection(NamespaceCollection, l3_pool=None)
         with pytest.raises(RuntimeError, match="list_owned_by requires an L3 pool"):
             await coll.list_owned_by("agents.owner")
 
@@ -580,21 +556,21 @@ class TestNamespaceSchemaInUse:
     async def test_it_answers_what_the_table_says(self, named: bool) -> None:
         pool = AsyncMock()
         pool.fetchval.return_value = named
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         assert await coll.schema_in_use("agent_0123") is named
         assert pool.fetchval.await_args.args[1] == "agent_0123"
 
     @pytest.mark.asyncio
     async def test_an_empty_schema_name_is_never_in_use_and_asks_nothing(self) -> None:
         pool = AsyncMock()
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         assert await coll.schema_in_use("") is False
         pool.fetchval.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_pool_refuses_rather_than_answering_the_schema_is_free(self) -> None:
         """``False`` means safe to drop; answering it without looking hands a caller a DROP SCHEMA."""
-        coll = _make_collection(NamespaceCollection, l3_pool=None)
+        coll = make_collection(NamespaceCollection, l3_pool=None)
         with pytest.raises(RuntimeError, match="schema_in_use requires an L3 pool"):
             await coll.schema_in_use("agent_0123")
 
@@ -608,7 +584,7 @@ class TestEnsureGroupRoleAssignment:
         existing_id = uuid7()
         pool = AsyncMock()
         pool.fetchrow.return_value = {"assignment_id": existing_id}
-        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         assignment_id, created = await coll.ensure_group_role_assignment(
             group_id=uuid7(),
             role_id=uuid7(),
@@ -631,7 +607,7 @@ class TestEnsureGroupRoleAssignment:
         pool = AsyncMock()
         pool.fetchrow.return_value = None
         pool.fetchval.side_effect = lambda sql, *args: args[1]
-        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         assignment_id, created = await coll.ensure_group_role_assignment(
             group_id=uuid7(),
             role_id=uuid7(),
@@ -651,7 +627,7 @@ class TestEnsureGroupRoleAssignment:
         pool = AsyncMock()
         pool.fetchrow.return_value = None
         pool.fetchval.side_effect = [None, winner]
-        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         group_id, role_id, scope_id = uuid7(), uuid7(), uuid7()
         assignment_id, created = await coll.ensure_group_role_assignment(
             group_id=group_id,
@@ -671,7 +647,7 @@ class TestEnsureGroupRoleAssignment:
         pool = AsyncMock()
         pool.fetchrow.return_value = None
         pool.fetchval.side_effect = [None, None]
-        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         with pytest.raises(RuntimeError, match="no row holds that grant"):
             await coll.ensure_group_role_assignment(
                 group_id=uuid7(),
@@ -682,7 +658,7 @@ class TestEnsureGroupRoleAssignment:
 
     @pytest.mark.asyncio
     async def test_rejects_unsupported_scope_type(self) -> None:
-        coll = _make_collection(
+        coll = make_collection(
             RoleAssignmentCollection,
             l3_pool=AsyncMock(),
         )
@@ -696,7 +672,7 @@ class TestEnsureGroupRoleAssignment:
 
     @pytest.mark.asyncio
     async def test_rejects_namespace_scope_without_id(self) -> None:
-        coll = _make_collection(
+        coll = make_collection(
             RoleAssignmentCollection,
             l3_pool=AsyncMock(),
         )
@@ -710,7 +686,7 @@ class TestEnsureGroupRoleAssignment:
 
     @pytest.mark.asyncio
     async def test_rejects_all_scope_with_id(self) -> None:
-        coll = _make_collection(
+        coll = make_collection(
             RoleAssignmentCollection,
             l3_pool=AsyncMock(),
         )
@@ -730,7 +706,7 @@ class TestDeleteByGroupAndScope:
     async def test_returns_zero_on_empty_delete(self) -> None:
         pool = AsyncMock()
         pool.execute.return_value = "DELETE 0"
-        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         n = await coll.delete_by_group_and_scope(
             group_id=uuid7(),
             scope_type="namespace",
@@ -742,7 +718,7 @@ class TestDeleteByGroupAndScope:
     async def test_returns_count_on_match(self) -> None:
         pool = AsyncMock()
         pool.execute.return_value = "DELETE 3"
-        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         n = await coll.delete_by_group_and_scope(
             group_id=uuid7(),
             scope_type="namespace",
@@ -755,7 +731,7 @@ class TestDeleteByGroupAndScope:
         """``managed_by`` argument adds a fifth predicate."""
         pool = AsyncMock()
         pool.execute.return_value = "DELETE 1"
-        coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
+        coll = make_collection(RoleAssignmentCollection, l3_pool=pool)
         await coll.delete_by_group_and_scope(
             group_id=uuid7(),
             scope_type="namespace",
@@ -803,7 +779,7 @@ class TestNamespaceCollectionFindById:
         row = _namespace_row(customer_id=cid)
         pool = AsyncMock()
         pool.fetchrow.return_value = row
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.find_by_id(row["namespace_id"])
         assert result is not None
         assert result.id == row["namespace_id"]
@@ -812,7 +788,7 @@ class TestNamespaceCollectionFindById:
     async def test_returns_none_when_absent(self) -> None:
         pool = AsyncMock()
         pool.fetchrow.return_value = None
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.find_by_id(uuid7())
         assert result is None
 
@@ -826,7 +802,7 @@ class TestNamespaceGetByName:
         row = _namespace_row(customer_id=cid, name="ws.acme")
         pool = AsyncMock()
         pool.fetchrow.return_value = row
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.get_by_name("ws.acme")
         assert result is not None
         assert result.name == "ws.acme"
@@ -835,7 +811,7 @@ class TestNamespaceGetByName:
     async def test_returns_none_when_absent(self) -> None:
         pool = AsyncMock()
         pool.fetchrow.return_value = None
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.get_by_name("missing")
         assert result is None
 
@@ -848,7 +824,7 @@ class TestNamespaceGetByOwnerAndCustomer:
         """``customer_id=None`` queries the platform partition."""
         pool = AsyncMock()
         pool.fetchrow.return_value = None
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         await coll.get_by_owner_and_customer(
             namespace_type="shared",
             owner_agent_id=None,
@@ -862,7 +838,7 @@ class TestNamespaceGetByOwnerAndCustomer:
         cid = uuid7()
         pool = AsyncMock()
         pool.fetchrow.return_value = None
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         await coll.get_by_owner_and_customer(
             namespace_type="memory",
             owner_agent_id=uuid7(),
@@ -879,7 +855,7 @@ class TestNamespaceListIdsByCustomerAndType:
         ids = [uuid7(), uuid7()]
         pool = AsyncMock()
         pool.fetch.return_value = [{"namespace_id": i} for i in ids]
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.list_ids_by_customer_and_type(uuid7(), "workspace")
         assert result == ids
 
@@ -892,7 +868,7 @@ class TestNamespaceListAllIds:
         ids = [uuid7(), uuid7(), uuid7()]
         pool = AsyncMock()
         pool.fetch.return_value = [{"namespace_id": i} for i in ids]
-        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        coll = make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.list_all_ids()
         assert result == ids
 
@@ -910,7 +886,7 @@ class TestGroupMembershipCycleGuard:
     async def test_a_group_inside_itself_is_a_cycle_with_no_io(self) -> None:
         """self-membership refuses before any pool call."""
         pool = AsyncMock()
-        coll = _make_collection(GroupMemberCollection, l3_pool=pool)
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
         group = uuid7()
         assert await coll.membership_would_cycle(group_id=group, member_group_id=group) is True
         pool.fetch.assert_not_awaited()
@@ -928,7 +904,7 @@ class TestGroupMembershipCycleGuard:
         # candidate insert: (group_id=B, member=A). walk starts at A; A's
         # children = {B}; B == target group -> cycle.
         pool.fetch.return_value = [{"member_id": group_b}]
-        coll = _make_collection(GroupMemberCollection, l3_pool=pool)
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
         assert await coll.membership_would_cycle(group_id=group_b, member_group_id=group_a) is True
 
     @pytest.mark.asyncio
@@ -936,5 +912,5 @@ class TestGroupMembershipCycleGuard:
         """a child with no group-children accepts a parent cleanly."""
         pool = AsyncMock()
         pool.fetch.return_value = []
-        coll = _make_collection(GroupMemberCollection, l3_pool=pool)
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
         assert await coll.membership_would_cycle(group_id=uuid7(), member_group_id=uuid7()) is False

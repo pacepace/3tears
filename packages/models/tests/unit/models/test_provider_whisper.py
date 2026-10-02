@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -11,8 +12,6 @@ from threetears.models.providers.whisper import (
     TranscriptionResult,
     TranscriptionSegment,
     WhisperTranscriptionProvider,
-    _MIME_TO_EXT,
-    _parse_verbose_json,
 )
 
 
@@ -213,24 +212,46 @@ class TestWhisperTranscriptionProvider:
                 await provider.transcribe(b"audio", "audio/wav")
 
 
-class TestParseVerboseJson:
-    """tests for _parse_verbose_json helper function."""
+async def _transcribe(json_data: dict[str, object], mime_type: str = "audio/wav") -> tuple[TranscriptionResult, Any]:
+    """runs one transcription against a mocked Whisper endpoint answering ``json_data``.
 
-    def test_basic_response(self) -> None:
+    :param json_data: the verbose_json body the endpoint answers
+    :ptype json_data: dict[str, object]
+    :param mime_type: the MIME type the caller declares for the audio
+    :ptype mime_type: str
+    :return: the parsed result, and the keyword arguments the upload was posted with
+    :rtype: tuple[TranscriptionResult, Any]
+    """
+    provider = WhisperTranscriptionProvider("sk-test")
+    mock_client = AsyncMock()
+    mock_client.post.return_value = _mock_response(json_data)
+    with patch("threetears.models.providers.whisper.httpx.AsyncClient") as MockClient:
+        MockClient.return_value.__aenter__.return_value = mock_client
+        MockClient.return_value.__aexit__.return_value = False
+        result = await provider.transcribe(b"audio", mime_type)
+    return result, mock_client.post.call_args.kwargs
+
+
+class TestParseVerboseJson:
+    """the verbose_json body Whisper answers, as ``transcribe`` hands it back."""
+
+    @pytest.mark.asyncio
+    async def test_basic_response(self) -> None:
         """parses text, language, and duration from response body."""
         body = {
             "text": "Hello world",
             "language": "en",
             "duration": 10.5,
         }
-        result = _parse_verbose_json(body)
+        result, _ = await _transcribe(body)
 
         assert result.text == "Hello world"
         assert result.language == "en"
         assert result.duration_seconds == 10.5
         assert result.segments is None
 
-    def test_with_segments(self) -> None:
+    @pytest.mark.asyncio
+    async def test_with_segments(self) -> None:
         """parses segments list into TranscriptionSegment objects."""
         body = {
             "text": "Hello world",
@@ -241,7 +262,7 @@ class TestParseVerboseJson:
                 {"start": 2.0, "end": 5.0, "text": " world"},
             ],
         }
-        result = _parse_verbose_json(body)
+        result, _ = await _transcribe(body)
 
         assert result.segments is not None
         assert len(result.segments) == 2
@@ -252,17 +273,19 @@ class TestParseVerboseJson:
         assert result.segments[1].end == 5.0
         assert result.segments[1].text == " world"
 
-    def test_missing_fields(self) -> None:
+    @pytest.mark.asyncio
+    async def test_missing_fields(self) -> None:
         """missing fields default to None or empty string."""
         body: dict[str, object] = {}
-        result = _parse_verbose_json(body)
+        result, _ = await _transcribe(body)
 
         assert result.text == ""
         assert result.language is None
         assert result.duration_seconds is None
         assert result.segments is None
 
-    def test_empty_segments(self) -> None:
+    @pytest.mark.asyncio
+    async def test_empty_segments(self) -> None:
         """empty segments list produces None segments field."""
         body = {
             "text": "Hello",
@@ -270,14 +293,15 @@ class TestParseVerboseJson:
             "duration": 1.0,
             "segments": [],
         }
-        result = _parse_verbose_json(body)
+        result, _ = await _transcribe(body)
 
         assert result.segments is None
 
 
 class TestMimeToExt:
-    """tests for _MIME_TO_EXT mapping."""
+    """the uploaded file's extension, named from the audio's MIME type."""
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("mime_type", "expected_ext"),
         [
@@ -293,10 +317,15 @@ class TestMimeToExt:
             ("audio/flac", "flac"),
         ],
     )
-    def test_known_mime_types(self, mime_type: str, expected_ext: str) -> None:
-        """known MIME type maps to correct file extension."""
-        assert _MIME_TO_EXT[mime_type] == expected_ext
+    async def test_known_mime_types(self, mime_type: str, expected_ext: str) -> None:
+        """known MIME type uploads under the matching file extension."""
+        _, posted = await _transcribe({"text": "x"}, mime_type)
+        filename, _data, sent_mime = posted["files"]["file"]
+        assert filename == f"audio.{expected_ext}"
+        assert sent_mime == mime_type
 
-    def test_unknown_mime_type(self) -> None:
+    @pytest.mark.asyncio
+    async def test_unknown_mime_type(self) -> None:
         """unknown MIME type falls back to bin extension."""
-        assert _MIME_TO_EXT.get("audio/unknown", "bin") == "bin"
+        _, posted = await _transcribe({"text": "x"}, "audio/unknown")
+        assert posted["files"]["file"][0] == "audio.bin"

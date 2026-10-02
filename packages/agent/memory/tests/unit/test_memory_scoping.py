@@ -1,14 +1,18 @@
-"""Tests for memory scoping -- agent_id and customer_id on MemoryEntity and helpers."""
+"""Tests for memory scoping -- agent_id and customer_id on MemoryEntity and on every hybrid search."""
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 import pytest
 from uuid import uuid7
 
-from threetears.agent.memory.collections import _build_user_scope_clause
+from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
+from threetears.agent.memory.collections import MediaContentCollection, MemoriesCollection
 from threetears.agent.memory.entities import MemoryEntity
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing import entity_collection_stub
 
 
@@ -206,87 +210,86 @@ class TestMemoryEntityScopingCoexistence:
         assert changes["customer_id"] == new_customer
 
 
+class _RecordingPool:
+    """L3 pool stand-in that records every statement and its parameters, returning no rows."""
+
+    def __init__(self) -> None:
+        self.statements: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        self.statements.append((" ".join(sql.split()), params))
+        return []
+
+
+def _registry(pool: _RecordingPool) -> tuple[CollectionRegistry, DefaultCoreConfig]:
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    return registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+
+
+_SEARCH_KWARGS: dict[str, Any] = {
+    "embedding": [1.0, 0.0],
+    "user_text": "hello world",
+    "top_k": 5,
+    "candidate_limit": 7,
+    "similarity_threshold": 0.0,
+    "recency_half_life_hours": 24.0,
+    "signal_weights": {"semantic": 1.0, "keyword": 0.0, "recency": 0.0},
+}
+
+
 class TestBuildScopeClause:
-    """Verify _build_user_scope_clause generates correct SQL fragments.
+    """every hybrid search scopes by the full (agent, customer, user) triple.
 
     collections-task-04 made ``agent_id`` (partition column) and
-    ``customer_id`` (sub-scope) mandatory; the helper no longer admits
-    optional / agent-only / customer-only call shapes.
+    ``customer_id`` (sub-scope) mandatory; no search admits an optional /
+    agent-only / customer-only call shape.
     """
 
-    def test_required_triple(self) -> None:
-        """all three IDs always emit predicates in (agent, customer, user) order."""
-        user_id = uuid7()
-        agent_id = uuid7()
-        customer_id = uuid7()
+    async def test_required_triple(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
+        """both legs emit the predicates in (agent, customer, user) order from $2, then the limit."""
+        pool = _RecordingPool()
+        registry, config = _registry(pool)
+        user_id, agent_id, customer_id = uuid7(), uuid7(), uuid7()
 
-        conditions, params, last_idx = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
+        await MemoriesCollection(
+            registry=registry, config=config, authorizer=permissive_memory_authorizer
+        ).hybrid_search(user_id=user_id, agent_id=agent_id, customer_id=customer_id, **_SEARCH_KWARGS)
+
+        assert len(pool.statements) == 2, "a vector leg and a keyword leg"
+        for sql, params in pool.statements:
+            assert "WHERE agent_id = $2 AND customer_id = $3 AND user_id = $4" in sql
+            assert list(params[1:4]) == [agent_id, customer_id, user_id]
+            assert "LIMIT $5" in sql
+            assert params[4] == 7
+
+    async def test_with_table_prefix(self) -> None:
+        """a joined search qualifies every scope predicate with its table alias."""
+        pool = _RecordingPool()
+        registry, config = _registry(pool)
+        user_id, agent_id, customer_id = uuid7(), uuid7(), uuid7()
+
+        await MediaContentCollection(registry=registry, config=config).hybrid_search(
+            user_id=user_id, agent_id=agent_id, customer_id=customer_id, **_SEARCH_KWARGS
         )
 
-        assert "agent_id = $2" in conditions
-        assert "customer_id = $3" in conditions
-        assert "user_id = $4" in conditions
-        assert params == [agent_id, customer_id, user_id]
-        assert last_idx == 4
+        assert pool.statements
+        for sql, params in pool.statements:
+            assert "mc.agent_id = $2 AND mc.customer_id = $3 AND mc.user_id = $4" in sql
+            assert list(params[1:4]) == [agent_id, customer_id, user_id]
 
-    def test_with_table_prefix(self) -> None:
-        """table prefix applies to every scope predicate uniformly."""
-        user_id = uuid7()
-        agent_id = uuid7()
-        customer_id = uuid7()
-
-        conditions, params, last_idx = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            table_prefix="mc",
-        )
-
-        assert "mc.agent_id = $2" in conditions
-        assert "mc.customer_id = $3" in conditions
-        assert "mc.user_id = $4" in conditions
-        assert params == [agent_id, customer_id, user_id]
-        assert last_idx == 4
-
-    def test_custom_start_param(self) -> None:
-        """``start_param`` shifts every parameter index in declared order."""
-        user_id = uuid7()
-        agent_id = uuid7()
-        customer_id = uuid7()
-
-        conditions, params, last_idx = _build_user_scope_clause(
-            user_id,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            start_param=5,
-        )
-
-        assert "agent_id = $5" in conditions
-        assert "customer_id = $6" in conditions
-        assert "user_id = $7" in conditions
-        assert last_idx == 7
-
-    def test_agent_id_required(self) -> None:
+    async def test_agent_id_required(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
         """omitting ``agent_id`` raises (no longer optional)."""
-        user_id = uuid7()
-        customer_id = uuid7()
+        registry, config = _registry(_RecordingPool())
+        memories = MemoriesCollection(registry=registry, config=config, authorizer=permissive_memory_authorizer)
 
         with pytest.raises(TypeError):
-            _build_user_scope_clause(
-                user_id,
-                customer_id=customer_id,  # type: ignore[call-arg]
-            )
+            await memories.hybrid_search(user_id=uuid7(), customer_id=uuid7(), **_SEARCH_KWARGS)  # type: ignore[call-arg]
 
-    def test_customer_id_required(self) -> None:
+    async def test_customer_id_required(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
         """omitting ``customer_id`` raises (no longer optional)."""
-        user_id = uuid7()
-        agent_id = uuid7()
+        registry, config = _registry(_RecordingPool())
+        memories = MemoriesCollection(registry=registry, config=config, authorizer=permissive_memory_authorizer)
 
         with pytest.raises(TypeError):
-            _build_user_scope_clause(
-                user_id,
-                agent_id=agent_id,  # type: ignore[call-arg]
-            )
+            await memories.hybrid_search(user_id=uuid7(), agent_id=uuid7(), **_SEARCH_KWARGS)  # type: ignore[call-arg]

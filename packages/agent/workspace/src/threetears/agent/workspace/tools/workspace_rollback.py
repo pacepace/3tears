@@ -2,7 +2,7 @@
 
 rolls back either a single file (when ``relative_path`` is supplied) or
 every head file in the workspace to the content present at the supplied
-``ref``. ``ref`` follows the ``_resolve_ref`` vocabulary (``"head"``,
+``ref``. ``ref`` follows the ``resolve_ref`` vocabulary (``"head"``,
 integer, or checkpoint label).
 
 design commitments:
@@ -10,23 +10,23 @@ design commitments:
 - **sandbox-first fail-wholesale.** every file in the rollback set is
   passed through :meth:`WorkspaceSandbox.validate_syntax` +
   :func:`authorize_workspace_file` (direction ``"write"``) BEFORE any
-  call to ``_write_file_atomic``. if any file fails either gate, no
+  call to ``write_file_atomic``. if any file fails either gate, no
   writes occur -- rollback is cleanly aborted via a ToolResult error.
   this pattern is load-bearing for the shard-18 AST test that asserts
   the full validation sweep runs before any mutation.
 - **per-file transaction.** each file's rollback is delegated to
-  :func:`_write_file_atomic`, which opens its own connection +
+  :func:`write_file_atomic`, which opens its own connection +
   transaction. the shard explicitly allows this: fail-wholesale is
   already guaranteed by the pre-enforce sweep above, and a
   cross-file transaction would require threading a connection through
-  ``_write_file_atomic`` (not supported today). the per-file tx model
+  ``write_file_atomic`` (not supported today). the per-file tx model
   keeps the journal + head-state + workspace-version triplet atomic
   per-file, which matches the OCC contract every other write tool
   follows.
 - **no OCC.** rollback is explicit override; ``expected_sha256=None``.
 - **revert action.** journal rows are labelled ``action='revert'`` so
   downstream history queries see the explicit rollback signal.
-- **skip-on-miss.** when ``_resolve_ref`` returns None for a file (the
+- **skip-on-miss.** when ``resolve_ref`` returns None for a file (the
   file did not exist at that ref), rollback skips it silently. the
   caller receives an accurate ``n_changed`` count.
 """
@@ -63,10 +63,10 @@ from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
-    _resolve_ref,
+    resolve_ref,
     _resolve_validators,
-    _resolve_workspace,
-    _write_file_atomic,
+    resolve_workspace,
+    write_file_atomic,
     authorize_workspace,
     authorize_workspace_file,
     workspace_audit_identity,
@@ -137,7 +137,7 @@ class WorkspaceRollbackTool(TearsTool):
             ``find_by_workspace`` and ``find_by_workspace_and_relative_path``
         :ptype workspace_file_collection: WorkspaceFileCollection
         :param workspace_file_version_collection: journal collection passed
-            through to :func:`_write_file_atomic`
+            through to :func:`write_file_atomic`
         :ptype workspace_file_version_collection: WorkspaceFileVersionCollection
         :param sandbox: workspace sandbox for per-path write enforcement
         :ptype sandbox: WorkspaceSandbox
@@ -147,14 +147,14 @@ class WorkspaceRollbackTool(TearsTool):
             ``actor_id`` on revert journal rows
         :ptype agent_id: UUID
         :param db_pool: asyncpg pool supplying acquire for ref resolution
-            and per-file ``_write_file_atomic`` transactions
+            and per-file ``write_file_atomic`` transactions
         :ptype db_pool: Any
         :param nats_client: NATS client for audit publish; None skips audit
         :ptype nats_client: Any
         :param namespace: NATS subject namespace for audit subject
         :ptype namespace: str | None
         :param validators: per-pattern validator entries forwarded to
-            :func:`_write_file_atomic`; rollback is still a content-write
+            :func:`write_file_atomic`; rollback is still a content-write
             so validators run on each reverted file
         :ptype validators: list[ValidatorEntry] | None
         """
@@ -177,7 +177,7 @@ class WorkspaceRollbackTool(TearsTool):
         phase 1: enumerate the rollback set. phase 2: sandbox-enforce
         write on every path -- any denial aborts the whole operation
         before any mutation. phase 3: for each file, resolve the target
-        ref; skip if absent; else delegate to :func:`_write_file_atomic`
+        ref; skip if absent; else delegate to :func:`write_file_atomic`
         with ``action='revert'``. all failures arrive as :class:`
         ToolResult` with ``success=False``.
 
@@ -203,7 +203,7 @@ class WorkspaceRollbackTool(TearsTool):
         correlation_id = uuid7()
         n_changed = 0
         try:
-            workspace = await _resolve_workspace(
+            workspace = await resolve_workspace(
                 workspace_arg,
                 self._context_provider(),
                 self._workspaces,
@@ -233,7 +233,7 @@ class WorkspaceRollbackTool(TearsTool):
                     # WS-ACL-06: thread namespace= so outside-tx reads
                     # resolve against the owner agent's schema when
                     # the calling agent is a grantee.
-                    target = await _resolve_ref(
+                    target = await resolve_ref(
                         conn,
                         workspace.id,
                         path,
@@ -242,7 +242,7 @@ class WorkspaceRollbackTool(TearsTool):
                     )
                     if target is None:
                         continue
-                    await _write_file_atomic(
+                    await write_file_atomic(
                         db_pool=self._db_pool,
                         workspace=workspace,
                         relative_path=path,

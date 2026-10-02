@@ -1,19 +1,21 @@
-"""Unit tests for pure-logic helpers on the agent-skills collections.
+"""Unit tests for the agent-skills collections' store writes, read off the SQL they send.
 
 The Collection classes are wired to a real Postgres pool in
-integration tests; the unit suite exercises:
+integration tests; the unit suite drives ``save_to_store`` /
+``fetch_from_store`` over a recording pool and checks:
 
-- ``_skill_insert_params`` / ``_invocation_insert_params`` projections
-  preserve the declared column order so positional asyncpg parameters
-  stay in sync with the SQL placeholders.
-- ``_build_upsert_sql`` emits a syntactically valid upsert with the
-  expected conflict target.
+- every positional parameter binds to the column its placeholder names,
+  with the documented defaults for omitted columns.
+- the upsert conflict-targets the composite pk, updates every non-pk
+  column from ``EXCLUDED``, and an edit fences on ``date_updated``.
 - Class attributes (``primary_key_column``, ``partition_column``)
   declare the documented contract.
 """
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -25,15 +27,6 @@ from threetears.agent.skills.collections import (
     AgentSkillCollection,
     AgentSkillInvocationCollection,
     SkillShapeError,
-    _AGENT_SKILL_INVOCATIONS_UPSERT_SQL,
-    _AGENT_SKILLS_FETCH_SQL,
-    _AGENT_SKILLS_UPSERT_CAS_SQL,
-    _AGENT_SKILLS_UPSERT_SQL,
-    _INVOCATION_INSERT_COLUMNS,
-    _SKILL_INSERT_COLUMNS,
-    _build_upsert_sql,
-    _invocation_insert_params,
-    _skill_insert_params,
 )
 
 
@@ -42,10 +35,59 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-class TestSkillInsertParams:
-    """``_skill_insert_params`` preserves column order + applies defaults."""
+_UPSERT = re.compile(
+    r"^INSERT INTO (?P<table>\w+) \((?P<columns>[^)]*)\) VALUES \((?P<placeholders>[^)]*)\) "
+    r"ON CONFLICT \((?P<conflict>[^)]*)\) DO UPDATE SET (?P<set>.*?)"
+    r"(?: WHERE (?P<fence>\S+) = (?P<fence_param>\$\d+))?$"
+)
 
-    def test_full_row_round_trip(self) -> None:
+
+@dataclass(frozen=True)
+class _Upsert:
+    """one recorded upsert, split into the parts a test asserts on."""
+
+    table: str
+    columns: list[str]
+    placeholders: list[str]
+    conflict: list[str]
+    assignments: list[str]
+    fence: str | None
+    fence_param: str | None
+    params: tuple[Any, ...]
+
+    @property
+    def bound(self) -> dict[str, Any]:
+        """column name -> the value bound at that column's placeholder."""
+        return dict(zip(self.columns, self.params[: len(self.columns)], strict=True))
+
+
+def _upsert(sql: str, params: tuple[Any, ...]) -> _Upsert:
+    match = _UPSERT.match(sql)
+    assert match is not None, f"not an upsert: {sql}"
+    return _Upsert(
+        table=match["table"],
+        columns=[c.strip() for c in match["columns"].split(",")],
+        placeholders=[p.strip() for p in match["placeholders"].split(",")],
+        conflict=[c.strip() for c in match["conflict"].split(",")],
+        assignments=[a.strip() for a in match["set"].split(",")],
+        fence=match["fence"],
+        fence_param=match["fence_param"],
+        params=params,
+    )
+
+
+async def _saved_skill(data: dict[str, Any], fence: datetime | None = None) -> _Upsert:
+    pool = _RecordingPool(status="INSERT 0 1")
+    coll, _ = _bare_skill_collection(pool)
+    await coll.save_to_store(data, fence)
+    [(sql, params)] = pool.calls
+    return _upsert(sql, params)
+
+
+class TestSkillInsertParams:
+    """a skill write binds every column at its placeholder and applies defaults."""
+
+    async def test_full_row_round_trip(self) -> None:
         """Every column in the dict is bound at its declared position."""
         agent_id = _new_uuid()
         skill_id = _new_uuid()
@@ -73,19 +115,18 @@ class TestSkillInsertParams:
             "date_created": now,
             "date_updated": now,
         }
-        params = _skill_insert_params(data)
-        assert len(params) == len(_SKILL_INSERT_COLUMNS)
-        # spot-check positional mapping
-        agent_idx = _SKILL_INSERT_COLUMNS.index("agent_id")
-        name_idx = _SKILL_INSERT_COLUMNS.index("name")
-        prompt_idx = _SKILL_INSERT_COLUMNS.index("prompt_mode")
-        additions_idx = _SKILL_INSERT_COLUMNS.index("tool_additions")
-        assert params[agent_idx] == agent_id
-        assert params[name_idx] == "deploy-helper"
-        assert params[prompt_idx] == "additive"
-        assert params[additions_idx] == ["mcp.shell"]
+        upsert = await _saved_skill(data)
+        assert upsert.placeholders == [f"${i + 1}" for i in range(len(upsert.columns))]
+        assert len(upsert.params) == len(upsert.columns)
+        bound = upsert.bound
+        assert bound["agent_id"] == agent_id
+        assert bound["skill_id"] == skill_id
+        assert bound["name"] == "deploy-helper"
+        assert bound["prompt_mode"] == "additive"
+        assert bound["tool_additions"] == ["mcp.shell"]
+        assert bound["date_updated"] == now
 
-    def test_defaults_applied_for_omitted_columns(self) -> None:
+    async def test_defaults_applied_for_omitted_columns(self) -> None:
         """Missing ``prompt_mode`` / ``enabled`` / counters get sensible defaults."""
         data = {
             "agent_id": _new_uuid(),
@@ -97,29 +138,19 @@ class TestSkillInsertParams:
             "date_created": datetime.now(UTC),
             "date_updated": datetime.now(UTC),
         }
-        params = _skill_insert_params(data)
-        idx_prompt = _SKILL_INSERT_COLUMNS.index("prompt_mode")
-        idx_additions = _SKILL_INSERT_COLUMNS.index("tool_additions")
-        idx_restrictions = _SKILL_INSERT_COLUMNS.index("tool_restrictions")
-        idx_keywords = _SKILL_INSERT_COLUMNS.index("trigger_keywords")
-        idx_tags = _SKILL_INSERT_COLUMNS.index("tags")
-        idx_source = _SKILL_INSERT_COLUMNS.index("source")
-        idx_enabled = _SKILL_INSERT_COLUMNS.index("enabled")
-        idx_use_count = _SKILL_INSERT_COLUMNS.index("use_count")
-        idx_success = _SKILL_INSERT_COLUMNS.index("success_count")
-        idx_failure = _SKILL_INSERT_COLUMNS.index("failure_count")
-        assert params[idx_prompt] == "additive"
-        assert params[idx_additions] == []
-        assert params[idx_restrictions] == []
-        assert params[idx_keywords] == ""
-        assert params[idx_tags] == []
-        assert params[idx_source] == "manual"
-        assert params[idx_enabled] is True
-        assert params[idx_use_count] == 0
-        assert params[idx_success] == 0
-        assert params[idx_failure] == 0
+        bound = (await _saved_skill(data)).bound
+        assert bound["prompt_mode"] == "additive"
+        assert bound["tool_additions"] == []
+        assert bound["tool_restrictions"] == []
+        assert bound["trigger_keywords"] == ""
+        assert bound["tags"] == []
+        assert bound["source"] == "manual"
+        assert bound["enabled"] is True
+        assert bound["use_count"] == 0
+        assert bound["success_count"] == 0
+        assert bound["failure_count"] == 0
 
-    def test_tool_additions_coerced_to_list(self) -> None:
+    async def test_tool_additions_coerced_to_list(self) -> None:
         """A tuple input is normalised to ``list`` for asyncpg's text[] codec."""
         data = {
             "agent_id": _new_uuid(),
@@ -132,15 +163,13 @@ class TestSkillInsertParams:
             "date_created": datetime.now(UTC),
             "date_updated": datetime.now(UTC),
         }
-        params = _skill_insert_params(data)
-        idx = _SKILL_INSERT_COLUMNS.index("tool_additions")
-        assert params[idx] == ["mcp.a", "mcp.b"]
+        assert (await _saved_skill(data)).bound["tool_additions"] == ["mcp.a", "mcp.b"]
 
 
 class TestInvocationInsertParams:
-    """``_invocation_insert_params`` preserves column order."""
+    """an invocation write binds every column at its placeholder."""
 
-    def test_full_row_round_trip(self) -> None:
+    async def test_full_row_round_trip(self) -> None:
         """All eleven invocation columns map positionally."""
         agent_id = _new_uuid()
         invocation_id = _new_uuid()
@@ -162,36 +191,43 @@ class TestInvocationInsertParams:
             "outcome_source": "agent_marker",
             "notes": "n",
         }
-        params = _invocation_insert_params(data)
-        assert len(params) == len(_INVOCATION_INSERT_COLUMNS)
-        assert params[_INVOCATION_INSERT_COLUMNS.index("agent_id")] == agent_id
-        assert params[_INVOCATION_INSERT_COLUMNS.index("invocation_source")] == "wake"
-        assert params[_INVOCATION_INSERT_COLUMNS.index("outcome")] == "success"
+        pool = _RecordingPool(status="INSERT 0 1")
+        coll = object.__new__(AgentSkillInvocationCollection)
+        coll.l3_pool = pool
+        await coll.save_to_store(data)
+        [(sql, params)] = pool.calls
+        upsert = _upsert(sql, params)
+        assert upsert.table == "agent_skill_invocations"
+        assert len(upsert.columns) == 11
+        assert len(params) == len(upsert.columns)
+        assert upsert.bound == data
 
 
 class TestBuildUpsertSql:
-    """``_build_upsert_sql`` emits SQL with the expected shape."""
+    """the upsert SQL a save sends has the expected shape."""
 
-    def test_upsert_includes_conflict_clause(self) -> None:
-        """Generated SQL carries ``ON CONFLICT (pk_cols) DO UPDATE SET ...``."""
-        sql = _build_upsert_sql(
-            "demo",
-            ("a", "b", "c"),
-            ("b", "c"),
-            ("a",),
-        )
-        assert sql.startswith("INSERT INTO demo (a, b, c) VALUES ($1, $2, $3) ")
-        assert "ON CONFLICT (a) DO UPDATE SET" in sql
-        assert "b = EXCLUDED.b" in sql
-        assert "c = EXCLUDED.c" in sql
+    async def test_upsert_includes_conflict_clause(self) -> None:
+        """``ON CONFLICT (pk) DO UPDATE SET`` every non-pk column from ``EXCLUDED``."""
+        upsert = await _saved_skill(TestSkillSaveShape.row(body="steps"))
+        assert upsert.table == "agent_skills"
+        non_pk = [c for c in upsert.columns if c not in upsert.conflict]
+        assert upsert.assignments
+        assert set(upsert.assignments) <= {f"{c} = EXCLUDED.{c}" for c in non_pk}
+        assert "name = EXCLUDED.name" in upsert.assignments
+        assert not any(a.startswith(("agent_id ", "skill_id ")) for a in upsert.assignments)
 
-    def test_agent_skills_upsert_targets_composite_pk(self) -> None:
-        """The module-level upsert string conflict-targets ``(agent_id, skill_id)``."""
-        assert "ON CONFLICT (agent_id, skill_id)" in _AGENT_SKILLS_UPSERT_SQL
+    async def test_agent_skills_upsert_targets_composite_pk(self) -> None:
+        """The skills upsert conflict-targets ``(agent_id, skill_id)``."""
+        assert (await _saved_skill(TestSkillSaveShape.row(body="steps"))).conflict == ["agent_id", "skill_id"]
 
-    def test_agent_skill_invocations_upsert_targets_composite_pk(self) -> None:
-        """The module-level invocation upsert conflict-targets ``(agent_id, invocation_id)``."""
-        assert "ON CONFLICT (agent_id, invocation_id)" in _AGENT_SKILL_INVOCATIONS_UPSERT_SQL
+    async def test_agent_skill_invocations_upsert_targets_composite_pk(self) -> None:
+        """The invocation upsert conflict-targets ``(agent_id, invocation_id)``."""
+        pool = _RecordingPool(status="INSERT 0 1")
+        coll = object.__new__(AgentSkillInvocationCollection)
+        coll.l3_pool = pool
+        await coll.save_to_store({"agent_id": _new_uuid(), "invocation_id": _new_uuid(), "skill_id": _new_uuid()})
+        [(sql, params)] = pool.calls
+        assert _upsert(sql, params).conflict == ["agent_id", "invocation_id"]
 
 
 class TestCollectionClassAttributes:
@@ -232,6 +268,10 @@ class _RecordingPool:
         """Record the statement + bound params and return the fixed tag."""
         self.calls.append((sql, params))
         return self.status
+
+    async def fetchrow(self, sql: str, *params: Any) -> None:
+        """Record a single-row read; the row is absent."""
+        self.calls.append((sql, params))
 
 
 def _bare_skill_collection(
@@ -292,35 +332,38 @@ class TestCounterMutationInvalidation:
 class TestSkillSaveCasFence:
     """``save_to_store`` honours the optimistic-lock fence on edits."""
 
-    def test_cas_sql_carries_date_updated_fence(self) -> None:
-        """The CAS variant fences the DO UPDATE on the trailing param."""
-        cas_param = f"${len(_SKILL_INSERT_COLUMNS) + 1}"
-        assert f"WHERE agent_skills.date_updated = {cas_param}" in _AGENT_SKILLS_UPSERT_CAS_SQL
-        # The unfenced insert variant carries no WHERE fence.
-        assert "WHERE" not in _AGENT_SKILLS_UPSERT_SQL
+    async def test_cas_sql_carries_date_updated_fence(self) -> None:
+        """The edit SQL fences the DO UPDATE on the trailing param; the insert SQL carries no fence."""
+        data = TestSkillSaveShape.row(body="steps")
+        edit = await _saved_skill(data, datetime.now(UTC))
+        assert edit.fence == "agent_skills.date_updated"
+        assert edit.fence_param == f"${len(edit.columns) + 1}"
+        insert = await _saved_skill(data)
+        assert insert.fence is None
 
     async def test_insert_path_uses_unfenced_sql(self) -> None:
         """No ``original_timestamp`` -> unfenced upsert, no trailing fence param."""
         pool = _RecordingPool(status="INSERT 0 1")
         coll, _ = _bare_skill_collection(pool)
-        data = {"agent_id": _new_uuid(), "skill_id": _new_uuid(), "user_id": _new_uuid(), "name": "x", "summary": "s"}
-        affected = await coll.save_to_store(data)
+        affected = await coll.save_to_store(TestSkillSaveShape.row(name="x", summary="s"))
         assert affected == 1
         sql, params = pool.calls[0]
-        assert sql == _AGENT_SKILLS_UPSERT_SQL
-        assert len(params) == len(_SKILL_INSERT_COLUMNS)
+        upsert = _upsert(sql, params)
+        assert upsert.fence is None
+        assert "WHERE" not in sql
+        assert len(params) == len(upsert.columns)
 
     async def test_edit_path_uses_cas_sql_with_fence_param(self) -> None:
         """An ``original_timestamp`` selects the CAS SQL and binds the fence last."""
         pool = _RecordingPool(status="INSERT 0 1")
         coll, _ = _bare_skill_collection(pool)
         fence = datetime.now(UTC)
-        data = {"agent_id": _new_uuid(), "skill_id": _new_uuid(), "user_id": _new_uuid(), "name": "x", "summary": "s"}
-        affected = await coll.save_to_store(data, fence)
+        affected = await coll.save_to_store(TestSkillSaveShape.row(name="x", summary="s"), fence)
         assert affected == 1
         sql, params = pool.calls[0]
-        assert sql == _AGENT_SKILLS_UPSERT_CAS_SQL
-        assert len(params) == len(_SKILL_INSERT_COLUMNS) + 1
+        upsert = _upsert(sql, params)
+        assert upsert.fence == "agent_skills.date_updated"
+        assert len(params) == len(upsert.columns) + 1
         assert params[-1] == fence
 
     async def test_cas_fence_mismatch_reports_zero_rows(self) -> None:
@@ -336,7 +379,7 @@ class TestSkillSaveShape:
     """``save_to_store`` refuses a row that is both kinds before any SQL runs."""
 
     @staticmethod
-    def _row(**fields: Any) -> dict[str, Any]:
+    def row(**fields: Any) -> dict[str, Any]:
         return {
             "agent_id": _new_uuid(),
             "skill_id": _new_uuid(),
@@ -349,30 +392,30 @@ class TestSkillSaveShape:
         pool = _RecordingPool(status="INSERT 0 1")
         coll, _ = _bare_skill_collection(pool)
         with pytest.raises(SkillShapeError, match="not both"):
-            await coll.save_to_store(self._row(body="steps", tool="loki.query"))
+            await coll.save_to_store(self.row(body="steps", tool="loki.query"))
         assert pool.calls == []
 
     async def test_arguments_without_tool_refused_before_sql(self) -> None:
         pool = _RecordingPool(status="INSERT 0 1")
         coll, _ = _bare_skill_collection(pool)
         with pytest.raises(SkillShapeError, match="arguments need a tool"):
-            await coll.save_to_store(self._row(body="steps", arguments={"q": 1}))
+            await coll.save_to_store(self.row(body="steps", arguments={"q": 1}))
         assert pool.calls == []
 
     async def test_non_object_arguments_refused_before_sql(self) -> None:
         pool = _RecordingPool(status="INSERT 0 1")
         coll, _ = _bare_skill_collection(pool)
         with pytest.raises(SkillShapeError, match="JSON object"):
-            await coll.save_to_store(self._row(tool="loki.query", arguments=[1, 2]))
+            await coll.save_to_store(self.row(tool="loki.query", arguments=[1, 2]))
         assert pool.calls == []
 
     async def test_tool_only_row_binds_tool_and_arguments(self) -> None:
         pool = _RecordingPool(status="INSERT 0 1")
         coll, _ = _bare_skill_collection(pool)
-        affected = await coll.save_to_store(self._row(tool="loki.query", arguments={"q": "error"}))
+        affected = await coll.save_to_store(self.row(tool="loki.query", arguments={"q": "error"}))
         assert affected == 1
-        [(_, params)] = pool.calls
-        bound = dict(zip(_SKILL_INSERT_COLUMNS, params, strict=True))
+        [(sql, params)] = pool.calls
+        bound = _upsert(sql, params).bound
         assert bound["body"] is None
         assert bound["tool"] == "loki.query"
         # a native object for the jsonb codec, never pre-encoded text.
@@ -382,11 +425,16 @@ class TestSkillSaveShape:
         """A row read through a pool without the jsonb codec carries arguments as text."""
         pool = _RecordingPool(status="INSERT 0 1")
         coll, _ = _bare_skill_collection(pool)
-        await coll.save_to_store(self._row(tool="loki.query", arguments='{"q": "error"}'))
-        [(_, params)] = pool.calls
-        assert dict(zip(_SKILL_INSERT_COLUMNS, params, strict=True))["arguments"] == {"q": "error"}
+        await coll.save_to_store(self.row(tool="loki.query", arguments='{"q": "error"}'))
+        [(sql, params)] = pool.calls
+        assert _upsert(sql, params).bound["arguments"] == {"q": "error"}
 
-    def test_every_written_column_is_read(self) -> None:
+    async def test_every_written_column_is_read(self) -> None:
         """The fetch selects exactly the written columns, so ``tool`` / ``arguments`` reach every read."""
-        assert _AGENT_SKILLS_FETCH_SQL.startswith(f"SELECT {', '.join(_SKILL_INSERT_COLUMNS)} FROM")
-        assert {"tool", "arguments"} <= set(_SKILL_INSERT_COLUMNS)
+        written = await _saved_skill(self.row(tool="loki.query", arguments={"q": "error"}))
+        pool = _RecordingPool()
+        coll, _ = _bare_skill_collection(pool)
+        assert await coll.fetch_from_store((_new_uuid(), _new_uuid())) is None
+        [(read_sql, _params)] = pool.calls
+        assert read_sql.startswith(f"SELECT {', '.join(written.columns)} FROM agent_skills")
+        assert {"tool", "arguments"} <= set(written.columns)

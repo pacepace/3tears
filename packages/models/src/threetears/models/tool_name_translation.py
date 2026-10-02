@@ -157,7 +157,7 @@ class NameMangledToolProxy(BaseTool):
         """the delegate's un-mangled, dotted canonical name.
 
         Public accessor so callers who substitute proxies ahead of a chat model's own
-        ``bind_tools`` (e.g. :mod:`threetears.models.providers._claude_cli`) can report the
+        ``bind_tools`` (e.g. :mod:`threetears.models.providers.claude_cli`) can report the
         canonical name to their own observability/tracking, without reaching into ``_delegate``.
 
         :return: canonical dotted tool name

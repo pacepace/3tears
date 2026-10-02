@@ -1,7 +1,7 @@
 """shared driver utilities: placeholder translation across SQL dialects.
 
 every concrete driver in :mod:`threetears.datasources.drivers` reuses
-:func:`_translate_placeholders` instead of reimplementing the regex
+:func:`translate_placeholders` instead of reimplementing the regex
 dance. centralizing the edge-case handling (``$10`` vs ``$1``, escaped
 ``$$``, string-literal ``'$1'``) prevents per-driver bugs.
 
@@ -30,6 +30,7 @@ __all__ = [
     "build_set_local_statement_timeout_sql",
     "build_set_search_path_sql",
     "build_set_statement_timeout_sql",
+    "translate_placeholders",
 ]
 
 PlaceholderStyle = Literal["asyncpg", "pyformat", "numeric", "named-at"]
@@ -301,7 +302,7 @@ def _translate_non_literal_segment(segment: str, target_style: PlaceholderStyle)
     return "$$".join(translated_parts)
 
 
-def _translate_placeholders(sql: str, target_style: PlaceholderStyle) -> str:
+def translate_placeholders(sql: str, target_style: PlaceholderStyle) -> str:
     """translate ``$N``-style placeholders to ``target_style``.
 
     edge cases handled:

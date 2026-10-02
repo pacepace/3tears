@@ -41,11 +41,7 @@ from langchain_core.tools import tool  # noqa: E402
 
 from threetears.models import DEFAULT_CHAT_MODEL, claude_cli_pool  # noqa: E402
 from threetears.models.errors import ModelProviderError  # noqa: E402
-from threetears.models.providers._claude_cli import (  # noqa: E402
-    _settle,
-    _StructuredAttempts,
-    create_subscription_chat,
-)
+from threetears.models.providers.claude_cli import create_subscription_chat  # noqa: E402
 from threetears.models.providers.structured_output import structured_output_kwargs  # noqa: E402
 
 TOKEN = "sk-ant-oat01-faketokenfortest"
@@ -573,19 +569,24 @@ def _answered(structured_output: Any) -> ResultMessage:
     )
 
 
-def _settled(structured_output: Any, output_format: Any = None) -> Any:
-    """the answer :func:`_settle` makes of a result carrying ``structured_output``.
+async def _settled(structured_output: Any, schema: dict[str, Any] | None = None) -> Any:
+    """the answer a structured call hands its caller when the CLI's result carries ``structured_output``.
+
+    Driven through the subscription model, with only the Agent SDK subprocess faked: the call binds
+    ``schema`` the way a consumer does, and the answer is read back from the message content.
 
     :param structured_output: the answer on the result
     :ptype structured_output: Any
-    :param output_format: the call's ``output_format``; the note schema when not given
-    :ptype output_format: Any
-    :return: the settled answer
+    :param schema: the call's json-schema; the note schema when not given
+    :ptype schema: dict[str, Any] | None
+    :return: the answer, decoded from the message
     :rtype: Any
     """
-    fmt = {"type": "json_schema", "schema": _NOTE_SCHEMA} if output_format is None else output_format
-    answer, _info = _settle(_answered(structured_output), fmt, [], "", _StructuredAttempts())
-    return answer
+    with _fake_cli(_answered(structured_output)):
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
+        bound = model.bind(**structured_output_kwargs("anthropic", _NOTE_SCHEMA if schema is None else schema))
+        message = await bound.ainvoke([HumanMessage(content="write the note")])
+    return json.loads(message.content)
 
 
 class TestTheCallsClosingTagsAreCut:
@@ -610,30 +611,29 @@ class TestTheCallsClosingTagsAreCut:
             pytest.param("x -> y>", "x -> y>", id="a-bare-angle-stays"),
         ],
     )
-    def test_only_the_calls_closers_at_the_end_go(self, said: str, kept: str) -> None:
-        answer = _settled({"note": said, "facts": ["20.0°C</facts>\n</invoke>", "16.1°C"]})
+    async def test_only_the_calls_closers_at_the_end_go(self, said: str, kept: str) -> None:
+        answer = await _settled({"note": said, "facts": ["20.0°C</facts>\n</invoke>", "16.1°C"]})
 
         assert answer == {"note": kept, "facts": ["20.0°C", "16.1°C"]}
 
-    def test_the_cut_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_the_cut_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("INFO"):
-            _settled({"note": "Heat is on.</note>\n</invoke>", "facts": []})
+            await _settled({"note": "Heat is on.</note>\n</invoke>", "facts": []})
 
         [record] = [r for r in caplog.records if "closing tags" in r.getMessage()]
         assert record.__dict__["extra_data"] == {"schema": "note", "cut": ["</invoke>", "</note>"]}
 
-    def test_an_answer_with_nothing_to_cut_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_an_answer_with_nothing_to_cut_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("INFO"):
-            _settled({"note": "Heat is on.", "facts": ["16.1°C"]})
+            await _settled({"note": "Heat is on.", "facts": ["16.1°C"]})
 
         assert not [r for r in caplog.records if "StructuredOutput call's" in r.getMessage()]
 
-    def test_a_top_level_string_loses_only_the_calls_own_closers(self) -> None:
+    async def test_a_top_level_string_loses_only_the_calls_own_closers(self) -> None:
         schema = {"type": "string"}
-        fmt = {"type": "json_schema", "schema": schema}
 
-        assert _settled("Heat is on.</invoke>", fmt) == "Heat is on."
-        assert _settled("Heat is on.</note>", fmt) == "Heat is on.</note>", "a top-level string has no key"
+        assert await _settled("Heat is on.</invoke>", schema) == "Heat is on."
+        assert await _settled("Heat is on.</note>", schema) == "Heat is on.</note>", "a top-level string has no key"
 
 
 class TestTheCallsJsonWrapperIsUnwrapped:
@@ -656,19 +656,19 @@ class TestTheCallsJsonWrapperIsUnwrapped:
             pytest.param('{"note": "Heat', '{"note": "Heat', id="not-json-stays"),
         ],
     )
-    def test_only_a_whole_wrapper_of_its_own_key_goes(self, said: str, kept: str) -> None:
-        answer = _settled({"note": said, "facts": []})
+    async def test_only_a_whole_wrapper_of_its_own_key_goes(self, said: str, kept: str) -> None:
+        answer = await _settled({"note": said, "facts": []})
 
         assert answer == {"note": kept, "facts": []}
 
-    def test_a_list_item_is_unwrapped_on_the_lists_key(self) -> None:
-        answer = _settled({"note": "n", "facts": ['{"facts": "16.1°C"}', '{"note": "20.0°C"}']})
+    async def test_a_list_item_is_unwrapped_on_the_lists_key(self) -> None:
+        answer = await _settled({"note": "n", "facts": ['{"facts": "16.1°C"}', '{"note": "20.0°C"}']})
 
         assert answer == {"note": "n", "facts": ["16.1°C", '{"note": "20.0°C"}']}
 
-    def test_the_unwrap_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_the_unwrap_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("INFO"):
-            _settled({"note": '{"note": "Heat is on."}', "facts": []})
+            await _settled({"note": '{"note": "Heat is on."}', "facts": []})
 
         [record] = [r for r in caplog.records if "JSON form" in r.getMessage()]
         assert record.__dict__["extra_data"] == {"schema": "note", "unwrapped": ["note"]}

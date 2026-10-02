@@ -7,8 +7,9 @@ spent learning to extract data from a challenge page. So the assertions that mat
 here are about what does NOT happen -- the recipe not moving, the classifier not being
 called, records not being written.
 
-Every model call is faked at ``llm_retry.create_chat_model``, dispatched by the response
-model each call asks for, which is what lets one test hold a classifier answer and a judge
+Every model call is faked at ``llm_retry.create_chat_model``, dispatched by the shape of the
+answer each call asks for (read from its response schema, the way the model reads it -- see
+``structured_output_fakes``), which is what lets one test hold a classifier answer and a judge
 answer at once without guessing at prompt text. Counting entries in ``requested`` is how the
 cost claims in the design are actually checked rather than asserted in prose.
 """
@@ -26,17 +27,8 @@ from threetears.core.config import DefaultCoreConfig
 
 from threetears.scrape.challenge import PageVerdict, build_classification_prompt, classify_failed_page
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-from threetears.scrape.eval_loop import _JudgeVerdict, run_eval_loop, run_eval_loop_multi_row
-from threetears.scrape.extraction import (
-    RowValidationResult,
-    ValidationResult,
-    _CandidateStrategy,
-    _CandidateStrategyList,
-    _RegexCandidateStrategy,
-    _RegexCandidateStrategyList,
-    _RowCandidateStrategy,
-    _RowCandidateStrategyList,
-)
+from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
+from threetears.scrape.extraction import RowValidationResult, ValidationResult
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
     clear_classification,
@@ -44,6 +36,15 @@ from threetears.scrape.health import (
     record_classification,
 )
 from threetears.scrape.llm_retry import StructuredCallFailedError
+
+from packages.scrape.tests.structured_output_fakes import (
+    CSS_CANDIDATES,
+    JUDGE_VERDICT,
+    PAGE_VERDICT,
+    REGEX_CANDIDATES,
+    ROW_CANDIDATES,
+    models_answering_by_shape,
+)
 
 # A wall: real HTML, HTTP 200, and nothing any stored selector will ever match.
 _WALL = """
@@ -83,38 +84,6 @@ def no_retry_sleeps() -> Iterator[None]:
     """
     with patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()):
         yield
-
-
-def fake_models(responses: dict[type, Any], requested: list[type] | None = None) -> Any:
-    """A ``create_chat_model`` replacement that answers by the response model asked for.
-
-    Dispatching on the requested model rather than on ``purpose`` is what this file needs
-    and the older tests did not: the page classifier and the candidate judge both run as
-    ``LlmPurpose.UTILITY``, so a purpose-keyed fake cannot tell them apart, and a test that
-    needs a classifier verdict AND a judge verdict in one run would get whichever was
-    listed first for both.
-
-    :param responses: response model -> the value its call returns, or an exception to raise
-    :ptype responses: dict[type, Any]
-    :param requested: accumulates every response model requested, in order; the record a
-        test asserts against to prove a call was or was not made
-    :ptype requested: list[type] | None
-    :return: a side_effect suitable for patching ``llm_retry.create_chat_model``
-    :rtype: Any
-    """
-
-    def _create(*_args: Any, **_kwargs: Any) -> Any:
-        def _with_structured_output(schema: type, **_kw: Any) -> Any:
-            if requested is not None:
-                requested.append(schema)
-            answer = responses.get(schema)
-            if isinstance(answer, Exception):
-                return SimpleNamespace(ainvoke=AsyncMock(side_effect=answer))
-            return SimpleNamespace(ainvoke=AsyncMock(return_value=answer))
-
-        return SimpleNamespace(with_structured_output=_with_structured_output)
-
-    return _create
 
 
 @pytest.fixture()
@@ -171,7 +140,9 @@ def test_the_status_line_appears_only_when_the_caller_knows_it() -> None:
 
 
 async def test_the_classifier_returns_the_models_verdict() -> None:
-    with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=fake_models({PageVerdict: _BLOCKED})):
+    with patch(
+        "threetears.scrape.llm_retry.create_chat_model", side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED})
+    ):
         verdict = await classify_failed_page(_WALL, _SCHEMA, api_key="k")
 
     assert verdict is not None
@@ -183,7 +154,7 @@ async def test_a_classifier_that_never_answers_degrades_to_none() -> None:
     """``None`` is the honest "we could not tell", and callers must read it as such."""
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({PageVerdict: RuntimeError("upstream is down")}),
+        side_effect=models_answering_by_shape({PAGE_VERDICT: RuntimeError("upstream is down")}),
     ):
         assert await classify_failed_page(_WALL, _SCHEMA, api_key="k") is None
 
@@ -211,7 +182,9 @@ async def test_a_wall_leaves_the_recipe_byte_identical(
     strategy_before, failures_before = before.extraction_strategy, before.consecutive_validation_failures
     validated_before, won_before = before.last_validated_at, before.won_at
 
-    with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=fake_models({PageVerdict: _BLOCKED})):
+    with patch(
+        "threetears.scrape.llm_retry.create_chat_model", side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED})
+    ):
         result = await run_eval_loop_multi_row(
             "warn_oh",
             _WALL,
@@ -246,13 +219,11 @@ async def test_a_wall_never_invents_a_recipe_for_a_target_that_had_none(
     try to reuse an empty strategy.
     """
     recipes, extractions, health = collections
-    candidates = _RowCandidateStrategyList(
-        candidates=[_RowCandidateStrategy(row_selector="tr.nope", field_selectors={})]
-    )
+    candidates = {"candidates": [{"row_selector": "tr.nope", "field_selectors": {}}]}
 
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({_RowCandidateStrategyList: candidates, PageVerdict: _BLOCKED}),
+        side_effect=models_answering_by_shape({ROW_CANDIDATES: candidates, PAGE_VERDICT: _BLOCKED}),
     ):
         result = await run_eval_loop_multi_row(
             "warn_new",
@@ -284,14 +255,14 @@ async def test_a_changed_page_regenerates_on_the_first_failure_not_the_third(
     """
     recipes, extractions, health = collections
     await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
-    candidates = _RowCandidateStrategyList(
-        candidates=[_RowCandidateStrategy(row_selector="tr", field_selectors={"employer": "td.org"})]
-    )
-    judged = _JudgeVerdict(winning_candidate_index=0, reasoning="the new cell holds the employer")
+    candidates = {"candidates": [{"row_selector": "tr", "field_selectors": {"employer": "td.org"}}]}
+    judged = {"winning_candidate_index": 0, "reasoning": "the new cell holds the employer"}
 
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({PageVerdict: _CHANGED, _RowCandidateStrategyList: candidates, _JudgeVerdict: judged}),
+        side_effect=models_answering_by_shape(
+            {PAGE_VERDICT: _CHANGED, ROW_CANDIDATES: candidates, JUDGE_VERDICT: judged}
+        ),
     ):
         result = await run_eval_loop_multi_row(
             "warn_oh",
@@ -319,7 +290,9 @@ async def test_an_ordinary_failure_still_just_counts(
     recipes, extractions, health = collections
     await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
 
-    with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=fake_models({PageVerdict: _CONTENT})):
+    with patch(
+        "threetears.scrape.llm_retry.create_chat_model", side_effect=models_answering_by_shape({PAGE_VERDICT: _CONTENT})
+    ):
         result = await run_eval_loop_multi_row(
             "warn_oh",
             _RESTYLED_PAGE,
@@ -351,7 +324,7 @@ async def test_a_classifier_that_cannot_answer_behaves_exactly_as_today(
 
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({PageVerdict: RuntimeError("upstream is down")}),
+        side_effect=models_answering_by_shape({PAGE_VERDICT: RuntimeError("upstream is down")}),
     ):
         result = await run_eval_loop_multi_row(
             "warn_oh",
@@ -390,11 +363,11 @@ async def test_an_unchanged_page_never_reaches_the_classifier(
     await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
     seeded = health.create({"target_id": "warn_oh", "content_fingerprint": content_fingerprint(_TABLE_PAGE)})
     await health.save_entity(seeded)
-    requested: list[type] = []
+    requested: list[str] = []
 
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({PageVerdict: _BLOCKED}, requested),
+        side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED}, requested),
     ):
         result = await run_eval_loop_multi_row(
             "warn_oh",
@@ -425,7 +398,7 @@ async def test_the_same_wall_next_poll_costs_nothing(
     """
     recipes, extractions, health = collections
     await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
-    requested: list[type] = []
+    requested: list[str] = []
 
     async def _poll() -> Any:
         return await run_eval_loop_multi_row(
@@ -441,12 +414,12 @@ async def test_the_same_wall_next_poll_costs_nothing(
 
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({PageVerdict: _BLOCKED}, requested),
+        side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED}, requested),
     ):
         first = await _poll()
         second = await _poll()
 
-    assert requested == [PageVerdict], "the second poll re-asked about a page it had already judged"
+    assert requested == [PAGE_VERDICT], "the second poll re-asked about a page it had already judged"
     assert first.validation_status == "blocked"
     assert second.validation_status == "blocked"
     assert second.field_confidences == {"page_verdict": "blocked", "page_verdict_evidence": _BLOCKED.evidence}, (
@@ -468,10 +441,8 @@ async def test_a_changed_verdict_stops_regenerating_once_it_has_been_acted_on(
     recipes, extractions, health = collections
     await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
     # Regeneration proposes something that matches nothing, so it cannot learn this page.
-    hopeless = _RowCandidateStrategyList(
-        candidates=[_RowCandidateStrategy(row_selector="tr.nope", field_selectors={"employer": "td.nope"})]
-    )
-    requested: list[type] = []
+    hopeless = {"candidates": [{"row_selector": "tr.nope", "field_selectors": {"employer": "td.nope"}}]}
+    requested: list[str] = []
 
     async def _poll() -> Any:
         return await run_eval_loop_multi_row(
@@ -487,13 +458,13 @@ async def test_a_changed_verdict_stops_regenerating_once_it_has_been_acted_on(
 
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({PageVerdict: _CHANGED, _RowCandidateStrategyList: hopeless}, requested),
+        side_effect=models_answering_by_shape({PAGE_VERDICT: _CHANGED, ROW_CANDIDATES: hopeless}, requested),
     ):
         await _poll()
         await _poll()
 
-    assert requested.count(PageVerdict) == 1, "the second poll re-asked about a page it had already judged"
-    assert requested.count(_RowCandidateStrategyList) == 1, (
+    assert requested.count(PAGE_VERDICT) == 1, "the second poll re-asked about a page it had already judged"
+    assert requested.count(ROW_CANDIDATES) == 1, (
         "the second poll regenerated again against a page the first poll already failed to learn"
     )
     recipe = await recipes.get("warn_oh")
@@ -515,10 +486,8 @@ async def test_a_changed_verdict_whose_regeneration_hit_an_outage_regenerates_ne
     """
     recipes, extractions, health = collections
     await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
-    learnable = _RowCandidateStrategyList(
-        candidates=[_RowCandidateStrategy(row_selector="tr", field_selectors={"employer": "td.org"})]
-    )
-    judged = _JudgeVerdict(winning_candidate_index=0, reasoning="the new cell holds the employer")
+    learnable = {"candidates": [{"row_selector": "tr", "field_selectors": {"employer": "td.org"}}]}
+    judged = {"winning_candidate_index": 0, "reasoning": "the new cell holds the employer"}
 
     async def _poll() -> Any:
         return await run_eval_loop_multi_row(
@@ -532,34 +501,34 @@ async def test_a_changed_verdict_whose_regeneration_hit_an_outage_regenerates_ne
             api_key="k",
         )
 
-    first_requested: list[type] = []
+    first_requested: list[str] = []
     with (
         patch(
             "threetears.scrape.llm_retry.create_chat_model",
-            side_effect=fake_models(
-                {PageVerdict: _CHANGED, _RowCandidateStrategyList: RuntimeError("upstream is down")}, first_requested
+            side_effect=models_answering_by_shape(
+                {PAGE_VERDICT: _CHANGED, ROW_CANDIDATES: RuntimeError("upstream is down")}, first_requested
             ),
         ),
         pytest.raises(StructuredCallFailedError),
     ):
         await _poll()
 
-    assert _RowCandidateStrategyList in first_requested, "poll 1 must have tried to regenerate"
+    assert ROW_CANDIDATES in first_requested, "poll 1 must have tried to regenerate"
     after_outage = await health.get("warn_oh")
     assert after_outage is None or after_outage.classified_verdict is None, (
         "a changed verdict whose regeneration never ran is still cached as acted on"
     )
 
-    second_requested: list[type] = []
+    second_requested: list[str] = []
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models(
-            {PageVerdict: _CHANGED, _RowCandidateStrategyList: learnable, _JudgeVerdict: judged}, second_requested
+        side_effect=models_answering_by_shape(
+            {PAGE_VERDICT: _CHANGED, ROW_CANDIDATES: learnable, JUDGE_VERDICT: judged}, second_requested
         ),
     ):
         result = await _poll()
 
-    assert _RowCandidateStrategyList in second_requested, "poll 2 counted a failure instead of regenerating"
+    assert ROW_CANDIDATES in second_requested, "poll 2 counted a failure instead of regenerating"
     assert result.validation_status == "validated"
     recipe = await recipes.get("warn_oh")
     assert recipe is not None
@@ -601,11 +570,11 @@ async def test_omitting_the_health_collection_spends_nothing_and_changes_nothing
     """Every pre-existing caller passes no health collection and must be untouched by all of this."""
     recipes, extractions, _ = collections
     await seed_recipe(recipes, "warn_oh", _ROW_STRATEGY)
-    requested: list[type] = []
+    requested: list[str] = []
 
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({PageVerdict: _BLOCKED}, requested),
+        side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED}, requested),
     ):
         result = await run_eval_loop_multi_row(
             "warn_oh",
@@ -650,7 +619,10 @@ async def test_every_reuse_shape_routes_a_wall_the_same_way(
     for name, entry_point, strategy_type, strategy in shapes:
         await seed_recipe(recipes, name, strategy)
 
-        with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=fake_models({PageVerdict: _BLOCKED})):
+        with patch(
+            "threetears.scrape.llm_retry.create_chat_model",
+            side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED}),
+        ):
             result = await entry_point(
                 name,
                 _WALL,
@@ -679,24 +651,22 @@ async def test_every_regeneration_shape_routes_a_wall_the_same_way(
     hook nothing would ever mark it as needing a human -- it would simply fail forever.
     """
     recipes, extractions, health = collections
-    dead_css = _CandidateStrategyList(candidates=[_CandidateStrategy(selectors={"employer": ".nope"})])
-    dead_regex = _RegexCandidateStrategyList(candidates=[_RegexCandidateStrategy(pattern=_DEAD_REGEX_PATTERN)])
-    dead_rows = _RowCandidateStrategyList(
-        candidates=[_RowCandidateStrategy(row_selector="tr.nope", field_selectors={"employer": "td.nope"})]
-    )
+    dead_css = {"candidates": [{"selectors": {"employer": ".nope"}}]}
+    dead_regex = {"candidates": [{"pattern": _DEAD_REGEX_PATTERN}]}
+    dead_rows = {"candidates": [{"row_selector": "tr.nope", "field_selectors": {"employer": "td.nope"}}]}
     shapes = [
-        ("css_single", run_eval_loop, "css", _CandidateStrategyList, dead_css),
-        ("regex_single", run_eval_loop, "regex", _RegexCandidateStrategyList, dead_regex),
-        ("css_rows", run_eval_loop_multi_row, "css", _RowCandidateStrategyList, dead_rows),
-        ("regex_rows", run_eval_loop_multi_row, "regex", _RegexCandidateStrategyList, dead_regex),
+        ("css_single", run_eval_loop, "css", CSS_CANDIDATES, dead_css),
+        ("regex_single", run_eval_loop, "regex", REGEX_CANDIDATES, dead_regex),
+        ("css_rows", run_eval_loop_multi_row, "css", ROW_CANDIDATES, dead_rows),
+        ("regex_rows", run_eval_loop_multi_row, "regex", REGEX_CANDIDATES, dead_regex),
     ]
 
-    for name, entry_point, strategy_type, candidate_model, candidates in shapes:
+    for name, entry_point, strategy_type, candidate_shape, candidates in shapes:
         target_id = f"regen_{name}"
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
-            side_effect=fake_models({candidate_model: candidates, PageVerdict: _BLOCKED}),
+            side_effect=models_answering_by_shape({candidate_shape: candidates, PAGE_VERDICT: _BLOCKED}),
         ):
             result = await entry_point(
                 target_id,
@@ -732,7 +702,10 @@ async def test_an_unreadable_health_store_degrades_rather_than_failing_the_poll(
 
     with (
         patch.object(health, "get", side_effect=_boom),
-        patch("threetears.scrape.llm_retry.create_chat_model", side_effect=fake_models({PageVerdict: _BLOCKED})),
+        patch(
+            "threetears.scrape.llm_retry.create_chat_model",
+            side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED}),
+        ),
     ):
         result = await run_eval_loop_multi_row(
             "warn_oh",
@@ -762,7 +735,10 @@ async def test_a_verdict_that_cannot_be_cached_is_still_acted_on(
 
     with (
         patch("threetears.scrape.eval_loop.record_classification", side_effect=_boom),
-        patch("threetears.scrape.llm_retry.create_chat_model", side_effect=fake_models({PageVerdict: _BLOCKED})),
+        patch(
+            "threetears.scrape.llm_retry.create_chat_model",
+            side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED}),
+        ),
     ):
         result = await run_eval_loop_multi_row(
             "warn_oh",
@@ -850,11 +826,11 @@ async def test_a_stored_verdict_nobody_recognises_is_re_asked_not_acted_on(
         }
     )
     await health.save_entity(seeded)
-    requested: list[type] = []
+    requested: list[str] = []
 
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({PageVerdict: _BLOCKED}, requested),
+        side_effect=models_answering_by_shape({PAGE_VERDICT: _BLOCKED}, requested),
     ):
         result = await run_eval_loop_multi_row(
             "warn_oh",
@@ -867,7 +843,7 @@ async def test_a_stored_verdict_nobody_recognises_is_re_asked_not_acted_on(
             api_key="k",
         )
 
-    assert requested == [PageVerdict]
+    assert requested == [PAGE_VERDICT]
     assert result.validation_status == "blocked"
 
 
@@ -901,17 +877,17 @@ async def test_an_unconfirmed_single_record_surfaces_the_first_survivor(
         '<td class="employer">Acme Corp</td><td class="alt">Beta LLC</td>'
         "</tr></table></body></html>"
     )
-    both_valid = _CandidateStrategyList(
-        candidates=[
-            _CandidateStrategy(selectors={"employer": "td.employer"}),
-            _CandidateStrategy(selectors={"employer": "td.alt"}),
+    both_valid = {
+        "candidates": [
+            {"selectors": {"employer": "td.employer"}},
+            {"selectors": {"employer": "td.alt"}},
         ]
-    )
-    no_winner = _JudgeVerdict(winning_candidate_index=None, reasoning="cannot confirm either")
+    }
+    no_winner = {"winning_candidate_index": None, "reasoning": "cannot confirm either"}
 
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({_CandidateStrategyList: both_valid, _JudgeVerdict: no_winner}),
+        side_effect=models_answering_by_shape({CSS_CANDIDATES: both_valid, JUDGE_VERDICT: no_winner}),
     ):
         result = await run_eval_loop(
             "warn_tie",
@@ -945,17 +921,17 @@ async def test_an_unconfirmed_row_set_still_surfaces_the_richest_survivor(
         '<tr class="r"><td class="employer">Beta LLC</td></tr>'
         "</table></body></html>"
     )
-    thin_then_rich = _RowCandidateStrategyList(
-        candidates=[
-            _RowCandidateStrategy(row_selector="tr:first-child", field_selectors={"employer": "td.employer"}),
-            _RowCandidateStrategy(row_selector="tr.r", field_selectors={"employer": "td.employer"}),
+    thin_then_rich = {
+        "candidates": [
+            {"row_selector": "tr:first-child", "field_selectors": {"employer": "td.employer"}},
+            {"row_selector": "tr.r", "field_selectors": {"employer": "td.employer"}},
         ]
-    )
-    no_winner = _JudgeVerdict(winning_candidate_index=None, reasoning="cannot confirm either")
+    }
+    no_winner = {"winning_candidate_index": None, "reasoning": "cannot confirm either"}
 
     with patch(
         "threetears.scrape.llm_retry.create_chat_model",
-        side_effect=fake_models({_RowCandidateStrategyList: thin_then_rich, _JudgeVerdict: no_winner}),
+        side_effect=models_answering_by_shape({ROW_CANDIDATES: thin_then_rich, JUDGE_VERDICT: no_winner}),
     ):
         result = await run_eval_loop_multi_row(
             "warn_rows_tie",

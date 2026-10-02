@@ -1,6 +1,6 @@
 """What a subscription model's bound tool looks like to the CLI, and that its handler runs nothing.
 
-The model hands every tool call back to the caller (see ``_claude_cli``'s module docstring), so the
+The model hands every tool call back to the caller (see ``claude_cli``'s module docstring), so the
 handler the CLI calls between the model's tool use and its one-turn limit must not run the tool.
 What still matters on the CLI side is what the model is SHOWN: the tool's wire name and schema.
 """
@@ -17,7 +17,7 @@ pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
 from threetears.models import DEFAULT_CHAT_MODEL
-from threetears.models.providers._claude_cli import create_subscription_chat
+from threetears.models.providers.claude_cli import create_subscription_chat
 
 from ._claude_cli_recorder import advertised_tools, call_tool, subscription_model
 

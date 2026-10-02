@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.agent.tools._coercion import normalize_kwargs
+from threetears.agent.tools.coercion import normalize_kwargs
 from threetears.agent.tools.http_operation import RestAffordance
 from threetears.observe import get_logger
 

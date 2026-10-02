@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 from threetears.agent.tools.router import (
     ToolRouter,
-    _parse_routing_decision,
     is_recall_intent,
 )
 
@@ -39,30 +38,6 @@ def test_is_recall_intent_new_task_overrides():
 
 
 # ---------------------------------------------------------------------------
-# _parse_routing_decision
-# ---------------------------------------------------------------------------
-
-
-def test_parse_routing_decision_valid_json():
-    result = _parse_routing_decision('{"tool_name": "web_search", "reasoning": "needs search"}')
-    assert result["tool_name"] == "web_search"
-    assert result["reasoning"] == "needs search"
-
-
-def test_parse_routing_decision_markdown_wrapped():
-    text = '```json\n{"tool_name": "calculator", "reasoning": "math"}\n```'
-    result = _parse_routing_decision(text)
-    assert result["tool_name"] == "calculator"
-    assert result["reasoning"] == "math"
-
-
-def test_parse_routing_decision_invalid():
-    result = _parse_routing_decision("this is not json at all")
-    assert result["tool_name"] is None
-    assert result["reasoning"] == "parse error"
-
-
-# ---------------------------------------------------------------------------
 # Mock factory
 # ---------------------------------------------------------------------------
 
@@ -79,6 +54,39 @@ class MockChatModelFactory:
         response.content = self._response_text
         model.ainvoke = AsyncMock(return_value=response)
         return model
+
+
+# ---------------------------------------------------------------------------
+# reading the routing model's answer
+# ---------------------------------------------------------------------------
+
+_SEARCH_TOOL = [{"name": "web_search", "description": "Search the web", "tool_llm_id": "t1"}]
+_CALCULATOR_TOOL = [{"name": "calculator", "description": "Do math", "tool_llm_id": "t2"}]
+
+
+async def test_a_plain_json_answer_is_read():
+    router = ToolRouter(
+        chat_model_factory=MockChatModelFactory('{"tool_name": "web_search", "reasoning": "needs search"}')
+    )
+    decision = await router.route("what is the weather in tokyo", available_tool_llms=_SEARCH_TOOL)
+    assert decision.tool_name == "web_search"
+    assert decision.reasoning == "needs search"
+
+
+async def test_a_markdown_wrapped_answer_is_read():
+    text = '```json\n{"tool_name": "calculator", "reasoning": "math"}\n```'
+    router = ToolRouter(chat_model_factory=MockChatModelFactory(text))
+    decision = await router.route("what is 2 plus 2", available_tool_llms=_CALCULATOR_TOOL)
+    assert decision.tool_name == "calculator"
+    assert decision.reasoning == "math"
+
+
+async def test_an_unreadable_answer_routes_to_no_tool():
+    router = ToolRouter(chat_model_factory=MockChatModelFactory("this is not json at all"))
+    decision = await router.route("what is the weather in tokyo", available_tool_llms=_SEARCH_TOOL)
+    assert decision.tool_name is None
+    assert decision.tool_type is None
+    assert decision.reasoning == "parse error"
 
 
 # ---------------------------------------------------------------------------

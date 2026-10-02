@@ -1904,7 +1904,7 @@ def _correlation_id_str(request: ProxyCallRequest) -> str:
     return result
 
 
-def _forwarded_deadline(caller_deadline: float | None, effective_timeout: float | None) -> float | None:
+def _forwarded_deadline(caller_deadline: float | None, effective_timeout: float) -> float | None:
     """Clamp the caller's remaining budget to what this proxy will actually wait.
 
     Three properties, in the order they matter.
@@ -1925,15 +1925,13 @@ def _forwarded_deadline(caller_deadline: float | None, effective_timeout: float 
 
     :param caller_deadline: the agent's remaining budget, when it declared one
     :ptype caller_deadline: float | None
-    :param effective_timeout: this proxy's own wait for the pod
-    :ptype effective_timeout: float | None
+    :param effective_timeout: this proxy's own wait for the pod, always resolved before a forward
+    :ptype effective_timeout: float
     :return: the deadline to forward, or ``None`` to send no deadline at all
     :rtype: float | None
     """
     if caller_deadline is None:
         return None
-    if effective_timeout is None:
-        return caller_deadline
     return min(caller_deadline, effective_timeout)
 
 
@@ -1942,7 +1940,7 @@ def _build_internal_payload(
     proxy_assertion: str | None = None,
     *,
     result_subject: str | None = None,
-    effective_timeout: float | None = None,
+    effective_timeout: float,
 ) -> bytes:
     """build internal NATS payload for forwarding to tool pod.
 
@@ -1965,9 +1963,8 @@ def _build_internal_payload(
         synchronous reply-inbox path
     :ptype result_subject: str | None
     :param effective_timeout: how long THIS proxy will wait for the pod, used as the ceiling the
-        caller's deadline is clamped to. ``None`` forwards the caller's deadline unclamped, which
-        is only correct where no wait has been resolved yet
-    :ptype effective_timeout: float | None
+        caller's deadline is clamped to
+    :ptype effective_timeout: float
     :return: serialized internal call request bytes
     :rtype: bytes
     """

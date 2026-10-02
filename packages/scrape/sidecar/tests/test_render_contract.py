@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import os
 from contextlib import AsyncExitStack
 from types import SimpleNamespace
@@ -23,7 +24,21 @@ import nodriver as uc
 import pytest
 from nodriver.core.connection import ProtocolException
 
-from tests.conftest import X11vncStub
+from tests.conftest import X11vncStub, lifecycle_on_test_port
+
+
+def _use_timings(monkeypatch: pytest.MonkeyPatch, **overrides: float) -> None:
+    """Run the container with some of its wait and retry budgets shortened for this test.
+
+    Replaces the app's own ``SidecarTimings`` with a copy carrying *overrides*, so every other
+    budget stays at its production value and the paths read them exactly where production does.
+
+    :param monkeypatch: the test's monkeypatch, which restores the production budgets afterwards
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :param overrides: ``SidecarTimings`` fields to change
+    :ptype overrides: float
+    """
+    monkeypatch.setattr(main.app.state, "timings", dataclasses.replace(main.app.state.timings, **overrides))
 
 
 # parity-exempt: hand-rolled subset stub of nodriver's third-party Element (only click/clear_input/send_keys/scroll_into_view, the only surface nav-steps drive); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
@@ -1183,7 +1198,7 @@ class TestWarmUp:
     async def test_retries_then_succeeds(self, client: httpx.AsyncClient, boot, monkeypatch):
         tab = _FakeTab(html="<html></html>", url="https://example.com/")
         browser = _FakeBrowser(tab=tab, fail_times=2, including_warm_up=True)  # fails twice, succeeds on the 3rd
-        monkeypatch.setattr(main, "_WARMUP_RETRY_DELAY_SECONDS", 0.0)
+        _use_timings(monkeypatch, warmup_retry_delay_seconds=0.0)
 
         await boot(browser)
 
@@ -1197,8 +1212,7 @@ class TestWarmUp:
         marks ready anyway, logged loudly (the real first request would hit
         the same failure mode this mitigation is tolerant of, not a new one)."""
         browser = _FakeBrowser(raise_exc=RuntimeError("cold-start failure"), including_warm_up=True)
-        monkeypatch.setattr(main, "_WARMUP_ATTEMPTS", 3)
-        monkeypatch.setattr(main, "_WARMUP_RETRY_DELAY_SECONDS", 0.0)
+        _use_timings(monkeypatch, warmup_attempts=3, warmup_retry_delay_seconds=0.0)
 
         await boot(browser)
 
@@ -1359,7 +1373,7 @@ class TestDownloadContract:
         assert browser.targets[0].closed is True
 
     async def test_download_that_never_completes_returns_504(self, client: httpx.AsyncClient, boot, monkeypatch):
-        monkeypatch.setattr(main, "_DOWNLOAD_POLL_INTERVAL_SECONDS", 0.01)
+        _use_timings(monkeypatch, download_poll_interval_seconds=0.01)
         browser = _FakeDownloadBrowser(never_writes=True)
         await boot(browser)
         async with client:
@@ -1372,7 +1386,7 @@ class TestDownloadContract:
     ):
         """A file still being written carries a .crdownload suffix -- must not
         be mistaken for a completed download."""
-        monkeypatch.setattr(main, "_DOWNLOAD_POLL_INTERVAL_SECONDS", 0.01)
+        _use_timings(monkeypatch, download_poll_interval_seconds=0.01)
 
         class _PartialThenCompleteBrowser(_FakeDownloadBrowser):
             async def simulate_navigation(self, context_id, url):
@@ -1403,7 +1417,7 @@ class TestDownloadContract:
     ):
         """Live-reproduced (2026-07-15): a freshly created target does not
         always appear in browser.targets on the first update_targets() call."""
-        monkeypatch.setattr(main, "_TAB_LOOKUP_DELAY_SECONDS", 0.01)
+        _use_timings(monkeypatch, tab_lookup_delay_seconds=0.01)
         browser = _FakeDownloadBrowser(target_lookup_failures=3)
         await boot(browser)
         async with client:
@@ -1411,8 +1425,7 @@ class TestDownloadContract:
         assert r.status_code == 200
 
     async def test_target_never_appearing_reports_driver_crash(self, client: httpx.AsyncClient, boot, monkeypatch):
-        monkeypatch.setattr(main, "_TAB_LOOKUP_ATTEMPTS", 3)
-        monkeypatch.setattr(main, "_TAB_LOOKUP_DELAY_SECONDS", 0.01)
+        _use_timings(monkeypatch, tab_lookup_attempts=3, tab_lookup_delay_seconds=0.01)
         browser = _FakeDownloadBrowser(target_lookup_failures=999)
         await boot(browser)
         async with client:
@@ -1814,7 +1827,7 @@ class TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn:
         async def _spawn(*_argv: object, **_kwargs: object) -> _Hangs:
             return _Hangs()
 
-        monkeypatch.setattr(main, "_WM_CALL_TIMEOUT_SECONDS", 0.05)
+        _use_timings(monkeypatch, wm_call_timeout_seconds=0.05)
         monkeypatch.setattr(main.asyncio, "create_subprocess_exec", _spawn)
 
         await boot(_FakeStartupBrowser([]))
@@ -1885,7 +1898,10 @@ class TestRenderPathHealsAfterHitl:
     def _fast(self, monkeypatch: pytest.MonkeyPatch, x11vnc_stub: X11vncStub):
         # The probe waits this long before calling a wedge a wedge; a real 15s would make the
         # wedged-browser test glacial, and the timeout value is not what is under test.
-        monkeypatch.setattr(main, "_HITL_HEALTHCHECK_TIMEOUT_SECONDS", 0.05)
+        _use_timings(monkeypatch, hitl_healthcheck_timeout_seconds=0.05)
+        # The manager production builds -- browser provider and healer wired by the same call --
+        # over a display on the stub's test port rather than the production one.
+        monkeypatch.setattr(main.app.state, "sessions", main.build_session_manager(vnc=lifecycle_on_test_port()))
         del x11vnc_stub
 
     async def test_a_healthy_render_path_is_left_alone(self, client: httpx.AsyncClient, boot) -> None:

@@ -35,7 +35,6 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
 from threetears.knowledge import ConceptEffective, ConceptSnapshot, EntryEffective, EntrySnapshot, Scope
 
-import threetears.agent.knowledge.middleware as mw_module
 from threetears.agent.knowledge.integration import (
     GovernedKnowledgeUnavailableError,
     KnowledgeIntegration,
@@ -44,23 +43,26 @@ from threetears.agent.knowledge.middleware import (
     GovernedKnowledgeRenderError,
     KnowledgeInjectionMiddleware,
     KnowledgeInjectionState,
-    _MAX_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET,
-    _MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET,
-    _SITUATIONAL_TOKENS_PER_CANDIDATE,
-    _concept_shadow_disclosures,
-    _cosine_similarity,
-    _entry_shadow_disclosures,
-    _estimate_tokens,
-    _rank_and_trim_shared,
-    _render_block,
-    _render_entry,
-    _resolve_situational_budget,
-    _split_invariant_concepts,
-    _split_invariant_entries,
-    _turn_query_text,
-    _warn_on_situational_starvation,
-    _warn_on_stable_order_fallback,
 )
+
+#: the situational-budget contract, stated as the numbers it was measured at (see
+#: the middleware's budget notes): a 3500-token floor, 175 tokens per situational
+#: candidate, and a 16000-token ceiling. a change to any of them is a deliberate
+#: re-measurement, so it lands here too.
+BUDGET_FLOOR = 3500
+TOKENS_PER_CANDIDATE = 175
+BUDGET_CEILING = 16000
+
+#: the four section headers the block renders, glossary before procedures.
+INVARIANT_GLOSSARY = "## Data concepts that ALWAYS apply"
+SITUATIONAL_GLOSSARY = "## Data concepts relevant to this question"
+INVARIANT_PROCEDURES = "## Data knowledge that ALWAYS applies"
+SITUATIONAL_PROCEDURES = "## Data knowledge relevant to this question"
+
+
+def _rendered_tokens(snapshot: EntrySnapshot) -> int:
+    """estimate what one unshadowed entry costs the budget: its rendered text over four chars a token."""
+    return len(f"### {snapshot.title}\n{snapshot.body}") // 4
 
 
 # --------------------------------------------------------------------------- #
@@ -133,16 +135,16 @@ def _concept_effective(
 class _BoomEntrySnapshot:
     """Entry snapshot whose ``title`` access raises, to force a single-item render fault.
 
-    Carries a real ``id`` (so the diagnostic log's id accessor works) and ``scope`` +
-    id ``.bytes`` (so the invariant stable-order sort that runs BEFORE render still
-    succeeds), but accessing ``title`` -- which ``_render_entry`` reads first --
-    raises, isolating the fault to the render step.
+    Every other attribute is a real :class:`EntrySnapshot`'s, so the shared merge,
+    the invariant split and the stable-order sort all see a well-formed row; only
+    rendering -- which reads ``title`` first -- faults.
     """
 
-    def __init__(self) -> None:
-        self.id = uuid7()
-        self.scope = Scope.PLATFORM
-        self.body = "body"
+    def __init__(self, *, always_inject: bool = False) -> None:
+        self.real = _entry_snapshot(always_inject=always_inject)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.real, name)
 
     @property
     def title(self) -> str:
@@ -155,9 +157,20 @@ class _BoomEntrySnapshot:
         raise RuntimeError("entry render boom")
 
 
-def _boom_entry_effective() -> EntryEffective:
-    """Build an :class:`EntryEffective` whose render raises on the ``title`` access."""
-    return EntryEffective(entry=cast("EntrySnapshot", _BoomEntrySnapshot()), shadows_scope=None)
+def _boom_entry(*, always_inject: bool = False) -> EntrySnapshot:
+    """Build an entry snapshot whose render raises on the ``title`` access."""
+    return cast("EntrySnapshot", _BoomEntrySnapshot(always_inject=always_inject))
+
+
+class _FixedEmbedder:
+    """embedding model that embeds every turn query as one fixed vector."""
+
+    def __init__(self, vector: list[float]) -> None:
+        self.vector = vector
+
+    async def aembed_query(self, text: str) -> list[float]:
+        _ = text
+        return list(self.vector)
 
 
 # --------------------------------------------------------------------------- #
@@ -166,9 +179,16 @@ def _boom_entry_effective() -> EntryEffective:
 class _StubEntryCollection:
     """opaque entry collection exposing the surface ``retrieve_entries`` reads."""
 
-    def __init__(self, snapshots: Sequence[EntrySnapshot] = (), *, raises: bool = False) -> None:
+    def __init__(
+        self,
+        snapshots: Sequence[EntrySnapshot] = (),
+        *,
+        raises: bool = False,
+        embeddings: dict[Any, list[float]] | None = None,
+    ) -> None:
         self._snapshots = list(snapshots)
         self._raises = raises
+        self._embeddings = embeddings or {}
 
     async def list_visible_to_user(
         self,
@@ -182,15 +202,22 @@ class _StubEntryCollection:
         return list(self._snapshots)
 
     async def fetch_embeddings(self, ids: Any, *, customer_scope: Any) -> dict[Any, Any]:
-        return {}
+        return {i: self._embeddings[i] for i in ids if i in self._embeddings}
 
 
 class _StubConceptCollection:
     """opaque concept collection exposing the surface ``retrieve_concepts`` reads."""
 
-    def __init__(self, snapshots: Sequence[ConceptSnapshot] = (), *, raises: bool = False) -> None:
+    def __init__(
+        self,
+        snapshots: Sequence[ConceptSnapshot] = (),
+        *,
+        raises: bool = False,
+        embeddings: dict[Any, list[float]] | None = None,
+    ) -> None:
         self._snapshots = list(snapshots)
         self._raises = raises
+        self._embeddings = embeddings or {}
 
     async def list_visible_to_user(
         self,
@@ -205,7 +232,7 @@ class _StubConceptCollection:
         return list(self._snapshots)
 
     async def fetch_embeddings(self, ids: Any, *, customer_scope: Any) -> dict[Any, Any]:
-        return {}
+        return {i: self._embeddings[i] for i in ids if i in self._embeddings}
 
 
 class _RaisingCallContext:
@@ -226,12 +253,18 @@ def _integration(
     *,
     entry_raises: bool = False,
     concept_raises: bool = False,
+    embedding_model: Any = None,
+    embeddings: dict[Any, list[float]] | None = None,
 ) -> KnowledgeIntegration:
-    """Build a real :class:`KnowledgeIntegration` over stub collections."""
+    """Build a real :class:`KnowledgeIntegration` over stub collections.
+
+    ``embeddings`` is the stored-vector table both stub collections answer
+    ``fetch_embeddings`` from; ``embedding_model`` embeds the turn query.
+    """
     return KnowledgeIntegration(
-        entry_collection=_StubEntryCollection(entries, raises=entry_raises),
-        concept_collection=_StubConceptCollection(concepts, raises=concept_raises),
-        embedding_model=None,
+        entry_collection=_StubEntryCollection(entries, raises=entry_raises, embeddings=embeddings),
+        concept_collection=_StubConceptCollection(concepts, raises=concept_raises, embeddings=embeddings),
+        embedding_model=embedding_model,
     )
 
 
@@ -526,73 +559,134 @@ class TestRealAgentRegression:
 
 
 # --------------------------------------------------------------------------- #
-# render / trim / cosine helper unit tests
+# split / trim / budget / ranking / render, driven through the middleware
 # --------------------------------------------------------------------------- #
-class TestRenderAndTrim:
-    def test_split_invariants(self) -> None:
-        views = [_entry_effective(always_inject=True), _entry_effective(always_inject=False)]
-        inv, sit = _split_invariant_entries(views)
-        assert len(inv) == 1
-        assert len(sit) == 1
-
-    def test_split_invariant_concepts(self) -> None:
-        views = [_concept_effective(always_inject=True), _concept_effective(always_inject=False)]
-        inv, sit = _split_invariant_concepts(views)
-        assert len(inv) == 1
-        assert len(sit) == 1
-
-    def test_render_block_orders_glossary_before_procedures(self) -> None:
-        block = _render_block(
-            invariant_concepts=[_concept_effective(always_inject=True)],
-            situational_concepts=[],
-            invariant_entries=[_entry_effective(always_inject=True)],
-            situational_entries=[],
-        )
-        assert block.startswith("# Governed data knowledge")
-        assert block.index("Data concepts") < block.index("Data knowledge")
-
-    def test_render_block_empty_when_no_views(self) -> None:
-        assert (
-            _render_block(
-                invariant_concepts=[],
-                situational_concepts=[],
-                invariant_entries=[],
-                situational_entries=[],
+def _run_turn(
+    *,
+    entries: Sequence[EntrySnapshot] = (),
+    concepts: Sequence[ConceptSnapshot] = (),
+    token_budget: int | None = None,
+    embedding_model: Any = None,
+    embeddings: dict[Any, list[float]] | None = None,
+) -> tuple[ModelRequest, Any]:
+    """Drive one turn through the middleware over the given governed rows."""
+    return _drive(
+        KnowledgeInjectionMiddleware(token_budget=token_budget),
+        _request(SystemMessage(content="base")),
+        _configurable(
+            _integration(
+                entries=entries,
+                concepts=concepts,
+                embedding_model=embedding_model,
+                embeddings=embeddings,
             )
-            == ""
-        )
+        ),
+    )
 
-    def test_rank_and_trim_tiny_budget_keeps_nothing(self) -> None:
+
+def _system_text(req: ModelRequest) -> str:
+    """The system prompt the model received."""
+    assert req.system_message is not None
+    content = req.system_message.content
+    assert isinstance(content, str)
+    return content
+
+
+def _metadata(out: Any) -> dict[str, Any]:
+    """The metadata ledger a drive persisted."""
+    assert isinstance(out, ExtendedModelResponse)
+    assert out.command is not None
+    update = out.command.update
+    assert isinstance(update, dict)
+    metadata = update["metadata"]
+    assert isinstance(metadata, dict)
+    return metadata
+
+
+def _warnings_naming(caplog: pytest.LogCaptureFixture, needle: str) -> list[str]:
+    """WARNING lines whose message contains ``needle``."""
+    return [r.getMessage() for r in caplog.records if r.levelname == "WARNING" and needle in r.getMessage()]
+
+
+def _all_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+
+
+def _huge_invariant(tokens: int) -> EntrySnapshot:
+    """An always-inject entry costing at least ``tokens`` -- enough to trip the D9 overflow line."""
+    return _entry_snapshot(title="Huge", body="x" * (tokens * 4 + 4), always_inject=True)
+
+
+class TestInvariantSplit:
+    def test_entries_split_into_always_and_relevant_sections(self) -> None:
+        req, out = _run_turn(
+            entries=[
+                _entry_snapshot(title="Hard rule", always_inject=True),
+                _entry_snapshot(title="Soft rule", always_inject=False),
+            ]
+        )
+        content = _system_text(req)
+        assert content.index(INVARIANT_PROCEDURES) < content.index("Hard rule") < content.index(SITUATIONAL_PROCEDURES)
+        assert content.index(SITUATIONAL_PROCEDURES) < content.index("Soft rule")
+        assert len(_metadata(out)["knowledge_injected_entries"]) == 2
+
+    def test_concepts_split_into_always_and_relevant_sections(self) -> None:
+        req, _out = _run_turn(
+            concepts=[
+                _concept_snapshot(name="hard term", always_inject=True),
+                _concept_snapshot(name="soft term", always_inject=False),
+            ]
+        )
+        content = _system_text(req)
+        assert content.index(INVARIANT_GLOSSARY) < content.index("hard term") < content.index(SITUATIONAL_GLOSSARY)
+        assert content.index(SITUATIONAL_GLOSSARY) < content.index("soft term")
+
+
+class TestRenderAndTrim:
+    def test_render_orders_glossary_before_procedures(self) -> None:
+        req, _out = _run_turn(
+            entries=[_entry_snapshot(always_inject=True)],
+            concepts=[_concept_snapshot(always_inject=True)],
+        )
+        content = _system_text(req)
+        assert content.startswith("base\n\n# Governed data knowledge")
+        assert content.index(INVARIANT_GLOSSARY) < content.index(INVARIANT_PROCEDURES)
+
+    def test_nothing_left_after_the_trim_passes_the_call_through(self) -> None:
+        # every retrieved item is situational and a zero budget keeps none of them,
+        # so the rendered block is empty and the request goes through un-merged.
+        req_in = _request(SystemMessage(content="base"))
+        req_out, out = _drive(
+            KnowledgeInjectionMiddleware(token_budget=0),
+            req_in,
+            _configurable(_integration(entries=[_entry_snapshot(), _entry_snapshot()])),
+        )
+        assert req_out is req_in
+        assert not isinstance(out, ExtendedModelResponse)
+
+    def test_tiny_budget_keeps_no_situational_item(self) -> None:
         # the situational tail is fully trimmable (unlike invariants): a budget below
-        # the first item's cost keeps NOTHING.
-        entries = [_entry_effective() for _ in range(3)]
-        kept_c, kept_e = _rank_and_trim_shared(
-            situational_concepts=[],
-            situational_entries=entries,
-            budget=1,
+        # the first item's cost keeps NOTHING of it.
+        req, out = _run_turn(
+            entries=[_entry_snapshot(title="Kept hard", always_inject=True)]
+            + [_entry_snapshot(title=f"Dropped {i}") for i in range(3)],
+            token_budget=1,
         )
-        assert kept_c == []
-        assert kept_e == []
+        content = _system_text(req)
+        assert "Kept hard" in content
+        assert "Dropped" not in content
+        assert SITUATIONAL_PROCEDURES not in content
+        assert len(_metadata(out)["knowledge_injected_entries"]) == 1
 
-    def test_rank_and_trim_partial_budget_trims_the_tail(self) -> None:
-        # a budget for exactly two items keeps two of five (greedy prefix, then break).
-        entries = [_entry_effective() for _ in range(5)]
-        per_item = _estimate_tokens(_render_entry(entries[0]))
-        _kept_c, kept_e = _rank_and_trim_shared(
-            situational_concepts=[],
-            situational_entries=entries,
-            budget=per_item * 2,
-        )
-        assert len(kept_e) == 2
+    def test_partial_budget_trims_the_tail(self) -> None:
+        # a budget for two and a half items keeps two of five (greedy prefix, then break).
+        entries = [_sized_entry_snapshot(i) for i in range(5)]
+        _req, out = _run_turn(entries=entries, token_budget=_rendered_tokens(entries[0]) * 5 // 2)
+        assert _injected_entry_count(out) == 2
 
-    def test_rank_and_trim_keeps_all_under_generous_budget(self) -> None:
-        entries = [_entry_effective() for _ in range(3)]
-        _kept_c, kept_e = _rank_and_trim_shared(
-            situational_concepts=[],
-            situational_entries=entries,
-            budget=10_000,
-        )
-        assert len(kept_e) == 3
+    def test_generous_budget_keeps_all(self) -> None:
+        _req, out = _run_turn(entries=[_entry_snapshot() for _ in range(3)], token_budget=10_000)
+        assert _injected_entry_count(out) == 3
 
 
 class TestBudgetScalesWithCorpus:
@@ -603,34 +697,59 @@ class TestBudgetScalesWithCorpus:
     14 to 25 of them per turn, so the same eval suite scored 48-50/51 with a
     different set of cases failing each run. Documenting more made the agent know
     less, which is the opposite of what the FIX_PROTOCOL asks for.
+
+    The effective budget is read where an operator reads it: the D9 overflow line
+    and the shared-trim drop line both name the budget that actually ran.
     """
 
-    def test_empty_pool_keeps_the_floor(self) -> None:
-        assert _resolve_situational_budget(configured=None, pool_size=0) == _MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET
+    def test_empty_pool_keeps_the_floor(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING"):
+            _run_turn(entries=[_huge_invariant(BUDGET_FLOOR + 100)])
+        (line,) = _warnings_naming(caplog, "invariant set alone exceeds situational budget")
+        assert f"budget={BUDGET_FLOOR})" in line
 
-    def test_small_corpus_keeps_the_floor(self) -> None:
+    def test_small_corpus_keeps_the_floor(self, caplog: pytest.LogCaptureFixture) -> None:
         # a corpus too small to fill the floor gains nothing from scaling, and the
         # floor is the value the 50/51 correctness evidence was earned on.
-        assert _resolve_situational_budget(configured=None, pool_size=3) == _MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET
+        with caplog.at_level("WARNING"):
+            _run_turn(entries=[_huge_invariant(BUDGET_FLOOR + 100)] + [_entry_snapshot() for _ in range(3)])
+        (line,) = _warnings_naming(caplog, "invariant set alone exceeds situational budget")
+        assert f"budget={BUDGET_FLOOR})" in line
 
-    def test_large_corpus_scales_above_the_floor(self) -> None:
-        scaled = _resolve_situational_budget(configured=None, pool_size=90)
-        assert scaled == 90 * _SITUATIONAL_TOKENS_PER_CANDIDATE
-        assert scaled > _MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET
-        assert scaled <= _MAX_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET
+    def test_large_corpus_scales_above_the_floor(self, caplog: pytest.LogCaptureFixture) -> None:
+        scaled = 90 * TOKENS_PER_CANDIDATE
+        assert BUDGET_FLOOR < scaled <= BUDGET_CEILING
+        with caplog.at_level("WARNING"):
+            _run_turn(entries=[_sized_entry_snapshot(i) for i in range(90)])
+        (line,) = _warnings_naming(caplog, "shared trim dropped")
+        assert f"budget={scaled} tokens" in line
 
-    def test_ceiling_caps_an_unbounded_corpus(self) -> None:
+    def test_ceiling_caps_an_unbounded_corpus(self, caplog: pytest.LogCaptureFixture) -> None:
         # unbounded scaling is a context bomb: without the cap a runaway corpus
         # puts the whole library in every system prompt on every turn.
-        assert _resolve_situational_budget(configured=None, pool_size=100_000) == _MAX_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET
+        assert 200 * TOKENS_PER_CANDIDATE > BUDGET_CEILING
+        with caplog.at_level("WARNING"):
+            _run_turn(entries=[_sized_entry_snapshot(i) for i in range(200)])
+        (line,) = _warnings_naming(caplog, "shared trim dropped")
+        assert f"budget={BUDGET_CEILING} tokens" in line
 
-    def test_explicit_budget_wins_over_scaling(self) -> None:
-        assert _resolve_situational_budget(configured=512, pool_size=100_000) == 512
+    def test_explicit_budget_wins_over_scaling(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING"):
+            _run_turn(entries=[_sized_entry_snapshot(i) for i in range(200)], token_budget=512)
+        (line,) = _warnings_naming(caplog, "shared trim dropped")
+        assert "budget=512 tokens" in line
 
-    def test_explicit_zero_budget_is_honoured_not_treated_as_unset(self) -> None:
+    def test_explicit_zero_budget_is_honoured_not_treated_as_unset(self, caplog: pytest.LogCaptureFixture) -> None:
         # zero is a real deployment setting (invariants only), which is why the
         # "scale me" signal is None and not an in-range sentinel.
-        assert _resolve_situational_budget(configured=0, pool_size=90) == 0
+        with caplog.at_level("WARNING"):
+            _run_turn(
+                entries=[_entry_snapshot(always_inject=True)] + [_sized_entry_snapshot(i) for i in range(90)],
+                token_budget=0,
+            )
+        (line,) = _warnings_naming(caplog, "shared trim dropped")
+        assert "dropped 90 of 90" in line
+        assert "budget=0 tokens" in line
 
     def test_constructor_default_defers_to_scaling(self) -> None:
         assert KnowledgeInjectionMiddleware().token_budget is None
@@ -638,63 +757,35 @@ class TestBudgetScalesWithCorpus:
 
     def test_default_admits_more_of_a_large_corpus_than_the_floor(self) -> None:
         snapshots = [_sized_entry_snapshot(i) for i in range(30)]
-        _req, scaled_out = _drive(
-            KnowledgeInjectionMiddleware(),
-            _request(SystemMessage(content="base")),
-            _configurable(_integration(entries=snapshots)),
-        )
-        _req2, pinned_out = _drive(
-            KnowledgeInjectionMiddleware(token_budget=_MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET),
-            _request(SystemMessage(content="base")),
-            _configurable(_integration(entries=snapshots)),
-        )
+        _req, scaled_out = _run_turn(entries=snapshots)
+        _req2, pinned_out = _run_turn(entries=snapshots, token_budget=BUDGET_FLOOR)
         assert _injected_entry_count(scaled_out) > _injected_entry_count(pinned_out)
 
     def test_explicit_budget_still_trims_a_large_corpus(self) -> None:
-        # the override is honoured END TO END, not just at the resolver: a
-        # deployment that asks for a lean cut gets one no matter how big the pool.
+        # the override is honoured END TO END: a deployment that asks for a lean
+        # cut gets one no matter how big the pool.
         snapshots = [_sized_entry_snapshot(i) for i in range(30)]
-        per_item = _estimate_tokens(_render_entry(EntryEffective(entry=snapshots[0], shadows_scope=None)))
-        _req, out = _drive(
-            KnowledgeInjectionMiddleware(token_budget=per_item * 2),
-            _request(SystemMessage(content="base")),
-            _configurable(_integration(entries=snapshots)),
-        )
+        _req, out = _run_turn(entries=snapshots, token_budget=_rendered_tokens(snapshots[0]) * 5 // 2)
         assert _injected_entry_count(out) == 2
 
-    def test_scaling_counts_only_situational_candidates(self) -> None:
+    def test_scaling_counts_only_situational_candidates(self, caplog: pytest.LogCaptureFixture) -> None:
         # invariants inject in full regardless (D9) and never enter the trim pool,
-        # so counting them would buy budget for items that do not spend it.
-        seen: dict[str, int] = {}
-
-        def _spy(*, configured: int | None, pool_size: int) -> int:
-            seen["pool_size"] = pool_size
-            return 10_000
-
-        integration = _integration(
-            entries=[_entry_snapshot(always_inject=True) for _ in range(4)] + [_entry_snapshot() for _ in range(2)],
-        )
-        with pytest.MonkeyPatch.context() as monkeypatch:
-            monkeypatch.setattr(mw_module, "_resolve_situational_budget", _spy)
-            _drive(
-                KnowledgeInjectionMiddleware(),
-                _request(SystemMessage(content="base")),
-                _configurable(integration),
-            )
-        assert seen["pool_size"] == 2
+        # so counting them would buy budget for items that do not spend it: 30
+        # situational candidates scale to 30 * 175, not (30 + 40) * 175.
+        invariants = [_entry_snapshot(title=f"Hard {i}", body="b", always_inject=True) for i in range(40)]
+        situational = [_sized_entry_snapshot(i) for i in range(30)]
+        assert sum(_rendered_tokens(s) for s in situational) > 30 * TOKENS_PER_CANDIDATE
+        with caplog.at_level("WARNING"):
+            _run_turn(entries=invariants + situational)
+        (line,) = _warnings_naming(caplog, "shared trim dropped")
+        assert f"budget={30 * TOKENS_PER_CANDIDATE} tokens" in line
 
     def test_invariants_inject_in_full_under_a_zero_budget(self) -> None:
         # the budget governs the situational tail ONLY; hard rules are exempt, so
         # even the leanest explicit budget cannot cull one.
         snapshots = [_entry_snapshot(title=f"Hard {i}", body="always apply", always_inject=True) for i in range(3)]
-        req, out = _drive(
-            KnowledgeInjectionMiddleware(token_budget=0),
-            _request(SystemMessage(content="base")),
-            _configurable(_integration(entries=snapshots)),
-        )
-        assert req.system_message is not None
-        content = req.system_message.content
-        assert isinstance(content, str)
+        req, out = _run_turn(entries=snapshots, token_budget=0)
+        content = _system_text(req)
         for index in range(3):
             assert f"Hard {index}" in content
         assert _injected_entry_count(out) == 3
@@ -704,14 +795,10 @@ class TestBudgetScalesWithCorpus:
         # reports the budget that actually did the cutting, not the floor.
         snapshots = [_sized_entry_snapshot(i) for i in range(30)]
         with caplog.at_level("WARNING"):
-            _drive(
-                KnowledgeInjectionMiddleware(),
-                _request(SystemMessage(content="base")),
-                _configurable(_integration(entries=snapshots)),
-            )
-        drops = [r.getMessage() for r in caplog.records if "shared trim dropped" in r.getMessage()]
+            _run_turn(entries=snapshots)
+        drops = _warnings_naming(caplog, "shared trim dropped")
         assert drops
-        assert f"budget={30 * _SITUATIONAL_TOKENS_PER_CANDIDATE}" in drops[0]
+        assert f"budget={30 * TOKENS_PER_CANDIDATE}" in drops[0]
 
 
 class TestSilentDegradationSignals:
@@ -723,95 +810,84 @@ class TestSilentDegradationSignals:
     """
 
     def test_unembedded_query_warns_naming_candidate_count(self, caplog: pytest.LogCaptureFixture) -> None:
-        entries = [_entry_effective() for _ in range(3)]
         with caplog.at_level("WARNING"):
-            _rank_and_trim_shared(
-                situational_concepts=[],
-                situational_entries=entries,
-                budget=10_000,
-            )
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+            _run_turn(entries=[_entry_snapshot() for _ in range(3)], token_budget=10_000)
+        warnings = _all_warnings(caplog)
         assert len(warnings) == 1
-        assert "fell back to stable order" in warnings[0].getMessage()
-        assert "did not embed" in warnings[0].getMessage()
-        assert "candidates=3" in warnings[0].getMessage()
+        assert "fell back to stable order" in warnings[0]
+        assert "did not embed" in warnings[0]
+        assert "candidates=3" in warnings[0]
 
     def test_no_stored_vectors_warns_naming_the_cause(self, caplog: pytest.LogCaptureFixture) -> None:
-        entries = [_entry_effective() for _ in range(2)]
         with caplog.at_level("WARNING"):
-            _rank_and_trim_shared(
-                situational_concepts=[],
-                situational_entries=entries,
-                budget=10_000,
-                query_embedding=[1.0, 0.0],
+            _run_turn(
+                entries=[_entry_snapshot() for _ in range(2)],
+                token_budget=10_000,
+                embedding_model=_FixedEmbedder([1.0, 0.0]),
                 embeddings={},
             )
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        warnings = _all_warnings(caplog)
         assert len(warnings) == 1
-        message = warnings[0].getMessage()
-        assert "none of the 2 situational candidates carry a stored embedding" in message
+        assert "none of the 2 situational candidates carry a stored embedding" in warnings[0]
 
     def test_healthy_ranking_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
-        entries = [_entry_effective() for _ in range(2)]
-        embeddings = {view.entry.id: [1.0, 0.0] for view in entries}
+        entries = [_entry_snapshot() for _ in range(2)]
         with caplog.at_level("WARNING"):
-            _rank_and_trim_shared(
-                situational_concepts=[],
-                situational_entries=entries,
-                budget=10_000,
-                query_embedding=[1.0, 0.0],
-                embeddings=embeddings,
+            _run_turn(
+                entries=entries,
+                token_budget=10_000,
+                embedding_model=_FixedEmbedder([1.0, 0.0]),
+                embeddings={e.id: [1.0, 0.0] for e in entries},
             )
-        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+        assert _all_warnings(caplog) == []
 
     def test_empty_pool_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
-        # nothing was retrieved, so nothing degraded -- warning here would fire on
-        # every turn of an agent that governs no situational knowledge at all.
+        # nothing situational was retrieved, so nothing degraded -- warning here would
+        # fire on every turn of an agent that governs no situational knowledge at all.
         with caplog.at_level("WARNING"):
-            _rank_and_trim_shared(situational_concepts=[], situational_entries=[], budget=10_000)
-        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+            _run_turn(entries=[_entry_snapshot(always_inject=True)], token_budget=10_000)
+        assert _all_warnings(caplog) == []
 
     def test_partial_embedding_coverage_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
         # one stored vector still ranks; only a TOTAL absence is the fallback.
-        entries = [_entry_effective() for _ in range(2)]
+        entries = [_entry_snapshot() for _ in range(2)]
         with caplog.at_level("WARNING"):
-            _rank_and_trim_shared(
-                situational_concepts=[],
-                situational_entries=entries,
-                budget=10_000,
-                query_embedding=[1.0, 0.0],
-                embeddings={entries[0].entry.id: [1.0, 0.0]},
+            _run_turn(
+                entries=entries,
+                token_budget=10_000,
+                embedding_model=_FixedEmbedder([1.0, 0.0]),
+                embeddings={entries[0].id: [1.0, 0.0]},
             )
-        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+        assert _all_warnings(caplog) == []
 
     def test_starvation_warns_with_counts(self, caplog: pytest.LogCaptureFixture) -> None:
+        entries = [_sized_entry_snapshot(i, body_chars=4000) for i in range(4)]
         with caplog.at_level("WARNING"):
-            _warn_on_situational_starvation(situational_entries=4, kept_entries=0, budget=512)
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert len(warnings) == 1
-        message = warnings[0].getMessage()
-        assert "kept no situational entries" in message
-        assert "candidates=4" in message
-        assert "budget=512" in message
+            _run_turn(entries=entries, token_budget=512)
+        (line,) = _warnings_naming(caplog, "kept no situational entries")
+        assert "candidates=4" in line
+        assert "budget=512" in line
 
     def test_starvation_silent_when_something_survived(self, caplog: pytest.LogCaptureFixture) -> None:
+        entries = [_sized_entry_snapshot(i) for i in range(4)]
         with caplog.at_level("WARNING"):
-            _warn_on_situational_starvation(situational_entries=4, kept_entries=1, budget=512)
-        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+            _req, out = _run_turn(entries=entries, token_budget=_rendered_tokens(entries[0]) * 3 // 2)
+        assert _injected_entry_count(out) == 1
+        assert _warnings_naming(caplog, "kept no situational entries") == []
 
     def test_starvation_silent_when_nothing_was_offered(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("WARNING"):
-            _warn_on_situational_starvation(situational_entries=0, kept_entries=0, budget=512)
-        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+            _run_turn(entries=[_entry_snapshot(always_inject=True)], token_budget=512)
+        assert _warnings_naming(caplog, "kept no situational entries") == []
 
-    def test_fallback_helper_prefers_the_query_cause(self, caplog: pytest.LogCaptureFixture) -> None:
-        # both causes hold at once; the query outage is the upstream one and is the
-        # only line logged, so a turn never carries two lines for one degradation.
+    def test_fallback_prefers_the_query_cause(self, caplog: pytest.LogCaptureFixture) -> None:
+        # both causes hold at once (no query vector AND no stored vectors); the query
+        # outage is the upstream one and is the only line logged, so a turn never
+        # carries two lines for one degradation.
         with caplog.at_level("WARNING"):
-            _warn_on_stable_order_fallback(similarity_active=False, pool_size=5, embedded_count=0)
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert len(warnings) == 1
-        assert "did not embed" in warnings[0].getMessage()
+            _run_turn(entries=[_entry_snapshot() for _ in range(5)], token_budget=10_000, embeddings={})
+        (line,) = _warnings_naming(caplog, "fell back to stable order")
+        assert "did not embed" in line
 
 
 class TestRenderFaultIsolation:
@@ -823,51 +899,34 @@ class TestRenderFaultIsolation:
     proceeding ungoverned.
     """
 
-    def test_situational_render_fault_skips_only_the_bad_item(self) -> None:
+    def test_situational_render_fault_skips_only_the_bad_item(self, caplog: pytest.LogCaptureFixture) -> None:
         # one situational entry booms on render; the surviving situational entry
         # (and the whole block) still reaches the agent -- the fault does NOT nuke
         # the block.
-        good = _entry_snapshot(title="Filter deleted", body="exclude deleted rows")
-        block = _render_block(
-            invariant_concepts=[],
-            situational_concepts=[],
-            invariant_entries=[],
-            situational_entries=[_boom_entry_effective(), EntryEffective(entry=good, shadows_scope=None)],
-        )
-        assert block.startswith("# Governed data knowledge")
-        # the good item survived; the boom item was skipped, not fatal.
-        assert "Filter deleted" in block
+        with caplog.at_level("WARNING"):
+            req, out = _run_turn(
+                entries=[_boom_entry(), _entry_snapshot(title="Filter deleted", body="exclude deleted rows")]
+            )
+        content = _system_text(req)
+        assert "# Governed data knowledge" in content
+        assert "Filter deleted" in content
+        assert _injected_entry_count(out) == 1
+        assert _warnings_naming(caplog, "skipping this item")
 
     def test_situational_all_faulting_yields_no_section_not_a_crash(self) -> None:
         # if EVERY situational item faults, the section is simply empty (skipped),
         # never a raised exception -- best-effort context degrades to nothing.
-        block = _render_block(
-            invariant_concepts=[],
-            situational_concepts=[],
-            invariant_entries=[],
-            situational_entries=[_boom_entry_effective()],
-        )
-        assert block == ""
-
-    def test_invariant_render_fault_fails_closed(self) -> None:
-        # an invariant (always-inject) hard rule that cannot render must FAIL CLOSED:
-        # silently dropping it would let the agent proceed ungoverned on a rule it
-        # must always apply.
-        with pytest.raises(GovernedKnowledgeRenderError):
-            _render_block(
-                invariant_concepts=[],
-                situational_concepts=[],
-                invariant_entries=[_boom_entry_effective()],
-                situational_entries=[],
-            )
+        req, _out = _run_turn(entries=[_boom_entry(), _entry_snapshot(title="Hard", always_inject=True)])
+        content = _system_text(req)
+        assert "Hard" in content
+        assert SITUATIONAL_PROCEDURES not in content
 
     def test_middleware_fails_closed_on_invariant_render_fault(self) -> None:
-        # the seam must NOT swallow the fail-closed signal into a pass-through: a
-        # GovernedKnowledgeRenderError from render surfaces (the turn fails loudly)
-        # rather than proceeding on the un-merged request. proven by forcing
-        # _render_block to raise the fail-closed error and asserting the handler is
-        # never reached and the error propagates.
-        integration = _integration(entries=[_entry_snapshot(always_inject=True)])
+        # an invariant (always-inject) hard rule that cannot render must FAIL CLOSED:
+        # silently dropping it would let the agent proceed ungoverned on a rule it
+        # must always apply. the seam must not swallow the signal into a
+        # pass-through either: the handler is never reached and the error surfaces.
+        integration = _integration(entries=[_boom_entry(always_inject=True), _entry_snapshot()])
         mw = KnowledgeInjectionMiddleware()
         request = _request(SystemMessage(content="base"))
         handler_calls: list[ModelRequest] = []
@@ -876,58 +935,123 @@ class TestRenderFaultIsolation:
             handler_calls.append(req)
             return SimpleNamespace(result=[AIMessage(content="ok")])
 
-        def _boom_render(**_kwargs: Any) -> str:
-            raise GovernedKnowledgeRenderError("invariant boom")
-
         async def _run() -> Any:
             with _configured(_configurable(integration)):
                 return await mw.awrap_model_call(request, _handler)
 
-        with pytest.MonkeyPatch.context() as monkeypatch:
-            monkeypatch.setattr(mw_module, "_render_block", _boom_render)
-            with pytest.raises(GovernedKnowledgeRenderError):
-                asyncio.run(_run())
-        # fail closed: the model was never invoked on the ungoverned request.
+        with pytest.raises(GovernedKnowledgeRenderError):
+            asyncio.run(_run())
         assert handler_calls == []
 
 
-class TestCosine:
-    def test_identical_vectors_score_one(self) -> None:
-        assert _cosine_similarity([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]) == 1.0
+class TestSimilarityRanking:
+    """situational items rank by cosine similarity to the turn query, highest first."""
 
-    def test_empty_or_mismatched_score_zero(self) -> None:
-        assert _cosine_similarity([], [1.0]) == 0.0
-        assert _cosine_similarity([1.0, 2.0], [1.0]) == 0.0
-        assert _cosine_similarity([0.0, 0.0], [1.0, 1.0]) == 0.0
+    def test_identical_direction_ranks_first(self) -> None:
+        near = _entry_snapshot(title="Near", body="b")
+        far = _entry_snapshot(title="Far", body="b")
+        req, _out = _run_turn(
+            entries=[far, near],
+            token_budget=10_000,
+            embedding_model=_FixedEmbedder([1.0, 2.0, 3.0]),
+            embeddings={near.id: [1.0, 2.0, 3.0], far.id: [3.0, -2.0, 0.5]},
+        )
+        content = _system_text(req)
+        assert content.index("### Near") < content.index("### Far")
+
+    def test_empty_mismatched_and_zero_vectors_score_zero(self, caplog: pytest.LogCaptureFixture) -> None:
+        # a mismatched dimension and a zero vector score 0.0 rather than crashing the
+        # rank: below a positive match, above an opposed one.
+        positive = _entry_snapshot(title="Positive", body="b")
+        mismatched = _entry_snapshot(title="Mismatched", body="b")
+        zero = _entry_snapshot(title="Zero", body="b")
+        opposed = _entry_snapshot(title="Opposed", body="b")
+        with caplog.at_level("WARNING"):
+            req, out = _run_turn(
+                entries=[opposed, zero, mismatched, positive],
+                token_budget=10_000,
+                embedding_model=_FixedEmbedder([1.0, 0.0]),
+                embeddings={
+                    positive.id: [1.0, 0.0],
+                    mismatched.id: [1.0, 0.0, 0.0],
+                    zero.id: [0.0, 0.0],
+                    opposed.id: [-1.0, 0.0],
+                },
+            )
+        content = _system_text(req)
+        assert content.index("### Positive") < content.index("### Mismatched") < content.index("### Opposed")
+        assert content.index("### Positive") < content.index("### Zero") < content.index("### Opposed")
+        assert _injected_entry_count(out) == 4
+        assert _warnings_naming(caplog, "wrong dimension")
 
 
 class TestShadowLedgers:
     def test_entry_shadow_disclosure_recorded(self) -> None:
-        views = [_entry_effective(shadows=Scope.PLATFORM), _entry_effective(shadows=None)]
-        ledger = _entry_shadow_disclosures(views)
+        platform = _entry_snapshot(title="Platform rule")
+        override = EntrySnapshot(
+            id=uuid7(),
+            scope=Scope.CUSTOMER,
+            title="Customer override",
+            body="use archived too",
+            always_inject=False,
+            datasource_id=None,
+            origin_entry_id=platform.id,
+        )
+        unrelated = _entry_snapshot(title="Unrelated")
+        _req, out = _run_turn(entries=[platform, override, unrelated], token_budget=10_000)
+        ledger = _metadata(out)["knowledge_shadow_disclosures"]
         assert len(ledger) == 1
         assert ledger[0]["shadows_scope"] == "platform"
-        assert "entry_id" in ledger[0]
-        assert "title" in ledger[0]
+        assert ledger[0]["entry_id"] == str(override.id)
+        assert ledger[0]["title"] == "Customer override"
 
     def test_concept_shadow_and_ambiguity_recorded(self) -> None:
-        views = [
-            _concept_effective(shadows=Scope.CUSTOMER),
-            _concept_effective(ambiguous=True),
-            _concept_effective(),
-        ]
-        ledger = _concept_shadow_disclosures(views)
-        assert len(ledger) == 2
-        by_scope = {d["shadows_scope"] for d in ledger}
-        assert "customer" in by_scope
-        assert any(d["ambiguous"] == "true" for d in ledger)
+        platform = _concept_snapshot(name="revenue", definition="gross")
+        override = ConceptSnapshot(
+            id=uuid7(),
+            scope=Scope.CUSTOMER,
+            name="revenue",
+            definition="net of refunds",
+            always_inject=False,
+            origin_concept_id=platform.id,
+        )
+        twin_a = _concept_snapshot(name="active users", definition="seen in 30 days")
+        twin_b = _concept_snapshot(name="active users", definition="seen in 7 days")
+        plain = _concept_snapshot(name="churn", definition="lost")
+        _req, out = _run_turn(concepts=[platform, override, twin_a, twin_b, plain], token_budget=10_000)
+        ledger = _metadata(out)["knowledge_concept_shadow_disclosures"]
+        by_name = {d["name"] for d in ledger}
+        assert "churn" not in by_name
+        assert any(d["shadows_scope"] == "platform" and d["name"] == "revenue" for d in ledger)
+        assert any(d["ambiguous"] == "true" and d["name"] == "active users" for d in ledger)
 
 
 class TestTurnQueryText:
     """the situational ranker embeds what the person asked."""
 
+    class _RecordingEmbedder:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def aembed_query(self, text: str) -> list[float]:
+            self.queries.append(text)
+            return [1.0, 0.0]
+
+    def _embedded_query(self, messages: list[BaseMessage]) -> list[str]:
+        embedder = self._RecordingEmbedder()
+        _drive(
+            KnowledgeInjectionMiddleware(),
+            ModelRequest(
+                model=cast("BaseChatModel", SimpleNamespace()),
+                messages=messages,
+                system_message=SystemMessage(content="base"),
+            ),
+            _configurable(_integration(entries=[_entry_snapshot()], embedding_model=embedder)),
+        )
+        return embedder.queries
+
     def test_a_plain_turn_is_its_text(self) -> None:
-        assert _turn_query_text([HumanMessage(content="which roofs need work")]) == "which roofs need work"
+        assert self._embedded_query([HumanMessage(content="which roofs need work")]) == ["which roofs need work"]
 
     def test_a_turn_carrying_an_image_is_its_text_blocks(self) -> None:
         # an attached image makes the turn a block list. the query is the question, not
@@ -938,4 +1062,4 @@ class TestTurnQueryText:
                 {"type": "text", "text": "which roofs need work"},
             ]
         )
-        assert _turn_query_text([AIMessage(content="earlier"), turn]) == "which roofs need work"
+        assert self._embedded_query([AIMessage(content="earlier"), turn]) == ["which roofs need work"]

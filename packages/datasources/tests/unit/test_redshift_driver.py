@@ -28,17 +28,11 @@ from threetears.datasources.drivers import (
     DriverConnectError,
     DriverMissingCredentialError,
 )
-from threetears.datasources.drivers._redshift_connector_internals import connection_socket
-from threetears.datasources.drivers._sync_bridge import AsyncSyncBridge
-from threetears.datasources.drivers.redshift_driver import (
-    RedshiftDriver,
-    _CANCEL_TIMEOUT_SECONDS,
-    _PING_SQL,
-    _REDSHIFT_COLUMNS_SQL_TEMPLATE,
-    _REDSHIFT_TABLES_SQL_TEMPLATE,
-    _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE,
-)
+from threetears.datasources.drivers import redshift_driver as redshift_driver_module
+from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
+
+from ._helpers.driver_shims import RedshiftConnectionWithSocket
 
 
 def _is_set_stmt_timeout(sql: str) -> bool:
@@ -276,9 +270,10 @@ class TestConstruction:
 
     def test_init_bridge_sized_from_config(self, redshift_config: RedshiftConnectionConfig) -> None:
         """the bridge is built with ``executor_max_workers`` from the config."""
-        with patch(
-            "threetears.datasources.drivers.redshift_driver.AsyncSyncBridge",
-            wraps=AsyncSyncBridge,
+        with patch.object(
+            redshift_driver_module,
+            "AsyncSyncBridge",
+            wraps=redshift_driver_module.AsyncSyncBridge,
         ) as bridge_cls:
             RedshiftDriver(redshift_config)
         assert bridge_cls.call_args.kwargs["max_workers"] == 2
@@ -461,9 +456,9 @@ class TestConnectionCaching:
         via setsockopt on the underlying socket -- passing them as connect kwargs raises
         TypeError (the regression that silently broke every datasource connection).
         """
-        conn = _build_mock_connection(fetchall_rows=[], description=[])
-        # the socket the driver sees, read through the one module that owns the access.
-        usock = connection_socket(conn)
+        conn = RedshiftConnectionWithSocket(_build_mock_connection(fetchall_rows=[], description=[]))
+        # the socket the connection carries where redshift_connector keeps it.
+        usock = conn.socket
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             return_value=conn,
@@ -750,9 +745,12 @@ class TestQueryRouting:
             calls = [
                 c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
-            # SQL is built from template + IN-clause placeholder for one schema
-            expected_sql = _REDSHIFT_TABLES_SQL_TEMPLATE.format(placeholders="%s")
-            assert calls[0].args[0] == expected_sql
+            # one parameterized IN-clause placeholder per schema, the schema bound, never inlined
+            sql = calls[0].args[0]
+            assert "FROM SVV_TABLES" in sql
+            assert "WHERE table_schema IN (%s)" in sql
+            assert "table_type = 'BASE TABLE'" in sql
+            assert "s1" not in sql
             assert calls[0].args[1] == ("s1",)
 
     @pytest.mark.asyncio
@@ -784,8 +782,10 @@ class TestQueryRouting:
             calls = [
                 c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
-            expected_sql = _REDSHIFT_COLUMNS_SQL_TEMPLATE.format(placeholders="%s")
-            assert calls[0].args[0] == expected_sql
+            sql = calls[0].args[0]
+            assert "FROM SVV_COLUMNS" in sql
+            assert "WHERE table_schema IN (%s)" in sql
+            assert calls[0].args[1] == ("s1",)
 
     @pytest.mark.asyncio
     async def test_table_hashes_returns_dict_keyed_by_schema_table(
@@ -810,8 +810,12 @@ class TestQueryRouting:
             calls = [
                 c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
-            expected_sql = _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE.format(placeholders="%s")
-            assert calls[0].args[0] == expected_sql
+            sql = calls[0].args[0]
+            # the per-column pre-hash is load-bearing (Redshift's LISTAGG ceiling)
+            assert "MD5(LISTAGG(MD5(" in sql
+            assert "FROM SVV_COLUMNS" in sql
+            assert "WHERE table_schema IN (%s)" in sql
+            assert calls[0].args[1] == ("s1",)
 
     @pytest.mark.asyncio
     async def test_execute_commits(self, redshift_config: RedshiftConnectionConfig) -> None:
@@ -851,7 +855,7 @@ class TestTestConnection:
             calls = [
                 c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
-            assert any(c.args[0] == _PING_SQL for c in calls)
+            assert any(c.args[0] == "SELECT 1" for c in calls)
 
     @pytest.mark.asyncio
     async def test_test_connection_sanitizes_connect_failure(self, redshift_config: RedshiftConnectionConfig) -> None:
@@ -1084,8 +1088,10 @@ class TestCancellation:
         """if conn.close hangs past the timeout, WARNING is logged + cancellation.failed.
 
         we make conn.close raise after a delay simulating a hung
-        terminate; the wait_for guard should fire and log a WARNING.
+        terminate; the wait_for guard should fire and log a WARNING. the driver
+        is built with a short cancel bound so the close outlasts it quickly.
         """
+        cancel_timeout = 0.2
         conn = _build_mock_connection()
 
         # make execute block so cancel actually has something to cancel
@@ -1110,7 +1116,7 @@ class TestCancellation:
             loop.call_soon_threadsafe(close_started.set)
             import time
 
-            time.sleep(_CANCEL_TIMEOUT_SECONDS + 2)
+            time.sleep(cancel_timeout + 1)
             # release after the wait_for has already fired
 
         conn.recorded_cursor.execute.side_effect = _blocking_execute
@@ -1120,7 +1126,7 @@ class TestCancellation:
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             return_value=conn,
         ):
-            driver = RedshiftDriver(redshift_config)
+            driver = RedshiftDriver(redshift_config, cancel_timeout_seconds=cancel_timeout)
             task = asyncio.create_task(driver.fetch("SELECT slow"))
             await asyncio.wait_for(execute_blocked.wait(), timeout=2.0)
             task.cancel()

@@ -113,7 +113,7 @@ dev-dependencies = [
     "hypothesis>=6.100",
     # the Claude Code subscription provider (models[claude-cli]), installed in dev for
     # the same reason as the adapters above: without it the five test modules covering
-    # _claude_cli.py skip silently, and mypy resolves ClaudeCodeChatModel to Any so the
+    # claude_cli.py skip silently, and mypy resolves ClaudeCodeChatModel to Any so the
     # whole module goes unchecked. Only the CLI BINARY + Node are runtime requirements;
     # the python packages import fine without them, so this costs nothing here.
     "langchain-claude-code>=0.1.0",
@@ -340,10 +340,6 @@ markers = [
     # suite-wide and never executed, so the code binding a robots read to the configured exit
     # had no test that could fail when it regressed.
     "real_robots_fetch: exercise the real robots default fetcher rather than the offline stub",
-    # Opts a test out of the scrape suite's autouse SSRF-guard neutralizer, for the few whose
-    # subject IS the guard. Without the opt-out the guard's live socket.getaddrinfo runs in a
-    # network-isolated unit runner and hangs; neutralized by default, exercised only here.
-    "real_ssrf_guard: exercise the real ScrapeTool SSRF guard rather than the neutralized stub",
     "enforcement: a structural rule over the source tree rather than a behaviour",
 ]
 # Note on the `allowed_objects` warning:

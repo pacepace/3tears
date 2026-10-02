@@ -1002,7 +1002,7 @@ def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None) -> tup
 
     **``$N``, not ``?``, and the distinction is the whole reason page two
     executes.** Every driver normalises placeholders through
-    :func:`threetears.datasources.drivers._util._translate_placeholders`, which
+    :func:`threetears.datasources.drivers.sql_fragments.translate_placeholders`, which
     recognises ``$N`` alone -- rewriting it to ``%s``, ``:N`` or ``@pN`` for the
     engine in front of it. A ``?`` is not a placeholder to any of them, so it
     travels to the engine verbatim and the bound values arrive with nothing to

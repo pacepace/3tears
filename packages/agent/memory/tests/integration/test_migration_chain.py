@@ -13,14 +13,19 @@ live schema.
 
 from __future__ import annotations
 
+import uuid
+
 import asyncpg
 import pytest
 
-from threetears.agent.memory.collections import _MEMORIES_SELECT_COLUMNS
+from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
+from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.migrations import drop_search_vector_gin_indexes
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.conversations.migrations import register as register_conversations
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 
 from .conftest import AsyncpgStore
@@ -54,6 +59,42 @@ def _build_runner() -> MigrationRunner:
     register_conversations(runner)
     register_memory(runner)
     return runner
+
+
+async def _read_back(
+    conn: asyncpg.Connection,
+    authorizer: MemoryAuthorizerDependencies,
+    agent_id: uuid.UUID,
+    memory_id: uuid.UUID,
+) -> MemoryEntity:
+    """
+    read one memory back through the collection's raw-SELECT scope read.
+
+    ``find_by_scope`` is the production path that selects the explicit column
+    list over the codec-less pool, so a column the migration chain added but the
+    read path forgot (or cannot decode) shows up here as a missing or wrong field.
+
+    :param conn: live asyncpg connection, search_path set to the agent schema
+    :ptype conn: asyncpg.Connection
+    :param authorizer: memory authorizer bundle (unused on the agent-internal read)
+    :ptype authorizer: MemoryAuthorizerDependencies
+    :param agent_id: agent the memory belongs to
+    :ptype agent_id: uuid.UUID
+    :param memory_id: memory to read back
+    :ptype memory_id: uuid.UUID
+    :return: the hydrated memory entity
+    :rtype: MemoryEntity
+    """
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=conn)
+    collection = MemoriesCollection(
+        registry=registry,
+        config=DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""),
+        authorizer=authorizer,
+    )
+    matches = [entity for entity in await collection.find_by_scope(agent_id) if entity.memory_id == memory_id]
+    assert len(matches) == 1, f"memory {memory_id} not read back through find_by_scope"
+    return matches[0]
 
 
 async def _columns(conn: asyncpg.Connection, schema: str, table: str) -> dict[str, str]:
@@ -608,7 +649,11 @@ class TestUnifiedMemoryParentFks:
 class TestScopeRelaxationAndSalience:
     """v024: null scope grains round-trip; salience/evergreen defaults apply."""
 
-    async def test_agent_scoped_memory_round_trips(self, pg_schema: tuple[str, str]) -> None:
+    async def test_agent_scoped_memory_round_trips(
+        self,
+        pg_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         """A memory with NULL customer_id + user_id inserts and hydrates.
 
         Proves the scope relaxation end-to-end: the DB accepts the null
@@ -648,12 +693,7 @@ class TestScopeRelaxationAndSalience:
                 now,
             )
 
-            row = await conn.fetchrow(
-                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE memory_id = $1",
-                memory_id,
-            )
-            assert row is not None
-            entity = MemoryEntity(dict(row), is_new=False)
+            entity = await _read_back(conn, permissive_memory_authorizer, agent_id, memory_id)
             assert entity.customer_id is None
             assert entity.user_id is None
             assert entity.salience == 0.5  # server default
@@ -664,7 +704,11 @@ class TestScopeRelaxationAndSalience:
         finally:
             await conn.close()
 
-    async def test_salience_flags_and_supersession_persist(self, pg_schema: tuple[str, str]) -> None:
+    async def test_salience_flags_and_supersession_persist(
+        self,
+        pg_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         """Explicit salience / evergreen / superseded_by persist + hydrate.
 
         :param pg_schema: (url, schema) tuple
@@ -705,12 +749,7 @@ class TestScopeRelaxationAndSalience:
                 now,
             )
 
-            row = await conn.fetchrow(
-                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE memory_id = $1",
-                memory_id,
-            )
-            assert row is not None
-            entity = MemoryEntity(dict(row), is_new=False)
+            entity = await _read_back(conn, permissive_memory_authorizer, agent_id, memory_id)
             assert entity.salience == 0.9
             assert entity.evergreen is True
             assert entity.superseded_by == gist_id
@@ -774,7 +813,11 @@ class TestSearchVectorGinIndexesDropped:
 class TestMemoryTags:
     """v025: tags JSONB persists, hydrates, and is GIN-queryable."""
 
-    async def test_tags_round_trip_and_containment_query(self, pg_schema: tuple[str, str]) -> None:
+    async def test_tags_round_trip_and_containment_query(
+        self,
+        pg_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         """A tags array persists, hydrates via the entity accessor, and is
         reachable by both containment (``@>``) and existence (``?``) queries.
 
@@ -831,20 +874,11 @@ class TestMemoryTags:
 
             # hydrate via the entity accessor (raw fetch path yields a
             # JSON string; the accessor decodes it to a list).
-            row = await conn.fetchrow(
-                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE memory_id = $1",
-                tagged_id,
-            )
-            assert row is not None
-            entity = MemoryEntity(dict(row), is_new=False)
+            entity = await _read_back(conn, permissive_memory_authorizer, agent_id, tagged_id)
             assert entity.tags == ["persona", "identity"]
 
-            untagged_row = await conn.fetchrow(
-                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE memory_id = $1",
-                untagged_id,
-            )
-            assert untagged_row is not None
-            assert MemoryEntity(dict(untagged_row), is_new=False).tags is None
+            untagged = await _read_back(conn, permissive_memory_authorizer, agent_id, untagged_id)
+            assert untagged.tags is None
 
             # containment: tags @> '["identity"]' matches only the tagged row.
             containment = await conn.fetch(

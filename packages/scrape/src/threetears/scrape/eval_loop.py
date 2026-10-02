@@ -35,7 +35,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, TypeVar, get_args
+from typing import Any, Literal, Protocol, TypeVar, get_args
 
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
@@ -88,7 +88,14 @@ from .llm_retry import (
     bounded_retry_structured_call_or_raise,
 )
 
-__all__ = ["DEFAULT_JUDGE_MODEL_ID", "StrategyType", "run_eval_loop", "run_eval_loop_multi_row"]
+__all__ = [
+    "DEFAULT_JUDGE_MODEL_ID",
+    "DocumentJudge",
+    "MultiRowJudge",
+    "StrategyType",
+    "run_eval_loop",
+    "run_eval_loop_multi_row",
+]
 
 #: Which extraction-strategy shape a target's page needs -- "css" (an HTML
 #: table, the original v1 shape), "regex" (a text-block/prose listing with
@@ -151,6 +158,74 @@ _PER_DOCUMENT_TIMEOUT_SECONDS = 90
 #: records in one call (Nevada's real master WARN PDF: 17 records), not one document's,
 #: so a well-behaved call legitimately takes longer.
 _MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS = 150
+
+
+class DocumentJudge(Protocol):
+    """Confirms or rejects one document's extracted record against that document's own content.
+
+    The ``"per_document"`` strategy's grounding check, as :func:`run_eval_loop_multi_row` calls
+    it. The production judge asks a model; a caller supplies another to change how a record is
+    grounded (or a test, to hold the judge's answer while it exercises routing and aggregation).
+    """
+
+    async def __call__(
+        self,
+        document: NoticeDocument,
+        extracted: dict[str, Any],
+        schema: FieldSchema,
+        *,
+        api_key: str,
+        judge_model_id: str,
+    ) -> bool:
+        """Answer whether *extracted* is grounded in *document*.
+
+        :param document: the document *extracted* came from
+        :ptype document: NoticeDocument
+        :param extracted: the already-coerced, already-complete field values to confirm
+        :ptype extracted: dict[str, Any]
+        :param schema: field_name -> expected Python type
+        :ptype schema: FieldSchema
+        :param api_key: OpenRouter API key
+        :ptype api_key: str
+        :param judge_model_id: the text judge model
+        :ptype judge_model_id: str
+        :return: ``True`` only when the record is confirmed
+        :rtype: bool
+        :raises StructuredCallFailedError: when the judge could not be asked; never a rejection
+        """
+        ...
+
+
+class MultiRowJudge(Protocol):
+    """Confirms each of a table's extracted records against the page image(s) they were read from.
+
+    The ``"multi_row_vision"`` strategy's grounding check, as :func:`run_eval_loop_multi_row`
+    calls it.
+    """
+
+    async def __call__(
+        self,
+        images: list[bytes],
+        records: list[dict[str, Any]],
+        schema: FieldSchema,
+        *,
+        api_key: str,
+    ) -> set[int]:
+        """Answer which of *records* are grounded in *images*.
+
+        :param images: the page image(s) the records were read from
+        :ptype images: list[bytes]
+        :param records: every already-coerced, already-complete record
+        :ptype records: list[dict[str, Any]]
+        :param schema: field_name -> expected Python type
+        :ptype schema: FieldSchema
+        :param api_key: OpenRouter API key
+        :ptype api_key: str
+        :return: the 0-based indices of the confirmed records
+        :rtype: set[int]
+        :raises StructuredCallFailedError: when the judge could not be asked; never an empty set
+        """
+        ...
 
 
 class _JudgeVerdict(BaseModel):
@@ -1485,6 +1560,8 @@ async def _run_per_document_extraction(
     api_key: str,
     extraction_model_id: str,
     judge_model_id: str,
+    judge: DocumentJudge,
+    deadline_seconds: float,
 ) -> ScrapeExtraction:
     """``"per_document"`` StrategyType: no cached pattern is possible (see that
     Literal's own comment) -- every document gets a fresh, independent extraction
@@ -1501,9 +1578,9 @@ async def _run_per_document_extraction(
     the same way css/regex targets are already observable, even though nothing
     here is ever reused to skip an LLM call.
 
-    Each document's call is bounded by an explicit outer deadline
-    (:data:`_PER_DOCUMENT_TIMEOUT_SECONDS`), not just ``extract_fields_directly``'s
-    own per-attempt *timeout* -- live-reproduced against a real West Virginia
+    Each document's call is bounded by an explicit outer deadline (*deadline_seconds*,
+    :data:`_PER_DOCUMENT_TIMEOUT_SECONDS` in production), not just
+    ``extract_fields_directly``'s own per-attempt *timeout* -- live-reproduced against a real West Virginia
     document: the underlying chat client occasionally hangs well past its
     configured per-attempt timeout with zero further retry activity (the 200 OK
     response headers land, the body read then never completes), a pre-existing
@@ -1558,7 +1635,7 @@ async def _run_per_document_extraction(
             else extract_fields_directly_chunked(document.text, schema, model_id=extraction_model_id, api_key=api_key)
         )
         try:
-            extracted = await asyncio.wait_for(extraction_call, timeout=_PER_DOCUMENT_TIMEOUT_SECONDS)
+            extracted = await asyncio.wait_for(extraction_call, timeout=deadline_seconds)
         except TimeoutError as exc:
             # Only this document's call is abandoned; the others keep running under their own
             # deadlines, and the failure is raised once the whole batch has run.
@@ -1566,7 +1643,7 @@ async def _run_per_document_extraction(
                 "scrape vision per-document field extraction"
                 if document.was_ocr
                 else "scrape direct per-document field extraction",
-                deadline_seconds=_PER_DOCUMENT_TIMEOUT_SECONDS,
+                deadline_seconds=deadline_seconds,
                 model_id=DEFAULT_VISION_MODEL_ID if document.was_ocr else extraction_model_id,
                 cause=exc,
                 target_id=target_id,
@@ -1579,15 +1656,13 @@ async def _run_per_document_extraction(
             return None
         try:
             confirmed = await asyncio.wait_for(
-                _judge_one_document_extraction(
-                    document, extracted, schema, api_key=api_key, judge_model_id=judge_model_id
-                ),
-                timeout=_PER_DOCUMENT_TIMEOUT_SECONDS,
+                judge(document, extracted, schema, api_key=api_key, judge_model_id=judge_model_id),
+                timeout=deadline_seconds,
             )
         except TimeoutError as exc:
             raise _deadline_failure(
                 "scrape per-document judge",
-                deadline_seconds=_PER_DOCUMENT_TIMEOUT_SECONDS,
+                deadline_seconds=deadline_seconds,
                 model_id=DEFAULT_VISION_MODEL_ID if document.was_ocr else judge_model_id,
                 cause=exc,
                 target_id=target_id,
@@ -1645,6 +1720,8 @@ async def _run_multi_row_vision_extraction(
     recipe_collection: ScrapeRecipeCollection,
     extraction_collection: ScrapeExtractionCollection,
     api_key: str,
+    judge: MultiRowJudge,
+    deadline_seconds: float,
 ) -> ScrapeExtraction:
     """``"multi_row_vision"`` StrategyType: one page, one table, read once via vision,
     every record grounded against the same source image(s) before counting as real.
@@ -1698,12 +1775,12 @@ async def _run_multi_row_vision_extraction(
     try:
         extracted_records = await asyncio.wait_for(
             extract_multi_row_fields_from_images(images, schema, api_key=api_key),
-            timeout=_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
+            timeout=deadline_seconds,
         )
     except TimeoutError as exc:
         raise _deadline_failure(
             "scrape multi-row vision extraction",
-            deadline_seconds=_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
+            deadline_seconds=deadline_seconds,
             model_id=DEFAULT_VISION_MODEL_ID,
             cause=exc,
             target_id=target_id,
@@ -1737,13 +1814,13 @@ async def _run_multi_row_vision_extraction(
 
     try:
         confirmed_indices = await asyncio.wait_for(
-            _judge_multi_row_extraction(images, complete_records, schema, api_key=api_key),
-            timeout=_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
+            judge(images, complete_records, schema, api_key=api_key),
+            timeout=deadline_seconds,
         )
     except TimeoutError as exc:
         raise _deadline_failure(
             "scrape multi-row judge",
-            deadline_seconds=_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
+            deadline_seconds=deadline_seconds,
             model_id=DEFAULT_VISION_MODEL_ID,
             cause=exc,
             target_id=target_id,
@@ -1804,6 +1881,10 @@ async def run_eval_loop_multi_row(
     strategy_type: StrategyType = "css",
     health_collection: ScrapeTargetHealthCollection | None = None,
     page_status: int | None = None,
+    document_judge: DocumentJudge = _judge_one_document_extraction,
+    multi_row_judge: MultiRowJudge = _judge_multi_row_extraction,
+    per_document_deadline_seconds: float = _PER_DOCUMENT_TIMEOUT_SECONDS,
+    multi_row_vision_deadline_seconds: float = _MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
 ) -> ScrapeExtraction:
     """Run one fetch through the multi-row eval loop and persist a ``ScrapeExtraction`` row.
 
@@ -1861,6 +1942,20 @@ async def run_eval_loop_multi_row(
     :ptype health_collection: ScrapeTargetHealthCollection | None
     :param page_status: the HTTP status the page came back with, when the caller knows it
     :ptype page_status: int | None
+    :param document_judge: the ``"per_document"`` grounding check, run on every complete
+        record; the default asks *judge_model_id* (or the vision model, for a scanned document)
+    :ptype document_judge: DocumentJudge
+    :param multi_row_judge: the ``"multi_row_vision"`` grounding check, run once over every
+        complete record; the default asks the vision model
+    :ptype multi_row_judge: MultiRowJudge
+    :param per_document_deadline_seconds: the outer deadline on each ``"per_document"``
+        extraction and judge call (default 90s), which bounds a chat client that hangs past
+        its own per-attempt timeout
+    :ptype per_document_deadline_seconds: float
+    :param multi_row_vision_deadline_seconds: the same outer deadline for the
+        ``"multi_row_vision"`` extraction and judge calls (default 150s; a whole table is
+        read in one call)
+    :ptype multi_row_vision_deadline_seconds: float
     :return: the persisted ``ScrapeExtraction`` row (``structured_fields["records"]`` holds every record)
     :rtype: ScrapeExtraction
     :raises StructuredCallFailedError: if a model call this poll depended on failed every
@@ -1888,6 +1983,8 @@ async def run_eval_loop_multi_row(
             api_key=api_key,
             extraction_model_id=extraction_model_id,
             judge_model_id=judge_model_id,
+            judge=document_judge,
+            deadline_seconds=per_document_deadline_seconds,
         )
     elif strategy_type == "multi_row_vision":
         result = await _run_multi_row_vision_extraction(
@@ -1898,6 +1995,8 @@ async def run_eval_loop_multi_row(
             recipe_collection=recipe_collection,
             extraction_collection=extraction_collection,
             api_key=api_key,
+            judge=multi_row_judge,
+            deadline_seconds=multi_row_vision_deadline_seconds,
         )
     else:
         result = await _run_row_strategy(

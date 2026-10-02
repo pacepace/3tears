@@ -30,7 +30,6 @@ from threetears.agent.tools.server import (
     CallResponse,
     ToolCallFailure,
     ToolServer,
-    _effective_ceiling,
 )
 from threetears.core.testing.replay_guard import FakeReplayGuard
 from threetears.nats import IncomingMessage
@@ -90,20 +89,21 @@ def _serving(body: Any, **guards: Any) -> tuple[ToolServer, RecordingNatsClient]
     return server, rec
 
 
-async def _call(server: ToolServer, rec: RecordingNatsClient, *, deadline_seconds: float) -> CallResponse:
+async def _call(server: ToolServer, rec: RecordingNatsClient, *, deadline_seconds: float | None) -> CallResponse:
     """deliver one authenticated call carrying a caller deadline, and return the pod's answer.
 
     :param server: the pod
     :ptype server: ToolServer
     :param rec: the client the pod answers on
     :ptype rec: RecordingNatsClient
-    :param deadline_seconds: what the caller says it has left
-    :ptype deadline_seconds: float
+    :param deadline_seconds: what the caller says it has left; ``None`` sends no deadline
+    :ptype deadline_seconds: float | None
     :return: the pod's reply
     :rtype: CallResponse
     """
     payload = signed_call_payload(pod_id=_POD_ID, tool_name="test.fake", tool_version="1.0.0")
-    payload["deadline_seconds"] = deadline_seconds
+    if deadline_seconds is not None:
+        payload["deadline_seconds"] = deadline_seconds
     await server.handle_call(
         IncomingMessage(
             data=json.dumps(payload).encode("utf-8"),
@@ -170,19 +170,26 @@ def test_a_request_without_a_deadline_is_unchanged() -> None:
     assert _request().deadline_seconds is None
 
 
+#: how long the tool in the composition test runs: past every short bound below, well
+#: inside every long one.
+_TOOL_RUN_SECONDS = 0.3
+
+
 @pytest.mark.parametrize(
-    ("pod_ceiling", "caller_deadline", "expected"),
+    ("pod_ceiling", "caller_deadline", "cut_off"),
     [
-        pytest.param(None, None, None, id="neither-bounds"),
-        pytest.param(30.0, None, 30.0, id="only-the-pod-bounds"),
-        pytest.param(None, 5.0, 5.0, id="only-the-caller-bounds"),
-        pytest.param(30.0, 5.0, 5.0, id="caller-is-tighter"),
-        pytest.param(5.0, 30.0, 5.0, id="pod-is-tighter-caller-cannot-buy-more"),
-        pytest.param(30.0, 0.0, 0.0, id="no-time-left-is-a-budget-not-an-absence"),
+        pytest.param(None, None, False, id="neither-bounds"),
+        pytest.param(30.0, None, False, id="only-the-pod-bounds-generously"),
+        pytest.param(0.05, None, True, id="only-the-pod-bounds-tightly"),
+        pytest.param(None, 0.05, True, id="only-the-caller-bounds"),
+        pytest.param(30.0, 0.05, True, id="caller-is-tighter"),
+        pytest.param(0.05, 30.0, True, id="pod-is-tighter-caller-cannot-buy-more"),
+        pytest.param(30.0, 0.0, True, id="no-time-left-is-a-budget-not-an-absence"),
+        pytest.param(30.0, 20.0, False, id="both-generous"),
     ],
 )
-def test_the_effective_ceiling_is_the_tighter_of_the_two(
-    pod_ceiling: float | None, caller_deadline: float | None, expected: float | None
+async def test_the_effective_ceiling_is_the_tighter_of_the_two(
+    pod_ceiling: float | None, caller_deadline: float | None, cut_off: bool
 ) -> None:
     """The composition rule §10.10 states: minimum, not either alone.
 
@@ -195,10 +202,25 @@ def test_the_effective_ceiling_is_the_tighter_of_the_two(
     :ptype pod_ceiling: float | None
     :param caller_deadline: what the caller said it had left
     :ptype caller_deadline: float | None
-    :param expected: the bound the call should run under
-    :ptype expected: float | None
+    :param cut_off: whether the call should be stopped at the hard limit
+    :ptype cut_off: bool
     """
-    assert _effective_ceiling(pod_ceiling, caller_deadline) == expected
+
+    async def body() -> ToolResult:
+        await asyncio.sleep(_TOOL_RUN_SECONDS)
+        return ToolResult(success=True, content="done")
+
+    guards: dict[str, Any] = {} if pod_ceiling is None else {"max_call_seconds": pod_ceiling}
+    server, rec = _serving(body, **guards)
+
+    answer = await _call(server, rec, deadline_seconds=caller_deadline)
+
+    if cut_off:
+        assert answer.success is False
+        assert answer.error is not None and _HARD_LIMIT in answer.error
+    else:
+        assert answer.success is True, answer.error
+        assert answer.content == "done"
 
 
 async def test_a_caller_deadline_bounds_a_call_on_an_unbounded_pod() -> None:

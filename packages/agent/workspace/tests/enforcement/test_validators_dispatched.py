@@ -1,7 +1,7 @@
 """enforcement: every write-class tool dispatches registered validators.
 
 the single source of validator dispatch for per-file writes is
-:func:`threetears.agent.workspace.tools.helpers._write_file_atomic`,
+:func:`threetears.agent.workspace.tools.helpers.write_file_atomic`,
 which calls :func:`dispatch_validators` inside its transaction before
 any INSERT/UPSERT. a tool that writes file content without routing
 through this helper would skip validator dispatch entirely.
@@ -11,7 +11,7 @@ this time, ``workspace_create`` and ``workspace_reset``) do their own
 pre-insert validator sweep via a direct call to
 :func:`dispatch_validators`. this test accepts either marker:
 
-- a call to ``_write_file_atomic(...)`` somewhere in the module, OR
+- a call to ``write_file_atomic(...)`` somewhere in the module, OR
 - a call to ``dispatch_validators(...)`` somewhere in the module.
 
 workspace_delete is excluded because it writes no file content: it
@@ -34,7 +34,7 @@ _TOOLS_ROOT = _SRC_ROOT / "tools"
 
 
 # every tool module that persists file content (either per-file via
-# _write_file_atomic or bulk via an in-class helper + dispatch_validators).
+# write_file_atomic or bulk via an in-class helper + dispatch_validators).
 _WRITE_FILE_TOOL_MODULES: tuple[str, ...] = (
     "fs_write",
     "fs_edit",
@@ -82,9 +82,9 @@ def _attribute_chain(node: ast.AST) -> list[str]:
 
 
 def _is_write_file_atomic_call(call: ast.Call) -> bool:
-    """true for ``_write_file_atomic(...)`` or qualified equivalent."""
+    """true for ``write_file_atomic(...)`` or qualified equivalent."""
     chain = _attribute_chain(call.func)
-    return chain[-1:] == ["_write_file_atomic"]
+    return chain[-1:] == ["write_file_atomic"]
 
 
 def _is_dispatch_validators_call(call: ast.Call) -> bool:
@@ -100,7 +100,7 @@ class TestValidatorsDispatched:
         """
         each module contains at least one validator dispatch site.
 
-        scan the whole module AST: either ``_write_file_atomic`` (the
+        scan the whole module AST: either ``write_file_atomic`` (the
         helper internally calls ``dispatch_validators``) or a direct
         ``dispatch_validators`` call counts.
 
@@ -122,11 +122,11 @@ class TestValidatorsDispatched:
                 if _is_dispatch_validators_call(node):
                     has_direct_dispatch = True
             if not (has_atomic_write or has_direct_dispatch):
-                violations.append(f"{module_name}: no _write_file_atomic or dispatch_validators call found in module")
+                violations.append(f"{module_name}: no write_file_atomic or dispatch_validators call found in module")
         assert not violations, (
             f"{len(violations)} validator-dispatch violation(s):\n"
             + "\n".join(violations)
-            + "\n\nwrite-class tools must route through _write_file_atomic "
+            + "\n\nwrite-class tools must route through write_file_atomic "
             "(which runs dispatch_validators) or call dispatch_validators "
             "directly before persisting content."
         )

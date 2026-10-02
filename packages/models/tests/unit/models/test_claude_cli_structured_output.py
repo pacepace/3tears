@@ -28,7 +28,7 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUse
 
 from threetears.models import DEFAULT_CHAT_MODEL  # noqa: E402
 from threetears.models.claude_cli_pool import launch_key  # noqa: E402
-from threetears.models.providers._claude_cli import create_subscription_chat  # noqa: E402
+from threetears.models.providers.claude_cli import create_subscription_chat  # noqa: E402
 from threetears.models.providers.structured_output import structured_output_kwargs  # noqa: E402
 
 _TOKEN = "sk-ant-oat01-faketokenfortest"
@@ -191,14 +191,14 @@ async def test_an_output_config_it_cannot_honour_is_refused_not_dropped() -> Non
             await model.bind(output_config={"effort": "low"}).ainvoke([HumanMessage(content="hi")])
 
 
-async def test_a_key_the_sdk_has_no_option_for_is_named() -> None:
-    with _no_real_sdk_calls(), patch("threetears.models.providers._claude_cli._logger") as logger:
+async def test_a_key_the_sdk_has_no_option_for_is_named(caplog: pytest.LogCaptureFixture) -> None:
+    with _no_real_sdk_calls(), caplog.at_level("WARNING"):
         model = create_subscription_chat(DEFAULT_CHAT_MODEL, _TOKEN)
         _FakeSDKClient.replies = _cli_answers(_ANSWER)
         await model.bind(temperature=0.2).ainvoke([HumanMessage(content="hi")])
 
-    [call] = logger.warning.call_args_list
-    assert call.kwargs["extra"]["extra_data"]["dropped"] == ["temperature"]
+    [record] = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert record.__dict__["extra_data"]["dropped"] == ["temperature"]
 
 
 async def test_a_structured_call_never_shares_a_cli_launched_without_its_schema() -> None:
