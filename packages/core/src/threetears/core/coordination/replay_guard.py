@@ -39,13 +39,22 @@ admitting a replay.
 
 **So the future tolerance is kept small, and it is not the verifier's past window.** How OLD an
 artifact may be when it arrives says nothing about how far its issue time may LEAD the verifier's
-clock, and only the second sets the reach. The platform's proof verifiers accept an issue time at
-most :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE` (5s) ahead while still
-accepting one :data:`~threetears.core.security.DEFAULT_PROOF_MAX_AGE` (60s) old, so their guards
-refuse for ten seconds after a broker restart. When the two directions were one symmetric leeway,
-the guards were sized for the whole minute and a restart cost 65 seconds of refused logins and
-tool calls. A guard sized for more than its verifier accepts is safe and only refuses for longer;
-one sized for less is refused by :meth:`ReplayGuard.require_covers`.
+clock, and only the second sets the reach. The registry's proof-of-possession verifier, whose
+signer is a platform pod, accepts an issue time at most
+:data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE` (5s) ahead while still accepting one
+:data:`~threetears.core.security.DEFAULT_PROOF_MAX_AGE` (60s) old, so its guard refuses for ten
+seconds after a broker restart. When the two directions were one symmetric leeway it was sized for
+the whole minute and a restart cost 65 seconds of refused tool calls. A DPoP verifier's signer is
+a user's device, whose clock the platform does not keep, so it accepts
+:data:`~threetears.core.security.CLIENT_ISSUE_TIME_FUTURE_TOLERANCE` (60s) ahead and its guard
+still reaches 65 seconds. A guard sized for more than its verifier accepts is safe and only
+refuses for longer; one sized for less is refused by :meth:`ReplayGuard.require_covers`.
+
+**A surface can ask before it is refused.** :meth:`ReplayGuard.refusing_until` answers whether the
+guard is inside that window now, and until when, from the bucket's creation time and the anchor
+alone -- no artifact. A login surface asks it before it reads a credential and answers every
+request in the window with one retryable reply, rather than letting the refusal surface after the
+password verified, where the only reply that leaks nothing is a wrong password's.
 
 **Bind at start, or the window is measured from the wrong moment.** The watermark is measured from
 the bucket's creation time, and the bucket is created by whichever call opens it first. A service
@@ -106,7 +115,7 @@ log = get_logger(__name__)
 #: The same clock-agreement requirement as
 #: :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`, between a different pair of
 #: hosts: that one is signer against verifier and is owned by the verifiers, this one is verifier
-#: against broker and is owned here. A proof verifier's guard therefore refuses for their sum.
+#: against broker and is owned here. A pod-signed proof's guard therefore refuses for their sum.
 CLOCK_DRIFT_ALLOWANCE = timedelta(seconds=5)
 
 
@@ -156,8 +165,10 @@ class ReplayGuard:
             this plus :data:`CLOCK_DRIFT_ALLOWANCE` of the bucket's creation time. Deliberately has
             no default: it is a property of the verifier, which confirms it with
             :meth:`require_covers`. It is the verifier's FUTURE bound only, never the window in
-            which an old artifact is still accepted; for a proof verifier it is
-            :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`. MUST NOT be negative
+            which an old artifact is still accepted; for a pod-signed proof it is
+            :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`, for a client-signed
+            DPoP proof :data:`~threetears.core.security.CLIENT_ISSUE_TIME_FUTURE_TOLERANCE`. MUST
+            NOT be negative
         :ptype verifier_future_tolerance: timedelta
         :param anchor: durable record of when this ledger FIRST existed
             (:mod:`threetears.core.coordination.replay_anchor`). Without one the guard cannot
@@ -284,7 +295,8 @@ class ReplayGuard:
             # later, which refuses more, never less.
             date_created = await bucket.date_created()
             refusal_reach = self._verifier_future_tolerance + CLOCK_DRIFT_ALLOWANCE
-            if await self._bucket_replaced_a_lost_one(date_created) and issued_at < date_created + refusal_reach:
+            refuses_before = await self._refuses_artifacts_issued_before(date_created)
+            if refuses_before is not None and issued_at < refuses_before:
                 log.warning(
                     "ReplayGuard refused an artifact issued before its bucket was created; "
                     "the bucket was wiped or is new, so an earlier sighting cannot be ruled out",
@@ -299,6 +311,57 @@ class ReplayGuard:
                 )
                 fresh = False
         return fresh
+
+    async def refusing_until(self) -> datetime | None:
+        """whether this guard is inside its post-wipe refusal window right now, and until when.
+
+        The question a surface asks BEFORE it looks at a credential or an artifact, so it can
+        answer every request in the window with one retryable reply that depends on nothing the
+        caller sent. Without it the refusal surfaces wherever the artifact happens to be checked
+        -- on a password login, after the password verified, where the only answer that leaks
+        nothing is the one a wrong password gets.
+
+        It depends only on the bucket's creation time, the reach, and the anchor: never on an
+        artifact. The moment it returns is computed by the one function :meth:`record_unique`
+        uses, so the two cannot disagree: inside the window, an artifact issued before the
+        returned moment is refused, and one issued at or after it is not refused by the wipe
+        rule.
+
+        ``None`` means the guard is not refusing by the wipe rule NOW: either its bucket did not
+        replace a lost one, or the reach has passed on this host's clock. After that an artifact
+        can still be refused for it -- one issued inside the reach and presented late -- and
+        that is a property of the artifact, not of the moment.
+
+        It records no nonce. Like :meth:`bind` it opens the bucket when nothing has, and reads
+        (stamping, if nothing has) the anchor. It costs one creation-time read from the broker
+        per call.
+
+        :return: the moment the window ends, timezone-aware UTC, or ``None`` when the guard is
+            not inside it
+        :rtype: datetime | None
+        :raises threetears.nats.KvError: when the bucket cannot be opened or its creation time
+            cannot be read -- the caller MUST NOT read that as "not refusing"
+        """
+        bucket = await self._bound_bucket()
+        await self._read_anchor()
+        refuses_before = await self._refuses_artifacts_issued_before(await bucket.date_created())
+        inside = refuses_before is not None and datetime.now(UTC) < refuses_before
+        return refuses_before if inside else None
+
+    async def _refuses_artifacts_issued_before(self, date_created: datetime) -> datetime | None:
+        """the wipe rule, once: the issue time below which an artifact is refused, if the rule applies.
+
+        The single computation behind :meth:`record_unique`'s refusal and
+        :meth:`refusing_until`'s answer.
+
+        :param date_created: the bucket's creation time, from the broker's clock
+        :ptype date_created: datetime
+        :return: the bucket's creation time plus the refusal reach when this bucket replaced a
+            lost one, else ``None``
+        :rtype: datetime | None
+        """
+        replaced = await self._bucket_replaced_a_lost_one(date_created)
+        return date_created + self._verifier_future_tolerance + CLOCK_DRIFT_ALLOWANCE if replaced else None
 
     async def _bucket_replaced_a_lost_one(self, date_created: datetime) -> bool:
         """whether this bucket replaced an earlier one whose nonces were lost.

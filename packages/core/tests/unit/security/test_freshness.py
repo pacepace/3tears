@@ -17,7 +17,12 @@ from datetime import timedelta
 import pytest
 
 from threetears.core.coordination.replay_guard import CLOCK_DRIFT_ALLOWANCE
-from threetears.core.security import DEFAULT_PROOF_MAX_AGE, ISSUE_TIME_FUTURE_TOLERANCE, issue_time_is_fresh
+from threetears.core.security import (
+    CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
+    DEFAULT_PROOF_MAX_AGE,
+    ISSUE_TIME_FUTURE_TOLERANCE,
+    issue_time_is_fresh,
+)
 
 _NOW = 1_800_000_000
 
@@ -43,6 +48,18 @@ class TestThePlatformNumbers:
 
     def test_the_future_tolerance_is_five_seconds(self) -> None:
         assert timedelta(seconds=5) == ISSUE_TIME_FUTURE_TOLERANCE
+
+    def test_a_client_signed_proof_keeps_a_minute_and_its_guard_the_sixty_five_second_reach(self) -> None:
+        # the signer is a browser or a laptop whose clock the platform does not keep, so the
+        # small number is not applied to it; the cost is the longer refusal after a wipe.
+        assert timedelta(seconds=60) == CLIENT_ISSUE_TIME_FUTURE_TOLERANCE
+        assert CLIENT_ISSUE_TIME_FUTURE_TOLERANCE + CLOCK_DRIFT_ALLOWANCE == timedelta(seconds=65)
+        assert issue_time_is_fresh(
+            _NOW + 55, now=_NOW, max_age=DEFAULT_PROOF_MAX_AGE, future_tolerance=CLIENT_ISSUE_TIME_FUTURE_TOLERANCE
+        )
+        assert not issue_time_is_fresh(
+            _NOW + 61, now=_NOW, max_age=DEFAULT_PROOF_MAX_AGE, future_tolerance=CLIENT_ISSUE_TIME_FUTURE_TOLERANCE
+        )
 
     def test_the_past_window_is_still_sixty_seconds(self) -> None:
         # separating the directions must not shorten how long a slow request has to arrive.

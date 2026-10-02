@@ -39,8 +39,8 @@ from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, EllipticCurv
 
 from threetears.core.coordination import ReplayGuard
 from threetears.core.security.freshness import (
+    CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
     DEFAULT_PROOF_MAX_AGE,
-    ISSUE_TIME_FUTURE_TOLERANCE,
     issue_time_is_fresh,
 )
 from threetears.core.security.identity_token import jwk_thumbprint
@@ -115,7 +115,7 @@ async def validate_dpop_proof(
     expected_htu: str | Sequence[str],
     replay_guard: ReplayGuard,
     max_age: timedelta = DEFAULT_PROOF_MAX_AGE,
-    future_tolerance: timedelta = ISSUE_TIME_FUTURE_TOLERANCE,
+    future_tolerance: timedelta = CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
 ) -> DpopProof:
     """Validate a DPoP proof presented at a token endpoint.
 
@@ -127,10 +127,16 @@ async def validate_dpop_proof(
 
     Freshness is two bounds, not one (:mod:`threetears.core.security.freshness`): ``iat`` may be
     as old as ``max_age`` and only as far ahead of this server's clock as ``future_tolerance``.
-    Both default to the values :mod:`threetears.core.security.pop` uses, so the two proof formats
-    age alike. The replay guard is sized for the FUTURE bound alone: whoever constructs it passes
-    ``verifier_future_tolerance`` equal to the ``future_tolerance`` used here, and after a broker
-    restart wipes its bucket it refuses proofs for that long plus its drift allowance.
+    The future bound defaults to
+    :data:`~threetears.core.security.CLIENT_ISSUE_TIME_FUTURE_TOLERANCE` -- a full minute, where
+    the pod-signed proof in :mod:`threetears.core.security.pop` allows five seconds -- because a
+    DPoP proof is signed by a user's browser or a developer's laptop, whose clock the platform
+    does not keep. The replay guard is sized for the FUTURE bound alone: whoever constructs it
+    passes ``verifier_future_tolerance`` equal to the ``future_tolerance`` used here, and after a
+    broker restart wipes its bucket it refuses proofs for that long plus its drift allowance: 65
+    seconds at the default. A surface can ask the guard's
+    :meth:`~threetears.core.coordination.ReplayGuard.refusing_until` first and answer that window
+    with a retryable reply.
 
     :param proof: the compact DPoP JWS.
     :ptype proof: str
@@ -218,9 +224,9 @@ async def validate_dpop_proof(
     #
     # The future half must stay TOLERANT as well as bounded. `iat` is an integer, so a
     # client whose clock leads the server's by a fraction of a second stamps `now + 1`;
-    # refusing that makes a login succeed or fail on sub-second timing. It is also SMALL, and
-    # its own number: the replay guard refuses for that long after a wipe of its bucket, so a
-    # future half as wide as the past one made every broker restart a minute of failed logins.
+    # refusing that makes a login succeed or fail on sub-second timing. It is its own number,
+    # separate from the past half: the replay guard refuses for that long after a wipe of its
+    # bucket, so it is as wide as an uncontrolled client clock needs and no wider.
     if not issue_time_is_fresh(iat, now=now, max_age=max_age, future_tolerance=future_tolerance):
         raise DpopError("dpop proof iat is outside the acceptable freshness window.")
 

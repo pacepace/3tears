@@ -363,6 +363,96 @@ class TestAPlatformSizedGuardAfterABrokerRestart:
             guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)
 
 
+class TestRefusingUntil:
+    """a guard says, without being shown an artifact, whether it is inside its post-wipe window.
+
+    A login surface asks this BEFORE it looks at a username or a password, so it can answer every
+    request in the window with one retryable reply that depends on no account. The answer has to
+    be the very moment ``record_unique`` refuses up to, or the gate and the guard disagree.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_established_bucket_is_not_refusing(self, client: FakeNatsClient) -> None:
+        bucket = await client.kv_bucket(name="pop_nonces")
+        bucket.wipe(date_created=datetime.now(UTC) - timedelta(hours=1))
+        assert await _guard(client).refusing_until() is None
+
+    @pytest.mark.asyncio
+    async def test_after_a_broker_restart_it_names_the_end_of_the_reach(self, client: FakeNatsClient) -> None:
+        guard = _guard(client)
+        await guard.bind()
+        await client.restart_broker()
+        bucket = await client.kv_bucket(name="pop_nonces")
+        created = await bucket.date_created()
+        assert await guard.refusing_until() == created + _REACH
+
+    @pytest.mark.asyncio
+    async def test_it_is_exactly_the_moment_record_unique_refuses_up_to(self, client: FakeNatsClient) -> None:
+        guard = _guard(client)
+        await guard.bind()
+        await client.restart_broker()
+        until = await guard.refusing_until()
+        assert until is not None
+        assert await guard.record_unique("just-before", issued_at=until - timedelta(microseconds=1)) is False
+        assert await guard.record_unique("at-the-moment", issued_at=until) is True
+
+    @pytest.mark.asyncio
+    async def test_once_the_reach_has_passed_it_is_not_refusing(self, client: FakeNatsClient) -> None:
+        bucket = await client.kv_bucket(name="pop_nonces")
+        bucket.wipe(date_created=datetime.now(UTC) - _REACH - timedelta(seconds=1))
+        assert await _guard(client).refusing_until() is None
+        bucket.wipe(date_created=datetime.now(UTC) - _REACH + timedelta(seconds=30))
+        assert await _guard(client).refusing_until() is not None
+
+    @pytest.mark.asyncio
+    async def test_it_records_nothing(self, client: FakeNatsClient) -> None:
+        guard = _guard(client)
+        await guard.refusing_until()
+        await guard.refusing_until()
+        bucket = await client.kv_bucket(name="pop_nonces")
+        assert bucket.keys() == ()
+
+    @pytest.mark.asyncio
+    async def test_a_first_run_with_an_anchor_is_not_refusing(self, client: FakeNatsClient) -> None:
+        # the anchor says this ledger was born with its bucket, so there is nothing to refuse:
+        # the same reading ``record_unique`` makes, from the same computation.
+        bucket = await client.kv_bucket(name="pop_nonces")
+        created = datetime.now(UTC)
+        bucket.wipe(date_created=created)
+        guard = ReplayGuard(
+            client,
+            bucket_name="pop_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            anchor=_StubAnchor(created),  # type: ignore[arg-type]
+        )
+        assert await guard.refusing_until() is None
+        assert await guard.record_unique("first-run", issued_at=created) is True
+
+    @pytest.mark.asyncio
+    async def test_a_wipe_with_an_anchor_is_refusing(self, client: FakeNatsClient) -> None:
+        bucket = await client.kv_bucket(name="pop_nonces")
+        created = datetime.now(UTC)
+        bucket.wipe(date_created=created)
+        guard = ReplayGuard(
+            client,
+            bucket_name="pop_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            anchor=_StubAnchor(created - timedelta(days=1)),  # type: ignore[arg-type]
+        )
+        assert await guard.refusing_until() == created + _REACH
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_that_cannot_be_read_fails_closed(self) -> None:
+        bucket = MagicMock()
+        bucket.date_created = AsyncMock(side_effect=KvError("stream info unavailable"))
+        nats_client = MagicMock()
+        nats_client.kv_bucket = AsyncMock(return_value=bucket)
+        with pytest.raises(KvError):
+            await _guard(nats_client).refusing_until()
+
+
 class _StubAnchor:
     """a `ReplayAnchor` whose recorded first-existence moment the test chooses.
 

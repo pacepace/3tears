@@ -7,9 +7,11 @@ enough to the verifier's own clock, and "close enough" is two different question
   The past window is how long a legitimately slow request has to arrive
   (:data:`DEFAULT_PROOF_MAX_AGE`). It is also how long a captured proof stays worth replaying,
   which is why every verifier records the proof's nonce in a replay guard for at least that long.
-- **How far AHEAD may it be?** Only as far as the signer's clock can honestly lead the verifier's
-  (:data:`ISSUE_TIME_FUTURE_TOLERANCE`). Nothing legitimate is stamped later than its signer's
-  clock, so the future side absorbs clock disagreement and nothing else.
+- **How far AHEAD may it be?** Only as far as the signer's clock can honestly lead the verifier's.
+  Nothing legitimate is stamped later than its signer's clock, so the future side absorbs clock
+  disagreement and nothing else. How much disagreement is honest depends on WHO SIGNS:
+  :data:`ISSUE_TIME_FUTURE_TOLERANCE` for a proof a platform pod signs, and
+  :data:`CLIENT_ISSUE_TIME_FUTURE_TOLERANCE` for one a user's device signs.
 
 They were one symmetric number once, and the future side inherited the past side's full minute.
 That minute was not free. A :class:`~threetears.core.coordination.replay_guard.ReplayGuard` keeps
@@ -17,10 +19,13 @@ nonces in memory-backed NATS KV, a broker restart wipes it, and after a wipe the
 every artifact its verifier could have accepted before the wipe -- which reaches exactly as far
 past the new bucket's creation time as the verifier accepts an issue time ahead of its clock, plus
 the guard's own clock-drift allowance. A verifier that accepted a minute ahead made every broker
-restart cost 65 seconds of refused logins and tool calls. Accepting five seconds ahead makes it
-ten.
+restart cost 65 seconds of refused traffic. Accepting five seconds ahead makes it ten.
 
-So the two directions are separate parameters on every verifier, and the future one has a single
+That saving is taken where the platform controls both clocks -- the pod-signed proof of possession
+on a tool call -- and deliberately not where it does not: a DPoP proof is signed by a browser or a
+developer's laptop, so its verifier keeps the minute and its guard keeps the 65-second reach.
+
+So the two directions are separate parameters on every verifier, and the future ones have a single
 owner here. A verifier passes its future tolerance to its guard's
 :meth:`~threetears.core.coordination.replay_guard.ReplayGuard.require_covers`, which fails loudly
 when the guard was sized for less.
@@ -31,12 +36,18 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Final
 
-__all__ = ["DEFAULT_PROOF_MAX_AGE", "ISSUE_TIME_FUTURE_TOLERANCE", "issue_time_is_fresh"]
+__all__ = [
+    "CLIENT_ISSUE_TIME_FUTURE_TOLERANCE",
+    "DEFAULT_PROOF_MAX_AGE",
+    "ISSUE_TIME_FUTURE_TOLERANCE",
+    "issue_time_is_fresh",
+]
 
-#: how far AHEAD of a verifier's clock a proof's signed issue time may be and still be accepted.
+#: how far AHEAD of a verifier's clock a POD-SIGNED proof's issue time may be and still be accepted.
 #:
-#: The platform's clock-agreement requirement, stated as a number: every host that signs a proof
-#: and every host that verifies one must agree to within this. Measured on a live cluster, sixteen
+#: For an artifact both ends of which are platform hosts: the agent's proof of possession, verified
+#: by the registry. The platform's clock-agreement requirement, stated as a number: every pod that
+#: signs such a proof and every pod that verifies one must agree to within this. Measured on a live cluster, sixteen
 #: pods -- hub, registry, gateway, identity, agents, tool pods and all three NATS brokers -- agreed
 #: to within about one second, the error of the measurement itself.
 #:
@@ -57,11 +68,31 @@ __all__ = ["DEFAULT_PROOF_MAX_AGE", "ISSUE_TIME_FUTURE_TOLERANCE", "issue_time_i
 #: sub-second timing.
 ISSUE_TIME_FUTURE_TOLERANCE: Final[timedelta] = timedelta(seconds=5)
 
+#: how far AHEAD of a verifier's clock a CLIENT-SIGNED proof's issue time may be and still be accepted.
+#:
+#: For a DPoP proof (:func:`threetears.iam.dpop.validate_dpop_proof`), which is signed by a user's
+#: browser or a developer's laptop at a login, refresh or token endpoint. That clock is not the
+#: platform's to keep: a phone or a laptop a few tens of seconds fast is ordinary, and at
+#: :data:`ISSUE_TIME_FUTURE_TOLERANCE` its owner could not log in at all, with a refusal that says
+#: nothing about clocks. So the client side keeps a full minute.
+#:
+#: The cost is the one the pod side stopped paying: a replay guard sized for this refuses for 65
+#: seconds after a broker restart wipes its bucket (this plus
+#: :data:`~threetears.core.coordination.replay_guard.CLOCK_DRIFT_ALLOWANCE`), so DPoP surfaces
+#: refuse logins and refreshes for that long. A surface softens it by asking its guard
+#: :meth:`~threetears.core.coordination.replay_guard.ReplayGuard.refusing_until` before it looks
+#: at a credential and answering "try again shortly" instead of a credential failure.
+#:
+#: Never use it for a pod-signed artifact: there it buys nothing and costs the 55 seconds.
+CLIENT_ISSUE_TIME_FUTURE_TOLERANCE: Final[timedelta] = timedelta(seconds=60)
+
 #: how OLD a proof's signed issue time may be and still be accepted, by default.
 #:
 #: The time a legitimately slow request has to arrive. Independent of
 #: :data:`ISSUE_TIME_FUTURE_TOLERANCE`: lengthening it costs replay-guard memory (a nonce is
-#: remembered for the whole accept window) and nothing after a broker restart.
+#: remembered for the whole accept window) and nothing after a broker restart. A nonce TTL must
+#: cover this PLUS the verifier's future tolerance: a proof accepted at the far future edge stays
+#: acceptable until this long after its issue time.
 DEFAULT_PROOF_MAX_AGE: Final[timedelta] = timedelta(seconds=60)
 
 

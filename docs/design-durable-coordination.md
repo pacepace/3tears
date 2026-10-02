@@ -74,16 +74,28 @@ named drift allowance between those hosts, added by the guard. Each verifier cal
 silently reopening the hole: at construction for the registry proxy and the tool server, and
 on every request for `validate_dpop_proof`, which is a function with no construction step.
 
-**The future tolerance is not the past window.** A proof may be up to 60s old when it arrives
-(`DEFAULT_PROOF_MAX_AGE`) and at most 5s ahead of the verifier's clock
-(`ISSUE_TIME_FUTURE_TOLERANCE`, both in `threetears.core.security.freshness`). Only the second
-sets the reach, so a proof verifier's guard refuses for 10s after a broker restart: 5s of future
-tolerance plus the 5s drift allowance. Until v0.58.0 the two directions were one symmetric 60s
-leeway, every guard was sized for the whole of it, and a restart cost 65s of refused logins and
-tool calls. The price of the small number is a requirement: every host that signs a proof must
-agree with every host that verifies one to within 5s, and one that does not is refused outright.
-The proxy assertion's verifier accepts nothing ahead, so the tool pod's guard reaches the 5s
-drift allowance alone.
+**The future tolerance is not the past window, and it depends on who signs.** A proof may be up
+to 60s old when it arrives (`DEFAULT_PROOF_MAX_AGE`). How far AHEAD of the verifier's clock it may
+be is a separate number, and only that number sets the reach. All three live in
+`threetears.core.security.freshness`.
+
+| Artifact | Signer | Future tolerance | Reach after a wipe |
+|---|---|---|---|
+| PoP proof (`verify_pop_proof`, registry `pop_nonces`) | an agent pod | `ISSUE_TIME_FUTURE_TOLERANCE`, 5s | 10s |
+| DPoP proof (`validate_dpop_proof`, hub and identity guards) | a browser or a laptop | `CLIENT_ISSUE_TIME_FUTURE_TOLERANCE`, 60s | 65s |
+| Proxy assertion (`verify_proxy_assertion`, tool pod) | the registry | 0s | 5s |
+
+Until v0.58.0 the two directions were one symmetric 60s leeway and the PoP guard was sized for the
+whole of it, so a broker restart cost 65s of refused tool calls. The price of the 5s is a
+requirement: every pod that signs a PoP proof must agree with the registry to within 5s, and one
+that does not is refused outright. The DPoP side keeps the minute because its signer's clock is
+not the platform's to keep; it pays the 65s.
+
+**Asking before refusing.** `ReplayGuard.refusing_until()` answers, with no artifact, whether the
+guard is inside that window now and until when. It is the same computation `record_unique`
+refuses with. A login surface asks it before it reads a credential and answers every request in
+the window with one account-independent retryable reply; `FakeReplayGuard(refusing_until=...)`
+puts the double inside the window for a test of that gate.
 
 **Bind at start, or the first call after a bucket is created is itself refused.** The bucket is
 created by whichever call opens it first. A guard left to open it in its first `record_unique`
@@ -390,7 +402,7 @@ The primitives keep their public surfaces apart from `ReplayGuard.record_unique`
   collection without an L3 pool.
 - **hub**: its DPoP guard (`hub-dpop-nonces`, built in `aibots/hub/app.py`) gains
   `verifier_future_tolerance` covering the future tolerance it validates with
-  (`ISSUE_TIME_FUTURE_TOLERANCE` since v0.58.0; the whole `iat_window` before). Without it the hub
+  (`CLIENT_ISSUE_TIME_FUTURE_TOLERANCE` since v0.58.0; the whole `iat_window` before). Without it the hub
   fails at startup on this release. `validate_dpop_proof` passes `issued_at` itself.
 - **identity's refresh-token jti ledger is not a nonce guard.** It was a `ReplayGuard` over a
   30-day TTL in a bucket of its own. Watermarked, a broker wipe would refuse every outstanding
