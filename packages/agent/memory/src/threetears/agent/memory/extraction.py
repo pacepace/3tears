@@ -44,6 +44,7 @@ from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
 from threetears.nats.errors import KvError
+from threetears.nats.subject_permissions import KV_KEY_SCOPE_GRAMMAR
 from threetears.observe import get_logger, traced
 
 __all__ = [
@@ -255,6 +256,8 @@ class MemoryExtractor:
         rate_limit_bucket: str = "ratelimits",
         summary_callback: Callable[[str, str], Awaitable[None]] | None = None,
         on_memory_created: Callable[["MemoryEntity"], Awaitable[None]] | None = None,
+        rate_limit_bucket_create_if_missing: bool = True,
+        rate_limit_key_scope: str | None = None,
     ) -> None:
         """initialize the extractor with the memories Collection + rbac authorizer.
 
@@ -298,13 +301,33 @@ class MemoryExtractor:
             extraction pipeline (the row is already committed; the
             push is best-effort)
         :ptype on_memory_created: Callable[[MemoryEntity], Awaitable[None]] | None
+        :param rate_limit_bucket_create_if_missing: ``True`` (the default) creates the rate-limit
+            bucket when absent; ``False`` only BINDS one another identity declared and never
+            issues STREAM.CREATE -- what an agent pod passes, since a pod holds no
+            stream-management verb and the hub declares the bucket
+        :ptype rate_limit_bucket_create_if_missing: bool
+        :param rate_limit_key_scope: the owner scope every cooldown key leads with, for a bucket SHARED
+            by many owners -- the platform's ``ratelimits``, which every agent pod binds and in which
+            each pod is granted only the keys under its own
+            :func:`~threetears.nats.subject_permissions.kv_key_scope_for` scope. ``None`` keys by the
+            conversation alone, for a bucket this extractor's process has to itself
+        :ptype rate_limit_key_scope: str | None
+        :raises ValueError: when ``rate_limit_key_scope`` is not one literal subject token
         """
+        if rate_limit_key_scope is not None and not KV_KEY_SCOPE_GRAMMAR.match(rate_limit_key_scope):
+            raise ValueError(
+                f"MemoryExtractor rate_limit_key_scope {rate_limit_key_scope!r} must be one literal subject "
+                f"token matching {KV_KEY_SCOPE_GRAMMAR.pattern}; a dot splits it and a wildcard widens it, so "
+                f"its keys would fall outside the owner's grant"
+            )
+        self._rate_limit_key_scope = rate_limit_key_scope
         self._config = config
         self._embedding_provider = embedding_provider
         self._chat_model_factory = chat_model_factory
         self._nats_client = nats_client
         self._prompts = prompts or ExtractionPrompts()
         self._rate_limit_bucket = rate_limit_bucket
+        self._rate_limit_bucket_create_if_missing = rate_limit_bucket_create_if_missing
         self._summary_callback = summary_callback
         self._on_memory_created = on_memory_created
         self._authorizer = authorizer
@@ -412,7 +435,9 @@ class MemoryExtractor:
         if claim.revision is None or self._nats_client is None:
             return
         try:
-            bucket = await self._nats_client.kv_bucket(name=self._rate_limit_bucket)
+            bucket = await self._nats_client.kv_bucket(
+                name=self._rate_limit_bucket, create_if_missing=self._rate_limit_bucket_create_if_missing
+            )
             released = await bucket.delete(key=self._rate_limit_key(conversation_id), revision=claim.revision)
         except Exception as exc:
             log.warning("could not release the extraction cooldown of a turn that stored nothing: %s", exc)
@@ -636,7 +661,8 @@ class MemoryExtractor:
         :rtype: str
         """
         # convert at border: KV key
-        return f"memory.last_extract.{conversation_id}"
+        key = f"memory.last_extract.{conversation_id}"
+        return key if self._rate_limit_key_scope is None else f"{self._rate_limit_key_scope}.{key}"
 
     async def check_rate_limit(
         self,
@@ -661,7 +687,9 @@ class MemoryExtractor:
         if self._nats_client is None or cooldown <= 0:
             return True, 0
         try:
-            bucket = await self._nats_client.kv_bucket(name=self._rate_limit_bucket)
+            bucket = await self._nats_client.kv_bucket(
+                name=self._rate_limit_bucket, create_if_missing=self._rate_limit_bucket_create_if_missing
+            )
             running = await bucket.get(key=self._rate_limit_key(conversation_id)) is not None
         except Exception as exc:
             log.warning("rate limit read failed, allowing extraction: %s", exc)
@@ -714,7 +742,9 @@ class MemoryExtractor:
         revision: int | None = None
         bucket_name = self._rate_limit_bucket
         try:
-            bucket = await self._nats_client.kv_bucket(name=bucket_name)
+            bucket = await self._nats_client.kv_bucket(
+                name=bucket_name, create_if_missing=self._rate_limit_bucket_create_if_missing
+            )
             bucket_name = bucket.name
             revision = await bucket.create(
                 key=self._rate_limit_key(conversation_id),

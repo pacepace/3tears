@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -56,19 +58,24 @@ def backend() -> DuckDBBackend:
 class TestImportError:
     """Verify ImportError when duckdb is not installed."""
 
-    def test_import_error_without_duckdb(self) -> None:
+    def test_import_error_without_duckdb(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A process without duckdb imports the module, and is told what to install on use.
+
+        The module is imported afresh with ``duckdb`` unimportable, which is exactly the state
+        an install without the extra is in. ``patch.dict`` restores ``sys.modules`` afterwards,
+        and the package attribute the fresh import rebinds is restored by ``monkeypatch``, so
+        nothing else in the process sees the duckdb-less copy.
+        """
+        import threetears.core.cache as cache_pkg
+
+        monkeypatch.setattr(cache_pkg, "duckdb", cache_pkg.duckdb)
         with mock.patch.dict("sys.modules", {"duckdb": None}):
-            import threetears.core.cache.duckdb as duckdb_mod
+            sys.modules.pop("threetears.core.cache.duckdb", None)
+            without_duckdb = importlib.import_module("threetears.core.cache.duckdb")
 
-            # Save original state
-            orig_has = duckdb_mod._HAS_DUCKDB
-
-            try:
-                duckdb_mod._HAS_DUCKDB = False
-                with pytest.raises(ImportError, match="duckdb"):
-                    DuckDBBackend()
-            finally:
-                duckdb_mod._HAS_DUCKDB = orig_has
+            assert without_duckdb.DuckDBBackend is not DuckDBBackend, "the module was not imported afresh"
+            with pytest.raises(ImportError, match="duckdb"):
+                without_duckdb.DuckDBBackend()
 
 
 class TestThreadLocalConnections:
@@ -303,12 +310,12 @@ class TestUpsertFiltersToTheRegisteredSchema:
     """
 
     def test_the_cache_age_stamp_does_not_break_the_write(self, backend: DuckDBBackend) -> None:
-        from threetears.core.cache.base import _CACHED_AT_COLUMN
+        from threetears.core.cache.base import CACHED_AT_COLUMN
 
         entity_id = uuid.uuid4()
         backend.upsert(
             "test_entities",
-            {"id": entity_id, "name": "stamped", _CACHED_AT_COLUMN: 1234.5},
+            {"id": entity_id, "name": "stamped", CACHED_AT_COLUMN: 1234.5},
             "id",
         )
 
@@ -318,18 +325,18 @@ class TestUpsertFiltersToTheRegisteredSchema:
 
     def test_the_stamp_is_dropped_rather_than_stored(self, backend: DuckDBBackend) -> None:
         """It is filtered out, not silently accepted into some other column."""
-        from threetears.core.cache.base import _CACHED_AT_COLUMN
+        from threetears.core.cache.base import CACHED_AT_COLUMN
 
         entity_id = uuid.uuid4()
         backend.upsert(
             "test_entities",
-            {"id": entity_id, "name": "stamped", _CACHED_AT_COLUMN: 1234.5},
+            {"id": entity_id, "name": "stamped", CACHED_AT_COLUMN: 1234.5},
             "id",
         )
 
         row = backend.select_by_id("test_entities", entity_id, "id")
         assert row is not None
-        assert _CACHED_AT_COLUMN not in row
+        assert CACHED_AT_COLUMN not in row
 
     def test_any_undeclared_key_is_dropped_too(self, backend: DuckDBBackend) -> None:
         """The filter is general, not a special case for the stamp."""

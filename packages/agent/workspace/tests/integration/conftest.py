@@ -14,7 +14,7 @@ REAL :class:`threetears.agent.workspace.tools.*` tool classes with:
 
 - **fake asyncpg pool**: :class:`_FakePool` below, a minimal in-memory
   PostgreSQL-shaped store that understands the specific SQL statements
-  :func:`_write_file_atomic`, :func:`_capture_back`, :func:`materialize`,
+  :func:`write_file_atomic`, :func:`_capture_back`, :func:`materialize`,
   and the lifecycle tools issue. it is NOT a general-purpose SQL engine
   -- it pattern-matches on statement prefix and carries the three tables
   (``workspaces`` / ``workspace_files`` / ``workspace_file_versions``)
@@ -70,7 +70,7 @@ from threetears.agent.tools.call_scope import (
     enter_call_scope,
 )
 from threetears.agent.tools.context_envelope import CallContext
-from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
@@ -197,7 +197,7 @@ class _FakeStore:
         :param args: bound parameters
         :ptype args: Any
         :return: dict-shaped row or None (matches asyncpg.Record.__getitem__
-            and dict conversion used by :func:`_resolve_ref`)
+            and dict conversion used by :func:`resolve_ref`)
         :rtype: dict[str, Any] | None
         """
         q = " ".join(query.split())
@@ -221,7 +221,7 @@ class _FakeStore:
             max_version = max((v.version for v in matches_j), default=0)
             return {"max_version": max_version}
         if "FROM workspace_file_versions" in q:
-            # simplified resolver for _resolve_ref variants exercised by
+            # simplified resolver for resolve_ref variants exercised by
             # the rollback integration; the full set of SELECTs appears
             # in helpers.py and is covered by unit tests.
             return self._handle_select_version(q, args)
@@ -321,7 +321,7 @@ class _FakeStore:
         self.files.pop((workspace_id, relative_path), None)
 
     def _handle_select_version(self, query: str, args: tuple[Any, ...]) -> dict[str, Any] | None:
-        """best-effort emulation of the _resolve_ref SELECTs."""
+        """best-effort emulation of the resolve_ref SELECTs."""
         # only the "ORDER BY version DESC LIMIT 1" case is exercised
         # today (ref='head') plus exact-version lookup.
         if "ORDER BY version DESC LIMIT 1" in query and "action = 'checkpoint'" not in query:

@@ -51,7 +51,7 @@ from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
     _next_journal_version,
-    _resolve_workspace,
+    resolve_workspace,
     authorize_workspace,
 )
 
@@ -167,7 +167,7 @@ class WorkspaceRefreshTool(TearsTool):
 
         result: ToolResult
         try:
-            workspace = await _resolve_workspace(
+            workspace = await resolve_workspace(
                 workspace_arg,
                 self._context_provider(),
                 self._workspaces,

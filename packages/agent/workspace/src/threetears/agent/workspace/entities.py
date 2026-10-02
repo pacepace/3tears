@@ -82,7 +82,7 @@ class Workspace(BaseEntity):
     .WorkspaceNamespaceEmitter`) computes the same key without a
     network round trip. :attr:`customer_id` is the one field that must
     be loaded from the hub's ``namespaces`` at resolve-time; the
-    ``_resolve_workspace`` helper stamps it onto the entity via the
+    ``resolve_workspace`` helper stamps it onto the entity via the
     ``customer_id`` setter after a single platform lookup.
 
     v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
@@ -348,7 +348,7 @@ class Workspace(BaseEntity):
         unlike :attr:`owner_agent_id` and :attr:`created_by_user_id`
         which alias columns already on the agent-schema row, the customer
         dimension lives on the paired hub ``namespaces`` row.
-        ``_resolve_workspace`` stamps the value via the :attr:`customer_id`
+        ``resolve_workspace`` stamps the value via the :attr:`customer_id`
         setter after a single platform lookup before returning the
         entity to a tool's ``execute``. returns ``None`` when the entity
         was hydrated without a platform lookup (tests, direct L1 reads);
@@ -365,7 +365,7 @@ class Workspace(BaseEntity):
         """
         stamps the resolved customer UUID onto the entity.
 
-        invoked by ``_resolve_workspace`` once the hub's ``namespaces``
+        invoked by ``resolve_workspace`` once the hub's ``namespaces``
         row for this workspace id has been fetched. the value is NOT
         persisted back to the agent schema (the column does not exist
         there); it lives only on the in-memory entity for the duration

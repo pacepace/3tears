@@ -13,6 +13,7 @@ from threetears.agent.tools.builtin.analyze_media import (
     create_analyze_media_tool,
 )
 from threetears.agent.tools.protocols import MediaInfo
+from threetears.media.contracts import MediaSizeLimitExceeded
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +31,19 @@ class FakeVisionProvider:
 
     async def analyze(self, image_data: bytes, mime_type: str, prompt: str) -> str:
         self.analyze_calls.append((image_data, mime_type, prompt))
+        return self.response
+
+
+# parity-with: threetears.agent.tools.protocols.ReferenceVisionProvider
+class FakeReferenceVisionProvider:
+    """A reference-taking vision backend: records object ids, never sees bytes."""
+
+    def __init__(self, response: str = "A referenced square."):
+        self.response = response
+        self.analyze_ref_calls: list[tuple[list, str]] = []
+
+    async def analyze_ref(self, object_ids: list, prompt: str) -> str:
+        self.analyze_ref_calls.append((list(object_ids), prompt))
         return self.response
 
 
@@ -66,6 +80,7 @@ class FakeMediaStorage:
         self._downloads: dict[UUID, tuple[bytes, str]] = {}
         self._content: dict[tuple[UUID, str, str | None], str] = {}
         self.store_calls: list[dict[str, Any]] = []
+        self.download_limits: list[int | None] = []
 
     def add_media(
         self,
@@ -90,8 +105,12 @@ class FakeMediaStorage:
     async def get_media(self, media_id: UUID) -> MediaInfo | None:
         return self._media.get(media_id)
 
-    async def download_media(self, media_id: UUID) -> tuple[bytes, str] | None:
-        return self._downloads.get(media_id)
+    async def download_media(self, media_id: UUID, *, max_bytes: int | None = None) -> tuple[bytes, str] | None:
+        self.download_limits.append(max_bytes)
+        found = self._downloads.get(media_id)
+        if found is not None and max_bytes is not None and len(found[0]) > max_bytes:
+            raise MediaSizeLimitExceeded(media_id, limit_bytes=max_bytes, size_bytes=None)
+        return found
 
     async def get_content(
         self,
@@ -513,6 +532,179 @@ class TestDocumentRouting:
         assert "no text QA capability" in result
 
 
+class TestDocumentSizeLimit:
+    """a document is read from its bytes only up to MAX_DOCUMENT_BYTES."""
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_DOCUMENT_BYTES
+
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(
+            mid,
+            MediaInfo(mid, "document", "text/plain", size_bytes=MAX_DOCUMENT_BYTES + 1),
+            b"small in this double",
+            "text/plain",
+        )
+        text = FakeTextProvider()
+        tool = _make_tool(storage, text=text, categories={"document"})
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Summarize", "analyzer": "TestVision"})
+
+        assert "too large" in result
+        assert storage.download_limits == [], "a document whose recorded size is over the limit was downloaded"
+        assert text.answer_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_DOCUMENT_BYTES
+
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "document", "text/plain"), b"The revenue was 42.", "text/plain")
+        text = FakeTextProvider("42.")
+        tool = _make_tool(storage, text=text, categories={"document"})
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Revenue?", "analyzer": "TestVision"})
+
+        assert result == "42."
+        assert storage.download_limits == [MAX_DOCUMENT_BYTES]
+
+    @pytest.mark.asyncio
+    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch):
+        from threetears.agent.tools.builtin import analyze_media
+
+        monkeypatch.setattr(analyze_media, "MAX_DOCUMENT_BYTES", 8)
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "document", "text/plain"), b"more than eight bytes", "text/plain")
+        text = FakeTextProvider()
+        tool = _make_tool(storage, text=text, categories={"document"})
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Summarize", "analyzer": "TestVision"})
+
+        assert "too large" in result
+        assert "passed that size while being read" in result
+        assert text.answer_calls == []
+
+
+class TestTranscriptionSizeLimit:
+    """audio and video are read for transcription only up to MAX_TRANSCRIPTION_BYTES."""
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_TRANSCRIPTION_BYTES
+
+        storage = FakeMediaStorage()
+        transcription = FakeTranscriptionProvider()
+        mid = uuid4()
+        storage.add_media(
+            mid,
+            MediaInfo(mid, "video", "video/mp4", size_bytes=MAX_TRANSCRIPTION_BYTES + 1),
+            b"small in this double",
+            "video/mp4",
+        )
+        tool = _make_tool(storage, transcription=transcription, categories={"video"}, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "What is said?", "analyzer": "TestVision"})
+
+        assert "too large" in result
+        assert f"{MAX_TRANSCRIPTION_BYTES + 1:,} bytes" in result
+        assert storage.download_limits == [], "a recording whose recorded size is over the limit was downloaded"
+        assert transcription.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_TRANSCRIPTION_BYTES
+
+        storage = FakeMediaStorage()
+        transcription = FakeTranscriptionProvider("Hello from audio.")
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "audio", "audio/mpeg"), b"fake-audio-data", "audio/mpeg")
+        tool = _make_tool(storage, transcription=transcription, categories={"audio"}, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "What is said?", "analyzer": "TestVision"})
+
+        assert "Hello from audio." in result
+        assert storage.download_limits == [MAX_TRANSCRIPTION_BYTES]
+
+    @pytest.mark.asyncio
+    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch):
+        from threetears.agent.tools.builtin import analyze_media
+
+        monkeypatch.setattr(analyze_media, "MAX_TRANSCRIPTION_BYTES", 8)
+        storage = FakeMediaStorage()
+        transcription = FakeTranscriptionProvider()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "audio", "audio/mpeg"), b"more than eight bytes", "audio/mpeg")
+        tool = _make_tool(storage, transcription=transcription, categories={"audio"}, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "What is said?", "analyzer": "TestVision"})
+
+        assert "too large" in result
+        assert "passed that size while being read" in result
+        assert transcription.calls == []
+
+
+class TestVisionImageSizeLimit:
+    """a bytes-taking vision backend is sent an image only up to MAX_VISION_IMAGE_BYTES."""
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_VISION_IMAGE_BYTES
+
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider()
+        mid = uuid4()
+        storage.add_media(
+            mid, MediaInfo(mid, "image", "image/jpeg", size_bytes=MAX_VISION_IMAGE_BYTES + 1), _small_jpeg()
+        )
+        tool = _make_tool(storage, vision=vision, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe", "analyzer": "TestVision"})
+
+        assert "too large" in result
+        assert storage.download_limits == [], "an image whose recorded size is over the limit was downloaded"
+        assert vision.analyze_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self):
+        from threetears.agent.tools.builtin.analyze_media import MAX_VISION_IMAGE_BYTES
+
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider("A red square.")
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
+        tool = _make_tool(storage, vision=vision, user_id=uuid4())
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe", "analyzer": "TestVision"})
+
+        assert "A red square." in result
+        assert storage.download_limits == [MAX_VISION_IMAGE_BYTES]
+
+    @pytest.mark.asyncio
+    async def test_one_image_over_the_limit_refuses_the_analysis_rather_than_dropping_it(self, monkeypatch):
+        from threetears.agent.tools.builtin import analyze_media
+
+        small = _small_jpeg()
+        monkeypatch.setattr(analyze_media, "MAX_VISION_IMAGE_BYTES", len(small))
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider()
+        fits, too_big = uuid4(), uuid4()
+        storage.add_media(fits, MediaInfo(fits, "image", "image/jpeg"), small)
+        storage.add_media(too_big, MediaInfo(too_big, "image", "image/jpeg"), small + b"-one-byte-more")
+        tool = _make_tool(storage, vision=vision, user_id=uuid4())
+
+        result = await tool.ainvoke(
+            {"media_ids": [str(fits), str(too_big)], "question": "Describe", "analyzer": "TestVision"}
+        )
+
+        assert "too large" in result
+        assert str(too_big) in result, "the refusal names the image it could not read"
+        assert vision.analyze_calls == [], "an analysis of the other images would read as an analysis of all of them"
+
+
 class TestAudioVideoRouting:
     """Audio/video should route through transcription."""
 
@@ -760,3 +952,62 @@ class TestNoUserIdMode:
 
         assert "No user result." in result
         assert len(storage.store_calls) == 0  # Nothing stored
+
+
+class TestReferenceVisionRouting:
+    """a ReferenceVisionProvider is routed by reference; bytes are never downloaded."""
+
+    async def test_image_goes_through_analyze_ref_not_download(self) -> None:
+        """analyze_media calls analyze_ref with the object id and never downloads bytes."""
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"))  # no bytes registered
+        vision = FakeReferenceVisionProvider("a referenced cat")
+        tool = _make_tool(storage, vision=vision)
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "what is this", "analyzer": "TestVision"})
+
+        assert "a referenced cat" in result
+        # routed by reference: analyze_ref saw the object id
+        assert vision.analyze_ref_calls
+        object_ids, prompt = vision.analyze_ref_calls[0]
+        assert object_ids == [mid]
+        assert "what is this" in prompt
+
+    async def test_two_images_analyse_together_in_one_call(self) -> None:
+        """several referenced images go to analyze_ref in ONE call, in order."""
+        storage = FakeMediaStorage()
+        id_a, id_b = uuid4(), uuid4()
+        storage.add_media(id_a, MediaInfo(id_a, "image", "image/jpeg"))
+        storage.add_media(id_b, MediaInfo(id_b, "image", "image/jpeg"))
+        vision = FakeReferenceVisionProvider()
+        tool = _make_tool(storage, vision=vision)
+
+        await tool.ainvoke({"media_ids": [str(id_a), str(id_b)], "question": "compare", "analyzer": "TestVision"})
+
+        assert len(vision.analyze_ref_calls) == 1
+        object_ids, _ = vision.analyze_ref_calls[0]
+        assert object_ids == [id_a, id_b]
+
+    async def test_an_id_the_storage_did_not_resolve_is_never_sent(self) -> None:
+        """an id get_media refused is dropped; analyze_ref sees only the resolved one."""
+        storage = FakeMediaStorage()
+        resolved, refused = uuid4(), uuid4()
+        storage.add_media(resolved, MediaInfo(resolved, "image", "image/jpeg"))
+        vision = FakeReferenceVisionProvider()
+        tool = _make_tool(storage, vision=vision)
+
+        await tool.ainvoke({"media_ids": [str(refused), str(resolved)], "question": "q", "analyzer": "TestVision"})
+
+        assert [ids for ids, _ in vision.analyze_ref_calls] == [[resolved]]
+
+    async def test_nothing_resolved_is_no_valid_media_and_no_call(self) -> None:
+        """when get_media resolves nothing, the answer says so and analyze_ref is never called."""
+        storage = FakeMediaStorage()
+        vision = FakeReferenceVisionProvider()
+        tool = _make_tool(storage, vision=vision)
+
+        result = await tool.ainvoke({"media_ids": [str(uuid4())], "question": "q", "analyzer": "TestVision"})
+
+        assert "No valid media found" in result
+        assert vision.analyze_ref_calls == []

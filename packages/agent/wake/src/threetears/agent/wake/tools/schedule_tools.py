@@ -56,10 +56,11 @@ from threetears.agent.wake.rate_limit import (
     resume_schedule_serialized,
 )
 from threetears.agent.wake.types import WakeConversations
+from threetears.core.exceptions import ConcurrentModificationError
 from threetears.scheduled_jobs import compute_next_fire_at
 from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_schedule_id
 from threetears.agent.wake.tools.validators import (
-    _ChainNode,
+    ChainNode,
     validate_context_from_chain,
     validate_schedule_config,
 )
@@ -415,11 +416,11 @@ def _make_chain_resolver(
     a chain can never reach outside the agent.
     """
 
-    async def resolver(schedule_id: UUID) -> _ChainNode | None:
+    async def resolver(schedule_id: UUID) -> ChainNode | None:
         entity = await schedules_collection.find_for_agent(agent_id, schedule_id)
         if entity is None:
             return None
-        return _ChainNode(
+        return ChainNode(
             agent_id=entity.agent_id,
             context_from_schedule_id=entity.context_from_schedule_id,
         )
@@ -953,6 +954,20 @@ def load_wake_schedule_update_tool(
         entity.date_updated = datetime.now(UTC)
         try:
             await schedules_collection.save_entity(entity)
+        except ConcurrentModificationError:
+            # the save is fenced on the row this edit read; something changed it since -- a fire,
+            # an expiry, a pause or resume, another edit -- and applying the edit would write that
+            # change away. The model re-reads and decides again.
+            log.info(
+                "wake_schedule_update refused: schedule changed since it was read",
+                extra={"extra_data": {"schedule_id": str(parsed)}},
+            )
+            return _tool_error(
+                "wake_schedule_update",
+                "the schedule changed after this edit read it (it fired, expired, was paused or resumed, "
+                "or was edited elsewhere); nothing was saved. Read it again with wake_schedule_list and "
+                "reapply the change if it still makes sense.",
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "wake_schedule_update persist failed",

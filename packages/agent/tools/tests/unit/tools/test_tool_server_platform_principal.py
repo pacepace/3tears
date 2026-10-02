@@ -22,10 +22,10 @@ import pytest
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.tools.server import CallResponse, ToolServer
-from threetears.core.security import PLATFORM_CUSTOMER_SENTINEL
+from threetears.core.security import IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE, PLATFORM_CUSTOMER_SENTINEL
 from threetears.nats import IncomingMessage
 
-from packages.agent.tools.tests.unit.tools._pod_auth import (
+from packages.agent.tools.tests.unit.tools.pod_auth import (
     RecordingNatsClient,
     jwks_provider,
     recording_tool_server,
@@ -161,6 +161,6 @@ class TestATooPodPrincipalCannotBorrowAUser:
 
         _subject, reply = rec.replies[-1]
         assert reply.success is False
-        assert reply.error is not None
-        assert "user-assertion verification failed" in reply.error
+        assert reply.error_code == IDENTITY_REFUSED
+        assert reply.error == IDENTITY_REFUSED_MESSAGE
         assert tool.contexts == []  # the tool never ran

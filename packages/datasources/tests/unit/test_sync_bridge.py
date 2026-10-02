@@ -20,7 +20,7 @@ import time
 
 import pytest
 
-from threetears.datasources.drivers._sync_bridge import AsyncSyncBridge
+from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
 
 
 class TestConstruction:

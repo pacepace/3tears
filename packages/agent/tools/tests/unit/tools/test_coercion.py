@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.agent.tools._coercion import coerce_value, normalize_kwargs
+from threetears.agent.tools.coercion import coerce_value, normalize_kwargs
 
 
 # ---------------------------------------------------------------------------

@@ -421,3 +421,141 @@ def test_constructing_with_a_bad_issuer_account_fails_closed(label: str) -> None
             policy=_FakePolicy(_perms()),
             issuer_account=bad,
         )
+
+
+# parity-exempt: narrow offline double for the NATS wire client, extended with the typed publish a deliberate refusal is sent with
+class _FakeNatsWithPublish(_FakeNats):
+    def __init__(self) -> None:
+        super().__init__()
+        self.published: list[tuple[Any, Any]] = []
+
+    async def publish(self, *, subject: Any, message: Any) -> None:
+        self.published.append((subject, message))
+
+
+async def test_a_deliberate_refusal_denies_with_its_reason_and_tells_the_principal() -> None:
+    """nats-server tells the refused client only "Authorization Violation", so the reason is sent too.
+
+    the denial carries the typed reason as its error (the server logs it), and the refusal itself is
+    published to the principal's own inbox subtree, over which the refused pod still listens.
+    """
+    from threetears.nats.auth_callout import decode_auth_request
+    from threetears.nats.credential_refusal import CredentialRefusal, CredentialRefusalReason, RefusedPrincipal
+
+    refusal = CredentialRefusal(reason=CredentialRefusalReason.SUPERSEDED, pod_id="pod-7", identity_generation="g-3")
+    resolver = _FakeResolver(RefusedPrincipal(inbox_prefix="_INBOX_agent_pod_a1", refusal=refusal))  # type: ignore[arg-type]
+    nc = _FakeNatsWithPublish()
+    responder = _responder(nc, resolver=resolver, policy=_FakePolicy(_perms()))
+
+    request_jwt = _request_jwt(server_id="NSRV", user_nkey="UME")
+    decision = await responder.build_decision(decode_auth_request(request_jwt))
+    nats_claim = _decode_payload(decision.response)["nats"]
+    assert nats_claim.get("error") == "superseded", "the deny carries the typed reason, not prose"
+    assert "jwt" not in nats_claim
+
+    await responder.handle_request(_FakeMsg(request_jwt.encode(), "_INBOX.srv.1"))
+    assert len(nc.replies) == 1, "the server still gets its signed deny"
+    assert nc.published == [(Subject.raw("_INBOX_agent_pod_a1.credential-refused"), refusal)]
+
+
+async def test_an_ordinary_denial_tells_nobody() -> None:
+    """a credential nothing authenticates is denied and nothing is published: it names no principal."""
+    nc = _FakeNatsWithPublish()
+    responder = _responder(nc, resolver=_FakeResolver(None), policy=_FakePolicy(_perms()))
+
+    await responder.handle_request(_FakeMsg(_request_jwt().encode(), "_INBOX.srv.1"))
+
+    assert len(nc.replies) == 1
+    assert nc.published == []
+
+
+# parity-exempt: narrow offline double for the NATS wire client whose publish fails, as a broken connection's does
+class _FakeNatsPublishFails(_FakeNats):
+    async def publish(self, *, subject: Any, message: Any) -> None:
+        raise RuntimeError("nats: connection closed")
+
+
+async def test_a_refusal_that_cannot_be_sent_never_raises_and_the_denial_still_stands(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the notice is best-effort: the principal falls back to retrying until its credential expires."""
+    from threetears.nats.credential_refusal import CredentialRefusal, CredentialRefusalReason, RefusedPrincipal
+
+    refusal = CredentialRefusal(reason=CredentialRefusalReason.SUPERSEDED, pod_id="pod-7", identity_generation="g-3")
+    resolver = _FakeResolver(RefusedPrincipal(inbox_prefix="_INBOX_agent_pod_a1", refusal=refusal))  # type: ignore[arg-type]
+    nc = _FakeNatsPublishFails()
+    responder = _responder(nc, resolver=resolver, policy=_FakePolicy(_perms()))
+
+    await responder.publish_refusal(RefusedPrincipal(inbox_prefix="_INBOX_agent_pod_a1", refusal=refusal))
+    await responder.handle_request(_FakeMsg(_request_jwt().encode(), "_INBOX.srv.1"))
+
+    assert len(nc.replies) == 1, "the server still gets its signed deny"
+    assert "could not tell a refused principal why" in caplog.text
+
+
+# parity-with: threetears.nats.auth_callout_responder.AdmissionRecorder
+class _FakeRecorder:
+    """records what it is handed, or raises the error it was given."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.recorded: list[tuple[Any, ResolvedPrincipal]] = []
+        self._error = error
+
+    async def record_admission(self, request: Any, principal: ResolvedPrincipal) -> None:
+        if self._error is not None:
+            raise self._error
+        self.recorded.append((request, principal))
+
+
+def _recording_responder(recorder: _FakeRecorder, resolver: Any) -> AuthCalloutResponder:
+    return AuthCalloutResponder(
+        _FakeNats(),
+        account_seed=generate_account_seed(),
+        resolver=resolver,
+        policy=_FakePolicy(_perms()),
+        account_name="SCRIOB",
+        admission_recorder=recorder,
+    )
+
+
+async def test_an_admission_is_recorded_with_its_request_and_principal() -> None:
+    """what it takes to close the connection later is handed over before the server is answered."""
+    from threetears.nats.auth_callout import decode_auth_request
+
+    recorder = _FakeRecorder()
+    responder = _recording_responder(recorder, _FakeResolver(_principal()))
+    request = decode_auth_request(_request_jwt(server_id="NSRV", user_nkey="UME"))
+
+    nats_claim = _decode_payload(await responder.build_response(request))["nats"]
+
+    assert "jwt" in nats_claim
+    assert recorder.recorded == [(request, _principal())]
+
+
+async def test_an_admission_that_cannot_be_recorded_is_denied() -> None:
+    """a connection nobody could close later is refused rather than admitted unreachable."""
+    from threetears.nats.auth_callout import decode_auth_request
+
+    recorder = _FakeRecorder(error=RuntimeError("the store is down"))
+    responder = _recording_responder(recorder, _FakeResolver(_principal()))
+    request = decode_auth_request(_request_jwt(server_id="NSRV", user_nkey="UME"))
+
+    decision = await responder.build_decision(request)
+
+    nats_claim = _decode_payload(decision.response)["nats"]
+    assert nats_claim.get("error") == "authentication failed"
+    assert "jwt" not in nats_claim
+    assert decision.refused is None, "an unrecorded admission is not a deliberate refusal: nothing is published"
+
+
+async def test_a_denied_connection_is_never_recorded() -> None:
+    """only admissions are recorded: a denial has no connection to close."""
+    from threetears.nats.auth_callout import decode_auth_request
+
+    recorder = _FakeRecorder()
+    responder = _recording_responder(recorder, _FakeResolver(None))
+    request = decode_auth_request(_request_jwt(server_id="NSRV", user_nkey="UME"))
+
+    await responder.build_response(request)
+
+    assert recorder.recorded == []

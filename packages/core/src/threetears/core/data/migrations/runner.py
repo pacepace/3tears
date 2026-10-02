@@ -429,9 +429,14 @@ class MigrationRunner:
         apply one named package's pending migrations against store's schema.
 
         used by per-package test harnesses that want to exercise a
-        single package in isolation (MIG-07). does not resolve
-        dependencies; callers must apply any depended-on packages first.
-        holds the database-wide DDL lock like every other apply.
+        single package in isolation (MIG-07), and by a pod's table upgrade,
+        whose generated steps are one package resumed by calling this
+        again. does not resolve dependencies; callers must apply any
+        depended-on packages first. holds the database-wide DDL lock like
+        every other apply, and verifies the ledger's identity for the
+        package before any body runs, as a scope apply does: a resumed run
+        whose step numbering shifted must refuse rather than read the
+        shifted steps as done.
 
         :param store: a DataStore (pinned to one connection for the run) or
             one database session, bound to the target schema via search_path
@@ -444,6 +449,8 @@ class MigrationRunner:
         :raises DdlLockTimeoutError: when the lock stayed held past the
             runner's ``lock_policy.max_wait``
         :raises DdlLockReleaseError: when the lock could not be given back
+        :raises LedgerMismatchError: when the ledger records a different
+            migration than the package registers at an applied version
         :raises MigrationFailedError: wrapping original migration exception
         """
         if package_name not in self._packages:
@@ -453,6 +460,7 @@ class MigrationRunner:
         async with self._locked(store) as session:
             await self._ensure_migrations_table(session)
             applied = await self._query_applied_versions(session)
+            self._verify_ledger_identity([package], applied)
             count = await self._apply_package_pending(session, package, applied)
         return count
 
@@ -571,15 +579,16 @@ class MigrationRunner:
         :raises MigrationFailedError: wrapping original migration exception
         """
         count = 0
-        for version_num in sorted(package.versions.keys()):
+        descriptions = package.descriptions
+        for version_num, func in sorted(package.versions.items()):
             if target is not None and version_num > target:
                 break
             key = (version_num, package.name)
             if key in applied:
                 continue
-            func = package.versions[version_num]
-            count += await self._run_one(store, package.name, version_num, func)
-            applied[key] = func.__name__
+            description = descriptions[version_num]
+            count += await self._run_one(store, package.name, version_num, func, description)
+            applied[key] = description
         return count
 
     async def _run_one(
@@ -588,6 +597,7 @@ class MigrationRunner:
         package_name: str,
         version_num: int,
         func: MigrationFunc,
+        description: str,
     ) -> int:
         """
         execute one migration callable and record it in ``_schema_migrations``.
@@ -605,11 +615,12 @@ class MigrationRunner:
         :ptype version_num: int
         :param func: async migration body taking the run's store
         :ptype func: MigrationFunc
+        :param description: the registered ledger description for this version
+        :ptype description: str
         :return: 1 on success (return type matches caller's counter)
         :rtype: int
         :raises MigrationFailedError: wrapping original migration exception
         """
-        description = func.__name__
         log.info(
             "applying migration package=%s version=%d description=%s",
             package_name,
@@ -792,9 +803,10 @@ class MigrationRunner:
         """
         refuse to apply when the ledger names a different migration than the code.
 
-        compares the ``description`` recorded at apply time
-        (``func.__name__``) against the name of the callable the code now
-        registers at that version. they diverge when migrations are
+        compares the ``description`` recorded at apply time against the
+        description the code now registers at that version
+        (:attr:`PackageMigrations.descriptions`: a function's ``__name__``,
+        or a generated step's explicit name). they diverge when migrations are
         renumbered and the resulting build meets a database that applied
         the old numbering: every shifted version reads as already applied,
         so its body never runs, and the version vacated at the bottom of
@@ -819,13 +831,13 @@ class MigrationRunner:
         """
         mismatches: list[str] = []
         for package in ordered:
-            for version_num, func in sorted(package.versions.items()):
+            for version_num, description in sorted(package.descriptions.items()):
                 recorded = applied.get((version_num, package.name))
                 if recorded is None:
                     continue
-                if recorded != func.__name__:
+                if recorded != description:
                     mismatches.append(
-                        f"{package.name}:{version_num} recorded as '{recorded}' but this build has '{func.__name__}'",
+                        f"{package.name}:{version_num} recorded as '{recorded}' but this build has '{description}'",
                     )
         if mismatches:
             joined = "; ".join(mismatches)

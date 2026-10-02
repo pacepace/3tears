@@ -8,7 +8,8 @@ rather than emulate the full client surface.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Awaitable, Callable, Protocol, TypeVar, runtime_checkable
 
@@ -50,11 +51,20 @@ class IncomingMessage:
     :ptype reply_subject: str | None
     :param subject: concrete subject the message arrived on (matters for wildcard subscribers)
     :ptype subject: str
+    :param monotonic_received: when the client took the message off the connection, on
+        ``time.monotonic``. A subscription takes each message as it arrives and holds it
+        until a callback is free, so the time between this and the callback starting is
+        time the message spent queued -- which a request/reply server has to count
+        against its caller's deadline. A hand-built envelope was received when it was built.
+        Not part of equality: two envelopes carrying the same message are the same message
+        whenever each was taken.
+    :ptype monotonic_received: float
     """
 
     data: bytes
     reply_subject: str | None
     subject: str
+    monotonic_received: float = field(default_factory=time.monotonic, compare=False)
 
     @property
     def reply(self) -> str | None:

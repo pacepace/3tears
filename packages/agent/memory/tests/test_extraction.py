@@ -183,6 +183,8 @@ def _make_extractor(
     nats_client: Any = None,
     summary_callback: Any = None,
     on_memory_created: Any = None,
+    rate_limit_bucket_create_if_missing: bool = True,
+    rate_limit_key_scope: str | None = None,
 ) -> MemoryExtractor:
     """build a :class:`MemoryExtractor` with a registry-bound Collection."""
     real_pool = pool or _make_pool()
@@ -196,6 +198,8 @@ def _make_extractor(
         nats_client=nats_client,
         summary_callback=summary_callback,
         on_memory_created=on_memory_created,
+        rate_limit_bucket_create_if_missing=rate_limit_bucket_create_if_missing,
+        rate_limit_key_scope=rate_limit_key_scope,
     )
 
 
@@ -435,7 +439,61 @@ class TestRateLimit:
         ext = _make_extractor(permissive_memory_authorizer, nats_client=client)
         await ext.check_rate_limit(uuid.uuid7())
         await ext.claim_rate_limit(uuid.uuid7())
-        assert client.opened_with == [{"name": "ratelimits"}, {"name": "ratelimits"}]
+        assert client.opened_with == [
+            {"name": "ratelimits", "create_if_missing": True},
+            {"name": "ratelimits", "create_if_missing": True},
+        ]
+
+    async def test_a_pod_extractor_binds_the_bucket_and_never_creates_it(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """an agent pod holds no STREAM.CREATE; the hub declares the bucket and the pod binds it."""
+        client = _SingleBucketClient(await FakeNatsClient().kv_bucket(name="ratelimits"))
+        ext = _make_extractor(
+            permissive_memory_authorizer, nats_client=client, rate_limit_bucket_create_if_missing=False
+        )
+        await ext.check_rate_limit(uuid.uuid7())
+        await ext.claim_rate_limit(uuid.uuid7())
+        assert client.opened_with == [
+            {"name": "ratelimits", "create_if_missing": False},
+            {"name": "ratelimits", "create_if_missing": False},
+        ]
+
+
+class TestTheThrottleKeyLeadsWithTheOwnersScope:
+    """an agent pod's throttle keys lead with its own scope in the shared ``ratelimits`` bucket.
+
+    Every agent pod binds that one bucket and is granted only the keys under its own scope, so an
+    unscoped key is refused by the grant, and without the grant's narrowing any pod could lift another
+    agent's extraction cooldown by deleting its key.
+    """
+
+    _SCOPE = "agent_pod-019470a8b5c37def81230000000000aa"
+
+    async def test_a_claim_writes_the_scoped_key_and_a_read_finds_it(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        bucket = await FakeNatsClient().kv_bucket(name="ratelimits")
+        ext = _make_extractor(
+            permissive_memory_authorizer, nats_client=_SingleBucketClient(bucket), rate_limit_key_scope=self._SCOPE
+        )
+        conversation_id = uuid.uuid7()
+        assert (await ext.claim_rate_limit(conversation_id))[0] is True
+        assert await bucket.get(key=f"{self._SCOPE}.memory.last_extract.{conversation_id}") is not None
+        assert await bucket.get(key=f"memory.last_extract.{conversation_id}") is None
+        assert (await ext.check_rate_limit(conversation_id))[0] is False
+        assert (await ext.claim_rate_limit(conversation_id))[0] is False
+
+    @pytest.mark.parametrize("scope", ["", "a.b", "a*", ">"])
+    def test_a_scope_that_is_not_one_literal_token_is_refused(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+        scope: str,
+    ) -> None:
+        with pytest.raises(ValueError, match="rate_limit_key_scope"):
+            _make_extractor(permissive_memory_authorizer, rate_limit_key_scope=scope)
 
 
 class TestACooldownOfZeroOrLessIsOff:

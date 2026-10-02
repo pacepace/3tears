@@ -652,16 +652,35 @@ def _invariant_token_cost(
     trim. Costs each invariant by the EXACT rendered text that will be injected,
     matching the situational trim's accounting.
 
+    This is the FIRST place an invariant is rendered, so it applies the same
+    fail-closed policy :func:`_render_block` does. A plain render exception
+    escaping here would reach the middleware's broad soft-fail and the turn would
+    proceed with NO governed block at all -- the fail-open the invariant tier
+    exists to refuse.
+
     :param invariant_concepts: always-inject effective concept views
     :ptype invariant_concepts: list[ConceptEffective]
     :param invariant_entries: always-inject effective entry views
     :ptype invariant_entries: list[EntryEffective]
     :return: combined rendered-token cost of all invariants
     :rtype: int
+    :raises GovernedKnowledgeRenderError: when an invariant fails to render
     """
-    concept_cost = sum(_estimate_tokens(_render_concept(concept)) for concept in invariant_concepts)
-    entry_cost = sum(_estimate_tokens(_render_entry(entry)) for entry in invariant_entries)
-    return concept_cost + entry_cost
+    concept_texts = _render_governed_items(
+        invariant_concepts,
+        _render_concept,
+        id_of=_concept_view_id,
+        tier="invariant concept",
+        hard=True,
+    )
+    entry_texts = _render_governed_items(
+        invariant_entries,
+        _render_entry,
+        id_of=_entry_view_id,
+        tier="invariant entry",
+        hard=True,
+    )
+    return sum(_estimate_tokens(text) for text in concept_texts + entry_texts)
 
 
 @dataclass(frozen=True)
@@ -744,28 +763,46 @@ def _rank_and_trim_shared(
     embeddings = embeddings or {}
     similarity_active = bool(query_embedding)
     pool: list[_RankedSituational] = []
+    # each item is costed by rendering it, so this is the FIRST render of the
+    # situational tail and it carries the same per-item isolation as
+    # :func:`_render_block`: a situational item that faults is skipped (logged) and
+    # leaves the pool, rather than raising out and dropping the whole block.
     for concept in situational_concepts:
-        pool.append(
-            _RankedSituational(
-                scope=concept.concept.scope,
-                id_bytes=concept.concept.id.bytes,
-                is_concept=True,
-                concept=concept,
-                entry=None,
-                rendered=_render_concept(concept),
-            ),
-        )
+        for rendered in _render_governed_items(
+            [concept],
+            _render_concept,
+            id_of=_concept_view_id,
+            tier="situational concept",
+            hard=False,
+        ):
+            pool.append(
+                _RankedSituational(
+                    scope=concept.concept.scope,
+                    id_bytes=concept.concept.id.bytes,
+                    is_concept=True,
+                    concept=concept,
+                    entry=None,
+                    rendered=rendered,
+                ),
+            )
     for entry in situational_entries:
-        pool.append(
-            _RankedSituational(
-                scope=entry.entry.scope,
-                id_bytes=entry.entry.id.bytes,
-                is_concept=False,
-                concept=None,
-                entry=entry,
-                rendered=_render_entry(entry),
-            ),
-        )
+        for rendered in _render_governed_items(
+            [entry],
+            _render_entry,
+            id_of=_entry_view_id,
+            tier="situational entry",
+            hard=False,
+        ):
+            pool.append(
+                _RankedSituational(
+                    scope=entry.entry.scope,
+                    id_bytes=entry.entry.id.bytes,
+                    is_concept=False,
+                    concept=None,
+                    entry=entry,
+                    rendered=rendered,
+                ),
+            )
 
     def _item_id(item: _RankedSituational) -> UUID:
         """Resolve the effective-view id of one pooled situational item.
@@ -1123,6 +1160,28 @@ def _render_governed_items(
     return rendered
 
 
+def _concept_view_id(view: ConceptEffective) -> str:
+    """Return a governed concept view's id for the diagnostic log.
+
+    :param view: effective concept view
+    :ptype view: ConceptEffective
+    :return: concept id as a string
+    :rtype: str
+    """
+    return str(view.concept.id)
+
+
+def _entry_view_id(view: EntryEffective) -> str:
+    """Return a governed entry view's id for the diagnostic log.
+
+    :param view: effective entry view
+    :ptype view: EntryEffective
+    :return: entry id as a string
+    :rtype: str
+    """
+    return str(view.entry.id)
+
+
 def _render_block(
     *,
     invariant_concepts: list[ConceptEffective],
@@ -1166,32 +1225,12 @@ def _render_block(
     """
     sections: list[str] = []
 
-    def _concept_id(view: ConceptEffective) -> str:
-        """Return an injected concept view's id for the diagnostic log.
-
-        :param view: effective concept view
-        :ptype view: ConceptEffective
-        :return: concept id as a string
-        :rtype: str
-        """
-        return str(view.concept.id)
-
-    def _entry_id(view: EntryEffective) -> str:
-        """Return an injected entry view's id for the diagnostic log.
-
-        :param view: effective entry view
-        :ptype view: EntryEffective
-        :return: entry id as a string
-        :rtype: str
-        """
-        return str(view.entry.id)
-
     # glossary (concepts) FIRST -- definitions before procedures.
     if invariant_concepts:
         parts = _render_governed_items(
             _stable_order_concepts(invariant_concepts),
             _render_concept,
-            id_of=_concept_id,
+            id_of=_concept_view_id,
             tier="invariant concept",
             hard=True,
         )
@@ -1203,7 +1242,7 @@ def _render_block(
         parts = _render_governed_items(
             situational_concepts,
             _render_concept,
-            id_of=_concept_id,
+            id_of=_concept_view_id,
             tier="situational concept",
             hard=False,
         )
@@ -1214,7 +1253,7 @@ def _render_block(
         parts = _render_governed_items(
             _stable_order_entries(invariant_entries),
             _render_entry,
-            id_of=_entry_id,
+            id_of=_entry_view_id,
             tier="invariant entry",
             hard=True,
         )
@@ -1224,7 +1263,7 @@ def _render_block(
         parts = _render_governed_items(
             situational_entries,
             _render_entry,
-            id_of=_entry_id,
+            id_of=_entry_view_id,
             tier="situational entry",
             hard=False,
         )
@@ -1382,9 +1421,10 @@ def _turn_query_text(messages: Sequence[BaseMessage]) -> str:
     The query side embeds the SAME shape the back-fill matches against: the user's
     turn MESSAGE (the situational question). The most-recent
     :class:`~langchain_core.messages.HumanMessage` in the running message list is
-    the turn query; its string content is returned (a non-string content payload --
-    a multimodal message -- yields an empty string so the ranker soft-fails to
-    stable-order rather than embedding garbage).
+    the turn query; its text is returned -- for a multimodal message, its text
+    blocks joined, so a turn carrying an image still ranks by what the person
+    asked. a message with no text yields an empty string and the ranker soft-fails
+    to stable-order.
 
     :param messages: the running message list
     :ptype messages: Sequence[BaseMessage]
@@ -1394,8 +1434,10 @@ def _turn_query_text(messages: Sequence[BaseMessage]) -> str:
     result = ""
     for message in reversed(messages):
         if isinstance(message, HumanMessage):
-            content = message.content
-            result = content if isinstance(content, str) else ""
+            # ``text`` is the message's text blocks joined: a turn carrying an image
+            # still ranks by what the person asked, and the reference blocks beside
+            # it add nothing to embed.
+            result = message.text
             break
     return result
 

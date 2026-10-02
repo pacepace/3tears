@@ -14,6 +14,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from packages.scrape.tests.scrape_tool_support import derived_target_id
 from pydantic import SecretStr
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -159,10 +160,10 @@ async def test_a_state_with_no_expiry_is_treated_as_expired(health: ScrapeTarget
     The writer always sets an expiry, so its absence means a hand-edited or half-written row,
     and the safe reading of a credential with no stated lifetime is that it has none left.
     """
-    from threetears.scrape.health import _merge_health
-
+    # Written as the half-written row would be: through the collection, with the blob and no
+    # expiry, rather than through `record_session_state`, which always writes both.
     sealed = seal_session_state(_STATE, _KEY, now=_NOW)
-    await _merge_health(health, target_id=_T, changes={"session_state_sealed": sealed.sealed})
+    await health.save_entity(health.create({"target_id": _T, "session_state_sealed": sealed.sealed}))
     row = await health.get(_T)
     assert row is not None
     assert row.session_state_sealed is not None
@@ -304,6 +305,7 @@ async def _tool(driver, health, key, *, target_id: str):
         session_state_key=key,
         drivers={"nodriver": driver},
         api_key="k",
+        block_private_hosts=False,
     )
 
 
@@ -319,9 +321,8 @@ async def test_the_tool_carries_a_stored_solve_into_the_fetch(health: ScrapeTarg
     """
     url = "https://example.gov/walled"
     schema = _EXTRACTABLE_SCHEMA
-    from threetears.scrape.tool import _derive_target_id
 
-    target_id = _derive_target_id(url, schema)
+    target_id = await derived_target_id(url, schema)
     await record_session_state(health, target_id=target_id, state=seal_session_state(_STATE, _KEY))
 
     driver = _StateCapturingDriver()
@@ -339,12 +340,11 @@ async def test_the_tool_carries_a_stored_solve_into_the_fetch(health: ScrapeTarg
 @pytest.mark.asyncio
 async def test_no_stored_solve_means_no_session_state(health: ScrapeTargetHealthCollection) -> None:
     """A target nobody has ever cleared fetches exactly as it always did."""
-    from threetears.scrape.tool import _derive_target_id
 
     url = "https://example.gov/plain"
     schema = _EXTRACTABLE_SCHEMA
     driver = _StateCapturingDriver()
-    tool = await _tool(driver, health, _KEY, target_id=_derive_target_id(url, schema))
+    tool = await _tool(driver, health, _KEY, target_id=await derived_target_id(url, schema))
     with _no_llm():
         await tool.execute(url=url, field_schema=schema)
     assert driver.session_states == [None]
@@ -359,9 +359,8 @@ async def test_an_expired_solve_is_not_sent(health: ScrapeTargetHealthCollection
     """
     url = "https://example.gov/stale"
     schema = _EXTRACTABLE_SCHEMA
-    from threetears.scrape.tool import _derive_target_id
 
-    target_id = _derive_target_id(url, schema)
+    target_id = await derived_target_id(url, schema)
     stale = seal_session_state(_STATE, _KEY, ttl=timedelta(seconds=-1))
     await record_session_state(health, target_id=target_id, state=stale)
 
@@ -382,9 +381,8 @@ async def test_without_a_key_the_stored_solve_is_left_sealed(health: ScrapeTarge
     """
     url = "https://example.gov/nokey"
     schema = _EXTRACTABLE_SCHEMA
-    from threetears.scrape.tool import _derive_target_id
 
-    target_id = _derive_target_id(url, schema)
+    target_id = await derived_target_id(url, schema)
     await record_session_state(health, target_id=target_id, state=seal_session_state(_STATE, _KEY))
 
     driver = _StateCapturingDriver()

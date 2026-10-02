@@ -73,6 +73,7 @@ def js_api_grants_for_stream(
     capability: JsCapability = JsCapability.FULL,
     bucket: str | None = None,
     scope: str | None = None,
+    filter_subject: str | None = None,
 ) -> list[str]:
     """the JetStream control-plane subjects scoped to ONE stream ``stream``, pinned by literal name.
 
@@ -102,7 +103,8 @@ def js_api_grants_for_stream(
 
     The stream-name token position differs per op family (verified against the installed nats-py
     2.x: ``nats/js/manager.py`` STREAM/CONSUMER/DIRECT builders + ``nats/js/client.py`` pull-consumer
-    ``CONSUMER.MSG.NEXT``), so :attr:`JsCapability.FULL` pins the name at each position it can occupy:
+    ``CONSUMER.MSG.NEXT``), so :attr:`JsCapability.FULL` -- the infra identities' management grant,
+    never a pod's -- pins the name at each position it can occupy:
 
     - ``$JS.API.STREAM.*.{stream}`` -- STREAM INFO/CREATE/UPDATE/DELETE/PURGE (name at token 5);
       ``manager.stream_info``/``add_stream``/``update_stream``/``delete_stream``/``purge_stream``.
@@ -134,6 +136,71 @@ def js_api_grants_for_stream(
     - plus ``$JS.API.STREAM.CREATE.{stream}`` and ``$JS.API.STREAM.UPDATE.{stream}`` for
       :attr:`JsCapability.KV_SCOPED_DECLARE` alone.
 
+    :attr:`JsCapability.KV_KEY_READ` narrows further, to ONE whole key carried in ``scope``:
+
+    - ``$JS.API.STREAM.INFO.{stream}`` -- the bind.
+    - ``$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{key}`` -- the read, with the key as the LITERAL
+      final token. A ``{key}.>`` tail needs at least one more token and matches nothing a
+      single-token key produces. Reachable only on a bucket created with ``allow_direct: true``.
+    - ``$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.{key}`` -- the watch, as a NAMED consumer
+      whose filter rides in the SUBJECT, where nats-server checks it against the body's
+      ``filter_subject``. The unnamed ``CONSUMER.CREATE.{stream}`` is NOT granted: its filter rides
+      only in the body and could name the whole bucket. nats-py's ``KeyValue.watch`` creates an
+      unnamed consumer, so a watcher on this grant subscribes with an explicit consumer name. The
+      delivered messages land on the holder's own inbox, already covered by its ``{inbox}.>``
+      subscribe grant; flow-control replies ride ``allow_responses``.
+
+    :attr:`JsCapability.KV_TABLE_SCOPED` emits the :attr:`JsCapability.KV_SCOPED` pair with
+    ``scope`` carrying the resource's whole ``{owner_scope}.{table}`` key prefix
+    (:attr:`~threetears.nats.subject_permissions.JsResource.key_prefix`), so the direct read is
+    ``$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{owner_scope}.{table}.>`` -- one table of another
+    principal's keys, and no consumer or watch route at all.
+
+    :attr:`JsCapability.KV_BUCKET_KEYS` is every POD's grant on an unscoped bucket -- its own
+    coordination buckets, the platform's shared per-agent buckets, and another agent's coordination
+    bucket an operator granted it. It covers the WHOLE of one bucket, through key-addressed calls
+    and named key consumers, and nothing about the stream itself:
+
+    - ``$JS.API.STREAM.INFO.{stream}`` -- the bind.
+    - ``$JS.API.STREAM.MSG.GET.{stream}`` -- the read nats-py issues on a bucket bound WITHOUT
+      ``allow_direct``, with the key in the body. Every key it can name is a key the grant already
+      covers, since the bucket is the grant's boundary. ``STREAM.MSG.DELETE`` is NOT granted.
+    - ``$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.>`` -- the read on a bucket WITH ``allow_direct``.
+    - ``$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.>`` -- a key watch or a key listing, as a
+      NAMED consumer whose filter rides in the SUBJECT (:meth:`threetears.nats.kv.NatsKvBucket.watch_key`,
+      :meth:`threetears.nats.kv.NatsKvBucket.keys`). The unnamed ``CONSUMER.CREATE.{stream}``, the
+      durable create and ``MSG.NEXT`` are NOT granted; nats-py's ``KeyValue.watch``/``keys`` use the
+      unnamed form and are refused.
+
+    :attr:`JsCapability.KV_OWNER_KEYS` is a pod's grant on a SHARED pod bucket, where the key
+    prefix rather than the bucket is the boundary: the same three routes narrowed to the holder's
+    own ``{scope}.>`` -- ``STREAM.INFO`` (the bind), ``DIRECT.GET.{stream}.$KV.{bucket}.{scope}.>``
+    and ``CONSUMER.CREATE.{stream}.*.$KV.{bucket}.{scope}.>`` -- and NOT ``STREAM.MSG.GET``, whose
+    key rides in the body and so would read every owner's keys. The bucket must run
+    ``allow_direct``, which the hub declares, or nats-py falls back to that body-carried read.
+
+    No stream-admin verb, ever: ``CREATE``/``UPDATE`` accept ``sources`` and ``republish``, which
+    copy ANY stream's messages into one the holder can read; ``DELETE``/``PURGE`` destroy state;
+    ``SNAPSHOT``/``RESTORE`` export or replace it. The hub declares every bucket a pod binds. The
+    ``$KV.`` publish for a writable grant is minted by :func:`mint_user_jwt` from the resource, not
+    here.
+
+    :attr:`JsCapability.STREAM_CONSUMER` is a pod's grant on a plain stream it collects its OWN
+    messages from, and it is exactly ONE subject:
+
+    - ``$JS.API.CONSUMER.CREATE.{stream}.*.{filter}`` -- a NAMED consumer whose filter rides in the
+      subject, where nats-server checks it against the body's ``filter_subject``; ``filter`` is the
+      resource's ``filter_subject``, a pattern inside the pod's own subjects. The consumer PUSHES to
+      a deliver subject the pod names, and the pod can only subscribe its own inbox; acknowledgements
+      and flow control ride ``allow_responses``.
+
+    Nothing else, and each omission is a cross-principal read: the unnamed
+    ``CONSUMER.CREATE.{stream}`` and ``DURABLE.CREATE`` carry their filter only in the body;
+    ``MSG.NEXT``, ``INFO`` and ``DELETE`` reach an existing consumer BY NAME whoever created it, so a
+    pod holding them could pull, inspect or destroy the collector's consumer over every principal's
+    messages; ``STREAM.INFO`` and every read verb describe or return the whole stream. Publishing
+    into a stream is an ordinary publish grant and needs nothing here.
+
     JetStream consumer ACK/NAK is NOT listed: it publishes to the delivered message's ``$JS.ACK.*``
     reply subject and rides the principal's ``allow_responses`` grant (the same way it did under the
     old ``$JS.API.>``, which never covered ``$JS.ACK``), so it needs no standing control grant here.
@@ -145,14 +212,41 @@ def js_api_grants_for_stream(
     :ptype capability: JsCapability
     :param bucket: the KV bucket ``stream`` backs; required for a scoped capability
     :ptype bucket: str | None
-    :param scope: the holder's L2 key scope; required for a scoped capability
+    :param scope: the key prefix the grant narrows to -- the holder's L2 key scope, the one key
+        for :attr:`JsCapability.KV_KEY_READ`, or ``{owner_scope}.{table}`` for
+        :attr:`JsCapability.KV_TABLE_SCOPED`; required for a scoped capability
     :ptype scope: str | None
+    :param filter_subject: the pattern a :attr:`JsCapability.STREAM_CONSUMER` holder's consumers
+        filter on; required for that capability and ignored by every other
+    :ptype filter_subject: str | None
     :return: the per-stream JS-API control-plane allow-list (publish subjects)
     :rtype: list[str]
-    :raises ValueError: if a scoped capability is requested without both ``bucket`` and ``scope``
+    :raises ValueError: if a scoped capability is requested without both ``bucket`` and ``scope``,
+        or a consumer capability without ``filter_subject``
     """
     grants: list[str]
-    if not capability_is_scoped(capability):
+    if capability is JsCapability.KV_BUCKET_KEYS:
+        if bucket is None:
+            raise ValueError(
+                f"{capability.value} grants for stream {stream!r} need the bucket name: the direct "
+                f"read subject is $JS.API.DIRECT.GET.{stream}.$KV.<bucket>.>, in which $KV and the "
+                f"bucket are separate tokens"
+            )
+        grants = [
+            f"$JS.API.STREAM.INFO.{stream}",
+            f"$JS.API.STREAM.MSG.GET.{stream}",
+            f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.>",
+            f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.>",
+        ]
+    elif capability is JsCapability.STREAM_CONSUMER:
+        if not filter_subject:
+            raise ValueError(
+                f"{capability.value} grants for stream {stream!r} need the consumer filter: the grant is "
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.<filter>, and with no filter a consumer could read "
+                f"every principal's messages"
+            )
+        grants = [f"$JS.API.CONSUMER.CREATE.{stream}.*.{filter_subject}"]
+    elif not capability_is_scoped(capability):
         grants = [
             f"$JS.API.STREAM.*.{stream}",
             f"$JS.API.STREAM.MSG.*.{stream}",
@@ -170,10 +264,23 @@ def js_api_grants_for_stream(
                 f"in which $KV and the bucket are separate tokens. "
                 f"got bucket={bucket!r} scope={scope!r}"
             )
-        grants = [
-            f"$JS.API.STREAM.INFO.{stream}",
-            f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}.>",
-        ]
+        if capability is JsCapability.KV_KEY_READ:
+            grants = [
+                f"$JS.API.STREAM.INFO.{stream}",
+                f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}",
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.{scope}",
+            ]
+        elif capability is JsCapability.KV_OWNER_KEYS:
+            grants = [
+                f"$JS.API.STREAM.INFO.{stream}",
+                f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}.>",
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.{scope}.>",
+            ]
+        else:
+            grants = [
+                f"$JS.API.STREAM.INFO.{stream}",
+                f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.{scope}.>",
+            ]
         if capability_declares(capability):
             grants.extend([f"$JS.API.STREAM.CREATE.{stream}", f"$JS.API.STREAM.UPDATE.{stream}"])
     return grants
@@ -294,16 +401,22 @@ def mint_user_jwt(
     # buckets (``checkpoints`` and ``{ns}_agent_config``) that are out of scope for KEY isolation.
     # Dropping it costs nothing and closes that firehose everywhere, not only on the scoped bucket.
     #
-    # PER-RESOURCE OPT-IN, and it is not optional. Only ``{ns}-collections`` writes a scope prefix.
-    # Emitting ``{scope}.>`` for ``checkpoints`` (its own separate ``l2_key``, keyed by thread id),
-    # ``{ns}_agent_config``, ``{ns}-epochs``, ``{ns}-ratelimits`` or ``{ns}-proxy_assertion_nonces``
-    # would deny every read on all of them -- and a refused JetStream request is never answered, so
-    # the failure arrives as a ten-second deadline that reads as an unreachable broker.
+    # PER-RESOURCE OPT-IN, and it is not optional. A resource carries a scope only where its keys
+    # lead with one: ``{ns}-collections`` and the shared pod buckets (``KV_OWNER_KEYS``). Emitting
+    # ``{scope}.>`` for ``{ns}_agent_config``, ``{ns}-epochs`` or a pod's own coordination bucket
+    # would deny every read on it -- and a refused JetStream request is never answered, so the
+    # failure arrives as a ten-second deadline that reads as an unreachable broker.
+    #
+    # ``key_prefix`` rather than ``scope`` for both tails: a table-scoped resource narrows one
+    # token past its scope (``{scope}.{table}``), and reading the prefix from one property is what
+    # keeps the publish tail and the read tail from ever naming different prefixes. Several
+    # resources on one stream each emit its ``STREAM.INFO`` bind; the repeats are left in, because
+    # the hub renders its static-user confs from this same composition.
     kv_data: list[str] = []
     js_control: list[str] = []
     for resource in permissions.js_resources:
         if resource.kind is JsResourceKind.KV_BUCKET and resource.writable:
-            tail = ">" if resource.scope is None else f"{resource.scope}.>"
+            tail = ">" if resource.key_prefix is None else f"{resource.key_prefix}.>"
             kv_data.append(f"$KV.{resource.name}.{tail}")
         bucket = resource.name if resource.kind is JsResourceKind.KV_BUCKET else None
         js_control.extend(
@@ -311,7 +424,8 @@ def mint_user_jwt(
                 resource.stream_name,
                 capability=resource.capability,
                 bucket=bucket,
-                scope=resource.scope,
+                scope=resource.key_prefix,
+                filter_subject=resource.filter_subject,
             )
         )
     if permissions.js_resources:

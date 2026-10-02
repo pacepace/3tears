@@ -6,6 +6,7 @@ import time
 
 import jwt as pyjwt
 import pytest
+from freezegun import freeze_time
 
 from threetears.core.security.identity_token import (
     IdentityTokenError,
@@ -65,6 +66,44 @@ class TestProxyAssertion:
         with pytest.raises(IdentityTokenError):
             verify_proxy_assertion(expired, jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1")
 
+    @freeze_time("2026-10-02T12:00:00+00:00")
+    def test_an_issue_time_ahead_of_the_pod_is_refused_at_the_default_leeway(self) -> None:
+        # the tool pod verifies at the default (zero), and sizes its replay guard for zero: an
+        # assertion stamped even one second ahead must not be accepted, or a replay stamped
+        # there would pass the guard's wipe check.
+        priv, pub = generate_signing_keypair()
+        jwks = build_jwks({"proxy-1": pub})
+        now = int(time.time())
+        with pytest.raises(IdentityTokenError, match="ImmatureSignature"):
+            verify_proxy_assertion(
+                _mint(priv, iat=now + 1, exp=now + 31), jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1"
+            )
+        assert verify_proxy_assertion(_mint(priv, iat=now), jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1")
+
+    @freeze_time("2026-10-02T12:00:00+00:00")
+    def test_the_leeway_is_the_whole_future_tolerance_on_the_issue_time(self) -> None:
+        # the one leeway bounds how far ahead an issue time may be, so it is the number a
+        # caller's replay guard must cover: four seconds ahead passes a five-second leeway, six
+        # does not.
+        priv, pub = generate_signing_keypair()
+        jwks = build_jwks({"proxy-1": pub})
+        now = int(time.time())
+        assert verify_proxy_assertion(
+            _mint(priv, iat=now + 4, exp=now + 34),
+            jwks=jwks,
+            expected_pod_id="pod-1",
+            body_hash="bh-1",
+            leeway_seconds=5,
+        )
+        with pytest.raises(IdentityTokenError, match="ImmatureSignature"):
+            verify_proxy_assertion(
+                _mint(priv, iat=now + 6, exp=now + 36),
+                jwks=jwks,
+                expected_pod_id="pod-1",
+                body_hash="bh-1",
+                leeway_seconds=5,
+            )
+
     def test_signature_under_a_key_not_in_the_jwks_rejected(self) -> None:
         priv, _pub = generate_signing_keypair()
         _other_priv, other_pub = generate_signing_keypair()
@@ -101,3 +140,40 @@ class TestProxyAssertion:
         )
         with pytest.raises(IdentityTokenError):
             verify_proxy_assertion(forged, jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1")
+
+
+class TestTheRefusalCodeIsSpelledOnce:
+    """the code a pod answers a failed assertion with is exported from core, where the pod and
+    the hub's error faces both read it, and its message names no check."""
+
+    def test_the_code_and_message_are_exported_from_the_security_package(self) -> None:
+        from threetears.core import security
+
+        assert security.TOOL_PROXY_ASSERTION_UNVERIFIED == "TOOL_PROXY_ASSERTION_UNVERIFIED"
+        assert "TOOL_PROXY_ASSERTION_UNVERIFIED" in security.__all__
+        assert "TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE" in security.__all__
+
+    def test_the_message_does_not_say_which_check_refused(self) -> None:
+        from threetears.core.security import TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE
+
+        for discriminator in ("absent", "missing", "replay", "nonce", "body", "guard", "kid", "Error"):
+            assert discriminator not in TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE
+
+
+class TestTheLedgerOutageCodeIsSpelledOnce:
+    """the code a verifier answers when its replay ledger cannot be reached is exported from core,
+    where the registry (the caller's proof) and the tool pod (the proxy's assertion) both read it."""
+
+    def test_the_code_and_message_are_exported_from_the_security_package(self) -> None:
+        from threetears.core import security
+
+        assert security.TOOL_POP_LEDGER_UNAVAILABLE == "TOOL_POP_LEDGER_UNAVAILABLE"
+        assert "TOOL_POP_LEDGER_UNAVAILABLE" in security.__all__
+        assert "TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE" in security.__all__
+
+    def test_the_message_names_no_exception(self) -> None:
+        """the exception type and its text belong in the verifier's log, never in the reply."""
+        from threetears.core.security import TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE
+
+        for discriminator in ("Error", "Kv", "bucket", "nonce"):
+            assert discriminator not in TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE

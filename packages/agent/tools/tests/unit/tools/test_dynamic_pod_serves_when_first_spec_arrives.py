@@ -44,22 +44,22 @@ import asyncio
 
 import pytest
 
-from packages.agent.tools.tests.unit.tools.test_dynamic_pod import (
-    _FakeToolServer,
-    _StubPod,
-    _StubSpec,
+from packages.agent.tools.tests.unit.tools.dynamic_pod_fakes import (
+    FakeToolServer,
+    StubPod,
+    StubSpec,
 )
 
 
-def _spec(key: str) -> _StubSpec:
+def _spec(key: str) -> StubSpec:
     """build a spec carrying one tool.
 
     :param key: spec key
     :ptype key: str
     :return: the spec
-    :rtype: _StubSpec
+    :rtype: StubSpec
     """
-    return _StubSpec(key=key, tool_count=1)
+    return StubSpec(key=key, tool_count=1)
 
 
 class TestServesWhenFirstSpecArrives:
@@ -68,8 +68,8 @@ class TestServesWhenFirstSpecArrives:
     @pytest.mark.asyncio
     async def test_a_pod_that_starts_empty_serves_once_a_spec_registers(self) -> None:
         """without this the pod never subscribes and is unreachable forever."""
-        server = _FakeToolServer()
-        pod = _StubPod(specs=[], fake_server=server)
+        server = FakeToolServer()
+        pod = StubPod(specs=[], fake_server=server)
         await pod.start()
         await asyncio.sleep(0)
         assert server.serve_count == 0, "nothing to serve yet"
@@ -92,8 +92,8 @@ class TestServesWhenFirstSpecArrives:
         cheapest way to introduce one is to re-check ``tools_count > 0`` on
         every registration.
         """
-        server = _FakeToolServer()
-        pod = _StubPod(specs=[], fake_server=server)
+        server = FakeToolServer()
+        pod = StubPod(specs=[], fake_server=server)
         await pod.start()
         server.set_connected(True)
 
@@ -107,8 +107,8 @@ class TestServesWhenFirstSpecArrives:
     @pytest.mark.asyncio
     async def test_a_pod_that_starts_with_tools_still_serves_once(self) -> None:
         """the pre-existing path is unchanged."""
-        server = _FakeToolServer()
-        pod = _StubPod(specs=[_spec("central-reporting")], fake_server=server)
+        server = FakeToolServer()
+        pod = StubPod(specs=[_spec("central-reporting")], fake_server=server)
 
         await pod.start()
 
@@ -119,12 +119,12 @@ class TestServesWhenFirstSpecArrives:
     @pytest.mark.asyncio
     async def test_a_spec_that_builds_no_tools_does_not_start_serving(self) -> None:
         """serving is gated on having something to serve, not on being asked."""
-        server = _FakeToolServer()
-        pod = _StubPod(specs=[], fake_server=server)
+        server = FakeToolServer()
+        pod = StubPod(specs=[], fake_server=server)
         await pod.start()
         server.set_connected(True)
 
-        await pod.register_spec(_StubSpec(key="empty", tool_count=0))
+        await pod.register_spec(StubSpec(key="empty", tool_count=0))
 
         await asyncio.sleep(0)
         assert server.serve_count == 0

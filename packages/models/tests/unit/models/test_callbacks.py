@@ -171,34 +171,23 @@ class TestUsageTrackerOTelAttributes:
     """tests that ``UsageTracker.record`` emits the locked span attributes."""
 
     _exporter: _InMemorySpanExporter
-    _provider: TracerProvider
 
-    @classmethod
-    def setup_class(cls) -> None:
-        """configures shared OTel TracerProvider with an in-memory exporter.
+    @pytest.fixture(autouse=True)
+    def _route_spans_here(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """hands every ``UsageTracker`` built in this test a tracer that exports to ``_exporter``.
 
-        OTel SDK >=1.39 guards ``set_tracer_provider`` behind
-        ``_TRACER_PROVIDER_SET_ONCE``; if any other test class earlier
-        in the run already set a provider (including the implicit
-        ProxyTracerProvider via ``trace.get_tracer``), this call is
-        silently rejected and our spans land in the wrong exporter
-        (or nowhere). Reset the internal sentinel so this test class
-        always binds its own provider regardless of run order. The
-        same workaround is used in ``test_tracking.py`` and in the
-        ``threetears.observe.setup`` module.
+        ``UsageTracker`` takes its tracer from the public ``opentelemetry.trace.get_tracer`` when it
+        is constructed. That resolves through the process-global provider, which OTel lets a
+        process install exactly once, so a test cannot install its own; it substitutes the lookup
+        instead, for this test only, and leaves the process-global state as it found it.
+
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
         """
-        cls._exporter = _InMemorySpanExporter()
-        cls._provider = TracerProvider()
-        cls._provider.add_span_processor(SimpleSpanProcessor(cls._exporter))
-        try:
-            trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # noqa: SLF001
-        except AttributeError:
-            pass
-        trace.set_tracer_provider(cls._provider)
-
-    def setup_method(self) -> None:
-        """clears collected spans before each test."""
-        self._exporter.clear()
+        self._exporter = _InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(self._exporter))
+        monkeypatch.setattr(trace, "get_tracer", provider.get_tracer)
 
     def test_record_emits_locked_attribute_keys(self) -> None:
         """the 9 locked ``llm.*`` keys all reach the OTel span."""
@@ -267,30 +256,32 @@ class TestPrometheusEmission:
         """``UsageTracker.record`` does not raise when prometheus_client is missing.
 
         simulates the missing-dep case by hiding ``prometheus_client`` from the
-        import system before instantiating a fresh tracker. the
-        ``_PrometheusEmitter`` then resolves to its no-op state.
+        import system before building a tracker for a registry no tracker has
+        used yet, so its emitter is built -- and fails its import -- now, and
+        resolves to its no-op state.
         """
         import sys
 
-        from threetears.models import tracking
+        prometheus_client = pytest.importorskip("prometheus_client")
+        registry = prometheus_client.CollectorRegistry()
 
-        # hide prometheus_client from the import system; reset the cached emitter.
+        # hide prometheus_client from the import system for the emitter this tracker builds.
         monkeypatch.setitem(sys.modules, "prometheus_client", None)
-        tracking._reset_prom_emitter_for_testing()  # noqa: SLF001
-        try:
-            tracker = UsageTracker()
-            usage = UsageRecord(
-                model_name="m",
-                provider_name="p",
-                purpose=LlmPurpose.CHAT,
-                input_tokens=1,
-                output_tokens=2,
-                total_tokens=3,
-                latency_ms=4,
-            )
-            tracker.record(usage)  # must not raise.
-        finally:
-            tracking._reset_prom_emitter_for_testing()  # noqa: SLF001
+        tracker = UsageTracker(prom_registry=registry)
+        usage = UsageRecord(
+            model_name="m",
+            provider_name="p",
+            purpose=LlmPurpose.CHAT,
+            input_tokens=1,
+            output_tokens=2,
+            total_tokens=3,
+            latency_ms=4,
+        )
+        tracker.record(usage)  # must not raise.
+        monkeypatch.undo()
+
+        # and it emitted nothing: the instruments were never registered.
+        assert not [family for family in registry.collect() if family.name.startswith("threetears_llm_")]
 
 
 class TestCircuitBreakerCallback:

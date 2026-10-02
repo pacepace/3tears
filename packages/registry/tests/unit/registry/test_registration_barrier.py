@@ -23,7 +23,7 @@ from threetears.registry.registration import (
     RegistrationHandler,
 )
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
 
 @pytest.fixture(autouse=True)
@@ -510,4 +510,5 @@ class TestCatalogMarkReady:
 
         kv.put.assert_called_once()
         payload = json.loads(kv.put.call_args[0][1].decode("utf-8"))
-        assert payload["date_registered"] == original_date.isoformat()
+        # the same instant, in the one stored form every storage tier writes
+        assert payload["date_registered"] == "2024-01-15T12:00:00.000000+00:00"

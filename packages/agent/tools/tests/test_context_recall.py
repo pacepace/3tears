@@ -36,10 +36,9 @@ def l1_backend() -> SQLiteBackend:
     b = SQLiteBackend(db_name=f"test_recall_{uuid.uuid4().hex[:8]}")
     b.initialize(make_context_metadata())
     yield b
-    from threetears.core._bridge import drain, shutdown
+    from threetears.core.testing import drain_and_shutdown_bridge
 
-    drain()
-    shutdown()
+    drain_and_shutdown_bridge()
     b.reset()
 
 
@@ -210,7 +209,7 @@ async def test_offload_recall_round_trips_across_registries() -> None:
     config-level (same namespace + agent_id) and is validated on a live
     stack; this test pins the manager/collection logic above it.
     """
-    from threetears.core._bridge import drain, shutdown
+    from threetears.core.testing import drain_and_shutdown_bridge
 
     shared_l3 = FakePool()
     conv = "00000000-0000-0000-0000-0000000000aa"
@@ -244,8 +243,7 @@ async def test_offload_recall_round_trips_across_registries() -> None:
         assert item is not None
         assert item["content"] == full
     finally:
-        drain()
-        shutdown()
+        drain_and_shutdown_bridge()
         backend_a.reset()
         backend_b.reset()
 

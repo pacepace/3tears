@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-nats"
-version = "0.57.0"
+version = "0.58.0"
 description = "Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives for 3tears applications"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,7 +22,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.57.0,<0.58.0",
+    "3tears-observe>=0.58.0,<0.59.0",
     "pydantic>=2.10",
 ]
 
@@ -43,7 +43,15 @@ client = [
     # anything in 2.10..2.14 built clean and died at runtime with an unexpected
     # keyword -- the mixed-install failure mode this repo already warns about,
     # arriving through an undeclared floor instead of an unbounded sibling.
-    "nats-py>=2.15",
+    #
+    # <2.17 because the client depends on nats-py private attributes (the
+    # ordered round trip, server-side UNSUB, a pull inbox's queue, a forced
+    # reconnect), owned and documented in threetears/nats/_nats_py_internals.py
+    # and verified against 2.15.0 and 2.16.0 there. A release that renamed one
+    # would install clean and fail at runtime -- every health probe, subscribe
+    # and pull-consumer stop degrading at once. Raise the cap only by the
+    # procedure in that module's docstring.
+    "nats-py>=2.15,<2.17",
     "nkeys>=0.2",
 ]
 

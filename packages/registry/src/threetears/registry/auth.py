@@ -35,6 +35,7 @@ __all__ = [
     "EndpointUsageEmitter",
     "LimitDecision",
     "LimitGuard",
+    "RegistryIdentity",
     "ToolPodAuth",
     "ToolPodAuthenticator",
 ]
@@ -465,6 +466,40 @@ class EndpointUsageEmitter(Protocol):
         :ptype request: ProxyCallRequest
         :param response: the outbound tool response (content + success)
         :ptype response: ProxyCallResponse
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
+
+@runtime_checkable
+class RegistryIdentity(Protocol):
+    """the host-minted identity this registry process presents on its L3 reads, and its lifecycle.
+
+    The L3 broker resolves a caller from a signed identity token and refuses a request carrying
+    none, and the token is minted by the HOST over a handshake 3tears does not define. So the host
+    supplies this object through ``THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY``, an async
+    factory taking the connected client. :class:`~threetears.registry.server.RegistryServer` calls
+    that factory ONCE, hands :meth:`token` -- the bound method, never its current value -- to every
+    factory that builds an L3 backend, and calls :meth:`close` on shutdown. That makes one
+    identity per process a property of the server rather than something the host has to keep in
+    module state, and gives the host's refresh loop an owner that stops it.
+    """
+
+    def token(self) -> str | None:
+        """the CURRENT identity token, re-read on every call because the host re-mints it in place.
+
+        :return: the token, or ``None`` when the host holds none
+        :rtype: str | None
+        """
+        ...
+
+    async def close(self) -> None:
+        """stop keeping the token fresh and release it.
+
+        Called once by the server's shutdown, after every component that reads through
+        :meth:`token` has stopped and before the connection drains.
+
         :return: nothing
         :rtype: None
         """

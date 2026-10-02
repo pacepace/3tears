@@ -19,7 +19,7 @@ import pytest
 from uuid_utils import uuid7
 
 from threetears.agent.skills.migrations import register as register_skills
-from threetears.agent.wake.collections import WebhookSubscriptionCollection
+from threetears.agent.wake.collections import WakeFireCollection, WebhookSubscriptionCollection
 from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.tools import (
     load_webhook_subscription_create_tool,
@@ -171,6 +171,21 @@ async def _seed_subscription(
     return UUID(sub_id_str), secret
 
 
+def _receive_collections(pool: asyncpg.Pool) -> tuple[WebhookSubscriptionCollection, WakeFireCollection]:
+    """the subscription + fire collections the receive path runs on, over ``pool``.
+
+    L3 only: these tests pin the SQL path against Postgres. Cross-replica eviction of the
+    ``last_fired_at`` stamp is pinned in ``test_webhook_fire_reaches_every_reader.py``.
+    """
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    return (
+        WebhookSubscriptionCollection(registry=registry, config=cfg),
+        WakeFireCollection(registry=registry, config=cfg),
+    )
+
+
 def _hmac_header(secret: str, payload: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode("utf-8"), payload, sha256).hexdigest()
 
@@ -181,6 +196,7 @@ async def test_webhook_receive_valid_signature_dispatches(
 ) -> None:
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
+    subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
         sub_id, secret = await _seed_subscription(pool, conversation_id=conv_id)
@@ -192,6 +208,8 @@ async def test_webhook_receive_valid_signature_dispatches(
             signature_header=_hmac_header(secret, payload),
             source_ip=None,
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=handler,
         )
@@ -218,6 +236,7 @@ async def test_webhook_receive_invalid_signature_rejected(
 ) -> None:
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
+    subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
         sub_id, _ = await _seed_subscription(pool, conversation_id=conv_id)
@@ -227,6 +246,8 @@ async def test_webhook_receive_invalid_signature_rejected(
             signature_header="sha256=bogus",
             source_ip=None,
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=_RecordingHandler(),
         )
@@ -242,6 +263,7 @@ async def test_webhook_receive_missing_signature_rejected(
 ) -> None:
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
+    subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
         sub_id, _ = await _seed_subscription(pool, conversation_id=conv_id)
@@ -251,6 +273,8 @@ async def test_webhook_receive_missing_signature_rejected(
             signature_header=None,
             source_ip=None,
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=_RecordingHandler(),
         )
@@ -266,6 +290,7 @@ async def test_webhook_receive_unknown_subscription_404(
 ) -> None:
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
+    subscriptions, fires = _receive_collections(pool)
     try:
         result = await webhook_receive(
             subscription_id=_new_uuid(),
@@ -273,6 +298,8 @@ async def test_webhook_receive_unknown_subscription_404(
             signature_header="sha256=anything",
             source_ip=None,
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=_RecordingHandler(),
         )
@@ -287,6 +314,7 @@ async def test_webhook_receive_source_ip_allow_list_403(
 ) -> None:
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
+    subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
         sub_id, secret = await _seed_subscription(
@@ -301,6 +329,8 @@ async def test_webhook_receive_source_ip_allow_list_403(
             signature_header=_hmac_header(secret, payload),
             source_ip="192.168.1.1",
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=_RecordingHandler(),
         )
@@ -315,6 +345,7 @@ async def test_webhook_receive_rate_limit_429(
 ) -> None:
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
+    subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
         sub_id, secret = await _seed_subscription(
@@ -333,6 +364,8 @@ async def test_webhook_receive_rate_limit_429(
                 signature_header=header,
                 source_ip=None,
                 pool=pool,
+                subscriptions=subscriptions,
+                fires=fires,
                 encryption_service=_IdentityEncryption(),
                 handler=handler,
             )
@@ -344,6 +377,8 @@ async def test_webhook_receive_rate_limit_429(
             signature_header=header,
             source_ip=None,
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=handler,
         )
@@ -358,6 +393,7 @@ async def test_webhook_receive_template_render_error_400(
 ) -> None:
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
+    subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
         # Template asks for a field that won't exist; Jinja's default
@@ -375,6 +411,8 @@ async def test_webhook_receive_template_render_error_400(
             signature_header=header,
             source_ip=None,
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=_RecordingHandler(),
         )
@@ -390,6 +428,7 @@ async def test_webhook_receive_paused_subscription_404(
 ) -> None:
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
+    subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
         sub_id, secret = await _seed_subscription(pool, conversation_id=conv_id)
@@ -405,6 +444,8 @@ async def test_webhook_receive_paused_subscription_404(
             signature_header=_hmac_header(secret, payload),
             source_ip=None,
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=_RecordingHandler(),
         )
@@ -428,6 +469,7 @@ async def test_webhook_receive_pre_verified_skips_hmac_compute(
     """
     url, schema = pg_schema
     pool = await _apply_schema(url, schema)
+    subscriptions, fires = _receive_collections(pool)
     try:
         conv_id = _new_uuid()
         sub_id, _real_secret = await _seed_subscription(pool, conversation_id=conv_id)
@@ -441,6 +483,8 @@ async def test_webhook_receive_pre_verified_skips_hmac_compute(
             signature_header="vendor=trusted-by-receiver",
             source_ip=None,
             pool=pool,
+            subscriptions=subscriptions,
+            fires=fires,
             encryption_service=_IdentityEncryption(),
             handler=handler,
             pre_verified=True,

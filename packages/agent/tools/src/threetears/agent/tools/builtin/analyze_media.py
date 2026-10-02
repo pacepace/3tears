@@ -28,11 +28,18 @@ from typing import Any, Awaitable, Callable
 from uuid import UUID
 
 from langchain_core.tools import StructuredTool
+from threetears.media.contracts import (
+    EXTRACTION_STATUS_COMPLETE,
+    EXTRACTION_STATUS_PENDING,
+    MediaSizeLimitExceeded,
+)
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.document import DocumentParseError, can_parse_document, parse_document
 from threetears.agent.tools.protocols import (
     MediaInfo,
     MediaStorage,
+    ReferenceVisionProvider,
     TextProvider,
     TranscriptionProvider,
     VisionProvider,
@@ -42,6 +49,9 @@ from threetears.langgraph.fence import explained_fence, mint_nonce
 from threetears.observe import get_logger
 
 __all__ = [
+    "MAX_DOCUMENT_BYTES",
+    "MAX_TRANSCRIPTION_BYTES",
+    "MAX_VISION_IMAGE_BYTES",
     "AnalyzeMediaTool",
     "AnalyzerConfig",
     "OnAnalysisCallback",
@@ -59,6 +69,42 @@ _PLAIN_RESPONSE_SUFFIX = "Answer in plain sentences."
 _DEFAULT_DOC_MAX_CHARS = 12_000
 _DEFAULT_TRANSCRIPT_MAX_CHARS = 10_000
 
+#: The largest document this tool downloads to read its text: 20 MiB. A
+#: document with no cached extraction is read from its own bytes, and every
+#: parser needs the whole file in memory at once -- in a tool pod whose memory
+#: every other call it is serving shares. The model is sent at most
+#: ``doc_max_chars`` of the text anyway, so a document past this size cannot be
+#: answered any better by reading all of it, and reading it is what takes the
+#: pod down. 20 MiB holds any ordinary report, contract or text file and is the
+#: same bound the model gateway puts on a referenced object. A document the
+#: catalog records as larger is refused without a byte moving; the read itself
+#: stops at this bound too, because a recorded size can be absent or wrong.
+MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
+
+#: The largest audio or video file this tool downloads to transcribe: 100 MiB.
+#: A transcription backend that takes bytes is handed the whole recording in
+#: one buffer, and the HTTP client sending it builds a second copy for the
+#: upload, so the pod holds about twice this while the call runs -- beside
+#: every other call it is serving. Recordings are legitimately larger than
+#: documents, so this is five times the document bound: 100 MiB is well over
+#: an hour of speech at ordinary compressed bitrates and over the 25 MB
+#: upload cap the Whisper API puts on a single request, so nothing a
+#: transcription backend would accept is refused here. What it stops is a
+#: catalogued multi-gigabyte video, which no backend would transcribe in one
+#: call, being buffered whole into a tool pod. Refused from its recorded size
+#: without a byte moving; the read itself stops at this bound too.
+MAX_TRANSCRIPTION_BYTES = 100 * 1024 * 1024
+
+#: The largest image this tool downloads for a bytes-taking vision backend:
+#: 20 MiB, the same bound the model gateway puts on a referenced image
+#: (``aibots.gateway.media.MAX_MEDIA_BYTES``). An image is downloaded whole and
+#: decoded before :func:`prepare_image_for_vision` resizes it, so the decoded
+#: pixels are a multiple of the file. Keeping the bytes path at the gateway's
+#: bound means an image is answerable the same way whichever vision backend
+#: an analyzer uses. Refused from its recorded size without a byte moving; the
+#: read itself stops at this bound too.
+MAX_VISION_IMAGE_BYTES = 20 * 1024 * 1024
+
 
 @dataclass
 class AnalyzerConfig:
@@ -69,7 +115,7 @@ class AnalyzerConfig:
     """
 
     name: str
-    vision: VisionProvider | None = None
+    vision: VisionProvider | ReferenceVisionProvider | None = None
     text: TextProvider | None = None
     transcription: TranscriptionProvider | None = None
     supported_categories: set[str] = field(
@@ -83,6 +129,70 @@ OnAnalysisCallback = Callable[[str, str, str], Awaitable[None]]
 
 def _tool_error(step: str, detail: str) -> str:
     return f"[analyze_media/{step}] Error: {detail}"
+
+
+def _too_large(kind: str, size_bytes: int | None, limit_bytes: int, ask: str) -> str:
+    """what the model is told about media over the size bound for its kind.
+
+    :param kind: what the media is, as the model reads it (``"document"``, ``"image"``)
+    :ptype kind: str
+    :param size_bytes: the media's size when known, or ``None`` when the read passed the limit
+    :ptype size_bytes: int | None
+    :param limit_bytes: the bound it passed
+    :ptype limit_bytes: int
+    :param ask: what the model can ask for instead
+    :ptype ask: str
+    :return: the sentence
+    :rtype: str
+    """
+    size = f"it is {size_bytes:,} bytes" if size_bytes is not None else "it passed that size while being read"
+    return f"This {kind} is too large to read (too_large): {size}, and {kind}s over {limit_bytes:,} bytes are not read. {ask}"
+
+
+def _refused_too_large(
+    kind: str,
+    mid_str: str,
+    size_bytes: int | None,
+    limit_bytes: int,
+    ask: str,
+) -> str:
+    """log a refused read and return what the model is told about it.
+
+    one place for the refusal, so every byte-taking path logs the same fields and
+    gives the same plain answer: before a download when the recorded size is over
+    the bound (``size_bytes`` set), or when a bounded read passed it (``None``).
+
+    :param kind: what the media is, as the model reads it
+    :ptype kind: str
+    :param mid_str: media UUID string for logging
+    :ptype mid_str: str
+    :param size_bytes: the recorded size, or ``None`` when the read passed the limit
+    :ptype size_bytes: int | None
+    :param limit_bytes: the bound it passed
+    :ptype limit_bytes: int
+    :param ask: what the model can ask for instead
+    :ptype ask: str
+    :return: the sentence for the tool error
+    :rtype: str
+    """
+    when = "its recorded size is over" if size_bytes is not None else "the read passed"
+    _log.warning(
+        f"{kind} not read: {when} the {kind} size limit",
+        extra={
+            "extra_data": {
+                "media_id": mid_str,
+                "kind": kind,
+                "size_bytes": size_bytes,
+                "limit_bytes": limit_bytes,
+            }
+        },
+    )
+    return _too_large(kind, size_bytes, limit_bytes, ask)
+
+
+_DOCUMENT_ASK = "Ask for a smaller document or a specific excerpt."
+_RECORDING_ASK = "Ask for a shorter recording or a specific excerpt."
+_IMAGE_ASK = "Ask for a smaller image."
 
 
 def create_analyze_media_tool(
@@ -372,7 +482,7 @@ class AnalyzeMediaTool(TearsTool):
                 f"Analyzer '{analyzer}' has no vision capability.",
             )
 
-        return await self._handle_vision(media_ids, acfg, question, analyzer)
+        return await self._handle_vision(media_ids, media_info, acfg, question, analyzer)
 
     async def _fire_callback(
         self,
@@ -403,6 +513,41 @@ class AnalyzeMediaTool(TearsTool):
                     extra={"extra_data": {"media_id": mid_str, "content_type": content_type}},
                 )
 
+    async def _extract_from_bytes(self, mid: UUID, mid_str: str) -> tuple[str | None, str | None]:
+        """read a document's text from its stored bytes, never more than :data:`MAX_DOCUMENT_BYTES`.
+
+        the fallback for a storage that serves bytes but caches no extracted
+        text. an absent download is no text (the caller answers that); a document
+        past the size bound, a type no parser reads, or a parser failure, is an
+        error naming why.
+
+        :param mid: media UUID
+        :ptype mid: UUID
+        :param mid_str: media UUID string for logging
+        :ptype mid_str: str
+        :return: ``(text, None)`` on success or absence, ``(None, detail)`` on a parse failure
+        :rtype: tuple[str | None, str | None]
+        """
+        text: str | None = None
+        error: str | None = None
+        try:
+            dl = await self._storage.download_media(mid, max_bytes=MAX_DOCUMENT_BYTES)
+        except MediaSizeLimitExceeded as exc:
+            return None, _refused_too_large("document", mid_str, exc.size_bytes, exc.limit_bytes, _DOCUMENT_ASK)
+        if dl is not None:
+            data, mime_type = dl
+            try:
+                parsed = await parse_document(data, mime_type)
+            except DocumentParseError as exc:
+                _log.warning(
+                    "document bytes could not be read as text",
+                    extra={"extra_data": {"media_id": mid_str, "mime_type": mime_type, "reason": exc.reason}},
+                )
+                error = f"This document could not be read ({exc.reason}): {exc.detail}"
+            else:
+                text = parsed.text
+        return text, error
+
     async def _handle_document(
         self,
         mid: UUID,
@@ -412,6 +557,14 @@ class AnalyzeMediaTool(TearsTool):
         question: str,
     ) -> str:
         """route a document item through extracted-text question answering.
+
+        the text is the storage's cached extraction when it has one, otherwise
+        the document's own bytes parsed by :func:`parse_document` -- a storage
+        with no extraction cache (the object catalog) is still readable. those
+        bytes are fetched only for a type a parser reads
+        (:func:`can_parse_document`) and only up to :data:`MAX_DOCUMENT_BYTES`;
+        any other type, and a document whose recorded size is over the limit,
+        is answered from its metadata without downloading it.
 
         :param mid: media UUID
         :ptype mid: UUID
@@ -426,12 +579,39 @@ class AnalyzeMediaTool(TearsTool):
         :return: provider response or formatted error string
         :rtype: str
         """
-        if info.extraction_status == "pending":
+        if info.extraction_status == EXTRACTION_STATUS_PENDING:
             return "This document is still being processed and cannot be read yet. Try again in a minute."
 
         extracted = await self._storage.get_content(mid, "extracted_text")
         if not extracted:
             extracted = await self._storage.get_content(mid, "transcript")
+        if not extracted and info.has_downloadable_data:
+            # a storage with no extraction cache (the object catalog has no
+            # content column) still serves the document's bytes; read the text
+            # from them rather than reporting a readable document unreadable.
+            # but only a type a parser reads: every type that is not image, audio
+            # or video lands here, and the object store holds artifacts (packet
+            # captures, database dumps) that must never be pulled whole into this
+            # pod's memory only to be turned away. and a readable type is still
+            # only read up to MAX_DOCUMENT_BYTES: refused here from its recorded
+            # size, and bounded on the read for a size that is unknown or wrong.
+            if not can_parse_document(info.mime_type):
+                _log.warning(
+                    "document not downloaded: no parser reads its type",
+                    extra={"extra_data": {"media_id": mid_str, "mime_type": info.mime_type}},
+                )
+                return _tool_error(
+                    "document analysis",
+                    f"This document could not be read (unsupported_type): no parser reads {info.mime_type!r}",
+                )
+            if info.size_bytes is not None and info.size_bytes > MAX_DOCUMENT_BYTES:
+                return _tool_error(
+                    "document analysis",
+                    _refused_too_large("document", mid_str, info.size_bytes, MAX_DOCUMENT_BYTES, _DOCUMENT_ASK),
+                )
+            extracted, parse_error = await self._extract_from_bytes(mid, mid_str)
+            if parse_error is not None:
+                return _tool_error("document analysis", parse_error)
         if not extracted:
             return _tool_error(
                 "document analysis",
@@ -526,14 +706,28 @@ class AnalyzeMediaTool(TearsTool):
 
         # Check for cached transcript
         cached_transcript = None
-        if info.extraction_status == "complete":
+        if info.extraction_status == EXTRACTION_STATUS_COMPLETE:
             cached_transcript = await self._storage.get_content(mid, "transcript")
 
         if cached_transcript:
             transcript = cached_transcript
         else:
-            # Download and transcribe
-            dl = await self._storage.download_media(mid)
+            # download and transcribe, never more than MAX_TRANSCRIPTION_BYTES:
+            # refused here from its recorded size, and bounded on the read for a
+            # size that is unknown or wrong.
+            kind = f"{info.media_category} file"
+            if info.size_bytes is not None and info.size_bytes > MAX_TRANSCRIPTION_BYTES:
+                return _tool_error(
+                    "transcribe",
+                    _refused_too_large(kind, mid_str, info.size_bytes, MAX_TRANSCRIPTION_BYTES, _RECORDING_ASK),
+                )
+            try:
+                dl = await self._storage.download_media(mid, max_bytes=MAX_TRANSCRIPTION_BYTES)
+            except MediaSizeLimitExceeded as exc:
+                return _tool_error(
+                    "transcribe",
+                    _refused_too_large(kind, mid_str, exc.size_bytes, exc.limit_bytes, _RECORDING_ASK),
+                )
             if dl is None:
                 return _tool_error(
                     "transcribe",
@@ -601,6 +795,7 @@ class AnalyzeMediaTool(TearsTool):
     async def _handle_vision(
         self,
         media_ids: list[str],
+        media_info: dict[str, MediaInfo],
         acfg: AnalyzerConfig,
         question: str,
         analyzer_name: str,
@@ -609,6 +804,9 @@ class AnalyzeMediaTool(TearsTool):
 
         :param media_ids: list of media UUID strings to analyze together
         :ptype media_ids: list[str]
+        :param media_info: the media the caller's storage resolved, by id string;
+            an id missing here was refused (not the caller's, or absent)
+        :ptype media_info: dict[str, MediaInfo]
         :param acfg: resolved AnalyzerConfig (must carry a vision provider)
         :ptype acfg: AnalyzerConfig
         :param question: prompt for the vision model
@@ -620,15 +818,47 @@ class AnalyzeMediaTool(TearsTool):
         """
         assert acfg.vision is not None
 
+        # Reference path: a vision backend that resolves the image itself (a
+        # gateway-backed provider) takes object ids, not bytes. all images go in
+        # ONE turn, the bytes never reach this pod, and no object-store creds are
+        # needed here. bytes-taking backends fall through to the download path.
+        if isinstance(acfg.vision, ReferenceVisionProvider):
+            # only ids the caller's storage resolved go to the backend: an id the
+            # storage refused (another customer's object, or one planted in content
+            # by prompt injection) must not rest on the gateway's authorization
+            # alone. the bytes path gets the same guarantee from download_media.
+            resolved = [mid for mid in media_ids if mid in media_info]
+            if not resolved:
+                return _tool_error(
+                    "load media",
+                    "No valid media found for the given media IDs.",
+                )
+            return await self._handle_vision_by_reference(resolved, acfg.vision, question, analyzer_name)
+
         from threetears.agent.tools.builtin.image_prep import (
             prepare_image_for_vision,
         )
 
-        # Download and preprocess all images
+        # download and preprocess all images, each never more than
+        # MAX_VISION_IMAGE_BYTES. one image over the bound refuses the whole
+        # analysis: an answer about the others would read as an answer about all.
         image_parts: list[tuple[bytes, str]] = []
         for mid_str in media_ids:
             mid = UUID(mid_str)
-            dl = await self._storage.download_media(mid)
+            info = media_info.get(mid_str)
+            if info is not None and info.size_bytes is not None and info.size_bytes > MAX_VISION_IMAGE_BYTES:
+                return _tool_error(
+                    "load media",
+                    f"{mid_str}: "
+                    + _refused_too_large("image", mid_str, info.size_bytes, MAX_VISION_IMAGE_BYTES, _IMAGE_ASK),
+                )
+            try:
+                dl = await self._storage.download_media(mid, max_bytes=MAX_VISION_IMAGE_BYTES)
+            except MediaSizeLimitExceeded as exc:
+                return _tool_error(
+                    "load media",
+                    f"{mid_str}: " + _refused_too_large("image", mid_str, exc.size_bytes, exc.limit_bytes, _IMAGE_ASK),
+                )
             if dl is None:
                 _log.warning(
                     "Media not found for analysis",
@@ -680,6 +910,67 @@ class AnalyzeMediaTool(TearsTool):
             return _tool_error("vision model invocation", str(exc))
 
         # Persist description for single-media analysis
+        return await self._finalize_vision(media_ids, result_text, analyzer_name)
+
+    async def _handle_vision_by_reference(
+        self,
+        media_ids: list[str],
+        vision: ReferenceVisionProvider,
+        question: str,
+        analyzer_name: str,
+    ) -> str:
+        """analyse referenced images without ever holding their bytes.
+
+        the reference-vision backend (a gateway-backed provider) takes the
+        object ids and resolves the images itself at the model boundary, so
+        this pod streams no bytes and needs no object-store credentials. all
+        images go in ONE turn, matching the multi-image message the platform
+        supports.
+
+        :param media_ids: media UUID strings, used verbatim as object ids
+        :ptype media_ids: list[str]
+        :param vision: the reference-vision backend
+        :ptype vision: ReferenceVisionProvider
+        :param question: prompt for the vision model
+        :ptype question: str
+        :param analyzer_name: display name of the analyzer
+        :ptype analyzer_name: str
+        :return: vision response (with optional display-url hint) or error string
+        :rtype: str
+        """
+        suffix = f"\n\n{self._response_suffix}" if self._response_suffix else ""
+        prompt = f"{question}{suffix}"
+        object_ids = [UUID(mid) for mid in media_ids]
+        try:
+            result_text = await vision.analyze_ref(object_ids, prompt)
+        except Exception as exc:
+            _log.error(
+                "Reference vision invocation failed",
+                extra={"extra_data": {"analyzer": analyzer_name, "error": str(exc)}},
+            )
+            return _tool_error("vision model invocation", str(exc))
+        return await self._finalize_vision(media_ids, result_text, analyzer_name)
+
+    async def _finalize_vision(
+        self,
+        media_ids: list[str],
+        result_text: str,
+        analyzer_name: str,
+    ) -> str:
+        """persist a single-image description and append a display-url hint.
+
+        shared close-out for both vision paths (bytes and reference) so the
+        persistence + display-hint behaviour has one implementation.
+
+        :param media_ids: the analysed media UUID strings
+        :ptype media_ids: list[str]
+        :param result_text: the vision model's answer
+        :ptype result_text: str
+        :param analyzer_name: display name of the analyzer, stored as model_name
+        :ptype analyzer_name: str
+        :return: the answer, with a markdown display hint when a URL builder exists
+        :rtype: str
+        """
         if result_text and len(media_ids) == 1 and self._user_id:
             try:
                 await self._storage.store_content(
@@ -697,12 +988,12 @@ class AnalyzeMediaTool(TearsTool):
 
             await self._fire_callback(media_ids[0], "description", result_text)
 
-        # Include display hint if the host app provides a URL builder
+        result = result_text
         if len(media_ids) == 1 and self._media_url_fn:
             url = self._media_url_fn(media_ids[0])
             if url:
-                return f"{result_text}\n\nTo show this image in your reply, write ![description]({url})"
-        return result_text
+                result = f"{result_text}\n\nTo show this image in your reply, write ![description]({url})"
+        return result
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """analyze media items using configured providers.

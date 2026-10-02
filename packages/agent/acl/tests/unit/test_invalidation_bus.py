@@ -15,7 +15,7 @@ from threetears.agent.acl.invalidation import (
     MembershipInvalidatePayload,
     RoleInvalidatePayload,
 )
-from ._fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeStore, make_cache
 
 from threetears.agent.acl.invalidation_bus import (
     publish_assignment_invalidation,

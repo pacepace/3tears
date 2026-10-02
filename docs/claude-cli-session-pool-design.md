@@ -14,7 +14,9 @@ empty conversation between calls. Everything below was verified against the bund
 The agent switch (`apply_flag_settings`) and the rewind reset (`rewind_conversation`) came later and
 were proven on claude-agent-sdk 0.2.116 with its bundled CLI 2.1.207; the switch also on 0.2.118 with
 CLI 2.1.209. A rewind to a conversation's first message further needs the CLI's server-side flag
-`tengu_rewind_first_message`. Both go through the SDK's private `_send_control_request`, so a CLI
+`tengu_rewind_first_message`. Both go through the SDK's private `_send_control_request` -- reached,
+like every SDK private member the pool needs, only through `threetears.models._claude_sdk_internals`,
+whose test checks that surface against the installed SDK -- so a CLI
 that refuses either one -- or a surface that moved -- counts toward the pool's self-disable latch:
 three such failures in a row turn pooling off, logged once, and calls run on CLIs of their own.
 A timeout or transport failure does not count (`repeats_on_every_call`): the SDK raises its timeout

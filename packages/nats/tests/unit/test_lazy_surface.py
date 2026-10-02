@@ -54,6 +54,39 @@ class _BlockedFinder:
         return None
 
 
+def _declared_lazy_table() -> dict[str, tuple[str, ...]]:
+    """the package's lazy table as its source declares it: submodule -> the names it re-exports.
+
+    Read from the file rather than from the module object, so these tests check the package's
+    declaration without binding to the private table the package resolves names through.
+
+    :return: the literal assigned to the lazy table in ``threetears/nats/__init__.py``
+    :rtype: dict[str, tuple[str, ...]]
+    :raises AssertionError: when the file declares no such table, so no test here passes vacuously
+    """
+    tree = ast.parse(Path(nats_pkg.__file__).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_LAZY_SUBMOD_ATTRS"
+            and node.value is not None
+        ):
+            table: dict[str, tuple[str, ...]] = ast.literal_eval(node.value)
+            assert table, "the lazy table is declared empty"
+            return table
+    raise AssertionError("threetears/nats/__init__.py no longer declares its lazy table as a literal")
+
+
+def _declared_lazy_names() -> set[str]:
+    """every name the lazy table declares, across all its submodules.
+
+    :return: the lazily-resolved public names
+    :rtype: set[str]
+    """
+    return {name for names in _declared_lazy_table().values() for name in names}
+
+
 def _purge(prefixes: Sequence[str]) -> None:
     for name in [n for n in sys.modules if n.split(".")[0] in prefixes]:
         del sys.modules[name]
@@ -108,7 +141,7 @@ class TestLazySurface:
         that nothing could have caught, since those names do not exist at runtime.
         ``test_type_checking_block_matches_lazy_table`` below now covers it.
         """
-        for submod, attrs in nats_pkg._LAZY_SUBMOD_ATTRS.items():  # noqa: SLF001
+        for submod, attrs in _declared_lazy_table().items():
             module: ModuleType = importlib.import_module(f"threetears.nats.{submod}")
             missing = [a for a in attrs if not hasattr(module, a)]
             assert not missing, f"threetears.nats.{submod} does not export {missing}"
@@ -136,7 +169,7 @@ class TestLazySurface:
                 submod = statement.module.removeprefix("threetears.nats.")
                 declared.setdefault(submod, set()).update(alias.name for alias in statement.names)
 
-        expected = {submod: set(attrs) for submod, attrs in nats_pkg._LAZY_SUBMOD_ATTRS.items()}  # noqa: SLF001
+        expected = {submod: set(attrs) for submod, attrs in _declared_lazy_table().items()}
         assert declared == expected, (
             f"TYPE_CHECKING block and _LAZY_SUBMOD_ATTRS disagree; "
             f"only in the block: { {k: sorted(v - expected.get(k, set())) for k, v in declared.items() if v - expected.get(k, set())} }, "
@@ -145,7 +178,7 @@ class TestLazySurface:
 
     def test_lazy_names_are_declared_public(self) -> None:
         """the lazy table may not smuggle in names __all__ does not promise."""
-        undeclared = sorted(set(nats_pkg._LAZY_ATTR_TO_SUBMOD) - set(nats_pkg.__all__))  # noqa: SLF001
+        undeclared = sorted(_declared_lazy_names() - set(nats_pkg.__all__))
         assert not undeclared, f"lazy names missing from __all__: {undeclared}"
 
     def test_every_public_name_resolves(self) -> None:
@@ -167,7 +200,7 @@ class TestLazySurface:
     def test_dir_advertises_the_lazy_names(self) -> None:
         """tab-completion and introspection should see the deferred surface."""
         listed = set(dir(nats_pkg))
-        assert set(nats_pkg._LAZY_ATTR_TO_SUBMOD) <= listed  # noqa: SLF001
+        assert _declared_lazy_names() <= listed
 
 
 class TestSubmoduleNameCollision:

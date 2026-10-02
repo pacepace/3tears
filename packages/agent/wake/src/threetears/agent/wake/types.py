@@ -258,7 +258,9 @@ class FireConversationHook(Protocol):
     conversation on that connection and returns its id; the platform then
     links the fire row to it in the same transaction, so the two commit
     together. The handler receives the id as
-    ``trigger.started_conversation_id``.
+    ``trigger.started_conversation_id``. The transaction is a
+    :class:`~threetears.core.collections.CallerTransaction`, so the hook may
+    save through a collection with ``save_entity(entity, conn=conn)``.
     """
 
     async def __call__(self, trigger: WakeTrigger, conn: Any) -> UUID:
@@ -296,7 +298,9 @@ class WakeConversations(Protocol):
         """Create a wake conversation on ``conn`` and return its id.
 
         Runs inside the transaction that inserts the wake, so a refused
-        insert leaves no empty conversation behind.
+        insert leaves no empty conversation behind. That transaction is a
+        :class:`~threetears.core.collections.CallerTransaction`, so the hook
+        may save through a collection with ``save_entity(entity, conn=conn)``.
 
         :param parent_conversation_id: the conversation the wake was created from
         :ptype parent_conversation_id: UUID

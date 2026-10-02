@@ -37,6 +37,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from threetears.core.backends.schema_sql import json_default
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
@@ -207,6 +208,9 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         await self._publish_invalidation(entity.id)
         entity.mark_clean()
         entity.original_date_updated = data.get("date_updated")
+        # the handle answers from the row it saved: L1 is a cache of L2 here, and a peer's
+        # broadcast may drop the key at any time.
+        entity.hold_row(data)
 
     async def delete(self, entity_id: Any) -> bool:
         """remove heartbeat row from L1 and L2.
@@ -299,7 +303,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         :return: JSON-encoded bytes
         :rtype: bytes
         """
-        return json.dumps(data, default=str).encode("utf-8")
+        return json.dumps(data, default=json_default).encode("utf-8")
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
         """deserialize JSON bytes from L2 back into row dict.

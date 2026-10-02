@@ -33,6 +33,7 @@ from threetears.agent.workspace.config import (
     WorkspaceConfig,
 )
 from threetears.agent.workspace.lease import WorkspaceFileLease
+from threetears.nats.subject_permissions import WORKSPACE_LOCKS_BUCKET_SUFFIX, agent_platform_bucket_suffix
 from threetears.agent.workspace.materialize import bind
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 
@@ -62,7 +63,9 @@ async def test_bind_captures_back_stub_builder_edit(
         allow=AllowConfig(read=["**/*"], write=["**/*.yaml"]),
     )
     sandbox = WorkspaceSandbox.from_config(config)
-    lease = WorkspaceFileLease(fx.nats, namespace="test", pod_id="test-pod")
+    # the hub declares the agent's own workspace-locks bucket; the lease only binds it
+    await fx.nats.kv_bucket(name=agent_platform_bucket_suffix(fx.agent_id, WORKSPACE_LOCKS_BUCKET_SUFFIX))
+    lease = WorkspaceFileLease(fx.nats, agent_id=fx.agent_id, pod_id="test-pod")
     new_payload = b"audience_units:\n  - audience_unit: test_override\n"
 
     async with bind(

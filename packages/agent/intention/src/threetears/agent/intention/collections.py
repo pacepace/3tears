@@ -406,15 +406,14 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         """
         if self.l3_pool is None or not intention_ids:
             return None
-        await self.l3_pool.execute(
-            "UPDATE intentions SET salience = LEAST(1.0, salience + $1) "
-            "WHERE agent_id = $2 AND intention_id = ANY($3::uuid[])",
-            access_bump,
-            agent_id,
-            intention_ids,
-        )
-        for intention_id in intention_ids:
-            await self.invalidate_cache((agent_id, intention_id))
+        async with self.bypassing_write(*[(agent_id, intention_id) for intention_id in intention_ids]):
+            await self.l3_pool.execute(
+                "UPDATE intentions SET salience = LEAST(1.0, salience + $1) "
+                "WHERE agent_id = $2 AND intention_id = ANY($3::uuid[])",
+                access_bump,
+                agent_id,
+                intention_ids,
+            )
         return None
 
     @spans_partitions(marker_only=True)
@@ -461,15 +460,15 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         # pool holds. The SQL literal lives in the shared helper (which
         # carries no ``intentions`` literal), so the partition-enforcement
         # walker is satisfied and this method holds no raw table SQL.
-        result = await apply_salience_decay(
-            self.l3_pool,
-            table="intentions",
-            half_life_seconds=half_life_days * 86400.0,
-            floor=floor,
-            skip_evergreen=False,
-            returning_columns=self.primary_key_columns,
-        )
-        decayed_pks = result if isinstance(result, list) else []
-        for pk in decayed_pks:
-            await self.invalidate_cache(pk)
+        async with self.bypassing_write() as write:
+            result = await apply_salience_decay(
+                self.l3_pool,
+                table="intentions",
+                half_life_seconds=half_life_days * 86400.0,
+                floor=floor,
+                skip_evergreen=False,
+                returning_columns=self.primary_key_columns,
+            )
+            decayed_pks = result if isinstance(result, list) else []
+            write.touches(*decayed_pks)
         return len(decayed_pks)

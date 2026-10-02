@@ -153,6 +153,9 @@ class CoordinationCollection(SchemaBackedCollection[CoordinationRow]):
     """
 
     primary_key_column: str | tuple[str, ...] = ("purpose", "key")
+    # save_to_store below only answers for a registry with no L3; every row it writes goes
+    # through the generated statement, so a row is completed as that statement stores it.
+    stores_through_generated_sql: ClassVar[bool | None] = True
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """build the collection and arm its first sweep.

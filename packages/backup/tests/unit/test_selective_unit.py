@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid7
 
 import pytest
@@ -10,9 +12,51 @@ import pytest
 from threetears.backup.selective import RowSelection, SelectiveRestore
 
 
-def _predicate(selection: RowSelection, pk: tuple[str, ...] = ("id",)):
-    restore = SelectiveRestore(connect=None, scratch_dsn="", live_dsn="")  # type: ignore[arg-type]
-    return restore._predicate(selection, pk)  # noqa: SLF001 -- the pure predicate builder is worth pinning directly
+# parity-exempt: the asyncpg connection surface plan() reads through -- fetch and close only
+class _SnapshotConnection:
+    """a snapshot connection with a table of primary key ``pk``, recording the row selection it is sent.
+
+    The catalog reads are told apart by what they select: ``attname`` is the primary-key read,
+    ``column_name`` the column list. The selection is the one statement starting ``SELECT *``.
+    """
+
+    def __init__(self, pk: tuple[str, ...]) -> None:
+        self.pk = pk
+        self.selections: list[tuple[str, tuple[object, ...]]] = []
+
+    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
+        if query.startswith("SELECT * FROM"):
+            self.selections.append((query, args))
+            return []
+        if "attname" in query:
+            return [{"attname": column} for column in self.pk]
+        return [{"column_name": column} for column in self.pk]
+
+    async def close(self) -> None:
+        return None
+
+
+def _predicate(selection: RowSelection, pk: tuple[str, ...] = ("id",)) -> tuple[str, list[object]]:
+    """the WHERE clause and parameters ``plan`` selects ``selection``'s rows with.
+
+    Read off the statement the restore actually sends to the snapshot, so these tests pin the
+    predicate where it takes effect rather than at a private builder.
+
+    :param selection: the rows to restore
+    :ptype selection: RowSelection
+    :param pk: the table's primary key
+    :ptype pk: tuple[str, ...]
+    :return: the clause after ``WHERE``, and its bound parameters
+    :rtype: tuple[str, list[object]]
+    """
+    connection = _SnapshotConnection(pk)
+
+    async def _connect(_dsn: str) -> _SnapshotConnection:
+        return connection
+
+    asyncio.run(SelectiveRestore(connect=_connect, scratch_dsn="scratch", live_dsn="live").plan(selection))  # type: ignore[arg-type]
+    [(query, params)] = connection.selections
+    return query.split(" WHERE ", 1)[1], list(params)
 
 
 class TestRowSelection:

@@ -25,9 +25,9 @@ from threetears.registry.proxy import ProxyCallResponse
 from threetears.registry.registration import RegistrationHandler
 from threetears.registry.routing import LeastConnectionsStrategy
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
-from ._dispatch_auth import make_authed_request, make_proxy
+from .dispatch_auth import make_authed_request, make_proxy
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +122,7 @@ _DEFAULT_CORRELATION_ID = UUID("01948a00-6666-7000-8000-0000abcdef01")
 
 
 # the enforce-only auth scaffolding (token+pop requests + a JWKS-wired proxy) is shared across the
-# registry dispatch-test modules; see ``_dispatch_auth``. these aliases keep the test bodies reading
+# registry dispatch-test modules; see ``dispatch_auth``. these aliases keep the test bodies reading
 # the same while every dispatch is now authenticated (v0.13.9 verifies identity + pop, fail-closed).
 _make_call_request = make_authed_request
 _make_proxy = make_proxy

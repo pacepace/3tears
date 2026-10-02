@@ -380,7 +380,8 @@ class TestWindowedCounter:
         counter = _counter(registry)
         await counter.record_attempt("k")
         collection = _counters(registry)
-        assert collection._flusher is not None, "nothing would ever drain the write buffer"  # noqa: SLF001
+        flush_loops = [t for t in asyncio.all_tasks() if t.get_name() == "coordination-flush" and not t.done()]
+        assert flush_loops, "nothing would ever drain the write buffer"
         await collection.aclose()
 
     def test_non_positive_window_rejected(self) -> None:

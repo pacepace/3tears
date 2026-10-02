@@ -32,10 +32,29 @@ the refusal must reach the verifier's future tolerance plus the drift between th
 a replay stamped at the edge of acceptance could slip past. The guard is given the verifier's
 future tolerance and adds :data:`CLOCK_DRIFT_ALLOWANCE` itself, so the drift is modelled in one
 place rather than guessed at each call site. A verifier calls :meth:`ReplayGuard.require_covers`
-with its own tolerance, so a leeway widened later fails loudly instead of reopening the hole.
+with its own tolerance, so a tolerance widened later fails loudly instead of reopening the hole.
 
 The cost is that for that long after a wipe, fresh artifacts are refused too -- the price of never
 admitting a replay.
+
+**So the future tolerance is kept small, and it is not the verifier's past window.** How OLD an
+artifact may be when it arrives says nothing about how far its issue time may LEAD the verifier's
+clock, and only the second sets the reach. The registry's proof-of-possession verifier, whose
+signer is a platform pod, accepts an issue time at most
+:data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE` (5s) ahead while still accepting one
+:data:`~threetears.core.security.DEFAULT_PROOF_MAX_AGE` (60s) old, so its guard refuses for ten
+seconds after a broker restart. When the two directions were one symmetric leeway it was sized for
+the whole minute and a restart cost 65 seconds of refused tool calls. A DPoP verifier's signer is
+a user's device, whose clock the platform does not keep, so it accepts
+:data:`~threetears.core.security.CLIENT_ISSUE_TIME_FUTURE_TOLERANCE` (60s) ahead and its guard
+still reaches 65 seconds. A guard sized for more than its verifier accepts is safe and only
+refuses for longer; one sized for less is refused by :meth:`ReplayGuard.require_covers`.
+
+**A surface can ask before it is refused.** :meth:`ReplayGuard.refusing_until` answers whether the
+guard is inside that window now, and until when, from the bucket's creation time and the anchor
+alone -- no artifact. A login surface asks it before it reads a credential and answers every
+request in the window with one retryable reply, rather than letting the refusal surface after the
+password verified, where the only reply that leaks nothing is a wrong password's.
 
 **Bind at start, or the window is measured from the wrong moment.** The watermark is measured from
 the bucket's creation time, and the bucket is created by whichever call opens it first. A service
@@ -55,9 +74,9 @@ that holds only a NATS client keeps today's conservative behaviour by leaving it
 
     guard = ReplayGuard(
         nats_client, bucket_name="pop_nonces", ttl_seconds=120,
-        verifier_future_tolerance=timedelta(seconds=60),
+        verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE,
     )
-    guard.require_covers(timedelta(seconds=leeway_seconds))  # at the verifier's construction
+    guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)  # at the verifier's construction
     await guard.bind()  # at service start, before serving anything
     if not await guard.record_unique(nonce, issued_at=proof_issued_at):
         raise <replay rejected>
@@ -71,6 +90,8 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol, cast
 
 from threetears.observe import get_logger
+
+from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -90,6 +111,11 @@ log = get_logger(__name__)
 #: disagree. Added to every guard's verifier future tolerance, because the creation time the wipe
 #: check compares against is the broker's clock while the tolerance is measured on the verifier's.
 #: Every second of it is also a second of refused traffic after a broker restart.
+#:
+#: The same clock-agreement requirement as
+#: :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`, between a different pair of
+#: hosts: that one is signer against verifier and is owned by the verifiers, this one is verifier
+#: against broker and is owned here. A pod-signed proof's guard therefore refuses for their sum.
 CLOCK_DRIFT_ALLOWANCE = timedelta(seconds=5)
 
 
@@ -118,6 +144,8 @@ class ReplayGuard:
         ttl_seconds: int,
         verifier_future_tolerance: timedelta,
         anchor: "ReplayAnchor | None" = None,
+        create_if_missing: bool = True,
+        key_scope: str | None = None,
     ) -> None:
         """configure the guard; the bucket is opened by :meth:`bind`, which a service calls at start.
 
@@ -136,7 +164,11 @@ class ReplayGuard:
             accepts an artifact's issue time. The guard refuses, after a wipe, anything issued within
             this plus :data:`CLOCK_DRIFT_ALLOWANCE` of the bucket's creation time. Deliberately has
             no default: it is a property of the verifier, which confirms it with
-            :meth:`require_covers`. MUST NOT be negative
+            :meth:`require_covers`. It is the verifier's FUTURE bound only, never the window in
+            which an old artifact is still accepted; for a pod-signed proof it is
+            :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`, for a client-signed
+            DPoP proof :data:`~threetears.core.security.CLIENT_ISSUE_TIME_FUTURE_TOLERANCE`. MUST
+            NOT be negative
         :ptype verifier_future_tolerance: timedelta
         :param anchor: durable record of when this ledger FIRST existed
             (:mod:`threetears.core.coordination.replay_anchor`). Without one the guard cannot
@@ -144,10 +176,25 @@ class ReplayGuard:
             wipe, and on a first run a window of refusals protecting nothing. With one, the
             watermark applies only when the anchor predates the bucket, which is what a wipe
             looks like. Optional because the registry server and the tool pod deliberately hold
-            only a NATS client, and a minute of refused internal RPC that retries does not
+            only a NATS client, and a few seconds of refused internal RPC that retries does not
             justify wiring durable storage into them
         :ptype anchor: ReplayAnchor | None
-        :raises ValueError: when ``ttl_seconds`` is not positive or the tolerance is negative
+        :param create_if_missing: ``True`` (the default) DECLARES the bucket, creating it when
+            absent -- and recreating it after a broker wipe; ``False`` only BINDS a bucket another
+            identity declared and never issues STREAM.CREATE. A pod holds no stream-management verb,
+            so a pod's guard binds, and after a wipe it refuses every artifact until the declarer
+            (the hub) has recreated the bucket -- failing closed, never recording into nothing
+        :ptype create_if_missing: bool
+        :param key_scope: the owner scope every nonce key leads with (``{key_scope}.{digest}``),
+            for a ledger kept in a bucket SHARED by many owners -- the platform's
+            ``proxy_assertion_nonces``, which every pod binds and in which each pod is granted only
+            the keys under its own :func:`~threetears.nats.subject_permissions.kv_key_scope_for`.
+            ``None`` keys by the digest alone, for a bucket this ledger has to itself. Owners never
+            share a ledger this way, which is sound because an assertion is bound to the one pod it
+            was issued for: its replay to another owner fails verification before the guard is asked
+        :ptype key_scope: str | None
+        :raises ValueError: when ``ttl_seconds`` is not positive, the tolerance is negative, or
+            ``key_scope`` is not one literal subject token
         """
         if ttl_seconds <= 0:
             raise ValueError(f"ReplayGuard ttl_seconds must be positive, got {ttl_seconds}")
@@ -155,11 +202,13 @@ class ReplayGuard:
             raise ValueError(
                 f"ReplayGuard verifier_future_tolerance must not be negative, got {verifier_future_tolerance}"
             )
+        self._key_scope = validated_key_scope(key_scope, primitive="ReplayGuard")
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = timedelta(seconds=ttl_seconds)
         self._verifier_future_tolerance = verifier_future_tolerance
         self._anchor = anchor
+        self._create_if_missing = create_if_missing
         # Read once, at bind, and kept: the anchor is a fact about this ledger's whole history, so
         # re-reading it per artifact would put a durable round trip on the hot path to learn
         # something that cannot change while the process runs. A failed read stays None and is
@@ -205,7 +254,7 @@ class ReplayGuard:
                 f"ReplayGuard {self._bucket_name!r} was sized for a verifier future tolerance of "
                 f"{self._verifier_future_tolerance}, but its verifier accepts issue times up to "
                 f"{future_tolerance} ahead; a replay stamped at that edge would pass the wipe check. "
-                "Construct the guard with verifier_future_tolerance at least the verifier's leeway."
+                "Construct the guard with verifier_future_tolerance at least the verifier's future tolerance."
             )
 
     async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
@@ -246,7 +295,8 @@ class ReplayGuard:
             # later, which refuses more, never less.
             date_created = await bucket.date_created()
             refusal_reach = self._verifier_future_tolerance + CLOCK_DRIFT_ALLOWANCE
-            if await self._bucket_replaced_a_lost_one(date_created) and issued_at < date_created + refusal_reach:
+            refuses_before = await self._refuses_artifacts_issued_before(date_created)
+            if refuses_before is not None and issued_at < refuses_before:
                 log.warning(
                     "ReplayGuard refused an artifact issued before its bucket was created; "
                     "the bucket was wiped or is new, so an earlier sighting cannot be ruled out",
@@ -261,6 +311,57 @@ class ReplayGuard:
                 )
                 fresh = False
         return fresh
+
+    async def refusing_until(self) -> datetime | None:
+        """whether this guard is inside its post-wipe refusal window right now, and until when.
+
+        The question a surface asks BEFORE it looks at a credential or an artifact, so it can
+        answer every request in the window with one retryable reply that depends on nothing the
+        caller sent. Without it the refusal surfaces wherever the artifact happens to be checked
+        -- on a password login, after the password verified, where the only answer that leaks
+        nothing is the one a wrong password gets.
+
+        It depends only on the bucket's creation time, the reach, and the anchor: never on an
+        artifact. The moment it returns is computed by the one function :meth:`record_unique`
+        uses, so the two cannot disagree: inside the window, an artifact issued before the
+        returned moment is refused, and one issued at or after it is not refused by the wipe
+        rule.
+
+        ``None`` means the guard is not refusing by the wipe rule NOW: either its bucket did not
+        replace a lost one, or the reach has passed on this host's clock. After that an artifact
+        can still be refused for it -- one issued inside the reach and presented late -- and
+        that is a property of the artifact, not of the moment.
+
+        It records no nonce. Like :meth:`bind` it opens the bucket when nothing has, and reads
+        (stamping, if nothing has) the anchor. It costs one creation-time read from the broker
+        per call.
+
+        :return: the moment the window ends, timezone-aware UTC, or ``None`` when the guard is
+            not inside it
+        :rtype: datetime | None
+        :raises threetears.nats.KvError: when the bucket cannot be opened or its creation time
+            cannot be read -- the caller MUST NOT read that as "not refusing"
+        """
+        bucket = await self._bound_bucket()
+        await self._read_anchor()
+        refuses_before = await self._refuses_artifacts_issued_before(await bucket.date_created())
+        inside = refuses_before is not None and datetime.now(UTC) < refuses_before
+        return refuses_before if inside else None
+
+    async def _refuses_artifacts_issued_before(self, date_created: datetime) -> datetime | None:
+        """the wipe rule, once: the issue time below which an artifact is refused, if the rule applies.
+
+        The single computation behind :meth:`record_unique`'s refusal and
+        :meth:`refusing_until`'s answer.
+
+        :param date_created: the bucket's creation time, from the broker's clock
+        :ptype date_created: datetime
+        :return: the bucket's creation time plus the refusal reach when this bucket replaced a
+            lost one, else ``None``
+        :rtype: datetime | None
+        """
+        replaced = await self._bucket_replaced_a_lost_one(date_created)
+        return date_created + self._verifier_future_tolerance + CLOCK_DRIFT_ALLOWANCE if replaced else None
 
     async def _bucket_replaced_a_lost_one(self, date_created: datetime) -> bool:
         """whether this bucket replaced an earlier one whose nonces were lost.
@@ -323,7 +424,7 @@ class ReplayGuard:
                 )
 
     async def bind(self) -> None:
-        """open this guard's KV bucket, creating it when absent. Idempotent and async-safe.
+        """open this guard's KV bucket, creating it when absent unless built bind-only. Idempotent and async-safe.
 
         **A service calls this at startup, before it serves any artifact.** After a wipe the
         guard refuses every artifact issued before its bucket's creation time plus the refusal
@@ -394,7 +495,7 @@ class ReplayGuard:
                     bucket = await self._client.kv_bucket(
                         name=self._bucket_name,
                         ttl=self._ttl,
-                        create_if_missing=True,
+                        create_if_missing=self._create_if_missing,
                         history=1,
                     )
                     # after the bucket exists, so a first run stamps a moment no earlier than its
@@ -423,7 +524,11 @@ class ReplayGuard:
         :return: whether a hook was registered
         :rtype: bool
         """
-        hooked = callable(getattr(type(self._client), "add_reconnect_callback", None))
+        # A BIND-ONLY guard hooks nothing: the touch exists to RECREATE a wiped bucket, which such
+        # a guard cannot do. It would only wait for the declarer (the bind waits for an absent
+        # bucket), and it would wait inside the client's reconnect callbacks, which run one after
+        # another -- holding up every hook registered after it. Its next record re-binds anyway.
+        hooked = self._create_if_missing and callable(getattr(type(self._client), "add_reconnect_callback", None))
         if hooked:
             hooking = cast("_ReconnectHooking", self._client)
             hooking.add_reconnect_callback(self._rebind_after_reconnect)
@@ -459,7 +564,12 @@ class ReplayGuard:
                     },
                 )
 
-    @staticmethod
-    def _key(nonce: str) -> str:
-        """hash the nonce into a fixed-length, KV-safe key (also avoids storing the raw nonce)."""
-        return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+    def _key(self, nonce: str) -> str:
+        """hash the nonce into a fixed-length, KV-safe key (also avoids storing the raw nonce).
+
+        :param nonce: the nonce to key
+        :ptype nonce: str
+        :return: the digest, led by the owner scope when the guard has one
+        :rtype: str
+        """
+        return owner_scoped_key(self._key_scope, hashlib.sha256(nonce.encode("utf-8")).hexdigest())

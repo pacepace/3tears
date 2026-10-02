@@ -1,19 +1,21 @@
-"""Tests for memory tools schemas and helpers."""
+"""Tests for memory tools schemas, and the error and timestamp shapes a tool returns."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
 
+from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.tools import (
     ChunkRecallInput,
     ChunkSearchInput,
     MemoryRecallInput,
     MemorySearchInput,
-    _fmt_dt,
-    _tool_error,
+    load_memory_search_tool,
 )
 
 
@@ -119,33 +121,80 @@ class TestMemoryRecallInput:
             MemoryRecallInput(memory_id="any", limit=51)
 
 
-# -- Helper functions ---------------------------------------------------------
+# -- What a tool returns: the error line and the timestamp ----------------------
+
+
+# parity-exempt: answers only find_by_alias, the one call memory_search's alias lookup makes; the SQL behind it is covered by the collection tests
+class _FakeAliasMemories:
+    """a memories collection whose alias lookup returns one fixed row, or raises."""
+
+    def __init__(self, row: dict[str, Any] | None = None, error: Exception | None = None) -> None:
+        self.row = row
+        self.error = error
+
+    async def find_by_alias(self, *, user_id: UUID, agent_id: UUID, alias: str) -> dict[str, Any] | None:
+        _ = user_id, agent_id, alias
+        if self.error is not None:
+            raise self.error
+        return self.row
+
+
+async def _search_by_alias(authorizer: MemoryAuthorizerDependencies, memories: _FakeAliasMemories) -> str:
+    (tool,) = await load_memory_search_tool(
+        uuid4(),
+        None,  # type: ignore[arg-type]  # the alias lookup embeds nothing
+        uuid4(),
+        uuid4(),
+        authorizer,
+        memories,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+    )
+    result = await tool.ainvoke({"alias": "home", "query": "home"})
+    assert isinstance(result, str)
+    return result
+
+
+def _alias_row(date_created: Any) -> dict[str, Any]:
+    return {"memory_id": uuid4(), "type_memory": "fact", "content": "lives in Leeds", "date_created": date_created}
 
 
 class TestToolError:
-    def test_format(self):
-        result = _tool_error("memory_search", "embed", "connection timeout")
-        assert result == "[TOOL ERROR] memory_search: embed failed — connection timeout"
+    async def test_format(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
+        result = await _search_by_alias(
+            permissive_memory_authorizer, _FakeAliasMemories(error=RuntimeError("connection timeout"))
+        )
+        assert result == "[TOOL ERROR] memory_search: alias failed — connection timeout"
 
-    def test_format_consistency(self):
-        result = _tool_error("memory_recall", "fetch", "not found")
+    async def test_format_consistency(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
+        result = await _search_by_alias(
+            permissive_memory_authorizer, _FakeAliasMemories(error=LookupError("not found"))
+        )
         assert result.startswith("[TOOL ERROR]")
-        assert "memory_recall" in result
-        assert "fetch failed" in result
+        assert "memory_search" in result
+        assert "alias failed" in result
+        assert result.endswith("not found")
 
 
 class TestFmtDt:
-    def test_none(self):
-        assert _fmt_dt(None) == ""
+    """the memory line carries ``[<timestamp>]`` when the row has one."""
 
-    def test_datetime(self):
+    async def test_none(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
+        result = await _search_by_alias(permissive_memory_authorizer, _FakeAliasMemories(_alias_row(None)))
+        assert "[fact] lives in Leeds" in result
+
+    async def test_datetime(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
         dt = datetime(2026, 3, 12, 14, 30, tzinfo=timezone.utc)
-        result = _fmt_dt(dt)
-        assert "Mar" in result
-        assert "2026" in result
+        result = await _search_by_alias(permissive_memory_authorizer, _FakeAliasMemories(_alias_row(dt)))
+        assert "[fact] [Mar 12, 2026 at 2:30 PM] lives in Leeds" in result
 
-    def test_non_datetime_falls_through_to_str(self):
-        assert _fmt_dt("some string") == "some string"
+    async def test_non_datetime_falls_through_to_str(
+        self, permissive_memory_authorizer: MemoryAuthorizerDependencies
+    ) -> None:
+        result = await _search_by_alias(permissive_memory_authorizer, _FakeAliasMemories(_alias_row("some string")))
+        assert "[fact] [some string] lives in Leeds" in result
+        result = await _search_by_alias(permissive_memory_authorizer, _FakeAliasMemories(_alias_row(42)))
+        assert "[fact] [42] lives in Leeds" in result
 
 
 # -- Shard C input schemas (v0.7.0 transcript-chunks tools) ------------------
@@ -190,4 +239,3 @@ class TestChunkSearchInput:
     def test_missing_query_raises(self):
         with pytest.raises(ValidationError):
             ChunkSearchInput()  # type: ignore[call-arg]
-        assert _fmt_dt(42) == "42"

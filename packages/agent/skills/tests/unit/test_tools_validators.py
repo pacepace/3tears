@@ -1,26 +1,28 @@
-"""Unit tests for the validator helpers + parsers in ``skills.tools``.
+"""Unit tests for the payload validation and id parsing the skills tools apply.
 
-These exercise pure-logic helpers (no Collection, no registry,
-no LLM):
+Driven through the ``skill_create`` / ``skill_get`` tools over in-memory
+fakes (no Postgres, no LLM), so each rule is pinned where an agent meets
+it -- as the tool's answer:
 
 - payload caps (name, summary, body, trigger_keywords, tags,
-  tool_additions, tool_restrictions)
+  tool_additions, tool_restrictions, arguments)
 - ``[skill:<id>]`` parsing
 - at-least-one-payload (CHECK-constraint mirror)
-- ``_tool_error`` format
+- the ``[TOOL ERROR] <tool>: <description>`` format
 
-The factory functions themselves (skill_create / skill_list / etc.)
-get full happy-path + ACL + cross-user coverage in the integration
-suite where real Collections + Postgres exercise the end-to-end path.
-The unit slice keeps the validator surface bit-tight.
+The factory functions' happy-path + ACL + cross-user coverage lives in
+``test_tools_factories.py`` and the integration suite.
 """
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 
+from packages.agent.skills.tests.unit.skill_fakes import FakeRegistry, FakeSkillsCollection
 from threetears.agent.skills.collections import skill_shape_error
 from threetears.agent.skills.tools import (
     ARGUMENTS_MAX_BYTES,
@@ -34,17 +36,43 @@ from threetears.agent.skills.tools import (
     SkillIntrospectInput,
     SkillInvokeInput,
     SkillListInput,
-    _at_least_one_payload,
-    _parse_skill_id,
-    _tool_error,
-    _validate_arguments,
-    _validate_body,
-    _validate_name,
-    _validate_summary,
-    _validate_tags,
-    _validate_tool_list,
-    _validate_trigger_keywords,
+    load_skill_create_tool,
+    load_skill_get_tool,
 )
+
+#: the tool names a create may name in its tool lists or as its tool; the fake
+#: registry grants exactly these, so an ACL refusal never masks a validation.
+_PERMITTED = {"mcp.shell", "mcp.dangerous", "a.b", "c.d", "loki.query"} | {f"t{i}" for i in range(64)}
+
+
+async def _create(**fields: Any) -> str:
+    """call ``skill_create`` with ``fields`` (a valid name / summary / body unless given)."""
+    payload: dict[str, Any] = {"name": "deploy", "summary": "ship it", "body": "a procedure"} | fields
+    [tool] = load_skill_create_tool(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        skills_collection=FakeSkillsCollection(),  # type: ignore[arg-type]
+        registry=FakeRegistry(permitted_tools=_PERMITTED),
+        offer_tool_skills=True,
+    )
+    out = await tool.ainvoke({k: v for k, v in payload.items() if v is not _OMIT})
+    assert isinstance(out, str)
+    return out
+
+
+#: marks a field the create call leaves out entirely.
+_OMIT: Any = object()
+
+
+def _accepted(out: str) -> bool:
+    return out.startswith("[skill:")
+
+
+def _refusal(out: str) -> str:
+    """the reason a refused create gives, after the ``[TOOL ERROR] skill_create:`` prefix."""
+    prefix = "[TOOL ERROR] skill_create: "
+    assert out.startswith(prefix), out
+    return out[len(prefix) :]
 
 
 # --- Schema-side parsing (Pydantic) ---
@@ -110,212 +138,196 @@ class TestSkillIntrospectInputSchema:
             SkillIntrospectInput(name_or_id="   ")
 
 
-# --- Validator helpers ---
+# --- Validation, as the tool answers it ---
 
 
 class TestValidateName:
-    """``_validate_name`` enforces SK-10 contract (length + charset)."""
+    """``skill_create`` enforces the SK-10 name contract (length + charset)."""
 
-    def test_valid_name(self) -> None:
-        assert _validate_name("deploy_helper") is None
-        assert _validate_name("ABC 123-xyz") is None
+    async def test_valid_name(self) -> None:
+        assert _accepted(await _create(name="deploy_helper"))
+        assert _accepted(await _create(name="ABC 123-xyz"))
 
-    def test_too_short(self) -> None:
-        err = _validate_name("")
-        assert err is not None
-        assert "1 character" in err
+    async def test_too_short(self) -> None:
+        assert "1 character" in _refusal(await _create(name=""))
 
-    def test_too_long(self) -> None:
-        err = _validate_name("x" * (NAME_MAX_LEN + 1))
-        assert err is not None
-        assert f"{NAME_MAX_LEN} characters" in err
+    async def test_too_long(self) -> None:
+        assert f"{NAME_MAX_LEN} characters" in _refusal(await _create(name="x" * (NAME_MAX_LEN + 1)))
 
-    def test_invalid_charset(self) -> None:
+    async def test_invalid_charset(self) -> None:
         for bad in ["foo!bar", "foo/bar", "foo.bar", "you@host"]:
-            err = _validate_name(bad)
-            assert err is not None, f"expected rejection for {bad!r}"
-            assert "match" in err
+            assert "match" in _refusal(await _create(name=bad)), f"expected rejection for {bad!r}"
 
 
 class TestValidateSummary:
-    def test_valid(self) -> None:
-        assert _validate_summary("one-line catalog entry") is None
+    async def test_valid(self) -> None:
+        assert _accepted(await _create(summary="one-line catalog entry"))
 
-    def test_empty_rejected(self) -> None:
-        err = _validate_summary("")
-        assert err is not None
+    async def test_empty_rejected(self) -> None:
+        assert "summary" in _refusal(await _create(summary=""))
 
-    def test_too_long(self) -> None:
-        err = _validate_summary("x" * (SUMMARY_MAX_LEN + 1))
-        assert err is not None
+    async def test_too_long(self) -> None:
+        assert "summary" in _refusal(await _create(summary="x" * (SUMMARY_MAX_LEN + 1)))
 
 
 class TestValidateBody:
-    def test_none(self) -> None:
-        assert _validate_body(None) is None
+    async def test_none(self) -> None:
+        # no body at all is fine when another payload carries the skill.
+        assert _accepted(await _create(body=_OMIT, tool_additions=["mcp.shell"]))
 
-    def test_short_body(self) -> None:
-        assert _validate_body("a procedure") is None
+    async def test_short_body(self) -> None:
+        assert _accepted(await _create(body="a procedure"))
 
-    def test_at_cap(self) -> None:
+    async def test_at_cap(self) -> None:
         # Exactly at cap is OK; one byte over is rejected.
-        assert _validate_body("a" * BODY_MAX_BYTES) is None
-        err = _validate_body("a" * (BODY_MAX_BYTES + 1))
-        assert err is not None
-        assert "32 KB cap" in err
+        assert _accepted(await _create(body="a" * BODY_MAX_BYTES))
+        assert "32 KB cap" in _refusal(await _create(body="a" * (BODY_MAX_BYTES + 1)))
 
-    def test_multibyte_counted_truthfully(self) -> None:
-        # Three-byte UTF-8 character; cap+1 bytes worth should reject.
-        # Each '€' is 3 bytes in UTF-8.
-        too_long = "€" * (BODY_MAX_BYTES // 3 + 1)
-        err = _validate_body(too_long)
-        assert err is not None
+    async def test_multibyte_counted_truthfully(self) -> None:
+        # Each '€' is 3 bytes in UTF-8; cap+1 bytes worth must reject.
+        assert "32 KB cap" in _refusal(await _create(body="€" * (BODY_MAX_BYTES // 3 + 1)))
 
 
 class TestValidateTriggerKeywords:
-    def test_valid(self) -> None:
-        assert _validate_trigger_keywords("alpha beta gamma") is None
+    async def test_valid(self) -> None:
+        assert _accepted(await _create(trigger_keywords="alpha beta gamma"))
 
-    def test_empty_ok(self) -> None:
-        assert _validate_trigger_keywords("") is None
+    async def test_empty_ok(self) -> None:
+        assert _accepted(await _create(trigger_keywords=""))
 
-    def test_too_long(self) -> None:
-        err = _validate_trigger_keywords("a" * (TRIGGER_KEYWORDS_MAX_LEN + 1))
-        assert err is not None
+    async def test_too_long(self) -> None:
+        assert "trigger_keywords" in _refusal(await _create(trigger_keywords="a" * (TRIGGER_KEYWORDS_MAX_LEN + 1)))
 
 
 class TestValidateTags:
-    def test_valid(self) -> None:
-        assert _validate_tags([]) is None
-        assert _validate_tags(["ops", "deploy"]) is None
+    async def test_valid(self) -> None:
+        assert _accepted(await _create(tags=[]))
+        assert _accepted(await _create(tags=["ops", "deploy"]))
 
-    def test_too_many(self) -> None:
-        err = _validate_tags([f"t{i}" for i in range(TAGS_MAX_ENTRIES + 1)])
-        assert err is not None
-        assert f"{TAGS_MAX_ENTRIES} entries" in err
+    async def test_too_many(self) -> None:
+        out = await _create(tags=[f"t{i}" for i in range(TAGS_MAX_ENTRIES + 1)])
+        assert f"{TAGS_MAX_ENTRIES} entries" in _refusal(out)
 
-    def test_non_string_entries(self) -> None:
-        err = _validate_tags(["ok", 5])  # type: ignore[list-item]
-        assert err is not None
+    async def test_non_string_entries(self) -> None:
+        # the tool's input schema refuses a non-string tag before the tool runs.
+        with pytest.raises(ValidationError):
+            await _create(tags=["ok", 5])
 
 
 class TestValidateToolList:
-    def test_valid(self) -> None:
-        assert _validate_tool_list("tool_additions", []) is None
-        assert _validate_tool_list("tool_additions", ["a.b", "c.d"]) is None
+    async def test_valid(self) -> None:
+        assert _accepted(await _create(tool_additions=[]))
+        assert _accepted(await _create(tool_additions=["a.b", "c.d"]))
 
-    def test_too_many(self) -> None:
-        err = _validate_tool_list(
-            "tool_additions",
-            [f"t{i}" for i in range(TOOL_LIST_MAX_ENTRIES + 1)],
-        )
-        assert err is not None
+    async def test_too_many(self) -> None:
+        out = await _create(tool_additions=[f"t{i}" for i in range(TOOL_LIST_MAX_ENTRIES + 1)])
+        assert "tool_additions" in _refusal(out)
 
-    def test_empty_string(self) -> None:
-        err = _validate_tool_list("tool_additions", [""])
-        assert err is not None
+    async def test_empty_string(self) -> None:
+        assert "tool_additions entries must all be non-empty strings" in _refusal(await _create(tool_additions=[""]))
 
-    def test_whitespace_only(self) -> None:
-        err = _validate_tool_list("tool_restrictions", ["   "])
-        assert err is not None
+    async def test_whitespace_only(self) -> None:
+        out = await _create(tool_restrictions=["   "])
+        assert "tool_restrictions entries must all be non-empty strings" in _refusal(out)
+
+
+_NO_PAYLOAD = "at least one of body, tool, tool_additions, or tool_restrictions must be non-empty"
 
 
 class TestAtLeastOnePayload:
     """Mirrors the L3 CHECK constraint."""
 
-    def test_body_only(self) -> None:
-        assert _at_least_one_payload(
-            body="procedure",
-            tool_additions=[],
-            tool_restrictions=[],
-        )
+    async def test_body_only(self) -> None:
+        assert _accepted(await _create(body="procedure"))
 
-    def test_additions_only(self) -> None:
-        assert _at_least_one_payload(
-            body=None,
-            tool_additions=["mcp.shell"],
-            tool_restrictions=[],
-        )
+    async def test_additions_only(self) -> None:
+        assert _accepted(await _create(body=_OMIT, tool_additions=["mcp.shell"]))
 
-    def test_restrictions_only(self) -> None:
-        assert _at_least_one_payload(
-            body=None,
-            tool_additions=[],
-            tool_restrictions=["mcp.dangerous"],
-        )
+    async def test_restrictions_only(self) -> None:
+        assert _accepted(await _create(body=_OMIT, tool_restrictions=["mcp.dangerous"]))
 
-    def test_all_empty_rejected(self) -> None:
-        assert not _at_least_one_payload(
-            body=None,
-            tool_additions=[],
-            tool_restrictions=[],
-        )
+    async def test_all_empty_rejected(self) -> None:
+        assert _refusal(await _create(body=_OMIT)) == _NO_PAYLOAD
 
-    def test_empty_string_body_rejected(self) -> None:
+    async def test_empty_string_body_rejected(self) -> None:
         # Empty body counts as no body for at-least-one-payload (DB CHECK
         # treats NULL and "" equivalently).
-        assert not _at_least_one_payload(
-            body="",
-            tool_additions=[],
-            tool_restrictions=[],
-        )
+        assert _refusal(await _create(body="")) == _NO_PAYLOAD
 
-    def test_whitespace_body_rejected(self) -> None:
-        assert not _at_least_one_payload(
-            body="   \n",
-            tool_additions=[],
-            tool_restrictions=[],
-        )
+    async def test_whitespace_body_rejected(self) -> None:
+        assert _refusal(await _create(body="   \n")) == _NO_PAYLOAD
+
+
+class _RecordingSkills(FakeSkillsCollection):
+    """the fake skills collection, recording the pk each ``get`` asked for."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asked: list[tuple[UUID, UUID]] = []
+
+    async def get(self, entity_id: Any) -> Any:
+        self.asked.append(entity_id)
+        return await super().get(entity_id)
+
+
+async def _get(raw: str) -> tuple[str, list[tuple[UUID, UUID]]]:
+    """call ``skill_get`` with ``raw``; return its answer and the pks it looked up."""
+    skills = _RecordingSkills()
+    [tool] = load_skill_get_tool(agent_id=uuid4(), user_id=uuid4(), skills_collection=skills)  # type: ignore[arg-type]
+    out = await tool.ainvoke({"skill_id": raw})
+    assert isinstance(out, str)
+    return out, skills.asked
 
 
 class TestParseSkillId:
     """Round-trip ``[skill:<uuid>]`` and bare-UUID forms."""
 
-    def test_bare_uuid(self) -> None:
+    async def test_bare_uuid(self) -> None:
         u = uuid4()
-        parsed = _parse_skill_id(str(u))
-        assert parsed == u
+        _out, asked = await _get(str(u))
+        assert [skill for _agent, skill in asked] == [u]
 
-    def test_tagged_form(self) -> None:
+    async def test_tagged_form(self) -> None:
         u = uuid4()
-        parsed = _parse_skill_id(f"[skill:{u}]")
-        assert parsed == u
+        _out, asked = await _get(f"[skill:{u}]")
+        assert [skill for _agent, skill in asked] == [u]
 
-    def test_tagged_with_whitespace(self) -> None:
+    async def test_tagged_with_whitespace(self) -> None:
         u = uuid4()
-        parsed = _parse_skill_id(f"  [skill: {u} ]  ")
-        assert parsed == u
+        _out, asked = await _get(f"  [skill: {u} ]  ")
+        assert [skill for _agent, skill in asked] == [u]
 
-    def test_invalid_returns_none(self) -> None:
-        assert _parse_skill_id("not-a-uuid") is None
-        assert _parse_skill_id("") is None
-        assert _parse_skill_id("[skill:not-uuid]") is None
+    async def test_invalid_is_refused_without_a_lookup(self) -> None:
+        for raw in ("not-a-uuid", "", "[skill:not-uuid]"):
+            out, asked = await _get(raw)
+            assert out == f"[TOOL ERROR] skill_get: invalid skill_id {raw!r}"
+            assert asked == []
 
 
 class TestToolError:
-    def test_format(self) -> None:
-        out = _tool_error("skill_create", "name too long")
-        assert out == "[TOOL ERROR] skill_create: name too long"
+    async def test_format(self) -> None:
+        out, _asked = await _get(str(uuid4()))
+        assert out == "[TOOL ERROR] skill_get: skill not found"
 
-    def test_includes_tool_name(self) -> None:
-        out = _tool_error("skill_invoke", "already active")
-        assert out.startswith("[TOOL ERROR] skill_invoke:")
+    async def test_includes_tool_name(self) -> None:
+        out = await _create(name="you@host")
+        assert out.startswith("[TOOL ERROR] skill_create:")
 
 
 # --- Confirm UUID parsing on assigned-name fixture ---
 
 
-def test_parse_skill_id_returns_uuid_type() -> None:
+async def test_parse_skill_id_returns_uuid_type() -> None:
     u = uuid4()
-    parsed = _parse_skill_id(str(u))
-    assert isinstance(parsed, UUID)
+    _out, asked = await _get(str(u))
+    assert isinstance(asked[0][1], UUID)
 
 
 class TestToolCallShape:
     """A skill is a body skill or a tool-call skill, never both; the tools add a size cap."""
 
-    def test_tool_counts_as_payload(self) -> None:
-        assert _at_least_one_payload(body=None, tool_additions=[], tool_restrictions=[], tool="loki.query")
+    async def test_tool_counts_as_payload(self) -> None:
+        assert _accepted(await _create(body=_OMIT, tool="loki.query"))
 
     @pytest.mark.parametrize(
         ("body", "tool", "arguments", "fragment"),
@@ -347,7 +359,8 @@ class TestToolCallShape:
     def test_accepted_shapes(self, body: str | None, tool: str | None, arguments: object) -> None:
         assert skill_shape_error(body=body, tool=tool, arguments=arguments) is None
 
-    def test_arguments_cap(self) -> None:
-        assert _validate_arguments({"q": "x" * ARGUMENTS_MAX_BYTES}) == "arguments exceed 32 KB cap"
-        assert _validate_arguments({"q": "x"}) is None
-        assert _validate_arguments(None) is None
+    async def test_arguments_cap(self) -> None:
+        out = await _create(body=_OMIT, tool="loki.query", arguments={"q": "x" * ARGUMENTS_MAX_BYTES})
+        assert _refusal(out) == "arguments exceed 32 KB cap"
+        assert _accepted(await _create(body=_OMIT, tool="loki.query", arguments={"q": "x"}))
+        assert _accepted(await _create(body=_OMIT, tool="loki.query"))

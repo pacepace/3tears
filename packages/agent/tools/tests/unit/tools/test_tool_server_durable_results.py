@@ -34,8 +34,8 @@ from threetears.agent.tools.server import CallAccepted, CallResponse, ToolServer
 from threetears.nats import IncomingMessage, Subject, Subjects, set_default_namespace
 
 from threetears.core.testing.replay_guard import FakeReplayGuard
-from packages.agent.tools.tests.unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
-from packages.agent.tools.tests.unit.tools._pod_auth import signed_call_payload as _signed_call_payload
+from packages.agent.tools.tests.unit.tools.pod_auth import jwks_provider as _pod_jwks_provider
+from packages.agent.tools.tests.unit.tools.pod_auth import signed_call_payload as _signed_call_payload
 
 _NS = "3tears"
 _POD = "scan-pod-1"
@@ -104,13 +104,16 @@ class _StubTool(TearsTool):
         return "1.0"
 
 
-def _server(nats: _FakeNats, *, tool: TearsTool | None = None) -> ToolServer:
+def _server(
+    nats: _FakeNats, *, tool: TearsTool | None = None, result_delivery_retry_seconds: float = 0.0
+) -> ToolServer:
     server = ToolServer(
         namespace=_NS,
         nats_client=nats,  # type: ignore[arg-type]
         pod_id=_POD,
         jwks_provider=_pod_jwks_provider,
         assertion_replay_guard=FakeReplayGuard(),
+        result_delivery_retry_seconds=result_delivery_retry_seconds,
     )
     server.register(tool if tool is not None else _StubTool())
     return server
@@ -339,10 +342,7 @@ class TestADeliveryFailureIsRetriedRatherThanDiscarded:
     exactly -- work done, answer gone -- and the caller still has a long timeout left to wait in."""
 
     @pytest.mark.asyncio
-    async def test_a_transient_publish_failure_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from threetears.agent.tools import server as server_module
-
-        monkeypatch.setattr(server_module, "_RESULT_DELIVERY_RETRY_SECONDS", 0.0)
+    async def test_a_transient_publish_failure_is_retried(self) -> None:
         nats = _FakeNats(jetstream_failures=2)
         server = _server(nats)
 
@@ -352,17 +352,31 @@ class TestADeliveryFailureIsRetriedRatherThanDiscarded:
         assert _decoded(nats.delivered[0][1])["content"] == "68KB of results"
 
     @pytest.mark.asyncio
-    async def test_exhausted_retries_do_not_raise_out_of_the_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_exhausted_retries_do_not_raise_out_of_the_dispatch(self) -> None:
         """the answer is lost and logged as lost; the dispatch must not also take the pod down."""
-        from threetears.agent.tools import server as server_module
-
-        monkeypatch.setattr(server_module, "_RESULT_DELIVERY_RETRY_SECONDS", 0.0)
         nats = _FakeNats(jetstream_failures=99)
         server = _server(nats)
 
         await server.handle_call(_long_call(result_subject=_delivery_subject()))
 
         assert not nats.delivered
+
+    @pytest.mark.asyncio
+    async def test_each_retry_waits_the_configured_pause(self) -> None:
+        """the pause is what lets a reconnect complete between attempts; two failures wait it twice."""
+        nats = _FakeNats(jetstream_failures=2)
+        server = _server(nats, result_delivery_retry_seconds=0.05)
+        loop = asyncio.get_running_loop()
+
+        started = loop.time()
+        await server.handle_call(_long_call(result_subject=_delivery_subject()))
+
+        assert len(nats.delivered) == 1
+        assert loop.time() - started >= 0.1
+
+    def test_a_negative_pause_is_refused_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="result_delivery_retry_seconds"):
+            _server(_FakeNats(), result_delivery_retry_seconds=-1.0)
 
 
 class _SlowTool(_StubTool):

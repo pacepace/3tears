@@ -17,6 +17,7 @@ giving structured logs accurate source locations even through wrapper layers.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -234,7 +235,9 @@ def _find_call_site(fn: str, lno: int) -> tuple[str, str | None, str]:
     :rtype: tuple[str, str | None, str]
     """
     call_site_class: str | None = None
-    frame: FrameType | None = sys._getframe()
+    # the public spelling of ``sys._getframe()``: this function's own frame, or None on an
+    # interpreter without frame support, where the walk below finds nothing and names no class.
+    frame: FrameType | None = inspect.currentframe()
     while frame is not None:
         frame_info = frame.f_code
         if frame_info.co_filename == fn and frame.f_lineno == lno:

@@ -61,7 +61,7 @@ from threetears.search.contracts import (
     get_capabilities,
 )
 from threetears.search.testing import ScriptedTransport, TransportScript
-from packages.search.tests._tavily_payloads import (
+from packages.search.tests.tavily_payloads import (
     CONTENT_RESULT,
     MALFORMED_BODY,
     NEWS_RESULT,

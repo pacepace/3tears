@@ -19,10 +19,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import (
-    _CACHED_AT_COLUMN,
-    _TABLES_WITHOUT_CACHE_STAMP,
-    _entry_is_fresh,
+    CACHED_AT_COLUMN,
+    TABLES_WITHOUT_CACHE_STAMP,
+    entry_is_fresh,
     build_select_clause,
 )
 from threetears.observe import counter, get_logger
@@ -161,7 +162,7 @@ class SQLiteBackend:
             # permanently NULL -- with any test that only inspects the DDL
             # still passing.
             if self._stamps_cache_age(table.name):
-                self._schema_info[table.name][_CACHED_AT_COLUMN] = "REAL"
+                self._schema_info[table.name][CACHED_AT_COLUMN] = "REAL"
             new_tables += 1
             log.debug(f"Created SQLite table: {table.name}")
 
@@ -520,7 +521,7 @@ class SQLiteBackend:
         The cached-at stamp is stripped here too. ``_deserialize_row`` strips it
         on the keyed reads, but this is an ``L1Backend`` protocol member and a
         ``SELECT *`` through it would hand a caller an internal bookkeeping
-        column that :data:`~threetears.core.cache.base._CACHED_AT_COLUMN`
+        column that :data:`~threetears.core.cache.base.CACHED_AT_COLUMN`
         promises never escapes.
 
         :param sql: SELECT statement with ``?`` placeholders
@@ -536,7 +537,7 @@ class SQLiteBackend:
         rows = cursor.fetchall()
         if not rows:
             return []
-        return [{k: v for k, v in dict(row).items() if k != _CACHED_AT_COLUMN} for row in rows]
+        return [{k: v for k, v in dict(row).items() if k != CACHED_AT_COLUMN} for row in rows]
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
         """Serialize a Python value for SQLite storage based on column type."""
@@ -545,10 +546,14 @@ class SQLiteBackend:
 
         result: Any = value
 
+        # JSON values encode with the platform default L2 uses, so a UUID, datetime or
+        # Decimal nested in one caches as its string, as the other tiers store it. a bare
+        # json.dumps raised on them, AFTER the L3 commit: the caller was told a committed
+        # write failed, and the invalidation broadcast after the cache step never ran.
         if isinstance(value, enum.Enum):
             result = value.value
         elif isinstance(value, dict):
-            result = json.dumps(value)
+            result = json.dumps(value, default=json_default)
         elif isinstance(value, _UUID_TYPES):
             result = str(value)
         elif isinstance(value, datetime):
@@ -558,7 +563,7 @@ class SQLiteBackend:
         elif isinstance(value, Decimal):
             result = float(value)
         elif isinstance(value, (tuple, list)):
-            result = json.dumps(list(value))
+            result = json.dumps(list(value), default=json_default)
         elif isinstance(value, bytes):
             result = value.hex()
 
@@ -610,7 +615,7 @@ class SQLiteBackend:
         return {
             col_name: self.deserialize_field(value, schema.get(col_name, "TEXT"))
             for col_name, value in row.items()
-            if col_name != _CACHED_AT_COLUMN
+            if col_name != CACHED_AT_COLUMN
         }
 
     def reset(self) -> None:
@@ -658,12 +663,12 @@ class SQLiteBackend:
             columns.append(f'"{column.name}" {ddl_type}{nullable}{primary}')
 
         if self._stamps_cache_age(table.name):
-            if any(col.name == _CACHED_AT_COLUMN for col in table.columns):
+            if any(col.name == CACHED_AT_COLUMN for col in table.columns):
                 raise ValueError(
-                    f"table {table.name!r} declares {_CACHED_AT_COLUMN!r}, which is reserved "
+                    f"table {table.name!r} declares {CACHED_AT_COLUMN!r}, which is reserved "
                     f"for the L1 cache-age stamp and is injected by the backend",
                 )
-            columns.append(f'"{_CACHED_AT_COLUMN}" REAL')
+            columns.append(f'"{CACHED_AT_COLUMN}" REAL')
 
         if is_composite_pk:
             pk_clause = ", ".join(f'"{c}"' for c in pk_cols)
@@ -675,7 +680,7 @@ class SQLiteBackend:
     @staticmethod
     def _stamps_cache_age(table: str) -> bool:
         """Whether ``table`` carries the injected cache-age stamp column."""
-        return table not in _TABLES_WITHOUT_CACHE_STAMP
+        return table not in TABLES_WITHOUT_CACHE_STAMP
 
     def _with_stamp(
         self,
@@ -703,9 +708,9 @@ class SQLiteBackend:
         """
         if columns is None or max_age_seconds is None or not self._stamps_cache_age(table):
             return columns
-        if _CACHED_AT_COLUMN in columns:
+        if CACHED_AT_COLUMN in columns:
             return columns
-        return [*columns, _CACHED_AT_COLUMN]
+        return [*columns, CACHED_AT_COLUMN]
 
     def _drop_expired(
         self,
@@ -753,7 +758,7 @@ class SQLiteBackend:
         :return: nothing
         :rtype: None
         """
-        stamp = raw_row.get(_CACHED_AT_COLUMN)
+        stamp = raw_row.get(CACHED_AT_COLUMN)
         reading = time.monotonic() if now_monotonic is None else now_monotonic
         try:
             self.delete_by_id(table, entity_id, primary_key)
@@ -794,7 +799,7 @@ class SQLiteBackend:
 
         A row with no stamp is never past its age. That is not a special case
         bolted on here -- it is the rule stated once in
-        :func:`~threetears.core.cache.base._entry_is_fresh`: an unstamped row
+        :func:`~threetears.core.cache.base.entry_is_fresh`: an unstamped row
         was authored locally and has never been served by a lower tier, so
         expiring it would discard a local write.
 
@@ -811,9 +816,9 @@ class SQLiteBackend:
         """
         if max_age_seconds is None or not self._stamps_cache_age(table):
             return False
-        stamp = raw_row.get(_CACHED_AT_COLUMN)
+        stamp = raw_row.get(CACHED_AT_COLUMN)
         reading = time.monotonic() if now_monotonic is None else now_monotonic
-        return not _entry_is_fresh(
+        return not entry_is_fresh(
             stamp,
             now_monotonic=reading,
             max_age_seconds=max_age_seconds,

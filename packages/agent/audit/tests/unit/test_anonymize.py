@@ -397,6 +397,33 @@ class TestDeclaredExtensions:
         assert kept == {"reason": "target_blocked"}
         assert masked == {"reason": ANONYMIZED_MARKER}
 
+    def test_a_grant_that_followed_its_renamed_node_keeps_its_ids_and_loses_the_names(self) -> None:
+        """``rbac.assignment.move``: the ids and the fixed reason are structural; the node names carry user segments."""
+        details = {
+            "datasource_id": str(uuid7()),
+            "group_id": str(uuid7()),
+            "role_id": str(uuid7()),
+            "managed_by": "manual",
+            "row_scope": "platform",
+            "scope_type": "subtree",
+            "reason": "datasource_renamed",
+            "scope_namespace_name_before": "datasources.agent_ab.reports",
+            "scope_namespace_name_after": "datasources.agent_ab.summaries",
+        }
+
+        erased = anonymize_details(details, event_type="rbac.assignment.move")
+
+        names = ("scope_namespace_name_before", "scope_namespace_name_after")
+        assert {key: erased[key] for key in names} == dict.fromkeys(names, ANONYMIZED_MARKER)
+        assert {key: value for key, value in erased.items() if key not in names} == {
+            key: value for key, value in details.items() if key not in names
+        }
+        assert all(is_classified_detail_key(key, event_type="rbac.assignment.move") for key in details)
+        # the reason is an enum only for this family; elsewhere it stays free text and masked
+        assert anonymize_details({"reason": "datasource_renamed"}, event_type=_PLAIN_EVENT) == {
+            "reason": ANONYMIZED_MARKER
+        }
+
     @pytest.mark.parametrize("event_type", ["security.exploit.approval.approved", "security.exploit.approval.denied"])
     def test_the_approver_of_a_paused_tool_call_keeps_their_id(self, event_type: str) -> None:
         """``decided_by`` is the deciding user's uuid on the hub's approval events, and erasure never changes an id.

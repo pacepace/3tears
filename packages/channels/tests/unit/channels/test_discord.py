@@ -1086,49 +1086,63 @@ class TestDiscordAdapterResponseRouting:
 # ---------------------------------------------------------------------------
 
 
+async def _posted_chunks(mock_discord: MagicMock, content: str) -> list[str]:
+    """post *content* through the adapter's front door and return the bodies discord received.
+
+    :param mock_discord: the patched ``discord`` module
+    :ptype mock_discord: MagicMock
+    :param content: the message body to post
+    :ptype content: str
+    :return: the ``content`` of every send, in order
+    :rtype: list[str]
+    """
+    from threetears.channels.discord import DiscordAdapter
+
+    target = _messageable_target(mock_discord)
+    mock_client = MagicMock()
+    mock_client.login = AsyncMock()
+    mock_client.fetch_channel = AsyncMock(return_value=target)
+    mock_discord.Client.return_value = mock_client
+
+    adapter = DiscordAdapter(bot_token="bot-tok", router=_MockRouter())
+    await adapter.post_message(channel="1", content=content)
+    return [call.kwargs["content"] for call in target.send.await_args_list]
+
+
 class TestSplitMessage:
-    """tests for _split_message helper function."""
+    """discord's 2000-character limit, observed as the sends post_message makes."""
 
-    def test_short_message_returns_single_item(self) -> None:
-        """message under limit returns single-element list."""
-        from threetears.channels.discord import _split_message
+    @patch("threetears.channels.discord.discord")
+    async def test_short_message_returns_single_item(self, mock_discord: MagicMock) -> None:
+        """message under limit is one send."""
+        assert await _posted_chunks(mock_discord, "hello world") == ["hello world"]
 
-        result = _split_message("hello world")
-        assert result == ["hello world"]
-
-    def test_exact_limit_returns_single_item(self) -> None:
-        """message exactly at limit returns single-element list."""
-        from threetears.channels.discord import _split_message
-
+    @patch("threetears.channels.discord.discord")
+    async def test_exact_limit_returns_single_item(self, mock_discord: MagicMock) -> None:
+        """message exactly at limit is one send."""
         content = "x" * 2000
-        result = _split_message(content)
-        assert result == [content]
+        assert await _posted_chunks(mock_discord, content) == [content]
 
-    def test_long_message_splits_correctly(self) -> None:
-        """message exceeding limit is split into correct number of chunks."""
-        from threetears.channels.discord import _split_message
-
-        content = "x" * 4500
-        result = _split_message(content)
+    @patch("threetears.channels.discord.discord")
+    async def test_long_message_splits_correctly(self, mock_discord: MagicMock) -> None:
+        """message exceeding limit is split into the correct number of chunks."""
+        result = await _posted_chunks(mock_discord, "x" * 4500)
         assert len(result) == 3
         assert len(result[0]) == 2000
         assert len(result[1]) == 2000
         assert len(result[2]) == 500
 
-    def test_custom_max_length(self) -> None:
-        """custom max_length parameter is respected."""
-        from threetears.channels.discord import _split_message
+    @patch("threetears.channels.discord.discord")
+    async def test_chunks_cut_at_the_limit_and_keep_order(self, mock_discord: MagicMock) -> None:
+        """each chunk is the exact next slice of the body: nothing lost, reordered or overlapped."""
+        content = "".join(chr(ord("a") + (i % 26)) for i in range(4100))
+        result = await _posted_chunks(mock_discord, content)
+        assert result == [content[0:2000], content[2000:4000], content[4000:4100]]
 
-        content = "abcdefghij"
-        result = _split_message(content, max_length=3)
-        assert result == ["abc", "def", "ghi", "j"]
-
-    def test_empty_message_returns_single_empty_item(self) -> None:
-        """empty string returns list with single empty string."""
-        from threetears.channels.discord import _split_message
-
-        result = _split_message("")
-        assert result == [""]
+    @patch("threetears.channels.discord.discord")
+    async def test_empty_message_returns_single_empty_item(self, mock_discord: MagicMock) -> None:
+        """empty body is one empty send."""
+        assert await _posted_chunks(mock_discord, "") == [""]
 
 
 # ---------------------------------------------------------------------------

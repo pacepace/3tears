@@ -133,13 +133,28 @@ class TestAuthorizeIntentionAccess:
                 deps=_deps(),
             )
 
-    def test_namespace_id_deterministic(self) -> None:
-        """the descriptor id is a stable uuid5 of the (agent, customer) pair."""
-        from threetears.agent.intention.authorize import _intention_namespace_id
+    async def test_namespace_id_deterministic(self) -> None:
+        """the descriptor id is a stable uuid5 of the (agent, customer) pair.
 
+        read where an operator meets it: the denial names the namespace by id,
+        and two denials for the same pair name the same one.
+        """
         agent_id = uuid4()
         customer_id = uuid4()
-        assert _intention_namespace_id(agent_id, customer_id) == uuid5(
+        expected = uuid5(
             NAMESPACE_DNS,
             f"threetears.namespaces.intention.{agent_id.hex}.{customer_id.hex}",
         )
+        messages = []
+        for _ in range(2):
+            with pytest.raises(IntentionAccessDenied) as denied:
+                await authorize_intention_access(
+                    action=ACTION_INTENTION_READ,
+                    agent_id=agent_id,
+                    customer_id=customer_id,
+                    caller_agent_id=uuid4(),
+                    deps=_deps(),
+                )
+            messages.append(str(denied.value))
+        assert messages[0] == messages[1]
+        assert messages[0].endswith(f"on intention namespace {expected}")

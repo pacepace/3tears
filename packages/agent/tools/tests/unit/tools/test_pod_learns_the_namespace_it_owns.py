@@ -76,18 +76,19 @@ class _StubTool(TearsTool):
         return "1.0"
 
 
-def _server() -> ToolServer:
-    """a server with one tool registered and no live connection.
+def _server(nats_client: AsyncMock | None = None) -> ToolServer:
+    """a server with one tool registered, attached to ``nats_client`` or never connected.
 
+    :param nats_client: the NATS double to inject, or ``None`` for a server that has not connected
+    :ptype nats_client: AsyncMock | None
     :return: the server under test
     :rtype: ToolServer
     """
-    server = ToolServer(
-        agent_id=uuid7(),
-        customer_id=uuid7(),
-        nats_url="nats://test:4222",
-        pod_id=_POD,
-    )
+    server: ToolServer
+    if nats_client is None:
+        server = ToolServer(agent_id=uuid7(), customer_id=uuid7(), nats_url="nats://test:4222", pod_id=_POD)
+    else:
+        server = ToolServer(agent_id=uuid7(), customer_id=uuid7(), nats_client=nats_client, pod_id=_POD)
     server.register(_StubTool())
     return server
 
@@ -116,9 +117,8 @@ class TestRegistrationStaysAPublishUnlessAsked:
         :return: none
         :rtype: None
         """
-        server = _server()
         nc = AsyncMock()
-        server._nc = nc  # noqa: SLF001
+        server = _server(nc)
         await server.publish_registration()
         assert isinstance(nc.publish.await_args.kwargs["message"], RegistrationManifest)
         nc.request.assert_not_awaited()
@@ -132,8 +132,7 @@ class TestRegistrationStaysAPublishUnlessAsked:
         :return: none
         :rtype: None
         """
-        server = _server()
-        server._nc = AsyncMock()  # noqa: SLF001
+        server = _server(AsyncMock())
         await server.publish_registration()
         assert server.owned_namespaces is None
 
@@ -147,8 +146,7 @@ class TestLearningTheOwnedNamespace:
         :return: none
         :rtype: None
         """
-        server = _server()
-        server._nc = _replying_nc("tools.pentest")  # noqa: SLF001
+        server = _server(_replying_nc("tools.pentest"))
         await server.publish_registration(await_reply=True)
         assert server.owned_namespaces == ("tools.pentest",)
 
@@ -158,9 +156,8 @@ class TestLearningTheOwnedNamespace:
         :return: none
         :rtype: None
         """
-        server = _server()
         nc = _replying_nc("tools.pentest")
-        server._nc = nc  # noqa: SLF001
+        server = _server(nc)
         await server.publish_registration(await_reply=True)
         manifest = nc.request.await_args.kwargs["message"]
         assert isinstance(manifest, RegistrationManifest)
@@ -173,8 +170,7 @@ class TestLearningTheOwnedNamespace:
         :return: none
         :rtype: None
         """
-        server = _server()
-        server._nc = _replying_nc("tools.pentest", "tools.threetears")  # noqa: SLF001
+        server = _server(_replying_nc("tools.pentest", "tools.threetears"))
         await server.publish_registration(await_reply=True)
         assert server.owned_namespaces == ("tools.pentest", "tools.threetears")
 
@@ -184,8 +180,7 @@ class TestLearningTheOwnedNamespace:
         :return: none
         :rtype: None
         """
-        server = _server()
-        server._nc = _replying_nc()  # noqa: SLF001
+        server = _server(_replying_nc())
         await server.publish_registration(await_reply=True)
         assert server.owned_namespaces == ()
 
@@ -202,10 +197,9 @@ class TestALearnThatFailsDoesNotBreakRegistration:
         :return: none
         :rtype: None
         """
-        server = _server()
         nc = AsyncMock()
         nc.request = AsyncMock(side_effect=RequestError("no responders"))
-        server._nc = nc  # noqa: SLF001
+        server = _server(nc)
         await server.publish_registration(await_reply=True)
         assert server.owned_namespaces is None
 
@@ -215,12 +209,11 @@ class TestALearnThatFailsDoesNotBreakRegistration:
         :return: none
         :rtype: None
         """
-        server = _server()
         nc = AsyncMock()
         nc.request = AsyncMock(
             return_value=RegistrationResponse(success=False, pod_id=_POD, error="invalid bootstrap token"),
         )
-        server._nc = nc  # noqa: SLF001
+        server = _server(nc)
         await server.publish_registration(await_reply=True)
         assert server.owned_namespaces is None
 
@@ -230,10 +223,16 @@ class TestALearnThatFailsDoesNotBreakRegistration:
         :return: none
         :rtype: None
         """
-        server = _server()
-        server._nc = _replying_nc("tools.pentest")  # noqa: SLF001
+        nc = AsyncMock()
+        nc.request = AsyncMock(
+            side_effect=[
+                RegistrationResponse(success=True, pod_id=_POD, owned_namespaces=["tools.pentest"]),
+                RegistrationResponse(success=True, pod_id=_POD, owned_namespaces=["tools.pentest", "tools.threetears"]),
+            ]
+        )
+        server = _server(nc)
         await server.publish_registration(await_reply=True)
-        server._nc = _replying_nc("tools.pentest", "tools.threetears")  # noqa: SLF001
+        assert server.owned_namespaces == ("tools.pentest",)
         await server.publish_registration(await_reply=True)
         assert server.owned_namespaces == ("tools.pentest", "tools.threetears")
 

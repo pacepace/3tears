@@ -113,7 +113,7 @@ ones that agent published about those actors, on `{ns}.hub.audit.anonymize`
 (`Subjects.hub_audit_anonymize()`), with the same rule as above: rows kept, ids kept,
 `details` and `ip_address` anonymized. The hub takes the agent from the verified identity
 token and touches only rows whose agent is the caller. A refusal (`INVALID_REQUEST`,
-`IDENTITY_UNVERIFIED`, `AGENT_MISMATCH`) raises `AuditAnonymizeRefusedError` with the
+`IDENTITY_REFUSED`, `AGENT_MISMATCH`) raises `AuditAnonymizeRefusedError` with the
 hub's `error_code`, and retrying meets it again -- including a refusal that carries no
 correlation id, since a hub that could not decode the body had none to echo. No token, a
 timeout, a reply that does not decode or carries another request's correlation id, and

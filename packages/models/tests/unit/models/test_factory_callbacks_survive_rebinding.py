@@ -7,8 +7,9 @@ built from the bare model: the callbacks were left behind. So on every tool-boun
 call -- the calls an agent makes -- nothing was metered and the breaker never saw a failure
 (metallm confirmed it with a probe).
 
-These drive real provider models at their transport: the Anthropic API route through an
-``httpx`` mock transport, the subscription route through a faked Agent SDK client.
+These drive real provider models at their transport: the Anthropic API route against a scripted
+Messages API served on loopback and reached through the public ``base_url``, the subscription route
+through a faked Agent SDK client.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ from threetears.models import DEFAULT_CHAT_MODEL
 from threetears.models.circuit_breaker import CircuitBreaker
 from threetears.models.factory import create_chat_model
 from threetears.models.tracking import UsageAuditSink, UsageRecord, UsageTracker
+
+from .provider_wire import serve_http_handler
 
 API_KEY = "sk-ant-api03-faketestkey"
 
@@ -84,13 +87,13 @@ def _message(content: list[dict[str, Any]], stop_reason: str) -> dict[str, Any]:
 
 
 @contextmanager
-def _anthropic_answers(*responses: httpx.Response) -> Iterator[list[dict[str, Any]]]:
+def _anthropic_answers(*responses: httpx.Response) -> Iterator[tuple[list[dict[str, Any]], str]]:
     """the Anthropic API answering each request with the next response.
 
     :param responses: the responses, in order
     :ptype responses: httpx.Response
-    :return: the request bodies the API received
-    :rtype: Iterator[list[dict[str, Any]]]
+    :return: the request bodies the API received, and the base URL a model reaches it on
+    :rtype: Iterator[tuple[list[dict[str, Any]], str]]
     """
     queue = list(responses)
     received: list[dict[str, Any]] = []
@@ -99,17 +102,12 @@ def _anthropic_answers(*responses: httpx.Response) -> Iterator[list[dict[str, An
         received.append(json.loads(request.content))
         return queue.pop(0)
 
-    def client(*, base_url: str | None, **_kwargs: Any) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url=base_url or "https://api.anthropic.com", transport=httpx.MockTransport(handler)
-        )
-
-    with patch("langchain_anthropic.chat_models._get_default_async_httpx_client", client):
-        yield received
+    with serve_http_handler(handler) as base_url:
+        yield received, base_url
 
 
 def _instrumented(
-    *, provider_kwargs: dict[str, Any] | None = None, api_key: str = API_KEY
+    *, provider_kwargs: dict[str, Any] | None = None, api_key: str = API_KEY, base_url: str | None = None
 ) -> tuple[Any, CircuitBreaker, _Sink]:
     """a factory-built model with a breaker and a tracker the test can read.
 
@@ -117,17 +115,22 @@ def _instrumented(
     :ptype provider_kwargs: dict[str, Any] | None
     :param api_key: the credential
     :ptype api_key: str
+    :param base_url: where the API route sends requests; ``None`` for the subscription route
+    :ptype base_url: str | None
     :return: the model, its breaker and its tracker's sink
     :rtype: tuple[Any, CircuitBreaker, _Sink]
     """
     breaker = CircuitBreaker("anthropic", failure_threshold=10)
     sink = _Sink()
+    settings = dict(provider_kwargs or {"max_retries": 0})
+    if base_url is not None:
+        settings["base_url"] = base_url
     model = create_chat_model(
         DEFAULT_CHAT_MODEL,
         api_key=api_key,
         breaker=breaker,
         tracker=UsageTracker(audit_sink=sink),
-        **(provider_kwargs or {"max_retries": 0}),
+        **settings,
     )
     return model, breaker, sink
 
@@ -143,12 +146,12 @@ _SERVER_ERROR = httpx.Response(500, json={"type": "error", "error": {"type": "ap
 
 class TestTheApiRoute:
     async def test_a_tool_bound_call_is_metered_and_its_failure_reaches_the_breaker(self) -> None:
-        model, breaker, sink = _instrumented()
-        bound = model.bind_tools([_Write()])
         tool_use = _message(
             [{"type": "tool_use", "id": "toolu_1", "name": "threetears_write", "input": {}}], "tool_use"
         )
-        with _anthropic_answers(_SERVER_ERROR, httpx.Response(200, json=tool_use)):
+        with _anthropic_answers(_SERVER_ERROR, httpx.Response(200, json=tool_use)) as (_received, base_url):
+            model, breaker, sink = _instrumented(base_url=base_url)
+            bound = model.bind_tools([_Write()])
             with pytest.raises(InternalServerError):
                 await bound.ainvoke([HumanMessage(content="write it")])
             assert breaker.failure_count == 1, "the breaker never saw the tool-bound call fail"
@@ -161,12 +164,12 @@ class TestTheApiRoute:
         assert [(r.input_tokens, r.output_tokens) for r in sink.records] == [(11, 7)]
 
     async def test_a_structured_call_is_metered_and_its_failure_reaches_the_breaker(self) -> None:
-        model, breaker, sink = _instrumented()
-        structured = model.with_structured_output(_Answer)
         answer = _message(
             [{"type": "tool_use", "id": "toolu_1", "name": "_Answer", "input": {"text": "hi"}}], "tool_use"
         )
-        with _anthropic_answers(_SERVER_ERROR, httpx.Response(200, json=answer)):
+        with _anthropic_answers(_SERVER_ERROR, httpx.Response(200, json=answer)) as (_received, base_url):
+            model, breaker, sink = _instrumented(base_url=base_url)
+            structured = model.with_structured_output(_Answer)
             with pytest.raises(InternalServerError):
                 await structured.ainvoke([HumanMessage(content="answer")])
             assert breaker.failure_count == 1, "the breaker never saw the structured call fail"
@@ -179,19 +182,19 @@ class TestTheApiRoute:
         assert len(sink.records) == 1
 
     async def test_a_bound_then_rebound_model_keeps_them_too(self) -> None:
-        model, breaker, _sink = _instrumented()
-        bound = model.bind_tools([_Write()]).bind(temperature=0)
-        with _anthropic_answers(_SERVER_ERROR):
+        with _anthropic_answers(_SERVER_ERROR) as (_received, base_url):
+            model, breaker, _sink = _instrumented(base_url=base_url)
+            bound = model.bind_tools([_Write()]).bind(temperature=0)
             with pytest.raises(InternalServerError):
                 await bound.ainvoke([HumanMessage(content="write it")])
 
         assert breaker.failure_count == 1
 
     async def test_arguments_bound_before_the_tools_still_reach_the_provider(self) -> None:
-        model, breaker, _sink = _instrumented()
-        bound = model.bind(max_tokens=77).bind_tools([_Write()])
         text = _message([{"type": "text", "text": "hi"}], "end_turn")
-        with _anthropic_answers(httpx.Response(200, json=text)) as received:
+        with _anthropic_answers(httpx.Response(200, json=text)) as (received, base_url):
+            model, _breaker, _sink = _instrumented(base_url=base_url)
+            bound = model.bind(max_tokens=77).bind_tools([_Write()])
             await bound.ainvoke([HumanMessage(content="hi")])
 
         assert received[0]["max_tokens"] == 77
@@ -206,9 +209,9 @@ class TestTheApiRoute:
             async def on_llm_end(self, *args: Any, **kwargs: Any) -> None:
                 seen.append("caller")
 
-        model, _breaker, sink = _instrumented()
         text = _message([{"type": "text", "text": "hi"}], "end_turn")
-        with _anthropic_answers(httpx.Response(200, json=text)):
+        with _anthropic_answers(httpx.Response(200, json=text)) as (_received, base_url):
+            model, _breaker, sink = _instrumented(base_url=base_url)
             await model.bind_tools([_Write()]).ainvoke([HumanMessage(content="hi")], config={"callbacks": [_Spy()]})
         await _settle()
 
@@ -226,9 +229,9 @@ class TestTheApiRoute:
             async def on_llm_end(self, *args: Any, **kwargs: Any) -> None:
                 seen.append("attached")
 
-        model, _breaker, sink = _instrumented()
         text = _message([{"type": "text", "text": "hi"}], "end_turn")
-        with _anthropic_answers(httpx.Response(200, json=text)):
+        with _anthropic_answers(httpx.Response(200, json=text)) as (_received, base_url):
+            model, _breaker, sink = _instrumented(base_url=base_url)
             await attach_callbacks(model, _Spy()).bind_tools([_Write()]).ainvoke([HumanMessage(content="hi")])
         await _settle()
 

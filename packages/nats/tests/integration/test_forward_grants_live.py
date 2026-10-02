@@ -14,8 +14,11 @@ directions against a live broker, with the MINTED credential applied as config-m
   Permissions Violation naming that exact subject. A denied subscribe and an unreachable
   broker both present as a silent timeout, so an assertion on the absence of a reply would
   pass against a dead test harness;
-- the pod can open the KV bucket its display claim actually materialises. Without it
-  ``KVLease.acquire`` defers opening the bucket to first use and that open raises ``KvError``
+- the pod can bind the KV bucket its display claim actually uses, and claim its session. The
+  lease is built by the production factory (``operator_session_lease``): bind-only, because a pod
+  holds no stream-management verb and the hub declares ``{ns}-leases`` at startup, and keyed under
+  the pod's own scope, because its grant on that shared bucket reaches only those keys. Without the
+  grant ``KVLease.acquire`` defers opening the bucket to first use and that open raises ``KvError``
   after a JetStream timeout, so the claim fails hard rather than downgrading silently.
 
 The permission set is applied directly as static ``authorization`` rather than by standing up
@@ -41,10 +44,10 @@ from pathlib import Path
 import nats
 import pytest
 
-from threetears.core.coordination import KVLease
 from threetears.core.testing.containers import check_docker_available
 from threetears.nats import NatsClient, Subjects, forward, serve_owner, set_default_namespace
-from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions
+from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions, kv_key_scope_for
+from threetears.scrape.operator_session import operator_session_lease
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
 pytestmark = pytest.mark.integration
@@ -277,10 +280,23 @@ async def test_tool_pod_can_open_the_bucket_its_display_claim_uses(
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", _NS)
 
     with _nats_with_auth(tmp_path) as uri:
+        # the hub declares the shared pod buckets at startup (``PodBucketDeclarer.declare_shared``),
+        # with exactly this shape; a pod only ever binds them.
+        admin = await NatsClient.connect(
+            nats_url=uri,
+            nats_subject_namespace=_NS,
+            client_name="admin-grant-test",
+            user="admin",
+            password=_ADMIN_PW,
+        )
+        async with admin:
+            await admin.ensure_kv_bucket(name="leases", ttl=None, storage="memory", history=1, direct=True)
         pod = await _connect_wrapped(uri, user="pod", password=_POD_PW, permissions=_pod_permissions())
         async with pod:
-            lease = KVLease(pod, pod_id=_POD_ID)
-            # the real acquire path: create the bucket, write the claim, read it back. a grant
+            lease = operator_session_lease(
+                pod, key_scope=kv_key_scope_for(Principal.TOOL_POD, pod_id=_POD_ID), pod_id=_POD_ID
+            )
+            # the real acquire path: bind the bucket, write the claim, read it back. a grant
             # naming a bucket nothing opens would surface here as a JS timeout, which is the
             # shape the missing grant took in production.
             handle = await lease.acquire("display/session-42", ttl_seconds=30, max_wait_seconds=5)

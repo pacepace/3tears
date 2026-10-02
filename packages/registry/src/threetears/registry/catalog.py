@@ -21,6 +21,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from threetears.core.serialization import json_datetime
 from threetears.nats import Subjects
 from threetears.observe import get_logger
 from threetears.registry.config import get_definition_ttl
@@ -304,8 +305,8 @@ class AnnouncedDefinition:
         """
         return {
             "definition": self.definition.to_dict(),
-            "first_announced": self.first_announced.isoformat(),
-            "last_announced": self.last_announced.isoformat(),
+            "first_announced": json_datetime(self.first_announced, field="first_announced"),
+            "last_announced": json_datetime(self.last_announced, field="last_announced"),
         }
 
     @classmethod
@@ -442,7 +443,7 @@ class ToolEndpoint:
         result = {
             "pod_id": self.pod_id,
             "status": self.status,
-            "date_last_heartbeat": self.date_last_heartbeat.isoformat(),
+            "date_last_heartbeat": json_datetime(self.date_last_heartbeat, field="date_last_heartbeat"),
             "verified_publisher": self.verified_publisher,
             "definitions": [announcement.to_dict() for announcement in self.definitions.values()],
         }
@@ -775,7 +776,7 @@ class CatalogEntry:
             "tool_version": self.tool_version,
             "full_name": self.full_name,
             "endpoints": [ep.to_dict() for ep in self.endpoints],
-            "date_registered": self.date_registered.isoformat(),
+            "date_registered": json_datetime(self.date_registered, field="date_registered"),
         }
         return result
 

@@ -55,6 +55,7 @@ import time
 from typing import Any, Final
 from uuid import UUID
 
+from threetears.core.collections import CallerTransaction
 from threetears.observe import get_logger
 
 from threetears.agent.wake.config import DEFAULT_WAKE_CONFIG, WakeConfig
@@ -395,7 +396,10 @@ async def _start_fire_conversation(
     fires = WakeFireCollection(
         registry=registry, config=DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     )
-    async with pool.acquire() as conn, conn.transaction():
+    # CallerTransaction, not conn.transaction(): a hook that saves the new conversation through its
+    # collection (``save_entity(conn=conn)``) joins it, and every row such a write touched is
+    # evicted from every cache tier once the transaction has ended.
+    async with pool.acquire() as conn, CallerTransaction(conn):
         started_conversation_id = await start_conversation(trigger, conn)
         linked = await fires.link_started_conversation(
             trigger.conversation_id, fire_id, started_conversation_id, conn=conn

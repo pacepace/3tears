@@ -20,9 +20,9 @@ import pytest
 from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
-from ._dispatch_auth import make_authed_request, make_proxy
+from .dispatch_auth import make_authed_request, make_proxy
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +35,7 @@ def _bind_namespace() -> None:
 
 
 # the enforce-only auth scaffolding (token+pop requests + a JWKS-wired proxy) is shared across the
-# registry dispatch-test modules; see ``_dispatch_auth``. these aliases keep the test bodies reading
+# registry dispatch-test modules; see ``dispatch_auth``. these aliases keep the test bodies reading
 # the same while every dispatch is now authenticated (v0.13.9 verifies identity + pop, fail-closed).
 _make_call_request = make_authed_request
 _make_proxy = make_proxy

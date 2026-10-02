@@ -27,6 +27,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
+from threetears.core.collections import CallerTransaction
 from threetears.observe import get_logger
 
 from threetears.agent.wake.config import WakeConfig
@@ -430,7 +431,11 @@ async def create_schedule_serialized(
     4. When ``make_wake_conversation`` is given, make the schedule's wake
        conversation on the same connection and put its id on the row, so a
        refused or failed insert leaves no empty conversation.
-    5. ``collection.save_entity(entity, conn=conn)``.
+    5. ``collection.save_entity(entity, conn=conn)`` -- the L3 INSERT
+       binds to the locked transaction, opened through
+       :class:`~threetears.core.collections.CallerTransaction`, which
+       evicts the row from L1 and L2 and broadcasts the eviction once the
+       transaction has committed or rolled back.
 
     The caller owns validation (schedule config, skill ACL, ``context_from``)
     and builds ``data``; ``data["conversation_id"]`` is the wake
@@ -457,7 +462,7 @@ async def create_schedule_serialized(
     :raises ScheduleCapExceeded: when the agent is at/over cap
     """
     async with pool.acquire() as conn:
-        async with conn.transaction():
+        async with CallerTransaction(conn):
             await _lock_agent(conn, agent_id)
             if not data.get("protected", False):
                 await _refuse_at_cap(conn, _COUNT_ACTIVE_SQL, (agent_id,), agent_id=agent_id, cap=cap, action="create")
@@ -488,7 +493,9 @@ async def resume_schedule_serialized(
     active schedules (the target excluded, so re-resuming an active one
     cannot refuse itself), raise :class:`ScheduleCapExceeded` at cap, then
     flip the row with :meth:`WakeScheduleCollection.resume` on the same
-    connection.
+    connection. The transaction is opened through
+    :class:`~threetears.core.collections.CallerTransaction`, so the row is
+    evicted from every cache tier once it commits or rolls back.
 
     The caller owns ``next_fire_at`` and the ownership check.
 
@@ -511,7 +518,7 @@ async def resume_schedule_serialized(
     :raises ScheduleCapExceeded: when the agent is at/over cap
     """
     async with pool.acquire() as conn:
-        async with conn.transaction():
+        async with CallerTransaction(conn):
             await _lock_agent(conn, agent_id)
             await _refuse_at_cap(
                 conn,
@@ -527,17 +534,14 @@ async def resume_schedule_serialized(
                 next_fire_at=next_fire_at,
                 conn=conn,
             )
-    # NOTE: like :meth:`WakeScheduleCollection.resume` / ``.pause``, the
-    # flip is a cache-bypass L3 UPDATE -- the L1/L2 row cache is "read-
-    # mostly, invalidated naturally on the next fetch" (the established
-    # contract for these status transitions). We deliberately do NOT call
-    # ``invalidate_cache`` here: an eviction would strip the row out from
-    # under any LIVE entity proxy the caller still holds (the proxy reads
-    # every field through L1 via ``get_field_sync``), turning a subsequent
-    # ``entity.schedule_id`` read into ``None``. The REST caller
-    # reflects the new ``status`` / ``next_fire_at`` onto its proxy via
-    # field setters (which write through to L1) for the response; the
-    # agent tool caller returns a string and re-reads on the next ``get``.
+    # The row is evicted from L1 and L2 on every replica, and the eviction
+    # broadcast, when the CallerTransaction above ends -- after the commit,
+    # never before it. This used to be skipped on the stated grounds that an
+    # eviction strips the row from under a live entity proxy the caller still
+    # holds. The skip was wrong: the schedule tools read the row before every
+    # edit and save the row they read, so a cached pre-resume row was written
+    # back over L3 and undid the resume. A loaded entity now holds its own row
+    # and reads nothing through L1, so the proxy concern no longer arises.
 
 
 async def _lock_agent(conn: Any, agent_id: UUID) -> None:

@@ -140,9 +140,9 @@ async def test_fail_closed_on_transport_error() -> None:
 
 async def test_fail_closed_on_hub_error_reply() -> None:
     """A hub error reply raises with the hub's reason and caches nothing."""
-    nc = _RecordingNats(responses=[_err(code="IDENTITY_UNVERIFIED", message="no session"), _ok()])
+    nc = _RecordingNats(responses=[_err(code="IDENTITY_REFUSED", message="no session"), _ok()])
     resolver = HubObjectResolver(nc, request_timeout_seconds=5.0)  # type: ignore[arg-type]
-    with pytest.raises(ResolveObjectError, match="IDENTITY_UNVERIFIED"):
+    with pytest.raises(ResolveObjectError, match="IDENTITY_REFUSED"):
         await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)
     # the rejection was NOT cached: a later resolve retries the hub + succeeds.
     handle = await resolver.resolve(_OBJECT, customer_id=_CUSTOMER, identity_token=_TOKEN)

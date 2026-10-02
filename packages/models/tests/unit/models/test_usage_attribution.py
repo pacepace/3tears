@@ -202,20 +202,34 @@ async def test_attach_callbacks_adds_to_a_factory_built_model_and_keeps_its_own(
 def test_factory_models_use_the_default_tracker_unless_given_one() -> None:
     default = UsageTracker()
     explicit = UsageTracker()
+    to_default: list[UsageRecord] = []
+    to_explicit: list[UsageRecord] = []
+    default.record = to_default.append  # type: ignore[method-assign]
+    explicit.record = to_explicit.append  # type: ignore[method-assign]
     try:
         set_default_usage_tracker(default)
         built = create_chat_model("gpt-4o-mini", api_key="sk-test", provider="openai")
         chosen = create_chat_model("gpt-4o-mini", api_key="sk-test", provider="openai", tracker=explicit)
     finally:
         set_default_usage_tracker(None)
-    assert _tracker_of(built) is default
-    assert _tracker_of(chosen) is explicit
+
+    _end_one_call(built)
+    assert (len(to_default), len(to_explicit)) == (1, 0), "a model built with no tracker recorded elsewhere"
+    _end_one_call(chosen)
+    assert (len(to_default), len(to_explicit)) == (1, 1), "a model built with its own tracker recorded elsewhere"
 
 
-def _tracker_of(model: Any) -> UsageTracker:
+def _end_one_call(model: Any) -> None:
+    """runs one call's start and end through the usage-tracking callback the factory bound to ``model``.
+
+    :param model: a factory-built model binding
+    :ptype model: Any
+    """
     callbacks = model.config["callbacks"]
     [tracking] = [c for c in callbacks if type(c).__name__ == "UsageTrackingCallback"]
-    return tracking._tracker  # type: ignore[no-any-return]  # noqa: SLF001
+    run = uuid4()
+    tracking.on_chat_model_start({}, [[]], run_id=run)
+    tracking.on_llm_end(_result(_reply(usage=_USAGE)), run_id=run)
 
 
 def test_uuid_metadata_is_parsed_and_junk_is_ignored() -> None:
@@ -333,12 +347,17 @@ def test_the_scope_is_taken_when_the_call_starts() -> None:
     ],
 )
 def test_the_accumulated_source_is_exact_only_when_every_call_was_reported(sources: list[str], expected: str) -> None:
-    from threetears.models.usage import _combine
-
-    total = None
+    # one answer of each source: counts the provider reported, text to estimate from, and nothing at all
+    answers = {
+        "reported": _reply(usage=_USAGE),
+        "estimated": _reply("an answer with no reported usage"),
+        "unavailable": _reply(""),
+    }
+    accumulator = UsageAccumulator()
     for source in sources:
-        total = _combine(total, source)  # type: ignore[arg-type]
-    assert total == expected
+        accumulator.on_llm_end(_result(answers[source]), run_id=uuid4())
+    assert accumulator.calls == len(sources)
+    assert accumulator.token_source == expected
 
 
 async def test_attach_keeps_callbacks_held_by_a_callback_manager() -> None:

@@ -11,11 +11,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from nats.js.api import ConsumerConfig as NatsConsumerConfig
+from nats.js.errors import NotFoundError as NatsNotFoundError
 from pydantic import BaseModel
 
 from threetears.nats.client import DEFAULT_JETSTREAM_PUBLISH_TIMEOUT
@@ -32,6 +37,8 @@ from threetears.nats import (
     Subscription,
     set_default_namespace,
 )
+
+from .wire_server import wire_server
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +92,23 @@ class _FakeMsg:
         self.subject = subject
 
 
+# parity-exempt: stands in for nats-py's transport; the round trip hands it the pending buffer and a PING
+class _FakeTransport:
+    """records what the round trip writes, and answers each PING's PONG unless the server is slow."""
+
+    def __init__(self, owner: _FakeNatsPyClient) -> None:
+        self._owner = owner
+
+    def writelines(self, payload: list[bytes]) -> None:
+        self._owner.wire.extend(chunk.decode().strip() for chunk in payload)
+
+    def write(self, payload: bytes) -> None:
+        self._owner.wire.append(payload.decode().strip())
+        if self._owner.answers_pings:
+            # the server answers the oldest PING first, exactly as nats-py pairs PONGs
+            self._owner.pongs.pop(0).set_result(True)
+
+
 # parity-exempt: subset shim for nats.aio.Client implementing publish/subscribe/request/drain/close/flush only; full nats-py Client surface is huge and tests exercise the wrapper above it
 class _FakeNatsPyClient:
     """minimal fake of nats.aio.client.Client used by tests."""
@@ -99,9 +123,24 @@ class _FakeNatsPyClient:
         # records errors passed to the nats-py op-error reconnect entry point that
         # :meth:`NatsClient.reconnect` drives.
         self.op_err_calls: list[Exception] = []
+        # the round trip's protocol, in the order it reached the transport, and the PONG futures
+        # queued for it. these are the fields of nats-py's own the round trip reads and writes.
+        self.wire: list[str] = []
+        self.answers_pings = True
+        self._pongs: list[asyncio.Future[bool]] = []
+        self._pending: list[bytes] = []
+        self._pending_data_size = 0
+        self._transport = _FakeTransport(self)
+        self._flush_queue: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
+        # a socket the server stopped reading: nats-py's flusher sits in ``transport.drain()``
+        self.backpressured = False
 
     async def _process_op_err(self, e: Exception) -> None:
         self.op_err_calls.append(e)
+
+    async def _send_unsubscribe(self, sid: int, limit: int = 0) -> None:
+        # queued, exactly as nats-py queues it, so the round trip after it carries it out first
+        self.queue_pending(f"UNSUB {sid}\r\n".encode())
 
     async def publish(self, subject: str, payload: bytes, reply: str | None = None) -> None:
         self.published.append((subject, payload, reply))
@@ -120,6 +159,36 @@ class _FakeNatsPyClient:
 
     async def close(self) -> None:
         self.is_closed = True
+
+    @property
+    def pongs(self) -> list[asyncio.Future[bool]]:
+        """the PONG futures still waiting for their PONG, oldest first."""
+        return self._pongs
+
+    def pending_buffer(self) -> tuple[list[bytes], int]:
+        """what nats-py would still hold to write: the buffered commands and their byte count."""
+        return self._pending, self._pending_data_size
+
+    def queue_pending(self, command: bytes) -> None:
+        """a command nats-py has buffered but its flusher has not yet written out."""
+        self._pending.append(command)
+        self._pending_data_size += len(command)
+
+    async def _flush_pending(self, force_flush: bool = False) -> None:
+        # what nats-py does on a backpressured socket: wait on the flusher with no bound
+        # (flush_timeout defaults to none), and swallow a cancellation of that wait. bounded to one
+        # swallow so a test against the defect fails rather than hanging the suite.
+        if force_flush and self.backpressured:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                pass
+        self.wire.append("flush-pending")
+
+    async def _send_ping(self, future: asyncio.Future[bool]) -> None:
+        # nats-py writes the PING straight to the transport, ahead of anything still pending
+        self._pongs.append(future)
+        self._transport.write(b"PING\r\n")
 
     async def flush(self, timeout: float = 2.0) -> None:
         self.flush_calls: list[float]
@@ -588,6 +657,84 @@ async def test_subscribe_max_in_flight_loop_crash_logs_real_error_type(
     await sub.unsubscribe()
 
 
+async def _stamped_behind_a_busy_callback(max_in_flight: int | None) -> tuple[float, float, float]:
+    """queue a second message behind a callback that holds the only slot, and date it.
+
+    the first callback parks until released; the second message is put on the connection
+    while it is parked, and the test waits until the client has taken it off the
+    connection before recording ``after_arrival``. the park then lasts a further
+    measurable stretch before the second callback can start.
+
+    :param max_in_flight: the cap to subscribe with; ``1`` or ``None`` both leave one slot
+    :ptype max_in_flight: int | None
+    :return: (``after_arrival``, the second message's ``monotonic_received``, when its callback started)
+    :rtype: tuple[float, float, float]
+    """
+    client, fake = _make_client()
+    release = asyncio.Event()
+    first_entered = asyncio.Event()
+    second: asyncio.Future[tuple[float, float]] = asyncio.get_running_loop().create_future()
+
+    async def handler(msg: IncomingMessage) -> None:
+        if msg.data == b"first":
+            first_entered.set()
+            await release.wait()
+            return
+        second.set_result((msg.monotonic_received, time.monotonic()))
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler, max_in_flight=max_in_flight)
+    raw = fake.subscribed[-1][2]
+    await raw.queue.put(_FakeMsg(data=b"first"))
+    await asyncio.wait_for(first_entered.wait(), timeout=2.0)
+
+    async def _taken_off_the_connection() -> None:
+        while not raw.queue.empty():
+            await asyncio.sleep(0)
+
+    await raw.queue.put(_FakeMsg(data=b"second"))
+    # a client that leaves the message on the connection while a callback holds the slot
+    # never takes it here, and cannot date its arrival.
+    await asyncio.wait_for(_taken_off_the_connection(), timeout=2.0)
+    after_arrival = time.monotonic()
+    await asyncio.sleep(0.2)  # the second message waits here, received but not started
+    release.set()
+
+    received, started = await asyncio.wait_for(second, timeout=2.0)
+    await raw.queue.put(None)
+    await sub.unsubscribe()
+    return after_arrival, received, started
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_in_flight", [1, None], ids=["bounded", "serial"])
+async def test_a_message_is_dated_when_it_arrives_not_when_its_callback_starts(max_in_flight: int | None) -> None:
+    """``monotonic_received`` counts the time a message waited for a callback slot.
+
+    a request/reply server holds each request to the deadline its caller set, and the
+    caller's clock started when it sent. dated from the callback's start instead, a
+    request that queued behind a busy subscription looks fresh however long it waited,
+    and the server runs work whose caller has already given up.
+    """
+    after_arrival, received, started = await _stamped_behind_a_busy_callback(max_in_flight)
+
+    assert received <= after_arrival, "the message was dated after the client had already taken it"
+    assert started - received >= 0.2, "the wait for a slot is missing from the message's age"
+
+
+def test_a_message_built_by_hand_is_dated_when_it_is_built() -> None:
+    """a hand-built envelope (a test, an in-process relay) was received when it was made."""
+    before = time.monotonic()
+    msg = IncomingMessage(data=b"{}", reply_subject=None, subject="3tears.tools.call")
+    assert before <= msg.monotonic_received <= time.monotonic()
+
+
+def test_the_receipt_time_is_not_part_of_a_messages_identity() -> None:
+    """the same message taken twice is still the same message."""
+    taken_early = IncomingMessage(data=b"{}", reply_subject=None, subject="s", monotonic_received=1.0)
+    taken_late = IncomingMessage(data=b"{}", reply_subject=None, subject="s", monotonic_received=2.0)
+    assert taken_early == taken_late
+
+
 @pytest.mark.asyncio
 async def test_request_typed_round_trip() -> None:
     """request encodes message, decodes response into declared type."""
@@ -739,11 +886,8 @@ async def test_connect_validates_namespace() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_passes_credentials_and_scoped_inbox(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_connect_passes_credentials_and_scoped_inbox() -> None:
     """the auth_token provider, user_credentials, and a scoped inbox_prefix reach the connect options."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -751,9 +895,8 @@ async def test_connect_passes_credentials_and_scoped_inbox(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -770,20 +913,15 @@ async def test_connect_passes_credentials_and_scoped_inbox(
 
 
 @pytest.mark.asyncio
-async def test_connect_auth_token_provider_is_reinvoked_per_connect(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_connect_auth_token_provider_is_reinvoked_per_connect() -> None:
     """the auth_token provider is passed through UNWRAPPED so nats-py re-invokes it on every
     (re)connect — each reconnect presents a freshly-minted token, never a cached (expired) snapshot."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
     async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
         captured["options"] = options
         return MagicMock()
-
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
 
     minted: list[str] = []
 
@@ -793,6 +931,7 @@ async def test_connect_auth_token_provider_is_reinvoked_per_connect(
         return token
 
     await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -809,11 +948,8 @@ async def test_connect_auth_token_provider_is_reinvoked_per_connect(
 
 
 @pytest.mark.asyncio
-async def test_connect_passes_user_and_password(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_connect_passes_user_and_password() -> None:
     """user + password reach the nats-py connect options (config-mode static auth_users)."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -821,9 +957,8 @@ async def test_connect_passes_user_and_password(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="gateway-svc",
@@ -838,11 +973,8 @@ async def test_connect_passes_user_and_password(
 
 
 @pytest.mark.asyncio
-async def test_connect_omits_credential_options_when_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_connect_omits_credential_options_when_absent() -> None:
     """anonymous connect (the legacy shared bus) sets none of the credential/inbox options."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -850,9 +982,8 @@ async def test_connect_omits_credential_options_when_absent(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -868,9 +999,7 @@ async def test_connect_omits_credential_options_when_absent(
 
 
 @pytest.mark.asyncio
-async def test_connect_uses_forever_reconnect(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_connect_uses_forever_reconnect() -> None:
     """runtime reconnect is unbounded: the options reaching nats-py carry
     ``max_reconnect_attempts=-1`` (forever) paced by a bounded per-attempt wait.
 
@@ -890,9 +1019,8 @@ async def test_connect_uses_forever_reconnect(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -959,9 +1087,7 @@ async def test_dispatch_loop_survives_message_gap_across_reconnect() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reconnect_callbacks_fan_out_on_reconnect(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_reconnect_callbacks_fan_out_on_reconnect() -> None:
     """callbacks registered via ``add_reconnect_callback`` fire in order on reconnect.
 
     forever-reconnect rides out an outage and replays subscriptions, but the BROKER
@@ -971,7 +1097,6 @@ async def test_reconnect_callbacks_fan_out_on_reconnect(
     the instance adopts the SAME list the dispatcher closes over, so post-connect
     registrations are visible to the already-installed slot.
     """
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -979,9 +1104,8 @@ async def test_reconnect_callbacks_fan_out_on_reconnect(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     client = await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -1006,16 +1130,13 @@ async def test_reconnect_callbacks_fan_out_on_reconnect(
 
 
 @pytest.mark.asyncio
-async def test_reconnect_callback_failure_is_isolated(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_reconnect_callback_failure_is_isolated() -> None:
     """one reconnect hook raising is logged and does not abort the others.
 
     a re-mint hook that fails must not break the callback chain or the nats-py
     reconnect path -- otherwise a single bad consumer would re-introduce the wedge
     forever-reconnect exists to prevent.
     """
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -1023,9 +1144,8 @@ async def test_reconnect_callback_failure_is_isolated(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     client = await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -1114,13 +1234,54 @@ async def test_reconnect_noops_when_not_currently_connected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ping_returns_true_when_flush_succeeds() -> None:
-    """ping forwards to nats-py flush and returns True on success."""
+async def test_ping_round_trips_after_the_pending_buffer() -> None:
+    """ping writes out what is pending, THEN pings: its PONG must answer for what came before."""
     client, fake = _make_client()
     fake.is_connected = True
+    fake.queue_pending(b"UNSUB 1\r\n")
     result = await client.ping(timeout=1.5)
     assert result is True
-    assert fake.flush_calls == [1.5]
+    assert fake.wire == ["UNSUB 1", "PING"]
+    assert fake.pending_buffer() == ([], 0)
+
+
+@pytest.mark.asyncio
+async def test_a_ping_on_a_backpressured_socket_answers_false_within_its_timeout() -> None:
+    """a socket the server stopped reading is what a health probe exists to catch.
+
+    nats-py's forced flush waits on the flusher with no bound and swallows a cancellation, so a
+    round trip that went through it outlived the probe's timeout by as long as the socket stayed
+    wedged. The PING queued behind the buffer never reaches the server, so no PONG comes.
+    """
+    client, fake = _make_client()
+    fake.is_connected = True
+    fake.backpressured = True
+    fake.answers_pings = False
+    fake.queue_pending(b"PUB tokens 1\r\nA\r\n")
+
+    started = time.monotonic()
+    result = await asyncio.wait_for(client.ping(timeout=0.05), timeout=2.0)
+
+    assert result is False
+    assert time.monotonic() - started < 1.0
+    assert fake.wire == ["PUB tokens 1\r\nA", "PING"]  # handed to the transport in order, never waited on
+
+
+@pytest.mark.asyncio
+async def test_a_round_trip_that_is_cancelled_stays_cancelled() -> None:
+    """a shutdown or a bounded drain cancels a round trip; the cancellation must not be discarded."""
+    client, fake = _make_client()
+    fake.is_connected = True
+    fake.backpressured = True
+    fake.answers_pings = False
+    flushing = asyncio.create_task(client.flush(timeout=30.0))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    flushing.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(flushing, timeout=2.0)
 
 
 @pytest.mark.asyncio
@@ -1130,17 +1291,25 @@ async def test_ping_returns_false_when_disconnected() -> None:
     fake.is_connected = False
     result = await client.ping()
     assert result is False
-    assert not hasattr(fake, "flush_calls") or fake.flush_calls == []
+    assert fake.wire == []
 
 
 @pytest.mark.asyncio
-async def test_ping_returns_false_when_flush_raises() -> None:
-    """ping converts a flush exception (timeout / broker error) into False."""
+async def test_a_ping_that_times_out_leaves_its_pong_future_for_the_late_pong() -> None:
+    """a timed-out ping reports False and abandons the WAIT, never the future.
+
+    nats-py's own flush cancels the future and leaves it in its PONG queue; the late PONG then
+    raises in the read loop and ends it. A pending future is resolved by that PONG harmlessly.
+    """
     client, fake = _make_client()
     fake.is_connected = True
-    fake.flush_error = TimeoutError("server slow")
-    result = await client.ping(timeout=0.1)
-    assert result is False
+    fake.answers_pings = False
+
+    assert await client.ping(timeout=0.05) is False
+
+    assert len(fake.pongs) == 1
+    assert not fake.pongs[0].cancelled()
+    fake.pongs[0].set_result(True)  # the late PONG: must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -1160,6 +1329,11 @@ def _client_with_js() -> tuple[NatsClient, Any]:
     js.update_stream = AsyncMock()
     js.publish = AsyncMock()
     js.subscribe = AsyncMock(return_value="sub-handle")
+    # a fresh server: no durable exists yet, so a bind creates it with the config it is given
+    js.consumer_info = AsyncMock(side_effect=NatsNotFoundError())
+    js.add_consumer = AsyncMock()
+    # the lookup nats-py's own bind makes when no stream is named
+    js.find_stream_name_by_subject = AsyncMock(return_value="3tears-found-by-subject")
     fake.jetstream = MagicMock(return_value=js)  # type: ignore[attr-defined]
     return client, js
 
@@ -1414,30 +1588,44 @@ class TestAPublishThatNeverGetsItsAck:
         Dropping the last reference to a live task makes asyncio warn about a task that was
         "destroyed but it is pending" -- noise in exactly the incident where the log matters.
 
+        After its swallowed cancellation the orphan waits on a future nothing else references, so
+        the event loop holds no strong reference to it either: if the client let go of the task,
+        a collection would reclaim it here. It must survive the collection, still running.
+
         :return: nothing
         :rtype: None
         """
+        import gc
+        import weakref
+
         from threetears.nats.errors import PublishTimeoutError
 
         client, js = _client_with_js()
+        orphans: list[weakref.ref[asyncio.Task[Any]]] = []
 
         async def _swallows_the_first_cancellation(*_args: Any, **_kwargs: Any) -> None:
+            task = asyncio.current_task()
+            assert task is not None
+            orphans.append(weakref.ref(task))
             try:
                 await asyncio.sleep(3600)
             except asyncio.CancelledError:
                 pass
-            await asyncio.sleep(3600)
+            await asyncio.get_running_loop().create_future()
 
         js.publish = _swallows_the_first_cancellation
 
         with pytest.raises(PublishTimeoutError):
             await client.jetstream_publish(subject=Subjects.channels_deliver("slack"), payload=b"x", timeout=0.05)
 
-        # The registry is module-private for a reason (see `_publish`), so this reads it
-        # there rather than asking the client for a handle on something nobody can act on.
-        from threetears.nats import _publish
+        await asyncio.sleep(0)  # the cancellation lands; the orphan swallows it and waits again
+        gc.collect()
 
-        assert len(_publish._abandoned) == 1  # noqa: SLF001
+        orphan = orphans[0]()
+        assert orphan is not None, "the abandoned publish was garbage-collected while still pending"
+        assert not orphan.done()
+        orphan.cancel()
+        await asyncio.wait({orphan})
 
     @pytest.mark.asyncio
     async def test_a_broker_rejection_is_still_a_plain_publish_error(self) -> None:
@@ -1817,6 +2005,58 @@ async def test_pull_handler_raise_dead_letters_at_budget() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("consumer_kind", ["push", "pull"])
+async def test_a_dead_letter_carries_the_subject_the_message_arrived_on(consumer_kind: str) -> None:
+    """the dead letter keeps the original subject in a header, not only the bytes.
+
+    A consumer that binds what an envelope claims to the subject it arrived on (the hub's audit
+    collector) cannot re-check a replayed dead letter against a subject it no longer has. The
+    header is written by this wrapper from the message the broker delivered, so it names the
+    subject the broker authorised, not one the payload asserts.
+    """
+    from threetears.nats import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER
+
+    msg = _fake_js_msg(data=b"poison", num_delivered=5)
+    msg.subject = "3tears.audit.tool_pod.0192a0b4-0000-7000-8000-000000000001.collector.promoted"
+    dlq = Subjects.audit_deadletter()
+    cb = AsyncMock(side_effect=RuntimeError("row refused"))
+    if consumer_kind == "push":
+        client, js = _client_with_js()
+        await client.jetstream_subscribe_durable(
+            subject=Subjects.audit_wildcard(), durable="d", cb=cb, max_deliver=5, dead_letter_subject=dlq
+        )
+        await js.subscribe.await_args.kwargs["cb"](msg)
+    else:
+        psub = MagicMock()
+        psub.fetch = AsyncMock(return_value=[msg])
+        client, js = _pull_js(psub=psub)
+        consumer = await client.jetstream_pull_subscribe(
+            subject=Subjects.audit_wildcard(), durable="d", cb=cb, max_deliver=5, dead_letter_subject=dlq
+        )
+        await consumer.fetch_and_process()
+
+    js.publish.assert_awaited_once_with(
+        dlq.path,
+        b"poison",
+        timeout=DEFAULT_JETSTREAM_PUBLISH_TIMEOUT.total_seconds(),
+        headers={DEAD_LETTER_ORIGINAL_SUBJECT_HEADER: msg.subject},
+    )
+    msg.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_jetstream_publish_passes_headers_through() -> None:
+    """headers reach the JetStream publish as given; none are sent when none are given."""
+    client, js = _client_with_js()
+    subject = Subjects.audit_deadletter()
+    await client.jetstream_publish(subject=subject, payload=b"x", headers={"A-Header": "v"})
+    await client.jetstream_publish(subject=subject, payload=b"y")
+    first, second = js.publish.await_args_list
+    assert first.kwargs["headers"] == {"A-Header": "v"}
+    assert "headers" not in second.kwargs
+
+
+@pytest.mark.asyncio
 async def test_pull_stop_unsubscribes_and_halts_run() -> None:
     """stop() unsubscribes the pull consumer and ends the run loop."""
     psub = MagicMock()
@@ -1836,23 +2076,262 @@ async def test_pull_stop_unsubscribes_and_halts_run() -> None:
     psub.unsubscribe.assert_awaited_once()
 
 
+@asynccontextmanager
+async def _stopping_pull_consumer(
+    *,
+    leftovers: list[bytes],
+    cb: AsyncMock,
+    redeliver: AsyncMock,
+    unsubscribe: AsyncMock,
+    connection: _FakeNatsPyClient | None = None,
+) -> AsyncIterator[tuple[Any, _FakeNatsPyClient, int]]:
+    """a pull consumer whose fetch inbox holds ``leftovers``, as the server left them at stop.
+
+    the inbox is a real nats-py subscription on a real connection, and the leftovers reach it the
+    way they do in production: a server delivers them and nats-py's read loop queues them. the
+    pull subscription carrying it is nats-py's own, built through its constructor, so the stop's
+    release reads exactly what it reads in production.
+
+    :return: the consumer, the connection it is bound to, and the inbox's sid on the wire
+    :rtype: AsyncIterator[tuple[Any, _FakeNatsPyClient, int]]
+    """
+    from nats.aio.client import Client as NatsPyClient
+    from nats.js.client import JetStreamContext
+
+    from threetears.nats import JetStreamPullConsumer
+
+    fake = connection if connection is not None else _FakeNatsPyClient()
+    async with wire_server() as server:
+        delivering = NatsPyClient()
+        await delivering.connect(server.url, allow_reconnect=False)
+        try:
+            inbox = await delivering.subscribe("_INBOX.pull")
+            await delivering.flush()
+            for data in leftovers:
+                await server.deliver("_INBOX.pull", data)
+            async with asyncio.timeout(2.0):
+                while inbox.pending_msgs < len(leftovers):
+                    await asyncio.sleep(0.01)
+            psub = JetStreamContext.PullSubscription(JetStreamContext(delivering), inbox, "stream", "d", b"_INBOX.pull")
+            psub.unsubscribe = unsubscribe  # type: ignore[method-assign]
+            consumer = JetStreamPullConsumer(
+                psub=psub,
+                cb=cb,
+                redeliver=redeliver,
+                durable="d",
+                subject=Subjects.channels_deliver("slack"),
+                batch=1,
+                fetch_timeout_seconds=0.01,
+                ack_wait_seconds=60.0,
+                bound_to=fake,  # type: ignore[arg-type]
+                current_connection=lambda: fake,  # type: ignore[arg-type,return-value]
+                resubscribe=AsyncMock(),
+            )
+            yield consumer, fake, server.sid_for("_INBOX.pull")
+        finally:
+            await delivering.close()
+
+
 @pytest.mark.asyncio
-async def test_pull_run_survives_transport_error_and_retries(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_pull_stop_handles_every_leftover_when_one_redelivery_fails(caplog: pytest.LogCaptureFixture) -> None:
+    """a redelivery that raises is logged; the later leftovers are still handled, and the inbox removed."""
+    cb = AsyncMock(side_effect=RuntimeError("handler failed"))
+    redeliver = AsyncMock(side_effect=[ConnectionError("nak on a failing transport"), None, None])
+    unsubscribe = AsyncMock()
+    async with _stopping_pull_consumer(
+        leftovers=[b"a", b"b", b"c"], cb=cb, redeliver=redeliver, unsubscribe=unsubscribe
+    ) as (consumer, fake, inbox_sid):
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+            await consumer.stop()
+
+    assert [call.args[0].data for call in cb.await_args_list] == [b"a", b"b", b"c"]
+    assert redeliver.await_count == 3
+    unsubscribe.assert_awaited_once()
+    assert f"UNSUB {inbox_sid}" in fake.wire, "the server was told to drop the inbox before the leftovers were taken"
+    assert any("neither handled nor redelivered" in r.getMessage() and "d" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_pull_stop_does_not_raise_when_the_final_unsubscribe_fails(caplog: pytest.LogCaptureFixture) -> None:
+    """a closed connection's unsubscribe raises; stop() logs it with the durable and returns."""
+    from nats.errors import ConnectionClosedError
+
+    unsubscribe = AsyncMock(side_effect=ConnectionClosedError())
+    async with _stopping_pull_consumer(
+        leftovers=[], cb=AsyncMock(), redeliver=AsyncMock(), unsubscribe=unsubscribe
+    ) as (consumer, _fake, _sid):
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+            await consumer.stop()
+
+    unsubscribe.assert_awaited_once()
+    assert any("final unsubscribe failed" in r.getMessage() and "durable=d" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_pull_stop_on_a_closed_connection_takes_the_plain_fallback_without_raising() -> None:
+    """the docstring's fallback: release refused by a closed connection, unsubscribe refused too; no raise."""
+    from nats.errors import ConnectionClosedError
+
+    closed = _FakeNatsPyClient()
+    closed.is_closed = True
+    cb = AsyncMock()
+    unsubscribe = AsyncMock(side_effect=ConnectionClosedError())
+    async with _stopping_pull_consumer(
+        leftovers=[b"never-released"], cb=cb, redeliver=AsyncMock(), unsubscribe=unsubscribe, connection=closed
+    ) as (consumer, _fake, _sid):
+        await consumer.stop()
+
+    unsubscribe.assert_awaited_once()
+    cb.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pull_stop_is_idempotent() -> None:
+    """a second stop() sends no second UNSUB and unsubscribes nothing again."""
+    unsubscribe = AsyncMock()
+    async with _stopping_pull_consumer(
+        leftovers=[], cb=AsyncMock(), redeliver=AsyncMock(), unsubscribe=unsubscribe
+    ) as (consumer, fake, _sid):
+        await consumer.stop()
+        wire_after_first = list(fake.wire)
+        await consumer.stop()
+
+    unsubscribe.assert_awaited_once()
+    assert fake.wire == wire_after_first
+
+
+@pytest.mark.asyncio
+async def test_a_pull_handler_holds_its_message_while_it_runs() -> None:
+    """a handler running longer than ack_wait keeps its message with in-progress acks, then stops.
+
+    ack_wait is the durable's crash detector: a fetcher that dies mid-handle hands the message
+    to another after it. Without a heartbeat it is also a ceiling on every handler, so a slow but
+    live one is redelivered under it and runs twice -- which forces ack_wait long, and a long
+    ack_wait is how long a crashed fetcher's message waits for anyone else.
+    """
+    msg = _fake_js_msg()
+    msg.in_progress = AsyncMock()
+    psub = MagicMock()
+    psub.fetch = AsyncMock(return_value=[msg])
+    client, _js = _pull_js(psub=psub)
+
+    async def slow(_msg: Any) -> None:
+        await asyncio.sleep(0.2)
+        await _msg.ack()
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.audit_wildcard(), durable="d", cb=slow, max_deliver=5, ack_wait_seconds=0.06
+    )
+    await consumer.fetch_and_process()
+    held = msg.in_progress.await_count
+    await asyncio.sleep(0.1)
+
+    assert held >= 3, f"a 0.2s handler under a 0.06s ack_wait sent {held} in-progress acks"
+    assert msg.in_progress.await_count == held, "in-progress acks continued after the handler finished"
+    msg.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_in_progress_ack_is_logged_and_the_handler_still_finishes(
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """an in-progress ack the transport refuses is logged with the durable; the handler is not disturbed."""
+    msg = _fake_js_msg()
+    msg.in_progress = AsyncMock(side_effect=ConnectionError("transport closed"))
+    psub = MagicMock()
+    psub.fetch = AsyncMock(return_value=[msg])
+    client, _js = _pull_js(psub=psub)
+
+    async def slow(_msg: Any) -> None:
+        await asyncio.sleep(0.1)
+        await _msg.ack()
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.audit_wildcard(), durable="d", cb=slow, max_deliver=5, ack_wait_seconds=0.03
+    )
+    with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+        await consumer.fetch_and_process()
+
+    msg.ack.assert_awaited_once()
+    msg.in_progress.assert_awaited_once()
+    assert any("in-progress ack failed" in r.getMessage() and "durable=d" in r.getMessage() for r in caplog.records)
+
+
+def _live_durable(*, ack_wait: float, max_deliver: int) -> Any:
+    """the consumer_info a server answers for a durable that already exists."""
+    info = MagicMock()
+    info.config = NatsConsumerConfig(
+        name="d", durable_name="d", ack_wait=ack_wait, max_deliver=max_deliver, filter_subject="3tears.audit.>"
+    )
+    return info
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consumer_kind", ["push", "pull"])
+async def test_an_existing_durable_takes_the_ack_wait_and_budget_the_code_now_asks_for(consumer_kind: str) -> None:
+    """a durable created under an older config is updated on bind, never silently kept.
+
+    nats-py's subscribe and pull_subscribe create a durable only when it is missing, and bind to an
+    existing one as it is. A changed ack_wait or max_deliver then reached no deployed stream at
+    all: the hub's audit durable kept a 60-second ack_wait after the code asked for 20.
+    """
+    client, js = _pull_js(psub=MagicMock())
+    js.consumer_info = AsyncMock(return_value=_live_durable(ack_wait=60.0, max_deliver=5))
+    kwargs: dict[str, Any] = {
+        "subject": Subjects.audit_wildcard(),
+        "durable": "d",
+        "cb": AsyncMock(),
+        "max_deliver": 4,
+        "ack_wait_seconds": 20.0,
+        "stream": "3tears-audit",
+    }
+    if consumer_kind == "push":
+        await client.jetstream_subscribe_durable(**kwargs)
+    else:
+        await client.jetstream_pull_subscribe(**kwargs)
+
+    js.add_consumer.assert_awaited_once()
+    (stream,) = js.add_consumer.await_args.args
+    sent = js.add_consumer.await_args.kwargs["config"]
+    assert stream == "3tears-audit"
+    assert (sent.durable_name, sent.ack_wait, sent.max_deliver) == ("d", 20.0, 4)
+    assert sent.filter_subject == "3tears.audit.>", "the update keeps every field it was not asked to change"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consumer_kind", ["push", "pull"])
+async def test_a_durable_already_as_asked_is_left_alone(consumer_kind: str) -> None:
+    """no update is sent when the live durable already carries the config asked for."""
+    client, js = _pull_js(psub=MagicMock())
+    js.consumer_info = AsyncMock(return_value=_live_durable(ack_wait=20.0, max_deliver=4))
+    kwargs: dict[str, Any] = {
+        "subject": Subjects.audit_wildcard(),
+        "durable": "d",
+        "cb": AsyncMock(),
+        "max_deliver": 4,
+        "ack_wait_seconds": 20.0,
+        "stream": "3tears-audit",
+    }
+    if consumer_kind == "push":
+        await client.jetstream_subscribe_durable(**kwargs)
+    else:
+        await client.jetstream_pull_subscribe(**kwargs)
+
+    js.add_consumer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pull_run_survives_transport_error_and_retries() -> None:
     """REGRESSION: a non-timeout transport error from fetch must NOT kill run(); it retries.
 
     run() had no guard, so a ConnectionClosedError from fetch (or from nak/ack/publish inside
     redelivery) during a NATS reconnect escaped and silently killed the unsupervised consumer task --
     channel delivery then stopped until the pod restarted. run() must catch, pace, and retry instead.
     """
-    import threetears.nats.client as client_module
     from nats.errors import ConnectionClosedError
 
-    # avoid the real 1s error-pace so the test is fast.
-    monkeypatch.setattr(client_module, "_PULL_CONSUMER_ERROR_BACKOFF_SECONDS", 0.0)
-
     calls = {"n": 0}
+    stopping: list[asyncio.Task[None]] = []
     psub = MagicMock()
     psub.unsubscribe = AsyncMock()
 
@@ -1860,7 +2339,11 @@ async def test_pull_run_survives_transport_error_and_retries(
         calls["n"] += 1
         if calls["n"] == 1:
             raise ConnectionClosedError()  # the reconnect-window transport error
-        consumer._stopped = True  # noqa: SLF001  # second cycle: end the loop cleanly
+        if not stopping:
+            # second cycle: a shutdown stops the consumer while this fetch is in flight, which is
+            # how the loop ends in production
+            stopping.append(asyncio.create_task(consumer.stop()))
+        await asyncio.sleep(0)
         return []
 
     psub.fetch = _fetch
@@ -1871,10 +2354,12 @@ async def test_pull_run_survives_transport_error_and_retries(
         durable="d",
         cb=AsyncMock(),
         max_deliver=5,
+        error_backoff_seconds=0.0,  # the production 1s pace, shortened so the test is fast
     )
 
     # run() must return normally (not propagate the transport error) after retrying past it.
     await asyncio.wait_for(consumer.run(), timeout=5.0)
+    await stopping[0]
     assert calls["n"] >= 2  # it retried after the transport error rather than dying
 
 
@@ -1884,9 +2369,7 @@ async def test_pull_run_survives_transport_error_and_retries(
 
 
 @pytest.mark.asyncio
-async def test_add_reconnect_callback_runs_on_reconnect(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_add_reconnect_callback_runs_on_reconnect() -> None:
     """a callback registered via ``add_reconnect_callback`` fires when nats-py reconnects.
 
     nats-py exposes a single ``reconnected_cb`` slot; the wrapper installs a dispatcher there at
@@ -1895,7 +2378,6 @@ async def test_add_reconnect_callback_runs_on_reconnect(
     session) after an outage, so tool calls resume immediately instead of failing until the next
     scheduled refresh.
     """
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -1903,9 +2385,8 @@ async def test_add_reconnect_callback_runs_on_reconnect(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     client = await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -1923,11 +2404,8 @@ async def test_add_reconnect_callback_runs_on_reconnect(
 
 
 @pytest.mark.asyncio
-async def test_reconnect_dispatcher_isolates_failing_callback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_reconnect_dispatcher_isolates_failing_callback() -> None:
     """a callback that raises is logged but does not abort the others or the reconnect path."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -1935,9 +2413,8 @@ async def test_reconnect_dispatcher_isolates_failing_callback(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     client = await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -1957,16 +2434,57 @@ async def test_reconnect_dispatcher_isolates_failing_callback(
     after.assert_awaited_once_with()
 
 
-def test_is_authorization_violation_detects_the_server_rejection() -> None:
+async def _connect_capturing_error_callback() -> tuple[NatsClient, Callable[[Exception], Awaitable[None]]]:
+    """a client connected over a stand-in connection, and the ``error_cb`` nats-py would call on it.
+
+    The error callback is the front door both the wedged-auth health signal and the rate-limited
+    error log sit behind: nats-py hands it every error the connection raises. Each call builds a new
+    client, so each test starts with its own rate-limit window and its own violation count.
+
+    :return: the connected client and the ``error_cb`` that reached its connect options
+    :rtype: tuple[NatsClient, Callable[[Exception], Awaitable[None]]]
+    """
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    client = await NatsClient.connect(
+        establish_connection=_fake_establish,
+        nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
+        client_name="agent-x",
+        verify_jetstream=False,
+    )
+    error_cb: Callable[[Exception], Awaitable[None]] = captured["options"]["error_cb"]
+    return client, error_cb
+
+
+async def _trips_health(*errors: Exception) -> bool:
+    """whether a fresh client reports unhealthy after its connection raises each of ``errors`` in turn.
+
+    :param errors: the errors nats-py hands ``error_cb``, in order
+    :ptype errors: Exception
+    :return: ``True`` when the client is no longer healthy afterwards
+    :rtype: bool
+    """
+    client, error_cb = await _connect_capturing_error_callback()
+    for error in errors:
+        await error_cb(error)
+    return not client.is_healthy
+
+
+@pytest.mark.asyncio
+async def test_a_server_authorization_rejection_trips_the_wedged_auth_signal() -> None:
     """the wedged-auth signal is matched on the server's -ERR text, robust across nats-py versions."""
-    from threetears.nats.client import _is_authorization_violation
-
-    assert _is_authorization_violation(Exception("nats: 'Authorization Violation'"))
-    assert _is_authorization_violation(Exception("AUTHORIZATION VIOLATION"))
-    assert not _is_authorization_violation(OSError("connection reset by peer"))
+    assert await _trips_health(*[Exception("nats: 'Authorization Violation'")] * 3)
+    assert await _trips_health(*[Exception("AUTHORIZATION VIOLATION")] * 3)
+    assert not await _trips_health(*[OSError("connection reset by peer")] * 3)
 
 
-def test_is_authorization_violation_detects_typed_authorization_error() -> None:
+@pytest.mark.asyncio
+async def test_a_typed_authorization_error_trips_the_wedged_auth_signal() -> None:
     """nats-py's typed AuthorizationError (str: 'nats: authorization failed') must also trip the signal.
 
     Its message shares no substring with 'authorization violation', so the reconnect-loop -ERR match
@@ -1974,19 +2492,14 @@ def test_is_authorization_violation_detects_typed_authorization_error() -> None:
     future nats-py routes the typed error to error_cb instead of the generic -ERR string."""
     from nats.errors import AuthorizationError
 
-    from threetears.nats.client import _is_authorization_violation
-
-    assert _is_authorization_violation(AuthorizationError())
-    assert _is_authorization_violation(Exception("nats: authorization failed"))
+    assert await _trips_health(*[AuthorizationError()] * 3)
+    assert await _trips_health(*[Exception("nats: authorization failed")] * 3)
 
 
 @pytest.mark.asyncio
-async def test_is_healthy_trips_on_persistent_auth_violation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_is_healthy_trips_on_persistent_auth_violation() -> None:
     """a persistent Authorization-Violation reconnect loop flips is_healthy False (so a /healthz keyed
     on it trips and k8s restarts the pod); a successful reconnect clears it; a network drop never does."""
-    import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
 
@@ -1994,9 +2507,8 @@ async def test_is_healthy_trips_on_persistent_auth_violation(
         captured["options"] = options
         return MagicMock()
 
-    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
-
     client = await NatsClient.connect(
+        establish_connection=_fake_establish,
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
@@ -2175,13 +2687,12 @@ async def test_subscribe_permissions_violation_names_subject_operation_and_conse
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """a refused SUBSCRIBE must log the subject, that it was a subscribe, and that it now receives nothing."""
-    from threetears.nats.client import _last_error_log, _on_error
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
     exc = _permission_error('Permissions Violation for Subscription to "3tears.forward.deadbeef.*"')
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await _on_error(exc)
+        await on_error(exc)
 
     records = _client_records(caplog, logging.ERROR)
     assert len(records) == 1
@@ -2198,13 +2709,12 @@ async def test_publish_permissions_violation_names_subject_operation_and_consequ
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """a refused PUBLISH must log the subject, that it was a publish, and that the message was dropped."""
-    from threetears.nats.client import _last_error_log, _on_error
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
     exc = _permission_error('Permissions Violation for Publish to "3tears.tools.result.pod-7.abc"')
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await _on_error(exc)
+        await on_error(exc)
 
     records = _client_records(caplog, logging.ERROR)
     assert len(records) == 1
@@ -2225,16 +2735,15 @@ async def test_permissions_violations_on_distinct_subjects_are_never_collapsed(
     is not that: each distinct subject is a DIFFERENT capability going dead, and suppressing the
     second behind the first hides the very thing the log is for.
     """
-    from threetears.nats.client import _last_error_log, _on_error
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
     first = _permission_error('Permissions Violation for Subscription to "3tears.forward.aaaa.*"')
     second = _permission_error('Permissions Violation for Subscription to "3tears.pipe.bbbb.pod-1.*.up"')
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await _on_error(first)
-        await _on_error(second)
-        await _on_error(first)  # the SAME subject repeating is still suppressed
+        await on_error(first)
+        await on_error(second)
+        await on_error(first)  # the SAME subject repeating is still suppressed
 
     lines = [rec.getMessage() for rec in _client_records(caplog, logging.ERROR)]
     assert len(lines) == 2, f"expected one line per distinct subject, got {lines}"
@@ -2252,13 +2761,12 @@ async def test_permissions_violation_of_an_unrecognised_shape_still_says_permiss
     rewords it must degrade to "something was refused, here is the raw error", never back to an
     anonymous "NATS error".
     """
-    from threetears.nats.client import _last_error_log, _on_error
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
     exc = _permission_error("Permissions Violation on this connection")
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await _on_error(exc)
+        await on_error(exc)
 
     records = _client_records(caplog, logging.ERROR)
     assert len(records) == 1
@@ -2271,23 +2779,149 @@ async def test_permissions_violation_of_an_unrecognised_shape_still_says_permiss
 async def test_non_permissions_errors_keep_their_existing_shape_and_rate_limiting(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """every other error path is untouched: same "NATS error: %s" line, same collapse of duplicates.
+    """every other non-transient error keeps its shape: same "NATS error: %s" line, same collapse of duplicates.
 
     Reconnect and degrade paths depend on this callback logging and CONTINUING; nothing here may
-    start raising or change what an ordinary transport error looks like.
+    start raising or change what an ordinary server error looks like. The error used is one the
+    server CLOSES the connection for (nats-py's ``_process_err``), so it is a real failure, not a
+    connection loss the client is already recovering from.
     """
-    from threetears.nats.client import _last_error_log, _on_error
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
 
     with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
-        await _on_error(OSError("connection reset by peer"))
-        await _on_error(OSError("connection reset by peer"))
+        await on_error(_server_error("maximum payload violation"))
+        await on_error(_server_error("maximum payload violation"))
 
     errors = [rec.getMessage() for rec in _client_records(caplog, logging.ERROR)]
     debugs = [rec.getMessage() for rec in _client_records(caplog, logging.DEBUG)]
-    assert errors == ["NATS error: connection reset by peer"]
+    assert errors == ["NATS error: nats: maximum payload violation"]
     assert any("rate-limited duplicate" in line for line in debugs)
+
+
+def _server_error(text: str) -> Exception:
+    """the exception nats-py hands ``error_cb`` for a server ``-ERR`` it closes the connection over.
+
+    :param text: the server's error text, without the ``nats: `` prefix nats-py adds
+    :ptype text: str
+    :return: the error as nats-py raises it
+    :rtype: Exception
+    """
+    from nats.errors import Error as NatsError
+
+    return NatsError(f"nats: {text}")
+
+
+# ---------------------------------------------------------------------------
+# connection loss the client is reconnecting from
+# ---------------------------------------------------------------------------
+#
+# Every NatsClient connection reconnects forever (RUNTIME_MAX_RECONNECT_ATTEMPTS = -1), so a
+# broker restart -- the read loop's "unexpected EOF", then each refused attempt's "Connect call
+# failed" until the broker is back -- is an outage the client is already recovering from. nats-py
+# reports each one through error_cb BEFORE it starts reconnecting, and logging them at ERROR made
+# every service in a stack page on a routine broker restart that healed itself seconds later.
+
+
+@pytest.mark.asyncio
+async def test_a_broker_closing_the_connection_is_a_warning_naming_the_reconnect(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the read loop's EOF when the broker restarts is logged at WARNING, with its detail, never ERROR."""
+    from nats.errors import UnexpectedEOF
+
+    _client, on_error = await _connect_capturing_error_callback()
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(UnexpectedEOF())
+
+    assert _client_records(caplog, logging.ERROR) == []
+    warnings = _client_records(caplog, logging.WARNING)
+    assert len(warnings) == 1
+    line = warnings[0].getMessage()
+    assert "unexpected eof" in line.lower(), "the error's own detail must survive"
+    assert "reconnect" in line.lower(), "the line must say the client is reconnecting"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_reconnect_attempt_is_a_warning_naming_the_refusal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """each attempt the broker is not yet back for is part of the same recovery, so WARNING too."""
+
+    _client, on_error = await _connect_capturing_error_callback()
+    refused = ConnectionRefusedError(61, "Connect call failed ('127.0.0.1', 4222)")
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(refused)
+
+    assert _client_records(caplog, logging.ERROR) == []
+    line = _client_records(caplog, logging.WARNING)[0].getMessage()
+    assert "Connect call failed ('127.0.0.1', 4222)" in line
+    assert "ConnectionRefusedError" in line, "the error's type must be named; some carry no text at all"
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_attempt_timing_out_is_a_warning_naming_the_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a connect attempt timing out carries no text, so the line must name its type to say anything."""
+
+    _client, on_error = await _connect_capturing_error_callback()
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(TimeoutError())
+
+    assert _client_records(caplog, logging.ERROR) == []
+    assert "TimeoutError" in _client_records(caplog, logging.WARNING)[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_connection_loss_is_collapsed_like_any_other_repeat(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a broker down for a minute refuses an attempt every few seconds: one line per window, not one per try."""
+
+    _client, on_error = await _connect_capturing_error_callback()
+    refused = ConnectionRefusedError(61, "Connect call failed ('127.0.0.1', 4222)")
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(refused)
+        await on_error(refused)
+
+    assert len(_client_records(caplog, logging.WARNING)) == 1
+    assert any("rate-limited duplicate" in rec.getMessage() for rec in _client_records(caplog, logging.DEBUG))
+
+
+@pytest.mark.asyncio
+async def test_an_authorization_violation_while_reconnecting_stays_an_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a refused credential is not an outage that heals: reconnecting cannot fix it, so it stays ERROR."""
+
+    _client, on_error = await _connect_capturing_error_callback()
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(_server_error("'authorization violation'"))
+
+    assert _client_records(caplog, logging.WARNING) == []
+    assert _client_records(caplog, logging.ERROR)[0].getMessage() == "NATS error: nats: 'authorization violation'"
+
+
+@pytest.mark.asyncio
+async def test_a_flush_timeout_is_not_mistaken_for_a_connection_loss(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """nats-py's own timeouts are TimeoutErrors too, but they report a stalled connection, not a lost one."""
+    from nats.errors import FlushTimeoutError
+
+    _client, on_error = await _connect_capturing_error_callback()
+
+    with caplog.at_level(logging.DEBUG, logger=_CLIENT_LOGGER):
+        await on_error(FlushTimeoutError())
+
+    assert _client_records(caplog, logging.WARNING) == []
+    assert len(_client_records(caplog, logging.ERROR)) == 1
 
 
 def _extra_data(record: logging.LogRecord) -> dict[str, Any] | None:
@@ -2312,13 +2946,12 @@ async def test_permissions_violation_carries_structured_fields(
     dead subject that only exists inside a sentence cannot be alerted on, grouped by, or extracted by
     a log pipeline, which is most of what naming the subject was for.
     """
-    from threetears.nats.client import _last_error_log, _on_error
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
     exc = _permission_error('Permissions Violation for Subscription to "3tears.forward.deadbeef.*"')
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await _on_error(exc)
+        await on_error(exc)
 
     records = _client_records(caplog, logging.ERROR)
     assert len(records) == 1
@@ -2334,13 +2967,12 @@ async def test_publish_permissions_violation_structured_operation_is_publish(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """the structured ``operation`` must discriminate publish from subscribe, not merely repeat prose."""
-    from threetears.nats.client import _last_error_log, _on_error
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
     exc = _permission_error('Permissions Violation for Publish to "3tears.tools.result.pod-7.abc"')
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await _on_error(exc)
+        await on_error(exc)
 
     data = _extra_data(_client_records(caplog, logging.ERROR)[0])
     assert data is not None
@@ -2360,20 +2992,19 @@ async def test_a_lowercased_payload_declares_the_subject_case_untrustworthy(
     pasting it into a grant list gets a subject that matches. the field must not present a possibly
     mangled subject as verbatim.
     """
-    from threetears.nats.client import _SUBJECT_CASE_LOWERCASED, _last_error_log, _on_error
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
     # _permission_error lowercases, exactly as nats-py's parser does.
     exc = _permission_error('Permissions Violation for Subscription to "$KV.3tears-Display.>"')
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await _on_error(exc)
+        await on_error(exc)
 
     record = _client_records(caplog, logging.ERROR)[0]
     data = _extra_data(record)
     assert data is not None
     assert data["subject"] == "$kv.3tears-display.>", "the subject is reported as received, not invented"
-    assert data["subject_case"] == _SUBJECT_CASE_LOWERCASED
+    assert data["subject_case"] == "lowercased-by-nats-py-parser"
     # a human reading the line, not the JSON, must also be warned before pasting it into a grant list.
     assert "lowercas" in record.getMessage().lower()
 
@@ -2387,21 +3018,20 @@ async def test_a_payload_carrying_uppercase_declares_the_subject_verbatim(
     the flag is derived rather than hardcoded so a nats-py that stops lowercasing (or a server error
     surfaced by some other path) is reported as trustworthy instead of permanently caveated.
     """
-    from threetears.nats.client import _SUBJECT_CASE_VERBATIM, _last_error_log, _on_error
 
     from nats.errors import Error as NatsError
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
     exc = NatsError('nats: Permissions Violation for Subscription to "$KV.3tears-Display.>"')
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await _on_error(exc)
+        await on_error(exc)
 
     record = _client_records(caplog, logging.ERROR)[0]
     data = _extra_data(record)
     assert data is not None
     assert data["subject"] == "$KV.3tears-Display.>"
-    assert data["subject_case"] == _SUBJECT_CASE_VERBATIM
+    assert data["subject_case"] == "verbatim"
     assert "lowercas" not in record.getMessage().lower(), "a verbatim subject must carry no false caveat"
 
 
@@ -2410,17 +3040,16 @@ async def test_an_undecomposable_violation_does_not_claim_a_subject_it_never_rec
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """no subject recovered means no subject CASE either; the fields must not fabricate one."""
-    from threetears.nats.client import _SUBJECT_CASE_NOT_REPORTED, _last_error_log, _on_error
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await _on_error(_permission_error("Permissions Violation on this connection"))
+        await on_error(_permission_error("Permissions Violation on this connection"))
 
     data = _extra_data(_client_records(caplog, logging.ERROR)[0])
     assert data is not None
     assert data["subject"] is None, "an unrecovered subject must be null, never a placeholder masquerading as one"
-    assert data["subject_case"] == _SUBJECT_CASE_NOT_REPORTED
+    assert data["subject_case"] == "not-reported"
     assert data["operation"] is None
     assert "permissions violation on this connection" in data["error"].lower()
 
@@ -2430,26 +3059,24 @@ async def test_non_permissions_errors_gain_no_structured_payload(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """every other error path is untouched -- same line, and no new fields on it."""
-    from threetears.nats.client import _last_error_log, _on_error
 
-    _last_error_log.clear()
+    _client, on_error = await _connect_capturing_error_callback()
 
     with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
-        await _on_error(OSError("connection reset by peer"))
+        await on_error(_server_error("maximum payload violation"))
 
     record = _client_records(caplog, logging.ERROR)[0]
-    assert record.getMessage() == "NATS error: connection reset by peer"
+    assert record.getMessage() == "NATS error: nats: maximum payload violation"
     assert _extra_data(record) is None
 
 
-def test_permissions_violation_is_not_an_authorization_violation() -> None:
+@pytest.mark.asyncio
+async def test_permissions_violation_is_not_an_authorization_violation() -> None:
     """the wedged-auth health signal must not be tripped by a permissions violation.
 
     They are different facts: an authorization violation is "this connection was rejected"
     (is_healthy trips, k8s restarts the pod); a permissions violation is "this connection is up
     and one subject on it is refused" -- restarting cannot fix it, only a grant can.
     """
-    from threetears.nats.client import _is_authorization_violation
-
     exc = _permission_error('Permissions Violation for Subscription to "3tears.forward.aaaa.*"')
-    assert not _is_authorization_violation(exc)
+    assert not await _trips_health(exc, exc, exc, exc)

@@ -404,7 +404,9 @@ def _decode(raw: bytes, declared_charset: str | None) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-async def _verify_candidate_page(url: str, *, client: httpx.AsyncClient | None = None) -> tuple[bool, str, str]:
+async def _verify_candidate_page(
+    url: str, *, client: httpx.AsyncClient | None = None, max_bytes: int = _VERIFY_MAX_BYTES
+) -> tuple[bool, str, str]:
     """Deterministic (no LLM) structural check -- does this page have real extractable structure.
 
     A direct, stateless HTTP fetch -- no nodriver sidecar, no browser -- so
@@ -425,14 +427,16 @@ async def _verify_candidate_page(url: str, *, client: httpx.AsyncClient | None =
     ``docs/search-task-01-conditional-revalidation.md``. It belongs to the
     scrape pipeline and to Extract, never to this discovery-time check.
 
-    The body is read under :data:`_VERIFY_MAX_BYTES` and may therefore be
-    truncated; the returned note distinguishes "no structure in what I read"
-    from "no structure on the page" rather than conflating them.
+    The body is read under *max_bytes* and may therefore be truncated; the
+    returned note distinguishes "no structure in what I read" from "no
+    structure on the page" rather than conflating them.
 
     :param url: the candidate URL to check
     :ptype url: str
     :param client: injectable HTTP client (``ApiDriver``'s own DI shape) -- built fresh if omitted
     :ptype client: httpx.AsyncClient | None
+    :param max_bytes: how much of the body is read before the rest is ignored
+    :ptype max_bytes: int
     :return: (verified, driver_backend guess, human-readable note on what was found)
     :rtype: tuple[bool, str, str]
     """
@@ -449,7 +453,7 @@ async def _verify_candidate_page(url: str, *, client: httpx.AsyncClient | None =
                 async for chunk in response.aiter_bytes():
                     chunks.append(chunk)
                     read += len(chunk)
-                    if read > _VERIFY_MAX_BYTES:
+                    if read > max_bytes:
                         break
         except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- honest-unverified
             # a fetch failure here must degrade to "unverified," never raise into the caller --
@@ -460,8 +464,8 @@ async def _verify_candidate_page(url: str, *, client: httpx.AsyncClient | None =
         if owns_client:
             await client.aclose()
 
-    truncated = read > _VERIFY_MAX_BYTES
-    raw = b"".join(chunks)[:_VERIFY_MAX_BYTES]
+    truncated = read > max_bytes
+    raw = b"".join(chunks)[:max_bytes]
 
     if "json" in content_type:
         # A truncated body is not parseable JSON, so this correctly declines to
@@ -504,7 +508,7 @@ async def _verify_candidate_page(url: str, *, client: httpx.AsyncClient | None =
         return (
             False,
             "nodriver",
-            f"no table, document link, or JSON list in the first {_VERIFY_MAX_BYTES} bytes "
+            f"no table, document link, or JSON list in the first {max_bytes} bytes "
             "of the page, which was longer than the verification cap",
         )
     return False, "nodriver", "no table, document link, or JSON list found on the fetched page"
@@ -517,6 +521,8 @@ async def find_target_page(
     searxng_url: str,
     model_id: str = DEFAULT_PAGE_FINDER_MODEL_ID,
     max_turns: int = _DEFAULT_MAX_TURNS,
+    verify_client: httpx.AsyncClient | None = None,
+    verify_max_bytes: int = _VERIFY_MAX_BYTES,
 ) -> PageFinderResult:
     """Search for, fetch, and self-verify a candidate page for *query*.
 
@@ -537,6 +543,14 @@ async def find_target_page(
     :ptype model_id: str
     :param max_turns: bounded round cap for the search/fetch loop
     :ptype max_turns: int
+    :param verify_client: the HTTP client the structural verification fetch uses. Omitted, a
+        fresh client is built for the one fetch and closed after it; supplied, it is used as
+        given (its transport, timeouts and redirect policy are its owner's) and left open
+    :ptype verify_client: httpx.AsyncClient | None
+    :param verify_max_bytes: how much of the candidate page the verification fetch reads. The
+        page is one an LLM picked out of search results, so its size is not this process's to
+        choose; structure past the cap is not looked for, and the note says when that happened
+    :ptype verify_max_bytes: int
     :return: the finding, verified or not
     :rtype: PageFinderResult
     """
@@ -620,7 +634,9 @@ async def find_target_page(
             search_failure=search_failure,
         )
 
-    verified, structural_backend, verification_note = await _verify_candidate_page(candidate.url)
+    verified, structural_backend, verification_note = await _verify_candidate_page(
+        candidate.url, client=verify_client, max_bytes=verify_max_bytes
+    )
     if verified:
         driver_backend = structural_backend
     elif candidate.driver_backend_guess in _VERIFIABLE_BACKENDS:

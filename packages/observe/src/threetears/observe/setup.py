@@ -19,8 +19,10 @@ from typing import TYPE_CHECKING
 from threetears.observe.logging import get_logger
 
 if TYPE_CHECKING:
-    from opentelemetry.sdk._logs import LoggerProvider
+    from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
+
+    from threetears.observe._otel_internals import OtelLogExport
 
 __all__ = [
     "TelemetryConfig",
@@ -65,7 +67,7 @@ class TelemetryConfig:
 # ---------------------------------------------------------------------------
 
 _tracer_provider: TracerProvider | None = None
-_log_provider: LoggerProvider | None = None
+_log_export: OtelLogExport | None = None
 _log_handler: logging.Handler | None = None
 _shutdown_called: bool = False
 
@@ -78,8 +80,9 @@ _shutdown_called: bool = False
 class _CallSiteEnrichingHandler(logging.Handler):
     """Logging handler that enriches OTel LogRecords with call-site attributes.
 
-    The standard OTel LoggingHandler maps Python's ``pathname``/``funcName``/
-    ``lineno`` to ``code.filepath``/``code.function``/``code.lineno``.
+    The OTel LoggingHandler (opentelemetry-instrumentation-logging's, built with
+    ``log_code_attributes=True``) maps Python's ``pathname``/``funcName``/
+    ``lineno`` to ``code.file.path``/``code.function.name``/``code.line.number``.
     ``ThreeTearsLogger`` sets enriched ``call_site_*`` attributes on the Python
     LogRecord.  This handler patches those onto the LogRecord's standard fields
     *before* the OTel handler processes them, so the downstream collector
@@ -144,6 +147,8 @@ def init_telemetry(config: TelemetryConfig) -> bool:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
 
+    from threetears.observe._otel_internals import allow_tracer_provider_reset
+
     resource = Resource.create(
         {
             "service.name": config.service_name,
@@ -162,15 +167,12 @@ def init_telemetry(config: TelemetryConfig) -> bool:
 
     provider.add_span_processor(BatchSpanProcessor(exporter))
 
-    # Reset the once-only flag so we can (re-)set the provider.
-    # Needed on OTel SDK >=1.39 where set_tracer_provider is guarded by
-    # _TRACER_PROVIDER_SET_ONCE which only allows a single set.
-    try:
-        trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined, unused-ignore]
-    except AttributeError:
-        # The private guard this reaches into was renamed or removed by an SDK upgrade. The
-        # set_tracer_provider below then keeps whatever provider was installed first, so tracing
-        # quietly stops reaching our exporter -- the one failure here that has to be loud.
+    # Reset the once-only flag so we can (re-)set the provider: on OTel >=1.39
+    # set_tracer_provider is guarded so it only takes effect once. See _otel_internals.
+    if not allow_tracer_provider_reset():
+        # The private guard was renamed or removed by an SDK upgrade. The set_tracer_provider
+        # below then keeps whatever provider was installed first, so tracing quietly stops
+        # reaching our exporter -- the one failure here that has to be loud.
         logger.warning(
             "could not reset the OTel set-once guard; set_tracer_provider may be a no-op",
             extra={"extra_data": {"guard": "trace._TRACER_PROVIDER_SET_ONCE._done"}},
@@ -197,32 +199,23 @@ def init_telemetry(config: TelemetryConfig) -> bool:
     return True
 
 
-def _init_log_export(config: TelemetryConfig, resource: object) -> None:
+def _init_log_export(config: TelemetryConfig, resource: Resource) -> None:
     """Initialize OTel log export (Python logging -> OTLP -> Loki).
 
     Attaches a LoggingHandler to the root logger so every log record is exported
     as an OTel log record with trace context (trace_id, span_id) attached.
     The handler is wrapped to enrich OTel records with call-site info.
     """
-    global _log_provider, _log_handler  # noqa: PLW0603
+    global _log_export, _log_handler  # noqa: PLW0603
 
-    from opentelemetry._logs import set_logger_provider
-    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-    from opentelemetry.sdk._logs import LoggerProvider
-    from opentelemetry.sdk._logs import LoggingHandler
-    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    # OpenTelemetry's logs API exists only as private modules; _otel_internals is their one owner.
+    from threetears.observe._otel_internals import start_log_export
 
-    log_provider = LoggerProvider(resource=resource)  # type: ignore[arg-type]
-    loki_otlp_url = f"http://{config.loki_endpoint}/otlp/v1/logs"
-    log_exporter = OTLPLogExporter(endpoint=loki_otlp_url)
-    log_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
-    set_logger_provider(log_provider)
-
-    otel_handler = LoggingHandler(level=logging.DEBUG, logger_provider=log_provider)
-    handler = _CallSiteEnrichingHandler(otel_handler)
+    log_export = start_log_export(resource, f"http://{config.loki_endpoint}/otlp/v1/logs")
+    handler = _CallSiteEnrichingHandler(log_export.handler)
     logging.root.addHandler(handler)
 
-    _log_provider = log_provider
+    _log_export = log_export
     _log_handler = handler
 
     logger.info(
@@ -242,7 +235,7 @@ def shutdown_telemetry() -> None:
 
     Safe to call multiple times -- second and subsequent calls are no-ops.
     """
-    global _shutdown_called, _tracer_provider, _log_provider, _log_handler  # noqa: PLW0603
+    global _shutdown_called, _tracer_provider, _log_export, _log_handler  # noqa: PLW0603
 
     if _shutdown_called:
         return
@@ -254,7 +247,7 @@ def shutdown_telemetry() -> None:
         logging.root.removeHandler(_log_handler)
         _log_handler = None
 
-    if _log_provider is not None:
+    if _log_export is not None:
         # Broad on purpose -- a vendor exporter can raise anything on teardown, and neither
         # failure may stop the shutdown that follows it or prevent ``init_telemetry()``
         # being called again. NOT silent, though: an earlier version swallowed both with
@@ -264,20 +257,22 @@ def shutdown_telemetry() -> None:
         # installed (console, file) is still attached and still receiving. All the silence
         # bought was an unexportable telemetry backend failing invisibly at every shutdown.
         try:
-            _log_provider.force_flush(timeout_millis=2000)
+            _log_export.force_flush(timeout_millis=2000)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not stop the shutdown that follows; logged, not silenced
             logger.warning("telemetry shutdown: log provider flush failed", exc_info=True)
         try:
-            _log_provider.shutdown()
+            _log_export.shutdown()
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not prevent init_telemetry() being callable again; logged, not silenced
             logger.warning("telemetry shutdown: log provider shutdown failed", exc_info=True)
-        _log_provider = None
+        _log_export = None
 
     if _tracer_provider is None:
         return
 
     from opentelemetry import trace
     from opentelemetry.trace import NoOpTracerProvider
+
+    from threetears.observe._otel_internals import allow_tracer_provider_reset
 
     try:
         _tracer_provider.force_flush(timeout_millis=2000)
@@ -298,10 +293,8 @@ def shutdown_telemetry() -> None:
         )
 
     # Reset the global provider so new init_telemetry calls work
-    try:
-        trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined, unused-ignore]
-    except AttributeError:
-        # Same private guard as init_telemetry: without the reset a later init_telemetry cannot
+    if not allow_tracer_provider_reset():
+        # Same guard as init_telemetry: without the reset a later init_telemetry cannot
         # install its provider, so tracing never comes back after this shutdown.
         logger.warning(
             "could not reset the OTel set-once guard; a later init_telemetry may be a no-op",

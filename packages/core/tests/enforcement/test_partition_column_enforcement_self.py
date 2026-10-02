@@ -18,12 +18,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# import the walker by sibling-module path. test_partition_column_enforcement
-# lives in the same enforcement directory; ``from .test_module import X``
-# is the standard pattern (also used by the hub's
-# test_underscore_access_self.py / test_cache_primitive_usage_self.py).
-from packages.core.tests.enforcement.test_partition_column_enforcement import (  # type: ignore[import-not-found]  # noqa: E501
-    _violations_in_file,
+# the walker lives in a support module beside both test modules, under a public name, so this
+# meta-test exercises exactly the function the enforcement test runs.
+from packages.core.tests.enforcement.partition_column_walker import (  # type: ignore[import-not-found]
+    violations_in_file,
 )
 
 __all__: list[str] = []
@@ -56,7 +54,7 @@ class TestPartitionWalkerPositive:
             tmp_path / "src" / "pkg" / "mod.py",
             "SQL = 'SELECT * FROM memories WHERE agent_id = $1'\n",
         )
-        strict, deferred = _violations_in_file(target)
+        strict, deferred = violations_in_file(target)
         assert strict == []
         assert deferred == []
 
@@ -69,7 +67,7 @@ class TestPartitionWalkerPositive:
             tmp_path / "src" / "pkg" / "mod.py",
             "SQL = 'SELECT * FROM unrelated_table WHERE id = $1'\n",
         )
-        strict, deferred = _violations_in_file(target)
+        strict, deferred = violations_in_file(target)
         assert strict == []
         assert deferred == []
 
@@ -82,7 +80,7 @@ class TestPartitionWalkerPositive:
             tmp_path / "src" / "pkg" / "mod.py",
             '"""prose: this module reads FROM memories."""\n',
         )
-        strict, deferred = _violations_in_file(target)
+        strict, deferred = violations_in_file(target)
         assert strict == []
         assert deferred == []
 
@@ -99,7 +97,7 @@ class TestPartitionWalkerNegative:
             tmp_path / "src" / "pkg" / "mod.py",
             "SQL = 'SELECT * FROM memories WHERE user_id = $1'\n",
         )
-        strict, deferred = _violations_in_file(target)
+        strict, deferred = violations_in_file(target)
         assert strict != [] or deferred != []
         all_msgs = strict + deferred
         joined = "\n".join(all_msgs)
@@ -116,7 +114,7 @@ class TestPartitionWalkerNegative:
             tmp_path / "src" / "pkg" / "deep.py",
             ("# leading comment\nSQL = 'SELECT id FROM memories'\n"),
         )
-        strict, deferred = _violations_in_file(target)
+        strict, deferred = violations_in_file(target)
         all_msgs = strict + deferred
         assert len(all_msgs) >= 1
         assert ":2:" in all_msgs[0]
@@ -131,7 +129,7 @@ class TestPartitionWalkerExemption:
             tmp_path / "src" / "pkg" / "mod.py",
             ("SQL = 'SELECT * FROM memories WHERE search_vector @@ websearch_to_tsquery(\\'english\\', $1)'\n"),
         )
-        strict, deferred = _violations_in_file(target)
+        strict, deferred = violations_in_file(target)
         assert strict == []
         assert deferred == []
 
@@ -141,7 +139,7 @@ class TestPartitionWalkerExemption:
             tmp_path / "src" / "pkg" / "migrations" / "v001.py",
             "SQL = 'SELECT * FROM memories WHERE user_id = $1'\n",
         )
-        strict, deferred = _violations_in_file(target)
+        strict, deferred = violations_in_file(target)
         assert strict == []
         assert deferred == []
 
@@ -151,6 +149,6 @@ class TestPartitionWalkerExemption:
             tmp_path / "tests" / "unit" / "test_x.py",
             "SQL = 'SELECT * FROM memories WHERE user_id = $1'\n",
         )
-        strict, deferred = _violations_in_file(target)
+        strict, deferred = violations_in_file(target)
         assert strict == []
         assert deferred == []

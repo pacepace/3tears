@@ -247,7 +247,7 @@ async def test_an_outbound_overflow_is_still_counted_and_still_generic() -> None
         await client.publish_raw(subject=Subjects.tools_call(), payload=b"x")
 
     assert not isinstance(caught.value, PayloadTooLargeError)
-    assert client._health_state["overflow_events"] == 1  # noqa: SLF001
+    assert client.overflow_events == 1
 
 
 # ---------------------------------------------------------------------------

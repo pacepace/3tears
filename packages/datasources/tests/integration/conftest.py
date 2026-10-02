@@ -15,7 +15,7 @@ import pytest
 
 from threetears.datasources.config import RedshiftConnectionConfig
 
-from ..unit._helpers.redshift_live_gate import central_reporting, gated
+from ..unit.helpers.redshift_live_gate import central_reporting, gated
 
 
 @pytest.fixture(scope="session")

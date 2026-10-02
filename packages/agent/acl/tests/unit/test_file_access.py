@@ -28,7 +28,7 @@ from threetears.agent.acl import (
 
 from threetears.core.namespaces import build_agent_namespace_name
 
-from ._fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeStore, make_cache
 
 
 def _ns_workspace() -> Namespace:

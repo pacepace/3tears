@@ -2,7 +2,7 @@
 
 A verifier -- ``ToolServer``, ``CallProxy``, ``validate_dpop_proof`` -- calls three things on its
 guard: ``require_covers`` where it is configured, ``bind`` when it starts, ``record_unique`` per
-artifact. Every repo that tested a verifier used to write its own stand-in for that surface, so a
+artifact. A surface that gates on the post-wipe window calls a fourth, ``refusing_until``. Every repo that tested a verifier used to write its own stand-in for that surface, so a
 method added to the guard became an edit to each of them, and the only thing naming a missed one
 was an ``AttributeError`` at startup. This double is declared against the real class, and the
 fake-parity gate compares the two, so a new public method on the guard fails that gate here
@@ -16,7 +16,7 @@ refuse to bind.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 __all__ = ["FakeReplayGuard"]
 
@@ -36,14 +36,20 @@ class FakeReplayGuard:
         real guard raises when its bucket cannot be reached, which its verifier must treat as a
         failed check. ``None`` answers the verdict
     :ptype record_error: BaseException | None
-    :param events: a log shared with the test's other doubles; ``"bind"`` and ``"record"`` are
-        appended as they happen, so a test can assert the order a verifier calls them in
+    :param events: a log shared with the test's other doubles; ``"bind"``, ``"record"`` and
+        ``"refusing_until"`` are appended as they happen, so a test can assert the order a verifier calls them in
     :ptype events: list[str] | None
     :param bucket_name: reported by :attr:`bucket_name`
     :ptype bucket_name: str
     :param verifier_future_tolerance: the tolerance :meth:`require_covers` checks against, as the
         real guard does. The default covers any verifier
     :ptype verifier_future_tolerance: timedelta
+    :param refusing_until: puts the double inside its post-wipe refusal window, ending at this
+        moment: :meth:`refusing_until` answers it while it is still ahead of the clock, and a
+        remembering double (``fresh=None``) refuses an artifact issued before it, as the real
+        guard does after a broker restart. ``None`` (the default) is a guard whose bucket was
+        never lost
+    :ptype refusing_until: datetime | None
     """
 
     def __init__(
@@ -55,6 +61,7 @@ class FakeReplayGuard:
         events: list[str] | None = None,
         bucket_name: str = "fake_nonces",
         verifier_future_tolerance: timedelta = timedelta.max,
+        refusing_until: datetime | None = None,
     ) -> None:
         """hold the chosen behaviour and start with nothing recorded.
 
@@ -70,14 +77,21 @@ class FakeReplayGuard:
         :ptype bucket_name: str
         :param verifier_future_tolerance: the tolerance the guard was sized for
         :ptype verifier_future_tolerance: timedelta
+        :param refusing_until: the end of the post-wipe refusal window to model, or ``None``
+        :ptype refusing_until: datetime | None
         :return: None
         :rtype: None
+        :raises ValueError: when ``refusing_until`` is timezone-naive
         """
+        if refusing_until is not None and refusing_until.tzinfo is None:
+            raise ValueError("FakeReplayGuard refusing_until must be timezone-aware")
         self._fresh = fresh
         self._bind_error = bind_error
         self._record_error = record_error
         self._bucket_name = bucket_name
         self._verifier_future_tolerance = verifier_future_tolerance
+        self._refusing_until = refusing_until
+        self.refusal_window_checks = 0
         self.events: list[str] = events if events is not None else []
         self.binds = 0
         self.seen: list[str] = []
@@ -116,6 +130,17 @@ class FakeReplayGuard:
                 f"{self._verifier_future_tolerance}, but its verifier accepts {future_tolerance}"
             )
 
+    async def refusing_until(self) -> datetime | None:
+        """count the question and answer the chosen window while it is still ahead of the clock.
+
+        :return: the window's end, or ``None`` when none was chosen or it has passed
+        :rtype: datetime | None
+        """
+        self.refusal_window_checks += 1
+        self.events.append("refusing_until")
+        inside = self._refusing_until is not None and datetime.now(UTC) < self._refusing_until
+        return self._refusing_until if inside else None
+
     async def bind(self) -> None:
         """count the bind and log it, then raise the chosen error if there is one.
 
@@ -148,4 +173,5 @@ class FakeReplayGuard:
         self.issued_at.append(issued_at)
         if self._record_error is not None:
             raise self._record_error
-        return first_sighting if self._fresh is None else self._fresh
+        wiped = self._refusing_until is not None and issued_at < self._refusing_until
+        return (first_sighting and not wiped) if self._fresh is None else self._fresh

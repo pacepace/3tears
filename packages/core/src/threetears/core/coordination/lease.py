@@ -44,8 +44,10 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any
 from uuid import uuid7
 
-from threetears.core.serialization import deserialize_from_json, serialize_to_json
+from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
 from threetears.observe import get_logger
+
+from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
 
 if TYPE_CHECKING:
     # From the submodule, not the package: these three are Protocols that
@@ -109,7 +111,8 @@ def _encode_envelope(holder: str, date_expires: datetime, date_acquired: datetim
     """serialize holder and timestamps to JSON bytes for KV storage.
 
     routes through :func:`serialize_to_json` so encoding stays consistent
-    with the rest of the codebase.
+    with the rest of the codebase; each instant is written in
+    :func:`~threetears.core.serialization.json_datetime`'s one stored form.
 
     :param holder: pod identifier owning the lease
     :ptype holder: str
@@ -119,11 +122,12 @@ def _encode_envelope(holder: str, date_expires: datetime, date_acquired: datetim
     :ptype date_acquired: datetime
     :return: JSON bytes suitable for storing as KV value
     :rtype: bytes
+    :raises ValueError: if either datetime is naive
     """
     payload: dict[str, Any] = {
         "holder": holder,
-        "expires_at": date_expires.isoformat(),
-        "acquired_at": date_acquired.isoformat(),
+        "expires_at": json_datetime(date_expires, field="expires_at"),
+        "acquired_at": json_datetime(date_acquired, field="acquired_at"),
     }
     return serialize_to_json(payload)
 
@@ -132,8 +136,9 @@ def _decode_envelope(value: bytes) -> _Envelope:
     """deserialize stored KV value bytes back to envelope dataclass.
 
     routes through :func:`deserialize_from_json`; datetimes are stored as
-    isoformat strings so they come back as plain ``str`` and are parsed
-    here into timezone-aware ``datetime`` objects.
+    ISO 8601 strings so they come back as plain ``str`` and are parsed
+    here into timezone-aware ``datetime`` objects. an envelope written before
+    the one stored form (``isoformat()``, no fixed fraction) parses the same.
 
     :param value: bytes payload as returned from KV bucket ``get`` call
     :ptype value: bytes
@@ -512,6 +517,9 @@ class KVLease:
         nats_client: "KvCapable",
         bucket_name: str | None = None,
         pod_id: str | None = None,
+        *,
+        create_if_missing: bool = True,
+        key_scope: str | None = None,
     ) -> None:
         """configure factory; defer bucket creation until first acquire.
 
@@ -534,12 +542,27 @@ class KVLease:
         :ptype bucket_name: str | None
         :param pod_id: explicit holder identifier; None auto-generates one
         :ptype pod_id: str | None
+        :param create_if_missing: ``True`` (the default) DECLARES the bucket, creating it
+            when absent; ``False`` only BINDS a bucket another identity declared, and never
+            issues STREAM.CREATE -- for a process whose grant on the bucket is key-addressed
+            only, where a refused create would cost the full JetStream deadline first
+        :ptype create_if_missing: bool
+        :param key_scope: the owner scope every lease key leads with (``{key_scope}.{key}``), for a
+            bucket SHARED by many owners -- the platform's ``leases``, which every tool pod binds and
+            in which each pod is granted only the keys under its own
+            :func:`~threetears.nats.subject_permissions.kv_key_scope_for`. Replicas of one owner
+            share the scope and so contend for one key. ``None`` keys by the caller's key alone,
+            for a bucket this factory's owner has to itself
+        :ptype key_scope: str | None
         :return: None
         :rtype: None
+        :raises ValueError: when ``key_scope`` is not one literal subject token
         """
+        self._key_scope = validated_key_scope(key_scope, primitive="KVLease")
         self._client = nats_client
         self._bucket_name = bucket_name if bucket_name is not None else self._default_bucket_name()
         self._pod_id = pod_id if pod_id is not None else f"pod-{uuid7().hex}"
+        self._create_if_missing = create_if_missing
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -583,7 +606,7 @@ class KVLease:
         return "leases"
 
     async def _ensure_bucket(self) -> "KvBucketLike":
-        """open existing bucket or create it with history=1 on first call.
+        """open the bucket with history=1 on first call: declare it, or bind only when so configured.
 
         lazy, async-safe: an ``asyncio.Lock`` serializes first-call setup
         so two concurrent acquires do not race to create the same
@@ -603,9 +626,13 @@ class KVLease:
                 self._bucket = await self._client.kv_bucket(
                     name=self._bucket_name,
                     history=1,
-                    create_if_missing=True,
+                    create_if_missing=self._create_if_missing,
                 )
-                log.info("KVLease bound bucket %s", self._bucket_name)
+                log.info(
+                    "KVLease bound bucket %s (create_if_missing=%s)",
+                    self._bucket_name,
+                    self._create_if_missing,
+                )
         return self._bucket
 
     async def acquire(
@@ -626,7 +653,8 @@ class KVLease:
         4. otherwise sleep ``min(1.0, remaining_time)`` and retry.
         5. on deadline elapsed, raise :class:`LeaseTimeout`.
 
-        :param key: KV key under which lease entry lives
+        :param key: the lease's name; the KV key is this, led by the factory's ``key_scope`` when
+            it has one (the handle carries the stored key)
         :ptype key: str
         :param ttl_seconds: seconds past acquisition at which entry goes stale
         :ptype ttl_seconds: int
@@ -639,6 +667,7 @@ class KVLease:
         :raises LeaseTimeout: if deadline elapses before lease becomes free
         """
         bucket = await self._ensure_bucket()
+        key = owner_scoped_key(self._key_scope, key)
         deadline = datetime.now(UTC) + timedelta(seconds=max_wait_seconds)
         handle: LeaseHandle | None = None
         timed_out = False

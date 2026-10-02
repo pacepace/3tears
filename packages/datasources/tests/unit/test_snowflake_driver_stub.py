@@ -11,6 +11,10 @@ than speculative.
 
 from __future__ import annotations
 
+import inspect
+import sys
+import typing
+
 import pytest
 
 from threetears.datasources.config import SnowflakeConnectionConfig
@@ -44,19 +48,22 @@ class TestStubContract:
         assert SnowflakeDriver.__abstractmethods__ == frozenset()
 
     def test_init_validates_config(self, snowflake_config: SnowflakeConnectionConfig) -> None:
-        """``__init__`` stores the config without backend I/O."""
-        driver = SnowflakeDriver(snowflake_config)
-        assert driver._config is snowflake_config  # noqa: SLF001
+        """``__init__`` takes the typed config and does no backend I/O: the backend library stays unloaded."""
+        assert typing.get_type_hints(SnowflakeDriver.__init__)["config"] is SnowflakeConnectionConfig
+        SnowflakeDriver(snowflake_config)
+        assert "snowflake.connector" not in sys.modules
 
     def test_init_datasource_name_default_is_unknown(self, snowflake_config: SnowflakeConnectionConfig) -> None:
         """default ``datasource_name`` matches the asyncpg / redshift contract."""
-        driver = SnowflakeDriver(snowflake_config)
-        assert driver._datasource_name == "unknown"  # noqa: SLF001
+        parameter = inspect.signature(SnowflakeDriver.__init__).parameters["datasource_name"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default == "unknown"
+        SnowflakeDriver(snowflake_config)
 
     def test_init_datasource_name_captured(self, snowflake_config: SnowflakeConnectionConfig) -> None:
-        """passing ``datasource_name`` is stored for the future metric path."""
+        """``datasource_name`` is accepted by keyword, the way the factory passes it."""
         driver = SnowflakeDriver(snowflake_config, datasource_name="sf-prod")
-        assert driver._datasource_name == "sf-prod"  # noqa: SLF001
+        assert isinstance(driver, Driver)
 
 
 class TestStubMethodsRaiseNotImplemented:

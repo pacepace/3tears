@@ -13,10 +13,10 @@ import os
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
-import threetears.models.price_lookup as price_lookup_module
 from threetears.models import (
     OPENROUTER_MODELS_URL,
     VOYAGE_PRICING_URL,
@@ -29,10 +29,7 @@ from threetears.models import (
     match_price,
     register_price_source,
 )
-from threetears.models.price_lookup import (
-    _SourceRegistry,
-    parse_voyage_pricing,
-)
+from threetears.models.price_lookup import parse_voyage_pricing
 
 _VOYAGE_FIXTURE = (Path(__file__).parent / "_voyage_pricing_fixture.html").read_text(encoding="utf-8")
 
@@ -315,61 +312,70 @@ def test_openrouter_source_is_the_catch_all() -> None:
     assert src.covers("some-future-provider")
 
 
-def test_registry_routes_voyage_to_voyage_and_rest_to_openrouter() -> None:
-    reg = _SourceRegistry()
-    assert isinstance(reg.resolve("voyage"), VoyagePriceSource)
-    assert isinstance(reg.resolve("voyageai"), VoyagePriceSource)
-    assert isinstance(reg.resolve("anthropic"), OpenRouterPriceSource)
-    assert isinstance(reg.resolve("openai"), OpenRouterPriceSource)
-    assert isinstance(reg.resolve("anything-else"), OpenRouterPriceSource)
+@pytest.mark.parametrize(
+    ("provider", "fetched"),
+    [
+        ("voyage", VOYAGE_PRICING_URL),
+        ("voyageai", VOYAGE_PRICING_URL),
+        ("anthropic", OPENROUTER_MODELS_URL),
+        ("openai", OPENROUTER_MODELS_URL),
+        ("anything-else", OPENROUTER_MODELS_URL),
+    ],
+)
+async def test_lookup_routes_voyage_to_voyage_and_rest_to_openrouter(provider: str, fetched: str) -> None:
+    # each source names itself by the page it fetches
+    client = _FakeClient({"data": _CATALOGUE}, text=_VOYAGE_FIXTURE)
+    await lookup_price(client, provider=provider, api_name="some-model")
+    assert client.requested == fetched
 
 
-def test_registry_keeps_openrouter_catch_all_last() -> None:
-    reg = _SourceRegistry()
-    assert isinstance(reg.sources[-1], OpenRouterPriceSource)
+def _source_for_a_provider_of_its_own() -> tuple[str, PriceLookup, Any]:
+    """a stub source covering one provider no other test or source names, and the price it answers.
 
+    ``register_price_source`` adds to the process's one registry and nothing takes a source back
+    out, so the provider is unique to this call: a registration can never answer another test's
+    lookup.
 
-def test_register_inserts_before_the_catch_all() -> None:
-    reg = _SourceRegistry()
-
-    class _AcmeSource:
-        def covers(self, provider: str) -> bool:
-            return provider == "acme"
-
-        async def lookup(self, client: Any, *, provider: str, api_name: str) -> PriceLookup:
-            return PriceLookup(provider, api_name, None, None, None, None, source="acme")
-
-    acme = _AcmeSource()
-    reg.register(acme)
-    # inserted BEFORE the catch-all, which remains last…
-    assert reg.sources[-1].__class__ is OpenRouterPriceSource
-    assert acme in reg.sources[:-1]
-    # …and it now wins for its provider.
-    assert reg.resolve("acme") is acme
-
-
-async def test_module_register_price_source_routes_through_lookup_price() -> None:
-    # register a stub source on the MODULE-LEVEL registry, then prove lookup_price dispatches to it.
-    sentinel = PriceLookup("acme", "widget-1", "acme/widget-1", Decimal("1.5"), None, None, source="acme")
+    :return: the provider, the sentinel price, and the source
+    :rtype: tuple[str, PriceLookup, Any]
+    """
+    provider = f"acme-{uuid4().hex}"
+    sentinel = PriceLookup(provider, "widget-1", f"{provider}/widget-1", Decimal("1.5"), None, None, source="acme")
 
     class _AcmeSource:
-        def covers(self, provider: str) -> bool:
-            return provider == "acme"
+        def covers(self, candidate: str) -> bool:
+            return candidate == provider
 
         async def lookup(self, client: Any, *, provider: str, api_name: str) -> PriceLookup:
             return sentinel
 
-    original = list(price_lookup_module._REGISTRY.sources)  # noqa: SLF001 -- save/restore module state for test isolation
-    try:
-        register_price_source(_AcmeSource())
-        result = await lookup_price(_FakeClient(text=""), provider="acme", api_name="widget-1")
-        assert result is sentinel
-        # a non-acme provider still falls through to the OpenRouter catch-all.
-        catalogue_client = _FakeClient({"data": _CATALOGUE})
-        fallthrough = await lookup_price(catalogue_client, provider="openai", api_name="gpt-4o")
-        assert fallthrough.matched_id == "openai/gpt-4o"
-    finally:
-        price_lookup_module._REGISTRY.sources = original  # noqa: SLF001 -- restore module state
+    return provider, sentinel, _AcmeSource()
+
+
+async def test_a_registered_source_wins_for_its_provider_and_the_catch_all_stays_last() -> None:
+    provider, sentinel, source = _source_for_a_provider_of_its_own()
+    register_price_source(source)
+
+    # inserted BEFORE the catch-all: it answers for its provider...
+    assert await lookup_price(_FakeClient(text=""), provider=provider, api_name="widget-1") is sentinel
+    # ...while the catch-all stays last and still answers for everything nothing else covers.
+    unclaimed = _FakeClient({"data": _CATALOGUE})
+    fallthrough = await lookup_price(unclaimed, provider="some-future-provider", api_name="gpt-4o")
+    assert unclaimed.requested == OPENROUTER_MODELS_URL
+    assert fallthrough.source_url == OPENROUTER_MODELS_URL
+
+
+async def test_module_register_price_source_routes_through_lookup_price() -> None:
+    # register a stub source on the module-level registry, then prove lookup_price dispatches to it.
+    provider, sentinel, source = _source_for_a_provider_of_its_own()
+    register_price_source(source)
+
+    result = await lookup_price(_FakeClient(text=""), provider=provider, api_name="widget-1")
+    assert result is sentinel
+    # a provider the stub does not cover still falls through to the OpenRouter catch-all.
+    catalogue_client = _FakeClient({"data": _CATALOGUE})
+    fallthrough = await lookup_price(catalogue_client, provider="openai", api_name="gpt-4o")
+    assert fallthrough.matched_id == "openai/gpt-4o"
 
 
 async def test_lookup_price_routes_voyage_to_the_scraper() -> None:

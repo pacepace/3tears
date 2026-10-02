@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from types import ModuleType
+from unittest.mock import patch
+
 import pytest
 
 from threetears.observe.metrics import (
-    _check_prometheus,
-    _sanitize_metric_name,
     counter,
     gauge,
     histogram,
@@ -14,49 +20,94 @@ from threetears.observe.metrics import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _reset_prometheus_check():
-    """Reset the prometheus_client availability cache between tests."""
-    import threetears.observe.metrics as mod
+@contextmanager
+def _metrics_without_prometheus(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
+    """``threetears.observe.metrics`` imported afresh into a process where prometheus_client is absent.
 
-    original = mod._prometheus_available
-    yield
-    mod._prometheus_available = original
+    The availability check runs once per process and remembers its answer, so the module the
+    rest of this suite shares has already seen prometheus_client installed. A fresh import with
+    the distribution unimportable is the state an install without it is in. ``patch.dict``
+    restores ``sys.modules`` on exit and ``monkeypatch`` the package attribute the import rebinds,
+    so the rest of the process never sees this copy; the copy itself stays usable after the block.
+
+    :param monkeypatch: pytest's patcher
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the freshly imported module
+    :rtype: Iterator[ModuleType]
+    """
+    import threetears.observe as observe_pkg
+
+    monkeypatch.setattr(observe_pkg, "metrics", importlib.import_module("threetears.observe.metrics"))
+    with patch.dict(sys.modules, {"prometheus_client": None}):
+        sys.modules.pop("threetears.observe.metrics", None)
+        yield importlib.import_module("threetears.observe.metrics")
+
+
+def _unique(stem: str) -> str:
+    """a metric name no other test registers, so each assertion reads only its own samples."""
+    return f"{stem}.{uuid.uuid4().hex[:8]}"
 
 
 class TestPrometheusCheck:
-    """prometheus_client availability detection."""
+    """prometheus_client availability detection, observed through what an accessor records."""
 
     def test_prometheus_available_when_installed(self):
-        import threetears.observe.metrics as mod
+        from prometheus_client import REGISTRY
 
-        mod._prometheus_available = None
-        result = _check_prometheus()
-        # prometheus-client is a dev dependency so should be available
-        assert result is True
+        # prometheus-client is a dev dependency, so an accessor records into the registry
+        name = _unique("test.check.available")
+        counter(name).inc()
 
-    def test_prometheus_cached_after_first_check(self):
-        import threetears.observe.metrics as mod
+        assert REGISTRY.get_sample_value(f"{name.replace('.', '_')}_total") == 1.0
 
-        mod._prometheus_available = None
-        _check_prometheus()
-        assert mod._prometheus_available is not None
-        cached = mod._prometheus_available
-        _check_prometheus()
-        assert mod._prometheus_available is cached
+    def test_prometheus_cached_after_first_check(self, monkeypatch: pytest.MonkeyPatch):
+        """the first check decides for the process: prometheus_client arriving later does not change it."""
+        from prometheus_client import REGISTRY
+
+        with _metrics_without_prometheus(monkeypatch) as metrics:
+            metrics.counter(_unique("test.check.before")).inc()  # the check runs here, absent
+
+        name = _unique("test.check.after")
+        metrics.counter(name).inc()  # prometheus_client importable again
+
+        assert REGISTRY.get_sample_value(f"{name.replace('.', '_')}_total") is None
+
+
+def _registered_as(name: str) -> str:
+    """the prometheus family name a counter registered under *name* records into.
+
+    :param name: the raw name given to :func:`counter`
+    :ptype name: str
+    :return: the family name whose ``_total`` sample is 1.0 after one increment
+    :rtype: str
+    """
+    from prometheus_client import REGISTRY
+
+    counter(name).inc()
+    families = [
+        family.name
+        for family in REGISTRY.collect()
+        if any(sample.name == f"{family.name}_total" and sample.value == 1.0 for sample in family.samples)
+        and family.name.endswith(name.rsplit(".", 1)[-1].translate(str.maketrans("<>", "__")))
+    ]
+    assert len(families) == 1, f"expected one family for {name!r}, found {families}"
+    return families[0]
 
 
 class TestSanitizeMetricName:
-    """metric name sanitization."""
+    """metric name sanitization, observed as the name the registry records under."""
 
     def test_dots_replaced(self):
-        assert _sanitize_metric_name("my.module.func") == "my_module_func"
+        suffix = uuid.uuid4().hex[:8]
+        assert _registered_as(f"my.module.func{suffix}") == f"my_module_func{suffix}"
 
     def test_angle_brackets_replaced(self):
-        assert _sanitize_metric_name("my.module.<locals>.func") == "my_module__locals__func"
+        suffix = uuid.uuid4().hex[:8]
+        assert _registered_as(f"my.module.<locals>.func{suffix}") == f"my_module__locals__func{suffix}"
 
     def test_already_clean_name_unchanged(self):
-        assert _sanitize_metric_name("already_clean") == "already_clean"
+        name = f"already_clean_{uuid.uuid4().hex[:8]}"
+        assert _registered_as(name) == name
 
 
 class TestAccessors:
@@ -182,22 +233,19 @@ class TestAccessors:
         with pytest.raises(ValueError, match="Duplicated timeseries"):
             histogram("test.accessor.shared_name_conflict")
 
-    def test_accessor_passthrough_without_prometheus(self):
-        import threetears.observe.metrics as mod
+    def test_accessor_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch):
+        with _metrics_without_prometheus(monkeypatch) as metrics:
+            c = metrics.counter("test.accessor.passthrough")
+            h = metrics.histogram("test.accessor.passthrough.histogram")
+            g = metrics.gauge("test.accessor.passthrough.gauge")
 
-        mod._prometheus_available = False
-
-        c = counter("test.accessor.passthrough")
-        h = histogram("test.accessor.passthrough.histogram")
-        g = gauge("test.accessor.passthrough.gauge")
-
-        # every method is safe to call and does nothing
-        c.inc()
-        c.labels(status="x").inc()
-        h.observe(1.0)
-        g.set(1.0)
-        g.inc()
-        g.dec()
+            # every method is safe to call and does nothing
+            c.inc()
+            c.labels(status="x").inc()
+            h.observe(1.0)
+            g.set(1.0)
+            g.inc()
+            g.dec()
 
 
 class TestMeteredDecorator:
@@ -254,27 +302,23 @@ class TestMeteredDecorator:
         with pytest.raises(ValueError, match="boom"):
             await explode()
 
-    def test_metered_passthrough_without_prometheus(self):
-        import threetears.observe.metrics as mod
+    def test_metered_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch):
+        with _metrics_without_prometheus(monkeypatch) as metrics:
 
-        mod._prometheus_available = False
+            @metrics.metered(name="test.passthrough")
+            def add(a, b):
+                return a + b
 
-        @metered(name="test.passthrough")
-        def add(a, b):
-            return a + b
+            assert add(1, 2) == 3
 
-        assert add(1, 2) == 3
+    async def test_metered_async_passthrough_without_prometheus(self, monkeypatch: pytest.MonkeyPatch):
+        with _metrics_without_prometheus(monkeypatch) as metrics:
 
-    async def test_metered_async_passthrough_without_prometheus(self):
-        import threetears.observe.metrics as mod
+            @metrics.metered(name="test.async.passthrough")
+            async def add(a, b):
+                return a + b
 
-        mod._prometheus_available = False
-
-        @metered(name="test.async.passthrough")
-        async def add(a, b):
-            return a + b
-
-        assert await add(1, 2) == 3
+            assert await add(1, 2) == 3
 
 
 class TestMeteredRecording:

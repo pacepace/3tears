@@ -1418,7 +1418,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
         acl_cache = _build_sql_backed_acl_cache(pool)
         owner_schema = _schema_name(agent_a)
         # WS-ACL-06: expose the workspace namespace -> owner schema
-        # mapping so grantee-side _write_file_atomic calls that pass
+        # mapping so grantee-side write_file_atomic calls that pass
         # ``namespace=workspace.namespace_name`` on the transaction
         # route to the OWNER's schema via _NamespaceTxWrapper.
         schema_pool = _SchemaBoundPool(

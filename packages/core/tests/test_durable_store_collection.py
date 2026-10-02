@@ -157,10 +157,9 @@ def l1_backend() -> SQLiteBackend:
     b = SQLiteBackend(db_name=f"test_durable_{uuid.uuid4().hex[:8]}")
     b.initialize(_make_metadata())
     yield b
-    from threetears.core._bridge import drain, shutdown
+    from threetears.core.testing.bridge import drain_and_shutdown_bridge
 
-    drain()
-    shutdown()
+    drain_and_shutdown_bridge()
 
 
 #: the principal scope this module's registries wire. every L2 key leads with one.

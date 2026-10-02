@@ -38,17 +38,18 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, EllipticCurvePublicKey
 
 from threetears.core.coordination import ReplayGuard
+from threetears.core.security.freshness import (
+    CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
+    DEFAULT_PROOF_MAX_AGE,
+    issue_time_is_fresh,
+)
 from threetears.core.security.identity_token import jwk_thumbprint
 
-__all__ = ["DEFAULT_IAT_WINDOW", "DpopError", "DpopProof", "validate_dpop_proof"]
+__all__ = ["DpopError", "DpopProof", "validate_dpop_proof"]
 
 _ALG: Final[str] = "ES256"
 _TYP: Final[str] = "dpop+jwt"
 _REQUIRED: Final[list[str]] = ["jti", "htm", "htu", "iat"]
-
-#: Clock-skew and freshness tolerance for a proof's ``iat``, matching
-#: :mod:`threetears.core.security.pop`'s default so the two proof formats age alike.
-DEFAULT_IAT_WINDOW: Final[timedelta] = timedelta(seconds=60)
 
 
 class DpopError(Exception):
@@ -113,7 +114,8 @@ async def validate_dpop_proof(
     expected_htm: str,
     expected_htu: str | Sequence[str],
     replay_guard: ReplayGuard,
-    iat_window: timedelta = DEFAULT_IAT_WINDOW,
+    max_age: timedelta = DEFAULT_PROOF_MAX_AGE,
+    future_tolerance: timedelta = CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
 ) -> DpopProof:
     """Validate a DPoP proof presented at a token endpoint.
 
@@ -122,6 +124,19 @@ async def validate_dpop_proof(
     verify under that key; ``htm``/``htu`` must match what the caller expects; ``iat`` must be
     fresh; and ``jti`` must be unused. The ``jti`` check is last and is consuming, so an
     otherwise-invalid proof does not burn a nonce.
+
+    Freshness is two bounds, not one (:mod:`threetears.core.security.freshness`): ``iat`` may be
+    as old as ``max_age`` and only as far ahead of this server's clock as ``future_tolerance``.
+    The future bound defaults to
+    :data:`~threetears.core.security.CLIENT_ISSUE_TIME_FUTURE_TOLERANCE` -- a full minute, where
+    the pod-signed proof in :mod:`threetears.core.security.pop` allows five seconds -- because a
+    DPoP proof is signed by a user's browser or a developer's laptop, whose clock the platform
+    does not keep. The replay guard is sized for the FUTURE bound alone: whoever constructs it
+    passes ``verifier_future_tolerance`` equal to the ``future_tolerance`` used here, and after a
+    broker restart wipes its bucket it refuses proofs for that long plus its drift allowance: 65
+    seconds at the default. A surface can ask the guard's
+    :meth:`~threetears.core.coordination.ReplayGuard.refusing_until` first and answer that window
+    with a retryable reply.
 
     :param proof: the compact DPoP JWS.
     :ptype proof: str
@@ -137,19 +152,23 @@ async def validate_dpop_proof(
         :meth:`~threetears.core.coordination.ReplayGuard.bind` at startup; an unbound guard still
         works, but after a broker wipe it refuses every proof issued before its first use.
     :ptype replay_guard: ReplayGuard
-    :param iat_window: freshness tolerance for ``iat``.
-    :ptype iat_window: timedelta
+    :param max_age: how old the proof's ``iat`` may be -- the time a slow request has to arrive.
+    :ptype max_age: timedelta
+    :param future_tolerance: how far ahead of this server's clock the proof's ``iat`` may be.
+        The proof is signed by the CLIENT, so this is the client's clock lead over the server's.
+    :ptype future_tolerance: timedelta
     :return: the resolved holder-key thumbprint.
     :rtype: DpopProof
     :raises DpopError: on any failure. The caller MUST treat this as deny -- never as a
         fallback to an unverified key.
     :raises ValueError: when ``replay_guard`` was sized for a smaller verifier future tolerance
-        than ``iat_window``. A configuration error, not a proof failure: that pairing would let a
-        proof replayed after a wipe of the guard's bucket through.
+        than ``future_tolerance``, or when either bound is negative. A configuration error, not a
+        proof failure: that pairing would let a proof replayed after a wipe of the guard's bucket
+        through.
     """
-    # the iat check below accepts issue times up to iat_window ahead of now, so the guard's wipe
-    # check must reach that far. checked before the proof, because it is about the wiring.
-    replay_guard.require_covers(iat_window)
+    # the iat check below accepts issue times up to future_tolerance ahead of now, so the guard's
+    # wipe check must reach that far. checked before the proof, because it is about the wiring.
+    replay_guard.require_covers(future_tolerance)
     try:
         header = jwt.get_unverified_header(proof)
     except jwt.PyJWTError as exc:
@@ -166,12 +185,12 @@ async def validate_dpop_proof(
             proof,
             key=holder_key,
             algorithms=[_ALG],  # literal pin -- statically auditable; never widen
-            # `verify_iat` off so this module's `iat_window` below is the SINGLE authority on
+            # `verify_iat` off so this module's window below is the SINGLE authority on
             # freshness. PyJWT's own `iat` check is one-sided (future only) and runs at the
             # leeway passed to decode, which is zero here -- so leaving it on rejected every
-            # proof from even one second ahead while this module documented sixty, and which
-            # of the two fired was invisible from the outside. `require` is unaffected: `iat`
-            # is still a mandatory claim, it is just adjudicated in one place.
+            # proof from even one second ahead while this module documented a tolerance, and
+            # which of the two fired was invisible from the outside. `require` is unaffected:
+            # `iat` is still a mandatory claim, it is just adjudicated in one place.
             options={"require": _REQUIRED, "verify_iat": False},
         )
     except jwt.PyJWTError as exc:
@@ -205,8 +224,10 @@ async def validate_dpop_proof(
     #
     # The future half must stay TOLERANT as well as bounded. `iat` is an integer, so a
     # client whose clock leads the server's by a fraction of a second stamps `now + 1`;
-    # refusing that makes a login succeed or fail on sub-second timing.
-    if abs(now - iat) > iat_window.total_seconds():
+    # refusing that makes a login succeed or fail on sub-second timing. It is its own number,
+    # separate from the past half: the replay guard refuses for that long after a wipe of its
+    # bucket, so it is as wide as an uncontrolled client clock needs and no wider.
+    if not issue_time_is_fresh(iat, now=now, max_age=max_age, future_tolerance=future_tolerance):
         raise DpopError("dpop proof iat is outside the acceptable freshness window.")
 
     jti = payload.get("jti")

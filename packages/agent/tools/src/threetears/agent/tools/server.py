@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, Iterable
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
@@ -52,7 +53,15 @@ from threetears.agent.tools.http_operation import RestAffordance
 from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolutionCache
 from threetears.core.namespaces import build_tool_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
-from threetears.core.security import CachedHubJwksProvider
+from threetears.core.security import (
+    IDENTITY_REFUSED,
+    IDENTITY_REFUSED_MESSAGE,
+    TOOL_POP_LEDGER_UNAVAILABLE,
+    TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE,
+    TOOL_PROXY_ASSERTION_UNVERIFIED,
+    TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
+    CachedHubJwksProvider,
+)
 from threetears.core.security.identity_token import (
     IdentityClaims,
     IdentityKeyNotFoundError,
@@ -63,7 +72,6 @@ from threetears.core.security.identity_token import (
 )
 from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
-    REAUTH_BUFFER_SECONDS,
     SYNC_REPLY_BUDGET_SECONDS,
     IncomingMessage,
     NatsClient,
@@ -72,6 +80,7 @@ from threetears.nats import (
     Subjects,
     TokenCallback,
     inbox_prefix_for,
+    kv_key_scope_for,
     nats_user_jwt_ttl_seconds,
     result_subject_is_owned_by_pod,
     result_subject_prefix_for_pod,
@@ -209,6 +218,13 @@ _ASSERTION_NONCE_TTL_SECONDS = 60
 # how far past the pod's clock a proxy assertion's iat and exp may fall. zero: the registry mints
 # and the pod verifies on NTP-synchronised hosts, and the assertion lives only 30s. the assertion
 # replay guard is sized for exactly this future tolerance, so the one value feeds both.
+#
+# PyJWT applies this one number to iat AND exp, so it is this surface's whole future tolerance.
+# it is stricter than the platform's `ISSUE_TIME_FUTURE_TOLERANCE` (5s), which every other proof
+# verifier accepts; it must never exceed it, and the guard below refuses to be built for less
+# than what is passed here. raising it to the platform value would stop a registry whose clock
+# leads this pod's by a fraction of a second being refused, and lengthen this pod's refusal
+# after a broker restart from 5s to 10s.
 _ASSERTION_LEEWAY_SECONDS = 0
 # how many times a durable result publish is retried before the answer is declared lost. the tool has
 # already run by then, so a transport blip must not cost the work; but the caller has a deadline, so
@@ -217,11 +233,6 @@ _RESULT_DELIVERY_ATTEMPTS = 3
 # pace between those attempts -- long enough for a reconnect to complete, short enough to fit several
 # tries inside any caller's timeout.
 _RESULT_DELIVERY_RETRY_SECONDS = 2.0
-#: how long a credential renewal waits for the replies the pod still owes. the renewal is scheduled
-#: REAUTH_BUFFER_SECONDS before the point the reconnect must start to beat expiry, so that buffer is
-#: exactly the slack a drain may spend; the renewal loop credits the same value to the window a
-#: synchronous call has, so the wait and the safety judgement cannot disagree.
-DRAIN_BEFORE_RENEWAL_SECONDS: Final[float] = float(REAUTH_BUFFER_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -751,10 +762,11 @@ class CallResponse(BaseModel):
     :ptype metadata: dict[str, Any] | None
     :param error: error message if execution failed
     :ptype error: str | None
-    :param error_code: machine-readable code for a refusal the pod names, read by the registry
-        straight into :attr:`threetears.registry.proxy.ProxyCallResponse.error_code`. ``None`` for
-        a success and for every failure the pod does not name -- a tool that raised, a gate that
-        reports only a reason
+    :param error_code: machine-readable code for a refusal the pod names -- one of its own gates,
+        or the tool's :attr:`~threetears.agent.tools.base_tool.ToolResult.error_code` copied through
+        unchanged -- read by the registry straight into
+        :attr:`threetears.registry.proxy.ProxyCallResponse.error_code`. ``None`` for a success and
+        for every failure nobody names -- a tool that raised, a gate that reports only a reason
     :ptype error_code: str | None
     :param context: unified identity + trace envelope echoed from the
         inbound :class:`CallRequest`; ``None`` when the inbound request
@@ -922,6 +934,23 @@ class DiscoveryProbeResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _AssertionGateRefusal:
+    """why the proxy-assertion gate refused a call: what the caller is told, and what stays here.
+
+    :param error_code: the code the caller branches on
+    :ptype error_code: str
+    :param error: the one message that code carries
+    :ptype error: str
+    :param reason: the server-side reason, for the log and the baseline audit, never the reply
+    :ptype reason: str
+    """
+
+    error_code: str
+    error: str
+    reason: str
+
+
 class HardCallTimeout(Exception):
     """the pod's hard per-call execution limit elapsed before the tool returned.
 
@@ -1022,6 +1051,7 @@ class ToolServer:
         engagement_resolver: "EngagementScopeResolver | None" = None,
         max_concurrent_calls: int | None = None,
         max_call_seconds: float | None = None,
+        result_delivery_retry_seconds: float = _RESULT_DELIVERY_RETRY_SECONDS,
     ) -> None:
         """initialize tool server.
 
@@ -1165,6 +1195,10 @@ class ToolServer:
             tool that raises its OWN ``TimeoutError`` within the ceiling is
             unaffected -- that stays an ordinary tool failure. Must be > 0.
         :ptype max_call_seconds: float | None
+        :param result_delivery_retry_seconds: the pause between attempts to publish a durable
+            result after a transient failure -- long enough for a reconnect to complete, short
+            enough to fit every attempt inside a caller's timeout. Must be >= 0.
+        :ptype result_delivery_retry_seconds: float
         :param assertion_replay_anchor: the durable first-existence record for the
             self-provisioned assertion replay guard, so it can tell a first run from a wiped
             bucket. ``None`` for a pod with nowhere to record one, which leaves that guard
@@ -1179,7 +1213,8 @@ class ToolServer:
         :ptype assertion_replay_guard: ReplayGuard | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value, ``max_concurrent_calls`` /
-            ``max_call_seconds`` is set to a non-positive value, an injected
+            ``max_call_seconds`` is set to a non-positive value,
+            ``result_delivery_retry_seconds`` is negative, an injected
             ``assertion_replay_guard`` was sized for a smaller verifier future tolerance than the
             pod's assertion leeway, ``pod_id`` is dotted -- an agent's shape -- but names no
             agent (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`), or ``agent_id``
@@ -1192,6 +1227,9 @@ class ToolServer:
         if max_call_seconds is not None and max_call_seconds <= 0:
             raise ValueError(f"max_call_seconds must be > 0 when set, got {max_call_seconds}")
         self._max_call_seconds = max_call_seconds
+        if result_delivery_retry_seconds < 0:
+            raise ValueError(f"result_delivery_retry_seconds must be >= 0, got {result_delivery_retry_seconds}")
+        self._result_delivery_retry_seconds = result_delivery_retry_seconds
         # A slot each concurrent tool.run holds; None leaves dispatch unbounded.
         # Constructed here (no running loop yet) and bound to the serve() loop on
         # first acquire -- the server runs on a single loop, so one semaphore is
@@ -1449,6 +1487,32 @@ class ToolServer:
         :rtype: str
         """
         return self._pod_id
+
+    @property
+    def assertion_nonce_key_scope(self) -> str | None:
+        """the owner scope every proxy-assertion nonce this pod records leads with.
+
+        ``proxy_assertion_nonces`` is one bucket every pod binds, and a pod is granted only the keys
+        under its own :func:`~threetears.nats.kv_key_scope_for` scope -- so the self-provisioned
+        guard keys by the scope the pod's grant was minted with: the OWNING AGENT's for an
+        in-process server (its composite pod-id names the agent), the ``tool_pods.id``'s for a tool
+        pod. A pod-id that is neither -- not a uuid -- is one no platform grant can be minted for, so
+        its server runs on a bus of its own and keys by the nonce digest alone.
+
+        :return: the scope, or ``None`` for a pod-id no platform principal carries
+        :rtype: str | None
+        """
+        owner = Subjects.agent_inprocess_owner_id(self._pod_id)
+        scope: str | None = None
+        if owner is not None:
+            scope = kv_key_scope_for(Principal.AGENT_POD, agent_id=owner)
+        else:
+            try:
+                scope = kv_key_scope_for(Principal.TOOL_POD, pod_id=self._pod_id)
+            except ValueError:
+                # NOSILENT: a non-uuid pod-id is not a platform tool pod, whose grant needs a uuid scope
+                scope = None
+        return scope
 
     @property
     def tools_count(self) -> int:
@@ -1870,8 +1934,8 @@ class ToolServer:
             # 5s clock-drift allowance alone -- but it is not nothing: for five seconds after any
             # NATS restart this pod refuses every proxied call, and the refusal names replay,
             # which is the one thing that did not happen. The registry's own guard had the same
-            # defect with a 65s reach; both are the twin of the bug the hub's DPoP guard was
-            # given an anchor to fix.
+            # defect with a longer reach (65s then, 10s now); both are the twin of the bug the
+            # hub's DPoP guard was given an anchor to fix.
             #
             # `anchor` stays None for a pod that supplied no registry, because such a pod has
             # nowhere to record first-existence. That is a real remaining window, recorded
@@ -1882,19 +1946,30 @@ class ToolServer:
             # to the pod's bootstrap, which builds it only once NATS is up and never for an
             # in-process pod riding its agent's connection -- so this server takes the ANCHOR
             # rather than the registry, and a caller with no L3 can still supply one.
+            #
+            # BIND-ONLY. A tool server runs in a pod, and a pod holds no stream-management verb:
+            # ``STREAM.CREATE`` carries ``sources`` in its body, a read of any stream on the bus.
+            # The hub declares ``{ns}-proxy_assertion_nonces`` at startup and after every NATS
+            # reconnect; a guard that finds it missing waits for the hub to declare it, and refuses
+            # every assertion until it is back.
+            #
+            # OWNER-SCOPED KEYS. Every pod binds this one bucket and is granted only the keys under
+            # its own scope, so the guard records under ``assertion_nonce_key_scope``: no pod can
+            # read another's nonces, or burn one of its in-flight assertions by recording it first.
             self._assertion_replay_guard = ReplayGuard(
                 self._nc,
                 bucket_name="proxy_assertion_nonces",
                 ttl_seconds=_ASSERTION_NONCE_TTL_SECONDS,
                 verifier_future_tolerance=timedelta(seconds=_ASSERTION_LEEWAY_SECONDS),
                 anchor=self._assertion_replay_anchor,
+                create_if_missing=False,
+                key_scope=self.assertion_nonce_key_scope,
             )
         # BOUND HERE, before the call subject is subscribed, whether this server built the guard
         # or was handed one. After a broker restart the guard refuses every assertion issued
-        # before its bucket's creation time plus its reach, and the bucket is created by whoever
-        # opens it first. Left to the first call, that call creates it and is refused as a replay
-        # it is not. Binding now puts the creation time before anything this pod can answer. The
-        # hub builds its tool pods without injecting a guard, so no owner can do this for them.
+        # before its bucket's creation time plus its reach. Binding now fails the start loudly
+        # when the hub has not declared the bucket, rather than on the first call. The hub builds
+        # its tool pods without injecting a guard, so no owner can do this for them.
         await self._assertion_replay_guard.bind()
 
         # QUEUE-GROUPED, because a pod identity is not a process. The DQ-B7 sweep
@@ -1940,17 +2015,15 @@ class ToolServer:
 
         # credential renewal: ONLY on the self-owned connection the auth-callout minted a user JWT
         # for. an injected (agent-owned) connection is renewed by its owner, so the pod must not
-        # race a second reconnect against it. a static user/password or anonymous connection holds
-        # a credential that never expires, so renewing it would drop its requests in flight and
-        # re-register the manifest every cycle for nothing. the client runs the loop, and stops it
-        # when this pod shuts the client down; it also judges whether the cadence can carry a
-        # synchronous call, crediting the drain the pod holds the connection open for.
+        # race a second renewal against it. a static user/password or anonymous connection holds
+        # a credential that never expires. the client runs the loop, and stops it when this pod
+        # shuts the client down. the longest request is the synchronous reply budget: a renewal
+        # keeps the replaced connection open that long, so a reply owed for a call that arrived
+        # on it still leaves on it -- NATS lets only the receiving connection answer.
         if self._owns_nats_connection and self._auth_token is not None and self._nc is not None:
             self._nc.renew_credential(
                 ttl_seconds=self._current_nats_jwt_ttl_seconds,
-                before_renewal=self.drain_before_reauth,
                 longest_request_seconds=SYNC_REPLY_BUDGET_SECONDS,
-                drain_grace_seconds=DRAIN_BEFORE_RENEWAL_SECONDS,
             )
 
         await self._shutdown_event.wait()
@@ -2589,11 +2662,21 @@ class ToolServer:
         identity, on ANY failure REJECT the call (return a rejection reason). there is no off/warn
         passthrough -- a call the pod cannot authenticate never runs on the unverified envelope.
 
+        Every rejection here is one condition -- the forwarded identity does not verify -- and the
+        caller answers it :data:`~threetears.core.security.IDENTITY_REFUSED` with
+        :data:`~threetears.core.security.IDENTITY_REFUSED_MESSAGE`, as the registry's door does. The
+        reason string this returns, and the structural detail this method logs, are server-side
+        only: a caller learns that it was refused, never which check refused it. The proxy
+        assertion is checked separately, by :meth:`_verify_proxy_assertion`, because it answers a
+        different question -- whether the call came through the registry -- not whose identity it
+        forwards.
+
         :param request: the parsed inbound call request
         :ptype request: CallRequest
         :return: ``(request, reason, principal_is_tool_pod)`` where ``request`` is the re-stamped
             request on verify success (else the original), ``reason`` is ``None`` when the call may
-            proceed or a rejection-reason string when the call MUST be rejected without
+            proceed or the server-side rejection reason (for the log and the audit, never the reply)
+            when the call MUST be rejected without
             dispatching, and ``principal_is_tool_pod`` is whether the VERIFIED principal is a tool
             pod -- ``False`` on every rejection, so nothing downstream can read a mark a failed
             verification never earned
@@ -2672,8 +2755,8 @@ class ToolServer:
         # attribution and breaking the per-user ToolContextManager. verify it against the SAME
         # issuer/JWKS and BIND it to the handshake token (``sub`` + ``customer_id`` MUST match) so a
         # user-assertion minted for agent A (customer X) cannot be replayed under agent B (or
-        # customer Y). on ANY failure the call is rejected fail-closed (mirroring the proxy's
-        # TOOL_USER_IDENTITY_UNVERIFIED). an empty string is treated as ABSENT (the user_id stays
+        # customer Y). on ANY failure the call is rejected fail-closed (the proxy refuses the
+        # same failure IDENTITY_REFUSED). an empty string is treated as ABSENT (the user_id stays
         # the handshake token's) -- a caller that builds the envelope without a user-assertion must
         # never trip a fail-closed deny on the empty value.
         user_assertion = context.user_identity_token
@@ -2719,7 +2802,7 @@ class ToolServer:
         )
         return request.model_copy(update={"context": verified_context}), None, principal.is_tool_pod
 
-    async def _verify_proxy_assertion(self, request: CallRequest) -> str | None:
+    async def _verify_proxy_assertion(self, request: CallRequest) -> _AssertionGateRefusal | None:
         """verify the registry proxy's body-bound assertion (the pod's PRIMARY identity gate).
 
         The proxy signs an assertion binding the verified caller identity + the call body + a
@@ -2730,20 +2813,37 @@ class ToolServer:
         provisioned by serve() or injected) -- a guardless pod fails closed rather than silently
         skipping single-use enforcement, mirroring the registry proxy's required pop replay guard.
 
+        Every rejection of the assertion itself is one condition -- the call could not show it came
+        through the registry for this body and this pod -- and the caller answers it
+        :data:`~threetears.core.security.TOOL_PROXY_ASSERTION_UNVERIFIED` with its one message. A
+        JWKS provider that fails here is that condition too: the assertion could not be verified.
+
+        **A replay ledger that cannot be reached is a different condition.** The assertion verified;
+        recording its nonce failed. The ledger fails closed, so the call is still refused, but as
+        :data:`~threetears.core.security.TOOL_POP_LEDGER_UNAVAILABLE` -- the code the registry
+        answers its own ledger outage with -- because nothing was judged bad and a retry may
+        succeed. Only the ledger's own failure, a :class:`~threetears.nats.errors.NatsClientError`
+        from its KV bucket, is caught; anything else is a defect and is not dressed as an outage.
+        Before this, that exception escaped the dispatch with no reply, and the caller waited out
+        its whole budget to be told ``TOOL_TIMEOUT``.
+
+        The reason each refusal carries, and the detail this method logs, are server-side only.
+
         :param request: the parsed inbound call request
         :ptype request: CallRequest
-        :return: ``None`` when the call may proceed; a rejection-reason string when it MUST be
-            rejected
-        :rtype: str | None
+        :return: ``None`` when the call may proceed; the refusal -- its code, its one message, and
+            the server-side reason for the log and the audit -- when it MUST be rejected
+        :rtype: _AssertionGateRefusal | None
         """
-        reason: str | None = None
+        refusal: _AssertionGateRefusal | None = None
         try:
             assertion = request.proxy_assertion
             if assertion is None:
                 raise IdentityTokenError("inbound call carries no proxy assertion")
             if self._jwks_provider is None:
                 raise IdentityTokenError("no JWKS provider for proxy assertion verification")
-            if self._assertion_replay_guard is None:
+            guard = self._assertion_replay_guard
+            if guard is None:
                 # fail closed: without a replay guard a captured assertion could be replayed verbatim
                 # within its accept window. serve() always provisions one; a guardless pod must not
                 # silently drop single-use enforcement.
@@ -2755,23 +2855,71 @@ class ToolServer:
             body_hash = canonical_call_hash(request.tool_name, request.arguments, correlation_id)
             claims = verify_proxy_assertion(
                 assertion,
-                jwks=self._jwks_provider(),
+                # through the converting loader: a provider that raises here would otherwise escape
+                # the dispatch with no reply, exactly as the ledger below once did.
+                jwks=self._load_pod_jwks(request.tool_name),
                 expected_pod_id=self._pod_id,
                 body_hash=body_hash,
                 leeway_seconds=_ASSERTION_LEEWAY_SECONDS,
             )
-            if not await self._assertion_replay_guard.record_unique(
-                claims.jti, issued_at=datetime.fromtimestamp(claims.iat, UTC)
-            ):
-                raise IdentityTokenError("proxy assertion nonce replay")
+            try:
+                fresh = await guard.record_unique(claims.jti, issued_at=datetime.fromtimestamp(claims.iat, UTC))
+            except NatsClientError as exc:
+                refusal = self._assertion_ledger_unavailable(request, guard.bucket_name, exc)
+            else:
+                if not fresh:
+                    raise IdentityTokenError("proxy assertion nonce replay")
         except (IdentityTokenError, ValueError) as exc:
             kind = type(exc).__name__
             # the structural failure reason (absent assertion, kid miss, spliced body, replayed
             # nonce), never token or key material.
             extra = {"extra_data": {"reason": kind, "detail": str(exc), "tool_name": request.tool_name}}
             log.warning("pod proxy-assertion verification failed; rejecting", extra=extra)
-            reason = f"proxy assertion verification failed ({kind})"
-        return reason
+            refusal = _AssertionGateRefusal(
+                error_code=TOOL_PROXY_ASSERTION_UNVERIFIED,
+                error=TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
+                reason=f"proxy assertion verification failed ({kind})",
+            )
+        return refusal
+
+    def _assertion_ledger_unavailable(
+        self, request: CallRequest, bucket_name: str, exc: NatsClientError
+    ) -> _AssertionGateRefusal:
+        """the refusal for a call whose assertion verified but whose nonce could not be recorded.
+
+        Logged once at ERROR with the ledger's error and what to do about it; the reply carries
+        the one shared message and never the exception.
+
+        :param request: the call request
+        :ptype request: CallRequest
+        :param bucket_name: the ledger's KV bucket, as the guard names it
+        :ptype bucket_name: str
+        :param exc: what the ledger raised
+        :ptype exc: NatsClientError
+        :return: the ``TOOL_POP_LEDGER_UNAVAILABLE`` refusal
+        :rtype: _AssertionGateRefusal
+        """
+        log.error(
+            "tool call refused: the proxy-assertion replay ledger could not be reached, so the nonce "
+            "could not be recorded and the call is denied unchecked. Check this pod's NATS connection "
+            "and its grant on the ledger bucket's keys under its own scope; the hub declares the "
+            "bucket at startup and after every NATS reconnect, so also check that the hub is up",
+            extra={
+                "extra_data": {
+                    "error_code": TOOL_POP_LEDGER_UNAVAILABLE,
+                    "pod_id": self._pod_id,
+                    "bucket": bucket_name,
+                    "tool_name": request.tool_name,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            },
+        )
+        return _AssertionGateRefusal(
+            error_code=TOOL_POP_LEDGER_UNAVAILABLE,
+            error=TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE,
+            reason=f"proxy assertion replay ledger unavailable ({type(exc).__name__})",
+        )
 
     def _foreign_caller_rejection(self, request: CallRequest) -> str | None:
         """refuse a verified caller that is not the agent this in-process server belongs to.
@@ -2821,6 +2969,14 @@ class ToolServer:
         before the tool is looked up. a Tool Pod's server serves every
         caller.
 
+        a forwarded identity that does not verify -- the handshake token,
+        or the per-turn user assertion -- is refused ``IDENTITY_REFUSED``
+        with the one message the registry and every hub door use; which
+        check refused it is logged here, never sent. a call whose
+        identity verified but whose proxy assertion does not -- it could
+        not show it came through the registry for this body and this pod
+        -- is refused ``TOOL_PROXY_ASSERTION_UNVERIFIED`` the same way.
+
         audit-task-01 (AUD-03): every dispatch -- including malformed
         requests, unknown-tool rejections, and raising tools -- emits a
         baseline ``tool.call`` :class:`AuditEvent` via
@@ -2843,20 +2999,20 @@ class ToolServer:
         # count and a failed call never strands the counter above baseline.
         with self._inflight_gauge.track():
             # The reply obligation starts here. While it is outstanding the
-            # connection must survive: `allow_responses` lives on the connection
-            # that received this message, so a proactive reconnect in the middle
+            # connection that received this message must survive:
+            # `allow_responses` lives on that connection, so losing it mid-call
             # silently converts a completed tool call into a permissions
             # violation on publish -- observed as a 92-second scan that finished
-            # with exit 0 and could never deliver its 68KB of results.
+            # with exit 0 and could never deliver its 68KB of results. A
+            # credential renewal keeps it open for the synchronous reply budget
+            # and the reply leaves on it (NatsClient.renew_connection).
             #
             # A call routed to durable delivery DISCHARGES that obligation as
-            # soon as it is acknowledged, long before the tool finishes. It has
-            # to: otherwise a 20-minute scan would hold the connection against
-            # re-auth for 20 minutes, the bounded drain would give up anyway, and
-            # it would log a reply about to be lost that is in fact perfectly
-            # safe on a subject this pod holds a standing grant on. The flag is a
-            # single-element list rather than instance state because dispatches
-            # run concurrently on one server.
+            # soon as it is acknowledged, long before the tool finishes: its
+            # answer goes to a subject this pod holds a standing grant on, which
+            # no connection change can strand. The flag is a single-element list
+            # rather than instance state because dispatches run concurrently on
+            # one server.
             owes_sync_reply = [True]
             self._calls_in_flight += 1
             self._calls_idle.clear()
@@ -2870,11 +3026,10 @@ class ToolServer:
     def sync_replies_in_flight(self) -> int:
         """how many dispatches still owe an answer on the request/reply INBOX.
 
-        The question this answers is "may this connection be recycled", which is correctness rather
+        The question this answers is "may this connection be closed", which is correctness rather
         than telemetry: ``allow_responses`` belongs to the connection that received a request, so
-        rebuilding the connection while this is non-zero permanently revokes the right to answer
-        those calls. The re-auth loop reads it before reconnecting, and shutdown paths can read it
-        for the same reason.
+        closing it while this is non-zero permanently revokes the right to answer those calls. A
+        shutdown path reads it for that reason.
 
         A durably-delivered call is NOT counted once it has been acknowledged: its answer goes to a
         subject the pod holds a standing grant on, so it no longer cares which connection is current.
@@ -2890,9 +3045,8 @@ class ToolServer:
     async def await_sync_replies(self, *, timeout: float) -> bool:
         """wait until nothing owes an inbox answer, bounded by ``timeout``.
 
-        Reports whether it settled rather than raising, because both outcomes are ordinary here: the
-        caller (the re-auth loop) proceeds either way -- waiting past the JWT's real deadline would
-        trade a lost reply for a dead connection, which is strictly worse -- and only differs in what
+        Reports whether it settled rather than raising, because both outcomes are ordinary here: a
+        caller bounded by something it cannot wait past proceeds either way, and only differs in what
         it says about it.
 
         :param timeout: longest to wait, in seconds
@@ -2905,7 +3059,7 @@ class ToolServer:
             await asyncio.wait_for(self._calls_idle.wait(), timeout=timeout)
         except TimeoutError:
             # NOSILENT: reported to the caller as False; the caller owns the log line, because what
-            # an unsettled wait MEANS differs by caller (re-auth loses replies, shutdown does not).
+            # an unsettled wait MEANS differs by caller.
             result = False
         return result
 
@@ -2914,7 +3068,7 @@ class ToolServer:
 
         called once per dispatch: at the acknowledgement for a durably-delivered call, and at
         dispatch end for every other. the floor at zero is deliberate -- a double settle would
-        otherwise drive the count negative and permanently defeat the drain.
+        otherwise drive the count negative and permanently defeat a wait on it.
 
         :return: nothing
         :rtype: None
@@ -3158,10 +3312,17 @@ class ToolServer:
 
             request, identity_rejection, principal_is_tool_pod = await self._verify_identity(request)
             if identity_rejection is not None:
+                # the registry and every hub door answer a forwarded identity that does not verify
+                # with this code and this one message, and so does the pod: a caller learns that
+                # it was refused, never which check refused it. ``identity_rejection`` -- which
+                # check, and the exception type -- stays on this side, in the log line below and
+                # the baseline audit's failure reason; ``_verify_identity`` already logged the
+                # structural detail beside the tool name.
                 error_response = CallResponse(
                     success=False,
                     content="",
-                    error=identity_rejection,
+                    error=IDENTITY_REFUSED_MESSAGE,
+                    error_code=IDENTITY_REFUSED,
                     context=request.context,
                 )
                 await self._answer(msg, error_response, delivery_subject)
@@ -3169,6 +3330,7 @@ class ToolServer:
                     "pod rejected call: identity unverified",
                     extra={
                         "extra_data": {
+                            "error_code": IDENTITY_REFUSED,
                             "reason": identity_rejection,
                             "tool_key": tool_key,
                             "correlation_id": correlation_id_log,
@@ -3184,27 +3346,34 @@ class ToolServer:
             # attribution when the pod overrode a forged or absent identity.
             bind_log_context(request.context)
 
-            assertion_rejection = await self._verify_proxy_assertion(request)
-            if assertion_rejection is not None:
+            assertion_refusal = await self._verify_proxy_assertion(request)
+            if assertion_refusal is not None:
+                # the identity verified; what did not is the call's proof that it came through the
+                # registry for this body and this pod -- or the ledger that makes that proof single
+                # use. one code and one message per condition, whatever the check was: the reason
+                # stays on this side, in the log line below and the baseline audit's failure reason,
+                # beside the detail ``_verify_proxy_assertion`` already logged.
                 error_response = CallResponse(
                     success=False,
                     content="",
-                    error=assertion_rejection,
+                    error=assertion_refusal.error,
+                    error_code=assertion_refusal.error_code,
                     context=request.context,
                 )
                 await self._answer(msg, error_response, delivery_subject)
                 log.warning(
-                    "pod rejected call: proxy assertion unverified",
+                    "pod rejected call at the proxy-assertion gate",
                     extra={
                         "extra_data": {
-                            "reason": assertion_rejection,
+                            "error_code": assertion_refusal.error_code,
+                            "reason": assertion_refusal.reason,
                             "tool_key": tool_key,
                             "correlation_id": correlation_id_log,
                         }
                     },
                 )
                 outcome = "failure"
-                failure_reason = assertion_rejection
+                failure_reason = assertion_refusal.reason
                 return
 
             owner_rejection = self._foreign_caller_rejection(request)
@@ -3263,6 +3432,7 @@ class ToolServer:
                     content=tool_result.content,
                     metadata=tool_result.metadata,
                     error=tool_result.error,
+                    error_code=tool_result.error_code,
                     context=request.context,
                 )
                 if not tool_result.success:
@@ -3420,7 +3590,7 @@ class ToolServer:
                     subject.path,
                     exc,
                 )
-                await asyncio.sleep(_RESULT_DELIVERY_RETRY_SECONDS)
+                await asyncio.sleep(self._result_delivery_retry_seconds)
 
     async def _respond(self, msg: IncomingMessage, response: BaseModel) -> None:
         """publish ``response`` to the inbound message's reply subject.
@@ -3677,67 +3847,6 @@ class ToolServer:
         :rtype: int | None
         """
         return nats_user_jwt_ttl_seconds()
-
-    async def drain_before_reauth(self, ttl_seconds: int | None) -> None:
-        """wait for outstanding replies before recycling the connection.
-
-        Public because it is a lifecycle operation on the server rather than an implementation
-        detail of the re-auth loop: "hold this connection open until it owes nothing" is the same
-        question a graceful shutdown asks, and the loop is only its first caller.
-
-        NATS scopes ``allow_responses`` to the CONNECTION that received a
-        request: the server remembers *this* connection may answer *that*
-        message. A proactive reconnect mid-call therefore does not merely
-        interrupt the work -- it permanently revokes the right to deliver the
-        answer, and the pod discovers this only when it tries to publish, after
-        the tool has already run to completion. Observed in production: a
-        92-second scan finished with exit 0 and 68KB of results that could never
-        be sent, because the connection had been recycled 56 seconds earlier.
-
-        So the re-auth waits for the pod to owe nothing. The wait is BOUNDED by
-        the JWT's real deadline, not open-ended: the schedule fires at
-        ``ttl - leeway - buffer``, leaving :data:`threetears.nats.REAUTH_BUFFER_SECONDS`
-        of slack before the point where the reconnect itself must begin to beat
-        expiry. Waiting past that would trade a lost reply for a dead
-        connection, which is strictly worse -- so on timeout it reconnects
-        anyway and says plainly that a reply is about to be lost.
-
-        A call longer than that slack cannot be rescued here, and no amount of
-        deferral fixes it -- which is why draining is the mitigation and not the
-        remedy. The remedy is that such calls never take this path: past
-        :data:`threetears.nats.SYNC_REPLY_BUDGET_SECONDS` the caller routes the
-        answer to a durable subject the pod holds a standing grant on, the
-        acknowledgement settles the inbox obligation immediately, and the count
-        this method waits on never includes it. So what is left here is exactly
-        the short calls the grace can genuinely cover.
-
-        :param ttl_seconds: the connection JWT TTL, or ``None`` when unknown
-        :ptype ttl_seconds: int | None
-        :return: nothing
-        :rtype: None
-        """
-        if self.sync_replies_in_flight == 0:
-            return
-        grace = DRAIN_BEFORE_RENEWAL_SECONDS
-        log.info(
-            "NATS re-auth deferred: waiting up to %ss for %d in-flight call(s) to reply",
-            grace,
-            self.sync_replies_in_flight,
-            extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self.sync_replies_in_flight}},
-        )
-        if not await self.await_sync_replies(timeout=grace):
-            # NOSILENT: the reconnect proceeds because the JWT is about to
-            # expire; the reply that is about to be lost is named here so it is
-            # never a silent discard.
-            log.error(
-                "NATS re-auth can wait no longer: %d short call(s) still owe a reply on the inbox "
-                "and the connection JWT is near expiry, so those replies will be refused. Long "
-                "calls are unaffected (they deliver on the pod's own durable subject); a call "
-                "stuck here means a tool declared a timeout inside the synchronous budget and then "
-                "ran past it.",
-                self.sync_replies_in_flight,
-                extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self.sync_replies_in_flight}},
-            )
 
     @traced()
     async def shutdown(self) -> None:

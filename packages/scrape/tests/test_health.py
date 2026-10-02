@@ -23,10 +23,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.kv import FakeNatsClient
+from threetears.models import LlmPurpose
 
 from threetears.scrape.challenge import PageVerdict
-from threetears.scrape.collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipeCollection
-from threetears.scrape.eval_loop import _stamp_fingerprint_if_validated, run_eval_loop, run_eval_loop_multi_row
+from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
     content_fingerprint,
@@ -41,11 +43,6 @@ _PAGE = """
   </table>
 </body></html>
 """
-
-
-def extractions_row(*, validation_status: str) -> ScrapeExtraction:
-    """A transient extraction carrying just the status the stamp helper branches on."""
-    return ScrapeExtraction({"target_id": "warn_oh", "validation_status": validation_status})
 
 
 @pytest.fixture()
@@ -312,24 +309,96 @@ async def test_a_validated_single_row_reuse_stamps_the_fingerprint(
     assert stored.content_fingerprint == content_fingerprint(_PAGE)
 
 
-async def test_needs_review_stamps_nothing(health: ScrapeTargetHealthCollection) -> None:
+def _structured_model(payload: dict[str, Any]) -> SimpleNamespace:
+    """A chat-model stand-in whose structured call answers *payload*, as the schema it was bound to.
+
+    Built from whatever schema the caller binds, so the test names no extraction or judge
+    model class: only the field names a real model's answer would carry.
+    """
+
+    def _bind(schema: Any, **_kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(ainvoke=AsyncMock(return_value=schema.model_validate(payload)))
+
+    return SimpleNamespace(with_structured_output=_bind)
+
+
+async def test_needs_review_stamps_nothing(
+    recipes: ScrapeRecipeCollection,
+    extractions: ScrapeExtractionCollection,
+    health: ScrapeTargetHealthCollection,
+) -> None:
     """``needs_review`` means nothing confirmed the extraction was right.
 
     That page is not a trustworthy "this is what the target looks like when it works"
-    reference, so it must not become the comparison value. Asserted directly against the
-    helper rather than through a full judge round: the rule is about the status, and
-    driving an LLM judge to produce it would test the judge instead.
+    reference, so it must not become the comparison value. Reached through a first run whose
+    judge confirms none of the structurally valid candidates -- the judge's answer is canned,
+    so what is under test is the status rule, not the judge.
     """
-    unconfirmed = extractions_row(validation_status="needs_review")
-    await _stamp_fingerprint_if_validated(health, unconfirmed, target_id="warn_oh", html=_PAGE)
-    assert await health.get("warn_oh") is None
+    extraction_model = _structured_model({"candidates": [{"selectors": {"employer": "td"}}]})
+    judge_model = _structured_model(
+        {"winning_candidate_index": None, "reasoning": "none match", "field_confidences": {}}
+    )
 
-    blocked = extractions_row(validation_status="blocked")
-    await _stamp_fingerprint_if_validated(health, blocked, target_id="warn_oh", html=_PAGE)
-    assert await health.get("warn_oh") is None
+    def _by_purpose(*_args: Any, purpose: Any = None, **_kwargs: Any) -> SimpleNamespace:
+        return extraction_model if purpose == LlmPurpose.EXTRACTION else judge_model
+
+    with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=_by_purpose):
+        result = await run_eval_loop(
+            "warn_oh",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="k",
+            health_collection=health,
+        )
+
+    assert result.validation_status == "needs_review"
+    assert await health.get("warn_oh") is None, "an unconfirmed read became the reference page"
+
+
+async def test_blocked_stamps_nothing(
+    recipes: ScrapeRecipeCollection,
+    extractions: ScrapeExtractionCollection,
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """A bot wall is the opposite of a reference page.
+
+    Reached the way production reaches it: a reused recipe finds nothing, and the classifier
+    reads the page as a wall. The verdict cache writes the row, so the assertion is on the
+    fingerprint columns rather than on the row's existence.
+    """
+    await _seed_working_recipe(
+        recipes, "warn_oh", {"row_selector": "table tr.nonexistent", "field_selectors": {"employer": "td.nope"}}
+    )
+    verdict = PageVerdict(kind="blocked", evidence="a challenge page", confidence="high")
+    fake_model = SimpleNamespace(
+        with_structured_output=lambda _schema, **_kw: SimpleNamespace(ainvoke=AsyncMock(return_value=verdict))
+    )
+
+    with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+        result = await run_eval_loop_multi_row(
+            "warn_oh",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="k",
+            health_collection=health,
+        )
+
+    assert result.validation_status == "blocked"
+    stored = await health.get("warn_oh")
+    assert stored is not None, "the verdict cache should have been written"
+    assert stored.content_fingerprint is None, "a bot wall became the reference page"
+    assert stored.fingerprint_updated_at is None
 
 
 async def test_a_health_write_failure_never_fails_the_scrape(
+    recipes: ScrapeRecipeCollection,
+    extractions: ScrapeExtractionCollection,
     health: ScrapeTargetHealthCollection,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -337,16 +406,26 @@ async def test_a_health_write_failure_never_fails_the_scrape(
 
     Losing real extracted data because a bookkeeping row could not be written would be a
     strictly worse outcome than having no fingerprint. The failure is logged with its
-    traceback, never silenced.
+    traceback, never silenced, and the caller still gets its validated extraction.
     """
-    validated = extractions_row(validation_status="validated")
+    await _seed_working_recipe(recipes, "warn_oh", {"row_selector": "table tr", "field_selectors": {"employer": "td"}})
 
     async def _boom(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("l3 is having a day")
 
     with patch("threetears.scrape.eval_loop.record_validated_fetch", side_effect=_boom):
-        await _stamp_fingerprint_if_validated(health, validated, target_id="warn_oh", html=_PAGE)
+        result = await run_eval_loop_multi_row(
+            "warn_oh",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="unused-no-llm-call-on-the-reuse-path",
+            health_collection=health,
+        )
 
+    assert result.validation_status == "validated"
     assert "fingerprint stamp failed" in caplog.text
 
 
@@ -360,65 +439,107 @@ async def test_the_vision_strategies_also_stamp(
     The first version of this feature put the stamp only at the multi-row entry point's
     common exit, which both of these strategies return before reaching, so two whole
     classes of target silently never got a fingerprint while the helper's docstring
-    claimed full coverage. Their inner extraction functions are patched out here because
-    the question is purely whether the surrounding entry point stamps, not how a vision
-    read behaves.
+    claimed full coverage. Each strategy runs through the public entry point with its
+    model calls held at the eval loop's public extraction functions and its grounding
+    judge injected as confirming, because the question is purely whether the surrounding
+    entry point stamps, not how a vision read behaves.
     """
-    for strategy_type, inner in (
-        ("per_document", "_run_per_document_extraction"),
-        ("multi_row_vision", "_run_multi_row_vision_extraction"),
+    import threetears.scrape.eval_loop as eval_loop_module
+
+    record = {"employer": "Acme Corp"}
+
+    per_document_page = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
+    with patch.object(eval_loop_module, "extract_fields_directly_chunked", AsyncMock(return_value=record)):
+        per_document = await run_eval_loop_multi_row(
+            "warn_per_document",
+            per_document_page,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="unused",
+            strategy_type="per_document",
+            document_judge=AsyncMock(return_value=True),
+            health_collection=health,
+        )
+
+    with (
+        patch.object(eval_loop_module, "extract_page_images", lambda _html: [b"page-0"]),
+        patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=[record])),
     ):
-        target_id = f"warn_{strategy_type}"
+        multi_row_vision = await run_eval_loop_multi_row(
+            "warn_multi_row_vision",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="unused",
+            strategy_type="multi_row_vision",
+            multi_row_judge=AsyncMock(return_value={0}),
+            health_collection=health,
+        )
 
-        async def _validated(*_args: Any, **_kwargs: Any) -> ScrapeExtraction:
-            return ScrapeExtraction({"target_id": target_id, "validation_status": "validated"})
-
-        with patch(f"threetears.scrape.eval_loop.{inner}", side_effect=_validated):
-            result = await run_eval_loop_multi_row(
-                target_id,
-                _PAGE,
-                "https://example.gov/warn",
-                {"employer": str},
-                recipe_collection=recipes,
-                extraction_collection=extractions,
-                api_key="unused",
-                strategy_type=strategy_type,  # type: ignore[arg-type]
-                health_collection=health,
-            )
-
-        assert result.validation_status == "validated"
-        stored = await health.get(target_id)
+    for strategy_type, result, page in (
+        ("per_document", per_document, per_document_page),
+        ("multi_row_vision", multi_row_vision, _PAGE),
+    ):
+        assert result.validation_status == "validated", strategy_type
+        stored = await health.get(f"warn_{strategy_type}")
         assert stored is not None, f"{strategy_type} returned validated but stamped no fingerprint"
-        assert stored.content_fingerprint == content_fingerprint(_PAGE)
+        assert stored.content_fingerprint == content_fingerprint(page)
 
 
-async def test_a_row_round_tripped_through_l2_comes_back_with_real_datetimes(
-    health: ScrapeTargetHealthCollection,
-) -> None:
-    """L2 serialization is lossy in one direction, and ``deserialize`` is where that is repaired.
+def _over_one_l2(nats_client: FakeNatsClient, config: DefaultCoreConfig) -> ScrapeTargetHealthCollection:
+    """A health collection in a pod of its own that shares only the L2 bucket.
+
+    Its own registry gives it its own L1, and with no L3 pool its rows otherwise live only in
+    its own process, so a row it reads that another such collection wrote can only have come
+    to it through L2 -- the read path that serialize/rehydrate exist for. Both pods are
+    replicas of one principal, so they share one L2 key scope, as replicas do.
+    """
+    registry = CollectionRegistry()
+    registry.configure(kv_key_scope="scrape-health-test")
+    return ScrapeTargetHealthCollection(registry, config, nats_client=nats_client)
+
+
+async def test_a_row_round_tripped_through_l2_comes_back_with_real_datetimes(config: DefaultCoreConfig) -> None:
+    """L2 serialization is lossy in one direction, and the L2 read path is where that is repaired.
 
     ``serialize`` writes JSON with ``default=str``, so every timestamp leaves as an ISO
-    string. Until ``deserialize`` turned them back, a row read through L2 differed in TYPE
+    string. Until the read turned them back, a row read through L2 differed in TYPE
     from the identical row read through L1 or L3. Harmless while it is only read, because
     the entity accessors parse on the way out. Not harmless when it is written BACK: an
     update fences on the row's own ``date_updated`` as an optimistic lock against a
     ``TIMESTAMPTZ`` column, and a string bound there fails at the asyncpg border.
 
-    Asserted across the serialize/rehydrate boundary rather than by mocking a hydrated row
-    into the merge; a test that injected strings past this layer would be testing its own
-    setup. The rehydration itself now lives on `BaseCollection` rather than in this
-    collection's `deserialize`, so the composition below is what the L2 read path performs.
+    Asserted across a real L2 round trip -- one pod writes, another pod reads it back out of
+    the shared bucket -- rather than by mocking a hydrated row into the merge; a test that
+    injected strings past this layer would be testing its own setup.
     """
-    written = {
-        "target_id": "warn_l2",
-        "consecutive_fetch_failures": 1,
-        "date_created": datetime(2026, 7, 25, 3, 0, tzinfo=UTC),
-        "date_updated": datetime(2026, 7, 25, 3, 10, tzinfo=UTC),
-        "last_blocked_at": datetime(2026, 7, 25, 3, 30, tzinfo=UTC),
-        "fingerprint_updated_at": datetime(2026, 7, 25, 3, 30, tzinfo=UTC),
-    }
+    nats_client = FakeNatsClient()
+    writer = _over_one_l2(nats_client, config)
+    reader = _over_one_l2(nats_client, config)
+    blocked = datetime(2026, 7, 25, 3, 30, tzinfo=UTC)
 
-    round_tripped = health._rehydrate_datetimes(health.deserialize(health.serialize(written)))
+    entity = writer.create(
+        {
+            "target_id": "warn_l2",
+            "consecutive_fetch_failures": 0,
+            "last_blocked_at": blocked,
+            "fingerprint_updated_at": blocked,
+        }
+    )
+    await entity.save()
+    # A second write stamps ``date_updated``: the row as it stands after an update is the one
+    # whose ``date_updated`` the NEXT update fences on.
+    entity.consecutive_fetch_failures = 1
+    await entity.save()
+    written = entity.to_dict()
+
+    read = await reader.get("warn_l2")
+    assert read is not None, "the row did not reach the second pod through L2"
+    round_tripped = read.to_dict()
 
     for column in ("date_created", "date_updated", "last_blocked_at", "fingerprint_updated_at"):
         assert isinstance(round_tripped[column], datetime), (
@@ -426,13 +547,14 @@ async def test_a_row_round_tripped_through_l2_comes_back_with_real_datetimes(
             "written back, a string cannot satisfy a TIMESTAMPTZ optimistic lock"
         )
         assert round_tripped[column] == written[column]
+    assert round_tripped["last_blocked_at"] == blocked
     # Non-timestamp columns are untouched by the rehydration.
     assert round_tripped["consecutive_fetch_failures"] == 1
     assert round_tripped["target_id"] == "warn_l2"
 
 
-def test_an_unparseable_timestamp_is_a_corrupt_cache_entry(
-    health: ScrapeTargetHealthCollection,
+async def test_an_unparseable_timestamp_is_a_corrupt_cache_entry(
+    config: DefaultCoreConfig, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A value that will not decode is refused, not carried onward.
 
@@ -444,20 +566,27 @@ def test_an_unparseable_timestamp_is_a_corrupt_cache_entry(
     precise fault the round-trip test above says this rehydration exists to prevent.
 
     The third option is the one taken. L2 is a cache, so a value that will not decode is a
-    corrupt cache entry: `BaseCollection` raises here, the L2 read path treats it as a miss and
-    falls through to L3, and the CAS path replaces the entry at the revision that held it.
-    Nothing is discarded, because L3 is authoritative and still holds the row.
+    corrupt cache entry: the L2 read path treats it as a miss and falls through to L3, and the
+    CAS path replaces the entry at the revision that held it. Nothing is discarded, because L3
+    is authoritative and still holds the row. Here L3 is this pod's own (empty) store, so the
+    read finds nothing rather than serving the undecodable row.
     """
-    from threetears.core.exceptions import CorruptCacheEntry
+    nats_client = FakeNatsClient()
+    reader = _over_one_l2(nats_client, config)
+    bucket = await nats_client.kv_bucket(name=reader.L2_BUCKET_SUFFIX)
+    await bucket.put(
+        key=reader.l2_key("warn_bad"),
+        value=b'{"target_id": "warn_bad", "date_updated": "not-a-timestamp"}',
+    )
 
-    payload = b'{"target_id": "warn_bad", "date_updated": "not-a-timestamp"}'
+    with caplog.at_level("WARNING"):
+        read = await reader.get("warn_bad")
 
-    with pytest.raises(CorruptCacheEntry) as caught:
-        health._rehydrate_datetimes(health.deserialize(payload))
-
+    assert read is None, "an undecodable L2 entry was served instead of falling through to L3"
     # Names the column, so the log line the read path emits can point at the bad data.
-    assert caught.value.column == "date_updated"
-    assert caught.value.value == "not-a-timestamp"
+    refused = [r for r in caplog.records if "could not be decoded" in r.getMessage()]
+    assert len(refused) == 1
+    assert refused[0].__dict__["extra_data"]["column"] == "date_updated"
 
 
 async def test_the_fingerprint_merge_carries_the_lock_forward(health: ScrapeTargetHealthCollection) -> None:

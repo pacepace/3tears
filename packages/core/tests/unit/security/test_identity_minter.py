@@ -83,6 +83,56 @@ def test_identity_generation_round_trips_when_stamped() -> None:
     assert claims.identity_generation == "gen-abc123"
 
 
+def test_data_version_absent_by_default() -> None:
+    """a plain mint states no table-list version, and the token still verifies."""
+    minter = IdentityMinter.generate(kid="agent-1", issuer=_ISSUER)
+
+    claims = verify_identity_token(
+        minter.mint("agent-1", customer_id="c"),
+        jwks=minter.jwks(),
+        issuer=_ISSUER,
+    )
+
+    assert claims.data_version is None
+
+
+def test_data_version_round_trips_when_given() -> None:
+    """the version the pod stated at handshake is signed into its token and read back unchanged."""
+    minter = IdentityMinter.generate(kid="agent-1", issuer=_ISSUER)
+
+    claims = verify_identity_token(
+        minter.mint("agent-1", customer_id="c", pod_id="pod-x", identity_generation="gen-1", data_version=4),
+        jwks=minter.jwks(),
+        issuer=_ISSUER,
+    )
+
+    assert claims.data_version == 4
+    assert claims.identity_generation == "gen-1"
+
+
+def test_cnf_absent_by_default() -> None:
+    """a plain mint binds no holder key."""
+    minter = IdentityMinter.generate(kid="agent-1", issuer=_ISSUER)
+
+    claims = verify_identity_token(minter.mint("agent-1", customer_id="c"), jwks=minter.jwks(), issuer=_ISSUER)
+
+    assert claims.cnf is None
+
+
+def test_cnf_round_trips_when_given() -> None:
+    """a connect credential names the runner's proof-of-possession key, signed as the cnf claim."""
+    minter = IdentityMinter.generate(kid="agent-1", issuer=_ISSUER)
+
+    claims = verify_identity_token(
+        minter.mint("agent-1", customer_id="c", pod_id="pod-x", cnf="runner-key-thumbprint"),
+        jwks=minter.jwks(),
+        issuer=_ISSUER,
+    )
+
+    assert claims.cnf == "runner-key-thumbprint"
+    assert claims.pod_id == "pod-x"
+
+
 def test_from_pem_round_trips() -> None:
     """a minter loaded from a PKCS#8 PEM mints tokens that verify against its published JWKS."""
     minter = IdentityMinter.from_pem(_pem(Ed25519PrivateKey.generate()), kid="k1", issuer=_ISSUER)

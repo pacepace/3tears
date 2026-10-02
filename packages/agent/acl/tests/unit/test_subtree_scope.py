@@ -30,7 +30,7 @@ from threetears.agent.acl import (
     evaluate_decision,
 )
 
-from ._fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeStore, make_cache
 
 CUSTOMER = UUID("11111111-1111-4111-8111-111111111111")
 TOOL_CALL = "tool.call"
@@ -323,9 +323,9 @@ class TestSubtreeRowsPartitionWithTheCustomerlessShapes:
         # written through the other.
         from threetears.agent.acl.collections import RoleAssignmentCollection
 
-        from .test_collections import _make_collection
+        from .collection_support import make_collection
 
-        collection = _make_collection(RoleAssignmentCollection)
+        collection = make_collection(RoleAssignmentCollection)
         entity = collection.create(
             {
                 "assignment_id": uuid4(),

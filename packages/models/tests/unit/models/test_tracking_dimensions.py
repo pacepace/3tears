@@ -12,6 +12,7 @@ import threading
 from typing import Sequence
 from uuid import uuid4
 
+import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import (
@@ -167,23 +168,23 @@ class TestUsageTrackerDimensionSpanAttrs:
     """GU-05-05: the new fields emit as ``llm.*`` span attributes when populated."""
 
     _exporter: _InMemorySpanExporter
-    _provider: TracerProvider
 
-    @classmethod
-    def setup_class(cls) -> None:
-        """configures shared OTel TracerProvider with in-memory exporter."""
-        cls._exporter = _InMemorySpanExporter()
-        cls._provider = TracerProvider()
-        cls._provider.add_span_processor(SimpleSpanProcessor(cls._exporter))
-        try:
-            trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-        except AttributeError:
-            pass
-        trace.set_tracer_provider(cls._provider)
+    @pytest.fixture(autouse=True)
+    def _route_spans_here(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """hands every ``UsageTracker`` built in this test a tracer that exports to ``_exporter``.
 
-    def setup_method(self) -> None:
-        """clears collected spans before each test."""
-        self._exporter.clear()
+        ``UsageTracker`` takes its tracer from the public ``opentelemetry.trace.get_tracer`` when it
+        is constructed. That resolves through the process-global provider, which OTel lets a
+        process install exactly once, so a test cannot install its own; it substitutes the lookup
+        instead, for this test only, and leaves the process-global state as it found it.
+
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
+        """
+        self._exporter = _InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(self._exporter))
+        monkeypatch.setattr(trace, "get_tracer", provider.get_tracer)
 
     def test_span_carries_dimension_attrs_when_populated(self) -> None:
         """populated dimensions land as llm.* span attributes."""
@@ -264,18 +265,51 @@ class TestUsageTrackerDimensionSpanAttrs:
 class TestDimensionCardinalityContract:
     """GU-05-06: no new dimension may become a Prometheus label."""
 
+    @staticmethod
+    def _scraped_label_names() -> set[str]:
+        """records one call carrying every new dimension, and returns the label names a scrape exposes.
+
+        :return: every label name on every ``threetears_llm_*`` sample, a histogram's ``le`` aside
+        :rtype: set[str]
+        """
+        prometheus_client = pytest.importorskip("prometheus_client")
+
+        registry = prometheus_client.CollectorRegistry()
+        UsageTracker(prom_registry=registry).record(
+            UsageRecord(
+                model_name=DEFAULT_LARGE_MODEL,
+                provider_name="anthropic",
+                purpose=LlmPurpose.CHAT,
+                input_tokens=1,
+                output_tokens=1,
+                total_tokens=2,
+                latency_ms=1,
+                bytes_in=2048,
+                bytes_out=4096,
+                api_calls=3,
+                correlation_id=uuid4(),
+                origin_invocation_ref=uuid4(),
+            )
+        )
+        samples = [
+            sample
+            for family in registry.collect()
+            if family.name.startswith("threetears_llm_")
+            for sample in family.samples
+        ]
+        assert samples, "the call reached no threetears_llm_* instrument, so there is nothing to check"
+        return {name for sample in samples for name in sample.labels} - {"le"}
+
     def test_prom_labels_frozen(self) -> None:
         """the locked Prometheus label set stays exactly (model, provider, purpose)."""
-        from threetears.models.tracking import _PROM_LABELS
-
-        assert _PROM_LABELS == ("model", "provider", "purpose")
+        assert self._scraped_label_names() == {"model", "provider", "purpose"}
 
     def test_new_dimensions_not_labels(self) -> None:
         """none of the new caller-scoped fields leak into the label set."""
-        from threetears.models.tracking import _PROM_LABELS
+        labels = self._scraped_label_names()
 
-        assert "correlation_id" not in _PROM_LABELS
-        assert "origin_invocation_ref" not in _PROM_LABELS
-        assert "bytes_in" not in _PROM_LABELS
-        assert "bytes_out" not in _PROM_LABELS
-        assert "api_calls" not in _PROM_LABELS
+        assert "correlation_id" not in labels
+        assert "origin_invocation_ref" not in labels
+        assert "bytes_in" not in labels
+        assert "bytes_out" not in labels
+        assert "api_calls" not in labels

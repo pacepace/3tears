@@ -29,8 +29,9 @@ these tests exercise:
 
 from __future__ import annotations
 
+import asyncio
+import runpy
 from collections.abc import Callable
-
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid7
@@ -48,7 +49,6 @@ from threetears.agent.acl import (
     RoleCollection,
     RoleInvalidatePayload,
 )
-from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.registry.auth import (
     AllowAllAuthorizer,
@@ -65,7 +65,36 @@ from threetears.registry.rbac_stack import (
     build_registry_rbac_stack,
 )
 from threetears.registry import server as server_module
+from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
 from threetears.registry.server import RegistryServer
+
+
+def _entrypoint_server_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """run ``python -m threetears.registry`` and return the keywords it built the server with.
+
+    the plugin factories are resolved from env at the entry point a deployment runs, so the
+    resolution is asserted there: on what the server is handed, not on the resolver in isolation.
+    the server itself is replaced by a recorder whose ``serve`` returns at once.
+
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the server's constructor keywords
+    :rtype: dict[str, Any]
+    """
+    monkeypatch.delenv("THREETEARS_REGISTRY_FORCE_DENY_ALL", raising=False)
+    monkeypatch.setenv("THREETEARS_REGISTRY_ALLOW_ALL_TOOLS", "true")
+    captured: dict[str, Any] = {}
+
+    class _CapturingServer:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def serve(self) -> None:
+            return None
+
+    monkeypatch.setattr(server_module, "RegistryServer", _CapturingServer)
+    runpy.run_module("threetears.registry", run_name="__main__")
+    return captured
 
 
 def _identity_token_provider(token: str = "registry.identity.token") -> "Callable[[], str | None]":
@@ -81,25 +110,6 @@ def _identity_token_provider(token: str = "registry.identity.token") -> "Callabl
     :rtype: Callable[[], str | None]
     """
     return lambda: token
-
-
-def _unwrap_l3(resolved: Any) -> Any:
-    """unwrap a resolved L3 backend to the raw transport it wraps.
-
-    L3B-03: the registry normalizes a raw L3 transport (here the rbac
-    :class:`NatsProxyL3Backend`) into a :class:`SqlL3Backend` so the collection
-    CRUD lifecycle gets the structured ``DurableStore`` ops. The pinning contract
-    (namespace + service-sentinel agent_id) lives on the wrapped NatsProxy, so peel
-    the wrapper before asserting on it.
-
-    :param resolved: the value returned by ``get_l3_pool``.
-    :ptype resolved: Any
-    :return: the wrapped transport, or ``resolved`` unchanged.
-    :rtype: Any
-    """
-    if isinstance(resolved, SqlL3Backend):
-        return resolved._pool  # noqa: SLF001 -- peel the wrapper to the wrapped NatsProxy transport
-    return resolved
 
 
 def _make_nats_client() -> MagicMock:
@@ -215,14 +225,16 @@ class TestBuildRegistryRbacStack:
             l1_backend=l1,
             identity_token=_identity_token_provider(),
         )
-        # the rbac pool is wired onto the registry as the default L3.
-        # introspect the registry's default pool through the public
-        # accessor. L3B-03: the registry wraps the raw NatsProxy transport
-        # in a ``SqlL3Backend`` so the collection CRUD lifecycle gets the
-        # structured ``DurableStore`` ops; the rbac NatsProxy is the pool
-        # the wrapper wraps, so unwrap before asserting its pinning.
-        pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
-        assert isinstance(pool, NatsProxyL3Backend)
+        # the rbac pool is wired onto the registry as the default L3, read
+        # through the registry's public accessor. L3B-03: the registry wraps
+        # the raw NatsProxy transport in a ``SqlL3Backend`` so the collection
+        # CRUD lifecycle gets the structured ``DurableStore`` ops; the wrapper
+        # forwards every attribute it does not define to the transport it
+        # wraps, so the transport's pinning reads straight through it.
+        pool = stack.registry.get_l3_pool("namespaces")
+        assert isinstance(pool, SqlL3Backend)
+        # the namespace-aware broker transport, not a bare SQL pool
+        assert pool.accepts_scoped_reads is True
         assert pool.default_namespace == PLATFORM_RBAC_READ_NAMESPACE
 
     def test_proxy_backend_uses_service_sentinel_agent_id(self) -> None:
@@ -240,7 +252,7 @@ class TestBuildRegistryRbacStack:
             l1_backend=l1,
             identity_token=_identity_token_provider(),
         )
-        pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
+        pool = stack.registry.get_l3_pool("namespaces")
         assert pool.agent_id == str(REGISTRY_SERVICE_SENTINEL_AGENT_ID)
 
 
@@ -391,7 +403,8 @@ class TestRegistryServerRbacFactoryConstructor:
             rbac_authorizer_factory=factory,
         )
         result = await server.apply_rbac_factory(nc)
-        factory.assert_awaited_once_with(nc)
+        # no identity factory configured, so the factory is handed no token provider
+        factory.assert_awaited_once_with(nc, None)
         assert result is rbac_authorizer
 
     @pytest.mark.asyncio
@@ -436,7 +449,8 @@ class TestRegistryServerRbacFactoryConstructor:
         # this assertion.
         result = await server.apply_rbac_factory(nc)
 
-        factory.assert_awaited_once_with(nc)
+        # no identity factory configured, so the factory is handed no token provider
+        factory.assert_awaited_once_with(nc, None)
         assert result is rbac_authorizer
 
 
@@ -512,7 +526,7 @@ class TestRegistryServerPodAuthenticatorFactory:
             pod_authenticator_factory=factory,
         )
         result = await server.apply_pod_authenticator_factory(nc)
-        factory.assert_awaited_once_with(nc)
+        factory.assert_awaited_once_with(nc, None)
         assert result is authenticator
 
     @pytest.mark.asyncio
@@ -540,36 +554,26 @@ class TestResolvePodAuthenticatorFactory:
     ``module:callable`` plugin path, keeping 3tears host-agnostic (the aibots Hub points it at its
     own factory)."""
 
-    @pytest.mark.asyncio
-    async def test_unset_env_is_open_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unset_env_is_open_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """no env var -> None -> open registration (pure-3tears / dev default)."""
-        from threetears.registry.server import _resolve_pod_authenticator_factory
-
         monkeypatch.delenv("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", raising=False)
-        assert _resolve_pod_authenticator_factory() is None
+        assert _entrypoint_server_kwargs(monkeypatch)["pod_authenticator_factory"] is None
 
-    @pytest.mark.asyncio
-    async def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """a valid ``module:callable`` path resolves to that exact object."""
-        from threetears.registry.server import _resolve_pod_authenticator_factory
+    def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a valid ``module:callable`` path hands the server that exact object."""
+        from threetears.registry.auth import AllowAllAuthorizer
 
         # point at a real importable callable to prove resolution (any module attr works).
         monkeypatch.setenv(
-            "THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY",
-            "threetears.registry.auth:AllowAllAuthorizer",
+            "THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", "threetears.registry.auth:AllowAllAuthorizer"
         )
-        from threetears.registry.auth import AllowAllAuthorizer
+        assert _entrypoint_server_kwargs(monkeypatch)["pod_authenticator_factory"] is AllowAllAuthorizer
 
-        assert _resolve_pod_authenticator_factory() is AllowAllAuthorizer
-
-    @pytest.mark.asyncio
-    async def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a path without the ``module:callable`` shape crashes startup (never silent open mode)."""
-        from threetears.registry.server import _resolve_pod_authenticator_factory
-
         monkeypatch.setenv("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", "no_colon_here")
         with pytest.raises(ValueError, match="module:callable"):
-            _resolve_pod_authenticator_factory()
+            _entrypoint_server_kwargs(monkeypatch)
 
 
 class TestRegistryServerLimitGuardFactory:
@@ -590,7 +594,7 @@ class TestRegistryServerLimitGuardFactory:
             limit_guard_factory=factory,
         )
         result = await server.apply_limit_guard_factory(nc)
-        factory.assert_awaited_once_with(nc)
+        factory.assert_awaited_once_with(nc, None)
         # apply_limit_guard_factory returns the value it stored on the slot the CallProxy reads,
         # so asserting on the return proves the resolved guard replaced the AllowAll default.
         assert result is guard
@@ -636,35 +640,24 @@ class TestResolveLimitGuardFactory:
     ``module:callable`` plugin path, keeping 3tears host-agnostic (the aibots Hub points it at its
     NATS-proxy-backed ``KvCallLimitGuard`` factory)."""
 
-    @pytest.mark.asyncio
-    async def test_unset_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unset_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """no env var -> None -> constructor default AllowAllLimitGuard (pure-3tears / dev)."""
-        from threetears.registry.server import _resolve_limit_guard_factory
-
         monkeypatch.delenv("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", raising=False)
-        assert _resolve_limit_guard_factory() is None
+        assert _entrypoint_server_kwargs(monkeypatch)["limit_guard_factory"] is None
 
-    @pytest.mark.asyncio
-    async def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """a valid ``module:callable`` path resolves to that exact object."""
-        from threetears.registry.server import _resolve_limit_guard_factory
-
-        monkeypatch.setenv(
-            "THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY",
-            "threetears.registry.auth:AllowAllLimitGuard",
-        )
+    def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a valid ``module:callable`` path hands the server that exact object."""
         from threetears.registry.auth import AllowAllLimitGuard
 
-        assert _resolve_limit_guard_factory() is AllowAllLimitGuard
+        # point at a real importable callable to prove resolution (any module attr works).
+        monkeypatch.setenv("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "threetears.registry.auth:AllowAllLimitGuard")
+        assert _entrypoint_server_kwargs(monkeypatch)["limit_guard_factory"] is AllowAllLimitGuard
 
-    @pytest.mark.asyncio
-    async def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a path without the ``module:callable`` shape crashes startup (never silent allow-all)."""
-        from threetears.registry.server import _resolve_limit_guard_factory
-
         monkeypatch.setenv("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "no_colon_here")
         with pytest.raises(ValueError, match="module:callable"):
-            _resolve_limit_guard_factory()
+            _entrypoint_server_kwargs(monkeypatch)
 
 
 class TestRegistryServerUsageEmitterFactory:
@@ -713,35 +706,24 @@ class TestResolveUsageEmitterFactory:
     ``module:callable`` plugin path, keeping 3tears host-agnostic (the aibots Hub points it at its
     metering-publish factory)."""
 
-    @pytest.mark.asyncio
-    async def test_unset_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unset_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """no env var -> None -> emit disabled (pure-3tears / dev default)."""
-        from threetears.registry.server import _resolve_usage_emitter_factory
-
         monkeypatch.delenv("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", raising=False)
-        assert _resolve_usage_emitter_factory() is None
+        assert _entrypoint_server_kwargs(monkeypatch)["usage_emitter_factory"] is None
 
-    @pytest.mark.asyncio
-    async def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """a valid ``module:callable`` path resolves to that exact object."""
-        from threetears.registry.server import _resolve_usage_emitter_factory
-
-        monkeypatch.setenv(
-            "THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY",
-            "threetears.registry.auth:AllowAllLimitGuard",
-        )
+    def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a valid ``module:callable`` path hands the server that exact object."""
         from threetears.registry.auth import AllowAllLimitGuard
 
-        assert _resolve_usage_emitter_factory() is AllowAllLimitGuard
+        # point at a real importable callable to prove resolution (any module attr works).
+        monkeypatch.setenv("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "threetears.registry.auth:AllowAllLimitGuard")
+        assert _entrypoint_server_kwargs(monkeypatch)["usage_emitter_factory"] is AllowAllLimitGuard
 
-    @pytest.mark.asyncio
-    async def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a path without the ``module:callable`` shape crashes startup (never silent drop)."""
-        from threetears.registry.server import _resolve_usage_emitter_factory
-
         monkeypatch.setenv("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "no_colon_here")
         with pytest.raises(ValueError, match="module:callable"):
-            _resolve_usage_emitter_factory()
+            _entrypoint_server_kwargs(monkeypatch)
 
 
 class TestTheStackRefusesWithoutAnIdentity:
@@ -809,52 +791,73 @@ class TestTheProviderIsForwardedByReferenceNotByValue:
             l1_backend=create_registry_l1_backend(),
             identity_token=lambda: held["token"],
         )
-        pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
+        pool = stack.registry.get_l3_pool("namespaces")
         assert pool.forwarded_identity_token() == "first.token"
         held["token"] = "re-minted.token"
         assert pool.forwarded_identity_token() == "re-minted.token"
 
 
 class TestTheIdentityTokenProviderFactoryHook:
-    """3tears resolves the provider from config; it never implements one.
+    """the rbac factory the entry point builds wires the stack with the token provider it is handed.
 
     Identity is the sharpest case of the host-agnostic rule: the token is minted by the
     HOST, over a handshake 3tears does not define, against a principal store 3tears
-    cannot read. So this hook has the same ``module:callable`` shape as the
-    pod-authenticator, limit-guard and usage-emitter hooks -- and unlike those three it
-    has no weaker-but-working default, because a broker that refuses an unidentified
-    request leaves nothing to fall back to.
+    cannot read. The server builds the host identity ONCE and hands its bound token to
+    every factory that builds an L3 backend (``test_registry_identity_lifecycle.py`` pins
+    that half); these pin the rbac factory's half, driven through the entry point a
+    deployment runs, ``python -m threetears.registry``. Unlike the pod-authenticator,
+    limit-guard and usage-emitter hooks there is no weaker-but-working default, because a
+    broker that refuses an unidentified request leaves nothing to fall back to. They are
+    synchronous because the entry point runs its own event loop, as ``python -m`` does.
     """
 
-    @pytest.mark.asyncio
-    async def test_unset_resolves_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """unset -> ``None``, which the stack turns into a wiring-time refusal."""
+    @staticmethod
+    def _entry_point_rbac_factory(monkeypatch: pytest.MonkeyPatch) -> Any:
+        """run the registry entry point in rbac mode and return the factory it hands the server.
+
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: the ``rbac_authorizer_factory`` the entry point constructs the server with
+        :rtype: Any
+        """
+        monkeypatch.delenv("THREETEARS_REGISTRY_ALLOW_ALL_TOOLS", raising=False)
+        monkeypatch.delenv("THREETEARS_REGISTRY_FORCE_DENY_ALL", raising=False)
+        captured: dict[str, Any] = {}
+
+        class _CapturingServer:
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            async def serve(self) -> None:
+                return None
+
+        monkeypatch.setattr(server_module, "RegistryServer", _CapturingServer)
+        runpy.run_module("threetears.registry", run_name="__main__")
+        factory = captured["rbac_authorizer_factory"]
+        assert factory is not None, "rbac mode must hand the server an rbac factory"
+        return factory
+
+    def test_no_provider_is_a_wiring_time_refusal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """no host identity configured: the server hands no provider, which the stack refuses."""
         monkeypatch.delenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", raising=False)
-        assert await server_module._resolve_identity_token_provider(_make_nats_client()) is None  # noqa: SLF001 -- module-private resolver under test
+        factory = self._entry_point_rbac_factory(monkeypatch)
+        with pytest.raises(RegistryIdentityUnavailableError, match="no identity_token provider"):
+            asyncio.run(factory(_make_nats_client(), None))
 
-    @pytest.mark.asyncio
-    async def test_a_malformed_spec_raises_rather_than_degrading(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """a misconfigured identity plugin must crash startup, never run unidentified."""
-        monkeypatch.setenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", "not-a-dotted-path")
-        with pytest.raises(ValueError, match="module:callable"):
-            await server_module._resolve_identity_token_provider(_make_nats_client())  # noqa: SLF001 -- module-private resolver under test
+    def test_the_handed_provider_reaches_the_stack(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the stack is wired with the provider the server handed over, not one it resolved itself."""
+        monkeypatch.delenv("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", raising=False)
+        asked: list[bool] = []
 
-    @pytest.mark.asyncio
-    async def test_the_resolved_factory_is_awaited_with_the_live_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """the host factory needs the connection to handshake over, so it gets it."""
-        nc = _make_nats_client()
-        seen: list[Any] = []
+        def _provider() -> str | None:
+            asked.append(True)
+            return "host.minted.token"
 
-        async def _factory(client: Any) -> "Callable[[], str | None]":
-            seen.append(client)
-            return lambda: "host.minted.token"
+        factory = self._entry_point_rbac_factory(monkeypatch)
 
-        monkeypatch.setattr(server_module, "_HOST_FACTORY_FOR_TEST", _factory, raising=False)
-        monkeypatch.setenv(
-            "THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY",
-            "threetears.registry.server:_HOST_FACTORY_FOR_TEST",
-        )
-        provider = await server_module._resolve_identity_token_provider(nc)  # noqa: SLF001 -- module-private resolver under test
-        assert seen == [nc]
-        assert provider is not None
-        assert provider() == "host.minted.token"
+        authorizer = asyncio.run(factory(_make_nats_client(), _provider))
+
+        # the stack asks the provider for a token before it builds, so the handed provider is
+        # the one the rbac stack was wired with -- a missing one would have refused above.
+        assert asked
+        assert isinstance(authorizer, RbacEvaluatorAuthorizer)

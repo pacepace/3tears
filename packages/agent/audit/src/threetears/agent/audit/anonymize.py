@@ -102,6 +102,7 @@ SAFE_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "connection_id",  # identity.login.*, identity.connection.*, identity.principal.* (identity)
         "conversation_id",  # security.exploit.approval.* (hub)
         "customer_id",  # rbac.group.create, rbac.role.create (hub); identity.tenancy.platform_scope (identity)
+        "datasource_id",  # the renamed datasource a grant followed, rbac.assignment.move (hub)
         "entity_id",  # knowledge.candidate.*, knowledge.promotion.* (hub)
         "external_realm_id",  # chat platform's workspace id, channel_realm.* (hub)
         "grant_id",  # admin.action mcp_tool_grant (hub)
@@ -285,6 +286,7 @@ PERSONAL_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "redirect_url",  # rendered from the respondent's answers, session.* (survey)
         "ref",  # a checkpoint label or claim-mapping name, typed by a user or admin (3tears, identity)
         "refused",  # str(exc), admin.action index_build (hub)
+        "removed_datasources",  # datasource names carry user-declared table names, agent.delete (hub)
         "removed_namespaces",  # namespace names, agent.delete (hub)
         "replaced_schema",  # customer schema name, datasource.rollover (hub)
         "revoked",  # namespace names, security.tool.approver.revoke (hub)
@@ -293,6 +295,8 @@ PERSONAL_DETAIL_KEYS: Final[frozenset[str]] = frozenset(
         "schedule_config",  # an arbitrary caller-supplied dict, admin.action scheduled_job_update (hub)
         "schema_name",  # customer schema name, datasource.rollover (hub)
         "scope_namespace_name",  # user-supplied namespace name, rbac.assignment.create (hub)
+        "scope_namespace_name_after",  # the grant's node name after its rename, rbac.assignment.move (hub)
+        "scope_namespace_name_before",  # the grant's node name before its rename, rbac.assignment.move (hub)
         "sha256_after",  # digest of user content: pseudonymous, confirmable by guessing (3tears)
         "sha256_before",  # digest of user content: pseudonymous, confirmable by guessing (3tears)
         "sid",  # a raw session id, credential-adjacent; logs carry only its digest (identity)
@@ -350,6 +354,8 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         "media.delivered": frozenset({"type"}),
         # fixed "operator_forced_owner_deletion" (hub)
         "rbac.assignment.delete": frozenset({"reason"}),
+        # fixed "datasource_renamed" (hub)
+        "rbac.assignment.move": frozenset({"reason"}),
         # allow / deny (hub)
         "rbac.introspect": frozenset({"decision"}),
         # the approval verdict, and the uuid of the user who approved or denied the paused tool
@@ -361,19 +367,26 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         "knowledge.candidate": frozenset({"delta", "regression"}),
         # http verb and status code (hub)
         "admin.request.refused": frozenset({"method", "status"}),
-        # backup, scheduled-job, mcp-grant and pii-rotation admin actions: enums, database names, counts (hub)
+        # backup, scheduled-job, mcp-grant and pii-rotation admin actions: enums, database names, counts;
+        # data-space limit and reset-target actions: a limit's code-supplied name, integer limits and
+        # data versions (hub)
         "admin.action": frozenset(
             {
+                "applied_version",
                 "databases",
                 "database",
                 "failed_databases",
                 "identical",
                 "inserts",
                 "kind",
+                "limit_after",
+                "limit_before",
+                "limit_name",
                 "mode",
                 "ok",
                 "permission",
                 "status",
+                "target_version_before",
                 "total_stale",
                 "updates",
             }
@@ -387,14 +400,18 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         "schema.bulk_describe": frozenset({"matched", "unmatched", "total"}),
         # a flag (hub)
         "agent.context_capture_read": frozenset({"captured"}),
-        # a flag (hub)
-        "agent.delete": frozenset({"force"}),
+        # two flags: forced, and whether it finished an earlier delete's teardown (hub)
+        "agent.delete": frozenset({"force", "finished_earlier_delete"}),
         # fixed labels grants_not_materialized / grants_not_revoked (hub)
         "agent.update_tool_access": frozenset({"failure", "warning"}),
         "agent.update_model_access": frozenset({"failure", "warning"}),
         "agent.update_access": frozenset({"failure", "warning"}),
         # a registered provider's name (hub)
         "gateway.provider.create": frozenset({"provider_name"}),
+        # a tool pod changing an agent's data under its grant: the tables the statement
+        # names (developer-declared names from the agent's table list, never customer
+        # typed), the affected-row count, and the broker-minted transaction id (hub)
+        "l3.write": frozenset({"tables", "row_count", "tx_id"}),
     }
 )
 

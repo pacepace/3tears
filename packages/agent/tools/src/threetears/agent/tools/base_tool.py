@@ -10,17 +10,32 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.agent.tools._coercion import normalize_kwargs
+from threetears.agent.tools.coercion import normalize_kwargs
 from threetears.agent.tools.http_operation import RestAffordance
 from threetears.observe import get_logger
 
 __all__ = [
+    "CONFLICT",
+    "TOOL_RESULT_ERROR_CODES",
     "MCPToolDefinition",
     "TearsTool",
     "ToolResult",
 ]
 
 _log = get_logger(__name__)
+
+#: what the call changes was changed by someone else at the same moment -- the tool's write lost
+#: its compare-and-swap race past any bounded re-read and retry, and nothing was written. the caller
+#: reads the thing again and retries. the platform renders it as HTTP 409 with a retryable sentence.
+CONFLICT = "CONFLICT"
+
+#: every code a tool may name on :attr:`ToolResult.error_code`. a closed vocabulary on purpose: the
+#: code is what every caller branches on and what the platform maps to an HTTP status, an agent
+#: summary and a channel sentence, so a code the platform has no face for would reach every one of
+#: them as the generic fallback. growing it is a release of this package plus a face in the
+#: platform's error map, never a string a single tool invents. upper case, like every platform code,
+#: so one condition never travels under two spellings.
+TOOL_RESULT_ERROR_CODES: frozenset[str] = frozenset({CONFLICT})
 
 
 @dataclass
@@ -35,12 +50,47 @@ class ToolResult:
     :ptype metadata: dict[str, Any] | None
     :param error: error message if execution failed
     :ptype error: str | None
+    :param error_code: the machine-readable code a FAILED call names, one of
+        :data:`TOOL_RESULT_ERROR_CODES`. the tool server copies it onto
+        ``CallResponse.error_code`` and the registry forwards it unchanged, so the caller
+        branches on it exactly as on a registry refusal. ``None`` for a success and for a
+        failure the tool does not name
+    :ptype error_code: str | None
+    :raises ValueError: when ``error_code`` is set on a success, or is not a declared code --
+        including a lower-case spelling of one
     """
 
     success: bool
     content: str
     metadata: dict[str, Any] | None = None
     error: str | None = None
+    error_code: str | None = None
+
+    def __post_init__(self) -> None:
+        """refuse a code no caller could branch on, at the line that names it.
+
+        a refusal here surfaces in the tool's own tests and in its pod's log as a failed call,
+        rather than as a code that reaches every platform face as the generic fallback.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``error_code`` is set on a success, or is not a declared code
+        """
+        if self.error_code is None:
+            return
+        if self.success:
+            raise ValueError(
+                f"ToolResult(success=True) names error_code={self.error_code!r}; a code names a refusal, "
+                f"so set success=False or drop the code"
+            )
+        if self.error_code not in TOOL_RESULT_ERROR_CODES:
+            canonical = self.error_code.upper()
+            hint = f"; the declared spelling is {canonical!r}" if canonical in TOOL_RESULT_ERROR_CODES else ""
+            raise ValueError(
+                f"ToolResult names error_code={self.error_code!r}, which is not in "
+                f"TOOL_RESULT_ERROR_CODES {sorted(TOOL_RESULT_ERROR_CODES)}{hint}. a new code is added "
+                f"to threetears.agent.tools.base_tool and mapped by the platform before a tool names it"
+            )
 
 
 @dataclass

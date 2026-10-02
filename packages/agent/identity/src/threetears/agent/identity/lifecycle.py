@@ -30,10 +30,13 @@ version that already exists at creation time (the current active head, or
 ``None`` for the first), so a cycle is impossible -- no origin walk / guard
 is needed (unlike the knowledge shadow-chain's arbitrary origin pointers).
 The chain is NOT guaranteed strictly linear, though: two concurrent tier-1
-proposals both parent to the same head, and consent does not re-parent, so
-sibling branches can exist among proposed/superseded rows. That is
-harmless here -- the one-active invariant still holds and nothing walks
-parents -- but a history UI must not assume a single linear path.
+proposals both parent to the same head, so sibling branches can exist among
+proposed/rejected rows, and a history UI must not assume a single linear
+path. Consent never re-parents, and it refuses a proposal whose parent is no
+longer the active head (:class:`IdentityProposalOutOfDate`): a proposal is a
+whole replacement text, so applying it after the block moved on would put
+back the text it was made from and erase every change since. Such a
+proposal can only be rejected.
 """
 
 from __future__ import annotations
@@ -72,8 +75,10 @@ from threetears.agent.identity.types import (
 log = get_logger(__name__)
 
 __all__ = [
+    "IdentityProposalOutOfDate",
     "content_hash",
     "consent",
+    "is_out_of_date",
     "propose",
     "reject",
     "rollback",
@@ -82,6 +87,41 @@ __all__ = [
 
 #: rationale-preview length carried on the proposed event.
 _RATIONALE_PREVIEW_LEN = 120
+
+
+class IdentityProposalOutOfDate(ValueError):
+    """A proposal made against a version that is no longer the block's active one.
+
+    A proposal is a whole replacement text: applied after the block changed, it
+    would put back the text it was made from and erase every change since. The
+    proposal stays ``proposed``; the caller offers only :func:`reject`.
+
+    :param version: the out-of-date proposal
+    :ptype version: IdentityVersionEntity
+    """
+
+    def __init__(self, version: IdentityVersionEntity) -> None:
+        self.version = version
+        super().__init__(
+            f"the {version.block_key} block has changed since version {version.version_id} was proposed; "
+            "consenting would undo those changes, so it can only be rejected"
+        )
+
+
+def is_out_of_date(version: IdentityVersionEntity, active: IdentityVersionEntity | None) -> bool:
+    """Whether ``version`` was proposed against something other than the block's ``active`` version.
+
+    A block with no active version takes any proposal: there is nothing it
+    could undo.
+
+    :param version: the proposal
+    :ptype version: IdentityVersionEntity
+    :param active: the block's active version, or None when it has none
+    :ptype active: IdentityVersionEntity | None
+    :return: True when the active version is not the one it was made from
+    :rtype: bool
+    """
+    return active is not None and version.parent_version_id != active.version_id
 
 
 def content_hash(content: str) -> str:
@@ -132,7 +172,9 @@ async def _apply(
     When ``conn`` is passed, both writes bind to the caller's transaction,
     so the supersede + activate (and any coupled caller write on the same
     ``conn``) commit or roll back as one unit -- a crash between them leaves
-    neither, not a superseded-with-no-active gap. Without a ``conn`` the
+    neither, not a superseded-with-no-active gap. The caller opens that
+    transaction with :class:`threetears.core.collections.CallerTransaction`,
+    which settles both rows' caches once it ends. Without a ``conn`` the
     ordering above is the guarantee.
     """
     if prior_active is not None and prior_active.version_id != new_version.version_id:
@@ -162,9 +204,10 @@ async def propose(
     :func:`consent`. Tier-2 (routine) blocks auto-apply immediately. Identical
     content to the current active is a no-op (returns the active).
 
-    :param conn: optional transaction handle; when passed, every version write
-        binds to it so a tier-2 auto-apply is atomic with the caller's coupled
-        writes (see :func:`_apply`)
+    :param conn: optional connection whose transaction the caller opened with
+        ``CallerTransaction(conn)``; when passed, every version write binds to it
+        so a tier-2 auto-apply is atomic with the caller's coupled writes (see
+        :func:`_apply`)
     :ptype conn: Any
     :return: the new version (or the active on a dedup no-op)
     :rtype: IdentityVersionEntity | None
@@ -317,12 +360,15 @@ async def consent(
 ) -> IdentityVersionEntity | None:
     """Consent to a proposed version -> it becomes active (tier-1 apply).
 
-    :param conn: optional transaction handle; when passed, the apply binds to
-        it so it is atomic with the caller's coupled writes (see :func:`_apply`)
+    :param conn: optional connection whose transaction the caller opened with
+        ``CallerTransaction(conn)``; when passed, the apply binds to it so it is
+        atomic with the caller's coupled writes (see :func:`_apply`)
     :ptype conn: Any
     :return: the applied version, or ``None`` if not found / not owned / not
         currently ``proposed``
     :rtype: IdentityVersionEntity | None
+    :raises IdentityProposalOutOfDate: when the block's active version is no
+        longer the one the proposal was made against; nothing is written
     """
     await authorize_identity_access(
         action=ACTION_IDENTITY_WRITE,
@@ -337,6 +383,8 @@ async def consent(
     prior_active = await collection.resolve_active(
         agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=version.block_key
     )
+    if is_out_of_date(version, prior_active):
+        raise IdentityProposalOutOfDate(version)
     version.status = IdentityVersionStatus.ACTIVE.value
     version.consenter_user_id = consenter_user_id
     await _apply(collection, new_version=version, prior_active=prior_active, conn=conn)
@@ -358,7 +406,8 @@ async def reject(
 ) -> IdentityVersionEntity | None:
     """Reject a proposed version (kept for history; no active change).
 
-    :param conn: optional transaction handle for the status write
+    :param conn: optional connection whose transaction the caller opened with
+        ``CallerTransaction(conn)``, for the status write
     :ptype conn: Any
     :return: the rejected version, or ``None`` if not found / not owned / not
         currently ``proposed``
@@ -398,8 +447,9 @@ async def rollback(
     the current head; the prior active is superseded. History is never
     mutated.
 
-    :param conn: optional transaction handle; when passed, the apply binds to
-        it so it is atomic with the caller's coupled writes (see :func:`_apply`)
+    :param conn: optional connection whose transaction the caller opened with
+        ``CallerTransaction(conn)``; when passed, the apply binds to it so it is
+        atomic with the caller's coupled writes (see :func:`_apply`)
     :ptype conn: Any
     :return: the new active (clone) version, or ``None`` if the target is not
         found / not owned

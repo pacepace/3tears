@@ -104,6 +104,11 @@ def _claims(registry: CollectionRegistry) -> CoordinationClaimsCollection:
     return coordination_collection(registry, CoordinationClaimsCollection)
 
 
+async def _always_lose(*args: Any, **kwargs: Any) -> Any:
+    """a compare-and-swap that every attempt loses to a concurrent writer."""
+    raise ConcurrentModificationError("coordination_claims", ("jobs", "k"), datetime.now(UTC))
+
+
 class TestClaim:
     @pytest.mark.asyncio
     async def test_fresh_key_is_claimed(self) -> None:
@@ -296,13 +301,13 @@ class TestComplete:
     async def test_complete_raises_a_conflict_when_the_budget_is_exhausted(self) -> None:
         # a lost compare-and-swap budget is reported as this primitive's own error, so a caller
         # catching IdempotencyConflict does not also have to know the collection's.
-        store = _store()
+        registry = _registry(_Nats())
+        store = _store(registry)
         await store.claim("k")
 
-        async def _always_lose(*args: Any, **kwargs: Any) -> Any:
-            raise ConcurrentModificationError("coordination_claims", ("jobs", "k"), datetime.now(UTC))
-
-        store._collection.l2_cas_mutate = _always_lose  # type: ignore[method-assign]  # noqa: SLF001
+        # the store writes through the registry's one claims collection, so this is the
+        # collection its compare-and-swap runs on
+        _claims(registry).l2_cas_mutate = _always_lose  # type: ignore[method-assign]
         with pytest.raises(IdempotencyConflict):
             await store.complete("k", result=b"result")
 
@@ -366,8 +371,19 @@ class TestConstruction:
         with pytest.raises(ValueError, match="needs an L2 client"):
             _store(_registry(None, _Store()))
 
-    def test_every_store_over_the_table_shares_one_collection(self) -> None:
+    @pytest.mark.asyncio
+    async def test_every_store_over_the_table_shares_one_collection(self) -> None:
+        # observed through what the stores do: a compare-and-swap that always loses, installed on
+        # the registry's claims collection, reaches BOTH stores. a store holding a collection of
+        # its own would complete untouched.
         registry = _registry(_Nats())
         first = _store(registry, purpose="a")
         second = _store(registry, purpose="b")
-        assert first._collection is second._collection  # noqa: SLF001
+        await first.claim("k")
+        await second.claim("k")
+
+        _claims(registry).l2_cas_mutate = _always_lose  # type: ignore[method-assign]
+
+        for store in (first, second):
+            with pytest.raises(IdempotencyConflict):
+                await store.complete("k", result=b"result")

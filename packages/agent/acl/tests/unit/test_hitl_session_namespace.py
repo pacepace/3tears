@@ -42,7 +42,7 @@ from threetears.core.namespaces import (
     build_namespace_name,
 )
 
-from ._fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeStore, make_cache
 
 # Two customers sharing their first eight hex characters, so a
 # truncated customer spelling would put both on one row rather than

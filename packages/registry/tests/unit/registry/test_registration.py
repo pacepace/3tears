@@ -18,7 +18,7 @@ from threetears.registry.registration import (
     RegistrationResponse,
 )
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
 
 @pytest.fixture(autouse=True)

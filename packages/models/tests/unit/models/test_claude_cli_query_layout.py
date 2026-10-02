@@ -26,10 +26,7 @@ pytest.importorskip("claude_agent_sdk")
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage  # noqa: E402
 
-from threetears.models import DEFAULT_CHAT_MODEL  # noqa: E402
-from threetears.models.providers._claude_cli import create_subscription_chat  # noqa: E402
-
-TOKEN = "sk-ant-oat01-faketokenfortest"
+from .claude_cli_recorder import sent_to_cli  # noqa: E402
 
 _CURRENT_HEADING = "The person's current message:"
 _CURRENT_OPEN = "<prompt-current-message>"
@@ -108,15 +105,15 @@ _LATEST = "What did I ask you about first, and what did you find?"
 
 
 def _convert(messages: list) -> tuple[str, str | None]:
-    """the model's query and system prompt for ``messages``.
+    """the query and the system prompt the CLI receives for one call carrying ``messages``.
 
     :param messages: the round
     :ptype messages: list
     :return: ``(query, system_prompt)``
     :rtype: tuple[str, str | None]
     """
-    model = create_subscription_chat(DEFAULT_CHAT_MODEL, TOKEN)
-    return model._convert_messages(messages)  # noqa: SLF001 -- the method under test
+    call = sent_to_cli(messages)
+    return call.query, call.system_prompt
 
 
 def _current_message(query: str) -> str:

@@ -17,33 +17,18 @@ namespaces.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from threetears.models import LlmPurpose
 
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-from threetears.scrape.eval_loop import (
-    _JudgeVerdict,
-    _MultiRowJudgeVerdict,
-    _judge_multi_row_extraction,
-    _judge_one_document_extraction,
-    run_eval_loop,
-    run_eval_loop_multi_row,
-)
+from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.llm_retry import StructuredCallExhaustedError, StructuredCallTimeoutError
-from threetears.scrape.extraction import (
-    NoticeDocument,
-    _CandidateStrategy,
-    _CandidateStrategyList,
-    _RegexCandidateStrategy,
-    _RegexCandidateStrategyList,
-    _RowCandidateStrategy,
-    _RowCandidateStrategyList,
-)
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+
+from packages.scrape.tests.structured_output_fakes import fake_structured_model
 
 _test_registry = CollectionRegistry()
 _test_config = DefaultCoreConfig()
@@ -97,12 +82,6 @@ _TEXT_ROWS_PAGE_HTML = """
 _WINNING_REGEX_ROW_PATTERN = r"(?P<employer>[^\n]+)\nAFFECTED: (?P<affected_count>\d+)"
 
 
-def _fake_structured_model(result=None, *, side_effect=None):
-    ainvoke_mock = AsyncMock(return_value=result, side_effect=side_effect)
-    structured = SimpleNamespace(ainvoke=ainvoke_mock)
-    return SimpleNamespace(with_structured_output=lambda schema, **kwargs: structured), ainvoke_mock
-
-
 def _dispatch_by_purpose(extraction_model, judge_model):
     """``create_chat_model`` side_effect: pick the extraction or judge fake by ``purpose``."""
 
@@ -121,13 +100,15 @@ def _collections():
 class TestRunEvalLoopFirstRun:
     async def test_no_existing_recipe_generates_and_persists_winner(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _CandidateStrategyList(candidates=[_CandidateStrategy(selectors=_WINNING_STRATEGY)])
-        judge_verdict = _JudgeVerdict(
-            winning_candidate_index=0, reasoning="matches page content", field_confidences={"employer": "confident"}
-        )
+        candidates = {"candidates": [{"selectors": _WINNING_STRATEGY}]}
+        judge_verdict = {
+            "winning_candidate_index": 0,
+            "reasoning": "matches page content",
+            "field_confidences": {"employer": "confident"},
+        }
 
-        fake_extraction_model, _ = _fake_structured_model(candidates)
-        fake_judge_model, _ = _fake_structured_model(judge_verdict)
+        fake_extraction_model, _ = fake_structured_model(candidates)
+        fake_judge_model, _ = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -156,10 +137,8 @@ class TestRunEvalLoopFirstRun:
     async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self):
         recipe_collection, extraction_collection = _collections()
         # Every proposed selector matches nothing in the page.
-        candidates = _CandidateStrategyList(
-            candidates=[_CandidateStrategy(selectors={"employer": ".nope", "affected_count": ".also-nope"})]
-        )
-        fake_extraction_model, _ = _fake_structured_model(candidates)
+        candidates = {"candidates": [{"selectors": {"employer": ".nope", "affected_count": ".also-nope"}}]}
+        fake_extraction_model, _ = fake_structured_model(candidates)
 
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_extraction_model):
             extraction = await run_eval_loop(
@@ -178,11 +157,11 @@ class TestRunEvalLoopFirstRun:
 
     async def test_judge_picks_no_winner_persists_needs_review_no_recipe(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _CandidateStrategyList(candidates=[_CandidateStrategy(selectors=_WINNING_STRATEGY)])
-        judge_verdict = _JudgeVerdict(winning_candidate_index=None, reasoning="none of these look right")
+        candidates = {"candidates": [{"selectors": _WINNING_STRATEGY}]}
+        judge_verdict = {"winning_candidate_index": None, "reasoning": "none of these look right"}
 
-        fake_extraction_model, _ = _fake_structured_model(candidates)
-        fake_judge_model, _ = _fake_structured_model(judge_verdict)
+        fake_extraction_model, _ = fake_structured_model(candidates)
+        fake_judge_model, _ = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -205,9 +184,9 @@ class TestRunEvalLoopFirstRun:
 
     async def test_judge_failure_degrades_to_needs_review_not_a_crash(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _CandidateStrategyList(candidates=[_CandidateStrategy(selectors=_WINNING_STRATEGY)])
-        fake_extraction_model, _ = _fake_structured_model(candidates)
-        fake_judge_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        candidates = {"candidates": [{"selectors": _WINNING_STRATEGY}]}
+        fake_extraction_model, _ = fake_structured_model(candidates)
+        fake_judge_model, _ = fake_structured_model(side_effect=RuntimeError("boom"))
 
         with (
             patch(
@@ -312,10 +291,10 @@ class TestRunEvalLoopRecipeReuse:
         )
         await recipe_collection.save_entity(recipe_entity)
 
-        candidates = _CandidateStrategyList(candidates=[_CandidateStrategy(selectors=_WINNING_STRATEGY)])
-        judge_verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="matches page content")
-        fake_extraction_model, extraction_ainvoke = _fake_structured_model(candidates)
-        fake_judge_model, judge_ainvoke = _fake_structured_model(judge_verdict)
+        candidates = {"candidates": [{"selectors": _WINNING_STRATEGY}]}
+        judge_verdict = {"winning_candidate_index": 0, "reasoning": "matches page content"}
+        fake_extraction_model, extraction_ainvoke = fake_structured_model(candidates)
+        fake_judge_model, judge_ainvoke = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -344,10 +323,10 @@ class TestRunEvalLoopRecipeReuse:
         """The build plan's own acceptance criteria: a second run against the
         same page reuses the recipe rather than re-invoking candidate generation."""
         recipe_collection, extraction_collection = _collections()
-        candidates = _CandidateStrategyList(candidates=[_CandidateStrategy(selectors=_WINNING_STRATEGY)])
-        judge_verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="matches")
-        fake_extraction_model, extraction_ainvoke = _fake_structured_model(candidates)
-        fake_judge_model, judge_ainvoke = _fake_structured_model(judge_verdict)
+        candidates = {"candidates": [{"selectors": _WINNING_STRATEGY}]}
+        judge_verdict = {"winning_candidate_index": 0, "reasoning": "matches"}
+        fake_extraction_model, extraction_ainvoke = fake_structured_model(candidates)
+        fake_judge_model, judge_ainvoke = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -387,12 +366,14 @@ class TestRunEvalLoopRecipeReuse:
 class TestRunEvalLoopMultiRowFirstRun:
     async def test_no_existing_recipe_generates_and_persists_every_row(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _RowCandidateStrategyList(candidates=[_RowCandidateStrategy(**_WINNING_ROW_STRATEGY)])
-        judge_verdict = _JudgeVerdict(
-            winning_candidate_index=0, reasoning="matches page content", field_confidences={"employer": "confident"}
-        )
-        fake_extraction_model, _ = _fake_structured_model(candidates)
-        fake_judge_model, _ = _fake_structured_model(judge_verdict)
+        candidates = {"candidates": [{**_WINNING_ROW_STRATEGY}]}
+        judge_verdict = {
+            "winning_candidate_index": 0,
+            "reasoning": "matches page content",
+            "field_confidences": {"employer": "confident"},
+        }
+        fake_extraction_model, _ = fake_structured_model(candidates)
+        fake_judge_model, _ = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -425,10 +406,8 @@ class TestRunEvalLoopMultiRowFirstRun:
 
     async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _RowCandidateStrategyList(
-            candidates=[_RowCandidateStrategy(row_selector=".nope", field_selectors={"employer": ".also-nope"})]
-        )
-        fake_extraction_model, _ = _fake_structured_model(candidates)
+        candidates = {"candidates": [{"row_selector": ".nope", "field_selectors": {"employer": ".also-nope"}}]}
+        fake_extraction_model, _ = fake_structured_model(candidates)
 
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_extraction_model):
             extraction = await run_eval_loop_multi_row(
@@ -450,18 +429,16 @@ class TestRunEvalLoopMultiRowFirstRun:
         """Unlike the single-record path, "best" has a real comparable signal
         here (row count captured), not just "first proposed"."""
         recipe_collection, extraction_collection = _collections()
-        candidates = _RowCandidateStrategyList(
-            candidates=[
+        candidates = {
+            "candidates": [
                 # This one only captures 1 of the 2 real rows (employer selector too narrow).
-                _RowCandidateStrategy(
-                    row_selector="tbody tr", field_selectors={"employer": "td.employer:-soup-contains('Acme')"}
-                ),
-                _RowCandidateStrategy(**_WINNING_ROW_STRATEGY),
+                {"row_selector": "tbody tr", "field_selectors": {"employer": "td.employer:-soup-contains('Acme')"}},
+                {**_WINNING_ROW_STRATEGY},
             ]
-        )
-        judge_verdict = _JudgeVerdict(winning_candidate_index=None, reasoning="none of these look right")
-        fake_extraction_model, _ = _fake_structured_model(candidates)
-        fake_judge_model, _ = _fake_structured_model(judge_verdict)
+        }
+        judge_verdict = {"winning_candidate_index": None, "reasoning": "none of these look right"}
+        fake_extraction_model, _ = fake_structured_model(candidates)
+        fake_judge_model, _ = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -562,10 +539,10 @@ class TestRunEvalLoopMultiRowRecipeReuse:
         )
         await recipe_collection.save_entity(recipe_entity)
 
-        candidates = _RowCandidateStrategyList(candidates=[_RowCandidateStrategy(**_WINNING_ROW_STRATEGY)])
-        judge_verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="matches page content")
-        fake_extraction_model, extraction_ainvoke = _fake_structured_model(candidates)
-        fake_judge_model, judge_ainvoke = _fake_structured_model(judge_verdict)
+        candidates = {"candidates": [{**_WINNING_ROW_STRATEGY}]}
+        judge_verdict = {"winning_candidate_index": 0, "reasoning": "matches page content"}
+        fake_extraction_model, extraction_ainvoke = fake_structured_model(candidates)
+        fake_judge_model, judge_ainvoke = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -592,10 +569,10 @@ class TestRunEvalLoopMultiRowRecipeReuse:
 
     async def test_second_run_against_same_healthy_recipe_reuses_it_again(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _RowCandidateStrategyList(candidates=[_RowCandidateStrategy(**_WINNING_ROW_STRATEGY)])
-        judge_verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="matches")
-        fake_extraction_model, extraction_ainvoke = _fake_structured_model(candidates)
-        fake_judge_model, judge_ainvoke = _fake_structured_model(judge_verdict)
+        candidates = {"candidates": [{**_WINNING_ROW_STRATEGY}]}
+        judge_verdict = {"winning_candidate_index": 0, "reasoning": "matches"}
+        fake_extraction_model, extraction_ainvoke = fake_structured_model(candidates)
+        fake_judge_model, judge_ainvoke = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -641,12 +618,14 @@ class TestRunEvalLoopMultiRowRecipeReuse:
 class TestRunEvalLoopRegexStrategyFirstRun:
     async def test_no_existing_recipe_generates_and_persists_winner(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _RegexCandidateStrategyList(candidates=[_RegexCandidateStrategy(pattern=_WINNING_REGEX_PATTERN)])
-        judge_verdict = _JudgeVerdict(
-            winning_candidate_index=0, reasoning="matches page content", field_confidences={"employer": "confident"}
-        )
-        fake_extraction_model, _ = _fake_structured_model(candidates)
-        fake_judge_model, _ = _fake_structured_model(judge_verdict)
+        candidates = {"candidates": [{"pattern": _WINNING_REGEX_PATTERN}]}
+        judge_verdict = {
+            "winning_candidate_index": 0,
+            "reasoning": "matches page content",
+            "field_confidences": {"employer": "confident"},
+        }
+        fake_extraction_model, _ = fake_structured_model(candidates)
+        fake_judge_model, _ = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -675,10 +654,8 @@ class TestRunEvalLoopRegexStrategyFirstRun:
 
     async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _RegexCandidateStrategyList(
-            candidates=[_RegexCandidateStrategy(pattern=r"NOPE: (?P<employer>x)(?P<affected_count>x)")]
-        )
-        fake_extraction_model, _ = _fake_structured_model(candidates)
+        candidates = {"candidates": [{"pattern": r"NOPE: (?P<employer>x)(?P<affected_count>x)"}]}
+        fake_extraction_model, _ = fake_structured_model(candidates)
 
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_extraction_model):
             extraction = await run_eval_loop(
@@ -700,8 +677,8 @@ class TestRunEvalLoopRegexStrategyFirstRun:
         """A malformed pattern (unbalanced parens) must fail structural
         validation cleanly, not raise out of the eval loop."""
         recipe_collection, extraction_collection = _collections()
-        candidates = _RegexCandidateStrategyList(candidates=[_RegexCandidateStrategy(pattern=r"(?P<employer>[")])
-        fake_extraction_model, _ = _fake_structured_model(candidates)
+        candidates = {"candidates": [{"pattern": r"(?P<employer>["}]}
+        fake_extraction_model, _ = fake_structured_model(candidates)
 
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_extraction_model):
             extraction = await run_eval_loop(
@@ -784,14 +761,14 @@ class TestRunEvalLoopRegexStrategyRecipeReuse:
 class TestRunEvalLoopMultiRowRegexStrategyFirstRun:
     async def test_no_existing_recipe_generates_and_persists_every_row(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _RegexCandidateStrategyList(
-            candidates=[_RegexCandidateStrategy(pattern=_WINNING_REGEX_ROW_PATTERN)]
-        )
-        judge_verdict = _JudgeVerdict(
-            winning_candidate_index=0, reasoning="matches page content", field_confidences={"employer": "confident"}
-        )
-        fake_extraction_model, _ = _fake_structured_model(candidates)
-        fake_judge_model, _ = _fake_structured_model(judge_verdict)
+        candidates = {"candidates": [{"pattern": _WINNING_REGEX_ROW_PATTERN}]}
+        judge_verdict = {
+            "winning_candidate_index": 0,
+            "reasoning": "matches page content",
+            "field_confidences": {"employer": "confident"},
+        }
+        fake_extraction_model, _ = fake_structured_model(candidates)
+        fake_judge_model, _ = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -823,10 +800,8 @@ class TestRunEvalLoopMultiRowRegexStrategyFirstRun:
 
     async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _RegexCandidateStrategyList(
-            candidates=[_RegexCandidateStrategy(pattern=r"NOPE: (?P<employer>x)(?P<affected_count>x)")]
-        )
-        fake_extraction_model, _ = _fake_structured_model(candidates)
+        candidates = {"candidates": [{"pattern": r"NOPE: (?P<employer>x)(?P<affected_count>x)"}]}
+        fake_extraction_model, _ = fake_structured_model(candidates)
 
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_extraction_model):
             extraction = await run_eval_loop_multi_row(
@@ -877,12 +852,10 @@ class TestRunEvalLoopMultiRowRegexStrategyRecipeReuse:
 
     async def test_second_run_against_same_healthy_recipe_reuses_it_again(self):
         recipe_collection, extraction_collection = _collections()
-        candidates = _RegexCandidateStrategyList(
-            candidates=[_RegexCandidateStrategy(pattern=_WINNING_REGEX_ROW_PATTERN)]
-        )
-        judge_verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="matches")
-        fake_extraction_model, extraction_ainvoke = _fake_structured_model(candidates)
-        fake_judge_model, judge_ainvoke = _fake_structured_model(judge_verdict)
+        candidates = {"candidates": [{"pattern": _WINNING_REGEX_ROW_PATTERN}]}
+        judge_verdict = {"winning_candidate_index": 0, "reasoning": "matches"}
+        fake_extraction_model, extraction_ainvoke = fake_structured_model(candidates)
+        fake_judge_model, judge_ainvoke = fake_structured_model(judge_verdict)
 
         with patch(
             "threetears.scrape.llm_retry.create_chat_model",
@@ -929,10 +902,10 @@ _NOTICES_PAGE_HTML = """
 
 
 class TestRunEvalLoopMultiRowPerDocumentStrategy:
-    """Mocks at the extract_fields_directly_chunked / _judge_one_document_extraction
-    function boundary (patched directly on the eval_loop module), not the deep
+    """Holds the extraction (extract_fields_directly_chunked, patched on the eval_loop module)
+    and the judge (an injected ``document_judge``) at their function boundaries, not the deep
     create_chat_model level -- these tests exercise per-document ROUTING/aggregation
-    logic; extraction's and the judge's own internals get their own dedicated unit
+    logic; extraction's and the default judge's own behaviour get their own dedicated
     tests in test_extraction.py and TestJudgeOneDocumentExtraction below."""
 
     async def test_extracts_one_confirmed_record_per_document(self):
@@ -951,7 +924,6 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", judge_mock),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_wv",
@@ -962,6 +934,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=judge_mock,
             )
 
         assert extraction.validation_status == "validated"
@@ -988,7 +961,6 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=False)),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_wv",
@@ -999,6 +971,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=AsyncMock(return_value=False),
             )
 
         assert extraction.validation_status == "failed"
@@ -1015,7 +988,6 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", extract_mock),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
         ):
             await run_eval_loop_multi_row(
                 "warn_act_wv",
@@ -1026,6 +998,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=AsyncMock(return_value=True),
             )
             await run_eval_loop_multi_row(
                 "warn_act_wv",
@@ -1036,6 +1009,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=AsyncMock(return_value=True),
             )
 
         assert extract_mock.await_count == 2
@@ -1051,7 +1025,6 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", extract_mock),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", judge_mock),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_wv",
@@ -1062,6 +1035,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=judge_mock,
             )
 
         assert extraction.validation_status == "failed"
@@ -1100,7 +1074,6 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_wv",
@@ -1111,6 +1084,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=AsyncMock(return_value=True),
             )
 
         assert extraction.validation_status == "validated"
@@ -1120,7 +1094,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         """Live-reproduced against a real document: the underlying chat client can hang well
         past its own per-attempt timeout with zero further retry activity -- a real
         West Virginia document reproduced this directly. asyncio.wait_for's outer
-        deadline (_PER_DOCUMENT_TIMEOUT_SECONDS) is what actually bounds it, not
+        deadline (per_document_deadline_seconds) is what actually bounds it, not
         extract_fields_directly_chunked's own timeout/attempts alone.
 
         Isolation bounds the wait, not the outcome: the other document still runs to
@@ -1158,8 +1132,6 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract_chunked),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", slow_judge),
-            patch.object(eval_loop_module, "_PER_DOCUMENT_TIMEOUT_SECONDS", deadline),
             pytest.raises(StructuredCallTimeoutError) as exc_info,
         ):
             await run_eval_loop_multi_row(
@@ -1171,6 +1143,8 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=slow_judge,
+                per_document_deadline_seconds=deadline,
             )
 
         assert exc_info.value.deadline_seconds == deadline
@@ -1196,8 +1170,6 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 "extract_fields_directly_chunked",
                 AsyncMock(return_value={"employer": "Acme Corp", "affected_count": 42}),
             ),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", hanging_judge),
-            patch.object(eval_loop_module, "_PER_DOCUMENT_TIMEOUT_SECONDS", 0.05),
             pytest.raises(StructuredCallTimeoutError) as exc_info,
         ):
             await run_eval_loop_multi_row(
@@ -1209,6 +1181,8 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=hanging_judge,
+                per_document_deadline_seconds=0.05,
             )
 
         assert exc_info.value.log_label == "scrape per-document judge"
@@ -1225,7 +1199,6 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
             patch.object(
                 eval_loop_module, "extract_fields_directly_chunked", AsyncMock(return_value={"employer": "Acme Corp"})
             ),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
         ):
             await run_eval_loop_multi_row(
                 "warn_act_wv",
@@ -1236,6 +1209,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=AsyncMock(return_value=True),
             )
             await run_eval_loop_multi_row(
                 "warn_act_wv",
@@ -1246,6 +1220,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=AsyncMock(return_value=True),
             )
 
         recipe = await recipe_collection.get("warn_act_wv")
@@ -1291,7 +1266,6 @@ class TestRunEvalLoopMultiRowVisionRouting:
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_text),
             patch.object(eval_loop_module, "extract_fields_from_images", fake_vision),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", fake_judge),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_hi",
@@ -1302,6 +1276,7 @@ class TestRunEvalLoopMultiRowVisionRouting:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=fake_judge,
             )
 
         assert len(text_calls) == 1
@@ -1329,8 +1304,6 @@ class TestRunEvalLoopMultiRowVisionRouting:
 
         with (
             patch.object(eval_loop_module, "extract_fields_from_images", hanging_vision),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
-            patch.object(eval_loop_module, "_PER_DOCUMENT_TIMEOUT_SECONDS", 0.05),
             pytest.raises(StructuredCallTimeoutError) as exc_info,
         ):
             await run_eval_loop_multi_row(
@@ -1342,6 +1315,8 @@ class TestRunEvalLoopMultiRowVisionRouting:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=AsyncMock(return_value=True),
+                per_document_deadline_seconds=0.05,
             )
 
         assert exc_info.value.log_label == "scrape vision per-document field extraction"
@@ -1349,8 +1324,8 @@ class TestRunEvalLoopMultiRowVisionRouting:
 
 
 class TestRunEvalLoopMultiRowVisionStrategy:
-    """Mocks at the extract_page_images / extract_multi_row_fields_from_images /
-    _judge_multi_row_extraction function boundary, same mocking-pattern-evolution
+    """Mocks at the extract_page_images / extract_multi_row_fields_from_images function
+    boundary, with the judge an injected multi_row_judge, same mocking-pattern-evolution
     lesson as TestRunEvalLoopMultiRowPerDocumentStrategy -- these tests exercise
     multi_row_vision's own ROUTING/aggregation/validation_status logic; extraction's
     and the judge's own internals get their own dedicated unit tests below and in
@@ -1368,7 +1343,6 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         with (
             patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
             patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
-            patch.object(eval_loop_module, "_judge_multi_row_extraction", AsyncMock(return_value={0, 1})),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_nv",
@@ -1379,6 +1353,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="multi_row_vision",
+                multi_row_judge=AsyncMock(return_value={0, 1}),
             )
 
         assert extraction.validation_status == "validated"
@@ -1400,7 +1375,6 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         with (
             patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
             patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
-            patch.object(eval_loop_module, "_judge_multi_row_extraction", AsyncMock(return_value={0, 2})),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_nv",
@@ -1411,6 +1385,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="multi_row_vision",
+                multi_row_judge=AsyncMock(return_value={0, 2}),
             )
 
         assert extraction.validation_status == "needs_review"
@@ -1432,7 +1407,6 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         with (
             patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
             patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
-            patch.object(eval_loop_module, "_judge_multi_row_extraction", AsyncMock(return_value=set())),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_nv",
@@ -1443,6 +1417,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="multi_row_vision",
+                multi_row_judge=AsyncMock(return_value=set()),
             )
 
         assert extraction.validation_status == "failed"
@@ -1458,7 +1433,6 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         with (
             patch.object(eval_loop_module, "extract_page_images", lambda html: []),
             patch.object(eval_loop_module, "extract_multi_row_fields_from_images", extract_mock),
-            patch.object(eval_loop_module, "_judge_multi_row_extraction", judge_mock),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_nv",
@@ -1469,6 +1443,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="multi_row_vision",
+                multi_row_judge=judge_mock,
             )
 
         assert extraction.validation_status == "failed"
@@ -1514,7 +1489,6 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         with (
             patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
             patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
-            patch.object(eval_loop_module, "_judge_multi_row_extraction", judge_mock),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_nv",
@@ -1525,6 +1499,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="multi_row_vision",
+                multi_row_judge=judge_mock,
             )
 
         assert extraction.validation_status == "validated"
@@ -1542,7 +1517,6 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         with (
             patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
             patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=None)),
-            patch.object(eval_loop_module, "_judge_multi_row_extraction", judge_mock),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_nv",
@@ -1553,6 +1527,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="multi_row_vision",
+                multi_row_judge=judge_mock,
             )
 
         assert extraction.validation_status == "failed"
@@ -1580,7 +1555,6 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         with (
             patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
             patch.object(eval_loop_module, "extract_multi_row_fields_from_images", hanging_extraction),
-            patch.object(eval_loop_module, "_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS", 0.05),
             pytest.raises(StructuredCallTimeoutError) as exc_info,
         ):
             await run_eval_loop_multi_row(
@@ -1592,6 +1566,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="multi_row_vision",
+                multi_row_vision_deadline_seconds=0.05,
             )
 
         assert exc_info.value.log_label == "scrape multi-row vision extraction"
@@ -1614,8 +1589,6 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         with (
             patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
             patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
-            patch.object(eval_loop_module, "_judge_multi_row_extraction", hanging_judge),
-            patch.object(eval_loop_module, "_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS", 0.05),
             pytest.raises(StructuredCallTimeoutError) as exc_info,
         ):
             await run_eval_loop_multi_row(
@@ -1627,6 +1600,8 @@ class TestRunEvalLoopMultiRowVisionStrategy:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="multi_row_vision",
+                multi_row_judge=hanging_judge,
+                multi_row_vision_deadline_seconds=0.05,
             )
 
         assert exc_info.value.log_label == "scrape multi-row judge"
@@ -1635,75 +1610,88 @@ class TestRunEvalLoopMultiRowVisionStrategy:
 
 
 # ===========================================================================
-# _judge_one_document_extraction -- per_document's own grounding check
+# the per_document grounding judge -- the default document_judge, driven through
+# run_eval_loop_multi_row with the extraction held and only the judge's model faked
 # ===========================================================================
 
-_TEXT_DOCUMENT = NoticeDocument(text="Acme Corp letter text", was_ocr=False, images=[])
-_VISION_DOCUMENT = NoticeDocument(text="", was_ocr=True, images=[b"fake-png-page-0"])
+_TEXT_DOCUMENT_HTML = '<html><body><div class="notice"><p>Acme Corp letter text</p></div></body></html>'
+_SCANNED_DOCUMENT_HTML = (
+    '<html><body><div class="notice" data-was-ocr="true">'
+    '<img class="ocr-page-image" data-page="0" src="data:image/png;base64,ZmFrZS1wbmc=">'
+    "</div></body></html>"
+)
 _EXTRACTED = {"employer": "Acme Corp", "affected_count": 42}
 
 
+async def _judge_one_document(html, fake_model, *, judge_model_id="deepseek/deepseek-chat-v3-0324"):
+    """Run one per_document poll over *html* whose extraction always yields :data:`_EXTRACTED`,
+    with the default judge asking *fake_model*. Returns the persisted extraction and the
+    ``create_chat_model`` mock, which only the judge reaches."""
+    import threetears.scrape.eval_loop as eval_loop_module
+
+    recipe_collection, extraction_collection = _collections()
+    with (
+        patch.object(eval_loop_module, "extract_fields_directly_chunked", AsyncMock(return_value=dict(_EXTRACTED))),
+        patch.object(eval_loop_module, "extract_fields_from_images", AsyncMock(return_value=dict(_EXTRACTED))),
+        patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model,
+        patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+    ):
+        extraction = await run_eval_loop_multi_row(
+            "warn_act_judge",
+            html,
+            "https://example.gov/warn",
+            _SCHEMA,
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            api_key="k",
+            judge_model_id=judge_model_id,
+            strategy_type="per_document",
+        )
+    return extraction, create_model
+
+
 class TestJudgeOneDocumentExtraction:
-    async def test_confirmed_verdict_returns_true(self):
-        verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="matches the document")
-        fake_model, ainvoke_mock = _fake_structured_model(verdict)
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            result = await _judge_one_document_extraction(
-                _TEXT_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
-            )
-        assert result is True
+    async def test_confirmed_verdict_keeps_the_record(self):
+        verdict = {"winning_candidate_index": 0, "reasoning": "matches the document"}
+        fake_model, ainvoke_mock = fake_structured_model(verdict)
+        extraction, _ = await _judge_one_document(_TEXT_DOCUMENT_HTML, fake_model)
+        assert extraction.structured_fields == {"records": [_EXTRACTED]}
         assert ainvoke_mock.await_count == 1
 
-    async def test_rejected_verdict_returns_false(self):
-        verdict = _JudgeVerdict(winning_candidate_index=None, reasoning="affected_count is not stated anywhere")
-        fake_model, _ = _fake_structured_model(verdict)
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            result = await _judge_one_document_extraction(
-                _TEXT_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
-            )
-        assert result is False
+    async def test_rejected_verdict_drops_the_record(self):
+        verdict = {"winning_candidate_index": None, "reasoning": "affected_count is not stated anywhere"}
+        fake_model, _ = fake_structured_model(verdict)
+        extraction, _ = await _judge_one_document(_TEXT_DOCUMENT_HTML, fake_model)
+        assert extraction.structured_fields == {"records": []}
+        assert extraction.validation_status == "failed"
 
     async def test_total_judge_failure_raises_never_reads_as_a_rejection(self):
         """A judge that could not be asked has not rejected the record; the record is still
         never kept, because the failure stops the poll rather than answering ``True``."""
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
-        with (
-            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
-            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
-            pytest.raises(StructuredCallExhaustedError),
-        ):
-            await _judge_one_document_extraction(
-                _TEXT_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
-            )
+        fake_model, _ = fake_structured_model(side_effect=RuntimeError("boom"))
+        with pytest.raises(StructuredCallExhaustedError):
+            await _judge_one_document(_TEXT_DOCUMENT_HTML, fake_model)
 
     async def test_text_document_uses_the_given_judge_model_no_provider_override(self):
-        verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="ok")
-        fake_model, _ = _fake_structured_model(verdict)
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
-            await _judge_one_document_extraction(
-                _TEXT_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
-            )
+        fake_model, _ = fake_structured_model({"winning_candidate_index": 0, "reasoning": "ok"})
+        _, create_model = await _judge_one_document(
+            _TEXT_DOCUMENT_HTML, fake_model, judge_model_id="deepseek/deepseek-chat-v3-0324"
+        )
         assert create_model.call_args.args[0] == "deepseek/deepseek-chat-v3-0324"
         assert create_model.call_args.kwargs["provider"] is None
 
     async def test_scanned_document_uses_the_vision_model_and_provider_ignoring_judge_model_id(self):
-        verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="matches the image")
-        fake_model, _ = _fake_structured_model(verdict)
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
-            result = await _judge_one_document_extraction(
-                _VISION_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="this-should-be-ignored"
-            )
-        assert result is True
+        fake_model, _ = fake_structured_model({"winning_candidate_index": 0, "reasoning": "matches the image"})
+        extraction, create_model = await _judge_one_document(
+            _SCANNED_DOCUMENT_HTML, fake_model, judge_model_id="this-should-be-ignored"
+        )
+        assert extraction.structured_fields == {"records": [_EXTRACTED]}
         assert create_model.call_args.args[0] == "anthropic/claude-sonnet-5"
         assert create_model.call_args.kwargs["provider"] == "openrouter"
 
     async def test_scanned_document_judge_prompt_includes_the_images(self):
-        verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="ok")
-        fake_model, ainvoke_mock = _fake_structured_model(verdict)
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            await _judge_one_document_extraction(
-                _VISION_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
-            )
+        fake_model, ainvoke_mock = fake_structured_model({"winning_candidate_index": 0, "reasoning": "ok"})
+        await _judge_one_document(_SCANNED_DOCUMENT_HTML, fake_model)
         [call] = ainvoke_mock.await_args_list
         [message] = call.args[0]
         image_blocks = [block for block in message.content if block.get("type") == "image_url"]
@@ -1711,7 +1699,8 @@ class TestJudgeOneDocumentExtraction:
 
 
 # ===========================================================================
-# _judge_multi_row_extraction -- multi_row_vision's own grounding check
+# the multi_row_vision grounding judge -- the default multi_row_judge, driven
+# through run_eval_loop_multi_row with the page images and table read held
 # ===========================================================================
 
 _MULTI_ROW_RECORDS = [
@@ -1720,59 +1709,81 @@ _MULTI_ROW_RECORDS = [
 ]
 
 
+async def _judge_multi_row(fake_model, *, images=(b"fake-png-page-0",), records=_MULTI_ROW_RECORDS):
+    """Run one multi_row_vision poll whose page holds *images* and whose table read yields
+    *records*, with the default judge asking *fake_model*. Returns the persisted extraction and
+    the ``create_chat_model`` mock, which only the judge reaches."""
+    import threetears.scrape.eval_loop as eval_loop_module
+
+    recipe_collection, extraction_collection = _collections()
+    with (
+        patch.object(eval_loop_module, "extract_page_images", lambda html: list(images)),
+        patch.object(
+            eval_loop_module,
+            "extract_multi_row_fields_from_images",
+            AsyncMock(return_value=[dict(record) for record in records]),
+        ),
+        patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model,
+        patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+    ):
+        extraction = await run_eval_loop_multi_row(
+            "warn_act_nv_judge",
+            "<html><body>a table</body></html>",
+            "https://example.gov/warn",
+            _SCHEMA,
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            api_key="k",
+            strategy_type="multi_row_vision",
+        )
+    return extraction, create_model
+
+
 class TestJudgeMultiRowExtraction:
-    async def test_confirmed_indices_are_returned_as_a_set(self):
-        verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0, 1], reasoning="both rows match")
-        fake_model, ainvoke_mock = _fake_structured_model(verdict)
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            result = await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
-        assert result == {0, 1}
+    async def test_every_confirmed_record_is_kept(self):
+        verdict = {"confirmed_record_indices": [0, 1], "reasoning": "both rows match"}
+        fake_model, ainvoke_mock = fake_structured_model(verdict)
+        extraction, _ = await _judge_multi_row(fake_model)
+        assert extraction.structured_fields == {"records": _MULTI_ROW_RECORDS}
+        assert extraction.validation_status == "validated"
         assert ainvoke_mock.await_count == 1
 
     async def test_a_subset_of_records_confirmed(self):
-        verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0], reasoning="row 1 bled into row 0's count")
-        fake_model, _ = _fake_structured_model(verdict)
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            result = await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
-        assert result == {0}
+        verdict = {"confirmed_record_indices": [0], "reasoning": "row 1 bled into row 0's count"}
+        fake_model, _ = fake_structured_model(verdict)
+        extraction, _ = await _judge_multi_row(fake_model)
+        assert extraction.structured_fields == {"records": [_MULTI_ROW_RECORDS[0]]}
+        assert extraction.validation_status == "needs_review"
 
     async def test_out_of_range_indices_are_filtered_out_fail_closed(self):
         """A hallucinated index (the judge names a record that doesn't exist) must
         never crash the caller or silently pass through as a confirmed record."""
-        verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0, 99], reasoning="oops")
-        fake_model, _ = _fake_structured_model(verdict)
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            result = await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
-        assert result == {0}
+        verdict = {"confirmed_record_indices": [0, 99], "reasoning": "oops"}
+        fake_model, _ = fake_structured_model(verdict)
+        extraction, _ = await _judge_multi_row(fake_model)
+        assert extraction.structured_fields == {"records": [_MULTI_ROW_RECORDS[0]]}
+        assert extraction.validation_status == "needs_review"
 
     async def test_total_judge_failure_raises_never_an_empty_confirmation(self):
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
-        with (
-            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
-            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
-            pytest.raises(StructuredCallExhaustedError),
-        ):
-            await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
+        fake_model, _ = fake_structured_model(side_effect=RuntimeError("boom"))
+        with pytest.raises(StructuredCallExhaustedError):
+            await _judge_multi_row(fake_model)
 
-    async def test_empty_records_returns_empty_set_without_calling_the_model(self):
-        with patch("threetears.scrape.llm_retry.create_chat_model") as create_model:
-            result = await _judge_multi_row_extraction([b"fake-png"], [], _SCHEMA, api_key="k")
-        assert result == set()
+    async def test_empty_records_never_call_the_model(self):
+        fake_model, _ = fake_structured_model({"confirmed_record_indices": [], "reasoning": "unused"})
+        extraction, create_model = await _judge_multi_row(fake_model, records=[])
+        assert extraction.structured_fields == {"records": []}
         create_model.assert_not_called()
 
     async def test_always_uses_the_vision_model_and_provider(self):
-        verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0], reasoning="ok")
-        fake_model, _ = _fake_structured_model(verdict)
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
-            await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
+        fake_model, _ = fake_structured_model({"confirmed_record_indices": [0], "reasoning": "ok"})
+        _, create_model = await _judge_multi_row(fake_model)
         assert create_model.call_args.args[0] == "anthropic/claude-sonnet-5"
         assert create_model.call_args.kwargs["provider"] == "openrouter"
 
     async def test_judge_prompt_includes_every_image_in_one_call(self):
-        verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0, 1], reasoning="ok")
-        fake_model, ainvoke_mock = _fake_structured_model(verdict)
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            await _judge_multi_row_extraction([b"page-0", b"page-1"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
+        fake_model, ainvoke_mock = fake_structured_model({"confirmed_record_indices": [0, 1], "reasoning": "ok"})
+        await _judge_multi_row(fake_model, images=(b"page-0", b"page-1"))
         assert ainvoke_mock.await_count == 1
         [call] = ainvoke_mock.await_args_list
         [message] = call.args[0]
@@ -1801,8 +1812,8 @@ class TestRegexValidationRunsOffTheEventLoop:
             r"\nEFFECTIVE DATE:\s*[^\n]+\nNO SUCH LINE"
         )
         recipe_collection, extraction_collection = _collections()
-        candidates = _RegexCandidateStrategyList(candidates=[_RegexCandidateStrategy(pattern=backtracking)])
-        fake_extraction_model, _ = _fake_structured_model(candidates)
+        candidates = {"candidates": [{"pattern": backtracking}]}
+        fake_extraction_model, _ = fake_structured_model(candidates)
 
         beats: list[float] = []
         stop = asyncio.Event()
@@ -1851,7 +1862,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
 
     async def test_candidate_generation_outage_raises_and_persists_nothing(self):
         recipe_collection, extraction_collection = _collections()
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("provider down"))
+        fake_model, _ = fake_structured_model(side_effect=RuntimeError("provider down"))
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
@@ -1872,7 +1883,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
 
     async def test_row_candidate_generation_outage_raises_and_persists_nothing(self):
         recipe_collection, extraction_collection = _collections()
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("provider down"))
+        fake_model, _ = fake_structured_model(side_effect=RuntimeError("provider down"))
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
@@ -1904,10 +1915,8 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
                 raise boom
             return {"employer": "Beta LLC", "affected_count": "7"}
 
-        fake_extraction_model, _ = _fake_structured_model(side_effect=extraction_answer)
-        fake_judge_model, judge_ainvoke = _fake_structured_model(
-            _JudgeVerdict(winning_candidate_index=0, reasoning="grounded")
-        )
+        fake_extraction_model, _ = fake_structured_model(side_effect=extraction_answer)
+        fake_judge_model, judge_ainvoke = fake_structured_model({"winning_candidate_index": 0, "reasoning": "grounded"})
         with (
             patch(
                 "threetears.scrape.llm_retry.create_chat_model",
@@ -1934,8 +1943,8 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
 
     async def test_per_document_judge_outage_fails_the_poll(self):
         recipe_collection, extraction_collection = _collections()
-        fake_extraction_model, _ = _fake_structured_model({"employer": "Acme Corp", "affected_count": "42"})
-        fake_judge_model, _ = _fake_structured_model(side_effect=RuntimeError("judge down"))
+        fake_extraction_model, _ = fake_structured_model({"employer": "Acme Corp", "affected_count": "42"})
+        fake_judge_model, _ = fake_structured_model(side_effect=RuntimeError("judge down"))
         with (
             patch(
                 "threetears.scrape.llm_retry.create_chat_model",
@@ -1972,7 +1981,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
             }
         )
         await recipe_collection.save_entity(recipe)
-        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("vision down"))
+        fake_model, _ = fake_structured_model(side_effect=RuntimeError("vision down"))
         with (
             patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
@@ -1999,10 +2008,10 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
-        fake_extraction_model, _ = _fake_structured_model(
+        fake_extraction_model, _ = fake_structured_model(
             {"records": [{"employer": "Acme Corp", "affected_count": "42"}]}
         )
-        fake_judge_model, _ = _fake_structured_model(side_effect=RuntimeError("judge down"))
+        fake_judge_model, _ = fake_structured_model(side_effect=RuntimeError("judge down"))
         with (
             patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
             patch(
@@ -2045,7 +2054,6 @@ class TestACancelledPollIsNotADeadlineFailure:
 
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", cancelled_extract),
-            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
             pytest.raises(asyncio.CancelledError),
         ):
             await run_eval_loop_multi_row(
@@ -2057,6 +2065,7 @@ class TestACancelledPollIsNotADeadlineFailure:
                 extraction_collection=extraction_collection,
                 api_key="k",
                 strategy_type="per_document",
+                document_judge=AsyncMock(return_value=True),
             )
 
         assert await _rows_for(extraction_collection, "warn_act_cancelled") == []

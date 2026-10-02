@@ -55,7 +55,7 @@ from threetears.channels.presence.collection import PresenceCollection
 from threetears.channels.presence.fanout import RoomFanout
 from threetears.channels.presence.l1_cache import create_presence_l1_backend
 from threetears.channels.presence.room_state import RoomState
-from threetears.channels.websocket import WebSocketHandler
+from threetears.channels.websocket import UNAUTHENTICATED, WebSocketAuthRefused, WebSocketHandler
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.nats import NatsClient, set_default_namespace
@@ -204,13 +204,13 @@ class _BlockingMockWebSocket:
         self._release.set()
 
 
-async def _auth_for(user_id: UUID, customer_id: UUID) -> Callable[[str], Awaitable[dict[str, object] | None]]:
+async def _auth_for(user_id: UUID, customer_id: UUID) -> Callable[[str], Awaitable[dict[str, object]]]:
     """build an auth validator returning a fixed user_id + customer_id (UUID strings)."""
 
-    async def _v(token: str) -> dict[str, object] | None:
-        if token == "valid-token":
-            return {"user_id": str(user_id), "customer_id": str(customer_id)}
-        return None
+    async def _v(token: str) -> dict[str, object]:
+        if token != "valid-token":
+            raise WebSocketAuthRefused(UNAUTHENTICATED, "authentication required")
+        return {"user_id": str(user_id), "customer_id": str(customer_id)}
 
     return _v
 
@@ -229,7 +229,7 @@ class _PodHandler:
     def handler(
         self,
         *,
-        auth_validator: Callable[[str], Awaitable[dict[str, object] | None]],
+        auth_validator: Callable[[str], Awaitable[dict[str, object]]],
         acl_cache: AclCache,
         ns: _StubNs,
         op_start: int = 100,

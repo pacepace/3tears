@@ -5,13 +5,12 @@ CapabilitySourceEntity, composite-PK shape on TableTemplateEntity, flat-PK
 shape on DataSourceTableEntity / DataSourceColumnEntity /
 DataSourceRelationEntity, and BaseEntity subclass invariants.
 
-access-mode coverage reaches past entities on purpose. the value set is
-carried by TWO independent string authorities in this package --
-:class:`DataSourceAccessMode` here, and
-``threetears.datasources.config._VALID_ACCESS_MODES`` -- and neither
-references the other. the parity and normalization cases live beside the
-enum they are guarding so a mode added to one authority and not the other
-fails in the same file that shows the enum.
+access-mode coverage reaches past entities on purpose. the value set's
+authority is :class:`DataSourceAccessMode` here, and
+:class:`~threetears.datasources.config.DatasourceConfig` is the YAML-facing
+gate that consumes it. the parity and normalization cases live beside the
+enum so a mode the enum gains and the gate does not accept -- or the
+reverse -- fails in the same file that shows the enum.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import ValidationError
 
-from threetears.datasources.config import _VALID_ACCESS_MODES, DatasourceConfig
+from threetears.datasources.config import DatasourceConfig
 from threetears.core.testing import entity_collection_stub
 from threetears.datasources.entities import (
     CapabilitySourceEntity,
@@ -101,15 +100,25 @@ class TestDataSourceAccessModeEnum:
 
 
 class TestAccessModeAuthorityParity:
-    """the enum and the config frozenset MUST carry identical value sets.
+    """the config gate MUST admit exactly the enum's value set.
 
-    ``_VALID_ACCESS_MODES`` mirrors the enum by hand rather than importing
-    it, so nothing in the type system stops a fifth mode landing in one
-    authority and not the other. this test is what stops it.
+    the gate once carried a hand-mirrored copy of the set, and it drifted:
+    ``publish`` reached the enum and not the gate. both directions are pinned
+    where an operator meets them -- every enum value loads, and the refusal
+    lists exactly the enum's values, so a mode the gate admits beyond the
+    enum shows up in its own error message.
     """
 
-    def test_config_frozenset_matches_enum(self) -> None:
-        assert set(_VALID_ACCESS_MODES) == {m.value for m in DataSourceAccessMode}
+    @pytest.mark.parametrize("mode", list(DataSourceAccessMode))
+    def test_every_enum_mode_is_admitted_by_the_config(self, mode: DataSourceAccessMode) -> None:
+        cfg = DatasourceConfig.model_validate({"name": "parity", "access_mode": mode.value})
+        assert cfg.access_mode == mode.value
+
+    def test_the_config_admits_nothing_beyond_the_enum(self) -> None:
+        with pytest.raises(ValidationError) as caught:
+            DatasourceConfig.model_validate({"name": "parity", "access_mode": "not-a-mode"})
+        admissible = ", ".join(sorted(m.value for m in DataSourceAccessMode))
+        assert f"must be one of {admissible}" in str(caught.value)
 
 
 class TestDatasourceConfigAccessMode:

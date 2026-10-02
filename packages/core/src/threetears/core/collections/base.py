@@ -21,7 +21,8 @@ import random
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
@@ -31,7 +32,9 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
-from threetears.core.cache.base import _CACHED_AT_COLUMN
+from threetears.core.cache.base import CACHED_AT_COLUMN
+from threetears.core.collections.bypassing_write import BypassingWrite
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.l2_order import (
     L2_ORDER_COLUMNS,
@@ -91,9 +94,9 @@ Table(
 )
 
 
-#: how often a collection sweeps expired absent-markers from its pod's L1, and how many rows one
-#: sweep removes. Bounded both ways so the sweep never becomes a cost a lookup notices; a backlog
-#: larger than one batch drains over successive intervals.
+#: how often a collection sweeps expired absent-markers from its pod's L1, and the default number
+#: of rows one sweep query removes (:attr:`BaseCollection.negative_cache_sweep_batch`). Bounded so
+#: no single query is a cost a lookup notices; a sweep keeps querying until the backlog is gone.
 _ABSENT_MARKER_SWEEP_INTERVAL_SECONDS: Final = 60.0
 _ABSENT_MARKER_SWEEP_BATCH: Final = 500
 _GENERATION_WARNING_INTERVAL_SECONDS: Final = 60.0
@@ -143,6 +146,158 @@ class _L2Lookup:
     row: dict[str, Any] | None
     marker: _AbsentMarker | None
     revision: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _L2BeforeWrite:
+    """L2's state for one key as a save read it, before its L3 write.
+
+    :ivar fenced: whether the save's L2 write is conditional -- ``False`` when there is no L2
+        bucket, or no L3 pool (L2 is then the source of truth, and its writes are last-writer-wins)
+    :ivar revision: the revision of the key's latest message, a deletion included, or ``0`` for a
+        key with no message; ``None`` when the save is unfenced or L2 could not be read
+    """
+
+    fenced: bool
+    revision: int | None
+
+
+@dataclass(slots=True)
+class _KeyActivity:
+    """what this process is doing to one key, tracked only while something is watching it.
+
+    :ivar changes: how many writes have begun on the key, and evictions of it have landed, since
+        it was first watched
+    :ivar writers: writes of the key in flight
+    :ivar holders: tickets outstanding on the key, reads and writes both; the entry is dropped when
+        the last is released, so the map holds only keys with work in flight
+    """
+
+    changes: int = 0
+    writers: int = 0
+    holders: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _KeyTicket:
+    """one read's or one write's claim on a key, taken before its first await.
+
+    :ivar key: the key, as the pk values' string forms
+    :ivar activity: the key's shared record
+    :ivar seen: ``activity.changes`` as this ticket left it
+    :ivar contended: whether a write of the key was already in flight when this ticket was taken
+    :ivar writing: whether the ticket is a write's
+    """
+
+    key: tuple[str, ...]
+    activity: _KeyActivity
+    seen: int
+    contended: bool
+    writing: bool
+
+
+class _L1Fence:
+    """orders this process's L1 writes of a key against every other write and eviction of it.
+
+    Every L1 write that follows an await -- a pull-through caching what L2 or L3 returned, a save
+    caching the row it committed -- is a claim that the row is still the newest, and the await is
+    where something newer can land: this process's own write of the key, or a peer's broadcast
+    evicting it. Caching after that leaves L1 behind the tier it was read from, with nothing left to
+    evict it. The L2 revision fences this between processes; this is the same fence inside one,
+    and the only one a collection with no L2 has.
+
+    A read or write takes a ticket before its first await and may cache only while no write of the
+    key began, and no eviction of it landed, since -- and, for a write, while no other write of the
+    key was in flight when it began. Two overlapping writes can reach L3 in either order, so neither
+    knows it is the later one; both drop the key, and the next read takes whichever row L3 kept.
+    The check and the L1 write run with no await between them.
+    """
+
+    __slots__ = ("_keys",)
+
+    def __init__(self) -> None:
+        """start with no key watched.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._keys: dict[tuple[str, ...], _KeyActivity] = {}
+
+    def begin(self, key: tuple[str, ...], *, writing: bool) -> _KeyTicket:
+        """take a ticket on ``key`` before the first await of a read or write of it.
+
+        :param key: the key, as the pk values' string forms
+        :ptype key: tuple[str, ...]
+        :param writing: whether the ticket is a write's, which every other ticket on the key sees
+        :ptype writing: bool
+        :return: the ticket
+        :rtype: _KeyTicket
+        """
+        activity = self._keys.get(key)
+        if activity is None:
+            activity = _KeyActivity()
+            self._keys[key] = activity
+        contended = activity.writers > 0
+        if writing:
+            activity.writers += 1
+            activity.changes += 1
+        activity.holders += 1
+        return _KeyTicket(key=key, activity=activity, seen=activity.changes, contended=contended, writing=writing)
+
+    @staticmethod
+    def still_newest(ticket: _KeyTicket) -> bool:
+        """whether the row ``ticket``'s holder is about to cache is still the newest this process knows.
+
+        :param ticket: the holder's ticket
+        :ptype ticket: _KeyTicket
+        :return: ``True`` when no write overlapped the ticket and no eviction landed since it was taken
+        :rtype: bool
+        """
+        return not ticket.contended and ticket.activity.changes == ticket.seen
+
+    def end(self, ticket: _KeyTicket) -> None:
+        """release ``ticket``, dropping the key's record once nothing holds it.
+
+        :param ticket: the ticket to release
+        :ptype ticket: _KeyTicket
+        :return: nothing
+        :rtype: None
+        """
+        activity = ticket.activity
+        if ticket.writing:
+            activity.writers -= 1
+        activity.holders -= 1
+        if activity.holders == 0 and self._keys.get(ticket.key) is activity:
+            del self._keys[ticket.key]
+
+    def changed(self, key: tuple[str, ...]) -> None:
+        """record that ``key`` was evicted or rewritten, so no ticket taken before now may cache it.
+
+        :param key: the key, as the pk values' string forms
+        :ptype key: tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        activity = self._keys.get(key)
+        if activity is not None:
+            activity.changes += 1
+
+    @contextmanager
+    def watching(self, key: tuple[str, ...], *, writing: bool) -> Iterator[_KeyTicket]:
+        """hold a ticket on ``key`` for the body, released however the body ends.
+
+        :param key: the key, as the pk values' string forms
+        :ptype key: tuple[str, ...]
+        :param writing: whether the ticket is a write's
+        :ptype writing: bool
+        :return: the ticket, for :meth:`still_newest`
+        :rtype: Iterator[_KeyTicket]
+        """
+        ticket = self.begin(key, writing=writing)
+        try:
+            yield ticket
+        finally:
+            self.end(ticket)
 
 
 class _NatsClientFromRegistry:
@@ -241,6 +396,12 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: above.
     negative_cache_max_age: ClassVar[timedelta | None] = None
 
+    #: How many expired absent-markers one sweep step deletes from this pod's L1 before checking
+    #: for more. A sweep keeps taking steps until the backlog is gone, so this bounds the size of
+    #: one query, never how much a sweep removes. Only meaningful with
+    #: :attr:`negative_cache_max_age` set; must be at least one.
+    negative_cache_sweep_batch: ClassVar[int] = _ABSENT_MARKER_SWEEP_BATCH
+
     #: The column holding each row's expiry time, or ``None`` for rows that never expire.
     #:
     #: A row whose expiry has passed is absent to every read that answers "does this exist" --
@@ -268,7 +429,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: None
         :rtype: None
         :raises TypeError: when :attr:`expires_at_column` is not a declared datetime column, or
-            :attr:`negative_cache_max_age` is under one second
+            :attr:`negative_cache_max_age` is under one second, or
+            :attr:`negative_cache_sweep_batch` is under one
         """
         super().__init_subclass__(**kwargs)
         if cls.expires_at_column is not None and cls.expires_at_column not in cls.datetime_columns:
@@ -280,6 +442,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             raise TypeError(
                 f"{cls.__name__}.negative_cache_max_age must be at least one second, the finest "
                 f"server-side lifetime an L2 entry can carry; got {cls.negative_cache_max_age}"
+            )
+        if cls.negative_cache_sweep_batch < 1:
+            raise TypeError(
+                f"{cls.__name__}.negative_cache_sweep_batch must be at least 1, or a sweep could never "
+                f"remove an expired absent-marker; got {cls.negative_cache_sweep_batch}"
             )
 
     # datasource-task-06 DS-06-04: per-concrete-class memo of table
@@ -367,6 +534,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         result: CollectionRegistry | None = getattr(self, "_registry", None)
         return result
+
+    @property
+    def broadcasts_invalidations(self) -> bool:
+        """whether this collection's evictions reach other replicas.
+
+        ``False`` when it was built with no NATS client: a write or eviction then drops the key on
+        this replica only, and every other replica keeps serving the row it cached. A host that
+        runs shared work over a collection -- a tick under a cross-pod lock -- checks this to refuse
+        a collection wired without the bus rather than let it evict locally in silence.
+
+        :return: ``True`` when the collection holds a NATS client to broadcast through
+        :rtype: bool
+        """
+        return self._nats_client is not None
 
     @property
     def required_l3_pool(self) -> L3Backend:
@@ -497,7 +678,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             :attr:`primary_key_columns` MUST be present
         :ptype data: dict[str, Any]
         :param original_timestamp: pre-modification ``date_updated``
-            for optimistic-lock validation, ``None`` for inserts
+            for optimistic-lock validation, ``None`` for inserts. a
+            non-``None`` value means the row was read as existing, so a
+            backend MUST write it update-only: a row deleted since the read
+            answers 0, never a re-insert
         :ptype original_timestamp: datetime | None
         :param conn: optional **backend-specific transaction handle** (e.g. an
             asyncpg connection for the SQL backend) that overrides
@@ -507,7 +691,8 @@ class BaseCollection(ABC, Generic[EntityT]):
             backends MUST honor this so the framework's transactional
             save_entity path stays atomic.
         :ptype conn: Any
-        :return: rows affected (0 on optimistic-lock failure, 1 on success)
+        :return: rows affected (0 on optimistic-lock failure or a row deleted
+            since it was read, 1 on success)
         :rtype: int
         """
         ...
@@ -534,6 +719,149 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: bool
         """
         return False
+
+    def complete_written_row(self, data: dict[str, Any]) -> dict[str, Any]:
+        """``data`` with every column the write stores as a value known before it runs, filled in.
+
+        Public extension point, paired with :meth:`columns_decided_by_store`: a column a write
+        leaves out is not always one the database decides. When the write is certain to store a
+        known value for it -- ``NULL``, for a nullable column with no default that the statement
+        writes either way -- the row cached is completed with that value instead of being read
+        back. The framework completes the row before asking which columns the database decides,
+        and caches the completed row.
+
+        The default completes nothing. :class:`~threetears.core.collections.schema_backed
+        .SchemaBackedCollection` completes from its declared columns when it writes through its
+        generated SQL.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: the row with every column of known stored value present; ``data`` itself when
+            there is none to add
+        :rtype: dict[str, Any]
+        """
+        return data
+
+    def columns_decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
+        """the columns whose stored value writing ``data`` leaves to the database, not to ``data``.
+
+        Public extension point. A write may leave columns for the database to decide: a server
+        default for a column it does not name, the stored value an update keeps for a column it
+        leaves out. The row the write sent is then not the row L3 holds, and a tier that cached
+        it would serve a row missing those columns -- on every replica reading L2, for as long as
+        the entry lives. A non-empty answer says so, and the framework acts on it at every write:
+
+        - a synchronous write (:meth:`save_entity`, an assignment) reads the row back from L3 once
+          it commits, and caches that;
+        - a write that reaches L1 and L2 before L3 (write-behind, :meth:`l2_cas_mutate` on a
+          collection with an L3 pool) has nothing to read back yet, so it is refused before any
+          tier takes it.
+
+        The default answers none: a collection that declares no columns writes the row it is
+        given. :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection` answers
+        from its declared columns. Never consulted on a collection with no L3 pool, whose L1 and
+        L2 are the record and fill nothing in.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: the names of the columns the database decides, in declared order; empty when
+            ``data`` is the row L3 holds after the write
+        :rtype: tuple[str, ...]
+        """
+        return ()
+
+    def _write_ahead_row(self, data: dict[str, Any]) -> dict[str, Any]:
+        """the row a write that reaches L1 and L2 before L3 caches, refused when the database decides any of it.
+
+        Such a write has no committed row to read back when it is cached, so the tiers would hold
+        the row as sent until it expired: missing the columns the database filled in, on every
+        replica reading L2. A collection with no L3 pool is the record itself and caches ``data``.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: the row completed by :meth:`complete_written_row`, or ``data`` with no L3 pool
+        :rtype: dict[str, Any]
+        :raises ValueError: when this collection has an L3 pool and :meth:`columns_decided_by_store`
+            names any column of the completed row
+        """
+        if self.l3_pool is None:
+            return data
+        completed = self.complete_written_row(data)
+        decided = self.columns_decided_by_store(completed)
+        if decided:
+            raise ValueError(
+                f"{type(self).__name__}: a write to {self.table_name!r} reaches L1 and L2 before L3, so "
+                f"its row must be the row L3 will hold, but the database decides {list(decided)!r}. "
+                f"name every one of them in the row, with the value it should store"
+            )
+        return completed
+
+    async def _stored_row(self, entity_id: Any, data: dict[str, Any]) -> dict[str, Any] | None:
+        """the whole row L3 holds after a committed write of ``data``: ``data`` itself, or a read of it.
+
+        The row is first completed by :meth:`complete_written_row`, and read from L3 only when
+        :meth:`columns_decided_by_store` names a column of it; never on a collection with no L3
+        pool. The read runs after the commit, so it sees this write or a later one; either is what
+        L3 holds, and the caller's fences decide whether it is cached.
+
+        A read that fails answers ``None``, which caches nothing: the write has committed, so the
+        save still succeeds, and the next read of the key goes to L3. A read that finds no row
+        (deleted since the commit) answers ``None`` too. A cancelled read drops the key from this
+        process's L1, which may hold the row as sent, and propagates.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param data: the row as written, stamped
+        :ptype data: dict[str, Any]
+        :return: the row L3 holds, or ``None`` when it could not be read
+        :rtype: dict[str, Any] | None
+        """
+        completed = data if self.l3_pool is None else self.complete_written_row(data)
+        decided = () if self.l3_pool is None else self.columns_decided_by_store(completed)
+        stored: dict[str, Any] | None = completed
+        if decided:
+            stored = None
+            try:
+                stored = await self.fetch_from_store(entity_id)
+            except Exception as exc:
+                log.warning(
+                    "reading back a row the database completed failed; nothing caches it and the next read goes to L3",
+                    extra={
+                        "extra_data": {
+                            "entity_id": str(entity_id),  # convert at border: log extra_data field
+                            "table": self.table_name,
+                            "decided_by_store": list(decided),
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    },
+                )
+            # BaseException after Exception: a cancellation is not an Exception, and leaves L1
+            # holding the row as sent unless it is dropped here.
+            except BaseException:
+                self._evict_l1(entity_id)
+                raise
+            else:
+                if stored is None:
+                    log.info(
+                        "a row the database completed was deleted before it was read back; it is cached nowhere",
+                        extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
+                    )
+        return stored
+
+    async def _drop_unread_row(self, entity_id: Any) -> None:
+        """drop a committed row that could not be read back from this replica's L1 and from L2.
+
+        L2 may hold the row this write replaced, so its key is deleted, which is always correct:
+        the next read seeds it from L3. Peers are told by the write's own broadcast.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        self._clear_l1_marker(entity_id)
+        self._evict_l1(entity_id)
+        await self._delete_from_l2(entity_id)
 
     @property
     def persists_l2_order(self) -> bool:
@@ -661,8 +989,29 @@ class BaseCollection(ABC, Generic[EntityT]):
                 out[column] = value.replace(tzinfo=UTC)
         return out
 
+    def decode_row(self, data: bytes) -> dict[str, Any]:
+        """decode one stored row of this collection: :meth:`deserialize`, then its declared instants.
+
+        The one decode for text this collection's rows were stored as -- an L2 value, or a row the
+        write buffer kept in L1 across a flush or a restart. :meth:`deserialize` is the subclass's
+        codec; every :attr:`datetime_columns` value it leaves as text, or as a naive datetime, then
+        comes back aware UTC, so a collection whose codec knows nothing of types (a durable-store
+        one, a hand-written one) still hands its instants on typed.
+
+        :param data: the stored bytes
+        :ptype data: bytes
+        :return: the row, its declared instants aware
+        :rtype: dict[str, Any]
+        :raises CorruptCacheEntry: when a declared instant will not parse
+        """
+        return self._rehydrate_datetimes(self.deserialize(data))
+
     def _rehydrate_datetimes(self, row: dict[str, Any]) -> dict[str, Any]:
         """Restore :attr:`datetime_columns` from the ISO strings the L2 codec produced.
+
+        A codec that already parsed the column (a dynamic collection's) may hand back a naive
+        datetime for a value stored before write-side normalisation; it is read as UTC exactly as
+        the same value left as text is.
 
         :raises CorruptCacheEntry: when a value will not parse. The caller treats that as a
             cache miss and falls through to L3 rather than failing the read -- see the
@@ -672,12 +1021,15 @@ class BaseCollection(ABC, Generic[EntityT]):
             return row
         for column in self.datetime_columns:
             value = row.get(column)
-            if not isinstance(value, str):
+            if isinstance(value, str):
+                try:
+                    parsed = datetime.fromisoformat(value)
+                except ValueError as exc:
+                    raise CorruptCacheEntry(self.table_name, column, value) from exc
+            elif isinstance(value, datetime):
+                parsed = value
+            else:
                 continue
-            try:
-                parsed = datetime.fromisoformat(value)
-            except ValueError as exc:
-                raise CorruptCacheEntry(self.table_name, column, value) from exc
             if parsed.tzinfo is None:
                 log.warning(
                     "naive datetime read from L2 and assumed UTC; written before write-side "
@@ -852,7 +1204,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         # to_dict() during a save reads its row through here -- and hiding the row there turns
         # updating an entity past its expiry into a crash rather than a write.
         if expiring and row is not None and self._row_is_expired(row):
-            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+            self._evict_l1(entity_id)
             row = None
         return row
 
@@ -1047,7 +1399,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         a denylist checks -- one per token -- are rarely seen twice, so without this the table grows
         with every distinct key ever looked up. Runs from the marker write path at most once per
         :data:`_ABSENT_MARKER_SWEEP_INTERVAL_SECONDS` per collection and drains the backlog in
-        batches of :data:`_ABSENT_MARKER_SWEEP_BATCH`, so the table never holds more than the
+        batches of :attr:`negative_cache_sweep_batch`, so the table never holds more than the
         markers written within one max age plus one interval, whatever the miss rate.
 
         :param now: the monotonic time the caller already read
@@ -1057,14 +1409,15 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return
+        batch = type(self).negative_cache_sweep_batch
         while True:
             expired = self._l1.execute_query(
-                f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE deadline <= ? LIMIT {_ABSENT_MARKER_SWEEP_BATCH}",
+                f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE deadline <= ? LIMIT {batch:d}",
                 (now,),
             )
             for row in expired:
                 self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (row["key"],), ("key",))
-            if len(expired) < _ABSENT_MARKER_SWEEP_BATCH:
+            if len(expired) < batch:
                 return
 
     def _clear_l1_marker(self, entity_id: Any) -> None:
@@ -1132,7 +1485,11 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         narrower than :meth:`invalidate_cache`: drops the L1 slot for
         this pod without touching L2, without publishing a cross-pod
-        invalidation, and without awaiting anything. intended for test
+        invalidation, and without awaiting anything. the receiving half
+        of a peer's invalidation broadcast
+        (:meth:`CollectionRegistry.start_invalidation_listener`) evicts
+        through here, so a read of the key in flight on this process
+        does not cache what it read before the eviction. also for test
         harnesses that want to simulate an L1 eviction and exercise
         the L2 / L3 fall-through path, and for single-pod cache-
         management flows where L2 coherence is driven separately.
@@ -1146,8 +1503,54 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        self._evict_l1(entity_id)
         return True
+
+    @property
+    def _l1_fence(self) -> _L1Fence:
+        """this collection's in-process ordering of L1 writes per key (:class:`_L1Fence`).
+
+        Made on first use rather than in ``__init__``: a harness may assemble an instance without
+        running ``__init__`` and still drive the write paths, and they must order their L1 writes
+        all the same.
+
+        :return: the fence
+        :rtype: _L1Fence
+        """
+        fence = self.__dict__.get("_l1_fence_state")
+        if fence is None:
+            fence = _L1Fence()
+            self.__dict__["_l1_fence_state"] = fence
+        result: _L1Fence = fence
+        return result
+
+    def _fence_key(self, entity_id: Any) -> tuple[str, ...]:
+        """the key :attr:`_l1_fence` tracks ``entity_id`` under.
+
+        String forms, because an invalidation arrives with the pk values as strings and must land
+        on the same key a local write of the typed values took.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: the pk values' string forms, in declared order
+        :rtype: tuple[str, ...]
+        """
+        return tuple(str(value) for value in self.normalize_pk(entity_id))
+
+    def _evict_l1(self, entity_id: Any) -> None:
+        """drop ``entity_id``'s row from this process's L1, and stop any read or write in flight caching it.
+
+        The one way a row leaves this collection's L1, so every eviction also reaches the fence: a
+        pull-through that read the row before the eviction would otherwise cache it after.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        self._l1_fence.changed(self._fence_key(entity_id))
+        if self._l1 is not None:
+            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
 
     # --- L2 cache (NATS KV, async) ---
 
@@ -1375,7 +1778,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 return _AbsentMarker(generation=raw[len(_ABSENT_MARKER_PREFIX) :].decode("utf-8"))
             except UnicodeDecodeError as exc:
                 raise CorruptCacheEntry(self.table_name, "absent-marker generation", raw) from exc
-        return self._rehydrate_datetimes(self.deserialize(raw))
+        return self.decode_row(raw)
 
     async def _write_l2_marker(self, entity_id: Any, generation: str, revision: int | None) -> None:
         """record in L2 that ``entity_id`` is absent under ``generation``, never over a writer's value.
@@ -1589,6 +1992,24 @@ class BaseCollection(ABC, Generic[EntityT]):
         recorded under it in both tiers. Because every committed write advances the generation, a
         marker recorded from an L3 read that predated a write carries a generation that write
         already moved past, and never answers again.
+
+        The row is cached in L1 only while no write of the key began, and no eviction of it
+        landed, in this process since the read started (:class:`_L1Fence`): either means the row
+        read may already be older than what L2 or L3 holds.
+        """
+        with self._l1_fence.watching(self._fence_key(entity_id), writing=False) as ticket:
+            found = await self._pull_through_watched(entity_id, ticket)
+        return found
+
+    async def _pull_through_watched(self, entity_id: Any, ticket: _KeyTicket) -> dict[str, Any] | None:
+        """the pull-through itself, under the read's ticket on the key.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param ticket: the read's ticket, taken before its first await
+        :ptype ticket: _KeyTicket
+        :return: the row, or ``None`` when no tier holds a live one
+        :rtype: dict[str, Any] | None
         """
         generation: str | None = None
         if self._negative_cache_active:
@@ -1601,7 +2022,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 return None
         lookup = await self._l2_lookup(entity_id)
         if lookup.row is not None:
-            if self._l1 is not None:
+            if self._l1 is not None and self._l1_fence.still_newest(ticket):
                 self._l1.upsert(self.table_name, self._stamped(lookup.row), self.primary_key_columns)
             return lookup.row
         if generation is not None and lookup.marker is not None and lookup.marker.generation == generation:
@@ -1615,7 +2036,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if pg_data is not None and self._row_is_expired(pg_data):
             pg_data = None
         if pg_data is not None:
-            pg_data = await self._seed_l2_from_store(entity_id, pg_data, lookup.revision)
+            pg_data = await self._seed_l2_from_store(entity_id, pg_data, lookup.revision, ticket)
         elif generation is not None:
             self._write_l1_marker(entity_id, generation)
             await self._write_l2_marker(entity_id, generation, lookup.revision)
@@ -1673,13 +2094,19 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
         return superseded
 
-    async def _seed_l2_from_store(self, entity_id: Any, stored: dict[str, Any], revision: int | None) -> dict[str, Any]:
+    async def _seed_l2_from_store(
+        self, entity_id: Any, stored: dict[str, Any], revision: int | None, ticket: _KeyTicket
+    ) -> dict[str, Any]:
         """seed L2 and L1 with a row a pull-through read from L3, answering with whatever is newest.
 
         :meth:`_seed_l2` decides whether the row reaches L2. When the key changed since the read
         and holds a live value, that value is newer than anything L3 returned, so it is what this
         read answers and what L1 keeps; answering with the L3 row would hand this caller the value
         every other reader has already moved past.
+
+        When the key changed and holds no live value, a writer deleted it -- a save whose own L2
+        write was refused, or an invalidation -- so the L3 row may predate that write. It is
+        answered, as the value at the moment of the read, and not cached anywhere.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
@@ -1688,14 +2115,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         :param revision: the key's latest revision as the lookup found it, or ``None`` when L2
             could not be read -- in which case L2 is left alone
         :ptype revision: int | None
+        :param ticket: the read's ticket on the key; L1 takes the row only while it is still newest
+        :ptype ticket: _KeyTicket
         :return: the row this read answers with -- the seeded one, or the newer one that beat it
         :rtype: dict[str, Any]
         """
         answer = stored
+        cacheable = True
         if revision is not None and await self._seed_l2(entity_id, stored, revision):
             current = await self._l2_lookup(entity_id)
-            answer = current.row if current.row is not None else stored
-        if self._l1 is not None:
+            if current.row is not None:
+                answer = current.row
+            else:
+                cacheable = False
+        if cacheable and self._l1 is not None and self._l1_fence.still_newest(ticket):
             self._l1.upsert(self.table_name, self._stamped(answer), self.primary_key_columns)
         return answer
 
@@ -1712,7 +2145,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         A copy, because the caller's dict is returned to the caller and becomes
         entity data. The stamp is storage bookkeeping and must not ride along.
         """
-        return {**data, _CACHED_AT_COLUMN: time.monotonic()}
+        return {**data, CACHED_AT_COLUMN: time.monotonic()}
 
     def _resolve_row(self, entity_id: Any) -> dict[str, Any]:
         """Get row from L1, pulling through L2/L3 on miss. Raises KeyError if not found.
@@ -1765,8 +2198,27 @@ class BaseCollection(ABC, Generic[EntityT]):
             return result
         entity_id = key
         row = self._resolve_row(entity_id)
-        entity = self.entity_class(row, is_new=False, collection=self)
+        entity = self._entity_from_read(entity_id, row)
         entity.original_date_updated = row.get("date_updated")
+        return entity
+
+    def _entity_from_read(self, entity_id: Any, row: dict[str, Any]) -> EntityT:
+        """build the entity a read answers with, from L1's copy when the read cached one.
+
+        A loaded entity holds its own row and writes no tier (:class:`BaseEntity`), so the read
+        alone decides what L1 holds: when it declined to cache (:class:`_L1Fence`: a write or
+        eviction of the key overlapped it), L1 is left without the row. When L1 holds the row
+        after the read, the entity is built from that copy.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param row: the row the read returned
+        :ptype row: dict[str, Any]
+        :return: the entity
+        :rtype: EntityT
+        """
+        cached = self._select_from_l1(entity_id)
+        entity: EntityT = self.entity_class(cached if cached is not None else row, is_new=False, collection=self)
         return entity
 
     def __setitem__(self, key: Any, value: Any) -> None:
@@ -1775,10 +2227,18 @@ class BaseCollection(ABC, Generic[EntityT]):
         collection[entity_id] = data_dict       -> write full entity
         collection[entity_id, "field"] = value   -> write single field
 
-        Writes to L1 synchronously. L2 and L3 writes are non-blocking
-        (fire-and-forget on the background event loop). L3 writes only
-        happen if flush strategy is ALWAYS; otherwise the change is
-        buffered for later flush.
+        Writes to L1 synchronously. The rest is non-blocking (fire-and-forget
+        on the background event loop) and follows :meth:`save_entity`'s
+        contract: L3 first, then L2 as a compare-and-swap at the revision read
+        before the L3 write, L1 kept only when L2 took the row, then the
+        broadcast (:meth:`_async_propagate_write`). A collection that defers
+        its L3 writes writes L2 first and buffers the L3 write for a later
+        flush.
+
+        A row the database completes (:meth:`columns_decided_by_store`) is read back from L3 once
+        the write commits, and that is what L2 and L1 keep. On a write-behind collection there is
+        nothing to read back before L2 takes the row, so such an assignment raises ``ValueError``
+        before L1 takes it.
 
         Refused on a collection that caches absences: the fire-and-forget write has no caller to
         tell when its write generation failed to advance, and an unadvanced generation keeps an
@@ -1791,6 +2251,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
         if isinstance(key, tuple):
             entity_id, field = key
+            current = self.get_row_sync(entity_id)
+            if current is not None and self._defers_l3_writes:
+                self._refuse_store_decided_assignment({**current, field: value})
             self.set_field_sync(entity_id, field, value)
             row = self.get_row_sync(entity_id)
             if row is not None:
@@ -1799,66 +2262,102 @@ class BaseCollection(ABC, Generic[EntityT]):
             entity_id = key
             if not isinstance(value, dict):
                 raise TypeError(f"collection[id] = value requires a dict, got {type(value).__name__}")
+            if self._defers_l3_writes:
+                self._refuse_store_decided_assignment(value)
             self.write_to_cache_sync(value)
             self._propagate_write(entity_id, value)
 
+    def _refuse_store_decided_assignment(self, row: dict[str, Any]) -> None:
+        """refuse a write-behind assignment whose row, as propagation sends it, the database completes.
+
+        Checked before L1 takes the row, on the row :meth:`_async_propagate_write` will send:
+        stamped with ``date_updated``, and carrying no order where this collection persists one.
+        The propagation completes the row it caches itself (:meth:`_write_ahead_row`).
+
+        :param row: the row the assignment writes
+        :ptype row: dict[str, Any]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the database would decide any column of it
+        """
+        sent = {**row, "date_updated": datetime.now(UTC)}
+        self._write_ahead_row(without_l2_order(sent) if self.persists_l2_order else sent)
+
     def _propagate_write(self, entity_id: Any, data: dict[str, Any]) -> None:
-        """Non-blocking propagation of a write to L2 and optionally L3."""
+        """Non-blocking propagation of a write to L3, L2 and the broadcast (:meth:`_async_propagate_write`)."""
         fire_and_forget(self._async_propagate_write(entity_id, dict(data)))
 
     async def _async_propagate_write(self, entity_id: Any, data: dict[str, Any]) -> None:
-        """Async write propagation: always L2, conditionally L3, always signal."""
+        """carry a subscript write to L3, L2 and the broadcast, under the same contract as :meth:`save_entity`.
+
+        L3 first, unless the collection defers its L3 writes; then L2 as a compare-and-swap at the
+        revision read before the L3 write; L1 keeps the row only when L2 took it and no other write
+        of the key overlapped this one; then the broadcast. Writing L2 before L3, as this once did,
+        let two writers leave L2 holding one row and L3 the other, with nothing left to evict it.
+
+        A write-behind collection writes L1 and L2 first and buffers the L3 write, as
+        :meth:`save_entity` does there: its L2 is ahead of L3 by design.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param data: the row, a copy the caller no longer holds
+        :ptype data: dict[str, Any]
+        :return: nothing
+        :rtype: None
+        """
         now = datetime.now(UTC)
         data["date_updated"] = now
         if self.persists_l2_order:
             # as in save_entity: a write that won no compare-and-swap stores no order.
             data.update(without_l2_order(data))
 
-        # Always update L1 with the new timestamp
-        if self._l1 is not None:
-            self._l1.upsert(self.table_name, data, self.primary_key_columns)
-
-        # Always propagate to L2
-        await self._save_to_l2(entity_id, data)
-
-        # Signal other pods to evict stale L1
-        await self._publish_invalidation(entity_id)
-
-        # L3: immediate or deferred, per the collection's declared policy or the process strategy
         if self._defers_l3_writes:
             assert self._write_buffer is not None
-            await self._write_buffer.add(self.table_name, entity_id, data)
-        else:
+            # refused at the assignment when the database would decide any of it; completed here
+            data = self._write_ahead_row(data)
+            self._l1_fence.changed(self._fence_key(entity_id))
+            if self._l1 is not None:
+                self._l1.upsert(self.table_name, data, self.primary_key_columns)
+            await self._save_to_l2(entity_id, data)
+            await self._publish_invalidation(entity_id)
+            await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(data))
+            return
+
+        with self._l1_fence.watching(self._fence_key(entity_id), writing=True) as ticket:
+            before = await self._l2_revision_before_write(entity_id)
             try:
                 rows_affected = await self.save_to_store(data)
-            except Exception as exc:
+            # BaseException, not Exception: a cancelled write's outcome is as unknown as a failed
+            # one's, and CancelledError is not an Exception. Only an Exception is swallowed: this
+            # path is fire-and-forget, so there is no caller to hand it to.
+            except BaseException as exc:
                 log.error(
                     "Background L3 write failed; withdrawing it from L1 and L2",
                     extra={
                         "extra_data": {
                             "entity_id": str(entity_id),
                             "table": self.table_name,
-                            "error": str(exc),
+                            "error": f"{type(exc).__name__}: {exc}",
                         }
                     },
                 )
-                # L1 and L2 took this row before L3 was tried, and the broadcast above sent peers
-                # to L2 for it. withdraw it from every tier so every reader goes to L3.
+                # L1 took this row synchronously at the assignment; withdraw it from every tier
+                # so every reader goes to L3.
                 await self.invalidate_cache(entity_id)
-            else:
-                if rows_affected == 0:
-                    # the store kept a different row than the one L1 and L2 now hold -- a lost
-                    # race on a fenced table, the DO NOTHING outcome on any other. either way
-                    # the caches disagree with L3 until withdrawn.
-                    await self.invalidate_cache(entity_id)
-                # This path is fire-and-forget: there is no caller left to
-                # hand a rowcount back to, and no exception is raised when a
-                # CAS fence rejects the write. On an unconditionally fenced
-                # collection a 0 here is a LOST WRITE -- the caller's value
-                # never reached L3 -- so say so. Left silent for unfenced
-                # collections, where 0 is the ordinary "DO NOTHING matched"
-                # outcome.
-                if rows_affected == 0 and self.emits_cas_fence:
+                if not isinstance(exc, Exception):
+                    raise
+                return
+            if rows_affected == 0:
+                # the store kept a different row than the one L1 holds -- a lost race on a fenced
+                # table, the DO NOTHING outcome on any other. either way L1 disagrees with L3
+                # until withdrawn.
+                await self.invalidate_cache(entity_id)
+                # This path is fire-and-forget: there is no caller left to hand a rowcount back
+                # to, and no exception is raised when a CAS fence rejects the write. On an
+                # unconditionally fenced collection a 0 here is a LOST WRITE -- the caller's value
+                # never reached L3 -- so say so. Left silent for unfenced collections, where 0 is
+                # the ordinary "DO NOTHING matched" outcome.
+                if self.emits_cas_fence:
                     log.error(
                         "Background L3 write lost its CAS race and was dropped; "
                         "the sync item-assignment write path cannot retry -- use "
@@ -1870,6 +2369,17 @@ class BaseCollection(ABC, Generic[EntityT]):
                             }
                         },
                     )
+                return
+            # the database may have filled in columns the assignment did not name; what is cached
+            # is the row L3 holds, never the row as sent.
+            stored = await self._stored_row(entity_id, data)
+            if stored is None:
+                await self.invalidate_cache(entity_id)
+                return
+            await self._cache_committed_row(entity_id, stored, before, ticket)
+
+        # Signal other pods to evict stale L1
+        await self._publish_invalidation(entity_id)
 
     def __contains__(self, entity_id: Any) -> bool:
         """Check if entity is in L1 cache."""
@@ -2015,8 +2525,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             self._set_span_attr("cache.hit_tier", "miss")
             return None
         self._set_span_attr("cache.hit_tier", "L1+")
-        result: EntityT = self.entity_class(data, is_new=False, collection=self)
-        return result
+        return self._entity_from_read(entity_id, data)
 
     @traced()
     async def save_entity(
@@ -2027,24 +2536,67 @@ class BaseCollection(ABC, Generic[EntityT]):
     ) -> None:
         """save entity through the three-tier write path.
 
+        **Cached only while still the newest write.** On a collection with an L3 pool
+        and an L2 bucket, the key's latest L2 revision is read before the L3 write, and the
+        committed row is written to L2 as a compare-and-swap at that revision rather than as an
+        unconditional put. L3 is a round trip, and a later save of the same row -- this
+        replica's own, or a peer's -- can complete inside it; when it has, the swap is refused,
+        the key is deleted from L2 and from this replica's L1, and the next read takes whichever
+        row L3 committed last. L1 caches the row only when L2 took it. The ordering needs no
+        order columns: the L2 revision read before the write is the fence, on every collection.
+        The save itself never fails for it; an unreadable L2 caches nothing and the save still
+        succeeds.
+
+        **The handle holds what it saved.** Whether or not any tier took the row, the saved entity
+        holds the row as stored (:meth:`BaseEntity.hold_row`) and answers from it, never from L1's
+        copy of the key: that copy is a cache a caller's transaction settling the key, a peer's
+        broadcast or expiry may drop at any time, and a later write may replace.
+
+        **Cached only while no other write of the key overlapped it, in this process.** L1 takes
+        the row only when no other save of the same key was in flight while this one was, and no
+        eviction of the key landed meanwhile. Overlapping saves can reach L3 in an order neither
+        sees; both drop the key from L1 and the next read takes whichever row L3 kept. On a
+        collection with an L3 pool and no L2 this is the only ordering there is.
+
+        **Joining a caller's transaction caches nothing until it ends.** With ``conn``, the row is
+        written to L3 inside the caller's transaction and is not final when this returns, so no
+        tier takes it and nothing is broadcast: the entity's working copy leaves L1 for its own
+        change buffer. The connection's transaction must have been opened by
+        :class:`~threetears.core.collections.caller_transaction.CallerTransaction`, which evicts the
+        key from L1 and L2 and broadcasts the eviction once the transaction has committed or
+        rolled back; the next read takes whichever row L3 ended with.
+
+        **Cached as L3 holds it.** A row that leaves columns for the database to decide -- a
+        server default for a column it does not name, the stored value an update keeps
+        (:meth:`columns_decided_by_store`) -- is read back from L3 once the write commits, and the
+        read is what L2, L1 and the handle keep. A read back that fails caches nothing; the save
+        still succeeds and the next read goes to L3. A write-behind collection, whose L2 takes the
+        row before L3 does, refuses such a row with ``ValueError`` before any tier takes it.
+
+        Unchanged elsewhere: a collection with no L3 pool (L2 is its source of truth) and a
+        write-behind collection keep the unconditional put, and a collection with no L2 caches in
+        L1 as before, subject to the in-process ordering above.
+
         :param entity: entity instance to persist
         :ptype entity: BaseEntity
-        :param conn: optional **backend-specific transaction handle** (e.g. an
-            asyncpg connection for the SQL backend) that overrides
-            :attr:`l3_pool` for the L3 write only. when supplied, the L3 write
-            binds to the caller's transaction (the caller owns commit /
-            rollback), making the write atomic with whatever other operations
-            the caller already issued on the same transaction. L1 / L2 /
-            invalidation publish run unchanged. ``None`` lets the collection's
-            own L3 store service the write. refused on a collection that caches
-            absences, whose write generation must advance after the commit
+        :param conn: optional **backend-specific connection** (e.g. an asyncpg
+            connection for the SQL backend) whose transaction the L3 write
+            joins, in place of :attr:`l3_pool`, so it commits or rolls back
+            with whatever else the caller issued on it. the transaction must
+            be open through ``CallerTransaction(conn)``. ``None`` lets the
+            collection's own L3 store service the write. refused on a
+            collection that caches absences, whose write generation must
+            advance after the commit, and on one that defers its L3 writes,
+            whose row would reach L3 outside the transaction
         :ptype conn: Any
         :return: nothing
         :rtype: None
         :raises ConcurrentModificationError: on optimistic-lock fence
             mismatch when the entity carries an
             ``original_date_updated`` value
-        :raises ValueError: when ``conn`` is passed to a collection that caches absences
+        :raises ValueError: when ``conn`` is passed to a collection that caches absences or defers
+            its L3 writes, or its transaction was not opened by ``CallerTransaction``; and when a
+            collection that defers its L3 writes is given a row the database would complete
         :raises GenerationUnavailableError: when a collection that caches absences committed the
             write but could not advance its write generation; retry the save
         """
@@ -2096,56 +2648,143 @@ class BaseCollection(ABC, Generic[EntityT]):
                 f"write generation must advance after the commit, which only the collection's own "
                 f"write can guarantee"
             )
+        if conn is not None and defer:
+            raise ValueError(
+                f"{type(self).__name__} defers its L3 writes to a write buffer, so a save cannot join a "
+                f"caller's transaction: the row would reach L3 at the next flush, outside it"
+            )
+        caller_transaction: CallerTransaction | None = None
+        if conn is not None:
+            caller_transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.save_entity")
         generation_failure: GenerationUnavailableError | None = None
 
         if defer:
+            # the row is visible in L1 and L2 before L3 by design: L2 is ahead of L3 for up to one
+            # flush interval, so it must already be the row L3 will hold. A read of the key in
+            # flight read it before this write.
+            try:
+                data = self._write_ahead_row(data)
+            except ValueError:
+                self._withdraw_unstored(entity, entity_id, working)
+                raise
+            self._l1_fence.changed(self._fence_key(entity_id))
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, data, self.primary_key_columns)
             await self._save_to_l2(entity_id, data)
             assert self._write_buffer is not None
-            await self._write_buffer.add(self.table_name, entity_id, data)
+            await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(data))
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
+            # a saved handle answers from the row it saved, never from L1's copy of the key, which
+            # any eviction may drop and any later write may replace.
+            entity.hold_row(data)
+        elif caller_transaction is not None:
+            # enrolled before the write, so a write whose outcome is unknown -- it raised, but the
+            # caller may still commit what reached L3 -- is settled with the rest.
+            caller_transaction.enroll(self, entity_id)
+            await self._store_uncommitted(entity, entity_id, data, original_timestamp, working, conn)
+            # nothing is cached and nothing is broadcast until the caller's transaction ends
+            # (CallerTransaction settles every key its writes touched).
+            return
         else:
-            try:
-                if conn is not None:
-                    rows_affected = await self.save_to_store(
-                        data,
-                        original_timestamp,
-                        conn=conn,
-                    )
+            with self._l1_fence.watching(self._fence_key(entity_id), writing=True) as ticket:
+                # L2's state BEFORE the L3 write: the row reaches L2 below only if nothing has
+                # touched the key since (see _cache_committed_row).
+                before = await self._l2_revision_before_write(entity_id)
+                try:
+                    rows_affected = await self.save_to_store(data, original_timestamp)
+                # BaseException, not Exception: a cancellation mid-write leaves the outcome as
+                # unknown as any failure does, and CancelledError is not an Exception.
+                except BaseException:
+                    self._withdraw_unstored(entity, entity_id, working)
+                    raise
+                if rows_affected == 0:
+                    self._withdraw_unstored(entity, entity_id, working)
+                    if entity.is_new:
+                        raise RuntimeError(
+                            f"L3 insert failed for {self.table_name} entity {entity_id}: 0 rows affected"
+                        )
+                    raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp or datetime.min)
+                # the row is committed: advance the generation before anything else, so an absence
+                # a reader recorded from an L3 read that predated this commit stops answering as
+                # soon as possible. a failure is raised only once L1, L2 and the broadcast have run.
+                generation_failure = await self._advance_generation()
+                # the database may have filled in columns the row did not name; what every tier
+                # and the handle keep is the row L3 holds, never the row as sent.
+                stored = await self._stored_row(entity_id, data)
+                entity.mark_clean()
+                if stored is None:
+                    # committed, but not readable back: nothing caches it, and the handle keeps
+                    # what it sent until it is reloaded.
+                    entity.original_date_updated = data.get("date_updated")
+                    await self._drop_unread_row(entity_id)
+                    entity.hold_row(data)
                 else:
-                    rows_affected = await self.save_to_store(
-                        data,
-                        original_timestamp,
-                    )
-            # BaseException, not Exception: a cancellation mid-write leaves the outcome as unknown
-            # as any failure does, and CancelledError is not an Exception.
-            except BaseException:
-                self._withdraw_unstored(entity, entity_id, working)
-                raise
-            if rows_affected == 0:
-                self._withdraw_unstored(entity, entity_id, working)
-                if entity.is_new:
-                    raise RuntimeError(f"L3 insert failed for {self.table_name} entity {entity_id}: 0 rows affected")
-                raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp or datetime.min)
-            # the row is committed: advance the generation before anything else, so an absence a
-            # reader recorded from an L3 read that predated this commit stops answering as soon as
-            # possible. a failure is raised only once L1, L2 and the broadcast have run.
-            generation_failure = await self._advance_generation()
-            entity.mark_clean()
-            entity.original_date_updated = data.get("date_updated")
-            if self._l1 is not None:
-                self._l1.upsert(self.table_name, data, self.primary_key_columns)
-            else:
-                # No L1 backend: repopulate _changes so entity fields remain accessible
-                object.__setattr__(entity, "_changes", dict(data))
-            self._clear_l1_marker(entity_id)
-            await self._save_to_l2(entity_id, data)
+                    entity.original_date_updated = stored.get("date_updated")
+                    await self._cache_committed_row(entity_id, stored, before, ticket)
+                    # a key the stored row does not carry is one this table does not hold: the
+                    # caller's own, which a read back cannot speak to. the handle keeps it; the
+                    # tiers do not, since they hold what an L3 read gives.
+                    carried = {key: value for key, value in data.items() if key not in stored}
+                    # the handle holds the row as stored whether or not L1 took it: L1's copy of
+                    # the key is a cache any eviction may drop (a caller's transaction settling
+                    # the key, a peer's broadcast, expiry) and any later write may replace, and
+                    # a handle reading through it would answer None, or another version.
+                    entity.hold_row({**carried, **stored})
 
         await self._publish_invalidation(entity_id)
         if generation_failure is not None:
             raise generation_failure
+
+    async def _store_uncommitted(
+        self,
+        entity: BaseEntity,
+        entity_id: Any,
+        data: dict[str, Any],
+        original_timestamp: datetime | None,
+        working: dict[str, Any],
+        conn: Any,
+    ) -> None:
+        """write a row to L3 inside a caller's transaction, leaving no tier holding it.
+
+        The row is not final until the caller's transaction ends, so no cache may take it: the
+        entity's working copy leaves L1 for the entity's own change buffer, and nothing reaches L2
+        or the broadcast. The :class:`CallerTransaction` evicts the key from every tier once the
+        transaction has ended.
+
+        :param entity: the entity being saved
+        :ptype entity: BaseEntity
+        :param entity_id: the key its row is cached under
+        :ptype entity_id: Any
+        :param data: the row, stamped
+        :ptype data: dict[str, Any]
+        :param original_timestamp: the optimistic-lock fence, or ``None`` for an insert
+        :ptype original_timestamp: datetime | None
+        :param working: the entity's data as it stood before the save stamped it
+        :ptype working: dict[str, Any]
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises ConcurrentModificationError: on an optimistic-lock fence mismatch
+        :raises RuntimeError: when an insert affects no row
+        """
+        try:
+            rows_affected = await self.save_to_store(data, original_timestamp, conn=conn)
+        # BaseException, not Exception: CancelledError is not an Exception, and a cancelled write
+        # leaves the outcome as unknown as any failure does.
+        except BaseException:
+            self._withdraw_unstored(entity, entity_id, working)
+            raise
+        if rows_affected == 0:
+            self._withdraw_unstored(entity, entity_id, working)
+            if entity.is_new:
+                raise RuntimeError(f"L3 insert failed for {self.table_name} entity {entity_id}: 0 rows affected")
+            raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp or datetime.min)
+        entity.mark_clean()
+        entity.original_date_updated = data.get("date_updated")
+        self._evict_l1(entity_id)
+        entity.hold_row(data)
 
     def _withdraw_unstored(self, entity: BaseEntity, entity_id: Any, working: dict[str, Any]) -> None:
         """take an entity's working copy out of L1 after its L3 write did not land.
@@ -2174,13 +2813,135 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: nothing
         :rtype: None
         """
-        if self._l1 is not None:
-            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
-        object.__setattr__(entity, "_changes", working)
+        self._evict_l1(entity_id)
+        entity.hold_row(working)
         log.info(
             "L3 write did not land; its working copy was withdrawn from L1",
             extra={"extra_data": {"table": self.table_name, "entity_id": str(entity_id)}},
         )
+
+    async def _l2_revision_before_write(self, entity_id: Any) -> _L2BeforeWrite:
+        """read the revision of the key's latest L2 message before a save writes L3.
+
+        The fence :meth:`_cache_committed_row` writes L2 at. Only a collection with an L3 pool and
+        an L2 bucket is fenced: without L3, L2 is the source of truth and a save's put is
+        last-writer-wins by contract; without L2 there is nothing to write.
+
+        A failed read leaves the save fenced with no revision, so the committed row is never
+        cached: the save itself still succeeds, since L3 is the durable record and a miss is
+        always correct. It degrades to a warning as every L2 access on a three-tier path does.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :return: whether the save's L2 write is fenced, and the revision to fence it at
+        :rtype: _L2BeforeWrite
+        """
+        before = _L2BeforeWrite(fenced=False, revision=None)
+        if self.l3_pool is not None:
+            try:
+                kv = await self._ensure_kv()
+                if kv is not None:
+                    _, revision = await kv.get_latest(key=self.l2_key(entity_id))
+                    before = _L2BeforeWrite(fenced=True, revision=revision)
+            except KvError as exc:
+                before = _L2BeforeWrite(fenced=True, revision=None)
+                log.warning(
+                    "L2 read before a save failed; the saved row is not cached and the next read goes to L3",
+                    extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+                )
+        return before
+
+    async def _cache_committed_row(
+        self, entity_id: Any, data: dict[str, Any], before: _L2BeforeWrite, ticket: _KeyTicket
+    ) -> None:
+        """cache a row whose L3 write committed, in L2 and L1, only while no later write has touched the key.
+
+        The L3 write is a round trip, and a later save of the same row can complete inside it:
+        this replica's own, or a peer's, whose broadcast has already evicted this replica's L1 and
+        deleted the shared key. An unconditional put of this row after that would leave it in L2,
+        and in L1, behind L3 with nothing left to evict it.
+
+        So on a fenced collection the row is written to L2 at ``before.revision`` -- the key's
+        latest message as read before the L3 write -- and lands only while the key's history is
+        exactly as that read found it. A write that lands was the newest when it landed: any save
+        that committed after this one read the key after this one did, so it either finds this
+        write and replaces it, or finds the key changed and evicts it. A refused write does not
+        know whether the key now holds a newer row or an older one, so it deletes the key and
+        every reader goes to L3, which holds whichever write committed last.
+
+        L1 takes the row only when L2 took it (or there is no fenced L2), and only while this
+        process's own fence still names this write the newest (:class:`_L1Fence`): no other write
+        of the key overlapped it and no eviction landed since it began. That second check is the
+        whole fence for a collection with an L3 pool and no L2, whose overlapping saves reach L3
+        in an order neither can see. The check and the L1 write run with no await between them;
+        otherwise the key is dropped from L1.
+
+        A collection with no L3 pool is left as it was: its L1 or L2 is the source of truth, so
+        there is nothing to drop the row back to, and its writes are last-writer-wins -- L1 takes
+        the row, then L2 takes it with an unconditional put.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param data: the row as committed
+        :ptype data: dict[str, Any]
+        :param before: L2's state for the key as read before the L3 write
+        :ptype before: _L2BeforeWrite
+        :param ticket: the write's ticket on the key, taken before its first await
+        :ptype ticket: _KeyTicket
+        :return: nothing
+        :rtype: None
+        """
+        self._clear_l1_marker(entity_id)
+        landed = True
+        if before.fenced:
+            landed = await self._write_l2_at(entity_id, data, before.revision)
+        newest = self.l3_pool is None or self._l1_fence.still_newest(ticket)
+        cached = self._l1 is not None and landed and newest
+        if cached:
+            assert self._l1 is not None  # narrow: cached implies an L1 backend
+            self._l1.upsert(self.table_name, data, self.primary_key_columns)
+        else:
+            self._evict_l1(entity_id)
+        if not before.fenced:
+            await self._save_to_l2(entity_id, data)
+
+    async def _write_l2_at(self, entity_id: Any, data: dict[str, Any], revision: int | None) -> bool:
+        """write a committed row to L2 at ``revision``, or delete the key when that is refused.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param data: the row as committed
+        :ptype data: dict[str, Any]
+        :param revision: the key's latest revision as read before the L3 write, ``0`` when it had
+            no message; ``None`` when that read failed, which writes nothing and deletes the key
+        :ptype revision: int | None
+        :return: whether L2 now holds this row
+        :rtype: bool
+        """
+        written = False
+        try:
+            kv = await self._ensure_kv()
+            if kv is not None and revision is not None:
+                payload = self.serialize(self._normalise_datetimes_for_write(data))
+                lifetime = self._l2_entry_lifetime(data)
+                timed = {} if lifetime is None else {"ttl": lifetime}
+                written = (
+                    await kv.update(key=self.l2_key(entity_id), value=payload, revision=revision, **timed) is not None
+                )
+        except KvError as exc:
+            log.warning(
+                "L2 write after a save failed; the key is dropped and the next read goes to L3",
+                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name, "error": str(exc)}},
+            )
+        if not written:
+            # the key may hold a row older than the one L3 now has; a delete is always correct,
+            # since the next read seeds L2 from L3 at the deletion's revision.
+            await self._delete_from_l2(entity_id)
+            log.debug(
+                "a saved row did not reach L2 at the revision read before its L3 write; the key is dropped",
+                extra={"extra_data": {"entity_id": str(entity_id), "table": self.table_name}},
+            )
+        return written
 
     async def persist_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
         """Persist a write-buffer entry to L3. Used by ``flush_pending``.
@@ -2217,20 +2978,29 @@ class BaseCollection(ABC, Generic[EntityT]):
         entity_id = entity.addressing_id
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
-        # L2's state BEFORE the L3 read, so the refresh below lands only if nothing was written
-        # to the key in between (see _seed_l2).
-        before = await self._l2_latest_before_refresh(entity_id)
-        data = await self.fetch_from_store(entity_id)
-        if data is None:
-            raise ValueError(f"Entity {entity_id} not found in storage")
-        entity.set_data(data)
-        entity.original_date_updated = data.get("date_updated")
-        if self._l1 is not None:
-            # Stamped: this row came from L3, so its provenance is a lower tier
-            # even though no pull-through ran. Leaving it unstamped would make a
-            # freshly-reloaded row read as locally authored, and locally
-            # authored rows never expire.
-            self._l1.upsert(self.table_name, self._stamped(data), self.primary_key_columns)
+        with self._l1_fence.watching(self._fence_key(entity_id), writing=False) as ticket:
+            # L2's state BEFORE the L3 read, so the refresh below lands only if nothing was written
+            # to the key in between (see _seed_l2).
+            before = await self._l2_latest_before_refresh(entity_id)
+            data = await self.fetch_from_store(entity_id)
+            if data is None:
+                raise ValueError(f"Entity {entity_id} not found in storage")
+            # the handle holds the row it reloaded, as a loaded handle holds the row it read: L1's
+            # copy is the fenced write below, never set_data's, and the handle never answers from it.
+            entity.hold_row(data)
+            entity.set_data(data)
+            entity.original_date_updated = data.get("date_updated")
+            if self._l1 is not None:
+                if self._l1_fence.still_newest(ticket):
+                    # Stamped: this row came from L3, so its provenance is a lower tier
+                    # even though no pull-through ran. Leaving it unstamped would make a
+                    # freshly-reloaded row read as locally authored, and locally
+                    # authored rows never expire.
+                    self._l1.upsert(self.table_name, self._stamped(data), self.primary_key_columns)
+                else:
+                    # a write or eviction of the key overlapped the read, so the row may already be
+                    # older than L3's: the handle keeps it, L1 does not.
+                    self._evict_l1(entity_id)
         if before is not None:
             live, revision = before
             # a live L2 value is refreshed only where L3 is never behind L2: a collection whose L3
@@ -2276,8 +3046,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
         await self.delete_from_store(entity_id)
-        if self._l1 is not None:
-            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        self._evict_l1(entity_id)
         await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
         return True
@@ -2383,6 +3152,21 @@ class BaseCollection(ABC, Generic[EntityT]):
         only through this method: an unfenced :meth:`save_entity` on the
         same row invalidates the key for every peer, and stores no order.
 
+        **The one sanctioned second writer shares the owner's scope.** A
+        principal granted write on another principal's rows -- a tool pod
+        granted write on an agent's tables -- does not build its registry
+        from its own scope. It builds it from the OWNER's id:
+        ``kv_key_scope_for(Principal.AGENT_POD, agent_id=owner)`` for the L2
+        scope, and the owner's namespace for its L3 backend, both derived
+        from that one id. Its swaps then compare against the owner's key, so
+        the two writers share one revision fence and neither overwrites the
+        other; the invalidation it publishes names that shared scope, so the
+        owner's replicas keep the key rather than evicting it. It still
+        authenticates as itself, so L3 refuses it without the grant and the
+        write audit names it, not the owner. A writer that keys on its own
+        scope instead is the two-principal case above, so derive both halves
+        in one place rather than at two call sites that can name two owners.
+
         **L1-only fallback**: when no NATS client is wired
         (:meth:`_ensure_kv` is ``None`` -- unit / single-pod), there is
         no cross-pod contention to CAS against, so the method degrades
@@ -2427,8 +3211,10 @@ class BaseCollection(ABC, Generic[EntityT]):
             generation
         :raises ValueError: on a collection with an L3 pool whose every L3
             write is fenced (``cas_null_safe``), or that does not persist the
-            L2 order, before L2 is touched; and on a ``"delete"`` there,
-            before L2 is touched
+            L2 order, before L2 is touched; on a ``"delete"`` there, before L2
+            is touched; and there on an ``"upsert"`` whose row leaves any column
+            for the database to decide (:meth:`columns_decided_by_store`), before
+            L2 is touched
         :raises L2EpochRegressedError: when L3 holds the row under an order
             later than anything the current bucket can write, before L2 is
             touched
@@ -2514,6 +3300,8 @@ class BaseCollection(ABC, Generic[EntityT]):
                     # the L2 value is written before its own revision exists, so it carries no
                     # order; the order is stamped on the row once the swap has won.
                     new_row = without_l2_order(new_row)
+                # L2 takes the row before L3 does, so it must already be the row L3 will hold.
+                new_row = self._write_ahead_row(new_row)
                 lifetime = self._l2_entry_lifetime(new_row)
                 # as in _save_to_l2: the ttl keyword is sent only when this table declares an
                 # expiry, so a bucket shim that predates per-entry lifetimes still satisfies the
@@ -2552,16 +3340,31 @@ class BaseCollection(ABC, Generic[EntityT]):
                 new_row = with_l2_order(new_row, order)
             try:
                 generation_failure = await self._persist_cas_result(entity_id, action, new_row)
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- compensates L2 for any persist failure, then re-raises it unchanged
+            # BaseException, not Exception: a persist cancelled mid-write leaves L2 holding a value
+            # the caller is told did not complete, as any failure does, and CancelledError is not an
+            # Exception.
+            except BaseException as exc:  # prawduct:allow prawduct/broad-except -- compensates L2 for any persist failure, then re-raises it unchanged
                 await self._withdraw_unpersisted_cas(entity_id, key, action, won_revision, exc)
                 raise
             if action == "delete":
-                if self._l1 is not None:
-                    self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+                self._evict_l1(entity_id)
             else:
                 assert new_row is not None  # narrow: "upsert" always carries a row
                 if self._l1 is not None:
-                    self._l1.upsert(self.table_name, new_row, self.primary_key_columns)
+                    # an ordered swap reaches this line only after the persist's round trip, and a
+                    # later swap can complete inside it: this replica's own, or a peer's whose
+                    # broadcast already evicted this L1. Caching this row then would leave L1 behind
+                    # L2 with nothing left to evict it, so it is cached only while L2 still holds
+                    # it; otherwise the key is dropped and the next read takes the newer value from
+                    # L2. No await separates the check from the write, so nothing lands between.
+                    assert won_revision is not None  # narrow: an upsert that won
+                    # a read of the key in flight here read it before this swap, so it must not
+                    # cache what it read: the swap is recorded on the fence as it lands in L1.
+                    if not ordered or await self._swap_still_current(entity_id, key, won_revision, payload):
+                        self._l1_fence.changed(self._fence_key(entity_id))
+                        self._l1.upsert(self.table_name, new_row, self.primary_key_columns)
+                    else:
+                        self._evict_l1(entity_id)
                 self._clear_l1_marker(entity_id)
             await self._publish_invalidation(entity_id, l2_key_current=True)
             if generation_failure is not None:
@@ -2664,6 +3467,45 @@ class BaseCollection(ABC, Generic[EntityT]):
             )
         return L2Order(epoch=chosen, revision=won_revision)
 
+    async def _swap_still_current(self, entity_id: Any, key: str, won_revision: int, payload: bytes) -> bool:
+        """whether L2 still holds exactly the value a won swap wrote, at the revision it won.
+
+        Asked after an ordered swap's persist, before its row is cached in L1: anything else in the
+        key -- a later swap's value, or no value -- means the row is no longer the newest, and
+        caching it would serve the older value on this replica until something evicted it. A
+        failed read answers ``False``: the swap has already won and persisted, so the mutation must
+        not be reported failed, and leaving L1 empty is always correct because the next read goes
+        to L2.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order, for the log
+        :ptype entity_id: Any
+        :param key: the scoped L2 key the swap won
+        :ptype key: str
+        :param won_revision: the revision the swap produced
+        :ptype won_revision: int
+        :param payload: the bytes the swap wrote
+        :ptype payload: bytes
+        :return: ``True`` only when the key still holds this swap's value at this swap's revision
+        :rtype: bool
+        """
+        current = False
+        try:
+            kv = await self._ensure_kv()
+            if kv is not None:
+                current = await kv.get_entry(key=key) == (payload, won_revision)
+        except KvError as exc:
+            log.warning(
+                "L2 read after a compare-and-swap failed; its row is not cached in L1 and the next read goes to L2",
+                extra={
+                    "extra_data": {
+                        "entity_id": str(entity_id),  # convert at border: log extra_data field
+                        "table": self.table_name,
+                        "error": str(exc),
+                    }
+                },
+            )
+        return current
+
     async def _withdraw_unpersisted_cas(
         self,
         entity_id: Any,
@@ -2755,7 +3597,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         assert new_row is not None  # narrow: "upsert" always carries a row
         if self._defers_l3_writes:
             assert self._write_buffer is not None  # narrow: deferral requires one
-            await self._write_buffer.add(self.table_name, entity_id, new_row)
+            await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(new_row))
             return None
         if await self.save_ordered_to_store(new_row) == 0:
             await self._confirm_superseded(entity_id, new_row)
@@ -2851,10 +3693,69 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: None
         """
         self._set_span_table()
-        if self._l1 is not None:
-            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        self._evict_l1(entity_id)
         await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
+
+    @asynccontextmanager
+    async def bypassing_write(self, *entity_ids: Any, conn: Any = None) -> AsyncIterator[BypassingWrite]:
+        """run a write that bypasses :meth:`save_entity`, then settle every cache of the rows it touched.
+
+        The one owner of the rule for a targeted UPDATE or DELETE on a table :meth:`get` serves: the
+        statement leaves L1 and L2 on every replica holding the row it replaced, so every row it may
+        have changed is evicted from both and the eviction broadcast.
+
+        - **On the collection's own pool** (``conn`` is ``None``): the rows are evicted once the
+          body ends, however it ended -- a statement that raised may still have reached L3, and a
+          cancelled one's outcome is as unknown. The eviction is shielded, so a cancellation
+          arriving meanwhile cannot stop it partway. A body that knows it changed nothing (a
+          compare-and-swap that lost) calls :meth:`BypassingWrite.unchanged` and evicts nothing,
+          unless it then raises.
+        - **Joined to a caller's transaction** (``conn`` given): the rows are not final until that
+          transaction ends, so they are enrolled in the enclosing
+          :class:`~threetears.core.collections.caller_transaction.CallerTransaction` and settled
+          there. A connection no ``CallerTransaction`` opened is refused before the body runs.
+
+        Usage::
+
+            async with self.bypassing_write((conversation_id, schedule_id)):
+                # cache-bypass: targeted UPDATE; the row is evicted from every tier once it lands.
+                await self.l3_pool.execute("UPDATE ...", ...)
+
+        :param entity_ids: the rows the write may change, when known before it -- pk values
+            (single-pk) or tuples of pk values in declared column order; more can be named during
+            the write with :meth:`BypassingWrite.touches`
+        :ptype entity_ids: Any
+        :param conn: the caller's connection the write joins, or ``None`` for the collection's pool
+        :ptype conn: Any
+        :return: the write's handle
+        :rtype: AsyncIterator[BypassingWrite]
+        :raises ValueError: when ``conn`` is given and its transaction was not opened by
+            ``CallerTransaction``
+        """
+        transaction = (
+            None if conn is None else CallerTransaction.join(conn, writer=f"{type(self).__name__}.bypassing_write")
+        )
+        write = BypassingWrite(self, transaction)
+        write.touches(*entity_ids)
+        completed = False
+        try:
+            yield write
+            completed = True
+        finally:
+            if transaction is None and not (completed and write.is_unchanged):
+                await asyncio.shield(self._evict_every(write.keys))
+
+    async def _evict_every(self, entity_ids: tuple[Any, ...]) -> None:
+        """evict each row in ``entity_ids`` from L1 and L2 and broadcast it (:meth:`invalidate_cache`).
+
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared column order
+        :ptype entity_ids: tuple[Any, ...]
+        :return: nothing
+        :rtype: None
+        """
+        for entity_id in entity_ids:
+            await self.invalidate_cache(entity_id)
 
     def create(self, data: dict[str, Any]) -> EntityT:
         """Create new entity (not persisted until save)."""

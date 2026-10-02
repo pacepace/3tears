@@ -12,7 +12,7 @@ architecture (DS-11-01..15):
 - **AsyncSyncBridge for sync->async**. ``redshift_connector`` is a
   DB-API sync library; every blocking call runs through the shared
   :class:`AsyncSyncBridge` from
-  :mod:`threetears.datasources.drivers._sync_bridge`. driver does NOT
+  :mod:`threetears.datasources.drivers.sync_bridge`. driver does NOT
   instantiate :class:`concurrent.futures.ThreadPoolExecutor` directly
   (enforcement test catches drift).
 - **connection cache** (``collections.deque``) of size
@@ -33,7 +33,7 @@ architecture (DS-11-01..15):
   ``hub_replicas x connection_cache_size``, so the user's CONNECTION
   LIMIT must be sized to the replica count.
 - **DB-API ``$1`` -> ``%s`` placeholder translation** via the shared
-  :func:`threetears.datasources.drivers._util._translate_placeholders`
+  :func:`threetears.datasources.drivers.sql_fragments.translate_placeholders`
   helper with ``target_style="pyformat"``.
 - **server-side streaming** via cursor ``arraysize`` +
   ``fetchmany()`` in :meth:`fetch_iter`, wrapped per-chunk through
@@ -160,9 +160,10 @@ if TYPE_CHECKING:
     RedshiftCursor = Any
 
 from threetears.datasources.config import RedshiftConnectionConfig
-from threetears.datasources.drivers._sync_bridge import AsyncSyncBridge
-from threetears.datasources.drivers._util import (
-    _translate_placeholders,
+from threetears.datasources.drivers._redshift_connector_internals import connection_socket
+from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
+from threetears.datasources.drivers.sql_fragments import (
+    translate_placeholders,
     build_relation_key_expression,
     build_set_local_statement_timeout_sql,
     build_set_search_path_sql,
@@ -177,7 +178,7 @@ from threetears.datasources.drivers.base import (
     Transaction,
     _check_otel_metrics,
     _instrument_cache,
-    _observed,
+    observed,
 )
 from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
 from threetears.datasources.drivers.errors import (
@@ -356,31 +357,6 @@ def _report_late_terminate(unit: asyncio.Future[None]) -> None:
         )
 
 
-def _connection_socket(conn: RedshiftConnection) -> Any:
-    """the socket a redshift_connector connection talks over, or ``None`` when it exposes none.
-
-    redshift_connector keeps its underlying ``SSLSocket`` on the private ``_usock`` attribute and
-    offers no public accessor, while this driver must reach it twice: to tune TCP keepalive and to
-    lift the login timeout. read here, ONCE, as an attribute under a reasoned SLF001 pragma -- the
-    spelling every check sees -- rather than through ``getattr`` with the name as a string, which
-    hid the dependency from all of them. a release that renames it degrades to ``None``, and each
-    caller says what that costs.
-
-    :param conn: live redshift_connector connection
-    :ptype conn: RedshiftConnection
-    :return: the connection's socket, or ``None``
-    :rtype: Any
-    """
-    result: Any = None
-    try:
-        result = conn._usock  # noqa: SLF001 -- redshift_connector exposes its socket nowhere else
-    except AttributeError:
-        # NOSILENT: an absent socket is the answer this returns, and each caller logs or raises
-        # what that means for it -- a keepalive left at the system default, or a refused login.
-        result = None
-    return result
-
-
 def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionConfig) -> None:
     """apply aggressive OS-level TCP keepalive on a redshift_connector connection.
 
@@ -402,9 +378,9 @@ def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionCon
     """
     if not cfg.tcp_keepalive:
         return
-    sock = _connection_socket(conn)
+    sock = connection_socket(conn)
     if sock is None:
-        log.warning("redshift keepalive: connection exposes no _usock; leaving keepalive at the system default")
+        log.warning("redshift keepalive: connection exposes no socket; leaving keepalive at the system default")
         return
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -436,7 +412,8 @@ _FETCH_ITER_ARRAYSIZE = 1000
 #: primitive since the lib has no ``cancel()`` API) opens no
 #: secondary socket but can still block on the TERMINATE write if
 #: the TCP send buffer is wedged. the wait_for guard makes the
-#: failure observable rather than silent. module-level so the
+#: failure observable rather than silent. the production default of
+#: ``RedshiftDriver(cancel_timeout_seconds=)``; module-level so the
 #: enforcement test's ``timeout=Constant`` walker doesn't flag the
 #: call site (Name reference, not Constant literal).
 _CANCEL_TIMEOUT_SECONDS = 5.0
@@ -735,7 +712,7 @@ class RedshiftDriver(Driver):
     :ptype config: RedshiftConnectionConfig
     :param datasource_name: human-readable name of the datasource this
         driver serves. surfaces as the ``datasource_name`` attribute
-        on every OTel metric emitted by :func:`_observed`. defaults
+        on every OTel metric emitted by :func:`observed`. defaults
         to ``"unknown"`` so callers without the name in scope can
         omit; Hub broker / tool-pod (shards 13/14) thread the name
         from :attr:`DatasourceConfig.name`
@@ -748,6 +725,7 @@ class RedshiftDriver(Driver):
         *,
         datasource_name: str = "unknown",
         connect_guard: ConnectGuard | None = None,
+        cancel_timeout_seconds: float = _CANCEL_TIMEOUT_SECONDS,
     ) -> None:
         """capture config; build bridge + cache; register finalize. no I/O.
 
@@ -759,11 +737,16 @@ class RedshiftDriver(Driver):
         :param connect_guard: asked before every fresh login and told of every
             refusal; ``None`` for an unguarded driver (an explicit probe)
         :ptype connect_guard: ConnectGuard | None
+        :param cancel_timeout_seconds: how long the cancel path waits for its client-side close and
+            its server-side terminate before it reports them as failed and moves on; neither is
+            abandoned, only the wait ends. the production default is the module's cancel bound
+        :ptype cancel_timeout_seconds: float
         :return: nothing
         :rtype: None
         """
         self._config = config
         self._connect_guard = connect_guard
+        self._cancel_timeout_seconds = cancel_timeout_seconds
         # bridge sized from config -- the enforcement test catches
         # inline literals. construction does NOT spawn workers; the
         # executor is started lazily on first submission.
@@ -797,7 +780,7 @@ class RedshiftDriver(Driver):
         # manual cleanup pass.
         self._backend_pids: weakref.WeakKeyDictionary[RedshiftConnection, int] = weakref.WeakKeyDictionary()
         self._closed = False
-        # read by :func:`_observed` as the ``datasource_name`` attribute
+        # read by :func:`observed` as the ``datasource_name`` attribute
         # on every metric emission. matches the AsyncpgDriver contract.
         self._datasource_name = datasource_name
         # pod-crash mitigation per DS-11-11: register a finalize
@@ -882,7 +865,7 @@ class RedshiftDriver(Driver):
         # lift the connect timeout: left on, it would fail every statement longer than the
         # login bound with a "connection time out". a socket this cannot reach would carry
         # that failure to a long build hours later, so the login fails now, naming it.
-        sock = _connection_socket(conn)
+        sock = connection_socket(conn)
         if sock is None:
             with self._suppress_close():
                 conn.close()
@@ -1264,7 +1247,7 @@ class RedshiftDriver(Driver):
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(checkout.conn.close),
-                timeout=_CANCEL_TIMEOUT_SECONDS,
+                timeout=self._cancel_timeout_seconds,
             )
         except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
             log.warning(
@@ -1423,7 +1406,7 @@ class RedshiftDriver(Driver):
         # lose that refusal, and strand the connection between the login and the close.
         unit: asyncio.Future[None] = asyncio.ensure_future(self._terminate_backend_unit(pid))
         try:
-            await asyncio.wait_for(asyncio.shield(unit), timeout=_CANCEL_TIMEOUT_SECONDS)
+            await asyncio.wait_for(asyncio.shield(unit), timeout=self._cancel_timeout_seconds)
         except asyncio.CancelledError:
             unit.add_done_callback(_report_late_terminate)
             raise
@@ -1432,7 +1415,7 @@ class RedshiftDriver(Driver):
             log.warning(
                 "redshift server-side terminate (pg_terminate_backend) did not finish within %ss for pid=%s; "
                 "it goes on in the background",
-                _CANCEL_TIMEOUT_SECONDS,
+                self._cancel_timeout_seconds,
                 pid,
             )
             if cancel_failed is not None:
@@ -1669,7 +1652,7 @@ class RedshiftDriver(Driver):
             cursor.close()
 
     @traced
-    @_observed(driver_type="redshift")
+    @observed(driver_type="redshift")
     async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         """run a SELECT statement; materialize all rows in memory.
 
@@ -1696,7 +1679,7 @@ class RedshiftDriver(Driver):
         # override is a caller bug, not a reason to burn a checkout.
         if timeout_seconds is not None:
             build_set_local_statement_timeout_sql(timeout_seconds)
-        translated = _translate_placeholders(sql, "pyformat")
+        translated = translate_placeholders(sql, "pyformat")
 
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
@@ -1711,7 +1694,7 @@ class RedshiftDriver(Driver):
         return result
 
     @traced
-    @_observed(driver_type="redshift")
+    @observed(driver_type="redshift")
     async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         """run a DML / DDL statement; discard any returned rows.
 
@@ -1732,7 +1715,7 @@ class RedshiftDriver(Driver):
             raise RuntimeError("RedshiftDriver is closed")
         if timeout_seconds is not None:
             build_set_local_statement_timeout_sql(timeout_seconds)
-        translated = _translate_placeholders(sql, "pyformat")
+        translated = translate_placeholders(sql, "pyformat")
 
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
@@ -1807,7 +1790,7 @@ class RedshiftDriver(Driver):
         :raises asyncio.CancelledError: propagated after backend cancel
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
-        translated = _translate_placeholders(sql, "pyformat")
+        translated = translate_placeholders(sql, "pyformat")
         if timeout_seconds is not None:
             build_set_local_statement_timeout_sql(timeout_seconds)
             checkout.timeout_overridden = True
@@ -1845,7 +1828,7 @@ class RedshiftDriver(Driver):
         :raises asyncio.CancelledError: propagated after backend cancel
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
-        translated = _translate_placeholders(sql, "pyformat")
+        translated = translate_placeholders(sql, "pyformat")
         if timeout_seconds is not None:
             build_set_local_statement_timeout_sql(timeout_seconds)
             checkout.timeout_overridden = True
@@ -1930,7 +1913,7 @@ class RedshiftDriver(Driver):
         """
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
-        translated = _translate_placeholders(sql, "pyformat")
+        translated = translate_placeholders(sql, "pyformat")
         # hold the open-connection semaphore for the whole streaming span -- the
         # connection is checked out until the generator is exhausted or closed;
         # released in the finally after the connection is released/evicted. guard
@@ -2013,7 +1996,7 @@ class RedshiftDriver(Driver):
     # -------------------------------------------------------------------
 
     @traced
-    @_observed(driver_type="redshift")
+    @observed(driver_type="redshift")
     async def list_tables(self, schemas: list[str]) -> list[TableRow]:
         """list tables in the schema allow-list using pg-compatible SQL.
 
@@ -2063,7 +2046,7 @@ class RedshiftDriver(Driver):
         return result
 
     @traced
-    @_observed(driver_type="redshift")
+    @observed(driver_type="redshift")
     async def list_columns(self, schemas: list[str]) -> list[ColumnRow]:
         """list columns for every table in the schema allow-list.
 
@@ -2124,7 +2107,7 @@ class RedshiftDriver(Driver):
         return result
 
     @traced
-    @_observed(driver_type="redshift")
+    @observed(driver_type="redshift")
     async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
         """count and fingerprint ``relation`` over ``key``, in one statement.
 
@@ -2229,7 +2212,7 @@ class RedshiftDriver(Driver):
     # -------------------------------------------------------------------
 
     @traced
-    @_observed(driver_type="redshift")
+    @observed(driver_type="redshift")
     async def test_connection(self) -> None:
         """cheapest possible round-trip; verifies credentials + reachability.
 

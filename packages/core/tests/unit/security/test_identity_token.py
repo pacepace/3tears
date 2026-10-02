@@ -407,6 +407,72 @@ def test_empty_identity_generation_normalizes_to_none(
     assert claims.identity_generation is None
 
 
+@pytest.mark.parametrize("data_version", [0, 1, 4, 2**40])
+def test_data_version_round_trips_when_set(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+    data_version: int,
+) -> None:
+    # the pod's declared table-list version survives sign -> verify so the broker can compare it with
+    # the space's target. 0 is a real version and must not be dropped as falsy.
+    priv, pub = keypair
+    jwks = build_jwks({"kid-1": pub})
+    token = sign_identity_token(_claims(data_version=data_version), signing_key=priv, kid="kid-1")
+    assert pyjwt.decode(token, options={"verify_signature": False})["data_version"] == data_version
+    claims = verify_identity_token(token, jwks=jwks, issuer=_ISS)
+    assert claims.data_version == data_version
+
+
+def test_data_version_is_optional_and_defaults_none(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+) -> None:
+    # a token minted without a data version -- every token issued before the claim existed, and every
+    # principal that manages no tables -- carries no claim and still verifies.
+    priv, pub = keypair
+    jwks = build_jwks({"kid-1": pub})
+    token = sign_identity_token(_claims(), signing_key=priv, kid="kid-1")
+    assert "data_version" not in pyjwt.decode(token, options={"verify_signature": False})
+    claims = verify_identity_token(token, jwks=jwks, issuer=_ISS)
+    assert claims.data_version is None
+
+
+@pytest.mark.parametrize("bad", ["4", 4.0, True, -1, None, [4]])
+def test_a_malformed_data_version_claim_is_rejected(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+    bad: object,
+) -> None:
+    # data_version is a FENCING claim: reading a malformed one as "absent" would hand an old pod the
+    # treatment of a pod that declared no version. a present claim is a non-negative int or the token
+    # is refused -- only the issuer can have written it, so a bad value is an issuer defect to surface.
+    priv, pub = keypair
+    jwks = build_jwks({"kid-1": pub})
+    now = int(time.time())
+    payload = {
+        "sub": "a",
+        "customer_id": "c",
+        "sid": "s",
+        "pod_id": "p",
+        "iss": _ISS,
+        "iat": now,
+        "exp": now + 600,
+        "data_version": bad,
+    }
+    token = pyjwt.encode(payload, key=priv, algorithm="EdDSA", headers={"kid": "kid-1"})
+    with pytest.raises(IdentityTokenError, match="data_version"):
+        verify_identity_token(token, jwks=jwks, issuer=_ISS)
+
+
+@pytest.mark.parametrize("bad", [-1, True])
+def test_signing_a_malformed_data_version_is_refused(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+    bad: object,
+) -> None:
+    # the signer refuses to emit a claim every verifier would refuse, so the defect surfaces at the
+    # issuer rather than as a pod that cannot reach its database.
+    priv, _ = keypair
+    with pytest.raises(IdentityTokenError, match="data_version"):
+        sign_identity_token(_claims(data_version=bad), signing_key=priv, kid="kid-1")
+
+
 def test_multi_kid_jwks_supports_overlap_window_rotation(
     keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
 ) -> None:

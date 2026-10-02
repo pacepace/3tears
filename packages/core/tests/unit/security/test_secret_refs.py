@@ -5,18 +5,18 @@ back-compat surface in ``datasources/tests/unit/test_secrets.py``; here we pin t
 core contract and the NEW capability: an app (e.g. scriob) registers its own scheme
 resolver and ``resolve_secret`` / ``validate_ref`` dispatch to it.
 
-Tests stay independent via a snapshot/restore of the process-global registry, so a
-test's registration never leaks into another test (or a re-run in the same process).
+The registry is process-global and has no way to unregister -- deliberately, since a scheme
+an app relies on must not be removable underneath it. Tests stay independent by registering a
+scheme name no other test (and no re-run in the same process) can collide with.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import uuid
 
 import pytest
 from pydantic import SecretStr
 
-from threetears.core.security import secret_refs
 from threetears.core.security.secret_refs import (
     SecretResolutionError,
     parse_ref,
@@ -24,17 +24,6 @@ from threetears.core.security.secret_refs import (
     resolve_secret,
     validate_ref,
 )
-
-
-@pytest.fixture(autouse=True)
-def _isolate_registry() -> Iterator[None]:
-    """Snapshot/restore the scheme registry so a test's registration never leaks."""
-    saved = dict(secret_refs._BACKENDS)  # noqa: SLF001 -- test isolation for the module's registry
-    try:
-        yield
-    finally:
-        secret_refs._BACKENDS.clear()  # noqa: SLF001
-        secret_refs._BACKENDS.update(saved)  # noqa: SLF001
 
 
 def test_parse_ref_smoke() -> None:
@@ -60,10 +49,11 @@ def test_register_scheme_makes_a_custom_scheme_resolvable() -> None:
         seen.append(locator)
         return SecretStr(f"resolved:{locator}")
 
-    register_scheme("schemeregtest", _resolver)
+    scheme = f"schemeregtest{uuid.uuid4().hex[:8]}"
+    register_scheme(scheme, _resolver)
 
-    assert validate_ref("schemeregtest://repo-42") == "schemeregtest://repo-42"
-    assert resolve_secret("schemeregtest://repo-42").get_secret_value() == "resolved:repo-42"
+    assert validate_ref(f"{scheme}://repo-42") == f"{scheme}://repo-42"
+    assert resolve_secret(f"{scheme}://repo-42").get_secret_value() == "resolved:repo-42"
     assert seen == ["repo-42"]  # dispatched to the registered resolver, locator passed through
 
 

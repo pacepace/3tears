@@ -1,7 +1,8 @@
 """WorkspaceFileLease — thin wrapper around core :class:`KVLease`.
 
-provides per-workspace, per-file distributed mutex semantics by
-namespacing KV keys under ``workspace:{workspace_id.hex}:{relative_path}``
+provides per-workspace, per-file distributed mutex semantics in the
+serving agent's OWN lock bucket, which the hub declares and the lease only
+binds, by namespacing KV keys under ``workspace:{workspace_id.hex}:{relative_path}``
 (or a sha256-bounded variant when the raw key would exceed the NATS KV
 practical limit). all ownership-token, TTL, and CAS semantics are
 inherited from core :class:`KVLease`; this wrapper only constructs
@@ -16,11 +17,11 @@ the handle.
 from __future__ import annotations
 
 import hashlib
-import os
 from typing import Any
 from uuid import UUID
 
 from threetears.core.coordination import KVLease, LeaseHandle
+from threetears.nats.subject_permissions import WORKSPACE_LOCKS_BUCKET_SUFFIX, agent_platform_bucket_suffix
 
 __all__ = [
     "WorkspaceFileLease",
@@ -45,50 +46,36 @@ class WorkspaceFileLease:
     def __init__(
         self,
         nats_client: Any,
-        namespace: str | None = None,
+        *,
+        agent_id: UUID,
         pod_id: str | None = None,
     ) -> None:
-        """configure wrapper; build bucket name and core lease factory.
+        """configure wrapper over the agent's OWN workspace-locks bucket, bind-only.
 
-        bucket name resolution precedence:
+        The bucket is ``{ns}-{scope}-workspace-locks``, where ``scope`` is the agent's L2 key scope
+        (:func:`threetears.nats.subject_permissions.agent_platform_bucket_suffix` renders the name
+        without the ``{ns}-`` the client layers on). It is the agent's own for a reason: the lock
+        keys name workspace ids and file paths, so a bucket every agent shared would let any agent
+        list another customer's paths and create or delete any lock. It is the name the agent pod's
+        grant covers, and the hub declares it for every agent.
 
-        1. ``f"{namespace}_workspace_locks"`` when ``namespace`` is given
-        2. ``f"{env}_workspace_locks"`` when ``THREETEARS_NATS_SUBJECT_NAMESPACE`` is set
-        3. ``"workspace_locks"`` as unscoped fallback
+        BIND-ONLY: a pod holds no stream-management verb, so the lease never issues
+        ``STREAM.CREATE``; a bucket the hub has not declared fails the first acquire loudly rather
+        than costing a JetStream deadline first.
 
-        it uses :meth:`os.environ.get` rather than subscript access so unit
-        tests and local-dev runs without the platform env var do not blow up
-        with :class:`KeyError` at wrapper construction.
-
-        **This no longer mirrors :meth:`KVLease._default_bucket_name`, and the
-        difference is a known defect rather than a design choice.** That method
-        used to bake the namespace into the name too; it now returns a bare
-        SUFFIX, because the name is handed to
-        :meth:`threetears.nats.kv.KvCapable.kv_bucket`, which layers the
-        connection's own ``{namespace}-`` over whatever it receives. The name
-        built here therefore materialises as ``{conn_ns}-{namespace}_workspace_locks``
-        -- a namespace on each side. It is left alone deliberately: unlike the
-        lease default, this one takes an EXPLICIT ``namespace`` argument that a
-        caller may legitimately set to something other than the connection's, so
-        collapsing it is a behaviour question about what that argument is for,
-        not a typo. Whoever settles that question owns renaming the bucket, and
-        the rename orphans live locks.
-
-        :param nats_client: connected NATS client exposing ``jetstream()``
+        :param nats_client: connected canonical NATS wrapper client
         :ptype nats_client: Any
-        :param namespace: NATS subject namespace override; None reads env var
-        :ptype namespace: str | None
+        :param agent_id: the agent whose workspace files are locked -- the agent this pod serves
+        :ptype agent_id: UUID
         :param pod_id: holder identifier forwarded to :class:`KVLease`;
             None delegates auto-generation to the core factory
         :ptype pod_id: str | None
         :return: None
         :rtype: None
+        :raises ValueError: if ``agent_id`` is not a uuid
         """
-        effective_namespace = (
-            namespace if namespace is not None else os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE")
-        )
-        bucket_name = f"{effective_namespace}_workspace_locks" if effective_namespace else "workspace_locks"
-        self._kvlease = KVLease(nats_client, bucket_name=bucket_name, pod_id=pod_id)
+        bucket_name = agent_platform_bucket_suffix(agent_id, WORKSPACE_LOCKS_BUCKET_SUFFIX)
+        self._kvlease = KVLease(nats_client, bucket_name=bucket_name, pod_id=pod_id, create_if_missing=False)
 
     @property
     def bucket_name(self) -> str:

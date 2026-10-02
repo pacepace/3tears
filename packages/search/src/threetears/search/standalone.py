@@ -354,6 +354,7 @@ class StandaloneTransport:
         user_agent: str = "3tears-search/standalone",
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        resolve: Callable[[str], Awaitable[tuple[str, ...]]] = _resolve,
     ) -> None:
         """Configure the transport from deployment facts.
 
@@ -403,6 +404,12 @@ class StandaloneTransport:
             a test that drives the clock must also own the sleeping, or a
             backoff would wait in real time against a clock that never moves
         :ptype sleep: Callable[[float], Awaitable[None]]
+        :param resolve: how the address guard resolves a hostname to its
+            addresses, raising :class:`TransportFailed` for a name that does
+            not resolve. Resolution off the event loop by default; injected
+            so a test can present a name that resolves somewhere it should
+            not (DNS rebinding) without owning a resolver
+        :ptype resolve: Callable[[str], Awaitable[tuple[str, ...]]]
         :raises ValueError: when ``max_attempts`` is below 1 or
             ``max_response_bytes`` is not positive
         """
@@ -424,6 +431,7 @@ class StandaloneTransport:
         self._user_agent = user_agent
         self._clock = clock
         self._sleep = sleep
+        self._resolve = resolve
 
     @property
     def egress_name(self) -> str:
@@ -1187,7 +1195,7 @@ class StandaloneTransport:
                 ),
             )
         try:
-            addresses = await _resolve(address or host)
+            addresses = await self._resolve(address or host)
         except TransportFailed:
             # A host whose only way out is a forward proxy has no DNS of its own: names resolve at
             # the proxy. Found live -- every fetch failed "cannot resolve host" while curl through

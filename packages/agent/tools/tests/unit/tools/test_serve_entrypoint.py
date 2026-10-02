@@ -1,6 +1,6 @@
 """tests for the built-in tool-pod entrypoint's per-key identity connect path.
 
-covers ``_BuiltinToolBootstrap.build_server`` (v0.14.1 per-key ONLY):
+covers the bootstrap ``main()`` runs and its ``build_server`` (v0.14.1 per-key ONLY):
 
 * per-key identity: with an identity signing key + pod id + issuer, the pod self-mints a verifiable
   identity JWT and hands ``ToolServer`` an ``auth_token`` provider (no static creds).
@@ -8,10 +8,14 @@ covers ``_BuiltinToolBootstrap.build_server`` (v0.14.1 per-key ONLY):
   static-credential fallback was deleted in the per-key cutover.
 
 plus the fail-loud guards on a partial identity config.
+
+every test reaches the bootstrap through ``main()``, the pod's real entrypoint: ``run`` is
+replaced by one that hands the instance back, so what is tested is exactly what the pod builds.
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,8 +23,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from threetears.agent.tools.bootstrap import ToolPodConfigError
-from threetears.agent.tools.serve import _BuiltinToolBootstrap, _register_builtin_tools
+from threetears.agent.tools.bootstrap import ToolPodConfigError, ToolServerBootstrap
+from threetears.agent.tools.serve import main
 from threetears.core.security import IdentityMinter, verify_identity_token
 
 _ISSUER = "aibots-tool-pod"
@@ -35,6 +39,21 @@ def _signing_key_pem() -> str:
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     ).decode("utf-8")
+
+
+def _entrypoint_bootstrap(monkeypatch: pytest.MonkeyPatch) -> ToolServerBootstrap:
+    """the bootstrap ``main()`` builds, captured at the point it would start running.
+
+    :param monkeypatch: pytest's monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the bootstrap the entrypoint runs
+    :rtype: ToolServerBootstrap
+    """
+    started: list[ToolServerBootstrap] = []
+    monkeypatch.setattr(ToolServerBootstrap, "run", lambda self: started.append(self))
+    main()
+    [bootstrap] = started
+    return bootstrap
 
 
 def _set_signing_key_ref(monkeypatch: pytest.MonkeyPatch, pem: str) -> None:
@@ -64,7 +83,7 @@ async def test_identity_path_hands_toolserver_a_verifiable_token(
 
     with patch("threetears.agent.tools.serve.ToolServer") as tool_server_cls:
         tool_server_cls.return_value = MagicMock()
-        await _BuiltinToolBootstrap("builtin").build_server()
+        await _entrypoint_bootstrap(monkeypatch).build_server()
 
     kwargs = tool_server_cls.call_args.kwargs
     assert kwargs["pod_id"] == _POD_ID
@@ -106,7 +125,7 @@ async def test_identity_path_resolves_a_k8s_ref(
 
     with patch("threetears.agent.tools.serve.ToolServer") as tool_server_cls:
         tool_server_cls.return_value = MagicMock()
-        await _BuiltinToolBootstrap("builtin").build_server()
+        await _entrypoint_bootstrap(monkeypatch).build_server()
 
     provider = tool_server_cls.call_args.kwargs["auth_token"]
     verifying_jwks = IdentityMinter.from_pem(pem, kid=_POD_ID, issuer=_ISSUER).jwks()
@@ -123,7 +142,7 @@ async def test_missing_signing_key_fails_loud(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("THREETEARS_NATS_PASSWORD", "secret")
 
     with pytest.raises(ValueError, match="THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF is required"):
-        await _BuiltinToolBootstrap("builtin").build_server()
+        await _entrypoint_bootstrap(monkeypatch).build_server()
 
 
 @pytest.mark.asyncio
@@ -134,7 +153,7 @@ async def test_identity_key_without_pod_id_fails_loud(monkeypatch: pytest.Monkey
     monkeypatch.setenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", _ISSUER)
 
     with pytest.raises(ValueError, match="THREETEARS_TOOL_POD_ID"):
-        await _BuiltinToolBootstrap("builtin").build_server()
+        await _entrypoint_bootstrap(monkeypatch).build_server()
 
 
 @pytest.mark.asyncio
@@ -145,7 +164,7 @@ async def test_identity_key_without_issuer_fails_loud(monkeypatch: pytest.Monkey
     monkeypatch.delenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", raising=False)
 
     with pytest.raises(ValueError, match="THREETEARS_TOOL_POD_CONNECT_ISSUER"):
-        await _BuiltinToolBootstrap("builtin").build_server()
+        await _entrypoint_bootstrap(monkeypatch).build_server()
 
 
 class TestIdentityConfigFaultsAreTerminal:
@@ -164,7 +183,7 @@ class TestIdentityConfigFaultsAreTerminal:
         monkeypatch.delenv("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF", raising=False)
 
         with pytest.raises(ToolPodConfigError) as err:
-            await _BuiltinToolBootstrap("builtin").build_server()
+            await _entrypoint_bootstrap(monkeypatch).build_server()
 
         assert err.value.variable == "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF"
 
@@ -175,7 +194,7 @@ class TestIdentityConfigFaultsAreTerminal:
         monkeypatch.setenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", _ISSUER)
 
         with pytest.raises(ToolPodConfigError) as err:
-            await _BuiltinToolBootstrap("builtin").build_server()
+            await _entrypoint_bootstrap(monkeypatch).build_server()
 
         assert err.value.variable == "THREETEARS_TOOL_POD_ID"
 
@@ -186,7 +205,7 @@ class TestIdentityConfigFaultsAreTerminal:
         monkeypatch.delenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", raising=False)
 
         with pytest.raises(ToolPodConfigError) as err:
-            await _BuiltinToolBootstrap("builtin").build_server()
+            await _entrypoint_bootstrap(monkeypatch).build_server()
 
         assert err.value.variable == "THREETEARS_TOOL_POD_CONNECT_ISSUER"
 
@@ -194,7 +213,7 @@ class TestIdentityConfigFaultsAreTerminal:
 class TestEveryBuiltinToolIsAccountedFor:
     """a tool this pod does not serve must say so; it may never just be absent.
 
-    ``_register_builtin_tools`` reports a ``registered`` / ``skipped`` summary that an
+    the built-in pod's ``register_tools`` reports a ``registered`` / ``skipped`` summary that an
     operator reads as the complete picture. Any tool that is neither registered NOR in
     ``skipped_reasons`` vanishes from that accounting: the pod logs a healthy total,
     the registry never receives the tool, an agent's readiness gate never waits for it
@@ -218,7 +237,7 @@ class TestEveryBuiltinToolIsAccountedFor:
         server = MagicMock()
 
         with caplog.at_level("WARNING"):
-            _register_builtin_tools(server)
+            asyncio.run(_entrypoint_bootstrap(monkeypatch).register_tools(server))
 
         registered = {call.args[0].__class__.__name__ for call in server.register.call_args_list}
         assert "WebSearchTool" not in registered, "web_search cannot register without a SearXNG url"
@@ -242,7 +261,7 @@ class TestEveryBuiltinToolIsAccountedFor:
         monkeypatch.setenv("THREETEARS_SEARXNG_URL", "http://searxng:8080")
         server = MagicMock()
 
-        _register_builtin_tools(server)
+        asyncio.run(_entrypoint_bootstrap(monkeypatch).register_tools(server))
 
         registered = {call.args[0].__class__.__name__ for call in server.register.call_args_list}
         assert "WebSearchTool" in registered, "web_search did not register even with THREETEARS_SEARXNG_URL set"

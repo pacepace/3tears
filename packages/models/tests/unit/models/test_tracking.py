@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Sequence
 
+import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import (
@@ -29,7 +30,6 @@ from threetears.models.tracking import (
     UsageCounterSink,
     UsageRecord,
     UsageTracker,
-    _reset_prom_emitter_for_testing,
 )
 
 
@@ -213,30 +213,23 @@ class TestUsageTracker:
     """tests for UsageTracker OpenTelemetry integration."""
 
     _exporter: _InMemorySpanExporter
-    _provider: TracerProvider
 
-    @classmethod
-    def setup_class(cls) -> None:
-        """configures shared OTel TracerProvider with in-memory exporter.
+    @pytest.fixture(autouse=True)
+    def _route_spans_here(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """hands every ``UsageTracker`` built in this test a tracer that exports to ``_exporter``.
 
-        OTel's ``set_tracer_provider`` is a set-once operation; if another
-        test class earlier in the run already set a provider, this call
-        is silently ignored and our spans land in their exporter. Reset
-        the internal sentinel and rebind the cached UsageTracker tracer
-        so this test class always sees its own provider.
+        ``UsageTracker`` takes its tracer from the public ``opentelemetry.trace.get_tracer`` when it
+        is constructed. That resolves through the process-global provider, which OTel lets a
+        process install exactly once, so a test cannot install its own; it substitutes the lookup
+        instead, for this test only, and leaves the process-global state as it found it.
+
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
         """
-        cls._exporter = _InMemorySpanExporter()
-        cls._provider = TracerProvider()
-        cls._provider.add_span_processor(SimpleSpanProcessor(cls._exporter))
-        try:
-            trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-        except AttributeError:
-            pass
-        trace.set_tracer_provider(cls._provider)
-
-    def setup_method(self) -> None:
-        """clears collected spans before each test."""
-        self._exporter.clear()
+        self._exporter = _InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(self._exporter))
+        monkeypatch.setattr(trace, "get_tracer", provider.get_tracer)
 
     def _make_usage(
         self,
@@ -429,23 +422,23 @@ class TestUsageTrackerSinks:
     """task-07.5: tests for audit + counter sink fanout."""
 
     _exporter: _InMemorySpanExporter
-    _provider: TracerProvider
 
-    @classmethod
-    def setup_class(cls) -> None:
-        """configures shared OTel TracerProvider with in-memory exporter."""
-        cls._exporter = _InMemorySpanExporter()
-        cls._provider = TracerProvider()
-        cls._provider.add_span_processor(SimpleSpanProcessor(cls._exporter))
-        try:
-            trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-        except AttributeError:
-            pass
-        trace.set_tracer_provider(cls._provider)
+    @pytest.fixture(autouse=True)
+    def _route_spans_here(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """hands every ``UsageTracker`` built in this test a tracer that exports to ``_exporter``.
 
-    def setup_method(self) -> None:
-        """clears collected spans before each test."""
-        self._exporter.clear()
+        ``UsageTracker`` takes its tracer from the public ``opentelemetry.trace.get_tracer`` when it
+        is constructed. That resolves through the process-global provider, which OTel lets a
+        process install exactly once, so a test cannot install its own; it substitutes the lookup
+        instead, for this test only, and leaves the process-global state as it found it.
+
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
+        """
+        self._exporter = _InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(self._exporter))
+        monkeypatch.setattr(trace, "get_tracer", provider.get_tracer)
 
     def _make_usage(self, **overrides: object) -> UsageRecord:
         """builds a usage record with sane defaults for sink tests.
@@ -571,23 +564,23 @@ class TestUsageTrackerTenantSpanAttrs:
     """task-07.5: tests for llm.tenant.* span attribute emission."""
 
     _exporter: _InMemorySpanExporter
-    _provider: TracerProvider
 
-    @classmethod
-    def setup_class(cls) -> None:
-        """configures shared OTel TracerProvider with in-memory exporter."""
-        cls._exporter = _InMemorySpanExporter()
-        cls._provider = TracerProvider()
-        cls._provider.add_span_processor(SimpleSpanProcessor(cls._exporter))
-        try:
-            trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
-        except AttributeError:
-            pass
-        trace.set_tracer_provider(cls._provider)
+    @pytest.fixture(autouse=True)
+    def _route_spans_here(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """hands every ``UsageTracker`` built in this test a tracer that exports to ``_exporter``.
 
-    def setup_method(self) -> None:
-        """clears collected spans before each test."""
-        self._exporter.clear()
+        ``UsageTracker`` takes its tracer from the public ``opentelemetry.trace.get_tracer`` when it
+        is constructed. That resolves through the process-global provider, which OTel lets a
+        process install exactly once, so a test cannot install its own; it substitutes the lookup
+        instead, for this test only, and leaves the process-global state as it found it.
+
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
+        """
+        self._exporter = _InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(self._exporter))
+        monkeypatch.setattr(trace, "get_tracer", provider.get_tracer)
 
     def test_span_carries_tenant_attrs_when_populated(self) -> None:
         """populated tenant fields land as llm.tenant.* span attributes."""
@@ -655,17 +648,39 @@ class TestPrometheusLabelDiscipline:
         """the locked Prometheus label set is exactly {model, provider, purpose}.
 
         adding tenant fields here would explode user_id / conversation_id
-        cardinality and bloat the time-series database.
+        cardinality and bloat the time-series database. asserted on what a
+        scrape actually exposes after recording a call that carries every
+        tenant field.
         """
-        from threetears.models.tracking import _PROM_LABELS
+        prometheus_client = pytest.importorskip("prometheus_client")
 
-        assert set(_PROM_LABELS) == {"model", "provider", "purpose"}
-        assert "user_id" not in _PROM_LABELS
-        assert "customer_id" not in _PROM_LABELS
-        assert "agent_id" not in _PROM_LABELS
-        assert "conversation_id" not in _PROM_LABELS
-        assert "invocation_ref" not in _PROM_LABELS
-        assert "category" not in _PROM_LABELS
+        registry = prometheus_client.CollectorRegistry()
+        UsageTracker(prom_registry=registry).record(
+            UsageRecord(
+                model_name=DEFAULT_LARGE_MODEL,
+                provider_name="anthropic",
+                purpose=LlmPurpose.CHAT,
+                input_tokens=1,
+                output_tokens=1,
+                total_tokens=2,
+                latency_ms=1,
+                cost_usd=Decimal("0.0001"),
+                agent_id=uuid4(),
+                customer_id=uuid4(),
+                user_id=uuid4(),
+                conversation_id=uuid4(),
+                invocation_ref="tool-llm-7c1a",
+                category="chat",
+            )
+        )
+
+        families = [family for family in registry.collect() if family.name.startswith("threetears_llm_")]
+        assert len(families) == 5, "the five locked instruments were not all exposed"
+        for family in families:
+            for sample in family.samples:
+                # a histogram's bucket bound is part of the histogram, not a label of ours
+                labels = set(sample.labels) - {"le"}
+                assert labels == {"model", "provider", "purpose"}, (family.name, sample.labels)
 
 
 class TestUsageTrackerCustomRegistry:
@@ -674,20 +689,10 @@ class TestUsageTrackerCustomRegistry:
     expose ``threetears_llm_*`` instruments on their own metrics endpoint.
 
     The default-registry path MUST remain unchanged for backward compat.
-    Each test resets the per-registry emitter cache in setup so registrations
-    don't bleed across tests.
+    Each test that needs isolation builds its own ``CollectorRegistry``, so no
+    registration bleeds across tests; the default registry is the process's,
+    as it is in production.
     """
-
-    def setup_method(self) -> None:
-        """clears the per-registry emitter cache so each test gets fresh
-        instruments without raising "Duplicated timeseries" against any
-        registry it touches.
-        """
-        _reset_prom_emitter_for_testing()
-
-    def teardown_method(self) -> None:
-        """clears the cache again so the next test class starts clean."""
-        _reset_prom_emitter_for_testing()
 
     def _make_usage(self) -> UsageRecord:
         """builds a usage record carrying a non-zero cost so the
@@ -737,13 +742,21 @@ class TestUsageTrackerCustomRegistry:
         """tracker built without ``prom_registry`` still uses the default
         global registry — backward compat guarantee.
 
-        Constructs a tracker with no kwarg and asserts it is wired to the
-        same emitter that ``_get_prom_emitter()`` (no arg) returns.
+        Records through a tracker built with no kwarg and asserts the default
+        registry's cost counter moved by exactly the recorded cost -- as a
+        before/after, so whatever earlier tests recorded there does not matter.
         """
-        from threetears.models.tracking import _get_prom_emitter
+        prometheus_client = pytest.importorskip("prometheus_client")
 
-        tracker = UsageTracker()
-        assert tracker._prom is _get_prom_emitter()
+        labels = {"model": DEFAULT_LARGE_MODEL, "provider": "anthropic", "purpose": "chat"}
+        before = prometheus_client.REGISTRY.get_sample_value("threetears_llm_cost_usd_total", labels) or 0.0
+
+        UsageTracker().record(self._make_usage())
+
+        after = prometheus_client.REGISTRY.get_sample_value("threetears_llm_cost_usd_total", labels)
+        assert after is not None and abs(after - before - 0.0042) < 1e-9, (
+            f"the default registry's cost counter went from {before!r} to {after!r}, not up by the recorded 0.0042"
+        )
 
     def test_custom_registry_does_not_pollute_default(self) -> None:
         """instruments registered on a custom registry are NOT exposed via
@@ -812,8 +825,15 @@ class TestUsageTrackerCustomRegistry:
         custom = CollectorRegistry()
         tracker_a = UsageTracker(prom_registry=custom)
         tracker_b = UsageTracker(prom_registry=custom)
-        # both trackers share the cached emitter for that registry
-        assert tracker_a._prom is tracker_b._prom
+        tracker_a.record(self._make_usage())
+        tracker_b.record(self._make_usage())
+
+        # one set of instruments on the registry, fed by both trackers: a second emitter would
+        # have raised on registering, and two separate counters could not sum to both calls
+        labels = {"model": DEFAULT_LARGE_MODEL, "provider": "anthropic", "purpose": "chat"}
+        assert custom.get_sample_value("threetears_llm_calls_total", labels) == 2.0
+        names = [family.name for family in custom.collect() if family.name.startswith("threetears_llm_")]
+        assert len(names) == len(set(names)) == 5
 
     def test_distinct_registries_get_distinct_emitters(self) -> None:
         """two trackers with two different registries do NOT share the
@@ -829,8 +849,13 @@ class TestUsageTrackerCustomRegistry:
         reg_a = CollectorRegistry()
         reg_b = CollectorRegistry()
         tracker_a = UsageTracker(prom_registry=reg_a)
-        tracker_b = UsageTracker(prom_registry=reg_b)
-        assert tracker_a._prom is not tracker_b._prom
+        UsageTracker(prom_registry=reg_b)
+        tracker_a.record(self._make_usage())
+
+        # each registry holds its own instruments: a call recorded through one is not on the other
+        labels = {"model": DEFAULT_LARGE_MODEL, "provider": "anthropic", "purpose": "chat"}
+        assert reg_a.get_sample_value("threetears_llm_calls_total", labels) == 1.0
+        assert reg_b.get_sample_value("threetears_llm_calls_total", labels) is None
 
     def test_trackers_built_on_several_threads_at_once_share_one_emitter(self) -> None:
         """the first trackers built concurrently register the instruments exactly once.

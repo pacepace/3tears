@@ -73,7 +73,7 @@ from pydantic import (
 )
 
 from threetears.datasources.geo_config import GeoConfig
-from threetears.datasources.entities import DataSourceType
+from threetears.datasources.entities import DataSourceAccessMode, DataSourceType
 from threetears.datasources.secrets import resolve_secret, validate_ref
 
 __all__ = [
@@ -88,21 +88,23 @@ __all__ = [
 ]
 
 
-# valid access mode values, mirrored from
-# :class:`threetears.datasources.entities.DataSourceAccessMode`. kept
-# as a literal set here so the config validator stays a pure pydantic
-# field check without pulling the enum module at validation time.
+# valid access mode values, DERIVED from
+# :class:`threetears.datasources.entities.DataSourceAccessMode` -- the one
+# authority for the value set.
 #
-# the mirror is by hand, so the two authorities can drift.
-# ``tests/unit/test_entities.py::TestAccessModeAuthorityParity`` is what
-# stops a mode landing in one and not the other -- and it has now done that
-# job once, catching ``publish`` here when only the enum carried it.
+# this used to be a literal set mirrored by hand, kept apart so the
+# validator would not "pull the enum module at validation time" -- but this
+# module already imports :mod:`threetears.datasources.entities`, so the
+# separation bought nothing and the two copies drifted: a parity test once
+# caught ``publish`` carried by the enum and missing here. deriving it ends
+# the drift by construction; ``tests/unit/test_entities.py`` pins the
+# behaviour at ``DatasourceConfig``, the gate that consumes it.
 #
 # ``build`` is a FOURTH value and ``publish`` a FIFTH. neither is a
 # composition: there is no ``readwritebuild``, and the publisher OWNS the
 # release schema, which is not a privilege another identity can be granted.
 # see :class:`DataSourceAccessMode` for why.
-_VALID_ACCESS_MODES = frozenset({"read", "write", "readwrite", "build", "publish"})
+_VALID_ACCESS_MODES = frozenset(mode.value for mode in DataSourceAccessMode)
 
 # credential resolution lives in :mod:`threetears.datasources.secrets`.
 # config carries a ``scheme://locator`` reference (``password_ref`` /

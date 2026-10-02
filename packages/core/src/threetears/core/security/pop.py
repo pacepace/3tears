@@ -16,7 +16,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn
 
 import jwt
@@ -24,6 +24,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from jwt.algorithms import OKPAlgorithm
 from threetears.observe import get_logger
 
+from threetears.core.security.freshness import (
+    DEFAULT_PROOF_MAX_AGE,
+    ISSUE_TIME_FUTURE_TOLERANCE,
+    issue_time_is_fresh,
+)
 from threetears.core.security.identity_token import IdentityTokenError, jwk_thumbprint
 
 __all__ = ["VerifiedPopProof", "access_token_hash", "make_pop_proof", "verify_pop_proof"]
@@ -130,15 +135,23 @@ def verify_pop_proof(
     expected_jkt: str,
     access_token_hash: str,
     body_hash: str,
-    leeway_seconds: int = 60,
+    max_age: timedelta = DEFAULT_PROOF_MAX_AGE,
+    future_tolerance: timedelta = ISSUE_TIME_FUTURE_TOLERANCE,
 ) -> VerifiedPopProof:
     """verify a proof-of-possession against the token's holder-key thumbprint + the call binding.
 
     Fail-closed checks, in order: EdDSA pin; the inline ``jwk`` thumbprint == ``expected_jkt`` (the
     token's ``cnf``); the signature under that inline key; ``ath`` == ``access_token_hash``; ``bh``
-    == ``body_hash``; ``iat`` within ``leeway_seconds`` of now. Returns the proof's ``jti`` nonce and
-    signed issue time so the caller can enforce single-use against its replay guard. Any failure
-    raises :class:`IdentityTokenError`.
+    == ``body_hash``; ``iat`` no older than ``max_age`` and no further ahead of now than
+    ``future_tolerance``. Returns the proof's ``jti`` nonce and signed issue time so the caller can
+    enforce single-use against its replay guard. Any failure raises :class:`IdentityTokenError`.
+
+    The two directions of the ``iat`` window are separate on purpose
+    (:mod:`threetears.core.security.freshness`). The caller's replay guard must be sized for
+    ``future_tolerance`` -- pass the same value to its
+    :meth:`~threetears.core.coordination.replay_guard.ReplayGuard.require_covers` -- because after
+    a wipe of the guard's bucket that is how far the refusal has to reach. ``max_age`` is not the
+    guard's concern.
 
     :param proof: the compact JWS proof from the caller
     :ptype proof: str
@@ -148,11 +161,15 @@ def verify_pop_proof(
     :ptype access_token_hash: str
     :param body_hash: the expected ``bh`` (canonical_call_hash of the received call)
     :ptype body_hash: str
-    :param leeway_seconds: clock-skew tolerance for the ``iat`` freshness window
-    :ptype leeway_seconds: int
+    :param max_age: how old the proof's ``iat`` may be -- the time a slow call has to arrive
+    :ptype max_age: timedelta
+    :param future_tolerance: how far ahead of this verifier's clock the proof's ``iat`` may be --
+        clock disagreement between the signer and this host, and nothing else
+    :ptype future_tolerance: timedelta
     :return: the proof nonce (``jti``) and signed issue time, for single-use enforcement
     :rtype: VerifiedPopProof
     :raises IdentityTokenError: on any verification failure
+    :raises ValueError: when ``max_age`` or ``future_tolerance`` is negative
     """
     try:
         header = jwt.get_unverified_header(proof)
@@ -168,12 +185,12 @@ def verify_pop_proof(
             proof,
             key=holder_key,
             algorithms=["EdDSA"],  # literal pin -- statically auditable; never widen
-            # `verify_iat` off so the `leeway_seconds` window below is the SINGLE authority on
-            # freshness. PyJWT's own `iat` check is one-sided (future only) and runs at the
-            # leeway passed to decode, which is zero here -- so leaving it on rejected every
-            # proof from even one second ahead while this function documented `leeway_seconds`,
-            # and which of the two fired was invisible from the outside. `require` is
-            # unaffected: `iat` is still mandatory, it is just adjudicated in one place.
+            # `verify_iat` off so the window below is the SINGLE authority on freshness. PyJWT's
+            # own `iat` check is one-sided (future only) and runs at the leeway passed to
+            # decode, which is zero here -- so leaving it on rejected every proof from even one
+            # second ahead while this function documented a tolerance, and which of the two
+            # fired was invisible from the outside. `require` is unaffected: `iat` is still
+            # mandatory, it is just adjudicated in one place.
             options={"require": _REQUIRED, "verify_iat": False},
         )
     except jwt.PyJWTError as exc:
@@ -187,10 +204,11 @@ def verify_pop_proof(
         _reject("pop iat must be an integer.")
     now = int(datetime.now(UTC).timestamp())
     # Two-sided and the only thing adjudicating iat: a proof from the future is as suspect as
-    # a stale one. It must stay TOLERANT as well as bounded -- signer and verifier are
-    # different machines, and an integer `iat` from a clock a fraction of a second fast reads
-    # as `now + 1`, which is a real call, not an attack.
-    if abs(now - iat) > leeway_seconds:
+    # a stale one. Each side has its own bound. The future side must stay TOLERANT as well as
+    # bounded -- signer and verifier are different machines, and an integer `iat` from a clock
+    # a fraction of a second fast reads as `now + 1`, which is a real call, not an attack --
+    # and SMALL, because the caller's replay guard refuses for that long after a wipe.
+    if not issue_time_is_fresh(iat, now=now, max_age=max_age, future_tolerance=future_tolerance):
         _reject("pop iat is outside the acceptable freshness window.")
     jti = payload.get("jti")
     if not isinstance(jti, str) or not jti:

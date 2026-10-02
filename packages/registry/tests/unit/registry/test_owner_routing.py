@@ -34,9 +34,9 @@ from threetears.registry.discovery import DiscoverRequest, DiscoverToolEntry, Di
 from threetears.registry.proxy import CallProxy, ProxyCallResponse
 from threetears.registry.registration import RegistrationHandler
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
-from ._dispatch_auth import make_authed_request, make_proxy
+from .dispatch_auth import make_authed_request, make_proxy
 
 _NS = "test"
 _TOOL = "aibots.knowledge_drafts"

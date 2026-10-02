@@ -51,9 +51,10 @@ a token string -- see its ``identity_token`` parameter, and
 :class:`RegistryIdentityUnavailableError` for what happens when the
 caller has none. Obtaining one is the HOST's job (3tears knows no
 handshake protocol); the standalone entrypoint resolves a host-supplied
-provider factory from
-``THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY`` exactly as it
-resolves the pod-authenticator, limit-guard and usage-emitter factories.
+identity factory from
+``THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY``, the server builds
+the :class:`~threetears.registry.auth.RegistryIdentity` once, and the rbac
+factory receives its bound ``token`` as this stack's provider.
 """
 
 from __future__ import annotations

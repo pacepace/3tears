@@ -54,6 +54,13 @@ design notes
 - **Graceful single-pod fallback.** ``client=None`` yields
   immediately without acquiring anything -- matches the existing
   behaviour for dev environments that do not run NATS.
+- **Infrastructure callers only; it declares its bucket.** The lock opens its
+  bucket with create-if-missing, which needs ``STREAM.CREATE`` -- a verb no agent
+  or tool pod holds, and no pod grant names ``{ns}-scheduler-locks``. Every
+  caller today is an infrastructure identity (hub sweeps and reconcilers, the
+  scheduled-jobs tick, a derived collection's build lock). A pod needing
+  cross-pod exclusion binds a hub-declared bucket through
+  ``KVLease(create_if_missing=False)`` instead.
 - **Bucket name namespacing.** The default bucket ``"scheduler-locks"``
   rides through :meth:`NatsClient.kv_bucket` and picks up the
   client's ``nats_subject_namespace`` prefix automatically (the
@@ -339,6 +346,14 @@ async def nats_distributed_lock(
         msg = f"max_hold {max_hold} must not be negative"
         raise ValueError(msg)
 
+    # DECLARES its bucket (``create_if_missing`` left at its default), deliberately. Every caller
+    # of this lock is an INFRASTRUCTURE identity that owns what it opens -- the hub's sweeps and
+    # reconcilers, the scheduled-jobs tick and its in-flight lock, a derived collection's build
+    # lock -- and none runs in an agent or tool pod: no pod grant names ``{ns}-scheduler-locks``,
+    # so a pod caller would be refused at the first call rather than silently served. A pod holds
+    # no stream-management verb; a pod that ever needs a cross-pod lock gets a bucket the hub
+    # declares and binds it, which is what ``KVLease(create_if_missing=False)`` over a hub-declared
+    # bucket already does.
     bucket = await client.kv_bucket(name=bucket_name, ttl=ttl)
     # JetStream KV bucket TTL is bucket-level + fixed-at-creation. The
     # client caches buckets by name (first-caller wins), so a second

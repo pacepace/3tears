@@ -14,7 +14,7 @@ import pytest
 from threetears.agent.wake.tools.validators import (
     CONTEXT_FROM_MAX_DEPTH,
     SUPPORTED_SCHEDULE_TYPES,
-    _ChainNode,
+    ChainNode,
     validate_context_from_chain,
     validate_schedule_config,
 )
@@ -185,10 +185,10 @@ class _InMemoryResolver:
         self._agent = agent_id
         self._edges = edges
 
-    async def __call__(self, schedule_id: UUID) -> _ChainNode | None:
+    async def __call__(self, schedule_id: UUID) -> ChainNode | None:
         if schedule_id not in self._edges:
             return None
-        return _ChainNode(
+        return ChainNode(
             agent_id=self._agent,
             context_from_schedule_id=self._edges[schedule_id],
         )
@@ -262,9 +262,9 @@ async def test_context_from_another_agents_wake_rejected() -> None:
     target = uuid4()
 
     class _OtherAgentResolver:
-        async def __call__(self, schedule_id: UUID) -> _ChainNode | None:
+        async def __call__(self, schedule_id: UUID) -> ChainNode | None:
             del schedule_id
-            return _ChainNode(
+            return ChainNode(
                 agent_id=agent_b,
                 context_from_schedule_id=None,
             )

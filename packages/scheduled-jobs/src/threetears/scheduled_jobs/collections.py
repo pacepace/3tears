@@ -574,8 +574,11 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
             raise ValueError(msg)
         changed = None
         if self.l3_pool is not None:
-            # cache-bypass: targeted UPDATE; the row cache is invalidated
-            # naturally on the next partition-aware fetch.
+            # cache-bypass: targeted UPDATE that settles no cache tier, and that is safe only
+            # because no code reads a scheduled_jobs row by primary key: get_by_job_id,
+            # list_jobs, list_for_partition, list_due_for_tick and update_schedule all query
+            # L3, so a cached copy of this row is never served. A by-pk reader added later must
+            # add the eviction (see threetears.agent.wake.collections for the shape).
             changed = await self.l3_pool.fetchval(
                 "UPDATE scheduled_jobs SET status = $1, date_updated = $2 "
                 "WHERE partition_key = $3 AND job_id = $4 "
@@ -687,9 +690,8 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
         """
         requested = None
         if self.l3_pool is not None:
-            # cache-bypass: targeted UPDATE guarded on status; the row
-            # cache is invalidated naturally on the next partition-aware
-            # fetch.
+            # cache-bypass: targeted UPDATE guarded on status. Settles no cache tier; safe only
+            # because no code reads a scheduled_jobs row by primary key (see set_status).
             requested = await self.l3_pool.fetchval(
                 "UPDATE scheduled_jobs SET next_fire_at = $1, date_updated = $1 "
                 "WHERE partition_key = $2 AND job_id = $3 AND status = 'active' "
@@ -737,8 +739,8 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
         """
         if self.l3_pool is None:
             return False
-        # cache-bypass: atomic CAS UPDATE; the row cache is invalidated
-        # naturally on the next partition-aware fetch.
+        # cache-bypass: atomic CAS UPDATE. Settles no cache tier; safe only because no code
+        # reads a scheduled_jobs row by primary key (see set_status).
         claimed = await self.l3_pool.fetchval(
             "UPDATE scheduled_jobs "
             "SET next_fire_at = $1, last_fired_at = $2, date_updated = $2, status = $3 "
@@ -867,8 +869,7 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: write-path; the row cache is read-mostly and
-        # invalidated naturally on the next fetch.
+        # cache-bypass: INSERT of a fresh fire_id, which no cache can hold.
         await self.l3_pool.execute(
             "INSERT INTO job_fires "
             "(partition_key, fire_id, job_id, scheduled_fire_at, actual_fired_at, status) "

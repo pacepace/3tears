@@ -22,7 +22,7 @@ from threetears.core.coordination.lease import (
     LeaseTimeout,
     LeaseUnavailable,
 )
-from threetears.core.serialization import deserialize_from_json, serialize_to_json
+from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
 
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
@@ -85,6 +85,17 @@ class TestAcquireEmpty:
         assert expires_at > acquired_at
         assert (expires_at - acquired_at) >= timedelta(seconds=29)
         assert acquired_at >= before - timedelta(seconds=1)
+
+    async def test_the_envelope_stores_both_instants_in_the_one_stored_form(self) -> None:
+        """``json_datetime``'s fixed-width form, as every storage tier writes it, not ``isoformat()``."""
+        lease, client = await _make_lease()
+        await lease.acquire("lock/a", ttl_seconds=30)
+        value = await (await _bucket_for(client, "test_leases")).get(key="lock/a")
+        assert value is not None
+        envelope = _decode_envelope(value)
+        for field in ("expires_at", "acquired_at"):
+            stored = envelope[field]
+            assert stored == json_datetime(datetime.fromisoformat(stored))
 
 
 class TestAcquireFailFast:
@@ -373,3 +384,41 @@ class TestBucketDefaults:
         second = KVLease(nats_client=client, bucket_name="test_leases")  # type: ignore[arg-type]
 
         assert first.pod_id != second.pod_id
+
+
+class TestOwnerScopedLeaseKeys:
+    """a lease over a SHARED bucket keys every claim under its owner's scope.
+
+    The platform's ``leases`` bucket is one bucket every tool pod binds, and each pod is granted only
+    the keys under its own scope. Replicas of one pod share the scope and so contend for one key; a
+    different pod's claim on the same name is a different key it cannot see.
+    """
+
+    _SCOPE = "tool_pod-01947100000070008000000000000001"
+
+    @pytest.mark.asyncio
+    async def test_a_claim_is_written_under_the_owners_scope(self) -> None:
+        client = FakeNatsClient()
+        lease = KVLease(client, bucket_name="leases", pod_id="replica-1", key_scope=self._SCOPE)  # type: ignore[arg-type]
+        handle = await lease.acquire("session-digest", ttl_seconds=30, max_wait_seconds=0)
+        assert handle.key == f"{self._SCOPE}.session-digest"
+        bucket = await client.kv_bucket(name="leases")
+        assert await bucket.get(key=f"{self._SCOPE}.session-digest") is not None
+        assert await bucket.get(key="session-digest") is None
+        await handle.release()
+        assert await bucket.get(key=f"{self._SCOPE}.session-digest") is None
+
+    @pytest.mark.asyncio
+    async def test_replicas_of_one_owner_contend_for_one_key(self) -> None:
+        client = FakeNatsClient()
+        first = KVLease(client, bucket_name="leases", pod_id="replica-1", key_scope=self._SCOPE)  # type: ignore[arg-type]
+        second = KVLease(client, bucket_name="leases", pod_id="replica-2", key_scope=self._SCOPE)  # type: ignore[arg-type]
+        held = await first.acquire("s", ttl_seconds=30, max_wait_seconds=0)
+        with pytest.raises(LeaseUnavailable):
+            await second.acquire("s", ttl_seconds=30, max_wait_seconds=0)
+        await held.release()
+
+    @pytest.mark.parametrize("scope", ["", "a.b", "a*", ">"])
+    def test_a_scope_that_is_not_one_literal_token_is_refused(self, scope: str) -> None:
+        with pytest.raises(ValueError, match="key_scope"):
+            KVLease(FakeNatsClient(), bucket_name="leases", key_scope=scope)  # type: ignore[arg-type]

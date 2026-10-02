@@ -33,7 +33,7 @@ from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 
-from ._helpers.driver_shims import (
+from .helpers.driver_shims import (
     REDSHIFT_TEST_PASSWORD,
     REDSHIFT_TEST_PASSWORD_ENV,
     REDSHIFT_TEST_PASSWORD_REF,
@@ -69,6 +69,7 @@ class _ConcurrencyMeter:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self.opened_total = 0
         self.open_now = 0
         self.open_peak = 0
         self.exec_now = 0
@@ -77,6 +78,7 @@ class _ConcurrencyMeter:
     def on_open(self) -> None:
         """record a fresh connection opening."""
         with self._lock:
+            self.opened_total += 1
             self.open_now += 1
             self.open_peak = max(self.open_peak, self.open_now)
 
@@ -213,9 +215,12 @@ async def test_connection_cache_bounded_by_cache_size() -> None:
     """the warm-connection cache never retains more than ``connection_cache_size``."""
     meter = _ConcurrencyMeter()
     driver = await _run_burst(meter, max_workers=5, cache_size=5)
-    assert driver._cache.maxlen == 5  # noqa: SLF001 - test inspects pool state
-    assert len(driver._cache) <= 5  # noqa: SLF001
+    # every query has finished, so each connection still open is one the cache retained.
+    assert meter.opened_total >= 1
+    assert 1 <= meter.open_now <= 5
     await driver.close()
+    # and close() releases every one of them.
+    assert meter.open_now == 0
 
 
 @pytest.mark.asyncio

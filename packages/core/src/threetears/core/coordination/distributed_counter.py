@@ -48,6 +48,8 @@ from typing import TYPE_CHECKING, Any, Final
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
+from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
+
 if TYPE_CHECKING:
     # From the submodule, not the package: these three are Protocols that
     # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
@@ -123,7 +125,15 @@ class DistributedCounter:
     :class:`KVLease`'s construction style within this package.
     """
 
-    def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl: timedelta | None = None) -> None:
+    def __init__(
+        self,
+        nats_client: "KvCapable",
+        *,
+        bucket_name: str,
+        ttl: timedelta | None = None,
+        create_if_missing: bool = True,
+        key_scope: str | None = None,
+    ) -> None:
         """configure the counter; defer bucket binding until first use.
 
         :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`;
@@ -143,12 +153,28 @@ class DistributedCounter:
             generous safety margin (a decrement that never runs -- crash,
             forgotten call -- must not leak the slot forever)
         :ptype ttl: timedelta | None
+        :param create_if_missing: ``True`` (the default) DECLARES the bucket, creating it when
+            absent; ``False`` only BINDS a bucket another identity declared, and never issues
+            STREAM.CREATE. a process granted key-addressed access to a bucket it does not own
+            (a tool pod over an agent's coordination bucket) holds no stream-admin verb, and a
+            refused create is never answered -- it costs the full JetStream deadline before
+            the bind that would have succeeded
+        :ptype create_if_missing: bool
+        :param key_scope: the owner scope every counter key leads with (``{key_scope}.{key}``), for a
+            bucket SHARED by many owners -- the platform's ``ratelimits``, which every agent pod binds
+            and in which each pod is granted only the keys under its own
+            :func:`~threetears.nats.subject_permissions.kv_key_scope_for` scope. ``None`` keys by the
+            caller's key alone, for a bucket this counter's owner has to itself
+        :ptype key_scope: str | None
         :return: none
         :rtype: None
+        :raises ValueError: when ``key_scope`` is not one literal subject token
         """
+        self._key_scope = validated_key_scope(key_scope, primitive="DistributedCounter")
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = ttl
+        self._create_if_missing = create_if_missing
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -213,7 +239,7 @@ class DistributedCounter:
         :raises threetears.nats.KvError: on a KV transport failure
         """
         bucket = await self._ensure_bucket()
-        value = await bucket.get(key=key)
+        value = await bucket.get(key=owner_scoped_key(self._key_scope, key))
         return _decode_value(value) if value is not None else 0
 
     async def _apply_delta(self, key: str, delta: int) -> int:
@@ -228,6 +254,7 @@ class DistributedCounter:
         :raises DistributedCounterConflict: if the CAS retry budget is exhausted
         """
         bucket = await self._ensure_bucket()
+        key = owner_scoped_key(self._key_scope, key)
         for attempt in range(_CAS_MAX_RETRIES):
             entry = await bucket.get_entry(key=key)
             if entry is None:
@@ -262,8 +289,12 @@ class DistributedCounter:
                     name=self._bucket_name,
                     ttl=self._ttl,
                     storage="memory",
-                    create_if_missing=True,
+                    create_if_missing=self._create_if_missing,
                     history=1,
                 )
-                log.info("DistributedCounter bound bucket %s", self._bucket_name)
+                log.info(
+                    "DistributedCounter bound bucket %s (create_if_missing=%s)",
+                    self._bucket_name,
+                    self._create_if_missing,
+                )
         return self._bucket

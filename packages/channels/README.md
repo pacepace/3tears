@@ -26,6 +26,32 @@ response = await router.dispatch(ChannelMessage(text="hello", channel="slack", .
 blocks = build_slack_blocks(response)
 ```
 
+## WebSocket connection lifetime
+
+`WebSocketHandler` ends a connection on its own in two cases, besides the peer disconnecting.
+
+**The peer stops answering.** Every `heartbeat_interval` seconds (config key, default 30) each open
+connection is sent `{"type": "ping"}`. A connection that has sent nothing since the previous ping
+is closed with code 1011, and its registry entry, rooms and presence are cleaned up as on a
+disconnect. Any frame counts as an answer; an otherwise idle client answers with
+`{"type": "pong"}`. A connection busy with a frame (a turn in flight) is not judged until it is
+reading again.
+
+**The credential expires.** If the `auth_validator`'s claims include `exp` (unix seconds), the
+first frame at or after that time, or the first heartbeat tick of an idle connection, is answered
+with the same refusal an unauthenticated connection gets:
+
+```json
+{"type": "error", "code": "UNAUTHENTICATED", "message": "access token expired"}
+```
+
+and the socket is closed 1008. A client handles it like any `UNAUTHENTICATED` refusal: obtain a
+fresh credential and reconnect. Leave `exp` out of the claims for a connection that should not
+expire.
+
+A connection that is answering pings also keeps its presence row fresh, so `PresenceSweeper`
+does not evict a live member.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

@@ -19,6 +19,9 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
+
+from threetears.nats.system_account import NatsConnectionRef
 from threetears.nats.user_jwt import account_public_key, encode_and_sign
 
 __all__ = ["AuthCalloutRequest", "decode_auth_request", "mint_auth_response"]
@@ -54,6 +57,28 @@ class AuthCalloutRequest:
         if not isinstance(sid, str) or not sid:
             raise ValueError("auth request server_id.id missing")
         return sid
+
+    @property
+    def connection(self) -> NatsConnectionRef | None:
+        """the connection this request authorizes, as the requesting server names it.
+
+        ``server_id.id`` and ``client_info.id`` (the server's ``cid``) together name exactly one
+        connection, which is what :func:`threetears.nats.kick_connection` closes. ``None`` when the
+        request carries no usable pair -- every nats-server this package supports sends both, so a
+        missing one is a server that cannot be kicked through, not a normal case.
+
+        :return: the connection, or ``None`` when the request does not name one
+        :rtype: NatsConnectionRef | None
+        """
+        server_id = self.server_id.get("id")
+        client_id = self.client_info.get("id")
+        result: NatsConnectionRef | None = None
+        if isinstance(server_id, str) and isinstance(client_id, int) and not isinstance(client_id, bool):
+            try:
+                result = NatsConnectionRef(server_id=server_id, client_id=client_id)
+            except ValidationError:
+                result = None
+        return result
 
     @property
     def bootstrap_token(self) -> str | None:

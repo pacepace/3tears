@@ -15,7 +15,7 @@ the credential:
 - WITHOUT them: :meth:`NatsClient.subscribe` returns a live :class:`Subscription` and RAISES NOTHING,
   the connection stays up and healthy, and the message never arrives. The refusal exists only as an
   asynchronous ``-ERR`` frame, which is precisely the invisible failure
-  :func:`threetears.nats.client._on_error`'s permissions-violation line was added to report -- so the
+  the wrapper error callback's permissions-violation line was added to report -- so the
   same test asserts that line fired, naming that exact subject in its structured fields. Without that
   assertion the negative half would pass equally against a broker that was never reachable.
 
@@ -44,7 +44,6 @@ import pytest
 
 from threetears.core.testing.containers import check_docker_available
 from threetears.nats import IncomingMessage, NatsClient, Subjects, set_default_namespace
-from threetears.nats.client import _SUBJECT_CASE_LOWERCASED, _last_error_log
 from threetears.nats.subject_permissions import Principal, PrincipalPermissions, build_permissions
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
@@ -200,7 +199,7 @@ async def _connect(uri: str, *, user: str, password: str, permissions: Principal
     """connect the canonical wrapper on one principal's credential + its scoped inbox.
 
     the wrapper rather than a raw nats-py client on purpose: it is the wrapper that installs
-    :func:`threetears.nats.client._on_error` as the error callback, and the negative half of this
+    its rate-limited error callback, and the negative half of this
     test turns on that callback's output.
 
     :param uri: the broker URI
@@ -258,7 +257,7 @@ async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription
             assert serving.is_healthy, "a working grant must leave the connection healthy"
 
             # --- WITHOUT them: same subject, same publish, and the capability is simply dead ---
-            _last_error_log.clear()  # the rate limiter is module-global; start this half clean
+            # a fresh client: the error-log rate limiter is per client, so this half starts clean
             ungranted = await _connect(
                 uri,
                 user="ungranted",
@@ -303,13 +302,13 @@ async def test_hitl_grant_delivers_and_its_absence_is_a_silent_dead_subscription
                 # the HITL subject is a namespace literal plus two sha256 digests, so nats-py's
                 # lowercasing cannot mangle it -- the equality above holds even though the case
                 # flag correctly refuses to promise that in general.
-                assert data["subject_case"] == _SUBJECT_CASE_LOWERCASED
+                assert data["subject_case"] == "lowercased-by-nats-py-parser"
 
                 # the sibling family is refused too: a pod without tool namespaces holds NEITHER of
                 # the two families one session derives, so its display stream is dead as well.
                 pipe_subject = Subjects.forward_scoped(Subjects.hitl_pipe_family(_OWNED_NODE), _SESSION_KEY)
                 assert pipe_subject.path != subject.path
-                _last_error_log.clear()
+                # a different subject is a different rate-limit key, so it is reported in its own right
                 with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
                     mark = len(caplog.records)
                     await ungranted.subscribe(pipe_subject, cb=_never)

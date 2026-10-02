@@ -24,7 +24,17 @@ from threetears.agent.tools.produce import (
     stream_result_to_object_store,
 )
 from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle, ObjectListing
-from threetears.agent.tools.server import CallRequest, ToolServer
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
+from packages.agent.tools.tests.unit.tools.pod_auth import (
+    ScopeRecordingTool,
+    deliver_call,
+    jwks_provider,
+    recording_tool_server,
+    signed_call_payload,
+)
+
+_POD_ID = "produce-pod"
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _CONVERSATION = UUID("019f1900-0000-7000-8000-000000000001")
@@ -253,25 +263,33 @@ async def test_fail_closed_when_no_owning_context() -> None:
 async def test_tool_server_wires_store_into_scope() -> None:
     """The ToolServer installs its pod-level store on every per-call scope."""
     store = _FakeStore()
-    server = ToolServer(
-        nats_url="nats://localhost:4222",
-        object_store=store,  # type: ignore[arg-type]
+    server, rec = recording_tool_server(
+        pod_id=_POD_ID,
+        jwks_provider=jwks_provider,
+        assertion_replay_guard=FakeReplayGuard(),
+        object_store=store,
     )
-    request = CallRequest(
-        tool_name="t",
-        tool_version="1.0.0",
-        arguments={},
-        context=CallContext(customer_id=_CUSTOMER, conversation_id=_CONVERSATION),
-    )
-    scope = await server._build_call_scope(request, principal_is_tool_pod=False)  # noqa: SLF001 -- wiring seam: server propagates its store to the per-call scope
+    tool = ScopeRecordingTool()
+    server.register(tool)
+    payload = signed_call_payload(pod_id=_POD_ID, customer_id=_CUSTOMER, conversation_id=_CONVERSATION)
+    await deliver_call(server, payload, pod_id=_POD_ID)
+    assert rec.last_reply[1].success is True, rec.last_reply[1].error
+    (scope,) = tool.scopes
+    assert scope is not None
     assert scope.object_store is store
 
 
 async def test_tool_server_default_scope_has_no_store() -> None:
     """A server wired without a store yields scopes with object_store=None."""
-    server = ToolServer(
-        nats_url="nats://localhost:4222",
+    server, rec = recording_tool_server(
+        pod_id=_POD_ID,
+        jwks_provider=jwks_provider,
+        assertion_replay_guard=FakeReplayGuard(),
     )
-    request = CallRequest(tool_name="t", tool_version="1.0.0", arguments={})
-    scope = await server._build_call_scope(request, principal_is_tool_pod=False)  # noqa: SLF001 -- wiring seam: default server yields a storeless scope
+    tool = ScopeRecordingTool()
+    server.register(tool)
+    await deliver_call(server, signed_call_payload(pod_id=_POD_ID), pod_id=_POD_ID)
+    assert rec.last_reply[1].success is True, rec.last_reply[1].error
+    (scope,) = tool.scopes
+    assert scope is not None
     assert scope.object_store is None

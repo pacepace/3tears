@@ -12,13 +12,19 @@ other's vocabulary.
 design notes
 ------------
 
-- **``wake_tick_job`` signature is preserved.** Consumers and the
-  integration tests still call ``wake_tick_job(pool, nats_client,
-  dispatch_callback)`` with the wake-shaped
-  ``DispatchCallback = (WakeTrigger, fire_id, pool) -> WakeDispatchResult``.
+- **``wake_tick_job`` keeps the wake-shaped callback.** Consumers call
+  ``wake_tick_job(pool, nats_client, dispatch_callback, schedules=, fires=)``
+  with ``DispatchCallback = (WakeTrigger, fire_id, pool) -> WakeDispatchResult``.
   The generic engine's ``(JobTrigger, fire_id) -> JobFireResult`` shape is
   bridged internally by :func:`_adapt` below, so the delegation is invisible
   to the consumer.
+- **The tick runs on the host process's collections.** ``schedules`` and
+  ``fires`` are built once on the registry that carries the process's NATS
+  client and runs its invalidation listener. A won claim evicts the schedule
+  from every cache tier; that eviction reaches the other replicas only
+  through that client. The tick used to build a registry per pass with no
+  client, and every other replica kept serving -- and its schedule tools kept
+  saving back -- the pre-claim row.
 - **Wrap, don't mutate.** :class:`_WakeScheduleStore` / :class:`_WakeFireStore`
   implement the core ``ScheduleStore`` / ``FireStore`` protocols by wrapping the
   UNCHANGED :class:`~threetears.agent.wake.collections.WakeScheduleCollection` /
@@ -178,31 +184,67 @@ class _WakeDueSchedule:
     :func:`_rebuild_wake_trigger` reads them back to reconstruct the
     ``WakeTrigger`` for the consumer's callback.
 
+    **Every field is read once, here, as the row is listed.** An entity reads
+    its fields through the collection's L1 on every access, and the engine
+    reads this row's fields AFTER it claims the row -- a claim that evicts the
+    row from every cache tier, as does any other replica's write to it
+    broadcast while the tick runs. A wrapper that kept the entity and read
+    through it lost the row it was dispatching to its own claim.
+
     Implements :class:`~threetears.scheduled_jobs.protocols.DueSchedule`
     structurally (conformance is enforced where
     :meth:`_WakeScheduleStore.list_due_for_tick` returns
     ``list[DueSchedule]``).
     """
 
+    __slots__ = (
+        "_job_id",
+        "_last_fired_at",
+        "_missed_fire_policy",
+        "_name",
+        "_next_fire_at",
+        "_partition_key",
+        "_payload",
+        "_schedule_config",
+        "_schedule_type",
+    )
+
     def __init__(self, entity: WakeScheduleEntity) -> None:
-        """Wrap a wake schedule entity.
+        """Capture a wake schedule entity's fields.
 
         :param entity: the schedule row read off ``list_due_for_tick``
         :ptype entity: WakeScheduleEntity
         :return: nothing
         :rtype: None
         """
-        self._entity = entity
+        self._partition_key: UUID = entity.conversation_id
+        self._job_id: UUID = entity.schedule_id
+        self._payload: dict[str, Any] = {
+            _P_USER_ID: entity.user_id,
+            _P_AGENT_ID: entity.agent_id,
+            _P_SKILL_ID: entity.skill_id,
+            _P_EXECUTION_MODE: entity.execution_mode,
+            _P_TASK_PROMPT: entity.task_prompt,
+            _P_CONTEXT_FROM: entity.context_from_schedule_id,
+            _P_INCLUDE_HISTORY: entity.include_conversation_history,
+            _P_PROTECTED: entity.protected,
+        }
+        self._schedule_type: str = entity.schedule_type
+        self._schedule_config: dict[str, Any] = dict(entity.schedule_config)
+        self._missed_fire_policy: str = entity.missed_fire_policy
+        self._next_fire_at: datetime | None = entity.next_fire_at
+        self._last_fired_at: datetime | None = entity.last_fired_at
+        self._name: str | None = entity.name
 
     @property
     def partition_key(self) -> UUID:
         """Return the generic partition key (wake's ``conversation_id``)."""
-        return self._entity.conversation_id
+        return self._partition_key
 
     @property
     def job_id(self) -> UUID:
         """Return the generic job id (wake's ``schedule_id``)."""
-        return self._entity.schedule_id
+        return self._job_id
 
     @property
     def kind(self) -> str:
@@ -211,47 +253,38 @@ class _WakeDueSchedule:
 
     @property
     def payload(self) -> dict[str, Any]:
-        """Pack the agent-specific fields into the opaque payload."""
-        return {
-            _P_USER_ID: self._entity.user_id,
-            _P_AGENT_ID: self._entity.agent_id,
-            _P_SKILL_ID: self._entity.skill_id,
-            _P_EXECUTION_MODE: self._entity.execution_mode,
-            _P_TASK_PROMPT: self._entity.task_prompt,
-            _P_CONTEXT_FROM: self._entity.context_from_schedule_id,
-            _P_INCLUDE_HISTORY: self._entity.include_conversation_history,
-            _P_PROTECTED: self._entity.protected,
-        }
+        """Return the agent-specific fields packed into the opaque payload."""
+        return dict(self._payload)
 
     @property
     def schedule_type(self) -> str:
         """Return the schedule type discriminator."""
-        return self._entity.schedule_type
+        return self._schedule_type
 
     @property
     def schedule_config(self) -> dict[str, Any]:
         """Return the per-schedule-type config dict."""
-        return self._entity.schedule_config
+        return self._schedule_config
 
     @property
     def missed_fire_policy(self) -> str:
         """Return the missed-fire policy."""
-        return self._entity.missed_fire_policy
+        return self._missed_fire_policy
 
     @property
     def next_fire_at(self) -> datetime | None:
         """Return the planned fire instant."""
-        return self._entity.next_fire_at
+        return self._next_fire_at
 
     @property
     def last_fired_at(self) -> datetime | None:
         """Return the most-recent fire instant (or ``None``)."""
-        return self._entity.last_fired_at
+        return self._last_fired_at
 
     @property
     def name(self) -> str | None:
         """Return the optional human-readable schedule name."""
-        return self._entity.name
+        return self._name
 
 
 class _WakeScheduleStore:
@@ -507,12 +540,15 @@ async def wake_tick_job(
     nats_client: Any,
     dispatch_callback: DispatchCallback,
     *,
+    schedules: WakeScheduleCollection,
+    fires: WakeFireCollection,
     on_reaped: ReapedFiresHook | None = None,
 ) -> None:
     """Run one tick pass of the agent-wake scheduler.
 
-    Builds the adapter stores over ``pool`` + an adapter dispatch callback that
-    bridges the consumer's wake-shaped callback to the generic engine, registers
+    Wraps ``schedules`` / ``fires`` in the adapter stores, builds an adapter
+    dispatch callback that bridges the consumer's wake-shaped callback to the
+    generic engine (``pool`` is forwarded to it unchanged), registers
     it against the single ``"agent_wake"`` kind, and delegates to
     :func:`threetears.scheduled_jobs.scheduled_tick_job` under the
     preserved ``"agent_wake_tick"`` cross-pod lock. The callback is awaited
@@ -529,7 +565,8 @@ async def wake_tick_job(
     integration tests pin the real asyncpg shape). Same for ``nats_client``
     (:class:`threetears.nats.NatsClient` or ``None``) -- a ``None`` skips lock
     acquisition for single-pod dev environments (the per-schedule optimistic-CAS
-    still guards against double fires).
+    still guards against double fires). Given a ``nats_client``, the tick refuses
+    ``schedules`` built with none: its claims would evict on this replica only.
 
     :param pool: asyncpg-compatible connection pool (or proxy)
     :ptype pool: Any
@@ -540,23 +577,31 @@ async def wake_tick_job(
         isolated to a single schedule and recorded as failed fires by the
         engine. The trigger it receives carries its ``fire_id``.
     :ptype dispatch_callback: DispatchCallback
+    :param schedules: the host process's schedule collection, built once on
+        the registry that carries its NATS client and runs its invalidation
+        listener; a won claim's eviction reaches other replicas only through
+        that client
+    :ptype schedules: WakeScheduleCollection
+    :param fires: the host process's fire collection, on the same registry
+    :ptype fires: WakeFireCollection
     :param on_reaped: told of every fire the reaper failed this tick, with
         the conversation each had started, so the consumer can close what
         it opened for them
     :ptype on_reaped: ReapedFiresHook | None
     :return: nothing
     :rtype: None
+    :raises ValueError: when ``nats_client`` is given and ``schedules`` has no NATS client, so a
+        won claim's eviction would reach no other replica
     """
-    # local imports keep the registry / config plumbing out of the wake
-    # package's always-paid import cost (mirrors the pre-S-2 tick body).
-    from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
-    from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
-
-    registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
-    cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
-    schedule_store = _WakeScheduleStore(WakeScheduleCollection(registry=registry, config=cfg))
-    fire_store = _WakeFireStore(WakeFireCollection(registry=registry, config=cfg), on_reaped)
+    if nats_client is not None and not schedules.broadcasts_invalidations:
+        raise ValueError(
+            "wake_tick_job was given a nats_client but its schedules collection has no NATS client: a "
+            "claim would evict the schedule on this replica only, and every other replica would keep "
+            "serving the pre-claim row. build schedules / fires on the registry that carries the "
+            "process's NATS client and runs its invalidation listener"
+        )
+    schedule_store = _WakeScheduleStore(schedules)
+    fire_store = _WakeFireStore(fires, on_reaped)
     emitter = get_wake_emitter()
 
     async def _adapt(job_trigger: JobTrigger, fire_id: UUID) -> JobFireResult:

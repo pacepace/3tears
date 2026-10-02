@@ -1,9 +1,15 @@
 """unit tests for :class:`threetears.mcp.server.McpServer` -- dispatch + RBAC + error mapping.
 
 constructs a minimal `McpServer` against an in-memory `ToolRegistry`,
-spies the SDK server's handler to extract the framework's dispatch
-result, and exercises the four error paths (unknown tool, identity
-failure, authorizer raise, denied) plus the happy path.
+then calls tools the way a client does: a real MCP ``ClientSession``
+over the server's own Streamable-HTTP app (``build_http_app``, served
+in-process through ``httpx.ASGITransport``). Every assertion is on the
+``CallToolResult`` the client receives, so the tests cover what reaches
+the wire -- including the SDK's wrapping of a content list into
+``isError=False`` -- rather than an intermediate return value.
+
+exercises the four error paths (unknown tool, identity failure,
+authorizer raise, denied), handler failure, and the happy path.
 """
 
 from __future__ import annotations
@@ -13,8 +19,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import httpx
 import mcp.types as mcp_types
 import pytest
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 from threetears.mcp.auth import Identity
 from threetears.mcp.server import McpServer
 from threetears.mcp.tool import McpTool, ToolRegistry
@@ -44,6 +53,7 @@ def _authorizer(*, allows: bool = True) -> Any:
     authz = MagicMock()
     authz.allows = AsyncMock(return_value=allows)
     authz.start = AsyncMock()
+    authz.stop = AsyncMock()
     return authz
 
 
@@ -69,6 +79,35 @@ def _make_tool(
     )
 
 
+async def _call_tool(server: McpServer, tool_name: str, arguments: dict[str, Any]) -> mcp_types.CallToolResult:
+    """call ``tool_name`` on ``server`` through a real MCP client session.
+
+    starts the server, serves its Streamable-HTTP app in-process, and
+    returns the ``CallToolResult`` exactly as the client receives it.
+
+    :param server: server under test
+    :ptype server: McpServer
+    :param tool_name: tool to call
+    :ptype tool_name: str
+    :param arguments: tool arguments
+    :ptype arguments: dict[str, Any]
+    :return: the client-side call result
+    :rtype: mcp_types.CallToolResult
+    """
+    await server.start()
+    app = server.build_http_app()
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://mcp.test")
+    try:
+        async with app.router.lifespan_context(app), client:
+            async with streamable_http_client("http://mcp.test/mcp", http_client=client) as (read, write, _sid):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(tool_name, arguments)
+    finally:
+        await server.stop()
+    return result
+
+
 def _payload_from_result(result: mcp_types.CallToolResult) -> dict[str, Any]:
     """parse the JSON envelope inside a CallToolResult error content."""
     text_block = result.content[0]
@@ -76,9 +115,11 @@ def _payload_from_result(result: mcp_types.CallToolResult) -> dict[str, Any]:
     return json.loads(text_block.text)
 
 
-def _content_text(content: list[mcp_types.TextContent]) -> str:
-    """extract text from a happy-path content list."""
-    return content[0].text
+def _content_text(result: mcp_types.CallToolResult) -> str:
+    """extract the text of the first content block of a result."""
+    block = result.content[0]
+    assert isinstance(block, mcp_types.TextContent)
+    return block.text
 
 
 # ---------------------------------------------------------------------
@@ -89,7 +130,7 @@ def _content_text(content: list[mcp_types.TextContent]) -> str:
 class TestDispatchHappyPath:
     @pytest.mark.asyncio
     async def test_allowed_dispatch_returns_text_content_list(self) -> None:
-        """authorizer-allowed call returns list[TextContent] (SDK wraps isError=False)."""
+        """authorizer-allowed call reaches the client as one text block with isError=False."""
 
         async def handler(**kwargs: Any) -> str:
             return f"called with {kwargs}"
@@ -102,12 +143,13 @@ class TestDispatchHappyPath:
             authorizer=_authorizer(allows=True),
             registry=_registry_with(tool),
         )
-        result = await server._dispatch("probe", {"foo": "bar"})  # noqa: SLF001
-        # happy path returns list[TextContent] -- SDK's call_tool decorator
-        # wraps in CallToolResult(isError=False, ...) at the protocol layer.
-        assert isinstance(result, list)
-        assert len(result) == 1
+        result = await _call_tool(server, "probe", {"foo": "bar"})
+        # the server returns list[TextContent] and the SDK's call_tool decorator
+        # wraps it in CallToolResult(isError=False, ...) at the protocol layer.
+        assert result.isError is False
+        assert len(result.content) == 1
         assert "called with {'foo': 'bar'}" in _content_text(result)
+        assert result.structuredContent is None
 
     @pytest.mark.asyncio
     async def test_dict_handler_result_rides_both_faces(self) -> None:
@@ -130,10 +172,9 @@ class TestDispatchHappyPath:
             authorizer=_authorizer(allows=True),
             registry=_registry_with(tool),
         )
-        result = await server._dispatch("probe", {})  # noqa: SLF001
-        assert isinstance(result, mcp_types.CallToolResult)
+        result = await _call_tool(server, "probe", {})
         assert result.isError is False
-        assert json.loads(_content_text(result.content)) == {"status": "ok", "count": 3}
+        assert json.loads(_content_text(result)) == {"status": "ok", "count": 3}
         assert result.structuredContent == {"status": "ok", "count": 3}
 
     @pytest.mark.asyncio
@@ -156,8 +197,8 @@ class TestDispatchHappyPath:
             authorizer=_authorizer(allows=True),
             registry=_registry_with(tool),
         )
-        result = await server._dispatch("probe", {})  # noqa: SLF001
-        assert isinstance(result, mcp_types.CallToolResult)
+        result = await _call_tool(server, "probe", {})
+        assert result.isError is False
         assert result.structuredContent == {"result": [1, 2, 3]}
 
     @pytest.mark.asyncio
@@ -175,9 +216,11 @@ class TestDispatchHappyPath:
             authorizer=_authorizer(allows=True),
             registry=_registry_with(tool),
         )
-        result = await server._dispatch("probe", {})  # noqa: SLF001
-        assert isinstance(result, list)
+        result = await _call_tool(server, "probe", {})
+        assert result.isError is False
+        assert len(result.content) == 1
         assert _content_text(result) == "plain prose"
+        assert result.structuredContent is None
 
     @pytest.mark.asyncio
     async def test_handler_returning_text_content_list_passes_through(self) -> None:
@@ -195,9 +238,12 @@ class TestDispatchHappyPath:
             authorizer=_authorizer(allows=True),
             registry=_registry_with(tool),
         )
-        result = await server._dispatch("probe", {})  # noqa: SLF001
-        assert result == [text_content]
+        result = await _call_tool(server, "probe", {})
+        assert result.isError is False
+        assert result.content == [text_content]
+        assert result.structuredContent is None
 
+    @pytest.mark.asyncio
     async def test_handler_returning_call_tool_result_passes_through(self) -> None:
         """handler that returns a full CallToolResult (isError=True downstream envelope) is forwarded verbatim."""
         error_result = mcp_types.CallToolResult(
@@ -216,10 +262,11 @@ class TestDispatchHappyPath:
             authorizer=_authorizer(allows=True),
             registry=_registry_with(tool),
         )
-        result = await server._dispatch("probe", {})  # noqa: SLF001
+        result = await _call_tool(server, "probe", {})
         # forwarded unchanged -- not re-wrapped into an isError=False text body
-        assert result is error_result
         assert result.isError is True
+        assert result.content == error_result.content
+        assert result.structuredContent is None
 
 
 # ---------------------------------------------------------------------
@@ -249,8 +296,7 @@ class TestDispatchErrorPaths:
             authorizer=_authorizer(allows=True),
             registry=ToolRegistry(),
         )
-        result = await server._dispatch("nonesuch", {})  # noqa: SLF001
-        assert isinstance(result, mcp_types.CallToolResult)
+        result = await _call_tool(server, "nonesuch", {})
         assert result.isError is True
         envelope = _payload_from_result(result)
         assert envelope["error"]["code"] == "UNKNOWN_TOOL"
@@ -267,8 +313,7 @@ class TestDispatchErrorPaths:
             authorizer=_authorizer(allows=True),
             registry=_registry_with(_make_tool()),
         )
-        result = await server._dispatch("probe", {})  # noqa: SLF001
-        assert isinstance(result, mcp_types.CallToolResult)
+        result = await _call_tool(server, "probe", {})
         assert result.isError is True
         assert _payload_from_result(result)["error"]["code"] == "IDENTITY_UNAVAILABLE"
 
@@ -277,6 +322,8 @@ class TestDispatchErrorPaths:
         """Authorizer raise -> CallToolResult(isError=True, code=AUTHZ_ERROR)."""
         authz = MagicMock()
         authz.allows = AsyncMock(side_effect=RuntimeError("broken"))
+        authz.start = AsyncMock()
+        authz.stop = AsyncMock()
         identity = Identity(principal_type="user", principal_id=uuid4())
         server = McpServer(
             name="test",
@@ -284,8 +331,7 @@ class TestDispatchErrorPaths:
             authorizer=authz,
             registry=_registry_with(_make_tool()),
         )
-        result = await server._dispatch("probe", {})  # noqa: SLF001
-        assert isinstance(result, mcp_types.CallToolResult)
+        result = await _call_tool(server, "probe", {})
         assert result.isError is True
         assert _payload_from_result(result)["error"]["code"] == "AUTHZ_ERROR"
 
@@ -299,8 +345,7 @@ class TestDispatchErrorPaths:
             authorizer=_authorizer(allows=False),
             registry=_registry_with(_make_tool()),
         )
-        result = await server._dispatch("probe", {})  # noqa: SLF001
-        assert isinstance(result, mcp_types.CallToolResult)
+        result = await _call_tool(server, "probe", {})
         assert result.isError is True
         envelope = _payload_from_result(result)
         assert envelope["error"]["code"] == "PERMISSION_DENIED"
@@ -321,8 +366,7 @@ class TestDispatchErrorPaths:
             authorizer=_authorizer(allows=True),
             registry=_registry_with(tool),
         )
-        result = await server._dispatch("probe", {})  # noqa: SLF001
-        assert isinstance(result, mcp_types.CallToolResult)
+        result = await _call_tool(server, "probe", {})
         assert result.isError is True
         envelope = _payload_from_result(result)
         assert envelope["error"]["code"] == "HANDLER_ERROR"

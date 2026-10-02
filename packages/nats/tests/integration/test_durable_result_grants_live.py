@@ -12,7 +12,7 @@ Three things are proven end to end, with the SAME allow-lists
 - a tool pod can publish a result under its OWN pod id and get a PubAck -- no silent timeout;
 - the same connection is DENIED publishing under a PEER pod's id, which is what makes a standing
   grant safe where a standing grant on the requester's inbox tree was not;
-- a registry connection can open the exact pull consumer :class:`JetStreamResultWaiter` opens and
+- a registry connection can open the exact pushed consumer :class:`JetStreamResultWaiter` opens and
   collect that result, which is the half a unit test cannot cover (the JS-API consumer grants).
 
 The auth-callout responder is not stood up: the grant strings are what matters, so they are applied

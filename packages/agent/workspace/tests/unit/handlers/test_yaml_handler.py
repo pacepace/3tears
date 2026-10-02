@@ -15,30 +15,35 @@ from typing import Any
 import pytest
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from threetears.core.serialization import _HANDLERS
+from threetears.core.serialization import FormatHandler, UnknownFormatError, handler_for, register_handler
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture
-def clean_registry() -> Iterator[None]:
-    """snapshot and restore module-level handler registry around test.
+def restore_yaml_registration() -> Iterator[None]:
+    """put back whichever handlers served yaml and yml before the test.
 
-    mirrors the fixture pattern in packages/core/tests/unit/
-    test_format_handler_registry.py to avoid cross-test contamination
-    when tests exercise self-registration side effects.
+    the self-registration tests re-execute the handler module, which
+    registers a handler of a freshly-created ``YamlHandler`` class. the
+    rest of the session holds the class it imported first, so the
+    handlers registered before the test are re-registered afterwards
+    through :func:`register_handler`, the registry's one way in.
 
-    :return: iterator yielding once while registry is cleared, then
-        restoring prior snapshot
+    :return: iterator yielding once around the test
     :rtype: Iterator[None]
     """
-    snapshot = dict(_HANDLERS)
-    _HANDLERS.clear()
+    prior: list[FormatHandler] = []
+    for extension in ("yaml", "yml"):
+        try:
+            prior.append(handler_for(f"x.{extension}"))
+        except UnknownFormatError:
+            continue
     try:
         yield
     finally:
-        _HANDLERS.clear()
-        _HANDLERS.update(snapshot)
+        for original in prior:
+            register_handler(original)
 
 
 @pytest.fixture
@@ -284,9 +289,15 @@ class TestMerge:
 
 
 class TestSelfRegistration:
-    """YamlHandler self-registers on module import via register_handler."""
+    """YamlHandler self-registers on module import via register_handler.
 
-    def test_import_triggers_registration(self, clean_registry: None) -> None:
+    each test re-executes the handler module, which defines a NEW
+    ``YamlHandler`` class: a handler registered by an earlier import is
+    an instance of the old class, so the ``isinstance`` checks below pass
+    only when the re-executed module registered its own handler.
+    """
+
+    def test_import_triggers_registration(self, restore_yaml_registration: None) -> None:
         """importing yaml_handler module must register a YamlHandler."""
         import sys
 
@@ -297,7 +308,7 @@ class TestSelfRegistration:
         resolved = handler_for("foo.yaml")
         assert isinstance(resolved, mod.YamlHandler)
 
-    def test_package_import_triggers_registration(self, clean_registry: None) -> None:
+    def test_package_import_triggers_registration(self, restore_yaml_registration: None) -> None:
         """importing threetears.agent.workspace top-level also registers.
 
         simulates a fresh process by evicting the package, its handlers
@@ -322,7 +333,7 @@ class TestSelfRegistration:
 
         assert isinstance(resolved, YamlHandler)
 
-    def test_registered_for_both_yaml_and_yml(self, clean_registry: None) -> None:
+    def test_registered_for_both_yaml_and_yml(self, restore_yaml_registration: None) -> None:
         import sys
 
         sys.modules.pop("threetears.agent.workspace.handlers.yaml_handler", None)

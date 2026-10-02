@@ -28,8 +28,8 @@ from threetears.nats import IncomingMessage, Subjects, set_default_namespace
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
 
-from ._copies import definition, endpoint, entry
-from ._dispatch_auth import make_authed_request, make_proxy
+from .copy_entries import definition, endpoint, entry
+from .dispatch_auth import make_authed_request, make_proxy
 
 __all__: list[str] = []
 

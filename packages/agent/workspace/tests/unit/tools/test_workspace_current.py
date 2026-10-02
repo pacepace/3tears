@@ -35,7 +35,7 @@ from threetears.agent.workspace.pin import PinnedWorkspace
 
 from threetears.agent.workspace.tools import workspace_current as workspace_current_module
 from threetears.agent.workspace.tools.workspace_current import WorkspaceCurrentTool
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceContext,
 )
 

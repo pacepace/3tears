@@ -20,13 +20,12 @@ wrapper between the chat model and the application can drop junk
 names before they reach downstream dispatch / logging / persistence
 layers.
 
-The wrappers in :mod:`threetears.models.providers.openrouter` and
-:mod:`threetears.models.providers.anthropic` invoke
-:func:`filter_invalid_tool_calls` on every streamed / generated
-``AIMessage``: each rejected name is logged once (truncated to 80
-characters) and dropped from the ``invalid_tool_calls`` list so
-downstream consumers never see it. Valid tool names pass through
-unchanged.
+The provider wrappers (OpenAI, OpenRouter, Anthropic) drop every tool
+call whose name this regex rejects -- from each stream, per call, and
+from every finished answer -- before any consumer sees it; see
+:mod:`threetears.models.providers._junk_tool_calls`. Each rejected name
+is logged once, truncated to 80 characters. Valid tool names pass
+through unchanged.
 
 This is intentionally separate from
 :mod:`threetears.models.tool_name_translation`. Translation hides

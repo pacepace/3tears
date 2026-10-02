@@ -68,7 +68,7 @@ Xvfb on `:99` at `1920x1080x24`; `sidecar/main.py`'s `_lifespan` launches nodriv
 with a pinned `user_data_dir`, opening a throwaway tab per request (`new_tab=True`) and closing
 it after. Every concurrent render paints onto the same X root window. Consequence: a naive
 "point VNC at `:99`" exposes every concurrently-rendering target's tab to whoever is connected,
-with full mouse and keyboard. `_create_isolated_tab` already exists (used by `/v1/download`) and
+with full mouse and keyboard. `create_isolated_tab` already exists (used by `/v1/download`) and
 creates a real isolated `BrowserContext` -- the primitive needed to fix this is already in the
 file.
 
@@ -115,7 +115,7 @@ already ships. Surveyed before designing; each row is a thing we are **not** wri
 | Event publication | `3tears-nats` `Subjects` builders + `subject_permissions` | **Not used as written -- see §6.** Nothing here ANNOUNCES that a target needs a human: `list_walled()` is a query the platform makes when it wants the queue, so the fact lives on the health row rather than on a subject. `3tears-nats` IS used, for something else entirely -- `serve_owner` / `forward` route a live session's control messages to the pod holding its display, behind the `hitl` extra. Recorded rather than deleted because the anticipated use and the actual one are easy to mistake for each other |
 | "Paused for a human" vocabulary | `threetears.langgraph.streaming` -- `detect_interrupt`, `StreamInterruptEvent`, `tool_status='interrupted'` ("not a failure, the graph is pausing for a human decision") | The platform already has a word for this state. Mirror it rather than coining a parallel one |
 | Traced/retried/circuit-broken HTTP | `core.http_client.TracedHttpClient` | Sidecar-facing calls, replacing raw `httpx` use where practical |
-| Isolated browser context | `sidecar/main.py`'s existing `_create_isolated_tab` | Per-target isolation inside one HITL session |
+| Isolated browser context | `sidecar/main.py`'s existing `create_isolated_tab` | Per-target isolation inside one HITL session |
 | Page-text normalisation for comparison | `extraction.html_to_text` | Input to the content fingerprint. As designed this said `strip_boilerplate`; the shipped fingerprint uses `html_to_text` plus whitespace collapse, which is the readable-text extraction the comparison actually wants -- `strip_boilerplate` truncates for prompt budget, which would make the digest depend on where the truncation fell |
 
 **Genuinely new, because nothing covers it:** challenge detection from a rendered page; the

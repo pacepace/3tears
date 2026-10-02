@@ -7,13 +7,17 @@ this transparently without knowing queries are proxied.
 errors keep the drop-in contract where the database itself refused the statement: a
 constraint violation (SQLSTATE class 23) raises the asyncpg exception a direct pool raises
 (``asyncpg.UniqueViolationError`` and its siblings), rebuilt from the fields the broker
-forwards. every other failed reply -- a broker refusal, a timeout, an exhausted pool, an
-unreachable broker -- raises :class:`DataLayerUnavailableError`.
+forwards. a refusal on the pod's data version raises one of two subclasses of
+:class:`DataLayerUnavailableError`: :class:`DataVersionSupersededError` (the pod is older than its
+space's target and must exit) or :class:`DataVersionNotReadyError` (the pod is at the target and
+the upgrade has not finished; wait). every other failed reply -- a broker refusal, a timeout, an
+exhausted pool, an unreachable broker -- raises :class:`DataLayerUnavailableError`.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from collections.abc import Callable
@@ -22,7 +26,12 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
-from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.core.backends.schema_sql import json_default
+from threetears.core.exceptions import (
+    DataLayerUnavailableError,
+    DataVersionNotReadyError,
+    DataVersionSupersededError,
+)
 from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
 
 # Subject comes from its own module, and NatsClient only under TYPE_CHECKING.
@@ -38,7 +47,12 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.nats import NatsClient
 
-__all__ = ["CONSTRAINT_VIOLATION_ERROR_CODE", "NatsProxyL3Backend"]
+__all__ = [
+    "CONSTRAINT_VIOLATION_ERROR_CODE",
+    "DATA_VERSION_NOT_READY_ERROR_CODE",
+    "DATA_VERSION_SUPERSEDED_ERROR_CODE",
+    "NatsProxyL3Backend",
+]
 
 _logger = get_logger(__name__)
 
@@ -48,6 +62,16 @@ _logger = get_logger(__name__)
 #: optionally, ``detail`` -- from which the proxy rebuilds the asyncpg exception a direct pool
 #: raises. the hub imports this name, so the two halves of the contract spell it once.
 CONSTRAINT_VIOLATION_ERROR_CODE = "CONSTRAINT_VIOLATION"
+
+#: the broker's ``error_code`` for a pod whose identity token carries a data version OLDER than
+#: its space's target. fatal: the proxy raises :class:`DataVersionSupersededError` and hands it to
+#: the backend's ``on_superseded`` callback first. the hub imports this name.
+DATA_VERSION_SUPERSEDED_ERROR_CODE = "DATA_VERSION_SUPERSEDED"
+
+#: the broker's ``error_code`` for a pod AT its space's target while the upgrade to that target
+#: has not finished. transient: the proxy raises :class:`DataVersionNotReadyError` and the pod
+#: waits. the hub imports this name.
+DATA_VERSION_NOT_READY_ERROR_CODE = "DATA_VERSION_NOT_READY"
 
 #: SQLSTATE class 23, integrity constraint violation: a deterministic refusal of this statement,
 #: never an infrastructure fault, so it is the one class rebuilt as its asyncpg error rather than
@@ -66,8 +90,20 @@ _VIOLATION_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _raise_for_failed_reply(response: dict[str, Any], what: str) -> NoReturn:
+def _raise_for_failed_reply(
+    response: dict[str, Any],
+    what: str,
+    *,
+    report_superseded: Callable[[DataVersionSupersededError], None],
+) -> NoReturn:
     """raise the error a failed broker reply stands for.
+
+    a data-version refusal is typed by its code, and only by its code: the broker answers
+    :data:`DATA_VERSION_SUPERSEDED_ERROR_CODE` or :data:`DATA_VERSION_NOT_READY_ERROR_CODE`, and
+    the pod must respond to the two in opposite ways -- exit, or wait -- so neither may arrive as a
+    bare :class:`DataLayerUnavailableError` the caller cannot tell apart. a supersession is passed
+    to ``report_superseded`` before it is raised, so the pod runtime learns of it whichever caller
+    issued the refused request.
 
     a constraint violation -- :data:`CONSTRAINT_VIOLATION_ERROR_CODE` with a class-23
     ``sqlstate`` -- is rebuilt as the asyncpg exception a direct pool raises for that SQLSTATE
@@ -85,11 +121,28 @@ def _raise_for_failed_reply(response: dict[str, Any], what: str) -> NoReturn:
     :ptype response: dict[str, Any]
     :param what: the operation that failed, for the unavailability message
     :ptype what: str
+    :param report_superseded: told of a supersession before it is raised; the backend's once-only
+        hand-off to its ``on_superseded`` callback
+    :ptype report_superseded: Callable[[DataVersionSupersededError], None]
     :return: never returns
     :rtype: NoReturn
+    :raises DataVersionSupersededError: for :data:`DATA_VERSION_SUPERSEDED_ERROR_CODE`
+    :raises DataVersionNotReadyError: for :data:`DATA_VERSION_NOT_READY_ERROR_CODE`
     :raises asyncpg.IntegrityConstraintViolationError: for a well-formed constraint violation
     :raises DataLayerUnavailableError: for every other failed reply
     """
+    error_code = response.get("error_code")
+    message = f"{what} failed: {error_code or 'UNKNOWN'}: {response.get('error_message', 'no details')}"
+    if error_code == DATA_VERSION_SUPERSEDED_ERROR_CODE:
+        superseded = DataVersionSupersededError(message)
+        report_superseded(superseded)
+        raise superseded
+    if error_code == DATA_VERSION_NOT_READY_ERROR_CODE:
+        _logger.debug(
+            "broker reported this pod's data version is not ready",
+            extra={"extra_data": {"operation": what}},
+        )
+        raise DataVersionNotReadyError(message)
     sqlstate = response.get("sqlstate")
     if (
         response.get("error_code") == CONSTRAINT_VIOLATION_ERROR_CODE
@@ -104,22 +157,25 @@ def _raise_for_failed_reply(response: dict[str, Any], what: str) -> NoReturn:
             },
         )
         raise asyncpg.PostgresError.new(fields)
-    raise DataLayerUnavailableError(
-        f"{what} failed: {response.get('error_code', 'UNKNOWN')}: {response.get('error_message', 'no details')}"
-    )
+    raise DataLayerUnavailableError(message)
 
 
 def _serialize_param(value: Any) -> Any:
     """serialize parameter value for NATS transport.
 
-    converts UUID, datetime, Decimal to string representations.
-    other types passed through unchanged.
+    converts UUID, datetime, Decimal to string representations and bytes to
+    ``\\x``-prefixed hex. a list or tuple is an array parameter (``= ANY($1::uuid[])``,
+    ``unnest($1::timestamptz[])``) and is converted element by element, at every
+    depth, into a list, so the broker can restore each element as it restores a
+    scalar. other types passed through unchanged.
 
     :param value: parameter value to serialize
     :ptype value: Any
     :return: serialized value suitable for JSON transport
     :rtype: Any
     """
+    if isinstance(value, (list, tuple)):
+        return [_serialize_param(element) for element in value]
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, datetime):
@@ -227,26 +283,198 @@ def _format_execute_tag(operation: str, row_count: Any) -> str:
     return f"{verb} {count}"
 
 
+#: a dollar-quote opener: ``$$`` or ``$tag$``. ``$1`` is a parameter, not a quote.
+_DOLLAR_QUOTE_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$")
+
+#: an unquoted word: a keyword or an identifier.
+_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9$]*")
+
+#: the verbs a statement's label is drawn from, by the word that opens its main clause.
+_MAIN_VERBS = {"SELECT": "select", "INSERT": "insert", "UPDATE": "update", "DELETE": "delete"}
+
+
+def _end_of_quoted(query: str, start: int, quote: str, *, backslash_escapes: bool) -> int:
+    """the index just past a quoted literal or identifier opening at ``start``.
+
+    :param query: the statement
+    :ptype query: str
+    :param start: the index of the opening quote
+    :ptype start: int
+    :param quote: the quote character, doubled inside the text to escape it
+    :ptype quote: str
+    :param backslash_escapes: whether a backslash escapes the next character
+        (an ``E'...'`` string)
+    :ptype backslash_escapes: bool
+    :return: the index after the closing quote, or the end of the text when unclosed
+    :rtype: int
+    """
+    index = start + 1
+    end = len(query)
+    while index < end:
+        char = query[index]
+        if backslash_escapes and char == "\\":
+            index += 2
+        elif char == quote and query.startswith(quote * 2, index):
+            index += 2
+        elif char == quote:
+            end = index
+        else:
+            index += 1
+    return min(end + 1, len(query))
+
+
+def _end_of_block_comment(query: str, start: int) -> int:
+    """the index just past a block comment opening at ``start``; Postgres nests them.
+
+    :param query: the statement
+    :ptype query: str
+    :param start: the index of the opening ``/*``
+    :ptype start: int
+    :return: the index after the matching ``*/``, or the end of the text when unclosed
+    :rtype: int
+    """
+    depth = 0
+    index = start
+    result = len(query)
+    while index < len(query) and result == len(query):
+        if query.startswith("/*", index):
+            depth += 1
+            index += 2
+        elif query.startswith("*/", index):
+            depth -= 1
+            index += 2
+            if depth == 0:
+                result = index
+        else:
+            index += 1
+    return result
+
+
+def _code_tokens(query: str) -> list[str]:
+    """the statement's code as tokens: upper-cased words, ``(``, ``)``, ``,`` and other marks.
+
+    literals, quoted identifiers, dollar-quoted text and comments are consumed
+    whole, so a parenthesis or a keyword inside one is never read as code. A quoted
+    identifier is one ``"`` token: it is a name, never a keyword.
+
+    :param query: the statement
+    :ptype query: str
+    :return: the tokens, in order
+    :rtype: list[str]
+    """
+    tokens: list[str] = []
+    index = 0
+    while index < len(query):
+        char = query[index]
+        dollar = _DOLLAR_QUOTE_RE.match(query, index)
+        word = _WORD_RE.match(query, index)
+        if char.isspace():
+            index += 1
+        elif query.startswith("--", index):
+            newline = query.find("\n", index)
+            index = len(query) if newline == -1 else newline + 1
+        elif query.startswith("/*", index):
+            index = _end_of_block_comment(query, index)
+        elif char == "'":
+            index = _end_of_quoted(query, index, "'", backslash_escapes=False)
+            tokens.append("'")
+        elif char in "Ee" and query.startswith("'", index + 1):
+            index = _end_of_quoted(query, index + 1, "'", backslash_escapes=True)
+            tokens.append("'")
+        elif char == '"':
+            index = _end_of_quoted(query, index, '"', backslash_escapes=False)
+            tokens.append('"')
+        elif dollar is not None:
+            closing = query.find(dollar.group(0), dollar.end())
+            index = len(query) if closing == -1 else closing + len(dollar.group(0))
+            tokens.append("'")
+        elif word is not None:
+            tokens.append(word.group(0).upper())
+            index = word.end()
+        else:
+            tokens.append(char)
+            index += 1
+    return tokens
+
+
+def _after_parens(tokens: list[str], start: int) -> int:
+    """the index just past the parenthesised group opening at ``start``.
+
+    :param tokens: the statement's tokens
+    :ptype tokens: list[str]
+    :param start: the index of a ``(`` token
+    :ptype start: int
+    :return: the index after its matching ``)``, or past the end when unclosed
+    :rtype: int
+    """
+    depth = 0
+    index = start
+    result = len(tokens) + 1
+    while index < len(tokens) and result > len(tokens):
+        if tokens[index] == "(":
+            depth += 1
+        elif tokens[index] == ")":
+            depth -= 1
+            if depth == 0:
+                result = index + 1
+        index += 1
+    return result
+
+
+def _main_clause_index(tokens: list[str]) -> int:
+    """the index of the token opening the statement's main clause, past any ``WITH`` list.
+
+    ``WITH [RECURSIVE] name [(columns)] AS [NOT] [MATERIALIZED] (body) [, ...]``
+    is walked by its grammar, so a CTE whose name is a verb (``WITH update AS ...``)
+    is read as the name it is.
+
+    :param tokens: the statement's tokens
+    :ptype tokens: list[str]
+    :return: the index of the main clause's first token; past the end when the
+        ``WITH`` list does not close
+    :rtype: int
+    """
+    index = 0
+    if tokens[:1] == ["WITH"]:
+        index = 2 if tokens[1:2] == ["RECURSIVE"] else 1
+        more = True
+        while more and index < len(tokens):
+            index += 1  # the CTE's name
+            if tokens[index : index + 1] == ["("]:
+                index = _after_parens(tokens, index)
+            index += 1 if tokens[index : index + 1] == ["AS"] else 0
+            index += 1 if tokens[index : index + 1] == ["NOT"] else 0
+            index += 1 if tokens[index : index + 1] == ["MATERIALIZED"] else 0
+            if tokens[index : index + 1] == ["("]:
+                index = _after_parens(tokens, index)
+            more = tokens[index : index + 1] == [","]
+            index += 1 if more else 0
+    return index
+
+
 def _detect_operation(query: str) -> str:
-    """detect SQL operation type from query string.
+    """label a statement with its SQL operation, from the verb of its main clause.
+
+    The label tells the broker how to run the statement -- a ``select`` is fetched
+    for rows, anything else executed for a count -- and names it in logs. It is the
+    verb Postgres's own command tag would carry: a ``WITH ... INSERT`` is an
+    ``insert``, and a data-modifying CTE under a ``SELECT`` is a ``select``. It is
+    never what authorizes the statement; the broker reads that off the statement.
 
     :param query: SQL query string
     :ptype query: str
-    :return: operation type (select, insert, update, delete, upsert)
+    :return: operation type (select, insert, update, delete, upsert); ``select``
+        when the main clause opens with no verb this backend labels
     :rtype: str
     """
-    stripped = query.strip().upper()
-    if stripped.startswith("SELECT"):
-        return "select"
-    if stripped.startswith("INSERT"):
-        if "ON CONFLICT" in stripped:
-            return "upsert"
-        return "insert"
-    if stripped.startswith("UPDATE"):
-        return "update"
-    if stripped.startswith("DELETE"):
-        return "delete"
-    return "select"
+    tokens = _code_tokens(query)
+    index = _main_clause_index(tokens)
+    result = _MAIN_VERBS.get(tokens[index], "select") if index < len(tokens) else "select"
+    if result == "insert" and any(
+        tokens[position : position + 2] == ["ON", "CONFLICT"] for position in range(index, len(tokens))
+    ):
+        result = "upsert"
+    return result
 
 
 class NatsProxyL3Backend:
@@ -302,6 +530,7 @@ class NatsProxyL3Backend:
         default_namespace: str | None = None,
         timeout_ms: int | None = None,
         identity_token: Callable[[], str | None] | None = None,
+        on_superseded: Callable[[DataVersionSupersededError], None] | None = None,
     ) -> None:
         """initialize NatsProxyL3Backend.
 
@@ -361,6 +590,15 @@ class NatsProxyL3Backend:
             side and the models are ``extra="forbid"`` -- so this raises at the
             call site rather than sending a request that cannot be authorized.
         :ptype identity_token: Callable[[], str | None] | None
+        :param on_superseded: called with the :class:`DataVersionSupersededError` the FIRST time
+            the broker refuses this principal's data version as older than its space's target,
+            immediately before that error is raised. The pod runtime passes its exit here, so
+            the exit is the runtime's to own rather than whichever caller's query happened to be
+            refused. At most ONCE per backend: every request in flight is refused the same way
+            once a pod is superseded, and one exit is what the runtime needs. A callback that
+            raises is logged and does not replace the error the caller receives. ``None`` means
+            no one is told, and the error is still raised.
+        :ptype on_superseded: Callable[[DataVersionSupersededError], None] | None
         :raises ValueError: when neither an agent id nor an owned namespace was
             supplied, so there is no namespace to send anything to
         """
@@ -384,6 +622,8 @@ class NatsProxyL3Backend:
         self.ns = namespace_prefix
         self.agent_id = agent_id
         self._identity_token = identity_token
+        self._on_superseded = on_superseded
+        self._superseded_reported = False
         self.default_namespace = resolved_namespace
         if timeout_ms is not None:
             self.timeout_ms = timeout_ms
@@ -545,6 +785,53 @@ class NatsProxyL3Backend:
             )
         return token
 
+    def raise_for_failed_reply(self, response: dict[str, Any], what: str) -> NoReturn:
+        """raise the error a failed broker reply stands for, telling the runtime of a supersession.
+
+        the ONE failure path for every reply this backend and its connection and transaction
+        proxies read, so a data-version refusal on any of them -- a query, a batch, ``tx.begin``,
+        a statement inside a transaction, ``tx.commit`` -- is typed the same way and reaches the
+        ``on_superseded`` callback the same way.
+
+        :param response: the parsed failed reply
+        :ptype response: dict[str, Any]
+        :param what: the operation that failed, for the error message
+        :ptype what: str
+        :return: never returns
+        :rtype: NoReturn
+        :raises DataVersionSupersededError: when the broker refuses this principal's data version
+            as older than its space's target
+        :raises DataVersionNotReadyError: when the broker refuses it as current but not yet applied
+        :raises asyncpg.IntegrityConstraintViolationError: for a well-formed constraint violation
+        :raises DataLayerUnavailableError: for every other failed reply
+        """
+        _raise_for_failed_reply(response, what, report_superseded=self._report_superseded)
+
+    def _report_superseded(self, error: DataVersionSupersededError) -> None:
+        """hand the first supersession to ``on_superseded``, once, and never let it mask the error.
+
+        :param error: the error about to be raised
+        :ptype error: DataVersionSupersededError
+        :return: nothing
+        :rtype: None
+        """
+        if self._superseded_reported:
+            return
+        self._superseded_reported = True
+        _logger.error(
+            "broker refused this principal's data version as superseded; the pod must be replaced",
+            extra={"extra_data": {"namespace": self.default_namespace, "error": str(error)}},
+        )
+        if self._on_superseded is None:
+            return
+        try:
+            self._on_superseded(error)
+        except Exception:  # prawduct:allow prawduct/broad-except -- a runtime exit hook that fails must not replace the refusal the caller is owed
+            _logger.exception(
+                "on_superseded callback raised; the supersession error is still raised to the caller",
+                extra={"extra_data": {"namespace": self.default_namespace}},
+            )
+
     async def execute_batch(
         self,
         queries: list[dict[str, Any]],
@@ -583,7 +870,7 @@ class NatsProxyL3Backend:
         response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "batch query")
+            self.raise_for_failed_reply(response, "batch query")
 
         results: list[Any] = response.get("results", [])
         return results
@@ -633,7 +920,7 @@ class NatsProxyL3Backend:
         response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "L3 query")
+            self.raise_for_failed_reply(response, "L3 query")
 
         return response
 
@@ -651,15 +938,19 @@ class NatsProxyL3Backend:
 
         :param subject: NATS subject on which to publish the request
         :ptype subject: str
-        :param payload: request payload dict, will be JSON-encoded with
-            ``default=str`` so UUID, datetime, Decimal values serialize
+        :param payload: request payload dict, JSON-encoded with the storage handler
+            (:func:`~threetears.core.backends.schema_sql.json_default`). Top-level parameters are
+            already converted by ``_serialize_param``; what the handler still meets is a value
+            nested in a dict or list parameter bound for a jsonb column, which the broker stores
+            as it arrives -- so a nested datetime is written in
+            :func:`~threetears.core.serialization.json_datetime`'s one form, as every tier writes it
         :ptype payload: dict[str, Any]
         :return: parsed JSON response dict from broker
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
-        payload_bytes = json.dumps(payload, default=str).encode("utf-8")
+        payload_bytes = json.dumps(payload, default=json_default).encode("utf-8")
         nats_timeout = (self.timeout_ms / 1000) + 2
 
         try:
@@ -931,7 +1222,7 @@ class _ProxyConnection:
         subject = f"{self._backend.ns}.l3.tx.execute"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "tx.execute")
+            self._backend.raise_for_failed_reply(response, "tx.execute")
         return _format_execute_tag(
             _detect_operation(query),
             response.get("row_count"),
@@ -982,7 +1273,7 @@ class _ProxyConnection:
         subject = f"{self._backend.ns}.l3.tx.fetchrow"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "tx.fetchrow")
+            self._backend.raise_for_failed_reply(response, "tx.fetchrow")
         row = response.get("row")
         if row is None:
             return None
@@ -1077,7 +1368,7 @@ class _ProxyConnection:
         subject = f"{self._backend.ns}.l3.tx.fetch"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "tx.fetch")
+            self._backend.raise_for_failed_reply(response, "tx.fetch")
         raw_rows: list[dict[str, Any]] = response.get("rows", [])
         return [_deserialize_row(r) for r in raw_rows]
 
@@ -1187,7 +1478,7 @@ class _ProxyTransaction:
         subject = f"{self._backend.ns}.l3.tx.begin"
         response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
-            _raise_for_failed_reply(response, "tx.begin")
+            self._backend.raise_for_failed_reply(response, "tx.begin")
         raw_tx_id = response.get("tx_id")
         if not isinstance(raw_tx_id, str):
             raise DataLayerUnavailableError(
@@ -1235,7 +1526,7 @@ class _ProxyTransaction:
                 # commit path so the caller learns the DB did not
                 # persist their work.
                 if action == "commit":
-                    _raise_for_failed_reply(response, "tx.commit")
+                    self._backend.raise_for_failed_reply(response, "tx.commit")
                 _logger.warning(
                     "proxy tx.rollback reported failure: %s",
                     response.get("error_message"),

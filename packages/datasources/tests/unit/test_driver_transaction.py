@@ -44,7 +44,7 @@ from threetears.datasources.drivers.base import (
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 
-from ._helpers.driver_shims import (
+from .helpers.driver_shims import (
     REDSHIFT_TEST_PASSWORD,
     REDSHIFT_TEST_PASSWORD_ENV,
     REDSHIFT_TEST_PASSWORD_REF,
@@ -618,16 +618,26 @@ class TestRedshiftSessionPinning:
     ) -> None:
         """DSD-01-02: the cache must not hand the pinned session to a second caller."""
         conn = build_mock_redshift_connection()
+        other = build_mock_redshift_connection()
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
-            return_value=conn,
-        ):
+            side_effect=[conn, other],
+        ) as connect_mock:
             driver = RedshiftDriver(redshift_config)
             transaction = await driver.begin()
             await transaction.execute("INSERT INTO t VALUES (1)")
-            assert conn not in driver._cache  # noqa: SLF001
+            # a second caller while the transaction is open gets a session of its own.
+            await driver.fetch("SELECT 'second caller'")
+            assert connect_mock.call_count == 2
+            assert [entry["sql"] for entry in other.statement_log] == ["SELECT 'second caller'"]
+            assert [entry["sql"] for entry in conn.statement_log] == ["INSERT INTO t VALUES (1)"]
             await transaction.commit()
-            assert conn in driver._cache  # noqa: SLF001
+            # committed, the pinned session is back: the next two callers run on the two
+            # cached sessions, one of them the formerly pinned one, with no new login.
+            await driver.fetch("SELECT 'after commit 1'")
+            await driver.fetch("SELECT 'after commit 2'")
+            assert connect_mock.call_count == 2
+            assert any(entry["sql"].startswith("SELECT 'after commit") for entry in conn.statement_log)
             await driver.close()
 
     @pytest.mark.asyncio
@@ -640,12 +650,15 @@ class TestRedshiftSessionPinning:
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             return_value=conn,
-        ):
+        ) as connect_mock:
             driver = RedshiftDriver(redshift_config)
             transaction = await driver.begin()
             await transaction.execute("INSERT INTO t VALUES (1)")
             await transaction.rollback()
-            assert conn in driver._cache  # noqa: SLF001
+            # the next caller reuses the released session, with no new login.
+            await driver.fetch("SELECT 'after rollback'")
+            connect_mock.assert_called_once()
+            assert conn.statement_log[-1]["sql"] == "SELECT 'after rollback'"
             await driver.close()
 
 

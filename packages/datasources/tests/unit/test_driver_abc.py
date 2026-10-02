@@ -20,7 +20,7 @@ import pytest
 
 from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow
 
-from ._helpers.fake_driver import FakeDriver
+from .helpers.fake_driver import FakeDriver
 
 
 class TestDriverAbstractness:
@@ -208,25 +208,25 @@ class TestObservedDecoratorCompiles:
     """
 
     def test_observed_decorator_importable(self) -> None:
-        from threetears.datasources.drivers.base import _observed
+        from threetears.datasources.drivers.base import observed
 
-        assert callable(_observed)
+        assert callable(observed)
 
     def test_observed_decorator_rejects_sync_function(self) -> None:
-        from threetears.datasources.drivers.base import _observed
+        from threetears.datasources.drivers.base import observed
 
         def sync_method(self: object) -> int:
             return 1
 
         with pytest.raises(TypeError, match="async"):
-            _observed("fake")(sync_method)  # type: ignore[arg-type]
+            observed("fake")(sync_method)  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_observed_decorator_wraps_async_method(self) -> None:
         """decorator returns a coroutine function that produces the wrapped result."""
-        from threetears.datasources.drivers.base import _observed
+        from threetears.datasources.drivers.base import observed
 
-        @_observed("fake")
+        @observed("fake")
         async def m(self: object) -> int:
             return 7
 

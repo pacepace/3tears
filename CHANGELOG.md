@@ -4,6 +4,1417 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.58.0 -- 2026-10-02
+
+### Security: a pod-signed proof's issue time may be 5 seconds ahead, not 60 -- a broker restart costs tool calls 10 seconds, not 65
+
+Found live: after a NATS broker restart, logins and tool calls were refused for about 65 seconds.
+A `ReplayGuard` keeps nonces in memory-backed KV, the restart wipes it, and the guard then refuses
+anything issued before `bucket creation + verifier future tolerance + CLOCK_DRIFT_ALLOWANCE (5s)`.
+Every proof verifier used one symmetric leeway for both directions, so it accepted an issue time a
+full minute AHEAD of its clock, and every guard had to be sized for that minute.
+
+The two directions are now separate on every proof verifier, and the future one depends on who
+signs. A proof may still be up to 60 seconds OLD.
+
+| Artifact | Signer | May be ahead by | Reach after a wipe |
+|---|---|---|---|
+| PoP proof (`verify_pop_proof`) | an agent pod | 5s (was 60s) | 10s (was 65s) |
+| DPoP proof (`validate_dpop_proof`) | a browser or a laptop | 60s (unchanged) | 65s (unchanged) |
+| Proxy assertion (`verify_proxy_assertion`) | the registry | 0s (unchanged) | 5s (unchanged) |
+
+- **Added, in `threetears.core.security` (module `freshness`):**
+  - **`ISSUE_TIME_FUTURE_TOLERANCE`** (`timedelta(seconds=5)`): how far ahead of a verifier's
+    clock a POD-signed issue time is accepted.
+  - **`CLIENT_ISSUE_TIME_FUTURE_TOLERANCE`** (`timedelta(seconds=60)`): the same for a proof a
+    user's device signs. The platform does not keep that clock, so it keeps the minute and pays
+    the 65-second reach.
+  - **`DEFAULT_PROOF_MAX_AGE`** (`timedelta(seconds=60)`): how old a proof may be.
+  - **`issue_time_is_fresh(issued_at, *, now, max_age, future_tolerance)`**: the check both
+    proof formats share.
+- **Added: `ReplayGuard.refusing_until() -> datetime | None`.** Whether the guard is inside its
+  post-wipe refusal window now, and until when, from the bucket's creation time, the reach and the
+  anchor alone -- never an artifact. One computation with `record_unique`'s wipe rule: an artifact
+  issued before the returned moment is refused. A surface asks it before it reads a credential,
+  to answer every request in the window with one retryable reply. Raises `KvError` when the bucket
+  cannot be read; that must not be taken as "not refusing". One broker round trip per call.
+- **Added: `FakeReplayGuard(refusing_until=)`** and `FakeReplayGuard.refusing_until()`, which put
+  the double inside the window for a test of such a gate; `refusal_window_checks` counts the
+  question, and `"refusing_until"` joins the `events` log. A remembering double (`fresh=None`)
+  refuses an artifact issued before that moment.
+- **BREAKING: `verify_pop_proof(leeway_seconds=)` is gone.** It takes `max_age: timedelta` and
+  `future_tolerance: timedelta`, defaulting to `DEFAULT_PROOF_MAX_AGE` and
+  `ISSUE_TIME_FUTURE_TOLERANCE`. A caller that passed `leeway_seconds` gets a `TypeError`; one that
+  relied on the default needs no change and now refuses a proof stamped more than 5 seconds ahead.
+- **BREAKING: `validate_dpop_proof(iat_window=)` is gone**, replaced by `max_age` and
+  `future_tolerance`, the second defaulting to `CLIENT_ISSUE_TIME_FUTURE_TOLERANCE`. What it
+  accepts is unchanged. It calls `replay_guard.require_covers(future_tolerance)`, so a guard only
+  has to cover the future bound; widening `max_age` needs no bigger guard.
+- **BREAKING: `threetears.iam.dpop.DEFAULT_IAT_WINDOW` is removed**, and so is
+  **`threetears.registry.proxy.POP_LEEWAY_SECONDS`**. Each was one name for both directions, read
+  to size a replay guard; a consumer now chooses the future tolerance for its signer explicitly.
+- **Changed: the registry's `pop_nonces` guard is sized for `ISSUE_TIME_FUTURE_TOLERANCE`**, and
+  `CallProxy` requires its `pop_replay_guard` to cover that rather than 60 seconds.
+- Unchanged, deliberately: the proxy assertion accepts nothing ahead of the pod's clock. The
+  identity token's 60-second leeway stays; it is not single-use and feeds no replay guard.
+  `ReplayGuard`'s wipe rule still compares with a strict `<`.
+
+**What it requires:** every pod that signs a PoP proof must agree with the registry to within 5
+seconds. One whose clock leads by more is refused outright, as a freshness failure, on every call.
+On a live cluster sixteen pods and all three brokers agreed to within about one second.
+
+**Consumers:** the hub (`aibots/hub/app.py`, `aibots/hub/security/dpop_binding.py`) and
+identity-core (`identity_core/server.py`, `tokens/mint_binding.py`, `tokens/rotation.py`) import
+`DEFAULT_IAT_WINDOW` and pass `iat_window=`. Each builds its DPoP guard with
+`verifier_future_tolerance=CLIENT_ISSUE_TIME_FUTURE_TOLERANCE`, passes `max_age=` /
+`future_tolerance=`, and sizes its DPoP nonce TTL to cover
+`DEFAULT_PROOF_MAX_AGE + CLIENT_ISSUE_TIME_FUTURE_TOLERANCE` (120s; both use 300s today). Until
+they do, they fail at import, not at runtime. A DPoP guard sized with the pod constant by mistake
+is refused by `require_covers`.
+
+### Testing: `FakeNatsClient` declares, and models a broker restart
+
+The shipped double had `kv_bucket` only, so a consumer that declares its bucket through
+`ensure_kv_bucket` -- the form `NatsClient` puts back after a reconnect -- could not be tested
+against it, and no test could tell a remembered declaration from an ordinary open.
+
+- **Added: `FakeNatsClient.ensure_kv_bucket`**, the `KvDeclaring` surface: creates the bucket, or
+  takes the declared TTL and `direct` on a live one with its entries kept, sharing the one handle
+  `kv_bucket` hands out; `create_if_missing=False` on an absent bucket raises `KeyError`.
+- **Added: `FakeNatsClient.remembered_declarations`**, the buckets the real client would create
+  again after a reconnect: memory-storage declarations that may create, and nothing else.
+- **Added: `FakeNatsClient.restart_broker()`**: every remembered bucket comes back empty, every
+  other one is absent until an operation heals it, then the reconnect hooks run.
+  `FakeNatsClient.bucket_exists(name)` answers which is which.
+- **Added: `FakeKvBucket.is_vanished` and `FakeKvBucket.reconcile(ttl=, direct=)`**, which the
+  client uses for the above.
+
+### NATS: a broker restart the client rides out is a WARNING, not an ERROR
+
+Found live in the devx bring-up: every service logged `NATS error: nats: unexpected EOF` at ERROR
+when the broker restarted, and again for each refused attempt before it was back, although every
+one of them reconnected on its own seconds later.
+
+- **Changed: a connection loss is logged at WARNING** as
+  `NATS connection lost, reconnecting: <type>: <detail>`. That covers the read loop's EOF or stale
+  connection, an `OSError` from a reconnect attempt (`Connect call failed`, a reset) and a bare
+  `TimeoutError` from one. The type is named because a timeout carries no text; before, it logged
+  as `NATS error: ` and nothing else. Repeats are still collapsed per 10-second window.
+- Unchanged: every other error stays at ERROR as `NATS error: <detail>`, including a refused
+  credential while reconnecting, nats-py's own flush and request timeouts, and a server `-ERR`.
+  A permissions violation keeps its decomposed ERROR line.
+
+### NATS: what a restart wipes from memory storage comes back after the reconnect
+
+Found live in the devx bring-up. The tool registry declared its memory-backed result stream
+(`{ns}-tools-results`) only at startup; a single-node NATS restart deleted it, and every tool call
+after that failed with `stream not found` until someone restarted the registry by hand. Every
+memory-storage stream declared through `NatsClient` had the same hole.
+
+- **Fixed: `NatsClient` re-declares every memory-storage stream it declared, after every
+  reconnect.** `ensure_jetstream_stream(storage="memory")` (the default) remembers the exact config
+  and creates the stream again with it. Create only, never update: a stream still live (a network
+  blip, or another declarer changed it since) is left exactly as it is, including one the server
+  refuses with "stream name already in use". File-storage streams survive a restart and are not
+  re-declared.
+- **Fixed: the same for memory KV buckets.** `ensure_kv_bucket(create_if_missing=True)` on memory
+  storage remembers the bucket's backing-stream config and creates it again after a reconnect, so a
+  bucket's binders get it back even when nothing in the declaring process touches it. A bind-only
+  open (`create_if_missing=False`, or `kv_bucket`) is never re-declared: only the declarer may
+  create it.
+- **Fixed: durable consumers on a wiped stream are bound again.** A durable lives on its stream, so
+  the restart takes it too, and nothing delivered to it afterwards. After the streams, each
+  durable this client bound (`jetstream_subscribe_durable`, `jetstream_pull_subscribe`) is looked
+  up; one the server no longer has is bound again with its original config -- a push consumer at
+  once, a pull consumer at its next fetch. A durable that survived is not touched.
+- The restoration runs in the background from the reconnect callback, first in line, so it never
+  holds up the reconnect path or later hooks. A failure is logged at ERROR naming the stream or
+  durable and retried with capped exponential backoff (0.5s doubling to 30s) until it succeeds. A
+  later reconnect replaces a restoration still retrying; `shutdown` and `abandon` stop it.
+- New on the consumer handles: `JetStreamPushConsumer.recreate(js, connection)` and `.stream`;
+  `JetStreamPullConsumer.rebind_on_next_fetch()`, `.stream`, `.subject`, `.durable` and
+  `.is_stopped`.
+- Durable result waiters (`jetstream_result_waiter`) needed nothing: each call creates its own
+  consumer and replaces it when it goes quiet.
+- **Consumer action:** none required. A service that registered its own reconnect hook only to
+  re-declare a memory stream or bucket it declares through `NatsClient` may drop it; keeping it is
+  harmless (the re-declaration is idempotent).
+
+### Channels: a server heartbeat, and a connection ends when its credential expires
+
+Owner ruling, 2026-10-01. `WebSocketHandler.heartbeat_interval` was documented and assigned but
+never read, so a peer that vanished without a close kept its registry and presence state until the
+transport noticed, and an open socket outlived the token it authenticated with indefinitely.
+
+- **New: the server heartbeat.** Every `heartbeat_interval` seconds (default 30, must be positive;
+  a non-positive value raises `ValueError`) each open connection is sent `{"type": "ping"}`. A
+  connection that has sent nothing at all since the previous ping -- a `{"type": "pong"}` answer
+  or any other frame -- is closed **1011** and cleaned up exactly as a disconnect is (registry,
+  rooms, presence). A ping that cannot be written within one interval closes it the same way. A
+  connection busy handling a frame is not judged on that tick. **Client action:** a client that
+  can sit idle longer than two intervals must answer `ping` with `pong`.
+- **New: `pong` is a built-in frame type**, consumed silently; `frame_handlers` may not register it.
+- **New: credential expiry.** When the `AuthValidator`'s claims carry `exp` (unix seconds), the
+  first frame at or after that instant, or the first heartbeat tick of an idle connection, answers
+  `{"type": "error", "code": "UNAUTHENTICATED", "message": "access token expired"}` and closes
+  **1008** -- the same refusal a connection without a valid token gets, so a client's
+  refresh-and-reconnect path takes over. An `exp` that is not a number raises `TypeError` (a host
+  bug). Claims without `exp` never expire.
+- **Fixed: a connection in a room keeps its presence heartbeat fresh.** Each answered tick calls
+  `RoomState.heartbeat`, which nothing called before, so `PresenceSweeper` would evict a live member.
+- **New constructor seams with production defaults:** `wall_clock` (`time.time`) and
+  `heartbeat_sleep` (`asyncio.sleep`).
+
+### Agent tools: a tool's refusal carries its error code to the caller
+
+Owner ruling, 2026-10-01. A tool pod's refusal reached every caller with no code, because
+`ToolResult` had nowhere to put one and `ToolServer` copied only `success`, `content`, `metadata`
+and `error` onto the call response; the platform rendered every such refusal as its generic 502.
+
+- **New: `ToolResult.error_code: str | None`**, copied by `ToolServer` onto
+  `CallResponse.error_code` and forwarded unchanged by the registry onto
+  `ProxyCallResponse.error_code` (and so onto `ToolCallError.error_code`).
+- **New: `threetears.agent.tools.base_tool.CONFLICT` (`"CONFLICT"`) and `TOOL_RESULT_ERROR_CODES`**,
+  the closed vocabulary a tool may name. `ToolResult` raises `ValueError` at construction for a code
+  outside it (a lower-case `"conflict"` included, with the declared spelling named) and for a code on
+  a success. Upper case, like every platform code, so one condition has one spelling on the wire;
+  closed, so every code a tool can name is one the platform's error map can be held total over.
+
+### Observe: the OpenTelemetry floor is what the code imports, and CI tests at it
+
+- **Dependency floor raised: `3tears-observe[otel]` now requires `opentelemetry-api`,
+  `opentelemetry-sdk` and `opentelemetry-exporter-otlp` `>=1.39`** (was `>=1.28`).
+  `threetears.observe._otel_internals` imports `opentelemetry.sdk._logs.export.LogRecordExporter`,
+  which first shipped in opentelemetry-sdk 1.39.0, so any install below it failed at import. A
+  consumer pinning an older OpenTelemetry must move to 1.39 or later; the three move together.
+- **New: `scripts/test-otel-floor.sh`**, run by CI's `check` job. It reads the `otel` extra's floors
+  and runs observe's OpenTelemetry tests in an isolated environment pinned to exactly those
+  versions, so a floor that falls behind the code goes red here instead of in a consumer.
+- **New enforcement: `tests/enforcement/test_otel_floor.py`** -- every OpenTelemetry requirement in
+  the workspace states a `>=` floor, api/sdk/exporter declared together share one floor, the root
+  dev install matches observe's floor, and CI still runs the floor script.
+
+### Core: a naive datetime is refused at every storage encoder; one stored form everywhere
+
+Owner ruling, 2026-10-01: one stored form for a datetime inside JSON -- ISO 8601, aware UTC, six
+fraction digits (`json_datetime`).
+
+- **Behaviour change: `json_datetime` raises `ValueError` on a naive datetime** (and on a `tzinfo`
+  whose `utcoffset()` is `None`), naming the field when the caller knows it
+  (`json_datetime(value, field="last_refill")`). Every storage encoder routes through it --
+  `schema_sql.json_default` (L3 jsonb codec, L2 payloads, L1 JSON columns, the broker's nested
+  params, the scan cache, the write buffer) and `serialize_to_json` -- so a naive datetime nested
+  in a stored document now fails the write instead of being stored without an offset.
+- **New: `threetears.core.serialization.to_stored_json(value, *, field=None)`** -- exactly what
+  `model_dump(mode="json")` writes, except every datetime takes the one stored form (pydantic
+  writes `...Z` and drops a zero fraction). Accepts a model or any structure of mappings,
+  sequences and models; a naive datetime is refused naming its path (`runs[0].date_started`).
+- A collection's own timestamp columns are not refused: `SchemaBackedCollection` now derives
+  `datetime_columns` from its schema's `DATETIMETZ_TYPE` columns, so a naive value there is stamped
+  UTC (and logged) before the L2 payload is written -- the same reading its L3 write coercion
+  already made. A dynamic collection declares its `timestamptz` columns the same way, and caches a
+  `timestamp` column's naive value (naive by declaration) as its wall-clock text
+  (`2026-10-01T12:30:00.000000`). The write buffer receives the normalised row too.
+- `WriteBuffer`: an L1-backed buffer reads every row back from its JSON text, so a UUID, instant,
+  Decimal or bytes reached L3 as a string and the write failed through its retry budget.
+  `flush_pending` now rehydrates each row through its `SchemaBackedCollection`'s schema
+  (`WriteBuffer.drain(decode=...)`); a legacy `str(dt)`, fraction-less or naive instant reads as
+  UTC. Tables with no schema get the parsed JSON, as before.
+- Stored writers moved to the one form: `KVLease` envelopes, `TokenBucket` state, the tool
+  registry's KV catalogue (`registry.catalog`), the workspace pin's `date_pinned`, and the audit
+  persister's `details` (`3tears-agent-audit` now depends on `3tears`). Every reader parses the
+  older spellings unchanged.
+
+### Tests: shared test-support modules carry plain names
+
+Owner ruling, 2026-10-01: shared test support is public, so its modules are not underscored. Every
+non-test module or package under a `tests/` tree that other test modules import loses its leading
+underscore, and every importer is updated. No aliases; `conftest.py` and `__init__.py` are untouched.
+Test-only, so nothing installed changes.
+
+- agent/acl `fake_loaders`; agent/memory and conversations `rbac_rows`; agent/tools `pod_auth`;
+  agent/workspace `helpers/` and `integration/strict_validator`; core `migrations/fake_store`;
+  datasources `unit/helpers/`; enforcement `release/scratch_repos` (was `_scratch`); models
+  `provider_wire`, `claude_cli_recorder`, `translation_helpers`; nats `wire_server`; registry
+  `copy_entries` (was `_copies`), `forwarding`, `dispatch_auth`; scrape `scrape_tool_support`,
+  `egress_fakes`, `pacer_fakes`, `bus_shims`, `kv_shims`, `camoufox_fakes`, `driver_log_helpers`;
+  search `tavily_payloads`, `searxng_payloads`, `search_instances`.
+- `web_fetch`'s whole-run refusal test now pins the remediation text exactly --
+  `install 3tears-search[extract]`, the extra that installs the loader -- in both the typed record
+  and the prose the model reads, rather than checking for a substring.
+
+### Enforcement: the private-binding gate enforces plain names on shared test support
+
+Owner ruling, 2026-10-01. `scan_private_bindings` used to allow a private module under a tests tree
+to be imported within that tree, on the theory that the underscore marked support pytest does not
+collect. It no longer does: shape G.module (and H.path, for the same module named by a string)
+reports every import of an underscore-prefixed module or package under a `tests`/`test` tree, from
+the same tree included. `conftest.py`, `__init__.py` and other dunders are not private, data files
+are never imported, and an underscore module nothing imports binds nothing, so none of those is a
+finding. A script's private helper module outside every `src` and tests tree is still its own
+directory's. No API changes; a consumer repo's gate reports any test-support module it still
+underscores.
+
+- **scrape's tests use the shared KV fake.** `packages/scrape/tests/kv_shims.py` is gone; scrape's
+  tests use `threetears.core.testing.kv` like every other package.
+
+### Enforcement: a private name bound by an import or by a string is a violation, in tests too
+
+Owner ruling, 2026-10-01. The underscore walkers A-F, SLF001 and the suppression policy all passed
+two spellings: a test importing a private name (`from ...redshift_driver import
+_CANCEL_TIMEOUT_SECONDS`, `from .test_websocket import _valid_auth`) or importing through a
+private module path, and a private name bound by a string (`monkeypatch.setattr(obj, "_x", v)`,
+`patch("pkg.mod._x")`, `patch.object(Client, "_astream")`, `mocker.spy`, `import_module`).
+
+- **New: `threetears.enforcement.underscore_access.private_binding`** -- `scan_private_bindings`,
+  `private_binding_findings`, `confinement_modules`, `undetected_planted_controls`,
+  `PrivateBindingScan`, and the four categories `SHAPE_G_NAME`, `SHAPE_G_MODULE`,
+  `SHAPE_H_ATTRIBUTE`, `SHAPE_H_PATH` (`PRIVATE_BINDING_CATEGORIES`). Scans every python file of
+  the repo. The rules -- what counts as private, the src package boundary, the plain-name rule
+  for test-support modules under a tests tree, the confinement-module sanction -- are in the module
+  docstring, with the thin shell a consumer repo adds to enable it.
+- **`pragma_policy.TEST_DIRECTORIES`** is public (was `_TEST_DIRECTORIES`), so the new module reads
+  the same answer to "is this a tests directory".
+- **3tears' own gate, `tests/enforcement/test_private_binding.py`, is red** until this repo's
+  findings are fixed. Nothing is exempted.
+
+### datasources, models, registry: the private bindings their tests held are gone
+
+The private-binding gate's findings in these three packages, fixed at the front door or by
+promoting a name production code already shares across modules. Renames, no aliases:
+
+- **`threetears.datasources.drivers.sql_fragments`** (was `drivers._util`) and
+  **`threetears.datasources.drivers.sync_bridge`** (was `drivers._sync_bridge`): the drivers' shared
+  SQL helpers and sync-to-async bridge, called by every concrete driver and named in
+  `IMPLEMENTING_DRIVERS.md` as what a new driver uses. **`translate_placeholders`** (was
+  `_translate_placeholders`) and **`drivers.base.observed`** (was `_observed`) are public for the same
+  reason.
+- **`threetears.models.providers.claude_cli`** (was `providers._claude_cli`): the subscription
+  backend `providers.anthropic` routes an OAuth token to.
+- **`RedshiftDriver(cancel_timeout_seconds=)`**: the cancel path's wait, defaulting to the module's
+  5 s bound, so a test passes a short one instead of patching the constant.
+- `threetears.datasources.config`'s admissible access modes are DERIVED from
+  `DataSourceAccessMode` rather than a hand-kept copy that had drifted once.
+- The registry's registry->pod envelope builder no longer accepts an unresolved proxy wait
+  (`effective_timeout` is required); both production callers always passed one.
+
+### Scrape: `run_eval_loop_multi_row` takes its grounding judges and outer deadlines as arguments
+
+The scrape tests reached the per-document and multi-row judges and their outer deadlines by
+patching private module attributes by string. They are now injected, each defaulting to exactly
+what ran before, so no caller changes:
+
+- **New: `threetears.scrape.eval_loop.DocumentJudge` and `MultiRowJudge`**, the protocols of the
+  `"per_document"` and `"multi_row_vision"` grounding checks.
+- **`run_eval_loop_multi_row`** takes `document_judge`, `multi_row_judge`,
+  `per_document_deadline_seconds` (default 90) and `multi_row_vision_deadline_seconds`
+  (default 150).
+
+### A datetime inside stored JSON has one form at every tier: `json_datetime`
+
+A datetime nested in a JSON value was stored three ways. L3's jsonb codec used `default=str`
+(`2026-10-01 12:30:00+00:00`); the L2 payload encoders and L1's cache used `isoformat()`
+(`2026-10-01T12:30:00+00:00`), which drops the fraction when it is zero, so even one tier wrote two
+widths. An agent's jsonb write through the broker took the `default=str` form too, from
+`NatsProxyL3Backend`'s request encoder. The same instant read back as a different string
+depending on which tier answered, and stored strings did not sort as instants.
+
+- **`threetears.core.serialization.json_datetime`** (new): ISO 8601 extended, `T` separator,
+  always six fraction digits, explicit UTC offset -- `2026-10-01T12:30:00.000000+00:00`. Fixed
+  width. An aware value in another zone is converted to UTC first.
+- **Every storage encoder writes it.** `schema_sql.json_default` (L2 payloads, L1 SQLite JSON
+  columns) and `serialize_to_json` (the entity codec) format datetimes through it.
+  `register_jsonb_text_codec` (L3) now encodes through `json_default` instead of `default=str`,
+  and so do `NatsProxyL3Backend`'s request encoder, the write buffer's L1 copy, the scan cache's
+  L1 payload, the DuckDB L1's JSON columns (which raised on a nested UUID, Decimal or datetime
+  before), and the L2 codecs of `ObjectResolutionCollection`, `HeartbeatCollection`, the presence
+  collections and the scrape collections.
+- **`json_default` encodes a `date`** as its ISO string, the same string `default=str` stored.
+
+**Behaviour change:** L3 jsonb and broker-bound values now refuse a type `json_default` does not
+cover (UUID, datetime, date, Decimal, bytes), as L2 and L1 already did, where `default=str` stored
+its `str()`; `bytes` nested in jsonb are stored base64, as L2 stores them, not as their `repr`.
+
+**Stored rows keep their strings.** Nothing is rewritten: every reader parses datetimes with
+`datetime.fromisoformat` (or Pydantic), which accepts the old space-separated and fraction-less
+forms as well as this one.
+
+**A naive datetime is still written**, fixed width without an offset
+(`2026-10-01T12:30:00.000000`). It names no instant and should be refused, but production writers
+still hand one to these encoders as a top-level column the L2 payload carries; refusing it here
+would fail their writes. Fixing those producers comes first.
+
+### A tool pod whose assertion replay ledger fails answers `TOOL_POP_LEDGER_UNAVAILABLE` instead of timing out
+
+`ToolServer` records every proxy assertion's nonce in a shared KV ledger before it runs the tool, and
+the ledger fails closed: when its bucket cannot be reached it raises `KvError` rather than answering
+"fresh". That exception escaped the dispatch with no reply published, so the registry waited its
+whole budget and the caller was told `TOOL_TIMEOUT` about a pod that had refused in milliseconds.
+
+**Behaviour change:** the pod now answers that outage `TOOL_POP_LEDGER_UNAVAILABLE`, the code the
+registry already answered its own pop ledger outage with, and the registry and the pod carry one
+message for it. Only the ledger's own failure (`threetears.nats.errors.NatsClientError`) is caught;
+the bucket, the error and what to check go to the pod's ERROR log.
+
+- **`TOOL_POP_LEDGER_UNAVAILABLE` / `TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE`** (new, in
+  `threetears.core.security`): one spelling for both hops. The registry's reply text changes from
+  `the replay ledger could not be reached (<ExceptionType>); the call was not checked, retry` to the
+  shared message; the exception type stays in its ERROR log.
+- **A JWKS provider that raises during the pod's assertion check** now refuses the call
+  `TOOL_PROXY_ASSERTION_UNVERIFIED` with a reply. The check read the provider directly, so a failure
+  there escaped the dispatch exactly as the ledger's did; it now reads through the same converting
+  loader the identity check uses.
+
+### L1 caches a JSON value holding a UUID, datetime or Decimal instead of failing a committed write
+
+`SQLiteBackend.serialize_value` encoded JSON columns with a bare `json.dumps`, so a dict or list
+holding a `UUID`, `datetime` or `Decimal` raised `TypeError`. L2 encodes the same value through
+`schema_sql.json_default` and L3's jsonb codec through `default=str`, and the L1 step runs after the
+L3 commit: the caller was told a write both other tiers had taken had failed, and the invalidation
+broadcast after the cache step never ran, leaving peers serving their old L1 copy. Found through the
+survey engine, whose session row carried a respondent's `session_id` inside `memory_data`.
+
+**Behaviour change:** L1 encodes JSON (`dict`, `list`, `tuple`) values with
+`threetears.core.backends.schema_sql.json_default`, the encoder L2 uses. A nested `UUID`, `datetime`,
+`Decimal` or `bytes` is cached as its string, exactly as L2 caches it; anything else still raises.
+
+### `nats_container` can leave out the SYSTEM account: `nats_system_account`
+
+Declaring the SYSTEM account (above, "the NATS test container declares a SYSTEM account") makes
+nats-server admit the global account through a hidden no-auth user, which it applies only to a
+client presenting NO credential. A client presenting a connect token -- a tool pod opens its own
+connection with one -- is checked against token auth nobody configured and refused with
+`Authorization Violation`, where before the account existed the server ignored the token. The
+survey engine's tool-pod registration suite failed on exactly this.
+
+- **`nats_system_account`** (new session fixture, default `True`): override it to `False` in a
+  suite's conftest, as with `nats_jetstream`, when the code under test presents connect tokens to a
+  bus that verifies none. The server then declares no auth and admits every client.
+- **`nats_container` takes it as a parameter**; a caller driving the fixture body directly passes
+  `(nats_jetstream, nats_system_account, tmp_path_factory)`.
+
+### A saved handle reads the row it saved, not L1's copy of the key
+
+A new entity read its fields through L1 after a save that cached, so anything that later dropped
+L1's copy of the key -- a `CallerTransaction` settling a key its writes touched, a peer's
+invalidation broadcast, `invalidate_cache`, expiry -- left the handle answering every field as
+missing (`IdentityVersionEntity.version_id` raised on a `None`). Until the unreleased "no scan writes L1"
+change, the next scan of the key happened to re-warm L1 and masked it; identity's
+`test_conn_binds_apply_to_caller_transaction` failed from that commit on. An edit on such a handle
+also wrote L1 before the save reached L3, so a reader in the same process was served it unsaved.
+
+**Behaviour change:** `BaseCollection.save_entity` (synchronous and write-behind) and
+`reload_entity` now always have the entity hold its row (`BaseEntity.hold_row`), exactly as a
+loaded entity does: the row as stored, plus any keys the caller carried that the table does not.
+Its reads answer from that row, and its edits stay on the handle until the next save. A saved
+handle no longer reflects later writes of its key through L1; read the key again (`get`) for the
+current row. `reload_entity` no longer writes L1 outside its fence through `set_data`.
+`HeartbeatCollection.save_entity` and the presence collections' `save_entity` hold their row too.
+A new entity reads through L1 only until its first save.
+
+### A tool pod adds its own health checks through `ToolServerBootstrap(extra_health_checks=)`
+
+A pod that needed a readiness gate of its own -- storage still being wired, a background loop
+that died -- had one way in: override the private `_start_health_server` and register checks on
+what it returned. That bound the pod to SDK internals any release may move
+(bluelabsio/bl-eng-client-delivery#95).
+
+- **`ToolServerBootstrap(..., extra_health_checks=[HealthCheck(...)])`** (new, keyword-only,
+  default empty): the checks are evaluated by the pod's health server after the bootstrap's own
+  (`nats` LIVE, `tools_registered` and `jwks_warmed` READY), each in the tier it declares, on
+  `/healthz/live`, `/healthz/ready` and their aliases. A probe reads state when it is asked, so a
+  subclass can build its checks in `__init__` over state that does not exist yet.
+- **A contributed check whose name is already taken is refused** with `ToolPodConfigError`
+  (`variable="extra_health_checks"`) before the pod serves, so `run()` exits `EX_CONFIG`. Two
+  components with one name would make the `?format=json` body ambiguous to an operator.
+- No change to `HealthServer`, the probe routes, the tiers, or the bootstrap's own checks.
+  Migrating: delete the `_start_health_server` override and pass its checks to `super().__init__`.
+
+### A junk-named tool call reaches no consumer of a chat model, streamed or not
+
+The provider wrappers (OpenAI, OpenRouter, Anthropic) dropped a junk-named tool call (a name the
+canonical regex rejects, like the 2026-05-19 `memory_recall" name="memory_recall`) only from each
+chunk's `invalid_tool_calls`. A streamed call's name also rides `tool_call_chunks`, so adding the
+chunks up brought it back; Anthropic names a call in one event and sends its arguments in later
+ones, so the named chunk parsed as a valid `tool_calls` entry no filter looked at; and a finished
+answer with well-formed arguments carried it in `tool_calls` and, from Anthropic, as a `tool_use`
+content block. Only a finished `ainvoke` with malformed arguments was protected.
+
+- **Streams are filtered per call, inside the model run.** The wrappers' `_astream` and `_stream`
+  release, hold or drop each fragment by its call's name, so `astream`, `stream`,
+  `astream_events`, a streaming `ainvoke`'s callbacks, LangGraph's messages stream and the
+  `on_chat_model_end` aggregate all see the same clean chunks. A call named on its first fragment
+  -- every wired provider does this -- streams with no delay; a fragment that arrives before its
+  name is held until the name does, and text never waits for it. A junk call's content blocks go
+  with it.
+- **Finished answers drop the call from `tool_calls`, `invalid_tool_calls` and the content
+  blocks**, not only from `invalid_tool_calls`.
+- **The Claude subscription backend hands back no junk call either**, invoked or streamed. A turn
+  that asked only for a junk call still ends as a turn that stopped for tools (not a failed
+  call), with no call handed back; its `finish_reason` still reads `tool_calls`, as Anthropic's
+  `stop_reason` does after the API wrapper drops one.
+- `drop_junk_invalid_tool_calls` (in the private `providers._name_translation_mixin`) is gone;
+  `providers._junk_tool_calls` holds the filter. Nothing outside the package used it.
+
+### A tool call's content block carries the same name as its `tool_calls` entry
+
+Anthropic carries every tool call twice, as a `tool_use` content block and as a `tool_calls`
+entry. The wrappers translated the entry back to the canonical dotted name and left the block on
+the wire name, so one message named the tool two ways. `reverse_translate_message` now translates
+tool-call content blocks too (`tool_use`, OpenAI Responses' `function_call`, LangChain's
+`tool_call` / `tool_call_chunk` / `invalid_tool_call`), finished and streamed; a provider's own
+server-side tool blocks are left alone. `forward_translate_message` mangles those blocks' dotted
+names on the way out, which matters when LangChain sends a `tool_use` block by its own name -- it
+does whenever no `tool_calls` entry shares the block's id, as for history rebuilt from stored
+content -- and which Anthropic would otherwise refuse.
+
+### The serving tool pod answers a forwarded identity that does not verify `IDENTITY_REFUSED`
+
+The pod re-verifies the identity the registry forwards, and refused one that did not verify with
+no `error_code` and a message naming the check that failed (`identity verification failed
+(IdentityTokenError)`, `user-assertion verification failed (ValueError)`). An unnamed refusal had no
+face to map to, so the hub's HTTP face rendered it as its 502 fallback; the registry's door, which
+checks the same identity first, already answered `IDENTITY_REFUSED`.
+
+- **Breaking: `ToolServer` answers `IDENTITY_REFUSED`, message `forwarded identity could not be
+  verified`, for every refusal of its identity gate**: an absent, expired, unknown-key or malformed
+  handshake token, a user assertion that does not verify or does not bind to the handshake token
+  or the conversation, and a user assertion on a tool pod's token. Through the hub this is now a
+  401, not a 502. A caller matching the old message text matches the code instead. Nothing
+  retries it: the registry fails over only on `TOOL_UNAVAILABLE`.
+- The reason stays on the pod's side. Its WARNING lines (`pod identity verification failed`,
+  `pod user-assertion verification failed`, `pod user-assertion presented on a tool pod token`)
+  still name the check and the exception, beside the tool name, and the baseline `tool.call`
+  audit's `failure_reason` still records which check refused.
+- **The proxy-assertion refusal is not this code, on purpose.** It answers a different condition
+  and has its own code; see the next entry.
+
+### The serving tool pod answers a call that did not come through the registry `TOOL_PROXY_ASSERTION_UNVERIFIED`
+
+After the forwarded identity verifies, the pod checks the registry's assertion that binds the call
+to this body, a single-use nonce and this pod. A refusal there carried no `error_code` and a
+message naming the exception (`proxy assertion verification failed (IdentityTokenError)`), so the
+hub's faces rendered it as their unnamed-failure fallback, a 502 with an "unmapped code" error
+line.
+
+- **Breaking: `ToolServer` answers `TOOL_PROXY_ASSERTION_UNVERIFIED`, message `the call could not
+  be verified as forwarded by the registry to this pod`, for every refusal of that gate**: no
+  assertion (a publisher straight onto the pod's internal subject), a spliced body, a replayed
+  nonce, an assertion for another pod or under a key the pod does not hold, and a pod with no
+  replay guard. A caller matching the old message text matches the code instead.
+- **It is not `IDENTITY_REFUSED`**: the identity verified. It is the pod-side counterpart of the
+  registry's `TOOL_POP_UNVERIFIED`. Through the registry it means the registry and the pod
+  disagree (the registry's signing key, the pod's JWKS, its replay ledger), so nothing retries it:
+  the registry fails over only on `TOOL_UNAVAILABLE`, and `ToolCallClient` raises it as
+  `ToolCallError` after its one request.
+- The reason stays on the pod's side: `pod proxy-assertion verification failed; rejecting` still
+  names the check and the detail beside the tool name, and the baseline `tool.call` audit's
+  `failure_reason` still records it.
+- **`threetears.core.security.TOOL_PROXY_ASSERTION_UNVERIFIED` and
+  `TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE`** (new, in `threetears.core.security.proxy_assertion`
+  beside the verifier): the code and message, spelled once. The pod answers with them and the
+  hub's error faces map the code.
+
+### The registry answers a forwarded identity that does not verify `IDENTITY_REFUSED`
+
+The tool-call door answered the condition every hub door answers `IDENTITY_REFUSED` with two codes
+of its own: `TOOL_IDENTITY_UNVERIFIED` when the handshake token did not verify, and
+`TOOL_USER_IDENTITY_UNVERIFIED` when the per-turn user assertion did not verify or bind (or rode on
+a tool pod's token). Its message named the exception that failed. One condition answers one code.
+
+- **Breaking: `CallProxy` answers `IDENTITY_REFUSED`, message `forwarded identity could not be
+  verified`, for every identity-check failure.** `TOOL_IDENTITY_UNVERIFIED` and
+  `TOOL_USER_IDENTITY_UNVERIFIED` are no longer sent. A caller branching on either branches on
+  `IDENTITY_REFUSED`. The registry's WARNING log still names which check refused and why, beside
+  the correlation id; the caller learns only that it was refused. Nothing retries it.
+- **`TOOL_POP_UNVERIFIED` is unchanged, on purpose.** It answers a different condition: the token
+  verified, and the caller did not prove it holds the key the token is bound to (absent or invalid
+  proof, a spliced body, a replayed nonce). The hub doors verify no proof of possession, so they
+  have no code for it to join.
+- **`threetears.core.security.IDENTITY_REFUSED` and `IDENTITY_REFUSED_MESSAGE`** (new): the code and
+  message, spelled once. The registry answers with them and the hub's identity-refusal owner
+  imports them.
+
+### The registry server owns its host identity, once, and closes it on shutdown
+
+The rbac stack, the pod authenticator and the limit guard each build an L3 backend, and all three
+present the registry's one host-minted identity. Only the rbac factory resolved the identity hook;
+the other two factories, resolved independently by the entry point, reached the same identity
+through host module state, and nothing ever stopped the host's refresh loop -- it outlived the
+server that started it.
+
+- **Breaking: the identity hook returns a `RegistryIdentity`** (new, `threetears.registry.auth`):
+  `token()` returns the current token and `close()` stops keeping it fresh. The env var is
+  unchanged, `THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY`; the factory it names now
+  returns the identity object instead of a bare `Callable[[], str | None]`.
+- **`RegistryServer(identity_factory=...)`** (new) and `apply_identity_factory(nc)`: `serve()`
+  builds the identity once, before every other factory, and `shutdown()` closes it after the
+  `on_shutdown` teardown and before the connection drains. The entry point passes the resolved
+  factory unawaited, so a malformed spec still crashes startup.
+- **Breaking: the rbac, pod-authenticator and limit-guard factories are called
+  `(nc, identity_token)`**, each with the identity's bound `token` (`None` when no identity factory
+  is configured). The usage-emitter factory is unchanged, `(nc)`: it builds no L3 backend. A host
+  factory updates its signature and takes the provider it is handed instead of obtaining its own.
+- `threetears.registry.server.IdentityTokenProvider` (new): the provider type those factories take.
+
+### An SLF001 suppression outside a recorded src module fails the build
+
+A leading underscore is a stability contract in `src/` and `tests/` alike (owner ruling,
+2026-10-01). Inline `# noqa: SLF001` pragmas and per-file ignores on test files let tests bind to
+private state while every gate stayed green.
+
+- **`threetears.enforcement.underscore_access.pragma_policy`** (new):
+  `slf001_policy_findings(repo_root, exemptions_path)` reports every comment that suppresses SLF001
+  (a code list naming it, a bare `noqa` on a line reading a private name, a bare file-level
+  directive), every per-file SLF001 ignore covering a file that is not a `src` module, every `src`
+  module ignored without an exemptions-ledger entry, and every ledger entry naming a test file.
+  `scanned_python_files` and `slf001_ignored_files` are the two inputs, for a consumer shell's
+  non-vacuity floors. The module docstring is the consumer's thin shell; 3tears runs it as
+  `tests/enforcement/test_slf001_pragma_policy.py`. `ruff_config.is_vendored` is public so the
+  file walk excludes exactly what the config discovery excludes.
+- **Third-party private members are confined, one module per library.** nats-py's stay in
+  `threetears.nats._nats_py_internals`, now under a per-file ignore with a ledger entry per access
+  instead of inline pragmas. OpenTelemetry's set-once guard moved out of `observe/setup.py` into
+  `threetears.observe._otel_internals`. `observe/logging.py` reads its call-site frame through
+  `inspect.currentframe()` rather than `sys._getframe()`, so it needs no exemption at all.
+- `CollectionAttemptLimiter` takes `clock=`, handed to its `WindowedCounter` -- the counter's own
+  time seam, carried through so a window boundary can be stood on.
+- `ConnectionRegistry.user_ids()`, `WebhookReceiver.verifier_for()` and
+  `RoomFanout.subscribed_rooms()` / `referenced_rooms()` -- added unreleased, with no caller
+  outside their own class -- are removed; their tests assert the behaviour instead.
+
+### Audit anonymization answers a forwarded identity that does not verify `IDENTITY_REFUSED`
+
+The hub answered the same condition two ways: `IDENTITY_REFUSED` on its L3 doors, the datasource
+door and `namespace.discover`, and `IDENTITY_UNVERIFIED` on memory-namespace ensure, the object
+catalog, engagement scope, the channel default, the approval broker and audit anonymize. It now
+answers `IDENTITY_REFUSED` everywhere, with one message, and logs the reason and the fix on its
+side.
+
+- **Breaking: `AUDIT_ANONYMIZE_ERROR_CODES` names `IDENTITY_REFUSED` in place of
+  `IDENTITY_UNVERIFIED`.** `request_audit_anonymization` raises `AuditAnonymizeRefusedError` for
+  it after the one request it sent, as before: the same token meets the same refusal, and the cure
+  is a fresh handshake. A caller branching on `IDENTITY_UNVERIFIED` branches on
+  `IDENTITY_REFUSED` instead.
+- The object, engagement-scope and memory-namespace clients carry the hub's code into their
+  error text unchanged, so a log reading `IDENTITY_UNVERIFIED` now reads `IDENTITY_REFUSED`.
+
+### A refused websocket connection tells the client which refusal it was
+
+`WebSocketHandler`'s auth seam was `async (token) -> dict | None`. `None` carried no reason, so
+every refusal reached the client as `{"type": "error", "message": "authentication failed"}` and a
+1008 close: an expired token, and a rule the host applied to the connection (the hub's
+cross-customer rule, its `channel.send` gate), read identically. A client could not tell "refresh
+and retry" from "you may not", and could not show the person which.
+
+- **Breaking: the seam is `AuthValidator = async (token) -> dict`, raising
+  `WebSocketAuthRefused(code, message)` to refuse.** Returning `None` is no longer a refusal; the
+  handler raises `TypeError` naming the new shape. A host updates its validator to raise. Use
+  `UNAUTHENTICATED` (new) for a token it cannot verify, and its own code for anything else --
+  ideally the code its other doors answer for the same condition.
+- **Every `error` frame sent before a 1008 close carries a `code`**:
+  `{"type": "error", "code": ..., "message": ...}`. The handler's own refusals -- no token, a peer
+  gone before it sent one -- and `disconnect_user` answer `UNAUTHENTICATED`. A validator's refusal
+  answers its own code and message, and is logged with the code.
+- `threetears.channels` exports `UNAUTHENTICATED`, `AuthValidator` and `WebSocketAuthRefused`.
+
+### A pull consumer's handler holds its message while it runs
+
+`ack_wait` on a durable pull consumer did two jobs: it was how long a message a dead fetcher held
+waited for anyone else, and it was a ceiling on every live handler, which was redelivered to
+another fetcher -- and ran twice -- once it ran past it. The second job forced `ack_wait` long, and
+a long `ack_wait` is a long strand. Found in the pre-PR live validation, 2026-09-30: a hub killed
+three seconds into its shutdown left an audit event awaiting ack for the full 60 seconds, and the
+person erasure made right after the restart, which waits 30 seconds for that backlog, failed.
+
+- **`JetStreamPullConsumer` sends an in-progress ack three times per `ack_wait`** while a handler
+  runs, for a fetched message and for one `stop()` collects alike, and stops when the handler
+  returns. `ack_wait` now bounds only a dead fetcher's hold, so a consumer can set it short. A
+  refused in-progress ack is logged with the durable and ends the holding; the handler still
+  finishes.
+- **`JetStreamPullConsumer(...)` takes a required `ack_wait_seconds`.** `jetstream_pull_subscribe`
+  passes its own; a direct constructor call must add it.
+- **A durable that already exists takes the `ack_wait` and `max_deliver` its code asks for.**
+  `jetstream_pull_subscribe` and `jetstream_subscribe_durable` read the live durable before
+  binding and, when either differs, send its config back with those two fields changed, which the
+  server applies in place. nats-py creates a durable only when it is missing, so before this a
+  changed `ack_wait` never reached a stream that already had the durable: the hub's rebuilt audit
+  consumer asked for 20 seconds and the running stack's durable kept 60.
+- **`threetears.agent.audit.DEFAULT_ANONYMIZE_TIMEOUT_SECONDS` is 60 seconds, was 30.** The hub's
+  anonymize responder waits half of the caller's timeout for the audit backlog, and that half must
+  outlast the hub's audit redelivery window (its durable's `ack_wait` plus one fetch, 25 seconds).
+
+### A row the database completes is cached as L3 holds it, never as it was sent
+
+A save that named only some of a table's columns, leaving the rest to their server defaults,
+cached the dict it sent on every tier: L1, L2, and every replica reading L2 served a row without
+the columns the database filled in. The hub's data-space ledger answered 500 on the missing
+`target_version` (found in the pre-PR live validation, 2026-09-30). The same held for a fenced
+update sending `NULL` for a `NOT NULL` default column, whose stored value the UPDATE keeps.
+
+- **`BaseCollection.columns_decided_by_store(data)`** (new public extension point) names the
+  columns whose stored value a write leaves to the database. `SchemaBackedCollection` answers
+  from its schema: a declared column the row leaves out, and a `NOT NULL` `server_default`
+  column it sends as `None`. The default names none.
+- **`BaseCollection.complete_written_row(data)`** (new public extension point) fills in the
+  columns a write stores as a value known before it runs. `SchemaBackedCollection` fills `None`
+  into each nullable, mutable, non-key column with no `server_default` that every generated
+  statement writes `NULL`, so a row leaving only those out costs no read.
+- **`SchemaBackedCollection.stores_through_generated_sql`** (new class attribute) says whether
+  every L3 write is a generated statement, which is what makes that completion sound. Inferred
+  (`None`) as "unless `save_to_store` is overridden"; `CoordinationCollection` declares `True`,
+  since its override only answers for a registry with no L3.
+- **A synchronous write reads the row back.** `save_entity` and a subscript assignment whose
+  completed row still leaves a column to the database read it from L3 once the write commits,
+  and cache that in L2 and L1 and on the saving handle. A read back that fails caches nothing
+  and drops the key from L1 and L2; the save still succeeds, and the next read goes to L3.
+  A key the caller carried that the stored row does not (a column the table does not declare,
+  such as the hub's own `spec` on a capability source) stays on the saving handle, and only
+  there: the tiers hold what an L3 read gives.
+- **A write ahead of L3 refuses such a row.** A write-behind `save_entity` or assignment, and
+  `l2_cas_mutate` on a collection with an L3 pool, put the row in L2 before L3 has it, so there
+  is nothing to read back: they raise `ValueError`, naming the columns, before any tier takes
+  it. Name every column in the row.
+- A collection with no L3 pool is its own record and is never read back or refused.
+- Remaining, not fixed here: a save joining a caller's transaction (`conn=`) caches nothing,
+  as before, but its handle still holds the row as sent until reloaded; and an insert that
+  meets an existing row under `ON CONFLICT DO UPDATE` keeps that row's immutable columns while
+  the cache takes the values sent; and a column a trigger rewrites on every write
+  (`conversations.search_vector`) is cached as sent whenever the row names it, since the schema
+  has no way to declare it computed.
+
+### Release tooling has one owner: `threetears.enforcement.release`
+
+The API-growth gate and the version-bump script were byte-copied into every aibots repo and
+held identical by a comment; two commits had already re-synced drift, and the script had no
+test anywhere. Both live in `3tears-enforcement` now.
+
+- **`api_growth_findings(ApiGrowthConfig(...))`** is the gate. Each repo's enforcement test
+  passes its source roots, first release, anchor exports and any extra surface extractors
+  (`http_routes`, or its own). It now refuses, naming the module, where it used to read an
+  empty set: a module that does not parse, and an `__all__` that is not a literal list, is
+  changed with anything but literal strings, is assigned twice or inside a block. A literal
+  `__all__.append("X")` under an optional-extra `try` is read, and counts. The baseline is
+  keyed by path, so byte-identical modules each keep theirs, and a tag whose tree or blobs the
+  clone lacks is a refusal rather than a crash or an empty baseline.
+- **`untagged_checkout_findings`** binds every CI job that runs the gate to a checkout with the
+  release tags (`fetch-depth: 0`). `release.yml`'s `check` job now has it: a manual dispatch's
+  shallow checkout carried no tag at all.
+- **`threetears-release patch|minor|major|release|sync|verify X.Y.Z`** is the bump. Every repo's
+  `scripts/bump-version.sh` is a one-line wrapper around it, configured by
+  `[tool.threetears-release]` (3tears' lockstep members, smoke tests, bake file, family bounds
+  and changelog style are listed there). It checks everything before it edits anything and
+  restores every file if a step fails. A `minor` or `major` from a declared-but-untagged patch
+  now proceeds when that patch's minor line has a tag, so the gate's own remedy works; the
+  untagged version's notes move to the new one.
+- `release.yml` calls `bump-version.sh verify X.Y.Z` (was `--verify`). The bump now also moves
+  `## Unreleased` under `## vX.Y.Z -- <date>`.
+
+### `3tears-enforcement` owns the declared-imports gate: `threetears.enforcement.imports_declared`
+
+Five aibots repos carried their own copy of "every import comes from a declared dependency",
+in three different strengths: the hub's covered every non-stdlib import with a guard on both
+computed inputs; the SDK's and admin's covered `threetears.*` only; client delivery's covered
+the platform families only; survey had none. One gate now, each repo's test a thin config call.
+
+- `run_imports_declared_enforcement(ImportsDeclaredConfig(repo_root=..., first_party=...,
+  source_roots=..., required_import_roots=..., required_owned_modules=...))`. Every
+  non-stdlib, non-first-party import under the source roots must be owned (at its full module
+  path, through the installed distributions' file lists and editable checkouts) by a
+  distribution the manifest declares.
+- Both inputs carry a non-vacuity guard: the walk must find `required_import_roots`, and the
+  owner map must know `required_owned_modules` (the half that emptied silently under editable
+  installs). Imports nothing installed provides are reported apart, since their fix is a sync.
+- `imports_declared_findings(config)` returns the findings for a caller that reports its own way.
+
+### `3tears-nats` asks whether a connection is still open: `probe_connection`
+
+- New in `threetears.nats.system_account` (re-exported): `probe_connection(system_client,
+  connection)` sends `$SYS.REQ.SERVER.<server_id>.CONNZ` filtered to the connection's client id,
+  which closes nothing, and answers `ProbeOutcome.HELD`, `NOT_HELD` (proof it is closed) or
+  `SERVER_GONE` (no responder: restarted or partitioned, as with a kick). No answer in time, a
+  refusal, or a reply that is not a CONNZ response raises `ConnectionProbeError`: nothing is
+  proven. Typed wire models `ConnectionProbeRequest`, `ConnectionProbeResponse`,
+  `HeldConnections`, `HeldConnection`; `connz_subject(server_id)`; `DEFAULT_PROBE_TIMEOUT`.
+- Moved from the aibots hub's connection fence, which built it privately. The live test pins the
+  CONNZ reply shape on nats-server 2.12.6 and 2.14.2 beside the kick's.
+
+### `3tears-nats` caps nats-py at what it was verified against, and one module owns the private surface
+
+`NatsClient` depends on eleven nats-py private attributes: the ordered round trip, server-side
+`UNSUB`, a pull inbox's queue, and a forced reconnect. nats-py had no upper bound. A release that
+renamed one would have installed clean and broken at runtime. `ping()` would answer `False`, every
+health probe would fail, and every subscribe and pull-consumer stop would degrade at once.
+
+- **`nats-py>=2.15,<2.17`** (was `>=2.15`). The surface is unchanged between 2.15.0 and 2.16.0.
+  The nats unit suite and live integration suite pass on both.
+- Every private access now lives in `threetears.nats._nats_py_internals`. Its docstring gives
+  each attribute, why it is used, the versions verified, and how to raise the cap. `client.py`
+  holds none of them.
+- A unit test constructs real nats-py objects and checks every declared attribute. A nats-py
+  bump that renames one now fails CI by name. CI has no Docker, so this check does not need it.
+
+### A reply owed across a lame-duck move or a requested renewal leaves on the connection that received the request
+
+The client recorded which connection received a request only while `renew_credential` was armed.
+But a server entering lame-duck mode, `renew_on_request` and a direct `renew_connection()` also
+hand the client to a successor, with no renewal loop running. Take a static-credential service
+answering through `allow_responses` during a rolling restart. Its reply left on the successor,
+the server refused it as a permissions violation, and the publish reported success.
+
+- The route is now recorded whenever the connection lifecycle says a handover can occur: the
+  client opened its own connection, and is live. The lifecycle owns the opener a successor is
+  opened with, so this question and `renew_connection` read the same thing.
+- The route map is bounded. A route whose reply is never sent is dropped once it is older than
+  the longest request the client declared (`renew_credential(longest_request_seconds=...)`,
+  default the sync reply budget). By then no requester is waiting.
+
+### A subscription exists when subscribe returns, and a stopping pull consumer strands nothing
+
+Both were found through the aibots hub's audit-anonymize test, which failed intermittently under
+parallel load. Both were reproduced in isolation before they were fixed.
+
+- **`NatsClient.subscribe` / `subscribe_typed` return only after the server has the `SUB`.** Before
+  this, the `SUB` was still in nats-py's pending buffer when the call returned. A request sent at
+  once from another connection was answered "no responders" in 108 of 200 tries; it is now 0.
+  The fix is one round trip per subscribe. If the connection cannot answer it, the subscription
+  is kept (nats-py replays it on reconnect) and a warning is logged.
+- **`JetStreamPullConsumer.stop()` lets the fetch in flight finish before it unsubscribes.** A
+  fetch is a pull request the server holds. Unsubscribing removed its inbox client-side at once,
+  but the server kept delivering to it until the `UNSUB` arrived. A message published in that
+  window on any other connection was delivered, dropped, and left awaiting ack for the durable's
+  whole `ack_wait`, where no other fetcher could have it. That happened to 6 of 20 messages; it
+  is now 0.
+  - `stop()` starts no new fetch. It waits for the current one to return, with its messages
+    handled and acked (bounded by one fetch timeout plus 10 seconds for handlers).
+  - The server is then told to drop the inbox while it is still subscribed here, and one ordered
+    round trip proves it did. Every message the server delivered to the inbox is queued here at
+    that point, and each is handled like a fetched one before the inbox is removed. This step is
+    needed because a pull request can outlive the fetch that sent it: under load the client's
+    timer fires first. A stop that only waited for the fetch still stranded messages, in 5 of 24
+    loaded hub test runs.
+  - It now takes up to one fetch timeout when idle, where before it returned at once.
+  - **It never raises, and a second call does nothing**, like `JetStreamPushConsumer.stop()`.
+    Before, a failed redelivery of one collected message (a `nak`, `ack` or dead-letter publish
+    on a failing transport) ended `stop()` early. The rest waited out `ack_wait` and the inbox
+    was never unsubscribed. The closing unsubscribe also raised `ConnectionClosedError` on a
+    closed connection. Now each failure is logged with the durable and the stop carries on. The
+    unsubscribe always runs, and a failure there is logged. A second call sent a second `UNSUB`;
+    now it returns at once.
+
+### A health probe names the release that answered it
+
+- `HealthServer(version=...)` (observe): an optional release version, echoed as `version` on the
+  `?format=json` body of every tier (a 503 included), on `HealthStatus.version` from
+  `get_status`, and on the `health server listening` startup line. The plain-text probe body is
+  unchanged. A consumer that passes none keeps working; its JSON body carries `"version": null`.
+- `RegistryServer(version=...)` (registry): passed through to its health server.
+  `python -m threetears.registry` passes the installed `3tears-registry` distribution's version.
+- `ToolServerBootstrap(version=...)` (agent-tools): passed through to the tool pod's health
+  server and onto its `<service> starting` line, and readable as `ToolServerBootstrap.version`.
+  `python -m threetears.agent.tools.serve` passes the installed `3tears-agent-tools` version.
+  Subclasses pass their own distribution's version.
+
+### A grant ensured by racing callers is held once
+
+- `RoleAssignmentCollection.ensure_group_role_assignment` inserts with `ON CONFLICT DO NOTHING`.
+  When the deploying application's unique index over the natural key absorbs the insert, it reads
+  back the row that won and answers `(id, created=False)`. It looks in both partitions, because a
+  grant can be filed under either. The aibots hub's v121 declares those indexes:
+  `(group_id, role_id, scope_namespace_id, managed_by)` for namespace scope and
+  `(group_id, role_id, managed_by)` for scope `all`.
+- The docstring called the race between the lookup and the insert theoretical. It was not: hub
+  replicas run the ensure together and left grants held twice.
+- **Without such an index the race still writes copies.** This package declares no table.
+- An absorbed insert with no row holding the grant raises `RuntimeError`. It is never answered
+  as found.
+
+### Long logins, an instant kick, and a lossless move off a restarting server
+
+Owner ruling Q17 (2026-09-30). nats-server takes a credential away from a live connection only at
+its user JWT's `exp`, so a short TTL was the only way to cut a revoked or superseded principal off
+-- and cost a renewal handover on every pod every few minutes. The TTL is now a day-long backstop;
+access is taken away when it must be, by closing the connection and refusing its reconnect.
+
+- **Breaking default:** `PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS` is 86400 (was 300), and the
+  generic responder's `DEFAULT_NATS_USER_JWT_TTL_SECONDS` is now that same constant (was 3600), so
+  no minter's default is shorter than what a client assumes. A deployment that set
+  `FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS` keeps its value; the renewal is still the
+  make-before-break handover.
+- New `threetears.nats.system_account` (re-exported): `kick_connection(system_client, connection)`
+  closes one connection through `$SYS.REQ.SERVER.<server_id>.KICK` and answers a `KickOutcome` --
+  `KICKED`, `NOT_CONNECTED` (the server no longer holds that client id), `SERVER_GONE` (no running
+  server has that id) -- or raises `ConnectionKickError` when the outcome is unknown.
+  `require_system_account(system_client)` proves the client reaches the system account (a client of
+  any other account finds no responder, which a kick would read as a gone server) and raises
+  `SystemAccountUnavailableError` otherwise. `NatsConnectionRef` (server id + client id) names one
+  connection; `KickClientRequest`, `ServerApiResponse`, `ServerApiError` and `ServerIdentity` type
+  the wire. Verified live against nats-server 2.12.6 and 2.14.2: a kick closes the connection in
+  about a millisecond.
+- `AuthCalloutRequest.connection`: the connection a callout request authorizes (the request's
+  server id and client id), or `None` when it names none.
+- `AuthCalloutResponder(admission_recorder=...)` and the new `AdmissionRecorder` protocol: every
+  admission is handed to the recorder before the server is answered; a recorder that raises
+  DENIES the connection, since an admission nobody could close would keep its credential until it
+  expires.
+- A server entering lame-duck mode (a rolling restart) no longer drops what is in flight: the
+  client moves to a successor connection with `renew_connection`, keeping the old one for the work
+  it carries, and retries the move until it lands or the server closes the connection first.
+  Proven live on a two-node cluster: no request failed and no subscribed message was lost, where
+  the reconnect it replaces lost both.
+- `NatsClient.publish_pin()` and `publish_raw(..., pin=...)`: a run of publishes whose order is its
+  meaning (a token stream) stays on the connection its first publish used, across a renewal or a
+  lame-duck move. Two connections are two publishers, and on two nodes of a cluster a later publish
+  on the successor can overtake the run's tail -- reproduced live.
+- `IdentityMinter.mint(..., cnf=...)` (core): a connect credential can carry the thumbprint of the
+  runner's proof-of-possession key, so a verifier can tell two runners of one pod-session apart
+  before either has handshaken.
+- `threetears.core.testing.fixtures.nats_container` declares a SYSTEM account
+  (`NATS_TEST_SYSTEM_ACCOUNT`, one user `NATS_TEST_SYSTEM_USER` / `NATS_TEST_SYSTEM_PASSWORD`), as
+  every platform bus does, so a control plane under test can kick and ping. A client presenting no
+  credentials is still admitted to the global account with JetStream, as before.
+
+### NatsClient's connections have one lifecycle model; a round trip holds its timeout
+
+- `NatsClient` keeps each connection's role (candidate, current, retiring) and its own phase
+  (running, renewing, abandoned, closed) in one state machine. A renewal's successor is owned from
+  the step that opens it and closed on every way out that does not make it current, cancellation
+  included; a renewal refuses to make it current once the client was abandoned or shut down.
+  Behaviour changes: `renew_connection` raises `NatsClientError` while another renewal is in
+  progress, and `renew_credential` raises it on an abandoned or shut-down client. `is_closed` is
+  `True` for an abandoned client.
+- `ping(timeout)`, `flush(timeout)` and every internal round trip no longer wait on nats-py's
+  flusher: on a backpressured socket they answer within their timeout, and a cancellation
+  propagates instead of being swallowed.
+- A publish to a request's reply subject leaves on the connection that received the request
+  whichever method sends it (the positional `publish(subject, payload)` shorthand and
+  `publish_raw` included), and forgets its route.
+
+### analyze_media bounds every download, not only documents
+
+The document bound below left two byte-taking paths reading whole objects into the tool pod:
+transcription and the bytes path of vision. A catalogued multi-gigabyte video sent for
+transcription was buffered whole.
+
+- New `analyze_media.MAX_TRANSCRIPTION_BYTES` (100 MiB). The transcription backend gets the whole
+  recording in one buffer and its HTTP upload copies it, so the pod holds about twice this. It is
+  well over an hour of compressed speech and over Whisper's 25 MB request cap, so nothing a
+  backend would accept is refused.
+- New `analyze_media.MAX_VISION_IMAGE_BYTES` (20 MiB), the model gateway's bound on a referenced
+  image, so an image is answerable the same way whichever vision backend an analyzer uses.
+- Both work like the document bound: refused from the recorded `size_bytes` before a byte moves,
+  and `download_media(max_bytes=...)` otherwise. The model is told "This audio file is too large
+  to read (too_large): ..." (or image, video file).
+- One image over the bound refuses the whole vision call and names that image. An answer about
+  the other images would read as an answer about all of them.
+- The extraction-status checks use `EXTRACTION_STATUS_PENDING` and `EXTRACTION_STATUS_COMPLETE`
+  instead of string literals. No behaviour change.
+
+### analyze_media refuses an unreadable document before downloading it
+
+- New `threetears.agent.tools.document.can_parse_document(mime_type, filename=None)`: whether
+  `parse_document` has a parser for the type, answered without the bytes.
+- analyze_media's document fallback answers a type no parser reads from its metadata, and never
+  downloads it -- a catalogued packet capture or database dump is no longer pulled whole into the
+  tool pod only to be turned away.
+
+### analyze_media reads a document only up to 20 MiB
+
+- `MediaInfo` (media-contracts) gains `size_bytes: int | None = None`: the stored object's size as
+  the storage's catalog records it, or `None` when the storage does not know it.
+  `ObjectCatalogMediaStorage.get_media` fills it from the object catalog.
+- `MediaStorage.download_media(media_id, *, max_bytes=None)`: with a limit, an implementation
+  refuses an item whose recorded size is over it without reading any of it, and stops reading as
+  soon as the bytes read pass it -- counting as they arrive, since a recorded size can be absent
+  or wrong -- releasing its stream and raising the new `MediaSizeLimitExceeded`
+  (`media_id`, `limit_bytes`, `size_bytes`; `size_bytes` is `None` when the read passed the limit).
+  **Breaking for implementers:** every `MediaStorage` must accept the keyword.
+  `ObjectCatalogMediaStorage` implements both halves.
+- New `threetears.agent.tools.builtin.analyze_media.MAX_DOCUMENT_BYTES` (20 MiB). A document with
+  no cached extraction is read from its own bytes, and every parser needs the whole file in the
+  tool pod's memory; the model reads at most `doc_max_chars` of it anyway. A readable document
+  recorded as larger is refused before a byte moves; one whose size is unknown or understated is
+  read with `max_bytes=MAX_DOCUMENT_BYTES` and stopped within one chunk of it. Either way the
+  model is told plainly: "This document is too large to read (too_large): ...". A type no parser
+  reads is still answered as unreadable first.
+
+### A credential the auth-callout refuses ON PURPOSE stops the client at once; any other refusal does not
+
+Owner ruling Q16 (2026-09-30). nats-server tells a refused connection only
+`-ERR 'Authorization Violation'` -- `client.authViolation` sends that fixed text "regardless of the
+authErr override", and the callout's `AuthorizationResponse.error` reaches only the server log -- so
+a client renewing its credential could not tell "your identity was superseded, stop serving" from
+"the callout is down, try again".
+
+**Contract changes:**
+
+- New `threetears.nats.credential_refusal`: `CredentialRefusal` (typed: `reason`, `pod_id`,
+  `identity_generation`), `CredentialRefusalReason` (`SUPERSEDED`, wire value `"superseded"`),
+  `RefusedPrincipal`, and `Subjects.credential_refusal(inbox_prefix)` --
+  `{inbox_prefix}.credential-refused`, inside the principal's own inbox grant.
+- `PrincipalResolver.resolve` may return a `RefusedPrincipal`: the responder denies with the typed
+  reason as the response error and publishes the `CredentialRefusal` to the principal's inbox
+  (`AuthCalloutResponder.publish_refusal`). New `AuthCalloutResponder.build_decision` returns the
+  response and the refusal; `build_response` is unchanged. An ordinary denial (`None`) publishes
+  nothing.
+- New `NatsClient.abandon_on_refusal(inbox_prefix=, is_mine=)`: a refusal that names this runner
+  closes every connection at once (`NatsClient.abandon`, also new: no drain, the renewal loop and
+  any renewal still opening its successor are stopped, and nothing renews an abandoned client).
+  A refusal naming another runner sharing the inbox is ignored.
+- A renewal candidate's refusals no longer count toward `is_healthy`: the connection in use is
+  still valid, and is kept -- and the renewal retried -- until its own credential expires. The
+  earlier count would have had a pod's supervisor restart it during a callout outage.
+
+Proven live (`test_credential_refusal_live.py`, config-mode `auth_callout`, the real responder
+serving it through `handle_request`): a refusal naming this runner closes the pod within
+moments of the refusal and stops the renewal attempt; one naming another generation is ignored;
+with the callout unreachable the pod keeps serving, healthy, and requests on it complete.
+
+### The display-claim grant test binds the leases bucket the way a tool pod does
+
+`test_forward_grants_live::test_tool_pod_can_open_the_bucket_its_display_claim_uses` failed on every
+run: it built `KVLease(pod, pod_id)` -- declaring, unscoped -- which no tool pod does since the pod
+grant on `{ns}-leases` became owner-keyed and bind-only. The grant was right and the test wrong; it
+now claims through `operator_session_lease`, over a bucket the admin declares as the hub does.
+
+### A NATS credential renewal no longer drops anything in flight: it is make-before-break
+
+Every agent and tool pod renewed its auth-callout credential by RECONNECTING its one connection,
+every `ttl - 90s`. For the 0.1-1s of the reconnect -- transport down, auth-callout round trip, SUB
+replay -- the server held no subscription for the pod, so core NATS dropped whatever was published
+to it: a reply to a request in flight, a message on a subscribed subject, a KV-watch delivery. A
+reply the pod owed for a request it had received could not be sent afterwards either, because the
+server lets only the connection that received a request answer it. On cobalt-prod this failed live
+agent turns: an L3 read sent ~0.4s before a renewal lost its reply in the gap and failed closed
+7s later as `DataLayerUnavailableError: NATS request failed`.
+
+The pre-renewal drain did not cover it and could not: it waited only for replies the in-process
+ToolServer OWED, never for the pod's own requests, and `drain_grace_seconds` only fed the cadence
+arithmetic. A request of ANY length is lost if its reply lands in the gap.
+
+**The decision.** A credential is per connection and stays valid until its own `exp`, and NATS has
+no in-band re-authentication that keeps a connection's interest (a second `CONNECT` makes
+nats-server drop every subscription the connection holds). So the renewal opens a SECOND
+connection, which the auth-callout mints a fresh credential, moves everything onto it, and keeps
+the old connection open for the longest request it may be carrying before draining it -- well
+before its credential expires.
+
+**Contract changes:**
+
+- **BREAKING:** `NatsClient.renew_credential(ttl_seconds=, longest_request_seconds=)`. The
+  `before_renewal` and `drain_grace_seconds` parameters are gone: nothing needs draining before a
+  renewal. `longest_request_seconds` is now also how long the replaced connection is held open.
+- New `NatsClient.renew_connection(*, retire_after)`: the handover. It opens the successor with
+  the options `connect` used (a client built around a caller's own nats-py connection cannot
+  renew and raises `NatsClientError`); subscribes every `Subscription` on it in the same queue
+  group and round-trips it; proves by an ordered round trip that everything already published on the
+  old connection reached the server, holding new publishes meanwhile, so a message published
+  after the renewal never overtakes one published before it; makes it current; ends each
+  subscription's old half without dropping what the server had routed to it; rebinds each durable
+  push consumer; and retires the old connection after `retire_after`. A failure before the switch
+  closes the successor and changes nothing.
+- **BREAKING (wire):** a `Subscription` made without a queue group now joins a group of its own
+  (`_solo.<uuid7>`, `Subscription.queue`). To every other subscriber it is indistinguishable from
+  a plain subscription; it is what lets the old and new connections both be subscribed during the
+  handover while each message is delivered to exactly one of them. A plain subscription on both
+  would deliver twice (the live test doubles messages when this is reverted).
+- A reply to a request received on a connection since replaced leaves on THAT connection
+  (`publish_reply` / `publish_raw_reply`). Recorded whenever the client can hand over, whether or
+  not a renewal is armed. See "A reply owed across a lame-duck move or a requested renewal".
+- Everything else bound to a connection follows the current one: `NatsKvBucket` rebinds its
+  handle (one `STREAM.INFO`, no declaration) before its next operation after a renewal; a
+  `watch_key` whose connection is retired replaces its consumer on the successor rather than
+  raising; a `JetStreamResultWaiter` rebuilds on the current connection
+  (**BREAKING:** its constructor takes `connection=` / `jetstream=` providers instead of `raw=` /
+  `js=`); a `JetStreamPullConsumer` rebinds its durable before its next fetch.
+- A replaced connection's disconnect is logged as a retirement at INFO, not "NATS disconnected",
+  and its errors do not count toward `is_healthy`.
+- **BREAKING:** `credential_renewal`: `seconds_until_reauth(ttl, *, longest_request_seconds)`
+  opens the successor at `ttl - leeway - buffer - longest`, measured from when the current
+  connection was established; new `seconds_until_retirement(...)`; `unsafe_reauth_delay_reason`
+  is replaced by `unsafe_renewal_reason(ttl, *, longest_request_seconds)`, unsafe exactly when
+  `ttl <= longest + REAUTH_MARGIN_SECONDS` -- the same floor the Hub already refuses. New
+  `REAUTH_CONNECT_TIMEOUT_SECONDS`, `REAUTH_RETIRE_DRAIN_SECONDS`.
+- `threetears.agent.tools`: `ToolServer.drain_before_reauth` and `DRAIN_BEFORE_RENEWAL_SECONDS`
+  are removed. `sync_replies_in_flight` / `await_sync_replies` stay, as the "may this connection
+  be closed" query.
+- `NatsClient.reconnect()` is unchanged, and its docstring now says it loses what is in flight.
+
+**Two nats-py defects the handover works around**, both proven against a real server:
+
+- `Subscription.drain()` writes its `PING` straight to the socket while its `UNSUB` still sits in
+  the pending buffer, so the `PING` reaches the server first (wire order observed:
+  `PING`, `UNSUB`). The drain then forgets the subscription while the server may still route to
+  it, and drops what arrives. With a shared queue group that is an outright loss: 1 of 11858
+  streamed messages across a few dozen renewals. The handover sends the `UNSUB` on its own and
+  makes an ordered round trip (see below) before nats-py's drain runs.
+- A flush that times out, or is cancelled, leaves its future in nats-py's PONG queue; the next
+  PONG raises `InvalidStateError` in `_process_pong` and the read loop's catch-all ends the read
+  loop -- the connection reports itself connected and never reads again, and a later `flush`
+  returns at once without a round trip, so a health probe built on it reports the dead connection
+  healthy. `NatsClient.ping()` -- the `/healthz` probe, with a caller's timeout -- did exactly this
+  to itself whenever a PONG came back late. Every round trip the wrapper makes (`ping`, `flush`,
+  and the handover's) now goes through `_round_trip`: it writes the pending buffer out BEFORE the
+  `PING` (nats-py's `PING` otherwise overtakes a pending `SUB`/`UNSUB`/`PUB`, so its `PONG` proved
+  nothing about them) and shields the `PONG` future, so a timeout or cancellation abandons the wait
+  and the late `PONG` resolves the future harmlessly. Reproduced live
+  (`test_a_timed_out_ping_leaves_the_connection_reading_live.py`: after a ping timed out, the next
+  request timed out on a connection reporting itself connected). `NatsClient.flush` raises
+  nats-py's `FlushTimeoutError` on a timeout, as before.
+
+**Proven live** (`packages/nats/tests/integration/test_credential_renewal_live.py`, a real
+nats-server with config-mode `auth_callout` and the real `AuthCalloutResponder`): a request in
+flight across a renewal completes (it timed out on the old code), a reply owed across it is
+delivered (it was refused as a permissions violation), a subscription receives everything before,
+during and after it exactly once, a KV watch sees the write made during it, and everything bound to
+the old connection carries on after it is retired; 100 back-to-back renewals under two streams lose,
+double and reorder nothing.
+
+### One core owner for a cache-bypassing write; no scan writes L1 outside the per-key fence
+
+Evicting after a targeted UPDATE was hand-rolled four times in three packages (memory, intention,
+wake), and wake re-implemented `save_entity`'s `CallerTransaction` join. And every scan that built
+its entities with `collection=self` wrote the scanned row into L1 outside the per-key fence `get`
+reads under: a row older than a write that landed while the scan ran stayed cached with nothing
+left to evict it. Wake had closed that for its own scans privately; intention's `find_by_user` /
+`find_open_for_deliberation`, memory's `find_by_user`, and the other packages' scans had not.
+
+**Contract changes:**
+
+- New `BaseCollection.bypassing_write(*entity_ids, conn=None)`, an async context manager yielding
+  a `BypassingWrite` (exported from `threetears.core.collections`). On the collection's pool it
+  evicts every touched row from L1 and L2 and broadcasts it once the body ends, however it ended,
+  shielded against cancellation; `BypassingWrite.touches(...)` names rows only the statement
+  reveals, and `BypassingWrite.unchanged()` skips the eviction for a write known to have changed
+  nothing, unless the body then raises. With `conn`, the rows are enrolled in the enclosing
+  `CallerTransaction` and settled when it ends. memory's and intention's salience and supersession
+  UPDATEs and every wake targeted UPDATE (the tick's claim included) run inside it.
+- New `CallerTransaction.join(conn, *, writer=)`: the enclosing transaction, or `ValueError`.
+  `save_entity(conn=)` and `bypassing_write(conn=)` refuse through it.
+  `WakeScheduleCollection.resume(conn=)` now names `WakeScheduleCollection.bypassing_write` in its
+  refusal.
+- **BREAKING (behaviour):** a `BaseEntity` constructed `is_new=False` with a collection holds its
+  own row (`BaseEntity.holds_row`, `BaseEntity.hold_row(data)`) and writes no cache tier on
+  construction. Its reads and `to_dict()` answer from that row with its edits on top; attribute
+  writes no longer write through to L1, since the row L1 holds for the key may be another version.
+  `get_changes()` still returns only the edits. Only the read that produced the row decides whether
+  L1 takes it. Code that relied on building a loaded entity to warm L1 now reads through `get`. A
+  new entity (`is_new=True`) is unchanged: it lives in L1 and writes through.
+- wake's scans build entities with their collection again, so `.save()` / `.reload()` work on them
+  and a composite-pk entity's `addressing_id` is the `(conversation_id, id)` tuple.
+
+### A datasource origin-link change evicts the knowledge scans that read it
+
+`ConceptCollection` / `PlaybookEntryCollection` `list_visible_to_user(..., datasource_id=)` read
+`datasources` for the KNW-77 origin link, but neither scan declared the table, so linking or
+unlinking a customer datasource served the old knowledge set until the 60-second TTL. Both scans
+now depend on `datasources`, which the hub broadcasts through `CapabilitySourceCollection`.
+
+### analyze_media reads a catalogued document, and sends the gateway only ids the caller owns
+
+Over `ObjectCatalogMediaStorage`, which caches no extracted text, every document analysis
+answered "No text could be extracted from this document." -- a text or PDF object included. And
+the reference-vision path sent the gateway every requested id, including ones the storage had just
+refused for the caller, and called it even when none resolved.
+
+**Contract changes:**
+
+- `AnalyzeMediaTool` document analysis falls back to the document's bytes when the storage has no
+  cached `extracted_text` / `transcript` and the item reports `has_downloadable_data`: it
+  downloads them and reads the text with `parse_document`. A type no parser reads, or a parser
+  failure, answers `[analyze_media/document analysis] Error: This document could not be read
+  (<reason>): <detail>` and asks no model.
+- A `ReferenceVisionProvider` receives only the ids `get_media` resolved. When none resolved, the
+  tool answers `No valid media found for the given media IDs.` and calls no backend, as the bytes
+  path already did.
+
+### A user merge names every row its alias-collision cascade removed
+
+`threetears.agent.memory.merge.repoint_user` deletes a source memory whose alias the master
+already holds, and the delete cascades to the memory's media, that media's media_content, the
+memory's chunks and every consolidation edge touching it. The DELETE returns none of those, so
+the hub could not evict them, and a pod that had read one kept serving it by id after L3 lost it.
+
+**Contract changes:**
+
+- **BREAKING:** `MemoryRepointResult` groups its keys by table. `repointed: dict[str, list[tuple]]`
+  holds the keys moved from source to master (`memories`, `media`, `media_content`,
+  `memory_chunks`); `removed: dict[str, list[tuple]]` holds the colliding memories deleted (under
+  `memories`) and every row that delete cascaded to (`media`, `media_content`, `memory_chunks`,
+  `memory_consolidations`). `evict` merges the two by table: every key the caller evicts. The
+  per-table fields `alias_collisions_deleted`, `memories`, `media`, `media_content` and
+  `memory_chunks` are gone. The removed tables are pinned against the declared schemas'
+  `ON DELETE CASCADE` foreign keys, so a new cascade onto `memories` or `media` fails the memory
+  tests until the merge names it.
+- The colliding memories and their media are locked `FOR UPDATE` before their children are read,
+  so no child can be added under them before the delete, and the delete removes exactly the
+  locked memories: the children named are exactly the children cascaded.
+- `repoint_user`'s INFO line counts what the cascade removed per table, beside what it moved, in
+  its message and in `extra_data` (`removed`, `repointed`).
+
+**On upgrade:** the hub merge orchestrator (`aibots.hub.customers.user_merge._invalidate_committed`)
+evicts with one loop, `for table, keys in result.evict.items()`, publishing each key's invalidation
+on that table, in place of one call per named field -- a field-by-field eviction would miss the
+cascaded `media`, `media_content`, `memory_chunks` and `memory_consolidations` rows, and pods would
+keep serving them by id. Its audit counts read `len(result.repointed["memories"])` and
+`len(result.removed["memories"])`.
+
+### A wake write reaches every replica, and never lands on a row it did not read
+
+The wake schedule and webhook tools read a row, change the fields the model asked for, and save
+the whole row back. That save ignored the version it read, so a row changed in between -- the
+tick claiming and expiring a one-shot, another replica pausing it, a webhook fire stamping
+`last_fired_at`, a secret rotation -- was written away: an expired one-shot re-armed, a paused
+schedule resumed, a rotated secret restored. And the two writers that change those rows most, the
+tick's claim and the webhook fire's `last_fired_at` stamp, each ran on a registry built per pass
+with no NATS client, so their evictions never reached another replica.
+
+**Contract changes:**
+
+- `WakeScheduleCollection` and `WebhookSubscriptionCollection` `save_to_store` honour
+  `original_timestamp`: a save of a row read from any tier is an update-only statement fenced on
+  the `date_updated` it was read with, and `save_entity` raises `ConcurrentModificationError` when
+  the row changed or was deleted since. A new row still upserts.
+- `wake_schedule_update` and `webhook_subscription_update` answer a refused save with a
+  `[TOOL ERROR]` telling the model the row changed and to re-read it with `wake_schedule_list` /
+  `webhook_subscription_list`, and save nothing.
+- **BREAKING:** `webhook_receive(..., subscriptions=, fires=, permit=None, start_conversation=None)`,
+  `WebhookReceiver(..., subscriptions=, fires=)` and
+  `wake_tick_job(pool, nats_client, dispatch_callback, *, schedules=, fires=, on_reaped=None)` take
+  the host process's wake collections as required keyword arguments, beside 0.57.0's optional
+  hooks, and no longer build a registry of their own. Build them once on the registry that carries the process's NATS client and runs its
+  invalidation listener (`start_invalidation_listener` / `stop_invalidation_listener`); a registry
+  with no client broadcasts nothing, and every other replica keeps the pre-write row.
+  `wake_tick_job` given a `nats_client` raises `ValueError` for `schedules=` built with none,
+  before it claims anything. New `BaseCollection.broadcasts_invalidations` says whether a
+  collection's evictions reach other replicas.
+- A wake scan (`list_*`, `find_by_id`, 0.57.0's `find_for_agent`, `latest_for_schedule`) returns
+  entities holding their own rows and caches nothing. The tools' agent-scoped reads go through
+  `find_for_agent`, so the row an edit saves back is the one L3 held when it was read, and the
+  fenced save refuses it if anything changed it since. They wrote the scanned row into L1 outside the per-key read
+  fence, and read every field back through it, so an eviction of the key -- the receiver's own
+  `record_fire` among them -- emptied the subscription the receiver was still reading.
+
+### No cache tier serves a row a bypassing write already replaced
+
+Three families of write reached L3 without leaving every cache tier agreeing with it.
+
+- A visibility scan read from L3 before a dependent write, and stored after that write's
+  eviction ran, was cached where no eviction could reach it and served until the 60-second TTL --
+  for a revoked grant as much as for new knowledge.
+- The wake collections' targeted UPDATEs (schedule pause / resume / reschedule / claim / expire;
+  webhook subscription pause / resume / rotate-secret / record-fire) evicted nothing. The schedule
+  and webhook tools read those rows and save the row they read, so a stale cached row
+  was written back over L3: a paused schedule resumed, a tick-expired one-shot re-armed, a rotated
+  webhook secret restored.
+- The raw salience and supersession UPDATEs on memories and intentions evicted afterwards, but not
+  when the UPDATE raised after reaching L3, and not past a cancellation partway through the loop.
+
+**Contract changes:**
+
+- **BREAKING:** `ScanCache.put(key, rows, *, token, now_monotonic) -> bool`. `depends_on=` moves
+  to `ScanCache.begin_read(depends_on) -> ScanReadToken`, called BEFORE the scan queries. `put`
+  refuses (returns `False`) when any table the token names was evicted since, and raises
+  `ValueError` for a token another `ScanCache` issued. New export `ScanReadToken`.
+- Every targeted UPDATE on `agent_wake_schedules` and `webhook_subscriptions` evicts the row from
+  L1 and L2 and broadcasts the invalidation, however the UPDATE ended. A lost
+  `claim_and_reschedule` changed nothing and evicts nothing. 0.57.0's `update_protected` and
+  `delete_protected` do too, through `bypassing_write`, once their transaction has ended; in
+  0.57.0 they invalidated after the fact, and `delete_protected(conn=)` before the caller's
+  transaction had committed, when a reader could re-cache the row L3 still held.
+- **BREAKING:** `WakeScheduleCollection.resume(..., conn=conn)` and
+  `threetears.agent.wake.delete_protected(..., conn=conn)` require the connection's transaction to
+  be opened by `CallerTransaction`, which evicts the row once it ends, and raise `ValueError`
+  otherwise. `resume_schedule_serialized` and `create_schedule_serialized` do this themselves, as
+  do `webhook_subscription_create` with `WakeConversations` hooks and `dispatch_wake`'s
+  fire-conversation transaction, so a `WakeConversations.create` or `FireConversationHook` that
+  saves through a collection with `save_entity(conn=conn)` joins it.
+- The wake tick's due-schedule adapter reads every field when the row is listed. It read them
+  through the entity's L1 proxy after the claim, which now evicts the row.
+- `wake_fires` and `scheduled_jobs` / `job_fires` UPDATEs still evict nothing, and their comments
+  now say why: no code reads those rows by primary key. That covers 0.57.0's
+  `link_started_conversation`, guarded `finalize_success` / `finalize_failed` and
+  `reap_stale_dispatching`. A by-pk reader added later needs the eviction; a wake test fails on
+  one.
+
+### A pod reaches only its own keys in the platform's shared pod buckets
+
+`{ns}-ratelimits`, `{ns}-proxy_assertion_nonces` and `{ns}-leases` are each one bucket every pod of
+a kind binds, and the pod grant covered the whole bucket: any pod could read, list, watch, overwrite
+or delete any other pod's keys -- lift another agent's extraction cooldown, burn another pod's
+in-flight assertion nonce, steal or release another pod's display claim. `{ns}-checkpoints` was
+granted to every agent pod the same way, keyed by thread id with no owner token: every agent's
+conversation state.
+
+**Contract changes:**
+
+- New `JsCapability.KV_OWNER_KEYS` and `JsResource.kv_owner_keys(name, *, scope, writable)`: bind,
+  a subject-carried read, a named key consumer and (when writable) a `$KV.` publish, each narrowed
+  to `{scope}.>`. No body-carried `STREAM.MSG.GET`, so the bucket must run `allow_direct`, which
+  the hub declares.
+- The agent pod holds `KV_OWNER_KEYS` on `ratelimits` and `proxy_assertion_nonces`, and the tool pod
+  on `proxy_assertion_nonces` and `leases`, each under its own `kv_key_scope_for` scope.
+- No pod, and not the hub's resolver, holds `{ns}-checkpoints` any more. Nothing on the platform
+  reads or writes it: the agent runtime's checkpointer runs on L3 alone, and a host wanting a
+  checkpoint L2 passes its own coordination bucket as `l2_bucket`.
+- The agent pod reads `{ns}-epochs` and no longer writes it; only the hub and the gateway bump.
+- `ReplayGuard`, `KVLease`, `DistributedCounter` and `TokenBucket` take `key_scope=`; with one,
+  every key is `{key_scope}.{key}`. `MemoryExtractor` takes `rate_limit_key_scope=`.
+- `ToolServer` keys its self-provisioned proxy-assertion guard under
+  `ToolServer.assertion_nonce_key_scope`: the owning agent's scope for an in-process server, the
+  pod's for a tool pod.
+- **BREAKING:** `threetears.scrape.operator_session_lease(nats_client, *, key_scope, pod_id=None)`
+  -- `key_scope` is required.
+
+**On upgrade:** keys written before the upgrade are unscoped and are never read again. Every one of
+these buckets is memory-backed and holds cache or coordination state (a throttle window, a nonce
+inside its accept window, a display claim with a TTL): the old keys expire with their own lifetimes
+or are lost at the next NATS restart, and nothing is migrated. `{ns}-checkpoints` is no longer
+declared by the hub; a bucket still live from before is inert until the next NATS restart.
+
+### A bind-only open waits for its declarer instead of failing on the first miss
+
+A pod never creates a bucket, and a NATS restart wipes every memory-backed one until the hub's
+reconnect re-declares them. A bind that found its bucket absent failed at once, which left a
+primitive bound once at startup unusable until something re-opened it.
+
+**Contract change:** a `create_if_missing=False` open that the server answers with not-found now
+retries with bounded backoff (0.1s doubling to 2s) for up to 30 seconds, then raises `KvError`
+naming the declarer. Every operation on a handle whose bucket vanished re-binds through the same
+wait, so a primitive recovers without a restart once the hub is back. A bind that is never answered
+-- an ungranted bucket -- is not retried. A bind-only `ReplayGuard` no longer registers a reconnect
+hook: it cannot recreate its bucket, and the hook would only wait for the declarer inside the
+client's serial reconnect callbacks.
+
+### A save answered late no longer caches a row older than L3's
+
+`save_entity` committed to L3, then cached the row in L1 and wrote it to L2 with an
+unconditional put. A later save of the same row could complete inside that L3 round trip: this
+replica's own, or a peer's, whose broadcast had already evicted this replica's L1 and deleted the
+shared key. The earlier row then sat in L1, and with no peer left to delete it in L2, behind L3
+with nothing to evict it. The replica served the older value until the row was written again.
+
+**Contract change, `threetears.core.collections.BaseCollection.save_entity`:** on a collection with
+an L3 pool and an L2 bucket, the L2 write is now conditional.
+
+- Before the L3 write, the save reads the revision of the key's latest L2 message, a deletion
+  included.
+- After the commit, the row is written to L2 as a compare-and-swap at that revision, not as a put.
+- When the swap is refused, the key is deleted from L2 and from this replica's L1. The next read
+  takes whichever row L3 committed last.
+- L1 caches the row only when L2 took it.
+- When L2 cannot be read or written, nothing is cached and the save still succeeds.
+- When the row is not cached, the entity's own change buffer carries it, so the handle still reads
+  what it saved.
+
+The fence is the L2 revision, so it needs no `l2_epoch` / `l2_revision` columns and applies to
+every three-tier collection.
+
+Unchanged:
+
+- A collection with no L3 pool, where L2 is the source of truth, keeps the unconditional put.
+- A write-behind save keeps the unconditional put.
+- A collection with no L2 caches in L1, subject to the in-process ordering in the next entry.
+
+**On upgrade:** a save on a three-tier collection now reads L2 once before its L3 write. A test
+harness that gives a collection an L2 client must also give its registry a `kv_key_scope`, and a
+bucket double must answer `get_latest` and `update`. `threetears.core.testing.kv.FakeNatsClient`
+already does both.
+
+### No cache tier is written ahead of L3, or after a newer write, on any write path
+
+The fence above covered one path. The same fault -- a cache tier written in an order, or at a time,
+that lets it disagree with L3 with nothing left to evict it -- had four more members:
+
+- `collection[id] = row` wrote L2 BEFORE L3. Two writers could leave L2 holding one row and L3 the
+  other.
+- `save_entity(entity, conn=conn)` wrote L1 and L2, and broadcast, before the caller's transaction
+  committed. A rollback left every tier holding a row L3 never had, and a reader in the meantime
+  was served it.
+- On a collection with an L3 pool and no L2, two overlapping saves of one key cached whichever
+  answered last, not whichever L3 kept.
+- A read that fetched a row from L2 or L3 cached it in L1 after a write or eviction of the key
+  landed in between -- this process's own save, or a peer's broadcast.
+
+A compare-and-swap whose L3 persist was cancelled also kept its won value in L2, because the
+withdrawal caught `Exception` and `CancelledError` is not one.
+
+**Contract, every write path of `threetears.core.collections.BaseCollection`:** L3 first; then L2 as
+a compare-and-swap at the revision read before the L3 write; L1 only when L2 took the row and no
+other write or eviction of the key overlapped this one in this process; then the broadcast. A write
+that cannot know it is the newest drops the key instead, and the next read takes whichever row L3
+kept. A write-behind collection still writes L1 and L2 first, by design, and a collection with no
+L3 pool is last-writer-wins as before.
+
+- **Subscript writes** (`collection[id] = row`, `collection[id, field] = value`) follow the contract.
+  The assignment still writes L1 synchronously; the propagation writes L3, then L2, then broadcasts.
+- **Overlapping writes in one process.** Each collection orders its own L1 writes per key: a read
+  or write caches only while no write of the key began, and no eviction of it landed, since it
+  started; and a write only while no other write of the key was in flight when it began. Two
+  overlapping saves both drop the key. This is the whole fence on a collection with no L2.
+- **Reads.** `get`, `ensure`, `collection[id]` and `reload_entity` cache what they read only under the
+  same rule. When they do not, the entity they return carries the row in its own change buffer and
+  L1 is left without it. A peer's invalidation now evicts through
+  `BaseCollection.evict_from_cache_sync`, so it reaches the ordering too.
+- **Added: `threetears.core.collections.CallerTransaction`.** `save_entity(..., conn=conn)` now
+  requires the connection's transaction to have been opened by `CallerTransaction(conn)`, and raises
+  `ValueError` otherwise. The save writes L3 inside the transaction and caches and broadcasts
+  nothing. When the transaction has committed or rolled back, `CallerTransaction` evicts every key
+  its writes touched from L1 and L2 and broadcasts the eviction. Eviction rather than writing the
+  committed row is correct whether the transaction committed, rolled back, or rolled back a
+  savepoint a save joined. Nested `CallerTransaction`s on one connection open savepoints and settle
+  once, at the outermost.
+- `save_entity(..., conn=conn)` on a collection that defers its L3 writes now raises `ValueError`.
+  It used to ignore `conn` and buffer the write outside the caller's transaction.
+
+**On upgrade:** replace `async with conn.transaction():` with
+`async with CallerTransaction(conn):` wherever a `save_entity(..., conn=conn)` runs inside it; any
+keyword the transaction took passes through. `threetears-agent-wake`'s serialized schedule create
+does so already. A test harness that builds a collection without running `__init__` needs no change.
+
+### `TokenBucket` takes an injectable clock and sleep
+
+**Added:** `TokenBucket(..., clock=..., sleep=...)`.
+
+- `clock` returns a timezone-aware UTC `datetime`, and every refill and deadline is read from it. It
+  defaults to the wall clock, as before. It stays a wall clock rather than a monotonic one, because
+  the refill instant is stored in the shared KV value and every pod reads it.
+- `sleep` is how a blocking claim, and a retry after a lost compare-and-swap, waits. It defaults to
+  `asyncio.sleep`.
+
+A caller that passes neither gets exactly the bucket it got before. A test can now drive time
+instead of waiting for it; the unit tests that asserted refills against the wall clock failed on a
+loaded machine.
+
+A consent can no longer undo the changes made since its proposal, and the dictionary answers when
+its first source does not. No schema changes.
+
+### Upgrade
+
+- **`agent-identity` `consent` can raise.** A proposal whose parent is no longer the block's
+  active version raises `IdentityProposalOutOfDate` instead of applying. A host that consents must
+  catch it and offer only `reject` for that proposal (metallm maps it to a 409).
+
+### agent-identity: consent refuses an out-of-date proposal
+
+A proposal is a whole replacement text. Consented after the block moved on (a sibling proposal
+applied first, a rollback, an edit), it put back the text it was made from and erased every change
+since.
+
+- `lifecycle.consent` raises `IdentityProposalOutOfDate` when the block's active version is not the
+  proposal's `parent_version_id`. It writes and emits nothing; the proposal stays `proposed`, and
+  `reject` still answers it. A block with no active version accepts any proposal.
+- `is_out_of_date(version, active)` is public, so a host can mark a stale proposal before anyone
+  tries to consent. Both names are exported from `threetears.agent.identity`.
+
+### agent-tools: the dictionary falls back to Wiktionary
+
+- The lookup is async. When the Free Dictionary API times out, cannot be reached, answers 5xx or
+  returns something unreadable, the tool asks Wiktionary's REST definitions and says the answer
+  came from there. A 404 from the first source is an answer, and Wiktionary is not asked.
+- Each request takes httpx's default timeout (5 s). The tool's name, schema and version (1.0) are
+  unchanged.
+
 ## v0.57.0 -- 2026-09-30
 
 A wake belongs to its agent, and a fire starts its own conversation. Five packages change their

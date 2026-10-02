@@ -84,6 +84,51 @@ class TestDecodeAuthRequest:
             decode_auth_request(f"{header}.{body}.{_b64url(b'sig')}")
 
 
+#: a server id as nats-server mints one: a server nkey.
+_SERVER_NKEY = "NCSS55HWYWEVBLVURKBUGDYA6LYFUEKJ7W3SESLZEHJ5XH3IXXVKYTJD"
+
+
+def _request_naming(server_id: object, client_id: object) -> str:
+    """a request whose server and client ids are exactly the given values."""
+    payload = {
+        "nats": {
+            "server_id": {"id": server_id},
+            "user_nkey": "UUSER1",
+            "connect_opts": {"auth_token": "tok"},
+            "client_info": {"id": client_id, "name": "pod-7"},
+        }
+    }
+    header = _b64url(json.dumps({"typ": "JWT"}).encode("ascii"))
+    body = _b64url(json.dumps(payload).encode("ascii"))
+    return f"{header}.{body}.{_b64url(b'sig')}"
+
+
+class TestTheRequestNamesItsConnection:
+    """the server id and the client id are what a kick of this connection is addressed with."""
+
+    def test_the_server_and_client_ids_name_the_connection(self) -> None:
+        connection = decode_auth_request(_request_naming(_SERVER_NKEY, 7)).connection
+        assert connection is not None
+        assert connection.server_id == _SERVER_NKEY
+        assert connection.client_id == 7
+
+    @pytest.mark.parametrize(
+        ("server_id", "client_id"),
+        [
+            (_SERVER_NKEY, None),
+            (None, 7),
+            (_SERVER_NKEY, "7"),
+            (_SERVER_NKEY, True),
+            (_SERVER_NKEY, 0),
+            ("not-a-server-id", 7),
+            ("NSERVER.KICK", 7),
+        ],
+    )
+    def test_a_request_that_names_no_usable_connection_says_so(self, server_id: object, client_id: object) -> None:
+        """no guessing: a pair that is not a server nkey and a positive int names nothing."""
+        assert decode_auth_request(_request_naming(server_id, client_id)).connection is None
+
+
 class TestMintAuthResponse:
     def test_admit_carries_user_jwt_and_verifies(self) -> None:
         seed = generate_account_seed()

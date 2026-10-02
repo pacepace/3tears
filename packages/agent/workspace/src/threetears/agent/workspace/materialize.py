@@ -25,7 +25,7 @@ three public entrypoints are offered:
   only the differences.
 
 writes during capture-back intentionally bypass
-:func:`threetears.agent.workspace.tools.helpers._write_file_atomic`
+:func:`threetears.agent.workspace.tools.helpers.write_file_atomic`
 because that helper enforces optimistic-concurrency against the head
 row's sha256 -- bind owns the workspace during its window, so OCC
 against a sha the bind process itself produced would merely forbid
@@ -52,7 +52,7 @@ anti-patterns deliberately avoided:
 
 - capture-back on exception -- never. disk state is suspect after a
   body crash, and losing the partial progress is the design.
-- :func:`_write_file_atomic` inside capture-back -- never, per above.
+- :func:`write_file_atomic` inside capture-back -- never, per above.
 - skipping lease acquisition inside :func:`bind` -- never; multi-pod
   safety depends on it.
 - automatic deletion of the disk root after bind exit -- never; the
@@ -68,6 +68,7 @@ import asyncio
 import hashlib
 import tempfile
 from collections import deque
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -84,9 +85,11 @@ from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.tools.helpers import _next_journal_version
 
 __all__ = [
+    "WatchChanges",
     "bind",
     "materialize",
     "recover",
+    "watch_disk_changes",
 ]
 
 if TYPE_CHECKING:
@@ -100,6 +103,24 @@ if TYPE_CHECKING:
 
 
 log = get_logger(__name__)
+
+
+#: the source of disk-change batches a bind window mirrors into L3: given the bound disk root, an
+#: async iterator of ``{(Change, absolute_path)}`` sets, one per batch of filesystem events.
+WatchChanges = Callable[[Path], AsyncIterator[set[tuple[Change, str]]]]
+
+
+def watch_disk_changes(disk_root: Path) -> AsyncIterator[set[tuple[Change, str]]]:
+    """the operating system's change events under ``disk_root``, batched by :func:`watchfiles.awatch`.
+
+    the :data:`WatchChanges` source :func:`bind` uses unless it is handed another.
+
+    :param disk_root: absolute path to the bound disk root
+    :ptype disk_root: Path
+    :return: async iterator of change batches, recursive under ``disk_root``
+    :rtype: AsyncIterator[set[tuple[Change, str]]]
+    """
+    return awatch(disk_root, recursive=True)
 
 
 _INSERT_WORKSPACE_FILE_VERSION_SQL = """
@@ -933,8 +954,9 @@ async def _watch_loop(
     correlation_id: UUID,
     just_wrote: deque[tuple[str, str]],
     on_conflict: BindConflictPolicy = BindConflictPolicy.DISK_WINS,
+    watch_changes: WatchChanges = watch_disk_changes,
 ) -> None:
-    """drive :func:`watchfiles.awatch` over ``disk_root`` while bind is open.
+    """drive ``watch_changes`` over ``disk_root`` while bind is open.
 
     each yielded batch is handed to :func:`_handle_watch_batch` along
     with the configured ``on_conflict`` policy. inner iteration
@@ -962,12 +984,14 @@ async def _watch_loop(
     :ptype just_wrote: deque[tuple[str, str]]
     :param on_conflict: policy forwarded to each batch handler
     :ptype on_conflict: BindConflictPolicy
+    :param watch_changes: the source of change batches under ``disk_root``
+    :ptype watch_changes: WatchChanges
     :return: None
     :rtype: None
     """
     resolved_root = disk_root.resolve()
     try:
-        async for batch in awatch(disk_root, recursive=True):
+        async for batch in watch_changes(disk_root):
             try:
                 changed = await _handle_watch_batch(
                     batch=batch,
@@ -1295,6 +1319,7 @@ async def bind(
     nats_client: Any = None,
     namespace: str | None = None,
     on_conflict: BindConflictPolicy = BindConflictPolicy.DISK_WINS,
+    watch_changes: WatchChanges = watch_disk_changes,
 ) -> AsyncIterator[Path]:
     """async context manager that sync L3 -> disk, yields path, captures on clean exit.
 
@@ -1350,6 +1375,9 @@ async def bind(
         live-watcher event handling; defaults to
         :attr:`BindConflictPolicy.DISK_WINS`
     :ptype on_conflict: BindConflictPolicy
+    :param watch_changes: the source of disk-change batches mirrored into L3 while the window is
+        open; defaults to :func:`watch_disk_changes`, the operating system's events
+    :ptype watch_changes: WatchChanges
     :return: async context manager yielding the sandboxed disk root
     :rtype: AsyncIterator[Path]
     :raises ValueError: if ``workspace_id`` does not resolve to a live workspace
@@ -1423,6 +1451,7 @@ async def bind(
                 correlation_id=correlation_id,
                 just_wrote=just_wrote,
                 on_conflict=on_conflict,
+                watch_changes=watch_changes,
             ),
             name=f"workspace.bind.watch:{workspace_id.hex}:{root_name}",
         )

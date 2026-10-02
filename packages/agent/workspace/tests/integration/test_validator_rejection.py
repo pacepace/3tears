@@ -13,7 +13,7 @@ REALISM
   rejection is asserted by inspecting the in-memory store directly.
 
 the validator lives at
-:mod:`packages.agent.workspace.tests.integration._strict_validator`
+:mod:`packages.agent.workspace.tests.integration.strict_validator`
 (module-level so :func:`_resolve_validator` can import it by its
 repo-root dotted path, the name every test module already has). it fails every payload that carries the ``audience_units:`` key
 so the fixture ``audience_settings.yaml`` is rejected deterministically.
@@ -55,7 +55,7 @@ async def test_fs_write_on_rejected_content_returns_failure_and_leaves_store_unt
         validators=[
             ValidatorEntry(
                 pattern="audience_settings.yaml",
-                validator="packages.agent.workspace.tests.integration._strict_validator.reject_any_audience_units",
+                validator="packages.agent.workspace.tests.integration.strict_validator.reject_any_audience_units",
             ),
         ],
     )

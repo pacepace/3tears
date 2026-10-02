@@ -8,64 +8,16 @@ import inspect
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
+from uuid import UUID
 
 import pytest
 
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
 
-
-# -- MockWebSocket for testing --
-
-
-class MockWebSocket:
-    """mock websocket object conforming to WebSocketProtocol.
-
-    :param messages: ordered list of text messages to return from receive_text
-    :ptype messages: list[str] | None
-    :param query_params: simulated query parameters (e.g. token)
-    :ptype query_params: dict[str, str] | None
-    """
-
-    def __init__(
-        self,
-        messages: list[str] | None = None,
-        query_params: dict[str, str] | None = None,
-    ) -> None:
-        self.messages: list[str] = list(messages or [])
-        self.sent: list[str] = []
-        self.closed: bool = False
-        self.close_code: int | None = None
-        self.accepted: bool = False
-        self.query_params: dict[str, str] = query_params or {}
-
-    async def accept(self) -> None:
-        """accept websocket connection."""
-        self.accepted = True
-
-    async def receive_text(self) -> str:
-        """return next queued message or raise to simulate disconnect."""
-        if not self.messages:
-            raise Exception("disconnect")
-        return self.messages.pop(0)
-
-    async def send_text(self, data: str) -> None:
-        """record sent message."""
-        self.sent.append(data)
-
-    async def close(self, code: int = 1000) -> None:
-        """close websocket."""
-        self.closed = True
-        self.close_code = code
+from .websocket_support import EchoRouter, MockWebSocket, refuse_unauthenticated, valid_auth
 
 
 # -- Mock routers for testing --
-
-
-class _EchoRouter:
-    """router that echoes message content back."""
-
-    async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
-        return ChannelResponse(content=f"echo: {message.content}")
 
 
 class _NullRouter:
@@ -75,26 +27,16 @@ class _NullRouter:
         return None
 
 
-# -- Mock auth validators --
+async def _always_reject_auth(token: str) -> dict[str, Any]:
+    """auth validator that always refuses."""
+    raise refuse_unauthenticated()
 
 
-async def _valid_auth(token: str) -> dict[str, Any] | None:
-    """auth validator that accepts 'valid-token' and returns user payload."""
-    if token == "valid-token":
-        return {"user_id": "user-123", "name": "Test User"}
-    return None
-
-
-async def _always_reject_auth(token: str) -> dict[str, Any] | None:
-    """auth validator that always rejects."""
-    return None
-
-
-async def _valid_auth_with_customer(token: str) -> dict[str, Any] | None:
+async def _valid_auth_with_customer(token: str) -> dict[str, Any]:
     """auth validator that returns a user id AND a customer scope on the payload."""
-    if token == "valid-token":
-        return {"user_id": "user-123", "customer_id": "cust-authenticated", "name": "Test User"}
-    return None
+    if token != "valid-token":
+        raise refuse_unauthenticated()
+    return {"user_id": "user-123", "customer_id": "cust-authenticated", "name": "Test User"}
 
 
 # ============================================================
@@ -290,16 +232,31 @@ class TestConnectionRegistry:
         assert ws_b in connections
 
     def test_unregister_last_connection_drops_user_bucket(self) -> None:
-        """removing a user's last handle leaves no empty bucket behind."""
+        """removing a user's last handle leaves no empty bucket behind.
+
+        the bucket is keyed by the user id, so a bucket that lingered would keep that id alive
+        for the life of the pod -- one entry per user who ever connected. observed as exactly
+        that: once the last handle leaves, the registry holds no reference to the id.
+        """
+        import gc
+        import weakref
+
         from threetears.channels.websocket import ConnectionRegistry
+
+        class _UserId(str):
+            """a user id the test can watch for references to."""
 
         registry = ConnectionRegistry()
         ws = MockWebSocket()
-        registry.register("user-1", ws)
-        registry.unregister("user-1", ws)
-        # bucket is gone, not a lingering empty list
+        user_id = _UserId("user-1")
+        watched = weakref.ref(user_id)
+        registry.register(user_id, ws)
+        registry.unregister(user_id, ws)
+        del user_id
+        gc.collect()
+
         assert registry.get_connections("user-1") == []
-        assert "user-1" not in registry._connections  # noqa: SLF001 -- migration assertion on internal state
+        assert watched() is None, "the registry still holds the user's bucket after its last handle left"
 
     def test_concurrent_register_unregister_does_not_race(self) -> None:
         """parallel register/unregister from threads keeps a consistent map.
@@ -351,8 +308,8 @@ class TestWebSocketHandlerAuthQueryParam:
         """handler authenticates via token query parameter."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        router = EchoRouter()
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         ws = MockWebSocket(
             messages=[],
@@ -376,8 +333,8 @@ class TestWebSocketHandlerAuthMessage:
         """handler authenticates via auth message when no query param."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        router = EchoRouter()
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         auth_msg = json.dumps({"type": "auth", "token": "valid-token"})
         ws = MockWebSocket(messages=[auth_msg])
@@ -398,7 +355,7 @@ class TestWebSocketHandlerAuthFailure:
         """handler closes connection on invalid query param token."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
+        router = EchoRouter()
         handler = WebSocketHandler(router=router, auth_validator=_always_reject_auth)
 
         auth_msg = json.dumps({"type": "auth", "token": "bad-token"})
@@ -424,7 +381,7 @@ class TestWebSocketHandlerAuthFailure:
         """handler closes connection on invalid auth message token."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
+        router = EchoRouter()
         handler = WebSocketHandler(router=router, auth_validator=_always_reject_auth)
 
         auth_msg = json.dumps({"type": "auth", "token": "bad-token"})
@@ -442,6 +399,118 @@ class TestWebSocketHandlerAuthFailure:
         assert ws.closed
 
 
+class TestAValidatorRefusalCarriesItsCode:
+    """the seam: a validator refuses with a code and a message, and the client receives both.
+
+    The seam used to be ``token -> claims | None``. ``None`` carried no reason, so every refusal
+    reached the client as ``authentication failed`` -- an expired token, a person the host had
+    blocked, and an authorization rule the host applied to the connection all read the same, and
+    a client could not tell "refresh and retry" from "you may not".
+    """
+
+    @staticmethod
+    def _frames(ws: MockWebSocket) -> list[dict[str, Any]]:
+        return [json.loads(text) for text in ws.sent]
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_code_and_message_reach_the_client_before_1008(self) -> None:
+        """a host rule's refusal arrives as itself, then the socket closes as a policy violation."""
+        from threetears.channels.websocket import WebSocketAuthRefused, WebSocketHandler
+
+        async def _refuse(token: str) -> dict[str, Any]:
+            raise WebSocketAuthRefused("SHARED_AGENT_ACCESS_DENIED", "agent is not shared with your customer")
+
+        ws = MockWebSocket(query_params={"token": "valid-token"})
+        await WebSocketHandler(router=EchoRouter(), auth_validator=_refuse).handle_connection(ws)
+
+        assert self._frames(ws) == [
+            {
+                "type": "error",
+                "code": "SHARED_AGENT_ACCESS_DENIED",
+                "message": "agent is not shared with your customer",
+            }
+        ]
+        assert ws.closed
+        assert ws.close_code == 1008
+
+    @pytest.mark.asyncio
+    async def test_a_refused_connection_never_reaches_the_router(self) -> None:
+        """no ``connected`` frame and no routed message after a refusal."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        ws = MockWebSocket(
+            messages=[json.dumps({"type": "message", "content": "hi"})],
+            query_params={"token": "bad-token"},
+        )
+        await WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth).handle_connection(ws)
+
+        assert [frame["type"] for frame in self._frames(ws)] == ["error"]
+        assert self._frames(ws)[0]["code"] == "UNAUTHENTICATED"
+
+    @pytest.mark.asyncio
+    async def test_no_token_answers_unauthenticated(self) -> None:
+        """the handler's own refusal speaks the same vocabulary a validator's does."""
+        from threetears.channels.websocket import UNAUTHENTICATED, WebSocketHandler
+
+        ws = MockWebSocket(messages=[json.dumps({"type": "message", "content": "no auth first"})])
+        await WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth).handle_connection(ws)
+
+        assert self._frames(ws) == [
+            {"type": "error", "code": UNAUTHENTICATED, "message": "no authentication token provided"}
+        ]
+        assert ws.close_code == 1008
+
+    @pytest.mark.asyncio
+    async def test_a_disconnect_during_authentication_answers_unauthenticated(self) -> None:
+        """a peer gone before it sent a token is refused with the authentication code."""
+        from threetears.channels.websocket import UNAUTHENTICATED, WebSocketHandler
+
+        ws = MockWebSocket(messages=[])
+        await WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth).handle_connection(ws)
+
+        assert self._frames(ws) == [{"type": "error", "code": UNAUTHENTICATED, "message": "authentication failed"}]
+        assert ws.close_code == 1008
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_is_logged_with_its_code(self, caplog: pytest.LogCaptureFixture) -> None:
+        """the server log names the code the client received."""
+        import logging
+
+        from threetears.channels.websocket import WebSocketAuthRefused, WebSocketHandler
+
+        async def _refuse(token: str) -> dict[str, Any]:
+            raise WebSocketAuthRefused("CHANNEL_ACCESS_DENIED", "no channel.send")
+
+        ws = MockWebSocket(query_params={"token": "valid-token"})
+        with caplog.at_level(logging.INFO):
+            await WebSocketHandler(router=EchoRouter(), auth_validator=_refuse).handle_connection(ws)
+
+        assert any("CHANNEL_ACCESS_DENIED" in record.getMessage() for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_validator_returning_none_is_a_programming_error(self) -> None:
+        """the seam changed outright: ``None`` is not a refusal any more, and is named as the break."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        async def _old_shape(token: str) -> Any:
+            return None
+
+        ws = MockWebSocket(query_params={"token": "valid-token"})
+        with pytest.raises(TypeError, match="WebSocketAuthRefused"):
+            await WebSocketHandler(router=EchoRouter(), auth_validator=_old_shape).handle_connection(ws)
+        assert not any(json.loads(text).get("type") == "connected" for text in ws.sent)
+
+    def test_the_refusal_carries_its_code_and_message(self) -> None:
+        """the typed refusal exposes both halves, for a host that inspects one it raised."""
+        from threetears.channels.websocket import WebSocketAuthRefused
+
+        refusal = WebSocketAuthRefused("CHANNEL_ACCESS_DENIED", "no channel.send")
+
+        assert refusal.code == "CHANNEL_ACCESS_DENIED"
+        assert refusal.message == "no channel.send"
+        assert "CHANNEL_ACCESS_DENIED" in str(refusal)
+
+
 class TestWebSocketHandlerConnectedMessage:
     """tests for connected confirmation message."""
 
@@ -450,8 +519,8 @@ class TestWebSocketHandlerConnectedMessage:
         """successful auth sends connected message with user_id."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        router = EchoRouter()
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         ws = MockWebSocket(
             messages=[],
@@ -473,8 +542,8 @@ class TestWebSocketHandlerMessageLoop:
         """message loop creates ChannelMessage and sends router response."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        router = EchoRouter()
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
@@ -495,7 +564,7 @@ class TestWebSocketHandlerMessageLoop:
         from threetears.channels.websocket import WebSocketHandler
 
         router = _NullRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
@@ -514,8 +583,8 @@ class TestWebSocketHandlerMessageLoop:
         """handler processes multiple messages in sequence."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        router = EchoRouter()
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         msg_a = json.dumps({"type": "message", "content": "first", "metadata": {}})
         msg_b = json.dumps({"type": "message", "content": "second", "metadata": {}})
@@ -545,7 +614,7 @@ class TestWebSocketHandlerMessageLoop:
                 return ChannelResponse(content="ok")
 
         router = _CapturingRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         user_msg = json.dumps(
             {
@@ -572,8 +641,8 @@ class TestWebSocketHandlerDisconnect:
         """disconnecting client is removed from connection registry."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        router = EchoRouter()
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         ws = MockWebSocket(
             messages=[],
@@ -590,8 +659,8 @@ class TestWebSocketHandlerDisconnect:
         """unexpected disconnect during message loop still cleans up registry."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        router = EchoRouter()
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
@@ -620,7 +689,7 @@ class TestWebSocketHandlerChannelMessage:
                 return None
 
         router = _CapturingRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
@@ -686,8 +755,8 @@ class TestWebSocketHandlerChannelMessage:
                 return None
 
         router = _CapturingRouter()
-        # _valid_auth returns no customer_id.
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        # valid_auth returns no customer_id.
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
@@ -708,9 +777,9 @@ class TestWebSocketHandlerConfig:
         """handler accepts optional config dict."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
+        router = EchoRouter()
         config = {"heartbeat_interval": 15}
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth, config=config)
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth, config=config)
         assert handler.config["heartbeat_interval"] == 15
 
     @pytest.mark.asyncio
@@ -718,8 +787,8 @@ class TestWebSocketHandlerConfig:
         """handler uses empty dict when no config provided."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        router = EchoRouter()
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
         assert isinstance(handler.config, dict)
 
 
@@ -857,7 +926,7 @@ class TestWebSocketHandlerStreaming:
                 return ChannelResponse(content="tok1tok2")
 
         router = _StreamRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
 
         user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
@@ -892,8 +961,8 @@ class TestWebSocketHandlerHeartbeat:
         """default heartbeat interval is 30 seconds."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
-        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+        router = EchoRouter()
+        handler = WebSocketHandler(router=router, auth_validator=valid_auth)
         assert handler.heartbeat_interval == 30
 
     @pytest.mark.asyncio
@@ -901,10 +970,10 @@ class TestWebSocketHandlerHeartbeat:
         """heartbeat interval can be configured."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
+        router = EchoRouter()
         handler = WebSocketHandler(
             router=router,
-            auth_validator=_valid_auth,
+            auth_validator=valid_auth,
             config={"heartbeat_interval": 15},
         )
         assert handler.heartbeat_interval == 15
@@ -923,10 +992,10 @@ class TestWebSocketHandlerMessageSizeEnforcement:
         """message exceeding max_message_size gets error response."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
+        router = EchoRouter()
         handler = WebSocketHandler(
             router=router,
-            auth_validator=_valid_auth,
+            auth_validator=valid_auth,
             config={"max_message_size": 100},
         )
 
@@ -952,10 +1021,10 @@ class TestWebSocketHandlerMessageSizeEnforcement:
         """normal size message is processed successfully."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
+        router = EchoRouter()
         handler = WebSocketHandler(
             router=router,
-            auth_validator=_valid_auth,
+            auth_validator=valid_auth,
             config={"max_message_size": 65536},
         )
 
@@ -975,10 +1044,10 @@ class TestWebSocketHandlerMessageSizeEnforcement:
         """config overrides default max_message_size."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
+        router = EchoRouter()
         handler = WebSocketHandler(
             router=router,
-            auth_validator=_valid_auth,
+            auth_validator=valid_auth,
             config={"max_message_size": 1024},
         )
         assert handler.max_message_size == 1024
@@ -1007,7 +1076,7 @@ async def _serve(frames: list[dict[str, Any]], router: _CountingEchoRouter) -> l
     """
     from threetears.channels.websocket import WebSocketHandler
 
-    handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+    handler = WebSocketHandler(router=router, auth_validator=valid_auth)
     follow_up = {"type": "message", "content": "still here", "metadata": {}}
     ws = MockWebSocket(
         messages=[json.dumps(frame) for frame in [*frames, follow_up]],
@@ -1055,6 +1124,28 @@ class TestAChatMessageTheAgentCannotUseIsRefused:
             pytest.param({"type": "message", "content": ["hi"], "metadata": {}}, id="content-a-list"),
             pytest.param({"type": "message", "content": "hi", "metadata": "tz"}, id="metadata-a-string"),
             pytest.param({"type": "message", "content": "hi", "metadata": ["tz"]}, id="metadata-a-list"),
+            pytest.param(
+                {
+                    "type": "message",
+                    "content": "hi",
+                    "metadata": {},
+                    "attachment_ids": "0192f0a0-0000-7000-8000-000000000001",
+                },
+                id="attachment-ids-a-string",
+            ),
+            pytest.param(
+                {"type": "message", "content": "hi", "metadata": {}, "attachment_ids": ["not-a-uuid"]},
+                id="attachment-ids-not-uuids",
+            ),
+            pytest.param(
+                {
+                    "type": "message",
+                    "content": "hi",
+                    "metadata": {},
+                    "attachment_ids": ["0192f0a0-0000-7000-8000-000000000001", 7],
+                },
+                id="attachment-ids-one-bad-element",
+            ),
         ],
     )
     async def test_a_malformed_chat_frame_is_refused_and_the_socket_keeps_serving(self, frame: dict[str, Any]) -> None:
@@ -1067,6 +1158,30 @@ class TestAChatMessageTheAgentCannotUseIsRefused:
         assert [message.content for message in router.routed] == ["still here"]
 
 
+class TestAttachmentIdsReachTheRouter:
+    """a chat frame's ``attachment_ids`` ride the routed message as ids, in order."""
+
+    @pytest.mark.asyncio
+    async def test_attachment_ids_are_parsed_in_order(self) -> None:
+        first = "0192f0a0-0000-7000-8000-000000000001"
+        second = "0192f0a0-0000-7000-8000-000000000002"
+        router = _CountingEchoRouter()
+
+        await _serve([{"type": "message", "content": "what is this", "attachment_ids": [first, second]}], router)
+
+        assert [message.attachment_ids for message in router.routed] == [[UUID(first), UUID(second)], []]
+
+    def test_parse_attachment_ids_reads_a_list_of_ids_whole_or_not_at_all(self) -> None:
+        from threetears.channels.websocket import parse_attachment_ids
+
+        one = "0192f0a0-0000-7000-8000-000000000001"
+        assert parse_attachment_ids([]) == []
+        assert parse_attachment_ids([one]) == [UUID(one)]
+        assert parse_attachment_ids([one, "nope"]) is None
+        assert parse_attachment_ids(one) is None
+        assert parse_attachment_ids(None) is None
+
+
 class TestWebSocketHandlerRateLimiting:
     """tests for rate limiting in message loop."""
 
@@ -1075,10 +1190,10 @@ class TestWebSocketHandlerRateLimiting:
         """messages exceeding rate limit get error response."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
+        router = EchoRouter()
         handler = WebSocketHandler(
             router=router,
-            auth_validator=_valid_auth,
+            auth_validator=valid_auth,
             config={
                 "rate_limit_messages": 2,
                 "rate_limit_window": 60.0,
@@ -1109,10 +1224,10 @@ class TestWebSocketHandlerRateLimiting:
         """after rate limit window passes, messages are accepted again."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
+        router = EchoRouter()
         handler = WebSocketHandler(
             router=router,
-            auth_validator=_valid_auth,
+            auth_validator=valid_auth,
             config={
                 "rate_limit_messages": 2,
                 "rate_limit_window": 0.01,
@@ -1157,10 +1272,10 @@ class TestWebSocketHandlerRateLimiting:
         """config overrides default rate limit settings."""
         from threetears.channels.websocket import WebSocketHandler
 
-        router = _EchoRouter()
+        router = EchoRouter()
         handler = WebSocketHandler(
             router=router,
-            auth_validator=_valid_auth,
+            auth_validator=valid_auth,
             config={
                 "rate_limit_messages": 20,
                 "rate_limit_window": 5.0,
@@ -1188,7 +1303,7 @@ class TestDisconnectUser:
     def _handler() -> Any:
         from threetears.channels.websocket import WebSocketHandler
 
-        return WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        return WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
 
     async def test_closes_every_socket_the_user_has(self) -> None:
         handler = self._handler()
@@ -1210,7 +1325,7 @@ class TestDisconnectUser:
 
         await handler.disconnect_user("user-1", reason="account disabled")
 
-        assert json.loads(ws.sent[0]) == {"type": "error", "message": "account disabled"}
+        assert json.loads(ws.sent[0]) == {"type": "error", "code": "UNAUTHENTICATED", "message": "account disabled"}
 
     async def test_leaves_other_users_connected(self) -> None:
         handler = self._handler()

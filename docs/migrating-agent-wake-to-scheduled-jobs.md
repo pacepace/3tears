@@ -6,12 +6,49 @@ isolation, drift) and its reschedule math to the generic `3tears-scheduled-jobs`
 core. `threetears.agent.wake.tick` is a thin adapter over
 `threetears.scheduled_jobs.scheduled_tick_job`.
 
-**The good news:** the wake-facing contract is unchanged. `wake_tick_job(pool,
-nats_client, dispatch_callback)`, the wake-shaped `DispatchCallback`,
+The dispatch-facing contract is unchanged: the wake-shaped `DispatchCallback`,
 `WakeTrigger`, `WakeDispatchResult`, `FireStatus`, the schedule/fire schema, and
-the webhook / `[SILENT]` handling all stay put. The cross-pod lock key stays
-`"agent_wake_tick"`. **For most consumers this is a no-op upgrade** — except one
-deleted module and some renamed metrics.
+the webhook / `[SILENT]` handling all stay put, and the cross-pod lock key stays
+`"agent_wake_tick"`. Every consumer has edits to make: the tick driver and any
+webhook receiver pass the host's wake collections, one deleted module has a new
+home, and some metrics were renamed.
+
+## Breaking — pass the host's wake collections to the tick and the webhook receiver
+
+`wake_tick_job` takes the host process's wake collections as required keyword
+arguments, `schedules=` and `fires=`, and no longer builds a registry of its own;
+so do `webhook_receive` and `WebhookReceiver` (`subscriptions=`, `fires=`). A tick
+driver calling `wake_tick_job(pool=..., nats_client=..., dispatch_callback=...)`
+raises `TypeError` until it passes them.
+
+Build the collections once, on the registry that carries the process's NATS
+client and runs its invalidation listener (`start_invalidation_listener` /
+`stop_invalidation_listener`). A registry with no client broadcasts nothing, and
+every other replica keeps serving the row the tick's claim or a webhook fire
+replaced; when `nats_client` is given, the tick refuses `schedules=` whose
+collection has no NATS client, with `ValueError`.
+
+```python
+# before
+await wake_tick_job(pool=pool, nats_client=nc, dispatch_callback=dispatch)
+
+# after -- schedules / fires built once at startup on the NATS-wired registry;
+# 0.57.0's on_reaped= (and webhook_receive's permit= / start_conversation=) sit beside them
+await wake_tick_job(pool=pool, nats_client=nc, dispatch_callback=dispatch, schedules=schedules, fires=fires)
+```
+
+`WakeScheduleCollection.resume(conn=...)` and `delete_protected(conn=...)` now
+require the connection's transaction to be opened by
+`threetears.core.collections.CallerTransaction(conn)`, and raise `ValueError`
+otherwise. An agent deletion that removes the agent's protected wake in its own
+transaction opens that transaction with `CallerTransaction`. The CHANGELOG entry "A wake write reaches every
+replica, and never lands on a row it did not read" has the rest.
+
+Find every site:
+
+```sh
+grep -rn "wake_tick_job(\|webhook_receive(\|WebhookReceiver(\|\.resume(.*conn=\|delete_protected(" .
+```
 
 ## Breaking — change this one import (mechanical, no behavior change)
 
@@ -39,18 +76,16 @@ grep -rn "agent\.wake\.reschedule\|_compute_next_fire_at" .
 
 ## Unchanged — nothing to do
 
-- **`wake_tick_job` registration.** Its signature is preserved, so your tick
-  driver (e.g. metallm's `api/src/services/scheduler.py`, which calls
-  `await wake_tick_job(pool=..., nats_client=..., dispatch_callback=...)`) and
-  any test that patches `threetears.agent.wake.tick.wake_tick_job` keep working
-  as-is.
+- **Where `wake_tick_job` lives.** A test that patches
+  `threetears.agent.wake.tick.wake_tick_job` still finds it there; its call
+  signature changed (above).
 - **The dispatch callback.** Still `(WakeTrigger, fire_id, pool) ->
   WakeDispatchResult`. The adapter rebuilds the `WakeTrigger` from the generic
   envelope internally; your handler never sees the generic shape.
 - **Schema / tables / migrations.** `agent_wake_schedules`, `wake_fires`,
   `webhook_subscriptions` are untouched. If you mirror the wake schema in your
   own migrations (metallm's alembic `096`–`099`), no new migration is needed.
-- **`config` / `collections` / `entities` / `api_models` / `tools`.** Unchanged.
+- **`config` / `entities` / `api_models` / `tools`.** Unchanged.
 
 ## Dependency
 

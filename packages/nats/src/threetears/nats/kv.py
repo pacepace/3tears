@@ -25,20 +25,38 @@ design notes
   ``create_key_value`` cannot express every field the platform needs and
   offers no way to reconcile a bucket that already exists. see
   :func:`open_kv_stream`.
+- a key is watched through :meth:`NatsKvBucket.watch_key`, never through
+  nats-py's ``KeyValue.watch``: the stock watch creates an UNNAMED consumer,
+  which a grant narrowed to one key cannot admit. see
+  :mod:`threetears.nats.kv_watch`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import time
+import uuid
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, runtime_checkable
 
-from nats.js.api import DiscardPolicy, Header, StorageType, StreamConfig, StreamInfo
-from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError
+from nats.errors import ConnectionClosedError as _NatsConnectionClosedError
+from nats.js.api import (
+    AckPolicy,
+    ConsumerConfig,
+    DeliverPolicy,
+    DiscardPolicy,
+    Header,
+    StorageType,
+    StreamConfig,
+    StreamInfo,
+)
+from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
 from threetears.observe import get_logger
 
-from threetears.nats._diagnostics import kv_grant_remedy, kv_timeout_remedy
+from threetears.nats.diagnostics import kv_grant_remedy, kv_timeout_remedy
 from threetears.nats._publish import run_bounded
 from threetears.nats.errors import (
     KvConfigMismatch,
@@ -46,16 +64,21 @@ from threetears.nats.errors import (
     PublishTimeoutError,
     StreamSubjectsOverlapError,
 )
+from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 
 if TYPE_CHECKING:
+    from nats.aio.msg import Msg
+    from nats.aio.subscription import Subscription as _NatsSubscription
     from nats.js.kv import KeyValue
 
     from threetears.nats.client import NatsClient
 
 __all__ = [
+    "DEFAULT_KV_TIMINGS",
     "RECONCILED_KV_STREAM_FIELDS",
     "REQUESTABLE_KV_STREAM_FIELDS",
     "KvDeclaring",
+    "KvTimings",
     "NatsKvBucket",
     "build_kv_stream_config",
     "kv_stream_differences",
@@ -145,27 +168,84 @@ RECONCILED_KV_STREAM_FIELDS: tuple[str, ...] = ("allow_direct", "allow_msg_ttl")
 #: instead would take L2 offline on every such process until the declarer rolled.
 _BIND_REFUSED_KV_STREAM_FIELDS: tuple[str, ...] = ("allow_direct",)
 
-#: Ceiling on one KV operation, ack included.
-#:
-#: Module-private, and that is deliberate rather than an oversight: exposing it
-#: (as a constant or as a per-call parameter) would grow this package's public
-#: surface, which on a patch line is the defect
-#: ``tests/enforcement/test_api_growth_requires_a_minor_bump.py`` exists to
-#: refuse. A deployment needing a different number is a reason to widen the
-#: surface in a MINOR release, not to widen it quietly here.
-#:
-#: Matches the JetStream publish ceiling because it bounds the same round trip:
-#: every KV write ends in ``js.publish`` (``KeyValue.put`` / ``_update`` /
-#: ``delete`` / ``purge`` all do), reached through the flush path that discards
-#: ``CancelledError``. Reads travel the same path and get the same bound.
-_KV_OP_TIMEOUT_SECONDS: float = 10.0
 
-#: How often the KV-timeout remedy may be logged, per bucket.
+@dataclasses.dataclass(frozen=True, slots=True)
+class KvTimings:
+    """the deadlines and paces a KV bucket runs its operations and binds under.
+
+    One value per client: :meth:`threetears.nats.NatsClient.connect` takes it as ``kv_timings`` and
+    every bucket the client opens carries it. The defaults are the production values; a host
+    changes one only for a reason it can name (a test that must reach a deadline in milliseconds, a
+    deployment whose declarer is known to come up slower).
+
+    :ivar op_timeout_seconds: ceiling on one KV operation, ack included. Matches the JetStream
+        publish ceiling because it bounds the same round trip: every KV write ends in
+        ``js.publish`` (``KeyValue.put`` / ``_update`` / ``delete`` / ``purge`` all do), reached
+        through the flush path that discards ``CancelledError``. Reads travel the same path and get
+        the same bound.
+    :ivar timeout_remedy_log_interval_seconds: how often the KV-timeout remedy may be logged, per
+        bucket. The condition it explains (an ungranted bucket, or an unreachable broker) persists
+        for as long as it persists, producing one timeout per operation; the remedy does not change
+        between them, so repeating it verbatim buries itself.
+    :ivar bind_wait_for_declarer_seconds: how long a BIND-only open waits for an absent bucket to be
+        declared before it fails. A process that only binds a bucket never creates it, so a bucket
+        missing at bind time is one its declarer has not declared YET: at first boot before the hub
+        has run, or after a NATS restart wiped every memory-backed bucket and before the hub's
+        reconnect re-declared them. Failing on the first miss left a primitive bound once at
+        startup unusable until the process restarted. Long enough to cover the hub reconnecting and
+        re-declaring after a broker restart; short enough that a bucket nobody will ever declare
+        surfaces as an error an operator can read. Every later operation on a handle re-binds
+        through the same wait, so an expiry here is never permanent.
+    :ivar bind_retry_first_delay_seconds: the first pause between two binds of an absent bucket; it
+        doubles up to ``bind_retry_max_delay_seconds``
+    :ivar bind_retry_max_delay_seconds: the longest pause between two binds of an absent bucket
+    """
+
+    op_timeout_seconds: float = 10.0
+    timeout_remedy_log_interval_seconds: float = 300.0
+    bind_wait_for_declarer_seconds: float = 30.0
+    bind_retry_first_delay_seconds: float = 0.1
+    bind_retry_max_delay_seconds: float = 2.0
+
+
+#: the production timings every client and bucket uses unless its host passes others.
+DEFAULT_KV_TIMINGS: Final[KvTimings] = KvTimings()
+
+#: Heartbeats a key watch's consumer may miss before the watch replaces it. One missed beat is
+#: ordinary scheduling jitter; three is a consumer the server no longer has.
+_KEY_WATCH_MISSED_HEARTBEATS: Final[int] = 3
+
+#: The status an idle heartbeat carries. Any OTHER status on a key watch's inbox is the server
+#: ending the consumer.
+_STATUS_IDLE_HEARTBEAT: Final[str] = "100"
+
+#: How long the server keeps a key watch's consumer once nothing is subscribed to its deliver subject.
 #:
-#: The condition it explains (an ungranted bucket, or an unreachable broker) persists
-#: for as long as it persists, producing one timeout per operation. The remedy does not
-#: change between them, so repeating it verbatim buries itself.
-_TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS: float = 300.0
+#: This, not a delete, is what removes a closed watch's consumer: a grant narrowed to one key
+#: (``JsCapability.KV_KEY_READ``) carries ``CONSUMER.CREATE`` and nothing else, so a
+#: ``CONSUMER.DELETE`` would be refused -- and a refused JetStream call does not raise, it blocks to
+#: its deadline, which would turn every close into a ten-second stall. Long enough to ride out a
+#: client reconnect without losing the consumer; short enough that an abandoned one is gone soon.
+_KEY_WATCH_INACTIVE_THRESHOLD_SECONDS: Final[float] = 30.0
+
+#: The header nats KV stamps on a delete or purge marker, and the values that mean one.
+_KV_OPERATION_HEADER: Final[str] = "KV-Operation"
+_KV_REMOVAL_OPERATIONS: Final[frozenset[str]] = frozenset({"DEL", "PURGE"})
+
+#: Consumer names a key watch mints carry this prefix, so an operator listing a stream's consumers
+#: can tell a watch from anything else.
+_KEY_WATCH_CONSUMER_PREFIX: Final[str] = "kw_"
+
+#: Consumer names a key listing mints carry this prefix, beside the key watch's ``kw_``.
+_KEY_LISTING_CONSUMER_PREFIX: Final[str] = "kl_"
+
+#: How long one key listing may take, end to end, before it raises rather than hangs. A listing
+#: whose consumer create is ungranted is never answered, so without a bound it would block forever.
+_KEY_LISTING_TIMEOUT_SECONDS: Final[float] = 30.0
+
+#: Characters that make a subject token a wildcard or split it. A watched key must be literal: the
+#: grant names it literally, and a wildcard filter would be a different consumer from the one granted.
+_KEY_WATCH_FORBIDDEN: Final[frozenset[str]] = frozenset({"*", ">", " ", "\t", "\r", "\n"})
 
 #: Last time the remedy was logged, keyed by fully-qualified bucket name.
 #:
@@ -315,6 +395,7 @@ async def open_kv_stream(
     full_name: str,
     config: StreamConfig,
     create_if_missing: bool,
+    timings: KvTimings = DEFAULT_KV_TIMINGS,
 ) -> KeyValue:
     """create, reconcile or bind the JetStream stream behind a KV bucket.
 
@@ -329,7 +410,8 @@ async def open_kv_stream(
     - ``create_if_missing=False`` BINDS. a reader has no authority to change a
       shared bucket, so drift on the reconciled set raises
       :class:`~threetears.nats.errors.KvConfigMismatch`, which the L2 accessors
-      deliberately do not catch.
+      deliberately do not catch. an ABSENT bucket is waited for, with bounded
+      backoff, since only its declarer can create it (:func:`_bind_when_declared`).
 
     a create failure the SERVER answered is classified from its API error code;
     a failure the server never answered (a permissions refusal reads as a
@@ -344,6 +426,8 @@ async def open_kv_stream(
     :ptype config: StreamConfig
     :param create_if_missing: declare the bucket when absent, rather than bind
     :ptype create_if_missing: bool
+    :param timings: how long a bind waits for an absent bucket's declarer, and how it paces itself
+    :ptype timings: KvTimings
     :return: bound nats-py KeyValue handle
     :rtype: KeyValue
     :raises StreamSubjectsOverlapError: a different stream already owns ``$KV.{bucket}.>``
@@ -351,7 +435,7 @@ async def open_kv_stream(
     :raises KvError: creation or binding failed
     """
     if not create_if_missing:
-        return await _bind_kv_stream(js=js, full_name=full_name, config=config)
+        return await _bind_kv_stream(js=js, full_name=full_name, config=config, timings=timings)
 
     add_exc: Exception | None = None
     try:
@@ -383,8 +467,74 @@ async def open_kv_stream(
     return kv
 
 
-async def _bind_kv_stream(*, js: Any, full_name: str, config: StreamConfig) -> KeyValue:
+async def _bind_when_declared(*, js: Any, full_name: str, timings: KvTimings) -> KeyValue:
+    """bind a KV bucket, waiting with bounded backoff while it is absent.
+
+    **Absent and refused are two different answers, and only one is worth waiting for.** A bucket
+    that does not exist is ANSWERED -- the server replies not-found -- and for a process that only
+    binds, that means its declarer has not declared it yet; the hub re-declares every pod bucket
+    when it reconnects after a broker restart, so waiting is what recovers. A bucket this principal
+    may not read is NEVER answered: the request dies on its deadline, and no amount of waiting grants
+    it, so that failure is raised at once.
+
+    :param js: connected JetStream context
+    :ptype js: Any
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :param timings: the wait for the declarer and the pace of the binds within it
+    :ptype timings: KvTimings
+    :return: bound nats-py KeyValue handle
+    :rtype: KeyValue
+    :raises KvError: the bucket stayed absent for :attr:`KvTimings.bind_wait_for_declarer_seconds`,
+        or the bind failed for any other reason
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timings.bind_wait_for_declarer_seconds
+    delay = timings.bind_retry_first_delay_seconds
+    attempts = 0
+    kv: KeyValue | None = None
+    while kv is None:
+        attempts += 1
+        try:
+            kv = await js.key_value(full_name)
+        except NotFoundError as exc:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise KvError(
+                    f"bind KV bucket failed: bucket={full_name} does not exist, and its declarer did not "
+                    f"declare it within {timings.bind_wait_for_declarer_seconds:g}s ({attempts} binds). this process "
+                    f"only binds it; the declaring identity (the hub, for every pod bucket) creates it at "
+                    f"startup and after every NATS reconnect -- check that it is running and connected."
+                ) from exc
+            if attempts == 1:
+                log.warning(
+                    "KV bucket %s does not exist yet; waiting up to %gs for its declarer to declare it",
+                    full_name,
+                    timings.bind_wait_for_declarer_seconds,
+                    extra={"extra_data": {"bucket": full_name}},
+                )
+            await asyncio.sleep(min(delay, remaining))
+            delay = min(delay * 2, timings.bind_retry_max_delay_seconds)
+        except Exception as exc:
+            # Hedged: an unanswered bind is what a refused one looks like, and what an unreachable
+            # broker looks like too.
+            raise KvError(
+                f"bind KV bucket failed: bucket={full_name}: {exc}. {kv_grant_remedy(full_name, certain=False)}"
+            ) from exc
+    if attempts > 1:
+        log.info(
+            "KV bucket %s bound once its declarer declared it",
+            full_name,
+            extra={"extra_data": {"bucket": full_name, "binds": attempts}},
+        )
+    return kv
+
+
+async def _bind_kv_stream(*, js: Any, full_name: str, config: StreamConfig, timings: KvTimings) -> KeyValue:
     """bind to an existing KV bucket, refusing one whose reconciled config differs.
+
+    A bucket that is ABSENT is waited for (:func:`_bind_when_declared`): a process that only binds
+    never creates one, so it waits for the declarer rather than failing the first time it looks.
 
     :param js: connected JetStream context
     :ptype js: Any
@@ -392,20 +542,14 @@ async def _bind_kv_stream(*, js: Any, full_name: str, config: StreamConfig) -> K
     :ptype full_name: str
     :param config: the config this reader requires
     :ptype config: StreamConfig
+    :param timings: the wait for an absent bucket's declarer
+    :ptype timings: KvTimings
     :return: bound nats-py KeyValue handle
     :rtype: KeyValue
     :raises KvConfigMismatch: the live bucket differs on the reconciled field set
     :raises KvError: binding failed
     """
-    kv: KeyValue
-    try:
-        kv = await js.key_value(full_name)
-    except Exception as exc:
-        # Hedged: this branch never attempts a create, so a bucket nobody has
-        # created yet fails here exactly the way an ungranted one does.
-        raise KvError(
-            f"bind KV bucket failed: bucket={full_name}: {exc}. {kv_grant_remedy(full_name, certain=False)}"
-        ) from exc
+    kv = await _bind_when_declared(js=js, full_name=full_name, timings=timings)
     if any(getattr(config, field, None) is not None for field in _BIND_REFUSED_KV_STREAM_FIELDS):
         live = await _live_stream_config(js=js, full_name=full_name, stream=config.name)
         drift = {
@@ -422,6 +566,64 @@ async def _bind_kv_stream(*, js: Any, full_name: str, config: StreamConfig) -> K
                 f"the bucket, or the bucket must be recreated with the declared configuration."
             )
     return kv
+
+
+async def _entry_ttl_for_bound_bucket(*, js: Any, full_name: str, ttl: timedelta) -> timedelta | None:
+    """the per-entry lifetime a BIND-only opener must write with, so its entries still expire.
+
+    A bucket's TTL is a property of its stream, set by whoever CREATES it. A pod never creates
+    one: the hub declares every bucket a pod binds, uniformly, with no bucket-wide expiry and
+    per-entry TTLs allowed -- because the hub cannot know which lifetime each primitive a pod runs
+    over its bucket wants. The opener still knows. So a bind-only open that asks for ``ttl`` on a
+    bucket with no bucket-wide expiry carries ``ttl`` onto every entry it writes instead, and its
+    entries expire exactly as they would in a bucket created with that TTL.
+
+    Anything else is refused rather than bound: a live bucket-wide expiry that differs from the
+    request would expire this opener's entries early or late -- a quota count forgotten, a
+    replay nonce remembered past its window, a credential outliving its lifetime -- with nothing
+    to say so.
+
+    :param js: connected JetStream context
+    :ptype js: Any
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :param ttl: the lifetime this opener wants every entry to have
+    :ptype ttl: timedelta
+    :return: ``None`` when the live bucket already expires entries at ``ttl``, else ``ttl`` itself
+        as the default per-entry lifetime
+    :rtype: timedelta | None
+    :raises KvConfigMismatch: when the live bucket expires entries at another age, or has no
+        bucket-wide expiry and refuses per-entry TTLs
+    :raises KvError: when the live configuration cannot be read
+    """
+    live = await _live_stream_config(js=js, full_name=full_name, stream=f"{_KV_STREAM_PREFIX}{full_name}")
+    requested = float(int(ttl.total_seconds()))
+    live_age = float(_normalised("max_age", live.max_age))
+    entry_ttl: timedelta | None = None
+    if live_age == requested:
+        log.debug(
+            "KV bucket bound with the bucket-wide lifetime it asked for", extra={"extra_data": {"bucket": full_name}}
+        )
+    elif live_age != 0.0:
+        raise KvConfigMismatch(
+            f"KV bucket {full_name!r} expires entries after {live_age:g}s and this process opened it "
+            f"read-only (create_if_missing=False) expecting {requested:g}s; its entries would expire at "
+            f"the wrong age. the bucket's declarer (the hub) must create it with no bucket-wide expiry, "
+            f"so each opener's entries carry their own lifetime."
+        )
+    elif not live.allow_msg_ttl:
+        raise KvConfigMismatch(
+            f"KV bucket {full_name!r} has no bucket-wide expiry and refuses per-entry TTLs "
+            f"(allow_msg_ttl is off), so this read-only opener cannot give its entries the {requested:g}s "
+            f"lifetime it needs. the declarer (the hub) must reconcile the bucket with allow_msg_ttl."
+        )
+    else:
+        entry_ttl = ttl
+        log.info(
+            "KV bucket bound with a per-entry lifetime standing in for a bucket-wide one",
+            extra={"extra_data": {"bucket": full_name, "entry_ttl_seconds": requested}},
+        )
+    return entry_ttl
 
 
 async def _reconcile_existing_kv_stream(*, js: Any, full_name: str, config: StreamConfig) -> None:
@@ -552,6 +754,83 @@ def _render_differences(differences: dict[str, tuple[Any, Any]]) -> str:
     )
 
 
+class _KvHandleBinding(NamedTuple):
+    """what one open of a bucket produces, before it is put on a :class:`NatsKvBucket`.
+
+    :ivar kv: the nats-py handle
+    :ivar entry_ttl: the per-entry TTL a bind-only open stamps on its writes, or ``None``
+    :ivar bound_to: the connection the handle was bound through
+    """
+
+    kv: KeyValue
+    entry_ttl: timedelta | None
+    bound_to: Any
+
+
+async def _bind_kv_handle(
+    *,
+    client: NatsClient,
+    full_name: str,
+    ttl: timedelta | None,
+    storage: str,
+    create_if_missing: bool,
+    history: int,
+    direct: bool | None,
+    timings: KvTimings,
+) -> _KvHandleBinding:
+    """open, create or reconcile a bucket and return the handle it yields.
+
+    The one opener behind :meth:`NatsKvBucket.open`, which wraps the result in a new bucket, and
+    :meth:`NatsKvBucket._reopen`, which refreshes an existing bucket in place with it.
+
+    :param client: connected wrapper client
+    :ptype client: NatsClient
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :param ttl: TTL for entries; ``None`` for no expiry
+    :ptype ttl: timedelta | None
+    :param storage: ``"file"`` or ``"memory"``
+    :ptype storage: str
+    :param create_if_missing: create (and reconcile) bucket rather than bind read-only
+    :ptype create_if_missing: bool
+    :param history: per-key historical revision count
+    :ptype history: int
+    :param direct: request ``allow_direct`` on the backing stream; ``None`` neither requests nor compares it
+    :ptype direct: bool | None
+    :param timings: the bucket's deadlines, of which a bind uses the wait for its declarer
+    :ptype timings: KvTimings
+    :return: the handle, its per-entry TTL, and the connection it was bound through
+    :rtype: _KvHandleBinding
+    :raises KvError: if bucket creation or binding fails
+    :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
+    :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
+    """
+    # the connection is read with the context, with no await between, so the handle records
+    # the connection it was actually bound on even when a renewal lands while it opens.
+    bound_to = client.raw
+    js = client.jetstream_context()
+    storage_type = StorageType.FILE if storage == "file" else StorageType.MEMORY
+    ttl_seconds = int(ttl.total_seconds()) if ttl is not None else 0
+
+    kv = await open_kv_stream(
+        js=js,
+        full_name=full_name,
+        config=build_kv_stream_config(
+            bucket=full_name,
+            ttl_seconds=ttl_seconds,
+            history=history,
+            storage_type=storage_type,
+            direct=direct,
+        ),
+        create_if_missing=create_if_missing,
+        timings=timings,
+    )
+    entry_ttl: timedelta | None = None
+    if not create_if_missing and ttl is not None and ttl_seconds > 0:
+        entry_ttl = await _entry_ttl_for_bound_bucket(js=js, full_name=full_name, ttl=ttl)
+    return _KvHandleBinding(kv=kv, entry_ttl=entry_ttl, bound_to=bound_to)
+
+
 class NatsKvBucket:
     """one JetStream KV bucket.
 
@@ -567,9 +846,26 @@ class NatsKvBucket:
     :ptype kv: KeyValue
     :param ttl: configured time-to-live, or ``None`` for no expiry
     :ptype ttl: timedelta | None
+    :param bound_to: the client's nats-py connection ``kv`` was bound through, which the handle
+        follows across a credential renewal; ``None`` for a handle the client does not move
+    :ptype bound_to: Any
+    :param timings: the deadlines its operations and re-binds run under
+    :ptype timings: KvTimings
     """
 
-    __slots__ = ("_client", "_create_if_missing", "_direct", "_full_name", "_history", "_kv", "_storage", "_ttl")
+    __slots__ = (
+        "_bound_to",
+        "_client",
+        "_create_if_missing",
+        "_direct",
+        "_entry_ttl",
+        "_full_name",
+        "_history",
+        "_kv",
+        "_storage",
+        "_timings",
+        "_ttl",
+    )
 
     def __init__(
         self,
@@ -582,10 +878,20 @@ class NatsKvBucket:
         create_if_missing: bool = True,
         history: int = 1,
         direct: bool | None = None,
+        entry_ttl: timedelta | None = None,
+        bound_to: Any = None,
+        timings: KvTimings = DEFAULT_KV_TIMINGS,
     ) -> None:
         self._client = client
+        self._timings = timings
         self._full_name = full_name
         self._kv = kv
+        # the nats-py connection ``kv`` issues its operations on. a credential renewal replaces the
+        # client's connection and later retires this one, so every operation first checks it is
+        # still the current one (:meth:`_follow_connection`). :meth:`open` -- the only way the
+        # client builds a bucket -- always records it; ``None`` is a handle built around a caller's
+        # own KeyValue, which is not the client's to move.
+        self._bound_to = bound_to
         self._ttl = ttl
         # Retained for self-heal: if the underlying stream/bucket vanishes (a NATS restart
         # on ephemeral storage wipes JetStream), an op can re-open the bucket with its
@@ -598,6 +904,9 @@ class NatsKvBucket:
         # bucket with allow_direct unset, silently putting every read back on the
         # body-carried form no key-scoped grant can constrain.
         self._direct = direct
+        # the lifetime every write carries when its caller names none: a bind-only open's stand-in
+        # for a bucket-wide TTL the declarer did not set (``_entry_ttl_for_bound_bucket``).
+        self._entry_ttl = entry_ttl
 
     @property
     def name(self) -> str:
@@ -632,6 +941,7 @@ class NatsKvBucket:
         create_if_missing: bool,
         history: int,
         direct: bool | None = None,
+        timings: KvTimings = DEFAULT_KV_TIMINGS,
     ) -> NatsKvBucket:
         """open, create or reconcile a JetStream KV bucket.
 
@@ -662,38 +972,37 @@ class NatsKvBucket:
         :param direct: request ``allow_direct`` on the backing stream; ``None``
             neither requests nor compares it
         :ptype direct: bool | None
+        :param timings: the deadlines the bucket's operations and binds run under
+        :ptype timings: KvTimings
         :return: ready bucket
         :rtype: NatsKvBucket
         :raises KvError: if bucket creation or binding fails
-        :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
+        :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing, or a
+            bucket-wide expiry that would expire its entries at the wrong age
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
         """
-        js = client.jetstream_context()
-        storage_type = StorageType.FILE if storage == "file" else StorageType.MEMORY
-        ttl_seconds = int(ttl.total_seconds()) if ttl is not None else 0
-
-        kv = await open_kv_stream(
-            js=js,
-            full_name=full_name,
-            config=build_kv_stream_config(
-                bucket=full_name,
-                ttl_seconds=ttl_seconds,
-                history=history,
-                storage_type=storage_type,
-                direct=direct,
-            ),
-            create_if_missing=create_if_missing,
-        )
-
-        return cls(
+        binding = await _bind_kv_handle(
             client=client,
             full_name=full_name,
-            kv=kv,
             ttl=ttl,
             storage=storage,
             create_if_missing=create_if_missing,
             history=history,
             direct=direct,
+            timings=timings,
+        )
+        return cls(
+            client=client,
+            full_name=full_name,
+            kv=binding.kv,
+            ttl=ttl,
+            storage=storage,
+            create_if_missing=create_if_missing,
+            history=history,
+            direct=direct,
+            entry_ttl=binding.entry_ttl,
+            bound_to=binding.bound_to,
+            timings=timings,
         )
 
     # ------------------------------------------------------------------
@@ -715,7 +1024,7 @@ class NatsKvBucket:
         recreates the bucket with the same ``allow_direct`` it was declared with
         rather than with the field unset.
         """
-        rebound = await NatsKvBucket.open(
+        binding = await _bind_kv_handle(
             client=self._client,
             full_name=self._full_name,
             ttl=self._ttl,
@@ -723,8 +1032,34 @@ class NatsKvBucket:
             create_if_missing=self._create_if_missing,
             history=self._history,
             direct=self._direct,
+            timings=self._timings,
         )
-        self._kv = rebound._kv  # noqa: SLF001 - sibling instance of the same class
+        self._kv = binding.kv
+        self._entry_ttl = binding.entry_ttl
+        self._bound_to = binding.bound_to
+
+    async def _follow_connection(self) -> None:
+        """rebind the handle when a credential renewal has replaced the connection it was bound on.
+
+        The nats-py handle issues every operation on the connection it was bound through, and a
+        renewal retires that connection once the work it carries has finished. Rebinding before
+        the next operation moves the bucket without an operation ever failing on the retired
+        connection. A bind is one ``STREAM.INFO``, which every principal that opened the bucket
+        holds, and it changes nothing about the bucket -- unlike :meth:`_reopen`, which declares.
+
+        :return: nothing
+        :rtype: None
+        :raises Exception: when the bind fails; :meth:`_run_with_reopen` treats it as the transport
+            failure it is
+        """
+        if self._bound_to is None:
+            return
+        current = self._client.raw
+        if current is self._bound_to:
+            return
+        js = self._client.jetstream_context()
+        self._kv = await self._bounded(lambda: js.key_value(self._full_name))
+        self._bound_to = current
 
     async def _run_with_reopen(self, op: Any, *, passthrough: tuple[type[BaseException], ...]) -> Any:
         """Run a KV op; on a TRANSPORT failure, re-open the bucket once and retry.
@@ -735,6 +1070,7 @@ class NatsKvBucket:
         propagates to the caller's ``KvError`` wrap.
         """
         try:
+            await self._follow_connection()
             return await self._bounded(op)
         except passthrough:
             raise
@@ -772,7 +1108,7 @@ class NatsKvBucket:
         # the first five minutes of a process's life, exactly when a missing grant is
         # most likely to be the thing that is wrong. It reads as correct on any
         # long-lived developer machine and fails only where it matters.
-        if last is not None and now - last < _TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS:
+        if last is not None and now - last < self._timings.timeout_remedy_log_interval_seconds:
             log.debug("KV operation timed out on %s (remedy already logged)", self._full_name)
             return
         _last_timeout_remedy_log[self._full_name] = now
@@ -798,7 +1134,9 @@ class NatsKvBucket:
         :rtype: Any
         :raises PublishTimeoutError: the operation blew its deadline or ignored cancellation
         """
-        return await run_bounded(op, timeout=_KV_OP_TIMEOUT_SECONDS, what=f"kv operation on {self._full_name}")
+        return await run_bounded(
+            op, timeout=self._timings.op_timeout_seconds, what=f"kv operation on {self._full_name}"
+        )
 
     # ------------------------------------------------------------------
     # operations
@@ -885,15 +1223,16 @@ class NatsKvBucket:
         :param value: bytes to store
         :ptype value: bytes
         :param ttl: a server-side lifetime for THIS entry, after which the server removes it;
-            ``None`` keeps the bucket's own expiry. Whole seconds, at least one. Needs the
-            stream's ``allow_msg_ttl``: a stream without it refuses the write, which raises
+            ``None`` keeps the bucket's own expiry -- or, for a bucket bound read-only whose
+            declarer set none, the lifetime the opener asked for. Whole seconds, at least one.
+            Needs the stream's ``allow_msg_ttl``: a stream without it refuses the write, which raises
         :ptype ttl: timedelta | None
         :return: new revision number
         :rtype: int
         :raises KvError: on transport failure, or when the stream does not allow per-entry TTLs
         :raises ValueError: when ``ttl`` is under one second
         """
-        msg_ttl = _msg_ttl_seconds(ttl)
+        msg_ttl = _msg_ttl_seconds(ttl if ttl is not None else self._entry_ttl)
         if msg_ttl is not None:
             return await self._put_with_ttl(key=key, value=value, msg_ttl=msg_ttl)
         try:
@@ -944,7 +1283,7 @@ class NatsKvBucket:
         :raises KvError: on transport failure, or when the stream does not allow per-entry TTLs
         :raises ValueError: when ``ttl`` is under one second
         """
-        msg_ttl = _msg_ttl_seconds(ttl)
+        msg_ttl = _msg_ttl_seconds(ttl if ttl is not None else self._entry_ttl)
 
         def _do_create() -> Any:
             # the keyword is sent only when a lifetime was asked for, so the call an untimed
@@ -987,7 +1326,7 @@ class NatsKvBucket:
         :raises KvError: on transport failure, or when the stream does not allow per-entry TTLs
         :raises ValueError: when ``ttl`` is under one second
         """
-        msg_ttl = _msg_ttl_seconds(ttl)
+        msg_ttl = _msg_ttl_seconds(ttl if ttl is not None else self._entry_ttl)
         if msg_ttl is not None:
             return await self._update_with_ttl(key=key, value=value, revision=revision, msg_ttl=msg_ttl)
         try:
@@ -1120,6 +1459,376 @@ class NatsKvBucket:
             raise KvError(f"KV stream info carries no creation time: bucket={self._full_name}")
         return info.created
 
+    async def watch_key(
+        self,
+        *,
+        key: str,
+        heartbeat: timedelta = DEFAULT_KEY_WATCH_HEARTBEAT,
+        retry: timedelta = DEFAULT_KEY_WATCH_RETRY,
+    ) -> AsyncGenerator[KvKeyUpdate]:
+        """the key's latest message, then every later one, until the caller stops iterating.
+
+        Watches through a push consumer created by NAME with its filter in the create subject
+        (``$JS.API.CONSUMER.CREATE.{stream}.{name}.$KV.{bucket}.{key}``) -- the one consumer shape a
+        grant narrowed to a single key can admit. nats-py's ``KeyValue.watch`` creates an unnamed
+        consumer, which such a grant refuses by blocking to its deadline.
+
+        The consumer delivers the key's last message first and acknowledges nothing. Every consumer
+        gets a FRESH name: a name still held by a consumer the server has not yet reaped would
+        refuse the create. It sends a heartbeat while the key is quiet, and when three go missing --
+        a broker restart emptied the stream, or the consumer was reaped during a long disconnect --
+        or the server says it ended the consumer, the watch replaces it. The replacement redelivers the key's latest
+        message, so nothing written in between is missed; a redelivery of the message this watch
+        last yielded is not yielded again.
+
+        A consumer create that fails is logged, naming the grant to check, and retried after
+        ``retry``; it is never raised, because the watch's whole job is to outlast the conditions
+        that make a create fail. A closed consumer's server-side state is left to the server to
+        reap -- a key-scoped grant carries no ``CONSUMER.DELETE``.
+
+        Close it by stopping iteration -- ``aclose()``, or leaving an ``aclosing`` block -- which
+        drops the subscription behind the current consumer.
+
+        :param key: the key to watch; one literal key, never a wildcard
+        :ptype key: str
+        :param heartbeat: how often a quiet consumer proves it is alive
+        :ptype heartbeat: timedelta
+        :param retry: the pause after a consumer create failed
+        :ptype retry: timedelta
+        :return: the key's messages, in order; a delete or purge arrives with ``value=None``
+        :rtype: AsyncGenerator[KvKeyUpdate]
+        :raises ValueError: when ``key`` is empty or not a literal subject token sequence
+        :raises KvError: when the NATS connection is closed, so no consumer can ever deliver again
+        """
+        if not key or any(char in _KEY_WATCH_FORBIDDEN for char in key):
+            raise ValueError(f"watch_key needs one literal key, got {key!r}")
+        subject = f"$KV.{self._full_name}.{key}"
+        stream = f"{_KV_STREAM_PREFIX}{self._full_name}"
+        last: KvKeyUpdate | None = None
+        while True:
+            consumer = await _KeyWatchConsumer.open(
+                client=self._client,
+                stream=stream,
+                subject=subject,
+                heartbeat=heartbeat,
+                retry=retry,
+                op_timeout_seconds=self._timings.op_timeout_seconds,
+            )
+            if consumer is None:
+                await asyncio.sleep(retry.total_seconds())
+                continue
+            try:
+                async with aclosing(consumer.updates(key=key)) as updates:
+                    async for update in updates:
+                        if update == last:
+                            continue
+                        last = update
+                        yield update
+            finally:
+                await consumer.close()
+
+    async def list_keys(self, *, prefix: str = "") -> list[str]:
+        """every live key in the bucket that starts with ``prefix``.
+
+        Lists through a push consumer created by NAME with its filter in the create subject
+        (``$JS.API.CONSUMER.CREATE.{stream}.{name}.$KV.{bucket}.{prefix}>``), the one consumer shape
+        a pod's grant on a bucket admits. nats-py's ``KeyValue.keys`` and ``watchall`` create an
+        UNNAMED consumer, whose filter rides only in the request body, and a pod is never granted
+        that -- the call blocks to its deadline instead of raising.
+
+        A prefix that ends on a token boundary (``""``, or ending in ``.``) narrows the filter
+        itself, so the server delivers only matching keys; any other prefix filters the whole
+        bucket and keeps the matching keys here. The consumer delivers each key's latest message,
+        headers only, and a key whose latest message is a delete or purge is not listed. It
+        acknowledges nothing, and the server reaps it after its inactivity threshold -- a pod's
+        grant carries no ``CONSUMER.DELETE``.
+
+        :param prefix: keep keys starting with this; ``""`` lists every key
+        :ptype prefix: str
+        :return: the live keys, in stream order
+        :rtype: list[str]
+        :raises ValueError: when ``prefix`` carries a wildcard or whitespace
+        :raises KvError: when the consumer cannot be created or the listing does not finish within
+            its bound -- an ungranted create is never answered, so it arrives here as a timeout
+        """
+        if any(char in _KEY_WATCH_FORBIDDEN for char in prefix):
+            raise ValueError(f"list_keys needs a literal prefix, got {prefix!r}")
+        subject_prefix = f"$KV.{self._full_name}."
+        narrowed = prefix == "" or prefix.endswith(".")
+        filter_subject = f"{subject_prefix}{prefix}>" if narrowed else f"{subject_prefix}>"
+        stream = f"{_KV_STREAM_PREFIX}{self._full_name}"
+        try:
+            async with asyncio.timeout(_KEY_LISTING_TIMEOUT_SECONDS):
+                found = await self._list_keys_through(stream=stream, filter_subject=filter_subject)
+        except TimeoutError as exc:
+            raise KvError(
+                f"listing keys of {self._full_name} did not finish within {_KEY_LISTING_TIMEOUT_SECONDS:g}s. "
+                f"an ungranted consumer create blocks to its deadline -- check this principal's grant on "
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.{filter_subject}"
+            ) from exc
+        return [key[len(subject_prefix) :] for key in found if key[len(subject_prefix) :].startswith(prefix)]
+
+    async def _list_keys_through(self, *, stream: str, filter_subject: str) -> list[str]:
+        """create one named, headers-only consumer and read each key's latest message through it.
+
+        :param stream: the bucket's backing stream
+        :ptype stream: str
+        :param filter_subject: the subject filter, inside this bucket
+        :ptype filter_subject: str
+        :return: the subjects of the live keys, in stream order
+        :rtype: list[str]
+        :raises KvError: when the NATS connection is closed or the consumer create fails
+        """
+        raw = self._client.raw
+        if raw.is_closed:
+            raise KvError(f"cannot list keys of {self._full_name}: the NATS connection is closed")
+        inbox = raw.new_inbox()
+        subscription = await raw.subscribe(inbox)
+        subjects: list[str] = []
+        try:
+            config = ConsumerConfig(
+                name=f"{_KEY_LISTING_CONSUMER_PREFIX}{uuid.uuid7().hex}",
+                deliver_subject=inbox,
+                filter_subject=filter_subject,
+                deliver_policy=DeliverPolicy.LAST_PER_SUBJECT,
+                ack_policy=AckPolicy.NONE,
+                headers_only=True,
+                inactive_threshold=_KEY_WATCH_INACTIVE_THRESHOLD_SECONDS,
+                mem_storage=True,
+            )
+            try:
+                info = await self._client.jetstream_context().add_consumer(stream, config=config)
+            except Exception as exc:
+                raise KvError(f"key listing consumer on {stream} could not be created: {exc}") from exc
+            pending = int(info.num_pending or 0)
+            while pending > 0:
+                msg = await subscription.next_msg(timeout=_KEY_LISTING_TIMEOUT_SECONDS)
+                pending = int(msg.metadata.num_pending)
+                if (msg.headers or {}).get(_KV_OPERATION_HEADER) not in _KV_REMOVAL_OPERATIONS:
+                    subjects.append(msg.subject)
+        finally:
+            await _drop_subscription(subscription, subject=filter_subject)
+        return subjects
+
+
+class _KeyWatchConsumer:
+    """one named push consumer on one key, and the inbox subscription it delivers to.
+
+    Built by :meth:`open` and consumed once by :meth:`updates`; :meth:`NatsKvBucket.watch_key`
+    replaces it when it goes quiet.
+
+    :param subscription: the core subscription on the consumer's deliver inbox
+    :ptype subscription: Any
+    :param name: the consumer's name
+    :ptype name: str
+    :param subject: the watched key's subject
+    :ptype subject: str
+    :param heartbeat: the consumer's idle heartbeat
+    :ptype heartbeat: timedelta
+    :param client: the wrapper client, asked whether it outlives the consumer's connection
+    :ptype client: NatsClient
+    """
+
+    __slots__ = ("_client", "_heartbeat", "_name", "_subject", "_subscription")
+
+    def __init__(
+        self,
+        *,
+        subscription: _NatsSubscription,
+        name: str,
+        subject: str,
+        heartbeat: timedelta,
+        client: NatsClient,
+    ) -> None:
+        self._subscription = subscription
+        self._name = name
+        self._subject = subject
+        self._heartbeat = heartbeat
+        self._client = client
+
+    @classmethod
+    async def open(
+        cls,
+        *,
+        client: NatsClient,
+        stream: str,
+        subject: str,
+        heartbeat: timedelta,
+        retry: timedelta,
+        op_timeout_seconds: float,
+    ) -> _KeyWatchConsumer | None:
+        """subscribe a fresh inbox, then create a freshly named consumer delivering to it.
+
+        The inbox is subscribed FIRST so nothing the consumer delivers can arrive before anything
+        is listening for it.
+
+        :param client: the connected wrapper client
+        :ptype client: NatsClient
+        :param stream: the bucket's backing stream
+        :ptype stream: str
+        :param subject: the watched key's subject
+        :ptype subject: str
+        :param heartbeat: the consumer's idle heartbeat
+        :ptype heartbeat: timedelta
+        :param retry: the pause the caller takes after a failure, for the log line
+        :ptype retry: timedelta
+        :param op_timeout_seconds: the bucket's ceiling on one KV operation, which bounds the create
+        :ptype op_timeout_seconds: float
+        :return: the consumer, or ``None`` when it could not be created
+        :rtype: _KeyWatchConsumer | None
+        :raises KvError: when the NATS connection is closed
+        """
+        raw = client.raw
+        if raw.is_closed:
+            raise KvError(f"cannot watch {subject}: the NATS connection is closed")
+        name = f"{_KEY_WATCH_CONSUMER_PREFIX}{uuid.uuid7().hex}"
+        inbox = raw.new_inbox()
+        subscription = await raw.subscribe(inbox)
+        config = ConsumerConfig(
+            name=name,
+            deliver_subject=inbox,
+            filter_subject=subject,
+            deliver_policy=DeliverPolicy.LAST_PER_SUBJECT,
+            ack_policy=AckPolicy.NONE,
+            idle_heartbeat=heartbeat.total_seconds(),
+            inactive_threshold=_KEY_WATCH_INACTIVE_THRESHOLD_SECONDS,
+            mem_storage=True,
+        )
+        js = client.jetstream_context()
+        consumer: _KeyWatchConsumer | None = None
+        try:
+            await run_bounded(
+                lambda: js.add_consumer(stream, config=config),
+                timeout=op_timeout_seconds,
+                what=f"key watch consumer create on {stream}",
+            )
+            consumer = cls(subscription=subscription, name=name, subject=subject, heartbeat=heartbeat, client=client)
+        # NOSILENT: logged naming the grant to check; the caller pauses and creates another
+        except Exception as exc:  # noqa: BLE001 -- a failed create is retried, never raised
+            log.warning(
+                "key watch consumer %s on %s could not be created; retrying in %.0fs. an ungranted "
+                "create blocks to its deadline -- check this principal's grant on "
+                "$JS.API.CONSUMER.CREATE.%s.*.%s: %s",
+                name,
+                subject,
+                retry.total_seconds(),
+                stream,
+                subject,
+                exc,
+                extra={"extra_data": {"subject": subject, "stream": stream, "consumer": name, "error": str(exc)}},
+            )
+            await _drop_subscription(subscription, subject=subject)
+        if consumer is not None:
+            log.debug(
+                "key watch consumer created",
+                extra={"extra_data": {"subject": subject, "stream": stream, "consumer": name}},
+            )
+        return consumer
+
+    async def updates(self, *, key: str) -> AsyncGenerator[KvKeyUpdate]:
+        """every message the consumer delivers, until its heartbeats stop.
+
+        :param key: the watched key, carried onto each update
+        :ptype key: str
+        :return: the key's messages, in order
+        :rtype: AsyncGenerator[KvKeyUpdate]
+        :raises KvError: when the NATS connection is closed
+        """
+        silence = self._heartbeat.total_seconds() * _KEY_WATCH_MISSED_HEARTBEATS
+        while True:
+            try:
+                msg = await self._subscription.next_msg(timeout=silence)
+            except _NatsConnectionClosedError as exc:
+                if self._client.is_closed:
+                    raise KvError(f"key watch on {self._subject} ended: the NATS connection is closed") from exc
+                # NOSILENT: the consumer's connection was retired by a credential renewal while the
+                # client lives on a successor; the caller replaces the consumer there, and the
+                # replacement redelivers the key's latest message.
+                log.info(
+                    "key watch consumer %s on %s lost its connection to a credential renewal; replacing it",
+                    self._name,
+                    self._subject,
+                    extra={"extra_data": {"subject": self._subject, "consumer": self._name}},
+                )
+                return
+            except TimeoutError:
+                # NOSILENT: a consumer that stopped heartbeating is replaced by the caller
+                log.info(
+                    "key watch consumer %s on %s missed %d heartbeats; replacing it",
+                    self._name,
+                    self._subject,
+                    _KEY_WATCH_MISSED_HEARTBEATS,
+                    extra={"extra_data": {"subject": self._subject, "consumer": self._name}},
+                )
+                return
+            headers = msg.headers or {}
+            status = headers.get(Header.STATUS) if not msg.data else None
+            if status == _STATUS_IDLE_HEARTBEAT:
+                # proof of life, and nothing to yield
+                continue
+            if status is not None:
+                # the server ended the consumer (``409 Consumer Deleted``, and its kin): replace it
+                # now rather than wait out the heartbeats it will never send.
+                log.info(
+                    "key watch consumer %s on %s ended by the server (%s %s); replacing it",
+                    self._name,
+                    self._subject,
+                    status,
+                    headers.get(Header.DESCRIPTION, ""),
+                    extra={"extra_data": {"subject": self._subject, "consumer": self._name, "status": status}},
+                )
+                return
+            yield self._update_of(msg, key=key)
+
+    def _update_of(self, msg: Msg, *, key: str) -> KvKeyUpdate:
+        """the update a delivered data message carries.
+
+        :param msg: the delivered message
+        :ptype msg: Msg
+        :param key: the watched key
+        :ptype key: str
+        :return: the update
+        :rtype: KvKeyUpdate
+        """
+        headers = msg.headers or {}
+        try:
+            revision = int(msg.metadata.sequence.stream)
+        except Exception as exc:  # noqa: BLE001 -- the value is still delivered; only its revision is unknown
+            log.warning(
+                "key watch message on %s carries no stream sequence; delivering it with revision 0: %s",
+                self._subject,
+                exc,
+                extra={"extra_data": {"subject": self._subject, "consumer": self._name, "error": str(exc)}},
+            )
+            revision = 0
+        removed = headers.get(_KV_OPERATION_HEADER) in _KV_REMOVAL_OPERATIONS
+        return KvKeyUpdate(key=key, value=None if removed else bytes(msg.data), revision=revision)
+
+    async def close(self) -> None:
+        """drop the inbox subscription; the server reaps the consumer after its inactivity threshold.
+
+        :return: nothing
+        :rtype: None
+        """
+        await _drop_subscription(self._subscription, subject=self._subject)
+
+
+async def _drop_subscription(subscription: _NatsSubscription, *, subject: str) -> None:
+    """unsubscribe a key watch's inbox, logging rather than raising a failure.
+
+    :param subscription: the core subscription on the deliver inbox
+    :ptype subscription: _NatsSubscription
+    :param subject: the watched key's subject, for the log line
+    :ptype subject: str
+    :return: nothing
+    :rtype: None
+    """
+    try:
+        await subscription.unsubscribe()
+    # NOSILENT: logged; the consumer behind it is reaped by the server once nothing listens
+    except Exception as exc:  # noqa: BLE001 -- teardown continues regardless
+        log.debug("key watch unsubscribe on %s failed: %s", subject, exc)
+
 
 @runtime_checkable
 class KvBucketLike(Protocol):
@@ -1178,6 +1887,7 @@ class KvCapable(Protocol):
         storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
+        direct: bool | None = None,
     ) -> KvBucketLike: ...
 
 

@@ -20,15 +20,31 @@ Translation happens in two directions at the wire boundary:
   canonical dotted name for dispatch / logging / persistence.
 - **Inbound (reverse)** — tool-call names in the RESPONSE are rewritten back
   from wire to canonical dotted form via
-  :func:`threetears.models.tool_name_translation.reverse_translate_message`, and
-  junk-named ``invalid_tool_calls`` entries (e.g. the XML-attribute-leak shape,
-  prod 2026-05-19) are dropped, before any of it reaches application dispatch.
+  :func:`threetears.models.tool_name_translation.reverse_translate_message`
+  before any of it reaches application dispatch.
 
-**Why the PUBLIC ``astream`` / ``ainvoke`` / ``invoke`` (not the protected
-``_astream`` / ``_generate``) are overridden.** Wrapping the protected
-``_astream`` in another async generator silently drops ``on_chat_model_stream``
-callbacks (prod 2026-05-13: 190 chunks delivered, 0 stream events — the live UI
-stayed blank while the DB content saved fine). And ``BaseChatModel.ainvoke`` /
+**Junk-named tool calls** (the XML-attribute-leak shape, prod 2026-05-19) are
+dropped where every consumer is downstream of the drop
+(:mod:`threetears.models.providers._junk_tool_calls`). On a stream that is the
+protected ``_astream`` / ``_stream``: ``BaseChatModel`` reports each chunk to the
+callbacks (``astream_events``, a streaming ``ainvoke``'s handlers, LangGraph's
+messages stream) and builds the ``on_chat_model_end`` aggregate only AFTER this
+hook yields it, and every streaming route -- ``astream``, ``ainvoke`` under a
+streaming callback, the v2 protocol events, a deadline-collected
+``_agenerate`` -- reads it. The run manager is kept from the provider's own
+stream, which would otherwise report each raw chunk before the filter saw it,
+and each released chunk is reported here instead. A finished message is
+filtered again at every public entry point, which covers the non-streamed
+answers.
+
+**Why the PUBLIC ``astream`` / ``ainvoke`` / ``invoke`` carry the name
+translation.** Prod 2026-05-13 lost every ``on_chat_model_stream`` event (190
+chunks delivered, 0 stream events -- the live UI stayed blank while the DB content
+saved fine) with translation in an ``_astream`` override. The ``_astream`` here
+keeps the event chain whole because ``BaseChatModel`` reports what it yields;
+``test_astream_events_emits_on_chat_model_stream`` and
+``test_astream_events_survives_with_config_callbacks`` pin that chain for each
+provider, and a change to this hook that breaks it fails them. And ``BaseChatModel.ainvoke`` /
 ``invoke`` route through ``_agenerate_with_cache`` -> the protected ``_astream``
 aggregate whenever a streaming callback is attached (the converged ``agent_node``
 path under an ``astream_events`` tap), bypassing BOTH ``astream`` AND
@@ -55,58 +71,25 @@ Mix in BEFORE the concrete base (``(NameTranslatingChatMixin, ChatX)``) so
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 from threetears.models.errors import ModelCallTimeout
+from threetears.models.providers._junk_tool_calls import JunkToolCallStreamFilter, drop_junk_tool_calls
 from threetears.models.tool_name_translation import (
     build_name_translation,
     forward_translate_input,
     reverse_translate_message,
 )
-from threetears.models.tool_name_validation import filter_invalid_tool_calls
-from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
+    from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
     from langchain_core.language_models import LanguageModelInput
     from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
-    from langchain_core.outputs import ChatResult
+    from langchain_core.outputs import ChatGenerationChunk, ChatResult
     from langchain_core.runnables import Runnable, RunnableConfig
 
-__all__ = ["NameTranslatingChatMixin", "drop_junk_invalid_tool_calls"]
-
-_logger = get_logger(__name__)
-
-
-def drop_junk_invalid_tool_calls(message: Any) -> None:
-    """drop ``invalid_tool_calls`` entries whose ``name`` fails validation.
-
-    Mutates ``message.invalid_tool_calls`` in place, keeping only entries whose
-    names match the canonical 3tears tool-name regex; each rejected entry is
-    logged once at WARNING (name truncated to 80 chars). Guards against a
-    junk-named fragment (e.g. an XML-attribute leak, prod 2026-05-19) reaching
-    downstream dispatch / persistence.
-
-    :param message: chat-model response (``AIMessage`` or ``AIMessageChunk``);
-        duck-typed via attribute access
-    :ptype message: Any
-    """
-    raw = getattr(message, "invalid_tool_calls", None) or []
-    if not raw:
-        return
-    kept, rejected = filter_invalid_tool_calls(raw)
-    if not rejected:
-        return
-    for entry in rejected:
-        name = entry.get("name") if isinstance(entry, dict) else None
-        truncated = name[:80] if isinstance(name, str) else repr(name)[:80]
-        _logger.warning(
-            "name-translating wrapper dropped invalid_tool_calls entry with junk name: %s",
-            truncated,
-        )
-    raw.clear()
-    raw.extend(kept)
+__all__ = ["NameTranslatingChatMixin"]
 
 
 class NameTranslatingChatMixin:
@@ -201,7 +184,6 @@ class NameTranslatingChatMixin:
             **kwargs,
         ):
             reverse_translate_message(chunk, self._name_reverse_map)
-            drop_junk_invalid_tool_calls(chunk)
             yield chunk
 
     def call_deadline_s(self) -> float | None:
@@ -216,35 +198,98 @@ class NameTranslatingChatMixin:
         """
         return None
 
-    async def _astream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
-        """The parent's stream, ended when no chunk arrives within :meth:`call_deadline_s`.
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """The parent's stream without junk-named tool calls, ended when nothing arrives within the deadline.
 
-        A long reply may stream for longer than the deadline; what cannot happen
-        is a wait that long with nothing arriving. Chunks pass through unchanged,
-        with the run manager the caller gave, so ``astream_events`` still sees
-        each one (translation stays on the public ``astream``).
+        A long reply may stream for longer than :meth:`call_deadline_s`; what cannot
+        happen is a wait that long with nothing arriving. Each chunk goes through
+        :class:`~threetears.models.providers._junk_tool_calls.JunkToolCallStreamFilter`
+        (the module docstring says why here). The parent gets no run manager, so it
+        cannot report a chunk before the filter has seen it; each chunk this yields is
+        reported to the caller's run manager instead, as the parent would have.
+        Translation stays on the public ``astream``.
 
-        :param args: positional passthrough to the parent's ``_astream``
-        :ptype args: Any
+        :param messages: chat messages
+        :ptype messages: list[BaseMessage]
+        :param stop: optional stop sequences
+        :ptype stop: list[str] | None
+        :param run_manager: the caller's run manager, when it wants each chunk reported
+        :ptype run_manager: AsyncCallbackManagerForLLMRun | None
         :param kwargs: keyword passthrough to the parent's ``_astream``
         :ptype kwargs: Any
-        :return: the parent's chunks
-        :rtype: AsyncIterator[Any]
+        :return: the parent's chunks, junk-named tool calls removed
+        :rtype: AsyncIterator[ChatGenerationChunk]
+        :raises ModelCallTimeout: when no chunk arrives within the deadline
         """
-        stream = super()._astream(*args, **kwargs)  # type: ignore[misc]
+        stream = super()._astream(messages, stop=stop, **kwargs)  # type: ignore[misc]
+        junk = JunkToolCallStreamFilter()
         try:
-            while True:
+            ended = False
+            while not ended:
+                released: list[ChatGenerationChunk]
                 try:
                     async with asyncio.timeout(self.call_deadline_s()):
                         chunk = await anext(stream)
+                    released = junk.feed(chunk)
                 except StopAsyncIteration:
-                    # NOSILENT: the parent's stream ended; that is the end of this one.
-                    return
+                    # NOSILENT: the parent's stream ended; what the filter still holds goes out last.
+                    ended = True
+                    released = junk.finish()
                 except TimeoutError as exc:
                     raise ModelCallTimeout(f"no chunk within {self.call_deadline_s()} s") from exc
-                yield chunk
+                for out in released:
+                    if run_manager is not None:
+                        await run_manager.on_llm_new_token(out.text, chunk=out, **_token_extras(out))
+                    yield out
         finally:
             await stream.aclose()
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        """The parent's sync stream without junk-named tool calls, as :meth:`_astream` does it.
+
+        The sync ``stream`` and a sync ``invoke`` under a streaming callback read this
+        hook. It has no deadline: the sync path never had one.
+
+        :param messages: chat messages
+        :ptype messages: list[BaseMessage]
+        :param stop: optional stop sequences
+        :ptype stop: list[str] | None
+        :param run_manager: the caller's run manager, when it wants each chunk reported
+        :ptype run_manager: CallbackManagerForLLMRun | None
+        :param kwargs: keyword passthrough to the parent's ``_stream``
+        :ptype kwargs: Any
+        :return: the parent's chunks, junk-named tool calls removed
+        :rtype: Iterator[ChatGenerationChunk]
+        """
+        junk = JunkToolCallStreamFilter()
+        stream: Iterator[ChatGenerationChunk] = super()._stream(messages, stop=stop, **kwargs)  # type: ignore[misc]
+
+        def released() -> Iterator[ChatGenerationChunk]:
+            """the filter's output for each source chunk, then what it still holds.
+
+            :return: the chunks to emit, in order
+            :rtype: Iterator[ChatGenerationChunk]
+            """
+            for chunk in stream:
+                yield from junk.feed(chunk)
+            yield from junk.finish()
+
+        for out in released():
+            if run_manager is not None:
+                run_manager.on_llm_new_token(out.text, chunk=out, **_token_extras(out))
+            yield out
 
     async def _agenerate(
         self,
@@ -292,7 +337,7 @@ class NameTranslatingChatMixin:
             )
         for generation in result.generations:
             reverse_translate_message(generation.message, self._name_reverse_map)
-            drop_junk_invalid_tool_calls(generation.message)
+            drop_junk_tool_calls(generation.message)
         translated: ChatResult = result
         return translated
 
@@ -328,7 +373,7 @@ class NameTranslatingChatMixin:
                 # member has no such attribute).
                 if isinstance(generation, ChatGeneration):
                     reverse_translate_message(generation.message, self._name_reverse_map)
-                    drop_junk_invalid_tool_calls(generation.message)
+                    drop_junk_tool_calls(generation.message)
         return result
 
     def generate(
@@ -355,7 +400,7 @@ class NameTranslatingChatMixin:
             for generation in generations:
                 if isinstance(generation, ChatGeneration):
                     reverse_translate_message(generation.message, self._name_reverse_map)
-                    drop_junk_invalid_tool_calls(generation.message)
+                    drop_junk_tool_calls(generation.message)
         return result
 
     async def ainvoke(
@@ -395,7 +440,7 @@ class NameTranslatingChatMixin:
             **kwargs,
         )
         reverse_translate_message(result, self._name_reverse_map)
-        drop_junk_invalid_tool_calls(result)
+        drop_junk_tool_calls(result)
         translated: AIMessage = result
         return translated
 
@@ -430,9 +475,21 @@ class NameTranslatingChatMixin:
             **kwargs,
         )
         reverse_translate_message(result, self._name_reverse_map)
-        drop_junk_invalid_tool_calls(result)
+        drop_junk_tool_calls(result)
         translated: AIMessage = result
         return translated
+
+
+def _token_extras(chunk: ChatGenerationChunk) -> dict[str, Any]:
+    """The extra arguments a provider passes with a chunk it reports: its logprobs, when it has any.
+
+    :param chunk: a chunk about to be reported
+    :ptype chunk: ChatGenerationChunk
+    :return: ``{"logprobs": ...}`` or nothing
+    :rtype: dict[str, Any]
+    """
+    logprobs = (chunk.generation_info or {}).get("logprobs")
+    return {"logprobs": logprobs} if logprobs else {}
 
 
 def _wire_tool_choice(tool_choice: Any, reverse_map: dict[str, str]) -> Any:
