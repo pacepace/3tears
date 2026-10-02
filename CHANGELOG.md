@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent tools: a tool's refusal carries its error code to the caller
+
+Owner ruling, 2026-10-01. A tool pod's refusal reached every caller with no code, because
+`ToolResult` had nowhere to put one and `ToolServer` copied only `success`, `content`, `metadata`
+and `error` onto the call response; the platform rendered every such refusal as its generic 502.
+
+- **New: `ToolResult.error_code: str | None`**, copied by `ToolServer` onto
+  `CallResponse.error_code` and forwarded unchanged by the registry onto
+  `ProxyCallResponse.error_code` (and so onto `ToolCallError.error_code`).
+- **New: `threetears.agent.tools.base_tool.CONFLICT` (`"CONFLICT"`) and `TOOL_RESULT_ERROR_CODES`**,
+  the closed vocabulary a tool may name. `ToolResult` raises `ValueError` at construction for a code
+  outside it (a lower-case `"conflict"` included, with the declared spelling named) and for a code on
+  a success. Upper case, like every platform code, so one condition has one spelling on the wire;
+  closed, so every code a tool can name is one the platform's error map can be held total over.
+
 ### Core: a naive datetime is refused at every storage encoder; one stored form everywhere
 
 Owner ruling, 2026-10-01: one stored form for a datetime inside JSON -- ISO 8601, aware UTC, six

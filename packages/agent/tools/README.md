@@ -8,6 +8,26 @@ Part of the [3tears](https://github.com/pacepace/3tears) framework.
 
 `ToolServer.handle_call` stamps every dispatch with a unified `AuditEvent` envelope (`event_type='tool.call'`) via `threetears.agent.audit.publish_audit`. The baseline emission fires in a `finally` block so success, failure (tool returned `success=False`), and error (tool raised) outcomes all produce a row. Identity axes carry from the active `ToolCallScope` (`actor_user_id`, `calling_agent_id`, `owner_agent_id`, `customer_id`, `correlation_id`); `resource_namespace_id` / `resource_namespace_type` stay `None` at the baseline layer since the tool resolves its target inside `execute`. Per-tool additive events (e.g. `workspace.fs_write`) still publish via `publish_audit` and ride alongside the baseline row under the same `correlation_id`, which ties a request's events together and is not a deduplication key: every `tool.call` in a turn shares it, and each is its own row. Each envelope's `id` is its identity, so a JetStream redelivery (which repeats the `id`) collapses to one row. Emission is fire-and-forget: NATS publish failures log WARN and never taint the tool's response.
 
+## Naming a refusal: `ToolResult.error_code`
+
+A tool that refuses a call for a reason its caller can act on names it with a code, not only a sentence:
+
+```python
+from threetears.agent.tools.base_tool import CONFLICT, ToolResult
+
+return ToolResult(success=False, content="", error="that changed while you were editing it", error_code=CONFLICT)
+```
+
+`ToolServer` copies `error_code` onto `CallResponse.error_code`, and the registry forwards it unchanged onto `ProxyCallResponse.error_code`, so a caller (and `ToolCallClient`'s `ToolCallError.error_code`) branches on the tool's code exactly as on a registry refusal. The platform maps each code to an HTTP status, an agent summary and a channel sentence; a failure with no code renders as the generic fallback (HTTP 502).
+
+The vocabulary is closed: `error_code` must be one of `TOOL_RESULT_ERROR_CODES`, or `ToolResult` raises `ValueError` at construction, naming the declared spelling when it was only the case that was wrong. Every code is upper case, like every platform code, so one condition never travels under two spellings. A success may not name a code.
+
+| Code | Meaning | Platform face |
+|------|---------|---------------|
+| `CONFLICT` | what the call changes was changed by someone else at the same moment; nothing was written. Read it again and retry. | HTTP 409, retryable |
+
+A new code is a change to `TOOL_RESULT_ERROR_CODES` here and a face in the platform's error map, released together.
+
 ## Tool-as-namespace emission
 
 Tool namespace materialization is platform-owned. `ToolServer.publish_registration` writes the `RegistrationManifest` (carrying `pod_id` + `tools` + the `owner_agent_id` / `customer_id` envelope fields), and a platform-side namespace emitter subscribes to `{ns}.tools.register` and upserts one `namespaces` row of type `tool` per tool. This is the sole writer in the platform.
