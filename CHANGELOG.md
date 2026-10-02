@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Testing: `FakeNatsClient` declares, and models a broker restart
+
+The shipped double had `kv_bucket` only, so a consumer that declares its bucket through
+`ensure_kv_bucket` -- the form `NatsClient` puts back after a reconnect -- could not be tested
+against it, and no test could tell a remembered declaration from an ordinary open.
+
+- **Added: `FakeNatsClient.ensure_kv_bucket`**, the `KvDeclaring` surface: creates the bucket, or
+  takes the declared TTL and `direct` on a live one with its entries kept, sharing the one handle
+  `kv_bucket` hands out; `create_if_missing=False` on an absent bucket raises `KeyError`.
+- **Added: `FakeNatsClient.remembered_declarations`**, the buckets the real client would create
+  again after a reconnect: memory-storage declarations that may create, and nothing else.
+- **Added: `FakeNatsClient.restart_broker()`**: every remembered bucket comes back empty, every
+  other one is absent until an operation heals it, then the reconnect hooks run.
+  `FakeNatsClient.bucket_exists(name)` answers which is which.
+- **Added: `FakeKvBucket.is_vanished` and `FakeKvBucket.reconcile(ttl=, direct=)`**, which the
+  client uses for the above.
+
 ### NATS: a broker restart the client rides out is a WARNING, not an ERROR
 
 Found live in the devx bring-up: every service logged `NATS error: nats: unexpected EOF` at ERROR
