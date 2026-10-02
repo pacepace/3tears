@@ -26,6 +26,18 @@ private module path, and a private name bound by a string (`monkeypatch.setattr(
 - **3tears' own gate, `tests/enforcement/test_private_binding.py`, is red** until this repo's
   findings are fixed. Nothing is exempted.
 
+### Scrape: `run_eval_loop_multi_row` takes its grounding judges and outer deadlines as arguments
+
+The scrape tests reached the per-document and multi-row judges and their outer deadlines by
+patching private module attributes by string. They are now injected, each defaulting to exactly
+what ran before, so no caller changes:
+
+- **New: `threetears.scrape.eval_loop.DocumentJudge` and `MultiRowJudge`**, the protocols of the
+  `"per_document"` and `"multi_row_vision"` grounding checks.
+- **`run_eval_loop_multi_row`** takes `document_judge`, `multi_row_judge`,
+  `per_document_deadline_seconds` (default 90) and `multi_row_vision_deadline_seconds`
+  (default 150).
+
 ### L1 caches a JSON value holding a UUID, datetime or Decimal instead of failing a committed write
 
 `SQLiteBackend.serialize_value` encoded JSON columns with a bare `json.dumps`, so a dict or list
