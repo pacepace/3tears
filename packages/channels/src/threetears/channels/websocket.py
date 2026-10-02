@@ -69,6 +69,22 @@ UNAUTHENTICATED: Final = "UNAUTHENTICATED"
 #: from an ordinary 1000/1001/1006 drop. The ``error`` frame sent just before it carries the code.
 _POLICY_VIOLATION_CLOSE_CODE: Final = 1008
 
+#: the close code a connection whose peer stopped answering the heartbeat is closed with. Not
+#: 1008: nothing was refused, and a client that is in fact still there should simply reconnect,
+#: the way it does after any other drop. 1011 is what the ``websockets`` library itself closes a
+#: keepalive timeout with.
+_UNRESPONSIVE_CLOSE_CODE: Final = 1011
+
+#: the frame the server heartbeat sends every ``heartbeat_interval`` seconds. A client answers it
+#: with :data:`_PONG_FRAME_TYPE`; any frame at all from the peer counts as the answer.
+_HEARTBEAT_PING: Final = json.dumps({"type": "ping"})
+
+#: the frame type a client answers a heartbeat ping with. Consumed by the handler, never routed.
+_PONG_FRAME_TYPE: Final = "pong"
+
+#: the client-safe message an expired connection's ``UNAUTHENTICATED`` frame carries.
+_CREDENTIAL_EXPIRED_MESSAGE: Final = "access token expired"
+
 
 class WebSocketAuthRefused(Exception):
     """an auth validator's refusal of a connection, carried to the client as itself.
@@ -102,7 +118,11 @@ class WebSocketAuthRefused(Exception):
 
 #: the host's authentication seam: verify the connection's token and return its claims
 #: (``user_id``, and ``customer_id`` when the host scopes by customer), or raise
-#: :class:`WebSocketAuthRefused` with the code and message the client should receive.
+#: :class:`WebSocketAuthRefused` with the code and message the client should receive. A claims
+#: dict that carries ``exp`` -- the credential's expiry in unix seconds, the JWT convention --
+#: ends the connection when that instant passes: the next frame, or the next heartbeat tick of an
+#: idle socket, is answered ``UNAUTHENTICATED`` and closed 1008. Without ``exp`` the connection
+#: never expires on its own.
 AuthValidator = Callable[[str], Awaitable[dict[str, Any]]]
 
 _DEFAULT_HEARTBEAT_INTERVAL = 30
@@ -118,7 +138,9 @@ _TRANSIENT_FRAME_TYPES = frozenset({"cursor", "typing", "presence"})
 # the built-in frame types the router owns; an app may NOT register a
 # handler for one of these (it would shadow core routing). app-specific
 # frame types (e.g. scriob ``commit``) go through ``frame_handlers``.
-_BUILTIN_FRAME_TYPES = frozenset({"message", "join", "leave", "editor.op", "resume", *_TRANSIENT_FRAME_TYPES})
+_BUILTIN_FRAME_TYPES = frozenset(
+    {"message", "join", "leave", "editor.op", "resume", _PONG_FRAME_TYPE, *_TRANSIENT_FRAME_TYPES}
+)
 
 # the built-in frame types that act on a room. each is handled under the
 # connection's room lock, so a revocation cannot interleave with one.
@@ -143,6 +165,11 @@ class _RoomConnection:
     :ivar customer_id: the principal's customer
     :ivar joined_rooms: rooms this connection is currently a member of
     :ivar lock: serializes room actions and evictions on this connection
+    :ivar expires_at: unix seconds at which the connection's credential expires (the validator's
+        ``exp`` claim), or ``None`` when the validator reported none
+    :ivar heard_from_peer: whether any frame arrived since the last heartbeat ping
+    :ivar handling_frame: whether the message loop is busy with a frame rather than reading; the
+        peer's silence proves nothing while it is
     """
 
     websocket: Any
@@ -150,6 +177,9 @@ class _RoomConnection:
     customer_id: str
     joined_rooms: set[str] = field(default_factory=set)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    expires_at: float | None = None
+    heard_from_peer: bool = True
+    handling_frame: bool = False
 
 
 async def _safe_send(websocket: Any, payload: str, *, context: str) -> bool:
@@ -205,6 +235,27 @@ def parse_attachment_ids(raw: object) -> list[UUID] | None:
         except ValueError:
             result = None
     return result
+
+
+def _claims_expiry(claims: dict[str, Any]) -> float | None:
+    """read the credential expiry a validator reported, in unix seconds.
+
+    :param claims: the validator's claims
+    :ptype claims: dict[str, Any]
+    :return: the ``exp`` claim, or ``None`` when the claims carry none
+    :rtype: float | None
+    :raises TypeError: when ``exp`` is present but not a number -- a host bug, since a
+        connection must not silently outlive a credential its host meant to bound it
+    """
+    if "exp" not in claims:
+        return None
+    exp = claims["exp"]
+    if not isinstance(exp, int | float) or isinstance(exp, bool):
+        raise TypeError(
+            f"auth_validator reported exp={exp!r} ({type(exp).__name__}); it must be the credential's "
+            "expiry in unix seconds, or be left out of the claims"
+        )
+    return float(exp)
 
 
 @runtime_checkable
@@ -398,11 +449,18 @@ class WebSocketHandler:
         join_action: str = _DEFAULT_JOIN_ACTION,
         write_action: str = _DEFAULT_WRITE_ACTION,
         room_policy: RoomPolicy | None = None,
+        wall_clock: Callable[[], float] = time.time,
+        heartbeat_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         """initialize websocket handler with router, auth validator, and config.
 
         config keys:
-          - heartbeat_interval: seconds between heartbeat pings (default 30)
+          - heartbeat_interval: seconds between heartbeat pings (default 30). Every open
+            connection is sent ``{"type": "ping"}`` on this interval, and one that has sent
+            nothing at all -- a ``{"type": "pong"}`` answer or any other frame -- by the next
+            tick is closed 1011 and cleaned up exactly as a disconnect is. So a vanished peer
+            is gone within two intervals. The same tick ends an idle connection whose
+            credential has expired (see :data:`AuthValidator`). Must be positive.
           - max_message_size: maximum inbound message bytes (default 65536)
           - rate_limit_messages: max messages per window (default 10)
           - rate_limit_window: sliding window duration in seconds (default 1.0)
@@ -459,11 +517,28 @@ class WebSocketHandler:
             policy anyone who may read the namespace may enter every room in
             it. ``None`` leaves the namespace gate as the only rule
         :ptype room_policy: RoomPolicy | None
+        :param wall_clock: current unix time in seconds, compared with a credential's ``exp``
+        :ptype wall_clock: Callable[[], float]
+        :param heartbeat_sleep: waits out one heartbeat interval between ticks
+        :ptype heartbeat_sleep: Callable[[float], Awaitable[None]]
+        :raises ValueError: when ``heartbeat_interval`` is not a positive number, or when only one
+            of ``acl_cache`` and ``ns_resolver`` is given, or when ``frame_handlers`` names a
+            built-in frame type
         """
         self.router = router
         self._auth_validator = auth_validator
         self.config: dict[str, Any] = config if config is not None else {}
-        self.heartbeat_interval: int = self.config.get("heartbeat_interval", _DEFAULT_HEARTBEAT_INTERVAL)
+        self.heartbeat_interval: float = self.config.get("heartbeat_interval", _DEFAULT_HEARTBEAT_INTERVAL)
+        if (
+            not isinstance(self.heartbeat_interval, int | float)
+            or isinstance(self.heartbeat_interval, bool)
+            or self.heartbeat_interval <= 0
+        ):
+            raise ValueError(
+                f"heartbeat_interval must be a positive number of seconds, got {self.heartbeat_interval!r}"
+            )
+        self._wall_clock = wall_clock
+        self._heartbeat_sleep = heartbeat_sleep
         self.max_message_size: int = self.config.get("max_message_size", _DEFAULT_MAX_MESSAGE_SIZE)
         self.rate_limit_messages: int = self.config.get("rate_limit_messages", _DEFAULT_RATE_LIMIT_MESSAGES)
         self.rate_limit_window: float = self.config.get("rate_limit_window", _DEFAULT_RATE_LIMIT_WINDOW)
@@ -500,10 +575,15 @@ class WebSocketHandler:
         """manage full lifecycle of single websocket connection.
 
         accepts connection, authenticates via query param or first message,
-        enters message loop on success, and cleans up on disconnect or error.
+        serves the message loop and the heartbeat on success, and cleans up when
+        either ends the connection -- a peer disconnect, a peer that stopped
+        answering the heartbeat, an expired credential -- or on error.
 
         :param websocket: websocket connection conforming to WebSocketProtocol
         :ptype websocket: Any
+        :raises TypeError: when the validator's claims are not a dict, or carry an ``exp``
+            that is not a number of unix seconds -- a host bug, raised before anything is
+            registered
         """
         await websocket.accept()
 
@@ -513,6 +593,7 @@ class WebSocketHandler:
 
         user_id = str(auth_payload.get("user_id", ""))
         customer_id = str(auth_payload.get("customer_id", ""))
+        expires_at = _claims_expiry(auth_payload)
 
         # one stable id per socket (design T3-D5): the presence pk (task-01)
         # and the broadcast ``exclude`` (so the author never echoes their own
@@ -537,7 +618,9 @@ class WebSocketHandler:
         # (design T3-D6: not shared/queryable state), so disconnect can leave
         # each and an eviction can find them. cross-pod membership itself
         # lives in the task-01 collection.
-        connection = _RoomConnection(websocket=websocket, user_id=user_id, customer_id=customer_id)
+        connection = _RoomConnection(
+            websocket=websocket, user_id=user_id, customer_id=customer_id, expires_at=expires_at
+        )
         with self._connections_lock:
             self._connections[connection_id] = connection
 
@@ -546,7 +629,7 @@ class WebSocketHandler:
             # cursor on the query string and a replay source is wired, stream
             # the durable tail before going live so a reconnect loses nothing.
             await self._maybe_resume_on_connect(websocket, connection)
-            await self._message_loop(websocket, user_id, customer_id, connection_id, connection)
+            await self._serve(websocket, user_id, customer_id, connection_id, connection)
         finally:
             with self._connections_lock:
                 self._connections.pop(connection_id, None)
@@ -561,6 +644,212 @@ class WebSocketHandler:
                         await self._room_fanout.leave_room(room_id, connection_id)
             if self._room_state is not None:
                 await self._room_state.unregister(connection_id, websocket)
+
+    async def _serve(
+        self,
+        websocket: Any,
+        user_id: str,
+        customer_id: str,
+        connection_id: str,
+        connection: _RoomConnection,
+    ) -> None:
+        """run the message loop and the heartbeat together until either ends the connection.
+
+        two tasks rather than a heartbeat polled from the loop, because the loop
+        spends an idle connection blocked in ``receive_text`` -- and a peer that
+        has vanished never wakes it: the close handshake cannot complete without
+        it. so whichever finishes first ends the other. the loop finishes when the
+        peer disconnects or its credential has expired by the time a frame
+        arrives; the heartbeat finishes when it has closed a connection whose peer
+        stopped answering, or whose credential expired while idle. an exception
+        from either is raised once both have stopped; cancelling this coroutine
+        cancels both.
+
+        :param websocket: the authenticated socket
+        :ptype websocket: Any
+        :param user_id: identifier of authenticated user
+        :ptype user_id: str
+        :param customer_id: the principal's customer, empty when the host scopes none
+        :ptype customer_id: str
+        :param connection_id: this socket's stable id
+        :ptype connection_id: str
+        :param connection: this socket's identity, rooms and liveness state
+        :ptype connection: _RoomConnection
+        :return: nothing
+        :rtype: None
+        """
+        tasks = (
+            asyncio.create_task(
+                self._message_loop(websocket, user_id, customer_id, connection_id, connection),
+                name=f"websocket-messages-{connection_id}",
+            ),
+            asyncio.create_task(
+                self._heartbeat(websocket, connection_id, connection),
+                name=f"websocket-heartbeat-{connection_id}",
+            ),
+        )
+        try:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks:
+            failure = None if task.cancelled() else task.exception()
+            if failure is not None:
+                raise failure
+
+    async def _heartbeat(self, websocket: Any, connection_id: str, connection: _RoomConnection) -> None:
+        """ping the peer every ``heartbeat_interval`` seconds; return once the connection is ended.
+
+        each tick, in order:
+
+        - a credential past its ``exp`` ends the connection ``UNAUTHENTICATED``,
+          even mid-turn: the credential no longer holds, whatever the socket is doing.
+        - a connection busy with a frame is left alone. the loop is not reading
+          then, so the peer's silence proves nothing; a peer that vanished
+          mid-turn fails the turn's own sends, and is judged on the ticks after.
+        - a peer that has sent nothing since the last ping is closed 1011.
+        - otherwise the presence row of a connection in any room is refreshed --
+          the presence sweeper evicts a connection whose heartbeat goes stale --
+          and the next ping is sent. a ping that cannot be delivered within one
+          interval means the peer is not reading, and closes the connection too.
+
+        :param websocket: the authenticated socket
+        :ptype websocket: Any
+        :param connection_id: this socket's stable id
+        :ptype connection_id: str
+        :param connection: this socket's identity, rooms and liveness state
+        :ptype connection: _RoomConnection
+        :return: nothing
+        :rtype: None
+        """
+        ended = False
+        while not ended:
+            await self._heartbeat_sleep(self.heartbeat_interval)
+            if self._credential_expired(connection):
+                await self._end_expired(websocket, connection_id, connection)
+                ended = True
+            elif connection.handling_frame:
+                log.debug(
+                    "heartbeat tick skipped: connection busy with a frame",
+                    extra={"extra_data": {"connection_id": connection_id}},
+                )
+            elif not connection.heard_from_peer:
+                log.info(
+                    "websocket peer sent nothing since the last heartbeat ping; closing",
+                    extra={
+                        "extra_data": {
+                            "connection_id": connection_id,
+                            "user_id": connection.user_id,
+                            "heartbeat_interval": self.heartbeat_interval,
+                        }
+                    },
+                )
+                await self._close_unresponsive(websocket)
+                ended = True
+            else:
+                connection.heard_from_peer = False
+                await self._refresh_presence(connection_id, connection)
+                if not await self._send_ping(websocket):
+                    log.info(
+                        "websocket heartbeat ping could not be delivered; closing",
+                        extra={"extra_data": {"connection_id": connection_id, "user_id": connection.user_id}},
+                    )
+                    await self._close_unresponsive(websocket)
+                    ended = True
+
+    def _credential_expired(self, connection: _RoomConnection) -> bool:
+        """whether the credential this connection authenticated with has expired.
+
+        :param connection: the connection
+        :ptype connection: _RoomConnection
+        :return: ``True`` once the wall clock reaches the credential's ``exp``
+        :rtype: bool
+        """
+        return connection.expires_at is not None and self._wall_clock() >= connection.expires_at
+
+    async def _end_expired(self, websocket: Any, connection_id: str, connection: _RoomConnection) -> None:
+        """close a connection whose credential expired, the way an unauthenticated one is refused.
+
+        the client reads ``UNAUTHENTICATED`` as "obtain a fresh credential and reconnect".
+
+        :param websocket: the socket
+        :ptype websocket: Any
+        :param connection_id: this socket's stable id
+        :ptype connection_id: str
+        :param connection: the connection
+        :ptype connection: _RoomConnection
+        :return: nothing
+        :rtype: None
+        """
+        log.info(
+            "websocket credential expired; closing the connection",
+            extra={
+                "extra_data": {
+                    "connection_id": connection_id,
+                    "user_id": connection.user_id,
+                    "expires_at": connection.expires_at,
+                }
+            },
+        )
+        await self._close_with_error(websocket, UNAUTHENTICATED, _CREDENTIAL_EXPIRED_MESSAGE)
+
+    async def _refresh_presence(self, connection_id: str, connection: _RoomConnection) -> None:
+        """refresh this connection's presence heartbeat when it is in any room.
+
+        best-effort: a presence write that fails leaves the connection open and
+        is logged -- the cost is that the sweeper may evict the member from the
+        room roster until the next successful refresh, never a dropped socket.
+
+        :param connection_id: this socket's stable id
+        :ptype connection_id: str
+        :param connection: the connection
+        :ptype connection: _RoomConnection
+        :return: nothing
+        :rtype: None
+        """
+        if self._room_state is None or not connection.joined_rooms:
+            return
+        try:
+            await self._room_state.heartbeat(connection_id)
+        except Exception:  # prawduct:allow prawduct/broad-except -- presence refresh is best-effort: a failed write must not end a live connection; the sweeper's eviction is the bounded cost, and the log names it
+            log.warning(
+                "presence heartbeat refresh failed; the presence sweeper may drop this member from its rooms",
+                exc_info=True,
+                extra={"extra_data": {"connection_id": connection_id}},
+            )
+
+    async def _send_ping(self, websocket: Any) -> bool:
+        """send one heartbeat ping, bounded by one interval.
+
+        :param websocket: the socket
+        :ptype websocket: Any
+        :return: ``True`` when the ping was handed to the transport in time
+        :rtype: bool
+        """
+        delivered = True
+        try:
+            await asyncio.wait_for(websocket.send_text(_HEARTBEAT_PING), timeout=self.heartbeat_interval)
+        except Exception:  # prawduct:allow prawduct/broad-except -- a failed or stalled ping IS the liveness verdict; the caller closes the connection and logs it
+            delivered = False
+        return delivered
+
+    async def _close_unresponsive(self, websocket: Any) -> None:
+        """close a connection whose peer stopped answering, bounded by one interval.
+
+        :param websocket: the socket
+        :ptype websocket: Any
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            await asyncio.wait_for(websocket.close(code=_UNRESPONSIVE_CLOSE_CODE), timeout=self.heartbeat_interval)
+        except Exception as exc:  # noqa: BLE001 -- the peer is gone; ending the connection does not depend on the close
+            log.debug(
+                "closing an unresponsive websocket failed",
+                extra={"extra_data": {"error": str(exc)}},
+            )
 
     async def _authenticate(self, websocket: Any) -> dict[str, Any] | None:
         """authenticate websocket connection via query param or first message.
@@ -634,8 +923,13 @@ class WebSocketHandler:
         ``editor.op`` / the transient ``cursor`` / ``typing`` / ``presence``
         / ``resume`` types drive the cross-pod room seams (when wired);
         an **unknown** type yields an ``error`` frame (never a silent drop).
+        a ``pong`` (the answer to a heartbeat ping) is consumed silently.
         enforces message size limits and sliding-window rate limiting
-        before processing each message.
+        before processing each message. a frame that arrives after the
+        connection's credential expired is not handled: the connection is
+        answered ``UNAUTHENTICATED``, closed 1008, and the loop ends. every
+        frame marks the peer as having answered the heartbeat, and the
+        connection as busy until the loop reads again.
 
         :param websocket: authenticated websocket connection
         :ptype websocket: Any
@@ -657,6 +951,7 @@ class WebSocketHandler:
         rate_message_count = 0
 
         while True:
+            connection.handling_frame = False
             try:
                 raw = await websocket.receive_text()
             except Exception:
@@ -664,6 +959,15 @@ class WebSocketHandler:
                     "websocket disconnected for user %s",
                     user_id,
                 )
+                break
+            # any frame at all answers the heartbeat; until the loop reads again it is busy, and
+            # the heartbeat does not read the peer's silence as absence.
+            connection.heard_from_peer = True
+            connection.handling_frame = True
+
+            if self._credential_expired(connection):
+                # the frame is not handled: the credential it would be acted on under has expired.
+                await self._end_expired(websocket, connection_id, connection)
                 break
 
             if len(raw) > self.max_message_size:
@@ -705,6 +1009,9 @@ class WebSocketHandler:
             # string to route. only the typed cross-pod frames are parsed into the
             # strict ``Frame`` envelope.
             msg_type = data.get("type", "") if isinstance(data, dict) else ""
+            if msg_type == _PONG_FRAME_TYPE:
+                # the answer to a heartbeat ping; arriving at all was the whole of its job.
+                continue
             if msg_type != "message":
                 try:
                     frame = Frame.model_validate(data)

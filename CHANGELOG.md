@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Channels: a server heartbeat, and a connection ends when its credential expires
+
+Owner ruling, 2026-10-01. `WebSocketHandler.heartbeat_interval` was documented and assigned but
+never read, so a peer that vanished without a close kept its registry and presence state until the
+transport noticed, and an open socket outlived the token it authenticated with indefinitely.
+
+- **New: the server heartbeat.** Every `heartbeat_interval` seconds (default 30, must be positive;
+  a non-positive value raises `ValueError`) each open connection is sent `{"type": "ping"}`. A
+  connection that has sent nothing at all since the previous ping -- a `{"type": "pong"}` answer
+  or any other frame -- is closed **1011** and cleaned up exactly as a disconnect is (registry,
+  rooms, presence). A ping that cannot be written within one interval closes it the same way. A
+  connection busy handling a frame is not judged on that tick. **Client action:** a client that
+  can sit idle longer than two intervals must answer `ping` with `pong`.
+- **New: `pong` is a built-in frame type**, consumed silently; `frame_handlers` may not register it.
+- **New: credential expiry.** When the `AuthValidator`'s claims carry `exp` (unix seconds), the
+  first frame at or after that instant, or the first heartbeat tick of an idle connection, answers
+  `{"type": "error", "code": "UNAUTHENTICATED", "message": "access token expired"}` and closes
+  **1008** -- the same refusal a connection without a valid token gets, so a client's
+  refresh-and-reconnect path takes over. An `exp` that is not a number raises `TypeError` (a host
+  bug). Claims without `exp` never expire.
+- **Fixed: a connection in a room keeps its presence heartbeat fresh.** Each answered tick calls
+  `RoomState.heartbeat`, which nothing called before, so `PresenceSweeper` would evict a live member.
+- **New constructor seams with production defaults:** `wall_clock` (`time.time`) and
+  `heartbeat_sleep` (`asyncio.sleep`).
+
 ### Agent tools: a tool's refusal carries its error code to the caller
 
 Owner ruling, 2026-10-01. A tool pod's refusal reached every caller with no code, because
