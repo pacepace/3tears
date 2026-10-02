@@ -12,7 +12,7 @@ import pytest
 from threetears.nats import Subjects
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
 _AGENT_A = UUID("01948a00-aaaa-7000-8000-00000000000a")
 _AGENT_B = UUID("01948a00-aaaa-7000-8000-00000000000b")

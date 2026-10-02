@@ -22,8 +22,8 @@ import json
 
 import httpx
 import pytest
-from packages.scrape.tests._driver_log_helpers import driver_warnings
-from packages.scrape.tests._egress_fakes import FakeEgress
+from packages.scrape.tests.driver_log_helpers import driver_warnings
+from packages.scrape.tests.egress_fakes import FakeEgress
 
 from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.drivers.api import ApiDriver, ApiDriverError

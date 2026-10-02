@@ -20,7 +20,7 @@ import pytest
 
 from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow
 
-from ._helpers.fake_driver import FakeDriver
+from .helpers.fake_driver import FakeDriver
 
 
 class TestDriverAbstractness:

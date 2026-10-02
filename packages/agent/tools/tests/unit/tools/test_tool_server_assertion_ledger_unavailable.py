@@ -28,7 +28,7 @@ from threetears.core.security import (
 from threetears.core.testing.replay_guard import FakeReplayGuard
 from threetears.nats import KvError
 
-from packages.agent.tools.tests.unit.tools._pod_auth import (
+from packages.agent.tools.tests.unit.tools.pod_auth import (
     RecordingNatsClient,
     ScopeRecordingTool,
     deliver_call,

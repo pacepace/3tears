@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from packages.scrape.tests._driver_log_helpers import driver_warnings
+from packages.scrape.tests.driver_log_helpers import driver_warnings
 from threetears.agent.tools.document import DocumentParseError, DocumentResult, DocumentSection, OcrConfig
 from threetears.core.http_client import TracedHttpClient
 

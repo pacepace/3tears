@@ -28,7 +28,7 @@ from threetears.agent.memory.authorize import (
     ensure_memory_owner_assignment,
 )
 
-from ._rbac_rows import RbacRows
+from .rbac_rows import RbacRows
 
 
 class _RecordingPublisher:

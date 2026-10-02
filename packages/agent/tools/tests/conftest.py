@@ -1,6 +1,6 @@
 """Agent-tools test configuration.
 
-Shared helpers (``testing_utils``, ``unit/tools/_pod_auth``) are imported by their repo-root
+Shared helpers (``testing_utils``, ``unit/tools/pod_auth``) are imported by their repo-root
 name -- ``from packages.agent.tools.tests.testing_utils import ...`` -- the same name pytest
 gives every test module. This directory is deliberately NOT put on ``sys.path``: its
 ``unit`` / ``integration`` / ``enforcement`` directories would then be importable as

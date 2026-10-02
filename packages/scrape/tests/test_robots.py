@@ -19,9 +19,9 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-from packages.scrape.tests._scrape_tool_support import derived_target_id
-from packages.scrape.tests._egress_fakes import FakeEgress
-from packages.scrape.tests._pacer_fakes import FakeDelayPacer
+from packages.scrape.tests.scrape_tool_support import derived_target_id
+from packages.scrape.tests.egress_fakes import FakeEgress
+from packages.scrape.tests.pacer_fakes import FakeDelayPacer
 from threetears.scrape.robots import DEFAULT_USER_AGENT, RobotsGate, RobotsPolicy
 
 _ROBOTS_DISALLOW = "User-agent: *\nDisallow: /private\n"

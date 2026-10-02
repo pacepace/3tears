@@ -28,7 +28,7 @@ from threetears.core.data.migrations import (
     PackageMigrations,
 )
 
-from ._fake_store import FakeDataStore
+from .fake_store import FakeDataStore
 
 _PACKAGE = "tools_pentest_sqlmap"
 

@@ -15,13 +15,13 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools.fs_write import FsWriteTool
-from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,

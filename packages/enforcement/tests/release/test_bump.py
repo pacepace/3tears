@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.enforcement.tests.release._scratch import TODAY, commit_all, git, release, snapshot
+from packages.enforcement.tests.release.scratch_repos import TODAY, commit_all, git, release, snapshot
 from threetears.enforcement.release import main
 
 _ADDED_SECTION = "## [0.1.0] - unreleased\n\nThe first release.\n\n### Added\n\n- the first thing\n"

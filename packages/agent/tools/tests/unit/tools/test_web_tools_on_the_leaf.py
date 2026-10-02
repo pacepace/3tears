@@ -474,8 +474,10 @@ class TestWebFetchFailsTyped:
         assert projection.failure.scope == EXTRACTOR_UNAVAILABLE_SCOPE
         # the shipped loader names the extra that installs the extractor. The stand-in this test
         # used to patch over it said "[fetch]" instead, so the assertion pinned the stand-in's
-        # wording rather than what a host without the extractor is actually told.
-        assert "3tears-search[extract]" in (projection.failure.remediation or "")
+        # wording rather than what a host without the extractor is actually told. Pinned whole,
+        # in the record AND in the prose the model reads, so a reworded or re-pointed extra fails.
+        assert projection.failure.remediation == "install 3tears-search[extract]"
+        assert result.content.splitlines()[-1] == "install 3tears-search[extract]"
 
     @pytest.mark.asyncio
     async def test_a_missing_url_also_answers_with_a_readable_projection(self) -> None:

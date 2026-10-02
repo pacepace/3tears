@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.enforcement.tests.release._scratch import TODAY, commit_all, git, release
+from packages.enforcement.tests.release.scratch_repos import TODAY, commit_all, git, release
 
 _CONFIG = """[tool.uv.workspace]
 members = ["packages/*", "packages/agent/*"]

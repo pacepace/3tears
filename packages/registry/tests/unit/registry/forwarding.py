@@ -23,8 +23,8 @@ from threetears.nats import IncomingMessage, Subject, set_default_namespace
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.proxy import ProxyCallRequest, ProxyCallResponse
 
-from ._copies import definition, endpoint, entry
-from ._dispatch_auth import make_proxy
+from .copy_entries import definition, endpoint, entry
+from .dispatch_auth import make_proxy
 
 __all__ = [
     "FORWARDING_NAMESPACE",

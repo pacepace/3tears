@@ -96,7 +96,7 @@ declares what production protocol it stands in for. Three routes, in order of pr
    wrapped rationale exempts nothing.
 
 Workspace tests centralise their asyncpg and workspace-entity shells under
-`packages/agent/workspace/tests/_helpers/`, so per-test inline fakes need only a one-line
+`packages/agent/workspace/tests/helpers/`, so per-test inline fakes need only a one-line
 subclass declaration.
 
 **Exempt in place, not in `tests/enforcement/_fake_parity_exemptions.txt`.** That file still

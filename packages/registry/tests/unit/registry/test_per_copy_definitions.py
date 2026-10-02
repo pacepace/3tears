@@ -26,7 +26,7 @@ from threetears.registry.catalog import (
     ToolEndpoint,
 )
 
-from ._copies import definition, endpoint, entry
+from .copy_entries import definition, endpoint, entry
 
 __all__: list[str] = []
 

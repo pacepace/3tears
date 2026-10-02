@@ -280,7 +280,7 @@ addopts = "--import-mode=importlib --ignore=packages/scrape/sidecar"
 # ``packages/agent/workspace/tests`` and ``packages/datasources/tests``
 # both define ``tests/integration/conftest.py``). Under importlib mode
 # without this flag, the second one collides ("Plugin already registered
-# under a different name") and relative ``from ._helpers`` imports
+# under a different name") and relative ``from .helpers`` imports
 # resolve into whichever ``tests.unit`` package was imported first.
 # Treating the test trees as namespace packages gives each module a
 # unique, rootdir-relative dotted name so the whole workspace collects
@@ -322,7 +322,7 @@ consider_namespace_packages = true
 # DIRECTORIES on ``sys.path`` (agent-tools, agent-workspace, scrape, search,
 # and conversations -> core's coordination tests). Nothing does any more:
 # every helper is imported by its repo-root name
-# (``from packages.agent.tools.tests.unit.tools._pod_auth import ...``),
+# (``from packages.agent.tools.tests.unit.tools.pod_auth import ...``),
 # and ``tests/enforcement/test_no_test_dir_on_sys_path.py`` refuses a new
 # insert. The inserts were also the collision: agent-tools' tests dir made
 # ``unit`` / ``integration`` / ``enforcement`` top-level names that the

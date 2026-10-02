@@ -44,7 +44,7 @@ from threetears.search.contracts import (
 from threetears.search.adapters.searxng import SearxngAdapter
 from threetears.search.limiter import InProcessRateLimiter
 from threetears.search.testing import FakeBudgetPort, FakeRateLimiterPort, ScriptedTransport, TransportScript
-from packages.search.tests._searxng_payloads import TWO_RESULTS_BODY
+from packages.search.tests.searxng_payloads import TWO_RESULTS_BODY
 
 _DECLARATION = ProviderCapabilities(
     provider="wiring",

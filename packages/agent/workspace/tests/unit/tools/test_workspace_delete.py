@@ -14,13 +14,13 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 
 from threetears.agent.workspace.tools import workspace_delete as workspace_delete_module
 from threetears.agent.workspace.tools.workspace_delete import WorkspaceDeleteTool
-from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,

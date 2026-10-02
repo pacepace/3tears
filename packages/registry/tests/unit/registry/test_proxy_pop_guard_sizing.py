@@ -17,7 +17,7 @@ from threetears.core.coordination import ReplayGuard
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.proxy import POP_LEEWAY_SECONDS
 
-from ._dispatch_auth import make_proxy
+from .dispatch_auth import make_proxy
 
 
 def _guard(tolerance: timedelta) -> ReplayGuard:

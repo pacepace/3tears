@@ -14,7 +14,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from packages.scrape.tests._scrape_tool_support import derived_target_id
+from packages.scrape.tests.scrape_tool_support import derived_target_id
 from pydantic import SecretStr
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig

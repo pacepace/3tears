@@ -26,7 +26,7 @@ from threetears.agent.tools.server import CallResponse, ToolServer
 from threetears.core.security import IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE, PLATFORM_CUSTOMER_SENTINEL
 from threetears.core.testing.replay_guard import FakeReplayGuard
 
-from packages.agent.tools.tests.unit.tools._pod_auth import (
+from packages.agent.tools.tests.unit.tools.pod_auth import (
     RecordingNatsClient,
     ScopeRecordingTool,
     deliver_call,

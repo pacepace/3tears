@@ -30,9 +30,9 @@ from threetears.core.security import IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE
 from threetears.nats import IncomingMessage, Subject, set_default_namespace
 
 from threetears.core.testing.replay_guard import FakeReplayGuard
-from packages.agent.tools.tests.unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
-from packages.agent.tools.tests.unit.tools._pod_auth import mint_user_assertion as _mint_user_assertion
-from packages.agent.tools.tests.unit.tools._pod_auth import signed_call_payload as _signed_call_payload
+from packages.agent.tools.tests.unit.tools.pod_auth import jwks_provider as _pod_jwks_provider
+from packages.agent.tools.tests.unit.tools.pod_auth import mint_user_assertion as _mint_user_assertion
+from packages.agent.tools.tests.unit.tools.pod_auth import signed_call_payload as _signed_call_payload
 
 
 # ---------------------------------------------------------------------------

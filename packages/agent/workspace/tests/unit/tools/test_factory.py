@@ -12,7 +12,7 @@ import pytest
 import threetears.agent.workspace.tools  # noqa: F401  -- registers builders
 from threetears.agent.tools.base_tool import TearsTool
 from threetears.agent.workspace.factory import build_workspace_tools
-from packages.agent.workspace.tests._helpers.factory_deps import minimal_tool_deps
+from packages.agent.workspace.tests.helpers.factory_deps import minimal_tool_deps
 
 #: the repo root, where ``packages.`` resolves as a namespace package for the subprocess probe.
 _REPO_ROOT = Path(__file__).resolve().parents[6]
@@ -96,7 +96,7 @@ from typing import Any
 import threetears.agent.workspace.tools  # registers the shipped builders
 from threetears.agent.tools.base_tool import TearsTool
 from threetears.agent.workspace.factory import build_workspace_tools, register_tool_builder
-from packages.agent.workspace.tests._helpers.factory_deps import minimal_tool_deps
+from packages.agent.workspace.tests.helpers.factory_deps import minimal_tool_deps
 
 
 class SentinelTool(TearsTool):

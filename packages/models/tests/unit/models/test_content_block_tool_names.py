@@ -17,8 +17,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Too
 
 from threetears.models.tool_name_translation import forward_translate_message, reverse_translate_message
 
-from ._provider_wire import AnthropicMessagesWire, TextBlock, ToolUseBlock, anthropic_model
-from ._translation_helpers import DottedTool
+from .provider_wire import AnthropicMessagesWire, TextBlock, ToolUseBlock, anthropic_model
+from .translation_helpers import DottedTool
 
 
 def _tool_block_names(message: AIMessage) -> list[Any]:

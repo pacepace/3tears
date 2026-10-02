@@ -38,7 +38,7 @@ from threetears.nats import (
     set_default_namespace,
 )
 
-from ._wire_server import wire_server
+from .wire_server import wire_server
 
 
 # ---------------------------------------------------------------------------

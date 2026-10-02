@@ -38,7 +38,7 @@ from threetears.core.data.migrations import (
 from threetears.core.data.migrations.errors import LedgerMismatchError
 from threetears.core.data.migrations.runner import MigrationRunner
 
-from ._fake_store import FakeDataStore
+from .fake_store import FakeDataStore
 
 
 async def users_approval_state(store: object) -> None:

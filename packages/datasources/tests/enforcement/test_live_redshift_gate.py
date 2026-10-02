@@ -1,7 +1,7 @@
 """every live Redshift test reaches the warehouse only through the one-login gate.
 
 the live tests log in as a production warehouse user that Redshift locks after
-five failed logins. the gate (``tests/unit/_helpers/redshift_live_gate.py``)
+five failed logins. the gate (``tests/unit/helpers/redshift_live_gate.py``)
 sends the password once per session, and that holds only while:
 
 - the ``redshift_config`` fixture that runs it is session-scoped -- pytest runs

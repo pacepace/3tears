@@ -31,7 +31,7 @@ from threetears.models.tool_name_translation import (
     reverse_translate_message,
 )
 
-from ._provider_wire import (
+from .provider_wire import (
     AnthropicMessagesWire,
     ChatCompletionsWire,
     TextBlock,
@@ -39,7 +39,7 @@ from ._provider_wire import (
     text_deltas,
     tool_call_delta,
 )
-from ._translation_helpers import DottedTool as _DottedTool
+from .translation_helpers import DottedTool as _DottedTool
 
 #: the XML-attribute-leak tool name from the 2026-05-19 prod incident
 _JUNK_NAME = 'memory_recall" name="memory_recall'
@@ -1050,7 +1050,7 @@ def test_the_other_wrappers_keep_no_extra_deadline() -> None:
     Asked of the models their public factories build, with a request timeout set on each, so a
     wrapper that started deriving a deadline from it would show here.
     """
-    from ._provider_wire import anthropic_model, openai_model
+    from .provider_wire import anthropic_model, openai_model
 
     openai = openai_model(ChatCompletionsWire(), request_timeout=30)
     anthropic = anthropic_model("http://127.0.0.1:9", default_request_timeout=30)

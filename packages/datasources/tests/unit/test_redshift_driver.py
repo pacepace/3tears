@@ -32,7 +32,7 @@ from threetears.datasources.drivers import redshift_driver as redshift_driver_mo
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 
-from ._helpers.driver_shims import RedshiftConnectionWithSocket
+from .helpers.driver_shims import RedshiftConnectionWithSocket
 
 
 def _is_set_stmt_timeout(sql: str) -> bool:

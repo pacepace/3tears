@@ -32,13 +32,13 @@ import pytest
 
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.materialize import WatchChanges, bind, recover, watch_disk_changes
-from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceEntity,
     FakeWorkspaceFile,
@@ -48,7 +48,7 @@ from packages.agent.workspace.tests._helpers.workspace_shims import (
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
 )
-from packages.agent.workspace.tests._helpers.scripted_watch import ScriptedWatch
+from packages.agent.workspace.tests.helpers.scripted_watch import ScriptedWatch
 
 
 # ---------------------------------------------------------------------------
