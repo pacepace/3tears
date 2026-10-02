@@ -52,7 +52,13 @@ from threetears.agent.tools.http_operation import RestAffordance
 from threetears.agent.tools.object_resolver import HubObjectResolver, ObjectResolutionCache
 from threetears.core.namespaces import build_tool_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
-from threetears.core.security import IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE, CachedHubJwksProvider
+from threetears.core.security import (
+    IDENTITY_REFUSED,
+    IDENTITY_REFUSED_MESSAGE,
+    TOOL_PROXY_ASSERTION_UNVERIFIED,
+    TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
+    CachedHubJwksProvider,
+)
 from threetears.core.security.identity_token import (
     IdentityClaims,
     IdentityKeyNotFoundError,
@@ -2770,10 +2776,15 @@ class ToolServer:
         provisioned by serve() or injected) -- a guardless pod fails closed rather than silently
         skipping single-use enforcement, mirroring the registry proxy's required pop replay guard.
 
+        Every rejection here is one condition -- the call could not show it came through the
+        registry for this body and this pod -- and the caller answers it
+        :data:`~threetears.core.security.TOOL_PROXY_ASSERTION_UNVERIFIED` with its one message.
+        The reason string this returns, and the detail this method logs, are server-side only.
+
         :param request: the parsed inbound call request
         :ptype request: CallRequest
-        :return: ``None`` when the call may proceed; a rejection-reason string when it MUST be
-            rejected
+        :return: ``None`` when the call may proceed; the server-side rejection reason (for the log
+            and the audit, never the reply) when it MUST be rejected
         :rtype: str | None
         """
         reason: str | None = None
@@ -2864,7 +2875,10 @@ class ToolServer:
         a forwarded identity that does not verify -- the handshake token,
         or the per-turn user assertion -- is refused ``IDENTITY_REFUSED``
         with the one message the registry and every hub door use; which
-        check refused it is logged here, never sent.
+        check refused it is logged here, never sent. a call whose
+        identity verified but whose proxy assertion does not -- it could
+        not show it came through the registry for this body and this pod
+        -- is refused ``TOOL_PROXY_ASSERTION_UNVERIFIED`` the same way.
 
         audit-task-01 (AUD-03): every dispatch -- including malformed
         requests, unknown-tool rejections, and raising tools -- emits a
@@ -3237,10 +3251,16 @@ class ToolServer:
 
             assertion_rejection = await self._verify_proxy_assertion(request)
             if assertion_rejection is not None:
+                # the identity verified; what did not is the call's proof that it came through the
+                # registry for this body and this pod. one code and one message whatever the check
+                # was: ``assertion_rejection`` stays on this side, in the log line below and the
+                # baseline audit's failure reason, beside the detail ``_verify_proxy_assertion``
+                # already logged.
                 error_response = CallResponse(
                     success=False,
                     content="",
-                    error=assertion_rejection,
+                    error=TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
+                    error_code=TOOL_PROXY_ASSERTION_UNVERIFIED,
                     context=request.context,
                 )
                 await self._answer(msg, error_response, delivery_subject)
@@ -3248,6 +3268,7 @@ class ToolServer:
                     "pod rejected call: proxy assertion unverified",
                     extra={
                         "extra_data": {
+                            "error_code": TOOL_PROXY_ASSERTION_UNVERIFIED,
                             "reason": assertion_rejection,
                             "tool_key": tool_key,
                             "correlation_id": correlation_id_log,

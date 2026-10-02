@@ -21,7 +21,12 @@ from threetears.agent.tools.server import (
     ToolManifestEntry,
     ToolServer,
 )
-from threetears.core.security import IDENTITY_REFUSED, IDENTITY_REFUSED_MESSAGE
+from threetears.core.security import (
+    IDENTITY_REFUSED,
+    IDENTITY_REFUSED_MESSAGE,
+    TOOL_PROXY_ASSERTION_UNVERIFIED,
+    TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
+)
 from threetears.core.security.identity_token import (
     IdentityClaims,
     build_jwks,
@@ -1897,7 +1902,8 @@ class TestToolServerProxyAssertionVerification:
         await server.handle_call(self._msg(token=self._token(priv), assertion=None, correlation_id=str(uuid4())))
         response = self._response(rec)
         assert response["success"] is False
-        assert "proxy assertion verification failed" in response["error"]
+        assert response["error_code"] == TOOL_PROXY_ASSERTION_UNVERIFIED
+        assert response["error"] == TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE
 
     @pytest.mark.asyncio
     async def test_enforce_rejects_an_assertion_for_a_different_body(self) -> None:
@@ -1939,9 +1945,10 @@ class TestToolServerProxyAssertionVerification:
         )
         response = self._response(rec)
         # the call is rejected at the proxy-assertion gate (the missing guard makes it fail closed);
-        # the wire error carries the gate name + exception type, not the internal message.
+        # the wire error is the gate's one code and message; which check refused stays in the log.
         assert response["success"] is False
-        assert "proxy assertion verification failed" in response["error"]
+        assert response["error_code"] == TOOL_PROXY_ASSERTION_UNVERIFIED
+        assert response["error"] == TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE
 
 
 class _PodRekeyingProvider:

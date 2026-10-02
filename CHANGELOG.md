@@ -99,11 +99,34 @@ checks the same identity first, already answered `IDENTITY_REFUSED`.
   `pod user-assertion verification failed`, `pod user-assertion presented on a tool pod token`)
   still name the check and the exception, beside the tool name, and the baseline `tool.call`
   audit's `failure_reason` still records which check refused.
-- **The proxy-assertion refusal is unchanged, on purpose.** It answers a different condition: the
-  identity verified, and the call did not prove it came through the registry for this body and
-  this pod (absent assertion, spliced body, replayed nonce, missing replay guard). It is the pod's
-  counterpart of the registry's `TOOL_POP_UNVERIFIED`, not an identity refusal, and still carries
-  no `error_code`.
+- **The proxy-assertion refusal is not this code, on purpose.** It answers a different condition
+  and has its own code; see the next entry.
+
+### The serving tool pod answers a call that did not come through the registry `TOOL_PROXY_ASSERTION_UNVERIFIED`
+
+After the forwarded identity verifies, the pod checks the registry's assertion that binds the call
+to this body, a single-use nonce and this pod. A refusal there carried no `error_code` and a
+message naming the exception (`proxy assertion verification failed (IdentityTokenError)`), so the
+hub's faces rendered it as their unnamed-failure fallback, a 502 with an "unmapped code" error
+line.
+
+- **Breaking: `ToolServer` answers `TOOL_PROXY_ASSERTION_UNVERIFIED`, message `the call could not
+  be verified as forwarded by the registry to this pod`, for every refusal of that gate**: no
+  assertion (a publisher straight onto the pod's internal subject), a spliced body, a replayed
+  nonce, an assertion for another pod or under a key the pod does not hold, and a pod with no
+  replay guard. A caller matching the old message text matches the code instead.
+- **It is not `IDENTITY_REFUSED`**: the identity verified. It is the pod-side counterpart of the
+  registry's `TOOL_POP_UNVERIFIED`. Through the registry it means the registry and the pod
+  disagree (the registry's signing key, the pod's JWKS, its replay ledger), so nothing retries it:
+  the registry fails over only on `TOOL_UNAVAILABLE`, and `ToolCallClient` raises it as
+  `ToolCallError` after its one request.
+- The reason stays on the pod's side: `pod proxy-assertion verification failed; rejecting` still
+  names the check and the detail beside the tool name, and the baseline `tool.call` audit's
+  `failure_reason` still records it.
+- **`threetears.core.security.TOOL_PROXY_ASSERTION_UNVERIFIED` and
+  `TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE`** (new, in `threetears.core.security.proxy_assertion`
+  beside the verifier): the code and message, spelled once. The pod answers with them and the
+  hub's error faces map the code.
 
 ### The registry answers a forwarded identity that does not verify `IDENTITY_REFUSED`
 
