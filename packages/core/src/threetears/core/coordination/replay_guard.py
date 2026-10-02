@@ -32,10 +32,20 @@ the refusal must reach the verifier's future tolerance plus the drift between th
 a replay stamped at the edge of acceptance could slip past. The guard is given the verifier's
 future tolerance and adds :data:`CLOCK_DRIFT_ALLOWANCE` itself, so the drift is modelled in one
 place rather than guessed at each call site. A verifier calls :meth:`ReplayGuard.require_covers`
-with its own tolerance, so a leeway widened later fails loudly instead of reopening the hole.
+with its own tolerance, so a tolerance widened later fails loudly instead of reopening the hole.
 
 The cost is that for that long after a wipe, fresh artifacts are refused too -- the price of never
 admitting a replay.
+
+**So the future tolerance is kept small, and it is not the verifier's past window.** How OLD an
+artifact may be when it arrives says nothing about how far its issue time may LEAD the verifier's
+clock, and only the second sets the reach. The platform's proof verifiers accept an issue time at
+most :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE` (5s) ahead while still
+accepting one :data:`~threetears.core.security.DEFAULT_PROOF_MAX_AGE` (60s) old, so their guards
+refuse for ten seconds after a broker restart. When the two directions were one symmetric leeway,
+the guards were sized for the whole minute and a restart cost 65 seconds of refused logins and
+tool calls. A guard sized for more than its verifier accepts is safe and only refuses for longer;
+one sized for less is refused by :meth:`ReplayGuard.require_covers`.
 
 **Bind at start, or the window is measured from the wrong moment.** The watermark is measured from
 the bucket's creation time, and the bucket is created by whichever call opens it first. A service
@@ -55,9 +65,9 @@ that holds only a NATS client keeps today's conservative behaviour by leaving it
 
     guard = ReplayGuard(
         nats_client, bucket_name="pop_nonces", ttl_seconds=120,
-        verifier_future_tolerance=timedelta(seconds=60),
+        verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE,
     )
-    guard.require_covers(timedelta(seconds=leeway_seconds))  # at the verifier's construction
+    guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)  # at the verifier's construction
     await guard.bind()  # at service start, before serving anything
     if not await guard.record_unique(nonce, issued_at=proof_issued_at):
         raise <replay rejected>
@@ -92,6 +102,11 @@ log = get_logger(__name__)
 #: disagree. Added to every guard's verifier future tolerance, because the creation time the wipe
 #: check compares against is the broker's clock while the tolerance is measured on the verifier's.
 #: Every second of it is also a second of refused traffic after a broker restart.
+#:
+#: The same clock-agreement requirement as
+#: :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`, between a different pair of
+#: hosts: that one is signer against verifier and is owned by the verifiers, this one is verifier
+#: against broker and is owned here. A proof verifier's guard therefore refuses for their sum.
 CLOCK_DRIFT_ALLOWANCE = timedelta(seconds=5)
 
 
@@ -140,7 +155,9 @@ class ReplayGuard:
             accepts an artifact's issue time. The guard refuses, after a wipe, anything issued within
             this plus :data:`CLOCK_DRIFT_ALLOWANCE` of the bucket's creation time. Deliberately has
             no default: it is a property of the verifier, which confirms it with
-            :meth:`require_covers`. MUST NOT be negative
+            :meth:`require_covers`. It is the verifier's FUTURE bound only, never the window in
+            which an old artifact is still accepted; for a proof verifier it is
+            :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`. MUST NOT be negative
         :ptype verifier_future_tolerance: timedelta
         :param anchor: durable record of when this ledger FIRST existed
             (:mod:`threetears.core.coordination.replay_anchor`). Without one the guard cannot
@@ -148,7 +165,7 @@ class ReplayGuard:
             wipe, and on a first run a window of refusals protecting nothing. With one, the
             watermark applies only when the anchor predates the bucket, which is what a wipe
             looks like. Optional because the registry server and the tool pod deliberately hold
-            only a NATS client, and a minute of refused internal RPC that retries does not
+            only a NATS client, and a few seconds of refused internal RPC that retries does not
             justify wiring durable storage into them
         :ptype anchor: ReplayAnchor | None
         :param create_if_missing: ``True`` (the default) DECLARES the bucket, creating it when
@@ -226,7 +243,7 @@ class ReplayGuard:
                 f"ReplayGuard {self._bucket_name!r} was sized for a verifier future tolerance of "
                 f"{self._verifier_future_tolerance}, but its verifier accepts issue times up to "
                 f"{future_tolerance} ahead; a replay stamped at that edge would pass the wipe check. "
-                "Construct the guard with verifier_future_tolerance at least the verifier's leeway."
+                "Construct the guard with verifier_future_tolerance at least the verifier's future tolerance."
             )
 
     async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:

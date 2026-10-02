@@ -70,15 +70,26 @@ HMAC-signed issue time, and for an OAuth client assertion whose `iat` is optiona
 ahead of its own clock, and the creation time is the broker's clock. So the refusal reaches
 the verifier's future tolerance, passed at construction with no default, plus a single
 named drift allowance between those hosts, added by the guard. Each verifier calls
-`require_covers` with its own leeway, so widening a leeway later fails loudly instead of
+`require_covers` with its own future tolerance, so widening one later fails loudly instead of
 silently reopening the hole: at construction for the registry proxy and the tool server, and
 on every request for `validate_dpop_proof`, which is a function with no construction step.
+
+**The future tolerance is not the past window.** A proof may be up to 60s old when it arrives
+(`DEFAULT_PROOF_MAX_AGE`) and at most 5s ahead of the verifier's clock
+(`ISSUE_TIME_FUTURE_TOLERANCE`, both in `threetears.core.security.freshness`). Only the second
+sets the reach, so a proof verifier's guard refuses for 10s after a broker restart: 5s of future
+tolerance plus the 5s drift allowance. Until v0.58.0 the two directions were one symmetric 60s
+leeway, every guard was sized for the whole of it, and a restart cost 65s of refused logins and
+tool calls. The price of the small number is a requirement: every host that signs a proof must
+agree with every host that verifies one to within 5s, and one that does not is refused outright.
+The proxy assertion's verifier accepts nothing ahead, so the tool pod's guard reaches the 5s
+drift allowance alone.
 
 **Bind at start, or the first call after a bucket is created is itself refused.** The bucket is
 created by whichever call opens it first. A guard left to open it in its first `record_unique`
 creates it there and then compares that call's artifact against a creation time of a moment ago
 -- inside the window by construction, however long after the service started the artifact was
-issued. On 2026-09-25, after a Docker restart, that refused a login with a 65s reach (surfacing as
+issued. On 2026-09-25, after a Docker restart, that refused a login with what was then a 65s reach (surfacing as
 "invalid username or password") and a tool call with a 5s reach (surfacing as "proxy assertion
 nonce replay"). So a service calls `ReplayGuard.bind()` at startup, before it serves anything:
 the bucket is then created before any artifact the process could issue or accept, and after a
@@ -378,7 +389,8 @@ The primitives keep their public surfaces apart from `ReplayGuard.record_unique`
   identity-edge holds no database by design, so its fail-open route throttles run the same
   collection without an L3 pool.
 - **hub**: its DPoP guard (`hub-dpop-nonces`, built in `aibots/hub/app.py`) gains
-  `verifier_future_tolerance` covering the `iat_window` it validates with. Without it the hub
+  `verifier_future_tolerance` covering the future tolerance it validates with
+  (`ISSUE_TIME_FUTURE_TOLERANCE` since v0.58.0; the whole `iat_window` before). Without it the hub
   fails at startup on this release. `validate_dpop_proof` passes `issued_at` itself.
 - **identity's refresh-token jti ledger is not a nonce guard.** It was a `ReplayGuard` over a
   30-day TTL in a bucket of its own. Watermarked, a broker wipe would refuse every outstanding

@@ -6,6 +6,56 @@ packages (bumped in lock-step).
 
 ## v0.58.0 -- unreleased
 
+### Security: a proof's issue time may be 5 seconds ahead, not 60 -- a broker restart costs 10 seconds, not 65
+
+Found live: after a NATS broker restart, logins and tool calls were refused for about 65 seconds.
+A `ReplayGuard` keeps nonces in memory-backed KV, the restart wipes it, and the guard then refuses
+anything issued before `bucket creation + verifier future tolerance + CLOCK_DRIFT_ALLOWANCE (5s)`.
+Every proof verifier used one symmetric leeway for both directions, so it accepted an issue time a
+full minute AHEAD of its clock, and every guard had to be sized for that minute.
+
+The two directions are now separate. A proof may still be up to 60 seconds OLD; it may be at most
+5 seconds AHEAD of the verifier's clock. Guards are sized for the 5, so the reach after a wipe is
+10 seconds.
+
+- **Added: `threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`** (`timedelta(seconds=5)`), the
+  one owner of how far ahead of a verifier's clock a signed issue time is accepted;
+  **`DEFAULT_PROOF_MAX_AGE`** (`timedelta(seconds=60)`), how old one may be; and
+  **`issue_time_is_fresh(issued_at, *, now, max_age, future_tolerance)`**, the check both proof
+  formats share. All three live in `threetears.core.security.freshness`.
+- **BREAKING: `verify_pop_proof(leeway_seconds=)` is gone.** It takes `max_age: timedelta` and
+  `future_tolerance: timedelta`, defaulting to the two constants. A caller that passed
+  `leeway_seconds` gets a `TypeError`; one that relied on the default needs no change and now
+  refuses a proof stamped more than 5 seconds ahead.
+- **BREAKING: `validate_dpop_proof(iat_window=)` is gone**, replaced the same way by `max_age` and
+  `future_tolerance`. It calls `replay_guard.require_covers(future_tolerance)`, so a guard only
+  has to cover the future bound; widening `max_age` needs no bigger guard.
+- **BREAKING: `threetears.iam.dpop.DEFAULT_IAT_WINDOW` is removed**, and so is
+  **`threetears.registry.proxy.POP_LEEWAY_SECONDS`**. Both were read to size a replay guard, and a
+  guard still sized from a 60-second name would pass `require_covers` and silently keep the
+  65-second outage; removing the names turns that into an import error. Size a proof verifier's
+  guard with `verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE`; take a nonce TTL or a past
+  window from `DEFAULT_PROOF_MAX_AGE`.
+- **Changed: the registry's `pop_nonces` guard is sized for `ISSUE_TIME_FUTURE_TOLERANCE`**, and
+  `CallProxy` requires its `pop_replay_guard` to cover that rather than 60 seconds.
+- Unchanged: the proxy assertion (`verify_proxy_assertion`, the tool pod's gate) accepts nothing
+  ahead of the pod's clock and its guard reaches the 5-second drift allowance alone. The identity
+  token's 60-second leeway is unchanged too; it is not single-use and feeds no replay guard.
+  `ReplayGuard` itself is unchanged: `require_covers` still refuses a guard sized for less than
+  its verifier accepts.
+
+**What it requires:** every host that signs a proof must agree with every host that verifies one to
+within 5 seconds. A signer whose clock leads by more is refused outright, as a freshness failure,
+on every request. On a live cluster sixteen pods and all three brokers agreed to within about one
+second. A DPoP proof presented at a login or token endpoint is signed by the CLIENT, so that
+requirement reaches the user's device there.
+
+**Consumers:** the hub (`aibots/hub/app.py`, `aibots/hub/security/dpop_binding.py`) and
+identity-core (`identity_core/server.py`, `tokens/mint_binding.py`, `tokens/rotation.py`) import
+`DEFAULT_IAT_WINDOW` and pass `iat_window=`; each must move to the names above, and builds its DPoP
+guard with `verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE`. Until they do, they fail at
+import, not at runtime.
+
 ### Testing: `FakeNatsClient` declares, and models a broker restart
 
 The shipped double had `kv_bucket` only, so a consumer that declares its bucket through

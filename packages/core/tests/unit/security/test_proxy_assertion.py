@@ -6,6 +6,7 @@ import time
 
 import jwt as pyjwt
 import pytest
+from freezegun import freeze_time
 
 from threetears.core.security.identity_token import (
     IdentityTokenError,
@@ -64,6 +65,44 @@ class TestProxyAssertion:
         expired = _mint(priv, iat=now - 120, exp=now - 60)
         with pytest.raises(IdentityTokenError):
             verify_proxy_assertion(expired, jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1")
+
+    @freeze_time("2026-10-02T12:00:00+00:00")
+    def test_an_issue_time_ahead_of_the_pod_is_refused_at_the_default_leeway(self) -> None:
+        # the tool pod verifies at the default (zero), and sizes its replay guard for zero: an
+        # assertion stamped even one second ahead must not be accepted, or a replay stamped
+        # there would pass the guard's wipe check.
+        priv, pub = generate_signing_keypair()
+        jwks = build_jwks({"proxy-1": pub})
+        now = int(time.time())
+        with pytest.raises(IdentityTokenError, match="ImmatureSignature"):
+            verify_proxy_assertion(
+                _mint(priv, iat=now + 1, exp=now + 31), jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1"
+            )
+        assert verify_proxy_assertion(_mint(priv, iat=now), jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1")
+
+    @freeze_time("2026-10-02T12:00:00+00:00")
+    def test_the_leeway_is_the_whole_future_tolerance_on_the_issue_time(self) -> None:
+        # the one leeway bounds how far ahead an issue time may be, so it is the number a
+        # caller's replay guard must cover: four seconds ahead passes a five-second leeway, six
+        # does not.
+        priv, pub = generate_signing_keypair()
+        jwks = build_jwks({"proxy-1": pub})
+        now = int(time.time())
+        assert verify_proxy_assertion(
+            _mint(priv, iat=now + 4, exp=now + 34),
+            jwks=jwks,
+            expected_pod_id="pod-1",
+            body_hash="bh-1",
+            leeway_seconds=5,
+        )
+        with pytest.raises(IdentityTokenError, match="ImmatureSignature"):
+            verify_proxy_assertion(
+                _mint(priv, iat=now + 6, exp=now + 36),
+                jwks=jwks,
+                expected_pod_id="pod-1",
+                body_hash="bh-1",
+                leeway_seconds=5,
+            )
 
     def test_signature_under_a_key_not_in_the_jwks_rejected(self) -> None:
         priv, _pub = generate_signing_keypair()

@@ -29,6 +29,7 @@ import pytest
 from threetears.core.coordination import ReplayGuard
 from threetears.core.coordination import replay_guard as replay_guard_module
 from threetears.core.coordination.replay_guard import CLOCK_DRIFT_ALLOWANCE
+from threetears.core.security import ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.testing import kv as fake_kv_module
 from threetears.nats import KvError
 
@@ -272,6 +273,94 @@ class TestReplayGuardAfterAWipe:
         stamped = created + timedelta(seconds=1)
         assert await guard.record_unique("n", issued_at=stamped) is False
         assert await guard.record_unique("n", issued_at=created + 2 * _REACH) is False
+
+
+class TestAPlatformSizedGuardAfterABrokerRestart:
+    """a guard sized for the platform's future tolerance refuses for ten seconds after a wipe, not 65.
+
+    Every proof verifier accepts an issue time at most
+    :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE` ahead of its clock, so that is
+    what its guard is sized for, and the reach after a wipe is that plus the drift allowance.
+    """
+
+    @staticmethod
+    async def _restarted(client: FakeNatsClient) -> tuple[ReplayGuard, datetime]:
+        """a bound, platform-sized guard whose broker has just restarted under it.
+
+        :param client: the KV double
+        :ptype client: FakeNatsClient
+        :return: the guard, and the creation time of the bucket the restart left it
+        :rtype: tuple[ReplayGuard, datetime]
+        """
+        guard = ReplayGuard(
+            client,
+            bucket_name="pop_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE,
+        )
+        await guard.bind()
+        assert await guard.record_unique("before-the-restart", issued_at=_later()) is True
+        await client.restart_broker()
+        bucket = await client.kv_bucket(name="pop_nonces")
+        return guard, await bucket.date_created()
+
+    def test_the_reach_is_ten_seconds(self) -> None:
+        assert ISSUE_TIME_FUTURE_TOLERANCE + CLOCK_DRIFT_ALLOWANCE == timedelta(seconds=10)
+
+    @pytest.mark.asyncio
+    async def test_an_artifact_issued_inside_ten_seconds_of_the_restart_is_refused(
+        self, client: FakeNatsClient
+    ) -> None:
+        guard, created = await self._restarted(client)
+        assert await guard.record_unique("at-0", issued_at=created) is False
+        assert await guard.record_unique("at-6", issued_at=created + timedelta(seconds=6)) is False
+        assert await guard.record_unique("at-9", issued_at=created + timedelta(seconds=9)) is False
+
+    @pytest.mark.asyncio
+    async def test_an_artifact_issued_ten_seconds_after_the_restart_is_accepted(self, client: FakeNatsClient) -> None:
+        # with the old sixty-second tolerance this was refused, and so was everything up to 65s.
+        guard, created = await self._restarted(client)
+        assert await guard.record_unique("at-10", issued_at=created + timedelta(seconds=10)) is True
+        assert await guard.record_unique("at-30", issued_at=created + timedelta(seconds=30)) is True
+
+    @pytest.mark.asyncio
+    async def test_a_replay_of_what_was_admitted_before_the_restart_is_still_refused(
+        self, client: FakeNatsClient
+    ) -> None:
+        # the shorter reach is sound only because the verifier refuses an issue time more than the
+        # tolerance ahead: a proof admitted before the wipe was issued no later than the
+        # verifier's clock plus the tolerance, which is inside the reach of any later creation.
+        guard = ReplayGuard(
+            client,
+            bucket_name="pop_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE,
+        )
+        bucket = await client.kv_bucket(name="pop_nonces")
+        accepted_at = datetime.now(UTC)
+        bucket.wipe(date_created=accepted_at - timedelta(hours=1))
+        latest_admissible = accepted_at + ISSUE_TIME_FUTURE_TOLERANCE
+        assert await guard.record_unique("edge", issued_at=latest_admissible) is True
+        # the broker restarts the instant after, with its clock at the drift allowance's far end.
+        bucket.wipe(date_created=accepted_at - CLOCK_DRIFT_ALLOWANCE + timedelta(milliseconds=1))
+        assert await guard.record_unique("edge", issued_at=latest_admissible) is False
+
+    def test_a_verifier_accepting_further_ahead_than_the_platform_tolerance_is_refused(self) -> None:
+        guard = ReplayGuard(
+            MagicMock(), bucket_name="b", ttl_seconds=60, verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE
+        )
+        guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)
+        with pytest.raises(ValueError, match="verifier_future_tolerance"):
+            guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE + timedelta(seconds=1))
+        with pytest.raises(ValueError, match="verifier_future_tolerance"):
+            guard.require_covers(timedelta(seconds=60))
+
+    def test_a_guard_sized_below_the_platform_tolerance_refuses_a_platform_verifier(self) -> None:
+        guard = ReplayGuard(
+            MagicMock(), bucket_name="b", ttl_seconds=60, verifier_future_tolerance=timedelta(seconds=4)
+        )
+        with pytest.raises(ValueError, match="verifier_future_tolerance"):
+            guard.require_covers(ISSUE_TIME_FUTURE_TOLERANCE)
 
 
 class _StubAnchor:

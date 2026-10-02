@@ -25,9 +25,18 @@ public surface:
   answers a call that could not show it came through the registry for this body and this pod) /
   :data:`TOOL_POP_LEDGER_UNAVAILABLE` (the code the registry and a tool pod both answer when the
   replay ledger their single-use check depends on cannot be reached).
+- proof freshness (``freshness``): :data:`ISSUE_TIME_FUTURE_TOLERANCE` (how far ahead of a
+  verifier's clock a signed issue time is accepted -- the one number every proof verifier's replay
+  guard is sized for) / :data:`DEFAULT_PROOF_MAX_AGE` (how old one may be) /
+  :func:`issue_time_is_fresh` (the check, each direction on its own bound).
 """
 
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
+from threetears.core.security.freshness import (
+    DEFAULT_PROOF_MAX_AGE,
+    ISSUE_TIME_FUTURE_TOLERANCE,
+    issue_time_is_fresh,
+)
 from threetears.core.security.identity_minter import (
     DEFAULT_IDENTITY_TTL_SECONDS,
     IdentityMinter,
@@ -93,6 +102,10 @@ __all__ = [
     "DecryptionError",
     "open_secret",
     "seal",
+    # proof freshness
+    "DEFAULT_PROOF_MAX_AGE",
+    "ISSUE_TIME_FUTURE_TOLERANCE",
+    "issue_time_is_fresh",
     # identity tokens
     "DEFAULT_IDENTITY_TTL_SECONDS",
     "IDENTITY_REFUSED",

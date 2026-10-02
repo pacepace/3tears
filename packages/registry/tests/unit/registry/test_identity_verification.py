@@ -18,7 +18,12 @@ from __future__ import annotations
 
 from threetears.core.testing.replay_guard import FakeReplayGuard
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+from freezegun import freeze_time
+from threetears.core.coordination import ReplayGuard
+from threetears.core.security import ISSUE_TIME_FUTURE_TOLERANCE
+from threetears.core.testing.kv import FakeNatsClient
 
 import jwt
 
@@ -983,12 +988,14 @@ def _pop_request(
     pop_body_args: dict[str, Any] | None = None,
     include_pop: bool = True,
     bind_cnf: bool = True,
+    pop_iat_offset: int = 0,
 ) -> ProxyCallRequest:
     """a request carrying a cnf-bound token + a matching per-call pop proof.
 
     ``bind_cnf=False`` mints a token with NO holder binding; ``include_pop=False`` omits the proof;
     ``pop_body_args`` computes the proof's body hash from DIFFERENT arguments than the request
-    actually carries (a spliced proof).
+    actually carries (a spliced proof); ``pop_iat_offset`` stamps the proof that many seconds
+    ahead of (positive) or behind (negative) the clock.
     """
     args = {"expression": "2+2"}
     cnf = jwk_thumbprint(holder_key.public_key()) if bind_cnf else None
@@ -1001,7 +1008,7 @@ def _pop_request(
             access_token_hash=access_token_hash(token),
             body_hash=body_hash,
             nonce=str(uuid7()),
-            iat=int(time.time()),
+            iat=int(time.time()) + pop_iat_offset,
         )
     return ProxyCallRequest(
         tool_name=_TOOL,
@@ -1263,6 +1270,20 @@ class TestDispatchPopEnforcement:
         message: ProxyCallResponse = nc.publish_reply.call_args.kwargs["message"]
         return message
 
+    @staticmethod
+    async def _settled(nc: AsyncMock) -> None:
+        """let a dispatch over a REAL replay guard finish: it awaits the kv double more than once.
+
+        :param nc: the client double the dispatch answers through
+        :ptype nc: AsyncMock
+        :return: None
+        :rtype: None
+        """
+        for _ in range(200):
+            if nc.publish_reply.called:
+                break
+            await asyncio.sleep(0)
+
     @pytest.mark.asyncio
     async def test_forwards_a_valid_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
@@ -1328,6 +1349,80 @@ class TestDispatchPopEnforcement:
         assert req.pop is not None
         signed_iat = jwt.decode(req.pop, options={"verify_signature": False})["iat"]
         assert guard.issued_at == [datetime.fromtimestamp(signed_iat, UTC)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ahead", [1, 4, 5])
+    async def test_forwards_a_pop_stamped_a_few_seconds_ahead(
+        self, hub: tuple[Any, dict[str, Any]], ahead: int
+    ) -> None:
+        # the agent's clock leads the proxy's as often as it lags; inside the future tolerance
+        # that is a real call. the clock is frozen so the edge is exact.
+        priv, jwks = hub
+        with freeze_time(datetime.now(UTC), real_asyncio=True):
+            req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=ahead)
+            guard = FakeReplayGuard(fresh=True)
+            nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
+        nc.request_raw.assert_called_once()
+        assert len(guard.seen) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ahead", [6, 55, 60])
+    async def test_rejects_a_pop_stamped_further_ahead_than_the_future_tolerance(
+        self, hub: tuple[Any, dict[str, Any]], ahead: int
+    ) -> None:
+        # the proxy's guard is sized for the future tolerance, so a proof accepted from further
+        # ahead could be replayed past the guard's wipe check. a minute ahead was accepted once,
+        # and cost every tool call for 65 seconds after a broker restart.
+        priv, jwks = hub
+        with freeze_time(datetime.now(UTC), real_asyncio=True):
+            req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=ahead)
+            guard = FakeReplayGuard(fresh=True)
+            nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
+        assert guard.seen == []  # refused before the guard: a stale-dated proof burns no nonce
+
+    @pytest.mark.asyncio
+    async def test_an_old_pop_inside_the_window_is_still_forwarded(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # the past side keeps its minute: a slow call is not what the future tolerance is about.
+        priv, jwks = hub
+        with freeze_time(datetime.now(UTC), real_asyncio=True):
+            req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=-55)
+            nc = await self._drive(lambda: jwks, req, pop_replay_guard=FakeReplayGuard(fresh=True))
+            stale = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_iat_offset=-61)
+            stale_nc = await self._drive(lambda: jwks, stale, pop_replay_guard=FakeReplayGuard(fresh=True))
+        nc.request_raw.assert_called_once()
+        stale_nc.request_raw.assert_not_called()
+        assert self._reply(stale_nc).error_code == "TOOL_POP_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_after_a_broker_restart_calls_are_refused_for_ten_seconds_not_sixty_five(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        # a real guard, sized as the registry server sizes it, over the kv double: nine seconds
+        # after the broker comes back a fresh proof is still refused; ten seconds after, it is
+        # forwarded.
+        priv, jwks = hub
+        kv = FakeNatsClient()
+        guard = ReplayGuard(
+            kv, bucket_name="pop_nonces", ttl_seconds=120, verifier_future_tolerance=ISSUE_TIME_FUTURE_TOLERANCE
+        )
+        # frozen on a whole second, because a proof's iat is one: stopped mid-second, the
+        # truncated issue time would trail the moment it was minted and the edge would move.
+        with freeze_time(datetime.now(UTC).replace(microsecond=0), real_asyncio=True) as clock:
+            await guard.bind()
+            await kv.restart_broker()
+            clock.tick(timedelta(seconds=9))
+            early = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+            early_nc = await self._drive(lambda: jwks, early, pop_replay_guard=guard)
+            await self._settled(early_nc)
+            clock.tick(timedelta(seconds=1))
+            later = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+            later_nc = await self._drive(lambda: jwks, later, pop_replay_guard=guard)
+            await self._settled(later_nc)
+        early_nc.request_raw.assert_not_called()
+        assert self._reply(early_nc).error_code == "TOOL_POP_UNVERIFIED"
+        later_nc.request_raw.assert_called_once()
 
 
 class _RaisingAuthorizer:

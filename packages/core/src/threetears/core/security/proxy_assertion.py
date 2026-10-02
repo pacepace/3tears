@@ -183,7 +183,12 @@ def verify_proxy_assertion(
     :ptype expected_pod_id: str
     :param body_hash: the expected ``bh`` (canonical_call_hash of the received call)
     :ptype body_hash: str
-    :param leeway_seconds: clock-skew tolerance
+    :param leeway_seconds: clock-skew tolerance, applied by the JWT library to ``exp`` AND to
+        ``iat``: an expiry up to this far behind the pod's clock is accepted, and so is an issue
+        time up to this far ahead of it. The second half is this verifier's future tolerance, so
+        the caller's replay guard must be sized for it, and it must not exceed
+        :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`. The default accepts
+        neither
     :ptype leeway_seconds: int
     :return: the verified assertion claims
     :rtype: ProxyAssertionClaims
