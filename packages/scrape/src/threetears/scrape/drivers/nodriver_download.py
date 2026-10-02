@@ -175,8 +175,16 @@ class NodriverDownloadDriver(ScrapeDriver):
                 await client.aclose()
 
         if response.status_code >= 400:
-            body = response.json()
-            error = body.get("error", {})
+            # The documented error body is JSON, but a 5xx can come from something in front of
+            # the sidecar (an ingress, a proxy) that writes HTML or plain text. That is still
+            # this driver's failure to report, not a decode error escaping from inside it.
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            error = body.get("error") if isinstance(body, dict) else None
+            if not isinstance(error, dict):
+                error = {}
             log.warning(
                 "sidecar download failed",
                 extra={"extra_data": {"url": url, "status": response.status_code, "code": error.get("code")}},

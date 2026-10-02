@@ -10,12 +10,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from uuid import uuid7
+from uuid import uuid4, uuid7
 
 import pytest
 
 from threetears.agent.audit import AuditEvent, publish_audit
-from threetears.nats import Subject, set_default_namespace
+from threetears.nats import (
+    Principal,
+    Subject,
+    Subjects,
+    build_permissions,
+    get_default_namespace,
+    set_default_namespace,
+)
 
 
 @dataclass
@@ -178,3 +185,53 @@ async def test_publish_serialization_error_does_not_raise() -> None:
 
     # must NOT raise
     await publish_audit(event, nats_client=_BrokenWrapper(), namespace="dev")
+
+
+async def test_a_tool_pod_publishes_under_its_own_pod_id_keeping_the_event_type() -> None:
+    """a tool pod's event rides ``{ns}.audit.tool_pod.{pod_id}.{event_type}``, envelope untouched.
+
+    that subject is what the pod's grant names, so it can publish every event type it produces and
+    nothing under another principal's audit subject.
+    """
+    nats = _FakeWrapper()
+    pod_id = uuid4()
+    event = _build_event("collector.promoted")
+    await publish_audit(event, nats_client=nats, namespace="aibots", tool_pod_id=pod_id)
+    assert len(nats.jetstream_publish_calls) == 1
+    subject, payload = nats.jetstream_publish_calls[0]
+    assert subject.path == f"aibots.audit.tool_pod.{pod_id}.collector.promoted"
+    assert AuditEvent.model_validate_json(payload).event_type == "collector.promoted"
+
+
+async def test_no_tool_pod_id_keeps_the_agent_subject() -> None:
+    """NEGATIVE CONTROL: without a pod id the subject is the bare ``{ns}.audit.{event_type}``."""
+    nats = _FakeWrapper()
+    await publish_audit(_build_event("collector.promoted"), nats_client=nats, namespace="aibots")
+    assert nats.jetstream_publish_calls[0][0].path == "aibots.audit.collector.promoted"
+
+
+def test_the_tool_pod_subject_refuses_an_empty_event_type() -> None:
+    """an empty event type would publish on the pod's bare subtree root."""
+    with pytest.raises(ValueError):
+        Subjects.tool_pod_audit_event(uuid4(), "", namespace="aibots")
+
+
+async def test_the_tool_pod_subject_is_inside_the_pods_own_grant() -> None:
+    """the subject a pod publishes on and the subtree its connection is granted are one derivation.
+
+    a publish outside the grant is refused by the broker with nothing raised at the producer, which
+    is fire-and-forget -- the event would simply never be recorded.
+    """
+    nats = _FakeWrapper()
+    pod_id = uuid4()
+    await publish_audit(_build_event("collector.promoted"), nats_client=nats, namespace="aibots", tool_pod_id=pod_id)
+    published = nats.jetstream_publish_calls[0][0].path
+    previous = get_default_namespace()
+    set_default_namespace("aibots")
+    try:
+        granted = build_permissions(Principal.TOOL_POD, pod_id=str(pod_id)).publish
+    finally:
+        set_default_namespace(previous)
+    own = str(Subjects.tool_pod_audit_wildcard(pod_id, namespace="aibots"))
+    assert own in granted
+    assert published.startswith(own.removesuffix(">"))

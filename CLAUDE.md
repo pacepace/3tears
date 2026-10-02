@@ -165,6 +165,16 @@ The command, the incident behind each rule, and the list of legitimate dev-box s
 - Testing: pytest
 - uv only. No poetry.
 
+## Leading underscores are a stability contract
+
+A leading underscore means implementation detail: nothing outside the defining class or module binds to it, in `src/` or in `tests/`.
+
+- Banned: inline `# noqa: SLF001`, per-file SLF001 ignores for tests, and aliases like `_helper = helper`.
+- **No public API exists only for a test.** A test reaches an object through its front door: the constructor, the fixture that builds it, or the behaviour it exposes. Promote a name only when production code needs it too.
+- Reaching into a third-party library's private members is confined to one module per library (the `nats/_nats_py_internals.py` shape), recorded in `tests/enforcement/_underscore_exemptions.txt` with a specific rationale, and nothing else touches those members.
+
+Owner ruling, 2026-10-01.
+
 ## Test fakes
 
 A test fake is any class named `Fake<Name>` or `_Fake<Name>` under a `tests/` directory, and every one declares what production protocol it stands in for, ON the class: subclass it, or `# parity-with: <fully.qualified.name>` (the only route that verifies the surface), or a one-line `# parity-exempt: <rationale>` of at least 30 characters. Never in `tests/enforcement/_fake_parity_exemptions.txt`, which is deliberately empty. `tests/enforcement/test_fake_protocol_parity.py` enforces it; the three routes in full: [docs/testing.md](docs/testing.md#test-fakes).

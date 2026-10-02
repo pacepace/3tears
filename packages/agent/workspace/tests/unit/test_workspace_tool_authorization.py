@@ -48,7 +48,7 @@ from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.agent.workspace.authorize import WorkspaceAccessDenied
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceEntity,
     FakeWorkspaceFile,
@@ -700,7 +700,7 @@ def _build_fs_write(
 ) -> tuple[Any, dict[str, Any]]:
     """build FsWriteTool + kwargs.
 
-    the underlying _write_file_atomic would need a working pool, so
+    the underlying write_file_atomic would need a working pool, so
     we pass a pool that raises inside acquire() after authorize
     completes; the test only asserts authorize invocation + denial
     paths so the failure after authorize is fine.
@@ -744,7 +744,7 @@ def _build_fs_edit(
     """build FsEditTool + kwargs.
 
     we pass a file that exists + valid find/replace. inner
-    _write_file_atomic is stubbed via raising pool; authorize runs
+    write_file_atomic is stubbed via raising pool; authorize runs
     before that point.
     """
     from threetears.agent.workspace.tools.fs_edit import FsEditTool

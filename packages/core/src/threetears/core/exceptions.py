@@ -8,6 +8,8 @@ __all__ = [
     "ConcurrentModificationError",
     "CorruptCacheEntry",
     "DataLayerUnavailableError",
+    "DataVersionNotReadyError",
+    "DataVersionSupersededError",
     "GenerationUnavailableError",
     "InvalidL2ScopeError",
     "L2EpochRegressedError",
@@ -42,6 +44,35 @@ class DataLayerUnavailableError(Exception):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class DataVersionSupersededError(DataLayerUnavailableError):
+    """Raised when the broker refuses a pod whose data version is older than its space's target.
+
+    FATAL for the pod. Its space has been, or is being, upgraded to a later version of its table
+    list, and a pod on the older list must not touch the new tables; a pod on the new version
+    replaces it. The broker keeps refusing every request this pod sends, so there is nothing to
+    retry. The backend hands this error to its ``on_superseded`` callback once before raising it,
+    so the pod runtime -- not whichever caller happened to issue the refused query -- owns the
+    exit.
+
+    A subclass of :class:`DataLayerUnavailableError` because, to code that only needs to know the
+    data layer is unusable, that is exactly what it is: an existing handler that treats an outage
+    as an outage stays correct, while code that must tell the two apart catches this type.
+    """
+
+
+class DataVersionNotReadyError(DataLayerUnavailableError):
+    """Raised when the broker refuses a pod whose data version IS its space's target, mid-upgrade.
+
+    TRANSIENT. The pod is at the right version, but the upgrade that brings its space there has
+    not finished, so the tables it expects may not exist yet. The pod waits for the upgrade's
+    all-clear and retries; it must not exit, which is the whole difference from
+    :class:`DataVersionSupersededError` and why the two are separate types.
+
+    A subclass of :class:`DataLayerUnavailableError` for the reason given there: the data layer
+    is, for now, unavailable to this pod.
+    """
 
 
 class L2EpochRegressedError(RuntimeError):

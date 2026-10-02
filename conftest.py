@@ -31,27 +31,25 @@ from collections.abc import Iterator
 
 import pytest
 
-# Importing langchain_core re-enables LangChain's own deprecation
-# warnings via ``surface_langchain_deprecation_warnings()``; that
-# function prepends a ``default``-action filter for
-# ``LangChainPendingDeprecationWarning`` which trumps a generic
-# ``PendingDeprecationWarning`` ignore. Pulling the exact subclass
-# here lets the filter target the same class langchain_core's surfacer
-# uses, so it actually wins.
-from langchain_core._api.deprecation import (  # noqa: E402
-    LangChainDeprecationWarning,
-    LangChainPendingDeprecationWarning,
-)
+# Importing langchain_core re-enables LangChain's own deprecation warnings: its
+# ``__init__`` calls ``surface_langchain_deprecation_warnings()``, which prepends a
+# ``default``-action filter for its ``LangChainPendingDeprecationWarning`` and
+# ``LangChainDeprecationWarning``. A filter installed BEFORE that import sits behind those
+# and loses. So langchain_core is imported first, through its public package, and the
+# ignores below are prepended after it, in front of its own. They match the stdlib bases
+# the LangChain classes derive from (a filter's category matches subclasses), narrowed by
+# the one message, so nothing here binds to ``langchain_core._api``, which is private.
+import langchain_core  # noqa: E402, F401
 
 warnings.filterwarnings(
     "ignore",
     message=r"The default value of .allowed_objects. will change in a future version",
-    category=LangChainPendingDeprecationWarning,
+    category=PendingDeprecationWarning,
 )
 warnings.filterwarnings(
     "ignore",
     message=r"The default value of .allowed_objects. will change in a future version",
-    category=LangChainDeprecationWarning,
+    category=DeprecationWarning,
 )
 
 pytest_plugins = ["threetears.core.testing.fixtures"]
@@ -75,11 +73,11 @@ def _bind_test_subject_namespace(monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     connects) that sets it would otherwise shadow this env value for every later
     test. clear it before and after each test so isolation holds. tests that
     assert the unconfigured behavior clear the env var + call
-    ``_reset_default_namespace()`` locally within the test body.
+    :func:`threetears.nats.testing.reset_default_namespace` locally within the test body.
     """
-    from threetears.nats.subjects import _reset_default_namespace
+    from threetears.nats.testing import reset_default_namespace
 
-    _reset_default_namespace()
+    reset_default_namespace()
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "aibots")
     yield
-    _reset_default_namespace()
+    reset_default_namespace()

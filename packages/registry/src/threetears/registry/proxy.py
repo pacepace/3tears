@@ -26,6 +26,8 @@ from pydantic import (
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
 from threetears.core.security.identity_token import (
+    IDENTITY_REFUSED,
+    IDENTITY_REFUSED_MESSAGE,
     IdentityClaims,
     IdentityKeyNotFoundError,
     IdentityTokenError,
@@ -35,6 +37,7 @@ from threetears.core.security.identity_token import (
     verify_identity_token,
 )
 from threetears.core.security.pop import access_token_hash, verify_pop_proof
+from threetears.core.security.proxy_assertion import TOOL_POP_LEDGER_UNAVAILABLE, TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE
 from threetears.nats import (
     RESULT_ACK_TIMEOUT_SECONDS,
     IncomingMessage,
@@ -627,7 +630,7 @@ class CallProxy:
 
         verification is UNCONDITIONAL and fail-closed (caller guarantees ``request.context`` and
         ``context.agent_id`` present): verify; on success return the re-stamped request; on ANY
-        failure return ``(request, <TOOL_IDENTITY_UNVERIFIED response>, None)`` so the dispatcher
+        failure return ``(request, <IDENTITY_REFUSED response>, None)`` so the dispatcher
         rejects the call without forwarding. there is no off/warn passthrough -- a call the proxy
         cannot authenticate never reaches the tool pod on the self-asserted envelope.
 
@@ -662,7 +665,7 @@ class CallProxy:
                 raise IdentityTokenError("no JWKS provider configured for identity verification")
             claims = await self._verify_token_reactively(token, refreshed=refreshed)
             # the VERIFIED handshake identity. these UUID conversions live INSIDE the try so a
-            # malformed-but-signed non-UUID claim fails closed (TOOL_IDENTITY_UNVERIFIED) rather
+            # malformed-but-signed non-UUID claim fails closed (IDENTITY_REFUSED) rather
             # than escaping as an uncaught ValueError. user_id DEFAULTS to the handshake token's:
             # ``None`` for an agent handshake token (one per pod; it CANNOT carry the per-turn
             # user), the system principal for a hub-originated call. the bound user-assertion below
@@ -690,14 +693,7 @@ class CallProxy:
                 }
             }
             log.warning("identity verification failed; rejecting call", extra=extra)
-            response = ProxyCallResponse(
-                success=False,
-                content="",
-                error=f"identity verification failed ({reason})",
-                error_code="TOOL_IDENTITY_UNVERIFIED",
-                context=context,
-            )
-            return request, response, None
+            return request, _identity_refused(context), None
 
         if principal.is_tool_pod:
             # the decision tier: a signed claim was read as "platform principal, no customer",
@@ -728,17 +724,7 @@ class CallProxy:
                         }
                     },
                 )
-                return (
-                    request,
-                    ProxyCallResponse(
-                        success=False,
-                        content="",
-                        error="user-assertion verification failed (IdentityTokenError)",
-                        error_code="TOOL_USER_IDENTITY_UNVERIFIED",
-                        context=context,
-                    ),
-                    None,
-                )
+                return request, _identity_refused(context), None
 
         # the verified user identity DEFAULTS to the handshake token's user_id: ``None`` for an
         # agent handshake token (one per pod; it CANNOT carry the per-turn user), the system
@@ -808,14 +794,7 @@ class CallProxy:
                     }
                 }
                 log.warning("user-assertion verification failed; rejecting call", extra=extra)
-                response = ProxyCallResponse(
-                    success=False,
-                    content="",
-                    error=f"user-assertion verification failed ({reason})",
-                    error_code="TOOL_USER_IDENTITY_UNVERIFIED",
-                    context=context,
-                )
-                return request, response, None
+                return request, _identity_refused(context), None
 
         verified_context = context.model_copy(
             update={
@@ -1602,18 +1581,21 @@ class CallProxy:
 
         The ledger's contract says a failure MUST be a failed check, never fresh, so the call is
         denied -- but not as ``TOOL_POP_UNVERIFIED``, which tells the caller its proof is bad. The
-        proof was never judged; the ledger could not be reached. Logged once at ERROR with the cause.
+        proof was never judged; the ledger could not be reached. Logged once at ERROR with the cause;
+        the reply carries the one shared message, the same a tool pod answers its own ledger outage
+        with, and never the exception.
 
         :param request: the call request
         :ptype request: ProxyCallRequest
         :param exc: what the ledger raised
         :ptype exc: Exception
-        :return: the ``TOOL_POP_LEDGER_UNAVAILABLE`` refusal
+        :return: the :data:`~threetears.core.security.TOOL_POP_LEDGER_UNAVAILABLE` refusal
         :rtype: ProxyCallResponse
         """
         log.error(
             "tool call refused: the proof-of-possession replay ledger could not be reached, so the "
-            "proof could not be checked and the call is denied",
+            "proof could not be checked and the call is denied; check the registry's NATS connection "
+            "and its grant on the pop nonce bucket",
             extra={
                 "extra_data": {
                     "tool_name": request.tool_name,
@@ -1626,8 +1608,8 @@ class CallProxy:
         return ProxyCallResponse(
             success=False,
             content="",
-            error=f"the replay ledger could not be reached ({type(exc).__name__}); the call was not checked, retry",
-            error_code="TOOL_POP_LEDGER_UNAVAILABLE",
+            error=TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE,
+            error_code=TOOL_POP_LEDGER_UNAVAILABLE,
             context=request.context,
         )
 
@@ -1875,6 +1857,31 @@ class CallProxy:
         return result
 
 
+def _identity_refused(context: CallContext) -> ProxyCallResponse:
+    """the one answer to a forwarded identity that does not verify.
+
+    every hub door answers this condition :data:`~threetears.core.security.IDENTITY_REFUSED`
+    with one undiscriminating message, and the registry's tool-call door answers it the same
+    way: a caller learns that it was refused, never which check refused it. which check it was
+    -- an absent, expired or foreign token, a malformed claim, an unverified or unbound user
+    assertion, an assertion on a tool pod's token -- is logged by the caller of this function,
+    beside the correlation id. a proof of possession that fails is a different condition and
+    answers ``TOOL_POP_UNVERIFIED``.
+
+    :param context: the call's context, echoed on the reply as every proxy reply echoes it
+    :ptype context: CallContext
+    :return: the refusal to publish
+    :rtype: ProxyCallResponse
+    """
+    return ProxyCallResponse(
+        success=False,
+        content="",
+        error=IDENTITY_REFUSED_MESSAGE,
+        error_code=IDENTITY_REFUSED,
+        context=context,
+    )
+
+
 def _correlation_id_str(request: ProxyCallRequest) -> str:
     """stringify the correlation id riding on ``request.context``.
 
@@ -1897,7 +1904,7 @@ def _correlation_id_str(request: ProxyCallRequest) -> str:
     return result
 
 
-def _forwarded_deadline(caller_deadline: float | None, effective_timeout: float | None) -> float | None:
+def _forwarded_deadline(caller_deadline: float | None, effective_timeout: float) -> float | None:
     """Clamp the caller's remaining budget to what this proxy will actually wait.
 
     Three properties, in the order they matter.
@@ -1918,15 +1925,13 @@ def _forwarded_deadline(caller_deadline: float | None, effective_timeout: float 
 
     :param caller_deadline: the agent's remaining budget, when it declared one
     :ptype caller_deadline: float | None
-    :param effective_timeout: this proxy's own wait for the pod
-    :ptype effective_timeout: float | None
+    :param effective_timeout: this proxy's own wait for the pod, always resolved before a forward
+    :ptype effective_timeout: float
     :return: the deadline to forward, or ``None`` to send no deadline at all
     :rtype: float | None
     """
     if caller_deadline is None:
         return None
-    if effective_timeout is None:
-        return caller_deadline
     return min(caller_deadline, effective_timeout)
 
 
@@ -1935,7 +1940,7 @@ def _build_internal_payload(
     proxy_assertion: str | None = None,
     *,
     result_subject: str | None = None,
-    effective_timeout: float | None = None,
+    effective_timeout: float,
 ) -> bytes:
     """build internal NATS payload for forwarding to tool pod.
 
@@ -1958,9 +1963,8 @@ def _build_internal_payload(
         synchronous reply-inbox path
     :ptype result_subject: str | None
     :param effective_timeout: how long THIS proxy will wait for the pod, used as the ceiling the
-        caller's deadline is clamped to. ``None`` forwards the caller's deadline unclamped, which
-        is only correct where no wait has been resolved yet
-    :ptype effective_timeout: float | None
+        caller's deadline is clamped to
+    :ptype effective_timeout: float
     :return: serialized internal call request bytes
     :rtype: bytes
     """

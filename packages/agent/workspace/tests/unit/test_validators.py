@@ -1,10 +1,10 @@
 """tests for :mod:`threetears.agent.workspace.validators`.
 
 covers :func:`dispatch_validators` (pattern matching, multi-validator
-ordering, WVE passthrough, non-WVE wrapping) and
-:func:`_resolve_validator` (caching, bad dotted paths, non-callable
-target, missing module). an integration test wires
-:func:`_write_file_atomic` to a fake pool + validator to verify that a
+ordering, WVE passthrough, non-WVE wrapping) and the resolution of each
+entry's dotted path that dispatch performs (caching, bad dotted paths,
+non-callable target, missing module). an integration test wires
+:func:`write_file_atomic` to a fake pool + validator to verify that a
 validation failure aborts the transaction before any INSERT/UPSERT fires.
 """
 
@@ -19,20 +19,18 @@ from uuid import UUID, uuid4
 import pytest
 
 from threetears.agent.workspace.config import ValidatorEntry
-from threetears.agent.workspace.tools.helpers import _write_file_atomic
+from threetears.agent.workspace.tools.helpers import write_file_atomic
 from threetears.agent.workspace.validators import (
     WorkspaceValidationError,
-    _resolve_validator,
     dispatch_validators,
 )
-from threetears.agent.workspace import validators as validators_module
-from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceEntity,
 )
 
@@ -125,6 +123,13 @@ class _FakePool(FakeAsyncpgPool):
 # ---------------------------------------------------------------------------
 
 
+#: every stub module name installed in this process. the resolver caches by dotted path for the
+#: life of the process -- that is its production contract -- so two tests sharing a module name
+#: would see each other's callables. each test therefore owns its name, and a reuse fails loudly
+#: here rather than leaking a stale callable into another test.
+_INSTALLED_STUB_NAMES: set[str] = set()
+
+
 def _install_stub_module(
     monkeypatch: pytest.MonkeyPatch,
     module_name: str,
@@ -134,18 +139,27 @@ def _install_stub_module(
 
     returns the created module so the test can mutate it mid-flight (e.g.
     simulate module reload between resolver calls).
+
+    :param monkeypatch: pytest monkeypatch, which removes the module at teardown
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :param module_name: a name no other test in this process has installed
+    :ptype module_name: str
+    :param attrs: attributes to set on the module
+    :ptype attrs: dict[str, Any]
+    :return: the installed module
+    :rtype: types.ModuleType
+    :raises AssertionError: if ``module_name`` was already installed in this process
     """
+    assert module_name not in _INSTALLED_STUB_NAMES, (
+        f"stub module {module_name!r} already installed in this process; the validator resolver "
+        "caches by dotted path for the process lifetime, so every test must use its own name"
+    )
+    _INSTALLED_STUB_NAMES.add(module_name)
     module = types.ModuleType(module_name)
     for name, value in attrs.items():
         setattr(module, name, value)
     monkeypatch.setitem(sys.modules, module_name, module)
     return module
-
-
-@pytest.fixture(autouse=True)
-def _clear_resolve_cache() -> None:
-    """every test runs against a clean _RESOLVED cache so order doesn't leak."""
-    validators_module._RESOLVED.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -295,32 +309,41 @@ def test_dispatch_validators_non_wve_gets_wrapped(
 
 
 # ---------------------------------------------------------------------------
-# _resolve_validator: caching + error paths
+# validator resolution through dispatch: caching + error paths
 # ---------------------------------------------------------------------------
+
+
+def _dispatch_one(dotted: str) -> None:
+    """dispatch a single ``*.yaml`` entry naming ``dotted`` against ``a.yaml``.
+
+    :param dotted: the entry's dotted validator path
+    :ptype dotted: str
+    """
+    dispatch_validators([ValidatorEntry(pattern="*.yaml", validator=dotted)], "a.yaml", b"x")
 
 
 def test_resolve_validator_caches_callable_object_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """same dotted path resolved twice -> identical callable object (one import)."""
+    """same dotted path dispatched twice -> the callable resolved first runs both times (one import)."""
+    calls: list[str] = []
 
     def _fn(relpath: str, content: Any) -> None:
-        return None
+        calls.append("original")
 
     module = _install_stub_module(monkeypatch, "tests_validators_stub_g", {"fn": _fn})
-    first = _resolve_validator("tests_validators_stub_g.fn")
-    # replace the module's attribute AFTER first resolve; a cached
-    # callable must still return the original closure.
-    module.fn = lambda *a, **k: None  # type: ignore[assignment]
-    second = _resolve_validator("tests_validators_stub_g.fn")
-    assert first is second
-    assert first is _fn
+    _dispatch_one("tests_validators_stub_g.fn")
+    # replace the module's attribute AFTER the first dispatch; the cached
+    # callable must still be the original closure.
+    module.fn = lambda *a, **k: calls.append("replacement")  # type: ignore[attr-defined]
+    _dispatch_one("tests_validators_stub_g.fn")
+    assert calls == ["original", "original"]
 
 
 def test_resolve_validator_no_dot_raises_value_error() -> None:
     """bare name with no dotted prefix -> ValueError at resolve time."""
     with pytest.raises(ValueError) as excinfo:
-        _resolve_validator("no_dot")
+        _dispatch_one("no_dot")
     assert "dotted import path" in str(excinfo.value)
 
 
@@ -334,14 +357,14 @@ def test_resolve_validator_non_callable_raises_value_error(
         {"not_a_fn": 42},
     )
     with pytest.raises(ValueError) as excinfo:
-        _resolve_validator("tests_validators_stub_h.not_a_fn")
+        _dispatch_one("tests_validators_stub_h.not_a_fn")
     assert "not callable" in str(excinfo.value)
 
 
 def test_resolve_validator_missing_module_propagates_import_error() -> None:
     """unknown module path -> ImportError propagates (config bug, fail loud)."""
     with pytest.raises(ImportError):
-        _resolve_validator("tests_validators_does_not_exist_ever.anything")
+        _dispatch_one("tests_validators_does_not_exist_ever.anything")
 
 
 def test_resolve_validator_missing_attr_propagates_attribute_error(
@@ -350,11 +373,11 @@ def test_resolve_validator_missing_attr_propagates_attribute_error(
     """module exists but lacks the attr -> AttributeError propagates."""
     _install_stub_module(monkeypatch, "tests_validators_stub_i", {"present": 1})
     with pytest.raises(AttributeError):
-        _resolve_validator("tests_validators_stub_i.missing")
+        _dispatch_one("tests_validators_stub_i.missing")
 
 
 # ---------------------------------------------------------------------------
-# integration: _write_file_atomic + validator rolls back before INSERT/UPSERT
+# integration: write_file_atomic + validator rolls back before INSERT/UPSERT
 # ---------------------------------------------------------------------------
 
 
@@ -381,7 +404,7 @@ async def test_write_file_atomic_validator_failure_aborts_before_inserts(
     pool = _FakePool()
     ws = _FakeWorkspaceEntity(id=uuid4())
     with pytest.raises(WorkspaceValidationError) as excinfo:
-        await _write_file_atomic(
+        await write_file_atomic(
             db_pool=pool,
             workspace=ws,
             relative_path="settings.yaml",
@@ -429,7 +452,7 @@ async def test_write_file_atomic_validator_pass_proceeds_to_inserts(
     ]
     pool = _FakePool()
     ws = _FakeWorkspaceEntity(id=uuid4())
-    new_version, _new_sha = await _write_file_atomic(
+    new_version, _new_sha = await write_file_atomic(
         db_pool=pool,
         workspace=ws,
         relative_path="settings.yaml",
@@ -455,7 +478,7 @@ async def test_write_file_atomic_no_validators_is_noop() -> None:
     """validators=None preserves pre-shard behavior exactly."""
     pool = _FakePool()
     ws = _FakeWorkspaceEntity(id=uuid4())
-    new_version, _new_sha = await _write_file_atomic(
+    new_version, _new_sha = await write_file_atomic(
         db_pool=pool,
         workspace=ws,
         relative_path="any.txt",

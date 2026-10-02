@@ -21,7 +21,7 @@ from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolR
 from threetears.agent.tools.server import CallResponse
 from threetears.nats import IncomingMessage
 
-from packages.agent.tools.tests.unit.tools._pod_auth import jwks_provider, recording_tool_server, signed_call_payload
+from packages.agent.tools.tests.unit.tools.pod_auth import jwks_provider, recording_tool_server, signed_call_payload
 
 _POD_ID = "test-pod"
 

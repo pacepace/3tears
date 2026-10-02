@@ -28,14 +28,15 @@ import pytest
 
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.agent.workspace.lease import WorkspaceFileLease
+from threetears.nats.subject_permissions import WORKSPACE_LOCKS_BUCKET_SUFFIX, agent_platform_bucket_suffix
 from threetears.agent.workspace.materialize import bind
-from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceEntity,
     FakeWorkspaceFile,
@@ -202,9 +203,12 @@ async def test_two_pods_binding_same_workspace_serialize_on_lease(
     agent_id = uuid4()
     ws = _FakeWorkspace(id=ws_id, name=workspace_name, agent_id=agent_id)
 
-    fake_nats = FakeNatsClient()
-    lease_a = WorkspaceFileLease(fake_nats, namespace="test", pod_id="pod-A")
-    lease_b = WorkspaceFileLease(fake_nats, namespace="test", pod_id="pod-B")
+    # the hub declares the agent's own workspace-locks bucket; the leases only bind it
+    fake_nats = FakeNatsClient(
+        declared_buckets=(agent_platform_bucket_suffix(agent_id, WORKSPACE_LOCKS_BUCKET_SUFFIX),)
+    )
+    lease_a = WorkspaceFileLease(fake_nats, agent_id=agent_id, pod_id="pod-A")
+    lease_b = WorkspaceFileLease(fake_nats, agent_id=agent_id, pod_id="pod-B")
 
     in_body = {"count": 0}
     peak = {"value": 0}
@@ -277,9 +281,12 @@ async def test_second_pod_gets_lease_after_first_releases(
     agent_id = uuid4()
     ws = _FakeWorkspace(id=ws_id, name=ws_name, agent_id=agent_id)
 
-    fake_nats = FakeNatsClient()
-    lease_a = WorkspaceFileLease(fake_nats, namespace="test", pod_id="pod-A")
-    lease_b = WorkspaceFileLease(fake_nats, namespace="test", pod_id="pod-B")
+    # the hub declares the agent's own workspace-locks bucket; the leases only bind it
+    fake_nats = FakeNatsClient(
+        declared_buckets=(agent_platform_bucket_suffix(agent_id, WORKSPACE_LOCKS_BUCKET_SUFFIX),)
+    )
+    lease_a = WorkspaceFileLease(fake_nats, agent_id=agent_id, pod_id="pod-A")
+    lease_b = WorkspaceFileLease(fake_nats, agent_id=agent_id, pod_id="pod-B")
 
     first_inside = asyncio.Event()
     release_first = asyncio.Event()

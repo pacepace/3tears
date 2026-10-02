@@ -14,6 +14,12 @@ the trigger's gate for its own transaction only:
 
 The gate is ``set_config('threetears.wake_protected_gate', ..., true)``,
 which PostgreSQL resets when the transaction ends.
+
+Each write runs in a :class:`~threetears.core.collections.CallerTransaction`
+through :meth:`~threetears.core.collections.BaseCollection.bypassing_write`, so
+the row is evicted from L1 and L2 on every replica once the transaction has
+ended -- never before the commit, when a reader could re-cache the old row
+from L3 with nothing left to evict it.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from threetears.core.collections import CallerTransaction
 from threetears.observe import get_logger
 from threetears.scheduled_jobs import compute_next_fire_at
 
@@ -97,11 +104,15 @@ async def update_protected(
     except ValueError as exc:
         raise ProtectedWakeError(f"schedule_config rejected by the reschedule engine: {exc}") from exc
     conversation_id = entity.conversation_id
-    async with _pool(collection).acquire() as conn, conn.transaction():
+    async with (
+        _pool(collection).acquire() as conn,
+        CallerTransaction(conn),
+        collection.bypassing_write((conversation_id, schedule_id), conn=conn),
+    ):
         await conn.execute(_OPEN_GATE_SQL, PROTECTED_GATE_SETTING, "update")
-        # cache-bypass: the gated UPDATE must run on the transaction that opened the gate.
+        # cache-bypass: the gated UPDATE must run on the transaction that opened the gate; the row
+        # is evicted from every tier once that transaction ends.
         await conn.execute(_UPDATE_SQL, conversation_id, schedule_id, dict(schedule_config), next_fire_at)
-    await collection.invalidate_cache((conversation_id, schedule_id))
     log.info(
         "protected wake schedule changed",
         extra={
@@ -129,8 +140,12 @@ async def delete_protected(
     """Delete a protected wake, as part of deleting its agent.
 
     Pass the agent deletion's own connection as ``conn`` so the wake goes
-    in that transaction; the gate then stays open until it ends. Without
-    ``conn`` the delete runs in a transaction of its own.
+    in that transaction; the gate then stays open until it ends. That
+    transaction must be opened by
+    :class:`~threetears.core.collections.CallerTransaction`, which evicts the
+    row from every cache tier once it has committed or rolled back: an
+    eviction before the commit lets a reader re-cache the row L3 still holds.
+    Without ``conn`` the delete runs in a transaction of its own.
 
     :param collection: three-tier wake-schedules collection
     :ptype collection: WakeScheduleCollection
@@ -143,15 +158,21 @@ async def delete_protected(
     :return: nothing
     :rtype: None
     :raises ProtectedWakeError: when the agent has no such protected wake
+    :raises ValueError: when ``conn`` is given and its transaction was not opened by
+        :class:`~threetears.core.collections.CallerTransaction`
     """
     entity = await _protected_wake(collection, agent_id, schedule_id)
     conversation_id = entity.conversation_id
     if conn is not None:
-        await _delete(conn, conversation_id, schedule_id)
+        async with collection.bypassing_write((conversation_id, schedule_id), conn=conn):
+            await _delete(conn, conversation_id, schedule_id)
     else:
-        async with _pool(collection).acquire() as own, own.transaction():
+        async with (
+            _pool(collection).acquire() as own,
+            CallerTransaction(own),
+            collection.bypassing_write((conversation_id, schedule_id), conn=own),
+        ):
             await _delete(own, conversation_id, schedule_id)
-    await collection.invalidate_cache((conversation_id, schedule_id))
     log.info(
         "protected wake deleted with its agent",
         extra={"extra_data": {"agent_id": str(agent_id), "schedule_id": str(schedule_id)}},
@@ -169,7 +190,8 @@ async def _delete(conn: Any, conversation_id: UUID, schedule_id: UUID) -> None:
     :ptype schedule_id: UUID
     """
     await conn.execute(_OPEN_GATE_SQL, PROTECTED_GATE_SETTING, "delete")
-    # cache-bypass: the gated DELETE must run on the transaction that opened the gate.
+    # cache-bypass: the gated DELETE must run on the transaction that opened the gate; the caller
+    # runs it inside bypassing_write, which evicts the row once that transaction ends.
     await conn.execute(_DELETE_SQL, conversation_id, schedule_id)
 
 

@@ -31,7 +31,7 @@ from threetears.search.contracts import (
     TransportFailed,
 )
 from threetears.search.testing import ScriptedTransport, TransportScript
-from packages.search.tests._searxng_payloads import TWO_RESULTS_BODY, ZERO_RESULTS_BODY
+from packages.search.tests.searxng_payloads import TWO_RESULTS_BODY, ZERO_RESULTS_BODY
 
 
 class _RecordingProvider:

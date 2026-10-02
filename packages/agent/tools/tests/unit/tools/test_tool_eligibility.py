@@ -133,14 +133,13 @@ class TestRegistrationManifestStampsFlags:
     @pytest.mark.asyncio
     async def test_publish_registration_stamps_default_flags(self) -> None:
         """default tool emits ``tool_eligible=True, skill_eligible=False``."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_BaseStubTool())
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         await server.publish_registration()
         # publish() received one positional arg: the manifest.
         call_kwargs = mock_nc.publish.await_args.kwargs
@@ -154,14 +153,13 @@ class TestRegistrationManifestStampsFlags:
     @pytest.mark.asyncio
     async def test_publish_registration_stamps_skill_only_flags(self) -> None:
         """skill-only tool emits ``tool_eligible=False, skill_eligible=True``."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_SkillOnlyTool(name="test.skill_only"))
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         entry = manifest.tools[0]
@@ -171,14 +169,13 @@ class TestRegistrationManifestStampsFlags:
     @pytest.mark.asyncio
     async def test_publish_registration_stamps_unified_surface_flags(self) -> None:
         """tool-shaped skill emits both flags True."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_UnifiedSurfaceTool(name="test.unified"))
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         await server.publish_registration()
         manifest = mock_nc.publish.await_args.kwargs["message"]
         entry = manifest.tools[0]
@@ -195,14 +192,13 @@ class TestRegistrationWarningWhenInvisible:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """``tool_eligible=False, skill_eligible=False`` -> WARNING with mcp_name."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_NeverVisibleTool(name="test.never_visible"))
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
             await server.publish_registration()
         warning_records = [
@@ -223,14 +219,13 @@ class TestRegistrationWarningWhenInvisible:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """defaults must NOT trigger the never-visible warning."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_BaseStubTool())
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
             await server.publish_registration()
         offending = [r for r in caplog.records if "tool_eligible=False" in r.getMessage()]
@@ -242,14 +237,13 @@ class TestRegistrationWarningWhenInvisible:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """``tool_eligible=False, skill_eligible=True`` is a valid pattern."""
+        mock_nc = AsyncMock()
         server = ToolServer(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            nats_url="nats://test:4222",
+            nats_client=mock_nc,
         )
         server.register(_SkillOnlyTool(name="test.skill_only_no_warn"))
-        mock_nc = AsyncMock()
-        server._nc = mock_nc  # noqa: SLF001
         with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
             await server.publish_registration()
         offending = [r for r in caplog.records if "tool_eligible=False" in r.getMessage()]

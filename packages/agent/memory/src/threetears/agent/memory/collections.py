@@ -94,6 +94,7 @@ __all__ = [
 
 log = get_logger(__name__)
 
+
 #: the keyword-match predicate every memory FTS query filters on. ``websearch_to_tsquery``
 #: turns an "or" or a leading "-" in the text into OR / NOT, which YugabyteDB's GIN index
 #: refuses outright, so the predicate filters the scoped rows instead of scanning the index
@@ -1844,21 +1845,20 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # pool holds. The SQL literal lives in the shared helper (which
         # carries no ``memories`` literal), so the partition-enforcement
         # walker is satisfied and this method holds no raw table SQL.
-        result = await apply_salience_decay(
-            self.l3_pool,
-            table="memories",
-            half_life_seconds=half_life_days * 86400.0,
-            floor=floor,
-            returning_columns=self.primary_key_columns,
-        )
-        decayed_pks = result if isinstance(result, list) else []
-        # invalidate each decayed row's L1/L2 entry so a subsequent get()
-        # re-reads fresh salience from L3. A bulk sweep issues one
-        # invalidation per decayed row; acceptable for a maintenance pass
-        # (revisit with a coarser generation-bump if a huge corpus makes
-        # the per-row publish a bottleneck).
-        for pk in decayed_pks:
-            await self.invalidate_cache(pk)
+        # each decayed row is evicted from L1/L2 so a subsequent get() re-reads fresh salience
+        # from L3. A bulk sweep issues one invalidation per decayed row; acceptable for a
+        # maintenance pass (revisit with a coarser generation-bump if a huge corpus makes the
+        # per-row publish a bottleneck).
+        async with self.bypassing_write() as write:
+            result = await apply_salience_decay(
+                self.l3_pool,
+                table="memories",
+                half_life_seconds=half_life_days * 86400.0,
+                floor=floor,
+                returning_columns=self.primary_key_columns,
+            )
+            decayed_pks = result if isinstance(result, list) else []
+            write.touches(*decayed_pks)
         return len(decayed_pks)
 
     async def bump_salience(
@@ -1894,20 +1894,18 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             return None
         # bulk reinforcement UPDATE keyed by a memory_id set; salience /
         # last_accessed are immutable to the entity-UPDATE generator, so
-        # this raw pass is the only writer.
-        await self.l3_pool.execute(
-            "UPDATE memories SET salience = LEAST(1.0, salience + $1), "
-            "last_accessed = now() "
-            "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[]) AND NOT evergreen",
-            access_bump,
-            agent_id,
-            memory_ids,
-        )
-        # cache coherence: invalidate each bumped row so a subsequent get()
-        # re-reads the fresh salience from L3 rather than serving a stale
-        # cached row (a bounded set -- the ids surfaced this retrieval).
-        for memory_id in memory_ids:
-            await self.invalidate_cache((agent_id, memory_id))
+        # this raw pass is the only writer. Each bumped row is evicted so a
+        # subsequent get() re-reads the fresh salience from L3 (a bounded set --
+        # the ids surfaced this retrieval).
+        async with self.bypassing_write(*[(agent_id, memory_id) for memory_id in memory_ids]):
+            await self.l3_pool.execute(
+                "UPDATE memories SET salience = LEAST(1.0, salience + $1), "
+                "last_accessed = now() "
+                "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[]) AND NOT evergreen",
+                access_bump,
+                agent_id,
+                memory_ids,
+            )
         return None
 
     async def find_active_for_consolidation(
@@ -2029,20 +2027,18 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             return None
         # bulk supersession UPDATE keyed by a memory_id set; superseded_by
         # is immutable to the entity-UPDATE generator, so this raw pass is
-        # the only writer (an entity save can't revert it).
-        await self.l3_pool.execute(
-            "UPDATE memories SET superseded_by = $1, date_updated = now() "
-            "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[])",
-            gist_id,
-            agent_id,
-            source_memory_ids,
-        )
-        # cache coherence: invalidate each superseded source so a
-        # subsequent get() re-reads the fresh superseded_by + date_updated
-        # from L3 (the ambient-retrieval filter reads L3 directly, but a
-        # later entity save must see the advanced CAS fence).
-        for source_memory_id in source_memory_ids:
-            await self.invalidate_cache((agent_id, source_memory_id))
+        # the only writer (an entity save can't revert it). Each superseded
+        # source is evicted so a subsequent get() re-reads the fresh
+        # superseded_by + date_updated (the ambient-retrieval filter reads L3
+        # directly, but a later entity save must see the advanced CAS fence).
+        async with self.bypassing_write(*[(agent_id, source_memory_id) for source_memory_id in source_memory_ids]):
+            await self.l3_pool.execute(
+                "UPDATE memories SET superseded_by = $1, date_updated = now() "
+                "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[])",
+                gist_id,
+                agent_id,
+                source_memory_ids,
+            )
         return None
 
 

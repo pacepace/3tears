@@ -35,6 +35,8 @@ from threetears.agent.wake.collections import WebhookSubscriptionCollection
 from threetears.agent.wake.entities import EncryptionService
 from threetears.agent.wake.tools.resolve import parse_conversation_id, parse_subscription_id
 from threetears.agent.wake.types import WakeConversations
+from threetears.core.collections import CallerTransaction
+from threetears.core.exceptions import ConcurrentModificationError
 from threetears.agent.wake.tools.schedule_tools import (
     WakeRegistryClient,
     _tool_error,
@@ -496,7 +498,9 @@ async def _persist_subscription(
     pool = collection.l3_pool
     if pool is None:
         raise RuntimeError("the subscription collection has no database to write to")
-    async with pool.acquire() as conn, conn.transaction():
+    # CallerTransaction, not conn.transaction(): the save joins it, and the row is evicted from
+    # every cache tier once the transaction has committed or rolled back.
+    async with pool.acquire() as conn, CallerTransaction(conn):
         row = dict(data)
         row["conversation_id"] = await wake_conversations.create(
             parent_conversation_id=parent_conversation_id,
@@ -637,6 +641,20 @@ def load_webhook_subscription_update_tool(
         entity.date_updated = datetime.now(UTC)
         try:
             await subscriptions_collection.save_entity(entity)
+        except ConcurrentModificationError:
+            # the save is fenced on the row this edit read; a fire, a pause or resume, a secret
+            # rotation or another edit changed it since, and the whole-row save would write that
+            # change away -- a rotated secret restored among them. The model re-reads instead.
+            log.info(
+                "webhook_subscription_update refused: subscription changed since it was read",
+                extra={"extra_data": {"subscription_id": str(parsed)}},
+            )
+            return _tool_error(
+                "webhook_subscription_update",
+                "the subscription changed after this edit read it (it fired, was paused, resumed or "
+                "rotated, or was edited elsewhere); nothing was saved. Read it again with "
+                "webhook_subscription_list and reapply the change if it still makes sense.",
+            )
         except Exception as exc:  # noqa: BLE001
             return _tool_error("webhook_subscription_update", f"persist failed: {exc}")
 

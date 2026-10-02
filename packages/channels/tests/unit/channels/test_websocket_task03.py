@@ -36,8 +36,9 @@ import pytest
 from threetears.agent.acl import AccessDenied
 from threetears.channels.frames import Frame, OpResult
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
+from threetears.channels.websocket import UNAUTHENTICATED, WebSocketAuthRefused
 
-from .test_websocket import MockWebSocket, _EchoRouter, _valid_auth
+from .websocket_support import EchoRouter, MockWebSocket, valid_auth
 
 
 # -- fakes for the injected seams ------------------------------------------
@@ -144,16 +145,22 @@ def _room_seam_handler(
     *,
     deny_actions: set[str] | None = None,
     op_handler: _FakeOpHandler | None = None,
+    auth_validator: Any = valid_auth,
 ) -> tuple[Any, _FakeRoomState, _FakeFanout, list[tuple[str, Any]]]:
-    """build a WebSocketHandler with all room seams injected + patched authz."""
+    """build a WebSocketHandler with all room seams injected + patched authz.
+
+    ``auth_validator`` is injected through the constructor, the handler's one
+    seam for it; a test needing a principal with a ``customer_id`` (or a
+    malformed one) passes its own validator here.
+    """
     from threetears.channels.websocket import WebSocketHandler
 
     state = _FakeRoomState()
     fanout = _FakeFanout()
     recorded = _capture_authz(monkeypatch, deny_actions=deny_actions)
     handler = WebSocketHandler(
-        router=_EchoRouter(),
-        auth_validator=_valid_auth,
+        router=EchoRouter(),
+        auth_validator=auth_validator,
         room_state=state,
         room_fanout=fanout,
         acl_cache=object(),
@@ -166,10 +173,10 @@ def _room_seam_handler(
 def _auth_with_customer(token: str) -> Any:
     """auth validator returning a user_id + customer_id as UUID strings."""
 
-    async def _v(tok: str) -> dict[str, Any] | None:
-        if tok == "valid-token":
-            return {"user_id": str(uuid4()), "customer_id": str(uuid4())}
-        return None
+    async def _v(tok: str) -> dict[str, Any]:
+        if tok != "valid-token":
+            raise WebSocketAuthRefused(UNAUTHENTICATED, "authentication required")
+        return {"user_id": str(uuid4()), "customer_id": str(uuid4())}
 
     return _v
 
@@ -187,7 +194,7 @@ class TestNoSeamIsChatPath:
         """a ``message`` frame hits the chat router and echoes, unchanged."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(messages=[user_msg], query_params={"token": "valid-token"})
         await handler.handle_connection(ws)
@@ -201,7 +208,7 @@ class TestNoSeamIsChatPath:
         """an unknown type now yields an ``error`` frame (old silent continue is gone)."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         weird = json.dumps({"type": "totally-unknown", "content": "x"})
         ws = MockWebSocket(messages=[weird], query_params={"token": "valid-token"})
         await handler.handle_connection(ws)
@@ -221,7 +228,7 @@ class TestNoSeamIsChatPath:
         """
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         typeless = json.dumps({"content": "no type here"})
         good = json.dumps({"type": "message", "content": "hi", "metadata": {}})
         ws = MockWebSocket(messages=[typeless, good], query_params={"token": "valid-token"})
@@ -245,8 +252,9 @@ class TestTypedRouting:
     @pytest.mark.asyncio
     async def test_join_authorizes_then_joins_room(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``join`` runs ``room.join`` authz then calls fanout.join_room."""
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         join_msg = json.dumps({"type": "join", "room": room})
@@ -260,8 +268,9 @@ class TestTypedRouting:
     @pytest.mark.asyncio
     async def test_leave_leaves_room(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``leave`` calls fanout.leave_room for the joined room."""
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         msgs = [json.dumps({"type": "join", "room": room}), json.dumps({"type": "leave", "room": room})]
@@ -279,8 +288,9 @@ class TestTypedRouting:
         the assigned seq (the ack), so the broadcast is NOT author-excluded.
         """
         op = _FakeOpHandler(start=100)
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, op_handler=op)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, op_handler=op, auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         msgs = [
@@ -311,8 +321,9 @@ class TestTypedRouting:
             async def __call__(self, room_id: str, user_id: str, frame: Frame) -> OpResult:
                 raise OpRejected("sequence-conflict")
 
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, op_handler=_RejectingOpHandler())
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, op_handler=_RejectingOpHandler(), auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         msgs = [
@@ -332,8 +343,9 @@ class TestTypedRouting:
     @pytest.mark.parametrize("ttype", ["cursor", "typing", "presence"])
     async def test_transient_frames_broadcast_without_seq(self, monkeypatch: pytest.MonkeyPatch, ttype: str) -> None:
         """``cursor``/``typing``/``presence`` transient-broadcast with NO seq, no op_handler."""
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         msgs = [
@@ -362,8 +374,9 @@ class TestAuthzGates:
     @pytest.mark.asyncio
     async def test_denied_join_errors_no_join_no_broadcast(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``room.join`` deny → error frame, NO join_room, NO broadcast."""
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, deny_actions={"room.join"})
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, deny_actions={"room.join"}, auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         ws = MockWebSocket(messages=[json.dumps({"type": "join", "room": room})], query_params={"token": "valid-token"})
@@ -378,8 +391,9 @@ class TestAuthzGates:
     async def test_denied_editor_op_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``entry.write`` deny on ``editor.op`` → error, op_handler NOT called, no broadcast."""
         op = _FakeOpHandler()
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, deny_actions={"entry.write"}, op_handler=op)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, deny_actions={"entry.write"}, op_handler=op, auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         msgs = [
@@ -397,8 +411,9 @@ class TestAuthzGates:
     @pytest.mark.asyncio
     async def test_authz_borders_user_id_to_uuid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """the authz gate receives a real ``UUID`` (str→UUID border-conversion)."""
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         ws = MockWebSocket(messages=[json.dumps({"type": "join", "room": room})], query_params={"token": "valid-token"})
@@ -420,8 +435,9 @@ class TestDisconnectCleanup:
     @pytest.mark.asyncio
     async def test_disconnect_leaves_joined_rooms_and_unregisters(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """after the loop ends, every joined room is left and the handle unregistered."""
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         # join, then the socket drops (no leave frame sent)
@@ -466,8 +482,9 @@ class TestEnforcement:
     @pytest.mark.asyncio
     async def test_unknown_frame_not_dropped_even_with_seams(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """an unknown type errors (never silently continues) even with seams wired."""
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, auth_validator=_auth_with_customer("valid-token")
+        )
 
         ws = MockWebSocket(
             messages=[json.dumps({"type": "no-such-type", "room": "r"})],
@@ -499,8 +516,8 @@ class TestAuthzWiringInvariant:
 
         with pytest.raises(ValueError, match="acl_cache and ns_resolver"):
             WebSocketHandler(
-                router=_EchoRouter(),
-                auth_validator=_valid_auth,
+                router=EchoRouter(),
+                auth_validator=valid_auth,
                 acl_cache=acl_cache,
                 ns_resolver=ns_resolver,  # type: ignore[arg-type]
             )
@@ -509,15 +526,15 @@ class TestAuthzWiringInvariant:
         """no authz seams → the deliberate chat config, constructs fine."""
         from threetears.channels.websocket import WebSocketHandler
 
-        WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
 
     def test_both_present_is_allowed(self) -> None:
         """both authz seams → an authorized config, constructs fine."""
         from threetears.channels.websocket import WebSocketHandler
 
         WebSocketHandler(
-            router=_EchoRouter(),
-            auth_validator=_valid_auth,
+            router=EchoRouter(),
+            auth_validator=valid_auth,
             acl_cache=object(),  # type: ignore[arg-type]
             ns_resolver=_AllowAuthorizer(),  # type: ignore[arg-type]
         )
@@ -543,7 +560,7 @@ class TestChatPathUnaffectedByTypedFields:
         """
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         # room as int, payload as object, seq as a non-numeric string — all would
         # fail strict Frame validation, but this is a chat ``message``.
         msg = json.dumps(
@@ -575,14 +592,13 @@ class TestMalformedPrincipal:
         must surface as a denial (the str→UUID border conversion is defended),
         NOT raise ``ValueError`` out of the message loop and kill the socket.
         """
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch)
 
-        async def _bad_auth(token: str) -> dict[str, Any] | None:
-            if token == "valid-token":
-                return {"user_id": "not-a-uuid", "customer_id": str(uuid4())}
-            return None
+        async def _bad_auth(token: str) -> dict[str, Any]:
+            if token != "valid-token":
+                raise WebSocketAuthRefused(UNAUTHENTICATED, "authentication required")
+            return {"user_id": "not-a-uuid", "customer_id": str(uuid4())}
 
-        handler._auth_validator = _bad_auth  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, auth_validator=_bad_auth)
 
         room = "cust:story:main:scene.md"
         # a join (which would crash via UUID()) then a second frame that must still be served.
@@ -614,8 +630,8 @@ class TestResumeFrame:
                 yield json.dumps({"type": "editor.op", "room": room_id, "seq": seq})
 
         handler = WebSocketHandler(
-            router=_EchoRouter(),
-            auth_validator=_valid_auth,
+            router=EchoRouter(),
+            auth_validator=valid_auth,
             replay_source=_replay,  # type: ignore[arg-type]
         )
         room = "cust:story:main:scene.md"
@@ -647,8 +663,8 @@ class TestAppFrameHandlers:
             await send(json.dumps({"type": "committed", "op_seq": 42}))
 
         handler = WebSocketHandler(
-            router=_EchoRouter(),
-            auth_validator=_valid_auth,
+            router=EchoRouter(),
+            auth_validator=valid_auth,
             frame_handlers={"commit": _commit},
         )
         ws = MockWebSocket(
@@ -670,7 +686,7 @@ class TestAppFrameHandlers:
 
         async def _noop(frame: Frame, **_: Any) -> None: ...
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _noop})
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth, frame_handlers={"commit": _noop})
         ws = MockWebSocket(messages=[json.dumps({"type": "no-such"})], query_params={"token": "valid-token"})
         await handler.handle_connection(ws)
 
@@ -685,8 +701,8 @@ class TestAppFrameHandlers:
 
         with pytest.raises(ValueError, match="reserved"):
             WebSocketHandler(
-                router=_EchoRouter(),
-                auth_validator=_valid_auth,
+                router=EchoRouter(),
+                auth_validator=valid_auth,
                 frame_handlers={"editor.op": _h},
             )
 
@@ -707,7 +723,7 @@ class TestFrameDispatchIsCrashSafe:
         async def _boom(frame: Frame, **_: Any) -> None:
             raise RuntimeError("kaboom from the app handler")
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _boom})
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth, frame_handlers={"commit": _boom})
         msgs = [json.dumps({"type": "commit", "room": "r"}), json.dumps({"type": "unknown-x"})]
         ws = MockWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise
@@ -725,8 +741,9 @@ class TestFrameDispatchIsCrashSafe:
             async def __call__(self, room_id: str, user_id: str, frame: Frame) -> OpResult:
                 raise RuntimeError("unexpected op_handler fault")
 
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, op_handler=_BoomOpHandler())
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, op_handler=_BoomOpHandler(), auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         msgs = [
@@ -771,7 +788,7 @@ class TestChatMessageDispatchIsCrashSafe:
         """a chat router that raises -> one error frame, loop keeps serving the next message."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_BoomRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=_BoomRouter(), auth_validator=valid_auth)
         msgs = [
             json.dumps({"type": "message", "content": "hi"}),
             json.dumps({"type": "unknown-x"}),
@@ -832,7 +849,7 @@ class TestMessageLoopSurvivesDeadSocketOnReply:
         """a guard-rejected message whose error reply fails to send -> loop still serves the next one."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         msgs = [bad_message, json.dumps({"type": "message", "content": "hi"})]
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise
@@ -844,7 +861,7 @@ class TestMessageLoopSurvivesDeadSocketOnReply:
         """the rate-limit guard's reply failing must not crash the loop either (separate window/counter path)."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, config={"rate_limit_messages": 1})
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth, config={"rate_limit_messages": 1})
         msgs = [json.dumps({"type": "message", "content": "one"})] * 3
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise
@@ -863,7 +880,7 @@ class TestFrameDispatchSurvivesDeadSocketOnErrorNotify:
         async def _boom(frame: Frame, **_: Any) -> None:
             raise RuntimeError("kaboom from the app handler")
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _boom})
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth, frame_handlers={"commit": _boom})
         msgs = [json.dumps({"type": "commit", "room": "r"}), json.dumps({"type": "message", "content": "hi"})]
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise -- this is the exact prod crash shape
@@ -875,7 +892,7 @@ class TestFrameDispatchSurvivesDeadSocketOnErrorNotify:
         """the ``_route_frame`` fallback's own error send failing must not crash the socket."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=EchoRouter(), auth_validator=valid_auth)
         msgs = [json.dumps({"type": "no-such-type"}), json.dumps({"type": "message", "content": "hi"})]
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise
@@ -897,7 +914,7 @@ class TestFrameDispatchSurvivesDeadSocketOnErrorNotify:
             await send(json.dumps({"type": "app-reply"}))  # not wrapped in its own try/except
 
         handler = WebSocketHandler(
-            router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _uses_raw_send}
+            router=EchoRouter(), auth_validator=valid_auth, frame_handlers={"commit": _uses_raw_send}
         )
         msgs = [json.dumps({"type": "commit", "room": "r"}), json.dumps({"type": "message", "content": "hi"})]
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
@@ -916,7 +933,7 @@ class TestChatMessageDispatchSurvivesDeadSocketOnErrorNotify:
         """the chat router raises, AND the resulting error-frame send ALSO fails -> socket survives."""
         from threetears.channels.websocket import WebSocketHandler
 
-        handler = WebSocketHandler(router=_BoomRouter(), auth_validator=_valid_auth)
+        handler = WebSocketHandler(router=_BoomRouter(), auth_validator=valid_auth)
         msgs = [json.dumps({"type": "message", "content": "hi"}), json.dumps({"type": "message", "content": "again"})]
         ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
         await handler.handle_connection(ws)  # must NOT raise -- this is THE prod crash shape
@@ -941,8 +958,9 @@ class TestNestedRoomHandlerSendsSurviveDeadSocket:
     async def test_editor_op_without_join_reply_failure_does_not_crash_socket(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        handler, _state, _fanout, _recorded = _room_seam_handler(monkeypatch, op_handler=_FakeOpHandler(start=0))
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, _state, _fanout, _recorded = _room_seam_handler(
+            monkeypatch, op_handler=_FakeOpHandler(start=0), auth_validator=_auth_with_customer("valid-token")
+        )
         room = "cust:story:main:scene.md"
         msgs = [
             json.dumps({"type": "editor.op", "room": room, "payload": "op"}),
@@ -957,8 +975,9 @@ class TestNestedRoomHandlerSendsSurviveDeadSocket:
     async def test_transient_frame_without_join_reply_failure_does_not_crash_socket(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        handler, _state, _fanout, _recorded = _room_seam_handler(monkeypatch)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, _state, _fanout, _recorded = _room_seam_handler(
+            monkeypatch, auth_validator=_auth_with_customer("valid-token")
+        )
         room = "cust:story:main:scene.md"
         msgs = [
             json.dumps({"type": "cursor", "room": room, "payload": "{}"}),
@@ -988,8 +1007,8 @@ class TestReplaySendSurvivesDeadSocket:
                 yield json.dumps({"type": "editor.op", "room": room_id, "seq": seq})
 
         handler = WebSocketHandler(
-            router=_EchoRouter(),
-            auth_validator=_valid_auth,
+            router=EchoRouter(),
+            auth_validator=valid_auth,
             replay_source=_replay,  # type: ignore[arg-type]
         )
         room = "cust:story:main:scene.md"
@@ -1018,8 +1037,9 @@ class TestEditRequiresJoin:
     async def test_editor_op_before_join_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """an ``editor.op`` for a room the connection never joined → error, no op, no broadcast."""
         op = _FakeOpHandler(start=100)
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, op_handler=op)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, op_handler=op, auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         # editor.op WITHOUT a preceding join.
@@ -1038,8 +1058,9 @@ class TestEditRequiresJoin:
     async def test_editor_op_after_join_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a ``join`` then ``editor.op`` for that room is accepted (the gate allows members)."""
         op = _FakeOpHandler(start=100)
-        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, op_handler=op)
-        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        handler, state, fanout, recorded = _room_seam_handler(
+            monkeypatch, op_handler=op, auth_validator=_auth_with_customer("valid-token")
+        )
 
         room = "cust:story:main:scene.md"
         msgs = [

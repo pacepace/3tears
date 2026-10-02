@@ -16,11 +16,10 @@ import pytest
 
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
-from threetears.agent.tools.reports import PandocNotFoundError
+from threetears.agent.tools.reports import PandocNotFoundError, PdfRenderer
 from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectListing
 
-from threetears.agent.tools import report as report_module
-from threetears.agent.tools.report import ReportTool, _strip_emoji
+from threetears.agent.tools.report import ReportTool
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _CONVERSATION = UUID("019f1900-0000-7000-8000-0000000000cc")
@@ -68,6 +67,28 @@ class _FakeStore:
 
     def list_entries(self, prefix: str | None = None) -> AsyncIterator[ObjectListing]:  # pragma: no cover
         raise NotImplementedError
+
+
+class _ScriptedPdfRenderer(PdfRenderer):
+    """Writes fixed bytes as the PDF, or raises, and records the Markdown it was handed."""
+
+    def __init__(self, *, pdf: bytes = b"%PDF-1.7 fake", error: Exception | None = None) -> None:
+        self.pdf = pdf
+        self.error = error
+        self.rendered: list[str] = []
+
+    def render(
+        self,
+        markdown_content: str,
+        output_path: str,
+        template_path: str | None = None,
+        variables: dict[str, str] | None = None,
+    ) -> None:
+        self.rendered.append(markdown_content)
+        if self.error is not None:
+            raise self.error
+        with open(output_path, "wb") as handle:
+            handle.write(self.pdf)
 
 
 def _scope(store: object | None) -> ToolCallScope:
@@ -155,9 +176,14 @@ async def test_malformed_findings_fail_closed() -> None:
     assert store.puts == []
 
 
-def test_strip_emoji_preserves_non_latin() -> None:
+async def test_pdf_strips_emoji_but_preserves_non_latin() -> None:
     """Emoji are stripped for pdflatex, but CJK / Hangul text is preserved."""
-    out = _strip_emoji("Findings 中文 한글 😀 done ✅")
+    renderer = _ScriptedPdfRenderer()
+    tool = ReportTool(pdf_renderer=renderer)
+    async with enter_call_scope(_scope(_FakeStore())):
+        result = await tool.execute(content="Findings 中文 한글 😀 done ✅", report_format="pdf")
+    assert result.success is True
+    [out] = renderer.rendered
     assert "😀" not in out
     assert "✅" not in out
     assert "中文" in out
@@ -184,15 +210,11 @@ async def test_no_store_fails_closed() -> None:
     assert "cannot store the report" in result.error
 
 
-async def test_pdf_without_pandoc_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_pdf_without_pandoc_fails_closed() -> None:
     """PDF requested but the pandoc toolchain is absent -> clean refusal."""
 
-    def _boom(_markdown: str) -> bytes:
-        raise PandocNotFoundError("pandoc not found")
-
-    monkeypatch.setattr(report_module, "_render_markdown_to_pdf_bytes", _boom)
     store = _FakeStore()
-    tool = ReportTool()
+    tool = ReportTool(pdf_renderer=_ScriptedPdfRenderer(error=PandocNotFoundError("pandoc not found")))
     async with enter_call_scope(_scope(store)):
         result = await tool.execute(findings=_FINDINGS, report_format="pdf")
     assert result.success is False
@@ -201,15 +223,11 @@ async def test_pdf_without_pandoc_fails_closed(monkeypatch: pytest.MonkeyPatch) 
     assert store.puts == []
 
 
-async def test_pdf_render_failure_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_pdf_render_failure_fails_closed() -> None:
     """A non-zero pandoc exit surfaces as a clean refusal, nothing stored."""
 
-    def _boom(_markdown: str) -> bytes:
-        raise RuntimeError("Pandoc failed (exit 43): boom")
-
-    monkeypatch.setattr(report_module, "_render_markdown_to_pdf_bytes", _boom)
     store = _FakeStore()
-    tool = ReportTool()
+    tool = ReportTool(pdf_renderer=_ScriptedPdfRenderer(error=RuntimeError("Pandoc failed (exit 43): boom")))
     async with enter_call_scope(_scope(store)):
         result = await tool.execute(content="# x\n\ny", report_format="pdf")
     assert result.success is False
@@ -217,11 +235,10 @@ async def test_pdf_render_failure_fails_closed(monkeypatch: pytest.MonkeyPatch) 
     assert store.puts == []
 
 
-async def test_pdf_success_streams_pdf_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_pdf_success_streams_pdf_bytes() -> None:
     """When the toolchain is present, PDF bytes stream under a .pdf key."""
-    monkeypatch.setattr(report_module, "_render_markdown_to_pdf_bytes", lambda _md: b"%PDF-1.7 fake")
     store = _FakeStore()
-    tool = ReportTool()
+    tool = ReportTool(pdf_renderer=_ScriptedPdfRenderer(pdf=b"%PDF-1.7 fake"))
     async with enter_call_scope(_scope(store)):
         result = await tool.execute(findings=_FINDINGS, report_format="pdf", title="Pdf Report")
     assert result.success is True

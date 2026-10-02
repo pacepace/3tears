@@ -159,6 +159,9 @@ class SlackAdapter:
     :ptype router: ChannelRouter
     :param config: optional adapter configuration overrides
     :ptype config: dict[str, Any] | None
+    :param user_profile_cache_max_entries: most user profiles held before the least recently
+        used is evicted
+    :ptype user_profile_cache_max_entries: int
     """
 
     def __init__(
@@ -167,6 +170,8 @@ class SlackAdapter:
         app_token: str,
         router: ChannelRouter,
         config: dict[str, Any] | None = None,
+        *,
+        user_profile_cache_max_entries: int = _USER_PROFILE_CACHE_MAX_ENTRIES,
     ) -> None:
         """initialize slack adapter with tokens, router, and optional config.
 
@@ -178,6 +183,10 @@ class SlackAdapter:
         :ptype router: ChannelRouter
         :param config: optional adapter configuration overrides
         :ptype config: dict[str, Any] | None
+        :param user_profile_cache_max_entries: most user profiles held before the least
+            recently used is evicted; the production bound is
+            :data:`_USER_PROFILE_CACHE_MAX_ENTRIES`
+        :ptype user_profile_cache_max_entries: int
         """
         self._app = AsyncApp(token=bot_token)
         self.app_token = app_token
@@ -195,10 +204,11 @@ class SlackAdapter:
         # an entry stops being served once ``cached_at_monotonic`` is older than
         # :data:`_USER_PROFILE_TTL_SECONDS`; the OrderedDict is kept in
         # least-recently-used order and capped at
-        # :data:`_USER_PROFILE_CACHE_MAX_ENTRIES` so the map cannot grow without
+        # ``user_profile_cache_max_entries`` so the map cannot grow without
         # bound. populated lazily on first message from each user via
         # :meth:`_resolve_user_profile`.
         self._user_profile_cache: OrderedDict[str, tuple[float, _SlackUserProfile]] = OrderedDict()
+        self._user_profile_cache_max_entries = user_profile_cache_max_entries
 
         self._app.event("message")(self.handle_message_event)
 
@@ -263,7 +273,7 @@ class SlackAdapter:
                 )
             self._user_profile_cache[user_id] = (now, profile)
             self._user_profile_cache.move_to_end(user_id)
-            while len(self._user_profile_cache) > _USER_PROFILE_CACHE_MAX_ENTRIES:
+            while len(self._user_profile_cache) > self._user_profile_cache_max_entries:
                 self._user_profile_cache.popitem(last=False)
             result = profile
         return result

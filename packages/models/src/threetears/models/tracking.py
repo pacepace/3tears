@@ -575,10 +575,6 @@ class _PrometheusEmitter:
         self._counter_calls: Any = None
         self._counter_cost: Any = None
         self._histogram_latency: Any = None
-        # resolved at construction so unregister_from_registry survives
-        # tests that hide prometheus_client via monkeypatch on the way
-        # back out. None when prometheus_client isn't installed.
-        self._resolved_registry: Any = None
         self._initialise()
 
     def _initialise(self) -> None:
@@ -588,24 +584,14 @@ class _PrometheusEmitter:
         False so subsequent calls become no-ops. when ``self._registry``
         is ``None`` the instruments register against the default global
         registry; otherwise they register against the supplied one.
-
-        captures the resolved registry into ``self._resolved_registry``
-        so :meth:`unregister_from_registry` can still find it even when
-        a test has hidden ``prometheus_client`` from ``sys.modules``
-        via ``monkeypatch.setitem`` (the import would otherwise fail
-        on the way back out and leave the registry with stale
-        collectors that the next ``_PrometheusEmitter`` then collides
-        with).
         """
         try:
-            from prometheus_client import REGISTRY, Counter, Histogram
+            from prometheus_client import Counter, Histogram
         except ImportError:
             logger.debug(
                 "prometheus_client not installed -- LLM Prometheus emission disabled",
             )
             return
-
-        self._resolved_registry = self._registry if self._registry is not None else REGISTRY
 
         # prometheus_client treats ``registry=None`` as "use the default
         # registry"; pass through verbatim so the default-registry path
@@ -640,65 +626,6 @@ class _PrometheusEmitter:
             **kwargs,
         )
         self._available = True
-
-    def unregister_from_registry(self) -> None:
-        """unregister every locked instrument from the registry it was bound to.
-
-        called by :func:`_reset_prom_emitter_for_testing` so the test
-        suite can rebuild the emitter cache without leaving the locked
-        ``threetears_llm_*`` counters behind on the registry. clearing
-        the cache alone is not enough: prometheus_client raises
-        ``ValueError`` on a duplicate registration, so the cleanup must
-        reach into the actual collector registry too.
-
-        uses ``self._resolved_registry`` (captured at ``_initialise``
-        time) so the cleanup still works when a test has hidden
-        ``prometheus_client`` from ``sys.modules`` between this
-        emitter's construction and now. without the captured handle,
-        re-importing ``REGISTRY`` here would fail and leave stale
-        collectors that the next emitter then duplicate-registers.
-
-        the method is idempotent: a partially-initialised emitter (one
-        where ``_initialise()`` failed mid-way) and a fully-initialised
-        emitter both unregister cleanly. ``KeyError`` / ``ValueError``
-        raised by ``registry.unregister`` (collector was never
-        registered, or already gone) are swallowed.
-
-        production code never calls this -- the emitter is meant to live
-        for the lifetime of the process.
-        """
-        if not self._available or self._resolved_registry is None:
-            return
-
-        collectors = (
-            self._counter_input,
-            self._counter_output,
-            self._counter_calls,
-            self._counter_cost,
-            self._histogram_latency,
-        )
-        for collector in collectors:
-            if collector is None:
-                continue
-            try:
-                self._resolved_registry.unregister(collector)
-            except KeyError, ValueError:
-                # KeyError: already off the registry (benign race). ValueError: registered against
-                # a different registry than the one resolved here -- benign for this best-effort
-                # cleanup, but a steady stream of it means the collectors and the registry were
-                # wired up from different places.
-                logger.debug(
-                    "could not unregister metrics collector; left in place",
-                    extra={"extra_data": {"collector": type(collector).__name__}},
-                )
-                continue
-
-        self._counter_input = None
-        self._counter_output = None
-        self._counter_calls = None
-        self._counter_cost = None
-        self._histogram_latency = None
-        self._available = False
 
     @property
     def available(self) -> bool:
@@ -762,26 +689,6 @@ def _get_prom_emitter(registry: "CollectorRegistry | None" = None) -> _Prometheu
     """
     key = 0 if registry is None else id(registry)
     return _PROM_EMITTERS.get(key, lambda: _PrometheusEmitter(registry=registry))
-
-
-def _reset_prom_emitter_for_testing() -> None:
-    """resets the per-registry emitter cache so unit tests can re-register metrics.
-
-    only intended for use by the test suite -- production code never
-    calls this. for each cached emitter, unregisters its locked
-    instruments from the underlying prometheus registry (default global
-    when the emitter was built with ``registry=None``), then clears the
-    module-level cache so the next ``_get_prom_emitter`` call rebuilds
-    fresh.
-
-    clearing the cache alone is insufficient: the collectors live on
-    the prometheus ``CollectorRegistry`` (the cache holds emitters, not
-    collectors), so a fresh ``_PrometheusEmitter`` would raise
-    ``ValueError: Duplicated timeseries`` when ``_initialise()`` tries
-    to register a same-named counter that the previous emitter already
-    put there.
-    """
-    _PROM_EMITTERS.clear(dispose=lambda emitter: emitter.unregister_from_registry())
 
 
 class UsageTracker:

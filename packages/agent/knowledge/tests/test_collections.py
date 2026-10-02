@@ -11,18 +11,17 @@ stub L3 pool.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid7
 
+import pytest
+from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.scan_cache import ScanCache
 from threetears.knowledge import Scope, build_table_ref
 
 from threetears.agent.knowledge.collections import (
     ConceptCollection,
     PlaybookEntryCollection,
-    _as_uuid,
-    _fetch_embeddings,
-    _parse_vector_text,
-    _row_to_concept_snapshot,
-    _row_to_snapshot,
 )
 
 
@@ -42,35 +41,68 @@ class _StubPool:
         return list(self._rows)
 
 
-class TestAsUuid:
-    def test_passthrough_uuid(self) -> None:
+def _entries_over(rows: list[dict[str, Any]]) -> PlaybookEntryCollection:
+    """an entry collection reading ``rows`` through a stub proxy pool, no cache."""
+    coll = PlaybookEntryCollection.__new__(PlaybookEntryCollection)
+    coll.l3_pool = _StubPool(rows)
+    return coll
+
+
+def _concepts_over(rows: list[dict[str, Any]]) -> ConceptCollection:
+    """a concept collection reading ``rows`` through a stub proxy pool, no cache."""
+    coll = ConceptCollection.__new__(ConceptCollection)
+    coll.l3_pool = _StubPool(rows)
+    return coll
+
+
+async def _embeddings_of(value: Any) -> dict[UUID, list[float]]:
+    """read one row's ``embedding::text`` value back through ``fetch_embeddings``."""
+    row_id = uuid7()
+    coll = _concepts_over([{"id": str(row_id), "embedding": value}])
+    return await coll.fetch_embeddings([row_id], customer_scope=uuid7())
+
+
+class TestProxyIdsComeBackAsUuids:
+    """ids cross the NATS proxy as strings; the snapshots carry real UUIDs."""
+
+    async def test_passthrough_uuid(self) -> None:
         u = uuid7()
-        assert _as_uuid(u) is u
+        (snap,) = await _entries_over([{**_entry_row(), "id": u}]).list_visible_to_user(uuid7(), customer_scope=uuid7())
+        assert snap.id is u
 
-    def test_coerces_string(self) -> None:
+    async def test_coerces_string(self) -> None:
         u = uuid7()
-        assert _as_uuid(str(u)) == u
+        (snap,) = await _entries_over([{**_entry_row(), "id": str(u)}]).list_visible_to_user(
+            uuid7(), customer_scope=uuid7()
+        )
+        assert snap.id == u
+        assert isinstance(snap.id, UUID)
 
-    def test_none_stays_none(self) -> None:
-        assert _as_uuid(None) is None
+    async def test_none_stays_none(self) -> None:
+        (snap,) = await _entries_over([{**_entry_row(), "origin_entry_id": None}]).list_visible_to_user(
+            uuid7(), customer_scope=uuid7()
+        )
+        assert snap.origin_entry_id is None
 
 
-class TestParseVectorText:
-    def test_none_is_none(self) -> None:
-        assert _parse_vector_text(None) is None
+class TestStoredVectorsParse:
+    """the ``embedding::text`` form parses back to floats; NULL and junk are omitted."""
 
-    def test_bracketed_text(self) -> None:
-        assert _parse_vector_text("[1.0, 2.0, 3.0]") == [1.0, 2.0, 3.0]
+    async def test_none_is_omitted(self) -> None:
+        assert await _embeddings_of(None) == {}
 
-    def test_list_passthrough(self) -> None:
-        assert _parse_vector_text([1, 2]) == [1.0, 2.0]
+    async def test_bracketed_text(self) -> None:
+        assert list((await _embeddings_of("[1.0, 2.0, 3.0]")).values()) == [[1.0, 2.0, 3.0]]
 
-    def test_unparseable_is_none(self) -> None:
-        assert _parse_vector_text(123) is None
+    async def test_list_passthrough(self) -> None:
+        assert list((await _embeddings_of([1, 2])).values()) == [[1.0, 2.0]]
+
+    async def test_unparseable_is_omitted(self) -> None:
+        assert await _embeddings_of(123) == {}
 
 
 class TestRowToSnapshot:
-    def test_platform_scope_derived(self) -> None:
+    async def test_platform_scope_derived(self) -> None:
         ds = uuid7()
         row = {
             "id": str(uuid7()),
@@ -83,14 +115,14 @@ class TestRowToSnapshot:
             "datasource_id": str(ds),
             "always_inject": True,
         }
-        snap = _row_to_snapshot(row)
+        (snap,) = await _entries_over([row]).list_visible_to_user(uuid7(), customer_scope=uuid7())
         assert isinstance(snap.id, UUID)
         assert snap.scope == Scope.PLATFORM
         assert snap.tags == ("a", "b")
         assert snap.always_inject is True
         assert snap.datasource_id == ds
 
-    def test_customer_scope_derived(self) -> None:
+    async def test_customer_scope_derived(self) -> None:
         row = {
             "id": str(uuid7()),
             "customer_id": str(uuid7()),
@@ -100,13 +132,13 @@ class TestRowToSnapshot:
             "tags": None,
             "always_inject": False,
         }
-        snap = _row_to_snapshot(row)
+        (snap,) = await _entries_over([row]).list_visible_to_user(uuid7(), customer_scope=uuid7())
         assert snap.scope == Scope.CUSTOMER
         assert snap.tags == ()
 
 
 class TestRowToConceptSnapshot:
-    def test_builds_with_table_ref(self) -> None:
+    async def test_builds_with_table_ref(self) -> None:
         row = {
             "id": str(uuid7()),
             "customer_id": None,
@@ -124,7 +156,7 @@ class TestRowToConceptSnapshot:
             "bound_schema_name": "public",
             "bound_table_name": "users",
         }
-        snap = _row_to_concept_snapshot(row)
+        (snap,) = await _concepts_over([row]).list_visible_to_user(uuid7(), customer_scope=uuid7())
         assert snap.name == "active users"
         assert snap.aliases == ("actives",)
         assert snap.tags == ("metric",)
@@ -135,27 +167,36 @@ class TestRowToConceptSnapshot:
 
 
 class TestFetchEmbeddings:
-    async def test_null_embedding_omitted_and_ids_coerced(self) -> None:
+    @pytest.mark.parametrize(
+        ("collection_class", "table"),
+        [(PlaybookEntryCollection, "playbook_entries"), (ConceptCollection, "concepts")],
+        ids=["playbook_entries", "concepts"],
+    )
+    async def test_null_embedding_omitted_and_ids_coerced(self, collection_class: Any, table: str) -> None:
         a, b = uuid7(), uuid7()
-        pool = _StubPool(
+        coll = collection_class.__new__(collection_class)
+        coll.l3_pool = _StubPool(
             [
                 {"id": str(a), "embedding": "[1.0, 2.0]"},
                 {"id": str(b), "embedding": None},
             ]
         )
-        out = await _fetch_embeddings(pool, "playbook_entries", [a, b], customer_scope=uuid7())
+        out = await coll.fetch_embeddings([a, b], customer_scope=uuid7())
         assert out == {a: [1.0, 2.0]}
-        assert pool.sql is not None
-        assert "ANY($1)" in pool.sql
+        assert coll.l3_pool.sql is not None
+        assert "ANY($1)" in coll.l3_pool.sql
+        assert f"FROM {table}" in coll.l3_pool.sql
 
     async def test_empty_ids_issues_no_query(self) -> None:
-        pool = _StubPool([])
-        out = await _fetch_embeddings(pool, "concepts", [], customer_scope=uuid7())
+        coll = _concepts_over([])
+        out = await coll.fetch_embeddings([], customer_scope=uuid7())
         assert out == {}
-        assert pool.sql is None
+        assert coll.l3_pool.sql is None
 
     async def test_none_pool_returns_empty(self) -> None:
-        out = await _fetch_embeddings(None, "concepts", [uuid7()], customer_scope=uuid7())
+        coll = ConceptCollection.__new__(ConceptCollection)
+        coll.l3_pool = None
+        out = await coll.fetch_embeddings([uuid7()], customer_scope=uuid7())
         assert out == {}
 
 
@@ -249,3 +290,166 @@ class TestConceptCollectionSql:
         )
         drafts = await coll.list_own_drafts(uuid7(), customer_scope=uuid7())
         assert drafts[0].target == "concept"
+
+
+class _WriteLandsDuringReadPool:
+    """L3 pool whose first read is overtaken by a write that commits while it is in flight.
+
+    The first ``fetch`` returns the row set as it stood BEFORE the write, and -- while
+    that read is still in flight -- runs the write's post-commit eviction exactly as
+    :meth:`CollectionRegistry.publish_invalidation` runs it: ``drop_for_table`` on the
+    pod's scan cache. Every later ``fetch`` returns the row set AFTER the write.
+
+    That ordering is the whole defect: the eviction lands between the read and the
+    cache store, so it evicts nothing, and the pre-write result is then stored and
+    served until the TTL backstop.
+    """
+
+    def __init__(
+        self,
+        scan_cache: ScanCache,
+        table: str,
+        before: list[dict[str, Any]],
+        after: list[dict[str, Any]],
+    ) -> None:
+        self._scan_cache = scan_cache
+        self._table = table
+        self._before = before
+        self._after = after
+        self.fetches = 0
+
+    async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[dict[str, Any]]:
+        self.fetches += 1
+        if self.fetches == 1:
+            self._scan_cache.drop_for_table(self._table)
+            return list(self._before)
+        return list(self._after)
+
+
+def _registry_with_scan_cache(scan_cache: ScanCache, pool: Any) -> Any:
+    """a registry stand-in carrying a REAL scan cache over a REAL L1 backend.
+
+    :param scan_cache: the pod's scan cache
+    :ptype scan_cache: ScanCache
+    :param pool: the L3 pool the collection reads through
+    :ptype pool: Any
+    :return: a registry stand-in
+    :rtype: Any
+    """
+    registry = MagicMock()
+    registry.get_l1_backend.return_value = None
+    registry.scan_cache = scan_cache
+    registry.get_l3_pool.return_value = pool
+    registry.register.return_value = None
+    registry.publish_invalidation = AsyncMock(return_value=None)
+    return registry
+
+
+def _config() -> Any:
+    config = MagicMock()
+    config.collection_flush = "ALWAYS"
+    config.collection_flush_tables = ""
+    return config
+
+
+class TestAScanOvertakenByAWriteIsNotCached:
+    """a scan read before a write and stored after that write's eviction must not be served.
+
+    Without a read token, ``put`` cannot tell a result read before the eviction from one
+    read after it, so the stale result is cached and served for the whole TTL.
+    """
+
+    async def test_concept_scan(self) -> None:
+        cache = ScanCache(SQLiteBackend())
+        before = [_concept_row()]
+        after = [_concept_row(), _concept_row()]
+        pool = _WriteLandsDuringReadPool(cache, "concepts", before, after)
+        registry = _registry_with_scan_cache(cache, pool)
+        coll = ConceptCollection(registry=registry, config=_config(), nats_client=None)
+        user_id, customer_scope = uuid7(), uuid7()
+
+        first = await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+        second = await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+
+        assert len(first) == 1
+        assert len(second) == 2, "the pre-write scan was cached after the write evicted it"
+        assert pool.fetches == 2
+
+    async def test_entry_scan(self) -> None:
+        cache = ScanCache(SQLiteBackend())
+        before = [_entry_row()]
+        after = [_entry_row(), _entry_row()]
+        pool = _WriteLandsDuringReadPool(cache, "role_assignments", before, after)
+        registry = _registry_with_scan_cache(cache, pool)
+        coll = PlaybookEntryCollection(registry=registry, config=_config(), nats_client=None)
+        user_id, customer_scope = uuid7(), uuid7()
+
+        first = await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+        second = await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+
+        assert len(first) == 1
+        assert len(second) == 2, "a scan read before a grant change was cached after its eviction"
+        assert pool.fetches == 2
+
+    async def test_an_undisturbed_scan_is_still_cached(self) -> None:
+        """the guard refuses only overtaken reads; an ordinary read still caches."""
+        cache = ScanCache(SQLiteBackend())
+        pool = _StubPool([_concept_row()])
+        registry = _registry_with_scan_cache(cache, pool)
+        coll = ConceptCollection(registry=registry, config=_config(), nats_client=None)
+        user_id, customer_scope = uuid7(), uuid7()
+
+        await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+        pool.sql = None
+        again = await coll.list_visible_to_user(user_id, customer_scope=customer_scope)
+
+        assert len(again) == 1
+        assert pool.sql is None, "an undisturbed scan must be served from the cache"
+
+
+def _concept_row() -> dict[str, Any]:
+    return {
+        "id": str(uuid7()),
+        "customer_id": None,
+        "user_id": None,
+        "origin_concept_id": None,
+        "name": "active users",
+        "aliases": [],
+        "definition": "seen in last 30 days",
+        "datasource_id": str(uuid7()),
+        "datasource_table_id": None,
+        "sql_fragment": None,
+        "caveats": None,
+        "tags": [],
+        "always_inject": False,
+        "bound_schema_name": None,
+        "bound_table_name": None,
+    }
+
+
+class TestAnOriginLinkChangeEvictsTheDatasourceScan:
+    """a datasource-scoped scan reads ``datasources`` for the origin link, so a write there evicts it.
+
+    The hub writes the link through ``CapabilitySourceCollection.save_entity`` with its
+    NATS client, which broadcasts an invalidation on ``datasources``. A scan that does
+    not declare the table keeps serving the pre-link knowledge set until the TTL.
+    """
+
+    @pytest.mark.parametrize(
+        ("collection_class", "row"),
+        [(ConceptCollection, _concept_row), (PlaybookEntryCollection, _entry_row)],
+        ids=["concepts", "playbook_entries"],
+    )
+    async def test_a_datasources_invalidation_drops_the_cached_scan(self, collection_class: Any, row: Any) -> None:
+        cache = ScanCache(SQLiteBackend())
+        pool = _StubPool([row()])
+        registry = _registry_with_scan_cache(cache, pool)
+        coll = collection_class(registry=registry, config=_config(), nats_client=None)
+        user_id, customer_scope, datasource_id = uuid7(), uuid7(), uuid7()
+
+        await coll.list_visible_to_user(user_id, datasource_id=datasource_id, customer_scope=customer_scope)
+        pool.sql = None
+        cache.drop_for_table("datasources")
+        await coll.list_visible_to_user(user_id, datasource_id=datasource_id, customer_scope=customer_scope)
+
+        assert pool.sql is not None, "a changed origin link must re-read the scan, not serve the cached one"

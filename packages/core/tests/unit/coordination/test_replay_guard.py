@@ -858,3 +858,105 @@ class TestReconnectHookIsObservable:
 
         touched = [_extra(r) for r in caplog.records if "touched its bucket" in r.getMessage()]
         assert touched == [{"bucket": "pop_nonces", "bucket_date_created": clock.moment.isoformat()}], touched
+
+
+class TestOwnerScopedKeys:
+    """a guard over a SHARED ledger records every nonce under its owner's key scope.
+
+    The platform's ``proxy_assertion_nonces`` bucket is one bucket every pod binds, and a pod is
+    granted only the keys under its own scope. So the guard writes ``{scope}.{digest}``: without the
+    scope its create is refused by the grant, and with another owner's scope it could burn that
+    owner's in-flight nonce.
+    """
+
+    _SCOPE = "agent_pod-019470a8b5c37def81230000000000aa"
+
+    @pytest.mark.asyncio
+    async def test_a_nonce_is_recorded_under_the_owners_scope(self, client: FakeNatsClient) -> None:
+        import hashlib
+
+        guard = ReplayGuard(
+            client,  # type: ignore[arg-type]
+            bucket_name="proxy_assertion_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            key_scope=self._SCOPE,
+        )
+        assert await guard.record_unique("nonce-1", issued_at=_later()) is True
+        bucket = await client.kv_bucket(name="proxy_assertion_nonces")
+        digest = hashlib.sha256(b"nonce-1").hexdigest()
+        assert await bucket.get(key=f"{self._SCOPE}.{digest}") is not None
+        assert await bucket.get(key=digest) is None
+
+    @pytest.mark.asyncio
+    async def test_a_replay_is_still_refused_under_the_scope(self, client: FakeNatsClient) -> None:
+        guard = ReplayGuard(
+            client,  # type: ignore[arg-type]
+            bucket_name="proxy_assertion_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            key_scope=self._SCOPE,
+        )
+        assert await guard.record_unique("nonce-1", issued_at=_later()) is True
+        assert await guard.record_unique("nonce-1", issued_at=_later()) is False
+
+    @pytest.mark.asyncio
+    async def test_two_owners_keep_two_ledgers_in_one_bucket(self, client: FakeNatsClient) -> None:
+        mine = ReplayGuard(
+            client,  # type: ignore[arg-type]
+            bucket_name="proxy_assertion_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            key_scope=self._SCOPE,
+        )
+        theirs = ReplayGuard(
+            client,  # type: ignore[arg-type]
+            bucket_name="proxy_assertion_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            key_scope="tool_pod-01947100000070008000000000000001",
+        )
+        assert await mine.record_unique("nonce-1", issued_at=_later()) is True
+        assert await theirs.record_unique("nonce-1", issued_at=_later()) is True
+
+    @pytest.mark.parametrize("scope", ["", "a.b", "a*", "a b", ">"])
+    def test_a_scope_that_is_not_one_literal_token_is_refused(self, scope: str) -> None:
+        with pytest.raises(ValueError, match="key_scope"):
+            ReplayGuard(
+                FakeNatsClient(),  # type: ignore[arg-type]
+                bucket_name="proxy_assertion_nonces",
+                ttl_seconds=120,
+                verifier_future_tolerance=_SKEW,
+                key_scope=scope,
+            )
+
+
+class TestABindOnlyGuardLeavesTheReconnectPathAlone:
+    """a guard that only binds cannot recreate its bucket, so it hooks nothing into the reconnect path.
+
+    The reconnect touch exists to RECREATE a wiped bucket before the next artifact creates it late.
+    A bind-only guard creates nothing: the hub re-declares, and the touch would only wait for it --
+    inside the client's reconnect callbacks, which run one after another, holding up every hook
+    registered after it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_bind_only_guard_registers_no_reconnect_hook(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = FakeNatsClient(declared_buckets=("proxy_assertion_nonces",))
+        recorded = _RecordingHooks(client, monkeypatch)
+        guard = ReplayGuard(
+            client,  # type: ignore[arg-type]
+            bucket_name="proxy_assertion_nonces",
+            ttl_seconds=120,
+            verifier_future_tolerance=_SKEW,
+            create_if_missing=False,
+        )
+        await guard.bind()
+        assert recorded.hooks == []
+
+    @pytest.mark.asyncio
+    async def test_a_declaring_guard_still_registers_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = FakeNatsClient()
+        recorded = _RecordingHooks(client, monkeypatch)
+        await _guard(client, bucket_name="pop_nonces").bind()
+        assert len(recorded.hooks) == 1

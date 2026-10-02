@@ -28,7 +28,8 @@ two pieces are:
 - :func:`reverse_translate_message` -- mutates an
   ``AIMessage`` / ``AIMessageChunk`` in place, rewriting every
   ``tool_calls`` / ``tool_call_chunks`` / ``invalid_tool_calls`` name
-  field through ``reverse_map``. Provider-specific
+  field, and the name on every tool-call content block, through
+  ``reverse_map``. Provider-specific
   ``_astream`` / ``_agenerate`` wrappers call this so consumers see
   canonical dotted tool names regardless of which provider's
   validator forced the wire-side rename.
@@ -47,10 +48,8 @@ Per-provider integration is a thin subclass that:
    streaming callback is attached (LangGraph's ``astream_events`` tap).
    The concrete subclasses therefore override the public ``astream`` +
    ``ainvoke`` + ``invoke`` (post-processing the result) AND
-   ``_agenerate`` (for the pure non-streaming path). Overriding the
-   protected ``_astream`` directly is deliberately avoided — wrapping it
-   in another async generator drops ``on_chat_model_stream`` callbacks
-   (see the ``astream`` docstrings in the provider modules).
+   ``_agenerate`` (for the pure non-streaming path); see
+   :mod:`threetears.models.providers._name_translation_mixin`.
 
 See :mod:`threetears.models.providers.openrouter` and
 :mod:`threetears.models.providers.anthropic` for the two concrete
@@ -72,6 +71,12 @@ __all__ = [
     "mangle_tool_name",
     "reverse_translate_message",
 ]
+
+#: content-block types that carry a tool call under a ``name``: Anthropic's ``tool_use``, OpenAI
+#: Responses' ``function_call``, and LangChain's own standard blocks. A provider's server-side tool
+#: (``server_tool_use``, ``web_search_call``, ...) is named by the provider, not by a bound tool, and
+#: is left alone.
+_TOOL_CALL_BLOCK_TYPES = frozenset({"tool_use", "function_call", "tool_call", "tool_call_chunk", "invalid_tool_call"})
 
 
 def mangle_tool_name(name: str) -> str:
@@ -152,7 +157,7 @@ class NameMangledToolProxy(BaseTool):
         """the delegate's un-mangled, dotted canonical name.
 
         Public accessor so callers who substitute proxies ahead of a chat model's own
-        ``bind_tools`` (e.g. :mod:`threetears.models.providers._claude_cli`) can report the
+        ``bind_tools`` (e.g. :mod:`threetears.models.providers.claude_cli`) can report the
         canonical name to their own observability/tracking, without reaching into ``_delegate``.
 
         :return: canonical dotted tool name
@@ -340,8 +345,8 @@ def reverse_translate_message(
     """rewrite tool-call names on ``message`` from wire to canonical form.
 
     Mutates in place. Called for every chunk yielded from a chat
-    model's ``_astream`` and every message in ``_agenerate``'s
-    result. Touches three name-bearing fields:
+    model's ``astream`` and every message in ``_agenerate``'s
+    result. Touches four name-bearing places:
 
     - ``tool_call_chunks`` -- partial streamed tool calls; the
       ``name`` field arrives once at the start of each call,
@@ -351,6 +356,9 @@ def reverse_translate_message(
     - ``invalid_tool_calls`` -- the recovery target for malformed
       streaming; consumers attempt to
       re-parse them.
+    - tool-call content blocks (``_TOOL_CALL_BLOCK_TYPES``) -- Anthropic
+      carries every call as a ``tool_use`` block as well, so ``content``
+      and ``tool_calls`` must name the same tool.
 
     No-op when the message has no tool-call fields or when the
     reverse map is empty (no tools were bound, so nothing to
@@ -377,6 +385,12 @@ def reverse_translate_message(
         name = tc.get("name")
         if name and name in reverse_map:
             tc["name"] = reverse_map[name]
+    content = getattr(message, "content", None)
+    for block in content if isinstance(content, list) else []:
+        if isinstance(block, dict) and block.get("type") in _TOOL_CALL_BLOCK_TYPES:
+            name = block.get("name")
+            if isinstance(name, str) and name in reverse_map:
+                block["name"] = reverse_map[name]
 
 
 def forward_translate_message(message: Any) -> Any:
@@ -399,8 +413,10 @@ def forward_translate_message(message: Any) -> Any:
     ``tool_calls`` re-sent on the next round, and a model hallucination
     or dotted MCP tool that never matched a bound spec. Both fail every
     provider's ``^[a-zA-Z0-9_-]`` tool-name validator. Every dotted name
-    in ``tool_call_chunks`` / ``tool_calls`` / ``invalid_tool_calls`` is
-    mangled via :func:`mangle_tool_name` -- the same transform
+    in ``tool_call_chunks`` / ``tool_calls`` / ``invalid_tool_calls`` and
+    on a tool-call content block (``_TOOL_CALL_BLOCK_TYPES``; LangChain
+    sends a ``tool_use`` block's own name when no ``tool_calls`` entry
+    shares its id) is mangled via :func:`mangle_tool_name` -- the same transform
     :func:`build_name_translation` applies to specs -- so a bound tool's
     history entry round-trips losslessly through the per-bind reverse
     map.
@@ -428,6 +444,19 @@ def forward_translate_message(message: Any) -> Any:
                 new_entries.append(entry)
         if field_changed:
             updates[field] = new_entries
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        new_content = [
+            {**block, "name": mangle_tool_name(block["name"])}
+            if isinstance(block, dict)
+            and block.get("type") in _TOOL_CALL_BLOCK_TYPES
+            and isinstance(block.get("name"), str)
+            and "." in block["name"]
+            else block
+            for block in content
+        ]
+        if any(new is not old for new, old in zip(new_content, content, strict=True)):
+            updates["content"] = new_content
     if not updates:
         return message
     return message.model_copy(update=updates)

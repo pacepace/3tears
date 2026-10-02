@@ -61,8 +61,11 @@ from threetears.channels.presence import (
     create_presence_l1_backend,
 )
 from threetears.channels.websocket import (
+    UNAUTHENTICATED,
+    AuthValidator,
     ConnectionRegistry,
     StreamingChannelRouter,
+    WebSocketAuthRefused,
     WebSocketHandler,
     WebSocketProtocol,
 )
@@ -93,7 +96,9 @@ from threetears.channels.mail import (
 __all__ = [
     "PRESENCE_L1_METADATA",
     "PRESENCE_L1_TABLE_NAMES",
+    "UNAUTHENTICATED",
     "Attachment",
+    "AuthValidator",
     "BatchSendResult",
     "ChannelDeliveryMessage",
     "ChannelMessage",
@@ -134,6 +139,7 @@ __all__ = [
     "StreamingChannelRouter",
     "TemplateRenderError",
     "TokenBucketPacer",
+    "WebSocketAuthRefused",
     "WebSocketHandler",
     "WebSocketProtocol",
     "build_discord_embed",

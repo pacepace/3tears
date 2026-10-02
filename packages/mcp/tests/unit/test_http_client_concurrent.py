@@ -16,13 +16,12 @@ from threetears.mcp.http_client import PlatformHttpClient
 
 def _build_client(transport: httpx.MockTransport) -> PlatformHttpClient:
     """build a client with the supplied mock transport injected."""
-    client = PlatformHttpClient(
+    return PlatformHttpClient(
         base_url="http://test.example",
         email="admin@example.org",
         password="hunter2",
+        transport=transport,
     )
-    client._client = httpx.AsyncClient(transport=transport)  # noqa: SLF001
-    return client
 
 
 @pytest.mark.asyncio

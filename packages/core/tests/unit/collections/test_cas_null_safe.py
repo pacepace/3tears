@@ -42,6 +42,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
+from threetears.core.testing.kv import FakeNatsClient
 
 # ---------------------------------------------------------------------------
 # fixtures / stubs
@@ -137,7 +138,10 @@ class _RecordingPool:
 
 
 def _registry(pool: Any) -> CollectionRegistry:
-    """build a registry wired with a single pool for all tables.
+    """build a registry wired with a single pool for all tables, and the L2 key scope.
+
+    the collections here are built with an L2 client, and a save reads its L2 key before its L3
+    write, so the registry carries the principal scope every L2 key is built under.
 
     :param pool: recording pool
     :ptype pool: Any
@@ -145,7 +149,7 @@ def _registry(pool: Any) -> CollectionRegistry:
     :rtype: CollectionRegistry
     """
     reg = CollectionRegistry()
-    reg.configure(l3_pool=pool)
+    reg.configure(l3_pool=pool, kv_key_scope="cas-null-safe-principal")
     return reg
 
 
@@ -162,22 +166,13 @@ def _config(**overrides: Any) -> DefaultCoreConfig:
     return DefaultCoreConfig(**kwargs)
 
 
-def _nats() -> AsyncMock:
-    """build a no-op NATS wrapper mock.
+def _nats() -> FakeNatsClient:
+    """build the shipped in-memory NATS double, whose bucket carries the whole KV surface a save uses.
 
-    :return: mock nats wrapper
-    :rtype: AsyncMock
+    :return: in-memory nats wrapper
+    :rtype: FakeNatsClient
     """
-    bucket = AsyncMock()
-    bucket.get = AsyncMock(return_value=None)
-    bucket.put = AsyncMock(return_value=1)
-    bucket.delete = AsyncMock(return_value=True)
-
-    nats = AsyncMock()
-    nats.kv_bucket = AsyncMock(return_value=bucket)
-    nats.publish = AsyncMock()
-    nats.subscribe_typed = AsyncMock()
-    return nats
+    return FakeNatsClient()
 
 
 def _row(**overrides: Any) -> dict[str, Any]:
@@ -274,22 +269,50 @@ class TestNullSafeFenceShape:
         assert pool.calls[0][2][-1] is None
 
     @pytest.mark.asyncio
-    async def test_subsequent_write_uses_the_same_statement_shape(self) -> None:
-        """a non-NULL expected value rides the same upsert, not a bare UPDATE.
+    async def test_a_write_over_a_read_version_is_update_only(self) -> None:
+        """a non-NULL expected value is a row read as EXISTING: it updates, never inserts.
 
-        one shape for create and update alike is what makes this a drop-in for
-        the hand-written ``save_to_store`` in the dependants, whose single
-        statement serves both.
+        the NULL-safe upsert used to serve this case too. a missing row reaches
+        its INSERT with the fence never evaluated, so a save racing a delete (an
+        erasure, a retire) re-created the row the delete had just removed.
         """
         pool = _RecordingPool()
-        pool.execute_status = "INSERT 0 1"
+        pool.execute_status = "UPDATE 1"
         coll = _CounterCollection(_registry(pool), _config(), nats_client=_nats())
         expected = datetime(2026, 1, 1, tzinfo=UTC)
         await coll.save_to_store(_row(), original_timestamp=expected)
         sql = pool.calls[0][1]
-        assert sql.startswith("INSERT INTO counters")
-        assert "WHERE counters.date_updated IS NOT DISTINCT FROM $6" in sql
+        assert sql.startswith("UPDATE counters SET")
+        assert "INSERT" not in sql
+        assert "AND date_updated = $" in sql
         assert pool.calls[0][2][-1] == expected
+
+    @pytest.mark.asyncio
+    async def test_a_row_deleted_since_it_was_read_is_not_recreated(self) -> None:
+        """the resurrection case end to end: the save loses, it does not re-insert.
+
+        the UPDATE matches no row once the row is gone, so the backend answers 0
+        and the caller gets the retryable error; its retry re-reads and finds the
+        row absent, which is the truth.
+        """
+        pool = _RecordingPool()
+        pool.execute_status = "UPDATE 0"
+        coll = _CounterCollection(_registry(pool), _config(), nats_client=_nats())
+        read = datetime(2026, 1, 1, tzinfo=UTC)
+        entity = _CounterEntity(_row(date_updated=read), is_new=False, collection=coll)
+        with pytest.raises(ConcurrentModificationError):
+            await coll.save_entity(entity)
+        assert all("INSERT" not in call[1] for call in pool.calls if call[0] == "execute")
+
+    @pytest.mark.asyncio
+    async def test_an_unflagged_schema_is_update_only_over_a_read_version_too(self) -> None:
+        """NEGATIVE CONTROL for the flag: the rule is the fence value's, not ``cas_null_safe``'s."""
+        pool = _RecordingPool()
+        pool.execute_status = "UPDATE 0"
+        coll = _UnfencedCounterCollection(_registry(pool), _config(), nats_client=_nats())
+        affected = await coll.save_to_store(_row(), original_timestamp=datetime(2026, 1, 1, tzinfo=UTC))
+        assert affected == 0
+        assert pool.calls[0][1].startswith("UPDATE plain_counters SET")
 
     @pytest.mark.asyncio
     async def test_fence_column_is_advanced_by_the_update(self) -> None:

@@ -28,33 +28,46 @@ from threetears.agent.wake.entities import (
     WakeFireEntity,
     WakeScheduleEntity,
     WebhookSubscriptionEntity,
-    _as_uuid,
 )
 
 
-class TestAsUuidDefensive:
-    """``_as_uuid`` must fail clearly on a None / empty non-UUID value.
+def _schedule_with_user(user_id: object) -> WakeScheduleEntity:
+    """a schedule entity whose non-nullable ``user_id`` column holds ``user_id`` as read from a tier."""
+    return WakeScheduleEntity(
+        {
+            "conversation_id": UUID(str(uuid7())),
+            "schedule_id": UUID(str(uuid7())),
+            "user_id": user_id,
+            "agent_id": UUID(str(uuid7())),
+            "schedule_type": "daily_at",
+        }
+    )
 
-    ``_as_uuid`` is only called for NON-nullable UUID columns (nullable
+
+class TestNonNullableUuidReadsAreDefensive:
+    """A non-nullable UUID accessor must fail clearly on a None value.
+
+    The UUID coercion is only applied to NON-nullable UUID columns (nullable
     ones short-circuit on ``None`` before reaching it). If such a field
     ever reads ``None`` -- e.g. a cache-coherence miss -- the stdlib
     ``UUID(str(None))`` raises the misleading "badly formed hexadecimal
     UUID string", which masks the real problem (a missing field) as a
-    UUID-format problem. The helper must instead raise a clear,
+    UUID-format problem. The accessor must instead raise a clear,
     diagnosable error.
     """
 
-    def test_as_uuid_passthrough_uuid(self) -> None:
+    def test_a_uuid_passes_through(self) -> None:
         u = UUID(str(uuid7()))
-        assert _as_uuid(u) is u
+        assert _schedule_with_user(u).user_id is u
 
-    def test_as_uuid_coerces_string(self) -> None:
+    def test_a_string_is_coerced(self) -> None:
         u = UUID(str(uuid7()))
-        assert _as_uuid(str(u)) == u
+        assert _schedule_with_user(str(u)).user_id == u
 
-    def test_as_uuid_none_raises_clear_error(self) -> None:
+    def test_none_raises_a_clear_error(self) -> None:
+        entity = _schedule_with_user(None)
         with pytest.raises((ValueError, TypeError)) as exc_info:
-            _as_uuid(None)
+            entity.user_id
         msg = str(exc_info.value).lower()
         # must NOT surface the misleading stdlib message
         assert "badly formed hexadecimal" not in msg

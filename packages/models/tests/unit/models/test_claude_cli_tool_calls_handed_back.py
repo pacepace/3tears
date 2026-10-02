@@ -1,7 +1,7 @@
 """A subscription model hands tool calls back, and the caller's graph runs them.
 
 Under a subscription the CLI used to run bound tools itself, so a caller's graph never saw a call:
-no approval, no ledger, no shaping, no loading tools mid-turn (see ``_claude_cli``'s module
+no approval, no ledger, no shaping, no loading tools mid-turn (see ``claude_cli``'s module
 docstring). These pin the standard contract against a REAL compiled LangGraph graph with a real
 ``ToolNode`` -- the model asks, the graph's tool node runs the tool, an approval ``interrupt()`` in
 the tool pauses the graph and a ``Command(resume=...)`` continues it, and the next model call reads
@@ -41,7 +41,7 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUse
 
 from threetears.models import DEFAULT_CHAT_MODEL  # noqa: E402
 from threetears.models.errors import ModelProviderError  # noqa: E402
-from threetears.models.providers._claude_cli import create_subscription_chat  # noqa: E402
+from threetears.models.providers.claude_cli import create_subscription_chat  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -359,14 +359,17 @@ async def test_usage_is_reported_the_way_every_chat_model_reports_it() -> None:
 async def test_a_tool_result_without_a_name_is_named_by_the_call_it_answers() -> None:
     from langchain_core.messages import ToolMessage
 
-    model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
-    query, _system = model._convert_messages(  # noqa: SLF001 -- the method under test
-        [
-            HumanMessage(content="write a"),
-            AIMessage(
-                content="", tool_calls=[{"id": "tu-1", "name": "threetears.stage_a_write", "args": {"path": "a"}}]
-            ),
-            ToolMessage(content="write landed", tool_call_id="tu-1"),
-        ]
-    )
+    with _no_real_sdk_calls():
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
+        _FakeSDKClient.script = _replies([_assistant_text("done"), _result()])
+        await model.ainvoke(
+            [
+                HumanMessage(content="write a"),
+                AIMessage(
+                    content="", tool_calls=[{"id": "tu-1", "name": "threetears.stage_a_write", "args": {"path": "a"}}]
+                ),
+                ToolMessage(content="write landed", tool_call_id="tu-1"),
+            ]
+        )
+    [query] = _FakeSDKClient.prompts
     assert '<prompt-turn role="tool" name="threetears.stage_a_write">\nwrite landed\n</prompt-turn>' in query

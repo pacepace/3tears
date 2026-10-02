@@ -14,23 +14,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
+from datetime import timedelta
 
 import pytest
 
 from threetears.nats import (
     ForwardedHandlerError,
     ForwardError,
+    IncomingMessage,
+    Subject,
     Subjects,
     set_default_namespace,
 )
-from threetears.nats.forward import (
-    _TAG_ERR,
-    _TAG_OK,
-    _decode_reply,
-    _encode_err,
-    _encode_ok,
-    _subject_for,
-)
+from threetears.nats.forward import forward, serve_owner
 
 
 @pytest.fixture(autouse=True)
@@ -212,30 +209,63 @@ def test_hitl_family_rejects_an_empty_owned_node() -> None:
         Subjects.hitl_forward_family("")
 
 
-def test_subject_for_selects_scoped_only_when_a_family_is_named() -> None:
-    """the transport helper both public functions route through picks by ``family``."""
-    assert _subject_for("k", None).path == Subjects.forward("k").path
-    assert _subject_for("k", "hitl-t").path == Subjects.forward_scoped("hitl-t", "k").path
+@pytest.mark.asyncio
+async def test_owner_and_caller_meet_on_the_scoped_subject_only_when_a_family_is_named() -> None:
+    """both public functions route by ``family``: unscoped without one, family-scoped with one."""
+
+    async def _echo(payload: bytes) -> bytes:
+        return payload
+
+    bus = _LoopbackBus()
+    async with serve_owner(bus, "k", _echo):  # type: ignore[arg-type]
+        await forward(bus, "k", b"x")  # type: ignore[arg-type]
+    assert bus.served == [Subjects.forward("k").path]
+    assert bus.requested == [Subjects.forward("k").path]
+
+    scoped = _LoopbackBus()
+    async with serve_owner(scoped, "k", _echo, family="hitl-t"):  # type: ignore[arg-type]
+        await forward(scoped, "k", b"x", family="hitl-t")  # type: ignore[arg-type]
+    assert scoped.served == [Subjects.forward_scoped("hitl-t", "k").path]
+    assert scoped.requested == [Subjects.forward_scoped("hitl-t", "k").path]
 
 
 # --------------------------------------------------------------------------
 # wire framing: ok frame round-trip
 # --------------------------------------------------------------------------
+#
+# The frame is the wire contract between an owner and a caller on different pods, possibly on
+# different releases, so its bytes are asserted literally: tag ``0x00`` and the handler's reply
+# verbatim, or tag ``0x01`` and UTF-8 JSON ``{type, message}``.
+
+_TAG_OK_BYTE = 0x00
+_TAG_ERR_BYTE = 0x01
 
 
-def test_ok_frame_round_trip() -> None:
+@pytest.mark.asyncio
+async def test_ok_frame_round_trip() -> None:
     """an ok frame decodes back to the exact handler bytes."""
     payload = b"\x00\x01\x02 arbitrary bytes \xff"
-    frame = _encode_ok(payload)
-    assert frame[0] == _TAG_OK
-    assert _decode_reply(frame) == payload
+
+    async def _handler(_request: bytes) -> bytes:
+        return payload
+
+    bus = _LoopbackBus()
+    async with serve_owner(bus, "k", _handler):  # type: ignore[arg-type]
+        assert await forward(bus, "k", b"req") == payload  # type: ignore[arg-type]
+    assert bus.replies == [bytes([_TAG_OK_BYTE]) + payload]
 
 
-def test_ok_frame_round_trip_empty_payload() -> None:
+@pytest.mark.asyncio
+async def test_ok_frame_round_trip_empty_payload() -> None:
     """an empty handler reply is unambiguous from an error frame (tag byte present)."""
-    frame = _encode_ok(b"")
-    assert frame == bytes([_TAG_OK])
-    assert _decode_reply(frame) == b""
+
+    async def _handler(_request: bytes) -> bytes:
+        return b""
+
+    bus = _LoopbackBus()
+    async with serve_owner(bus, "k", _handler):  # type: ignore[arg-type]
+        assert await forward(bus, "k", b"req") == b""  # type: ignore[arg-type]
+    assert bus.replies == [bytes([_TAG_OK_BYTE])]
 
 
 # --------------------------------------------------------------------------
@@ -243,23 +273,37 @@ def test_ok_frame_round_trip_empty_payload() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_error_frame_carries_type_name_and_message() -> None:
-    """encoding an exception captures its type name + message as JSON body."""
+@pytest.mark.asyncio
+async def test_error_frame_carries_type_name_and_message() -> None:
+    """a handler exception is framed as its type name + message, as JSON."""
 
     class OpLogSequenceConflict(Exception):
         pass
 
-    frame = _encode_err(OpLogSequenceConflict("expected seq 7, got 9"))
-    assert frame[0] == _TAG_ERR
+    async def _handler(_request: bytes) -> bytes:
+        raise OpLogSequenceConflict("expected seq 7, got 9")
+
+    bus = _LoopbackBus()
+    async with serve_owner(bus, "k", _handler):  # type: ignore[arg-type]
+        with pytest.raises(ForwardedHandlerError):
+            await forward(bus, "k", b"req")  # type: ignore[arg-type]
+    (frame,) = bus.replies
+    assert frame[0] == _TAG_ERR_BYTE
     decoded = json.loads(frame[1:].decode("utf-8"))
     assert decoded == {"type": "OpLogSequenceConflict", "message": "expected seq 7, got 9"}
 
 
-def test_error_frame_decodes_to_forwarded_handler_error() -> None:
+@pytest.mark.asyncio
+async def test_error_frame_decodes_to_forwarded_handler_error() -> None:
     """decoding an error frame raises ForwardedHandlerError with type + message preserved."""
-    frame = _encode_err(ValueError("bad input"))
-    with pytest.raises(ForwardedHandlerError) as excinfo:
-        _decode_reply(frame)
+
+    async def _handler(_request: bytes) -> bytes:
+        raise ValueError("bad input")
+
+    bus = _LoopbackBus()
+    async with serve_owner(bus, "k", _handler):  # type: ignore[arg-type]
+        with pytest.raises(ForwardedHandlerError) as excinfo:
+            await forward(bus, "k", b"req")  # type: ignore[arg-type]
     assert excinfo.value.type_name == "ValueError"
     assert excinfo.value.message == "bad input"
     # the str carries both so a log line is self-describing.
@@ -267,11 +311,17 @@ def test_error_frame_decodes_to_forwarded_handler_error() -> None:
     assert "bad input" in str(excinfo.value)
 
 
-def test_error_frame_round_trip_preserves_custom_type_name() -> None:
+@pytest.mark.asyncio
+async def test_error_frame_round_trip_preserves_custom_type_name() -> None:
     """a consumer can map the forwarded type name back onto its own exception."""
-    frame = _encode_err(RuntimeError("cas conflict"))
-    with pytest.raises(ForwardedHandlerError) as excinfo:
-        _decode_reply(frame)
+
+    async def _handler(_request: bytes) -> bytes:
+        raise RuntimeError("cas conflict")
+
+    bus = _LoopbackBus()
+    async with serve_owner(bus, "k", _handler):  # type: ignore[arg-type]
+        with pytest.raises(ForwardedHandlerError) as excinfo:
+            await forward(bus, "k", b"req")  # type: ignore[arg-type]
     assert excinfo.value.type_name == "RuntimeError"
 
 
@@ -280,24 +330,75 @@ def test_error_frame_round_trip_preserves_custom_type_name() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_decode_rejects_empty_frame() -> None:
+@pytest.mark.asyncio
+async def test_decode_rejects_empty_frame() -> None:
     """an empty frame (no tag byte) is a protocol error, not silently treated as ok."""
     with pytest.raises(ForwardError, match="empty frame"):
-        _decode_reply(b"")
+        await forward(_LoopbackBus(answer=b""), "k", b"req")  # type: ignore[arg-type]
 
 
-def test_decode_rejects_unknown_tag() -> None:
+@pytest.mark.asyncio
+async def test_decode_rejects_unknown_tag() -> None:
     """an unknown tag byte raises rather than silently mis-decoding."""
     with pytest.raises(ForwardError, match="unknown frame tag"):
-        _decode_reply(bytes([0x7F]) + b"body")
+        await forward(_LoopbackBus(answer=bytes([0x7F]) + b"body"), "k", b"req")  # type: ignore[arg-type]
 
 
-def test_decode_rejects_malformed_error_frame() -> None:
+@pytest.mark.asyncio
+async def test_decode_rejects_malformed_error_frame() -> None:
     """an error frame with non-JSON / missing fields raises ForwardError, not KeyError."""
-    bad = bytes([_TAG_ERR]) + b"not json"
+    bad = bytes([_TAG_ERR_BYTE]) + b"not json"
     with pytest.raises(ForwardError, match="malformed error frame"):
-        _decode_reply(bad)
+        await forward(_LoopbackBus(answer=bad), "k", b"req")  # type: ignore[arg-type]
 
-    missing_fields = bytes([_TAG_ERR]) + json.dumps({"type": "X"}).encode("utf-8")
+    missing_fields = bytes([_TAG_ERR_BYTE]) + json.dumps({"type": "X"}).encode("utf-8")
     with pytest.raises(ForwardError, match="malformed error frame"):
-        _decode_reply(missing_fields)
+        await forward(_LoopbackBus(answer=missing_fields), "k", b"req")  # type: ignore[arg-type]
+
+
+class _LoopbackBus:
+    """the slice of :class:`NatsClient` the forward helpers use, wired back to itself in-process.
+
+    ``serve_owner`` subscribes here; ``forward`` requests here, and the request is handed to that
+    subscription with a reply subject whose reply is recorded and returned -- or, when ``answer``
+    is given, ``forward`` receives that frame as if a misbehaving owner had sent it.
+
+    :param answer: a raw reply frame to return to every request instead of dispatching it
+    :ptype answer: bytes | None
+    :ivar served: the subject of each subscription ``serve_owner`` made
+    :ivar requested: the subject of each request ``forward`` made
+    :ivar replies: every reply frame the owner published, in order
+    """
+
+    def __init__(self, *, answer: bytes | None = None) -> None:
+        self._answer = answer
+        self._callbacks: dict[str, Callable[[IncomingMessage], Awaitable[None]]] = {}
+        self.served: list[str] = []
+        self.requested: list[str] = []
+        self.replies: list[bytes] = []
+
+    async def subscribe(
+        self, *, subject: Subject, cb: Callable[[IncomingMessage], Awaitable[None]], **_options: object
+    ) -> str:
+        self.served.append(subject.path)
+        self._callbacks[subject.path] = cb
+        return subject.path
+
+    async def flush(self) -> None:
+        return None
+
+    async def unsubscribe(self, subscription: str) -> None:
+        self._callbacks.pop(subscription, None)
+
+    async def publish_raw_reply(self, *, reply_subject: str, payload: bytes) -> None:
+        self.replies.append(payload)
+
+    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta) -> bytes:
+        self.requested.append(subject.path)
+        if self._answer is not None:
+            return self._answer
+        before = len(self.replies)
+        await self._callbacks[subject.path](
+            IncomingMessage(data=payload, reply_subject="_INBOX.loopback", subject=subject.path)
+        )
+        return self.replies[before]

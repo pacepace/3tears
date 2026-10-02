@@ -349,3 +349,27 @@ class TestTwoSetsInOneMillisecondAreTwoSets:
         first_keys = {d.key for d in first.databases} | {first.globals_key}
         second_keys = {d.key for d in second.databases} | {second.globals_key}
         assert first_keys.isdisjoint(second_keys)
+
+
+class TestANaiveTimestampIsRefusedBeforeAnythingIsDumped:
+    async def test_no_dump_runs_and_the_error_names_the_argument(
+        self, tmp_path: Any, dump_argv: list[list[str]]
+    ) -> None:
+        """the manifest stores its instant in the one stored form, which refuses a naive value.
+
+        Refused at the manifest write, that would come AFTER every dump had landed -- a whole set
+        taken and then abandoned. So the refusal comes first, before a single dump tool runs.
+        """
+
+        async def connect(_dsn: str) -> _RecordingConnection:
+            return _RecordingConnection()
+
+        config = BackupConfig(
+            passphrase=SecretStr("test-passphrase-not-a-real-one"), prefix="utest", encryption_work_factor=2**4
+        )
+        backup = ClusterBackup(config, FilesystemObjectStore(str(tmp_path)), connect)
+
+        with pytest.raises(ValueError, match="naive datetime in 'when'"):
+            await backup.create_backup("postgresql://u@h/postgres", when=datetime(2026, 7, 1, 3, 0))
+
+        assert dump_argv == []

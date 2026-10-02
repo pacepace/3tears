@@ -19,7 +19,7 @@ from threetears.core.testing.replay_guard import FakeReplayGuard
 from threetears.nats import KvError
 from threetears.registry.catalog import ToolCatalog
 
-from ._dispatch_auth import make_proxy
+from .dispatch_auth import make_proxy
 
 
 @pytest.mark.asyncio

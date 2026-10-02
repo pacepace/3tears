@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from threetears.agent.tools.base_tool import (
+    CONFLICT,
+    TOOL_RESULT_ERROR_CODES,
     MCPToolDefinition,
     TearsTool,
     ToolResult,
@@ -203,3 +205,35 @@ class TestNoPlatformImports:
                     violations.append(node.module)
 
         assert violations == [], f"banned imports found in base_tool.py: {violations}"
+
+
+class TestToolResultErrorCode:
+    """a tool names its refusal with a declared, upper-case code, or construction refuses it."""
+
+    def test_a_failure_carries_the_code_it_names(self) -> None:
+        result = ToolResult(success=False, content="", error="changed under you", error_code=CONFLICT)
+
+        assert result.error_code == "CONFLICT"
+
+    def test_a_result_names_no_code_by_default(self) -> None:
+        assert ToolResult(success=False, content="", error="it broke").error_code is None
+        assert ToolResult(success=True, content="ok").error_code is None
+
+    def test_conflict_is_a_declared_code(self) -> None:
+        assert CONFLICT == "CONFLICT"
+        assert CONFLICT in TOOL_RESULT_ERROR_CODES
+
+    def test_a_lowercase_spelling_is_refused_and_the_message_names_the_canonical_one(self) -> None:
+        """one condition, one code: ``conflict`` and ``CONFLICT`` must never both reach the wire."""
+        with pytest.raises(ValueError, match="'CONFLICT'"):
+            ToolResult(success=False, content="", error="changed", error_code="conflict")
+
+    def test_an_undeclared_code_is_refused_naming_the_vocabulary(self) -> None:
+        """a code the platform does not map would reach every face as the generic fallback."""
+        with pytest.raises(ValueError, match="TOOL_RESULT_ERROR_CODES"):
+            ToolResult(success=False, content="", error="gone", error_code="SURVEY_GONE")
+
+    def test_a_success_naming_a_code_is_refused(self) -> None:
+        """a code names a refusal; a success that names one is a contradiction no face can render."""
+        with pytest.raises(ValueError, match="success"):
+            ToolResult(success=True, content="ok", error_code=CONFLICT)

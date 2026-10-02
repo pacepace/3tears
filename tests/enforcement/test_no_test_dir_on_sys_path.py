@@ -3,8 +3,8 @@ enforcement: no test tree puts a directory on ``sys.path``.
 
 Every test module and helper is named from the repo root -- the root
 ``pyproject.toml`` sets ``pythonpath = ["."]`` and ``--import-mode=importlib``, so
-``packages/agent/tools/tests/unit/tools/_pod_auth.py`` is
-``packages.agent.tools.tests.unit.tools._pod_auth`` -- and a helper is imported by
+``packages/agent/tools/tests/unit/tools/pod_auth.py`` is
+``packages.agent.tools.tests.unit.tools.pod_auth`` -- and a helper is imported by
 that name. Names built that way cannot collide across packages.
 
 A conftest that inserted its own ``tests`` directory into ``sys.path`` made every

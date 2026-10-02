@@ -49,6 +49,10 @@ class _RecordingBucket:
         del key
         return None
 
+    async def get_latest(self, *, key: str) -> tuple[bytes | None, int]:
+        del key
+        return None, 0
+
     async def put(self, *, key: str, value: bytes) -> int:
         del key, value
         return 1
@@ -94,7 +98,7 @@ class _StubEntity(BaseEntity):
 
 
 class _StubCollection(BaseCollection[_StubEntity]):
-    """Concrete collection with no durable tier; only ``_ensure_kv`` is exercised."""
+    """Concrete collection with no durable tier; a read is driven only so it opens its bucket."""
 
     def __init__(self, registry: CollectionRegistry, nats_client: Any) -> None:
         super().__init__(
@@ -161,7 +165,7 @@ class TestTheDefaultIsUnchanged:
     @pytest.mark.asyncio
     async def test_an_unconfigured_registry_opens_with_create(self) -> None:
         collection, client = _wired(l2_create_if_missing=None)
-        await collection._ensure_kv()  # noqa: SLF001 - the resolution under test
+        assert await collection.get("absent") is None  # a read resolves the collection's bucket
         assert client.opens == [True]
 
 
@@ -176,7 +180,7 @@ class TestTheFlagReachesTheOpen:
     @pytest.mark.asyncio
     async def test_a_reader_registry_binds_without_creating(self) -> None:
         collection, client = _wired(l2_create_if_missing=False)
-        await collection._ensure_kv()  # noqa: SLF001 - the resolution under test
+        assert await collection.get("absent") is None  # a read resolves the collection's bucket
         assert client.opens == [False]
 
     def test_it_merges_like_every_other_configure_argument(self) -> None:

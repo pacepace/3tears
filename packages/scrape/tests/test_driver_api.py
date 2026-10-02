@@ -1,4 +1,4 @@
-"""Unit tests for ApiDriver and _resolve_path.
+"""Unit tests for ApiDriver, including how it resolves ``results_path``.
 
 All tests are fully mocked -- no real network calls (httpx.MockTransport
 throughout). The real, live proof against Michigan's genuine Sitecore XA
@@ -22,41 +22,62 @@ import json
 
 import httpx
 import pytest
-from packages.scrape.tests._driver_log_helpers import driver_warnings
+from packages.scrape.tests.driver_log_helpers import driver_warnings
+from packages.scrape.tests.egress_fakes import FakeEgress
 
 from threetears.scrape.driver import NavStep, RenderedPage
-from threetears.scrape.drivers.api import ApiDriver, ApiDriverError, _resolve_path
+from threetears.scrape.drivers.api import ApiDriver, ApiDriverError
 
 # ===========================================================================
-# _resolve_path
+# results_path resolution, through render()
 # ===========================================================================
 
 
-class TestResolvePath:
-    def test_single_segment_path(self):
-        assert _resolve_path({"Results": [1, 2, 3]}, "Results") == [1, 2, 3]
+async def _render_records(body: object, results_path: str) -> str:
+    """Render *body* through ``ApiDriver`` with *results_path*, returning the page body.
 
-    def test_dotted_multi_segment_path(self):
-        assert _resolve_path({"data": {"records": ["a", "b"]}}, "data.records") == ["a", "b"]
+    The path walk is reached through ``render`` -- the driver's one public entry -- so these
+    tests pin what a caller sees for a given ``results_path``, not a helper's return value.
+    """
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
+    try:
+        page = await ApiDriver(client=client).render(
+            "https://example.gov/api/search", results_path=results_path, fragment_field="Html"
+        )
+    finally:
+        await client.aclose()
+    return page.html.removeprefix("<html><body>").removesuffix("</body></html>")
 
-    def test_missing_key_raises(self):
+
+def _records(*values: str) -> list[dict[str, str]]:
+    return [{"Html": value} for value in values]
+
+
+class TestResultsPath:
+    async def test_single_segment_path(self):
+        assert await _render_records({"Results": _records("1", "2", "3")}, "Results") == "1\n2\n3"
+
+    async def test_dotted_multi_segment_path(self):
+        assert await _render_records({"data": {"records": _records("a", "b")}}, "data.records") == "a\nb"
+
+    async def test_missing_key_raises(self):
         with pytest.raises(ApiDriverError) as exc_info:
-            _resolve_path({"Other": []}, "Results")
+            await _render_records({"Other": []}, "Results")
         assert exc_info.value.code == "bad_results_path"
 
-    def test_missing_nested_key_raises(self):
+    async def test_missing_nested_key_raises(self):
         with pytest.raises(ApiDriverError) as exc_info:
-            _resolve_path({"data": {}}, "data.records")
+            await _render_records({"data": {}}, "data.records")
         assert exc_info.value.code == "bad_results_path"
 
-    def test_non_list_terminal_value_raises(self):
+    async def test_non_list_terminal_value_raises(self):
         with pytest.raises(ApiDriverError) as exc_info:
-            _resolve_path({"Results": "not a list"}, "Results")
+            await _render_records({"Results": "not a list"}, "Results")
         assert exc_info.value.code == "bad_results_path"
 
-    def test_non_dict_intermediate_value_raises(self):
+    async def test_non_dict_intermediate_value_raises(self):
         with pytest.raises(ApiDriverError) as exc_info:
-            _resolve_path({"data": ["not", "a", "dict"]}, "data.records")
+            await _render_records({"data": ["not", "a", "dict"]}, "data.records")
         assert exc_info.value.code == "bad_results_path"
 
 
@@ -311,19 +332,21 @@ class TestApiDriverEgress:
 
         A hosted address-echo service would be a network call to a third party inside a unit
         test, so what is asserted instead is the thing that determines the address: the
-        transport the driver actually bound. A mock transport standing in for the proxy records
-        that the request reached it, which is the same claim one layer down and does not depend
-        on someone else's uptime.
+        transport the request actually left by. The exit's transport stands in for the proxy
+        and records that the request reached it, which is the same claim one layer down and
+        does not depend on someone else's uptime.
         """
-        from threetears.core.egress import ProxyEgress
         from threetears.scrape.drivers.api import ApiDriver
 
-        egress = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+        egress = FakeEgress()
         driver = ApiDriver(egress=egress)
 
-        pool = egress.httpx_transport()._pool
-        assert "9050" in str(pool._proxy_url), "the driver's exit is not the configured one"
-        assert driver._egress is egress
+        await driver.render("https://example.gov/api", results_path="")
+
+        assert [str(r.url) for r in egress.requests] == ["https://example.gov/api"], (
+            "the driver's request did not leave by the configured exit"
+        )
+        assert driver.egress is egress
 
     async def test_an_injected_client_is_not_rebound(self) -> None:
         """An injected client already has whatever transport its owner gave it.
@@ -333,14 +356,23 @@ class TestApiDriverEgress:
         breaking every test that injects a client.
         """
         import httpx
-        from threetears.core.egress import ProxyEgress
         from threetears.scrape.drivers.api import ApiDriver
 
-        pinned = httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=[])))
-        driver = ApiDriver(client=pinned, egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"))
+        pinned_requests: list[httpx.Request] = []
+
+        def _pinned(request: httpx.Request) -> httpx.Response:
+            pinned_requests.append(request)
+            return httpx.Response(200, json=[])
+
+        pinned = httpx.AsyncClient(transport=httpx.MockTransport(_pinned))
+        egress = FakeEgress()
+        driver = ApiDriver(client=pinned, egress=egress)
 
         await driver.render("https://example.gov/api", results_path="")
-        assert driver._client is pinned
+
+        assert [str(r.url) for r in pinned_requests] == ["https://example.gov/api"]
+        assert egress.requests == [], "the injected client was rebound to the driver's exit"
+        await pinned.aclose()
 
 
 class TestApiDriverAnnouncesADroppedSolve:

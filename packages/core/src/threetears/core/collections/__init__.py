@@ -20,9 +20,18 @@ from threetears.core.collections.bucket import (
     COLLECTIONS_BUCKET_SUFFIX,
     bind_collections_bucket,
 )
+from threetears.core.collections.bypassing_write import BypassingWrite
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
 from threetears.core.collections.merge import repoint_user_rows
+from threetears.core.collections.reapply import (
+    REAPPLY_BACKOFF_SECONDS,
+    REAPPLY_MAX_ATTEMPTS,
+    ExponentialBackoff,
+    full_jitter_backoff,
+    reapply_on_lost_race,
+)
 from threetears.core.collections.registry import (
     CacheInvalidationMessage,
     CollectionRegistry,
@@ -73,16 +82,21 @@ __all__ = [
     "BYTES_TYPE",
     "COLLECTIONS_BUCKET_SUFFIX",
     "BaseCollection",
+    "BypassingWrite",
     "CacheInvalidationMessage",
+    "CallerTransaction",
     "CollectionRegistry",
     "Column",
     "DATETIMETZ_TYPE",
     "DerivedCollection",
     "DurableStoreCollection",
+    "ExponentialBackoff",
     "FlushStrategy",
     "INT_TYPE",
     "JSONB_TYPE",
     "PartitionEnforcementError",
+    "REAPPLY_BACKOFF_SECONDS",
+    "REAPPLY_MAX_ATTEMPTS",
     "STRING_TYPE",
     "SchemaBackedCollection",
     "TableSchema",
@@ -94,7 +108,9 @@ __all__ = [
     "deserialize_from_json",
     "encode_jsonb",
     "flush_pending",
+    "full_jitter_backoff",
     "init_connection",
+    "reapply_on_lost_race",
     "register_jsonb_text_codec",
     "repoint_user_rows",
     "serialize_to_json",

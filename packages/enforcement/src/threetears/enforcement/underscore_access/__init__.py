@@ -30,6 +30,20 @@ directions, and
 :mod:`~threetears.enforcement.underscore_access.ruff_config` is the
 single definition of which paths ARE exempted, so two consumers
 cannot answer that differently.
+
+:mod:`~threetears.enforcement.underscore_access.pragma_policy` holds
+the SLF001 suppression policy itself: no inline ``noqa`` for SLF001, and
+a per-file ignore only on a ``src`` module the ledger records. Its
+module docstring shows the thin shell a consumer repo adds to enable it.
+
+:mod:`~threetears.enforcement.underscore_access.private_binding` holds the
+two spellings every check above passed, over src, tests and scripts alike:
+
+- shape G: a private name or module bound by an import
+- shape H: a private name bound by a string -- ``patch``, ``patch.object``,
+  ``monkeypatch.setattr``/``delattr``, ``mocker.spy``, ``import_module``
+
+its module docstring states the rules and shows the consumer's thin shell.
 """
 
 from threetears.enforcement.underscore_access.config import (
@@ -43,6 +57,7 @@ from threetears.enforcement.underscore_access.ledger import (
     blanket_noqa_offenders,
     carry_forward_rationales,
     enclosing_scopes,
+    import_bindings,
     ledger_entries,
     missing_files,
     orphan_rationales,
@@ -50,9 +65,37 @@ from threetears.enforcement.underscore_access.ledger import (
     unlisted_accesses,
     unresolved_entries,
 )
+from threetears.enforcement.underscore_access.pragma_policy import (
+    TEST_DIRECTORIES,
+    confinement_modules,
+    confinement_own_test_entries,
+    is_own_test_of,
+    is_src_module,
+    ledger_entries_outside_src,
+    own_test_name,
+    scanned_python_files,
+    slf001_ignored_files,
+    slf001_ignores_outside_src,
+    slf001_ignores_without_a_ledger_entry,
+    slf001_policy_findings,
+    slf001_pragma_offenders,
+)
+from threetears.enforcement.underscore_access.private_binding import (
+    DOCUMENTED_STDLIB_PRIVATES,
+    PRIVATE_BINDING_CATEGORIES,
+    SHAPE_G_MODULE,
+    SHAPE_G_NAME,
+    SHAPE_H_ATTRIBUTE,
+    SHAPE_H_PATH,
+    PrivateBindingScan,
+    private_binding_findings,
+    scan_private_bindings,
+    undetected_planted_controls,
+)
 from threetears.enforcement.underscore_access.ruff_config import (
     all_exempted_files,
     exempted_files,
+    is_vendored,
     ruff_configs,
     slf001_globs,
 )
@@ -71,7 +114,20 @@ from threetears.enforcement.underscore_access.walkers import (
 )
 
 __all__ = [
+    "DOCUMENTED_STDLIB_PRIVATES",
     "MODULE_SCOPE",
+    "PRIVATE_BINDING_CATEGORIES",
+    "PrivateBindingScan",
+    "SHAPE_G_MODULE",
+    "SHAPE_G_NAME",
+    "SHAPE_H_ATTRIBUTE",
+    "SHAPE_H_PATH",
+    "TEST_DIRECTORIES",
+    "confinement_modules",
+    "confinement_own_test_entries",
+    "private_binding_findings",
+    "scan_private_bindings",
+    "undetected_planted_controls",
     "ledger_paths",
     "ledger_scope_entries",
     "scoped_accesses",
@@ -81,15 +137,27 @@ __all__ = [
     "carry_forward_rationales",
     "enclosing_scopes",
     "exempted_files",
+    "import_bindings",
+    "is_own_test_of",
+    "is_src_module",
+    "is_vendored",
     "ledger_entries",
+    "ledger_entries_outside_src",
     "missing_files",
     "orphan_rationales",
+    "own_test_name",
     "package_id",
     "private_accesses",
     "ruff_configs",
     "run_underscore_enforcement",
     "same_package",
+    "scanned_python_files",
     "slf001_globs",
+    "slf001_ignored_files",
+    "slf001_ignores_outside_src",
+    "slf001_ignores_without_a_ledger_entry",
+    "slf001_policy_findings",
+    "slf001_pragma_offenders",
     "unlisted_accesses",
     "unresolved_entries",
     "shape_a_violations",

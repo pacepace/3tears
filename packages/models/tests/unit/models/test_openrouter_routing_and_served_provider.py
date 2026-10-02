@@ -205,11 +205,12 @@ class TestTheServedProviderIsRead:
         answer = await _ask(_model(_Wire()), "ainvoke")
         assert answer.response_metadata.get("provider") == _SERVED_BY
 
-    async def test_a_streamed_answer_names_it_on_the_final_chunks_generation_info(self) -> None:
+    async def test_a_streamed_answer_names_it_on_the_final_chunks_metadata(self) -> None:
+        """the final chunk's generation info reaches a streaming caller as its ``response_metadata``."""
         model = _model(_Wire())
-        infos = [chunk.generation_info async for chunk in model._astream([HumanMessage(content="is it?")])]  # noqa: SLF001 -- the chunk's generation_info is only visible below the public stream
-        finals = [info for info in infos if info and info.get("finish_reason")]
-        assert [info.get("provider") for info in finals] == [_SERVED_BY]
+        metas = [chunk.response_metadata async for chunk in model.astream([HumanMessage(content="is it?")])]
+        finals = [meta for meta in metas if meta.get("finish_reason")]
+        assert [meta.get("provider") for meta in finals] == [_SERVED_BY]
 
     @pytest.mark.parametrize("how", ["ainvoke", "astream"])
     async def test_the_per_call_log_line_carries_it(self, how: str, caplog: pytest.LogCaptureFixture) -> None:

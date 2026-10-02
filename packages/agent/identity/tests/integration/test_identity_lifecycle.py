@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from threetears.agent.acl import AclCache
+from threetears.core.collections import CallerTransaction
 
 from threetears.agent.identity import lifecycle
 from threetears.agent.identity.authorize import IdentityAuthorizerDependencies
@@ -193,7 +194,7 @@ async def test_conn_binds_apply_to_caller_transaction(pg_schema: tuple[str, str]
         assert root.status == "active"
 
         with pytest.raises(_Rollback):
-            async with pool.acquire() as conn, conn.transaction():
+            async with pool.acquire() as conn, CallerTransaction(conn):
                 applied = await lifecycle.propose(
                     coll,
                     authz,

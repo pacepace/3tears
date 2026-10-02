@@ -1,4 +1,4 @@
-"""unit tests for :mod:`threetears.nats.pipe`.
+"""unit tests for :mod:`threetears.nats.pipe` and its wire protocol, :mod:`threetears.nats.pipe_wire`.
 
 cover the wire framing round-trip and its refusals (short frame, unknown tag,
 a sequence that does not fit the field), the attach envelopes and their version
@@ -36,17 +36,19 @@ from threetears.nats.pipe import (
     PipeRemoteError,
     PipeSequenceGapError,
     PipeStream,
-    _decode_attach_reply,
-    _decode_attach_request,
-    _decode_frame,
-    _encode_attach_reply,
-    _encode_attach_request,
-    _encode_frame,
-    _TAG_CLOSE,
-    _TAG_CREDIT,
-    _TAG_DATA,
-    _TAG_ERROR,
-    _TAG_READY,
+)
+from threetears.nats.pipe_wire import (
+    TAG_CLOSE,
+    TAG_CREDIT,
+    TAG_DATA,
+    TAG_ERROR,
+    TAG_READY,
+    decode_attach_reply,
+    decode_attach_request,
+    decode_frame,
+    encode_attach_reply,
+    encode_attach_request,
+    encode_frame,
 )
 from threetears.nats.transport import IncomingMessage
 
@@ -108,6 +110,14 @@ class _FakeSubscription:
         """drop the subject's subscriber from the bus."""
         self.mark_closed()
         self._bus.subscribers.pop(self._subject_path, None)
+
+    async def subscribe_on(self, connection: object) -> object:
+        """the bus is one connection that is never renewed; a pipe test never moves a subscription."""
+        raise AssertionError("a pipe test has one connection; nothing renews it")
+
+    def move_to(self, raw_subscription: object, connection: object) -> object:
+        """the bus is one connection that is never renewed; a pipe test never moves a subscription."""
+        raise AssertionError("a pipe test has one connection; nothing renews it")
 
 
 # parity-with: threetears.nats.pipe.PipeTransport
@@ -177,37 +187,37 @@ async def _settle() -> None:
 
 def test_frame_round_trips_tag_sequence_and_body() -> None:
     """a framed message decodes back to the tag, sequence and body it carried."""
-    frame = _encode_frame(_TAG_DATA, 7, b"payload-bytes")
-    assert _decode_frame(frame) == (_TAG_DATA, 7, b"payload-bytes")
+    frame = encode_frame(TAG_DATA, 7, b"payload-bytes")
+    assert decode_frame(frame) == (TAG_DATA, 7, b"payload-bytes")
 
 
 def test_frame_round_trips_an_empty_body() -> None:
     """a control frame carries no body and still decodes unambiguously."""
-    assert _decode_frame(_encode_frame(_TAG_CLOSE, 42, b"")) == (_TAG_CLOSE, 42, b"")
+    assert decode_frame(encode_frame(TAG_CLOSE, 42, b"")) == (TAG_CLOSE, 42, b"")
 
 
 def test_frame_body_is_verbatim_for_bytes_that_look_like_a_header() -> None:
     """a body whose leading bytes resemble a header is not re-interpreted."""
-    body = _encode_frame(_TAG_CREDIT, 9, b"inner")
-    tag, seq, decoded = _decode_frame(_encode_frame(_TAG_DATA, 1, body))
-    assert (tag, seq, decoded) == (_TAG_DATA, 1, body)
+    body = encode_frame(TAG_CREDIT, 9, b"inner")
+    tag, seq, decoded = decode_frame(encode_frame(TAG_DATA, 1, body))
+    assert (tag, seq, decoded) == (TAG_DATA, 1, body)
 
 
 def test_frame_round_trips_the_widest_sequence_the_field_holds() -> None:
     """the top of the uint32 space encodes and decodes without truncation."""
-    assert _decode_frame(_encode_frame(_TAG_DATA, 0xFFFFFFFF, b"x"))[1] == 0xFFFFFFFF
+    assert decode_frame(encode_frame(TAG_DATA, 0xFFFFFFFF, b"x"))[1] == 0xFFFFFFFF
 
 
 def test_frame_refuses_a_sequence_past_the_field() -> None:
     """the sequence space is refused rather than wrapped: a wrap reads as valid ordering."""
     with pytest.raises(PipeProtocolError, match="does not fit"):
-        _encode_frame(_TAG_DATA, 0x1_0000_0000, b"x")
+        encode_frame(TAG_DATA, 0x1_0000_0000, b"x")
 
 
 def test_frame_refuses_a_payload_shorter_than_its_header() -> None:
     """a truncated frame is refused rather than read as a zero sequence."""
     with pytest.raises(PipeProtocolError, match="shorter than"):
-        _decode_frame(b"\x00\x00")
+        decode_frame(b"\x00\x00")
 
 
 # --------------------------------------------------------------------------
@@ -217,27 +227,27 @@ def test_frame_refuses_a_payload_shorter_than_its_header() -> None:
 
 def test_attach_request_round_trips() -> None:
     """the caller's request decodes to the version and limits it asked for."""
-    payload = _encode_attach_request(version=PIPE_PROTOCOL_VERSION, credit=4096, max_chunk=512)
-    assert _decode_attach_request(payload) == (PIPE_PROTOCOL_VERSION, 4096, 512)
+    payload = encode_attach_request(version=PIPE_PROTOCOL_VERSION, credit=4096, max_chunk=512)
+    assert decode_attach_request(payload) == (PIPE_PROTOCOL_VERSION, 4096, 512)
 
 
 def test_attach_request_refuses_a_foreign_op() -> None:
     """an envelope for some other operation is refused, not part-read."""
     with pytest.raises(PipeProtocolError, match="op"):
-        _decode_attach_request(b'{"op": "detach", "version": 1, "credit": 1, "max_chunk": 1}')
+        decode_attach_request(b'{"op": "detach", "version": 1, "credit": 1, "max_chunk": 1}')
 
 
 def test_attach_reply_round_trips_the_readable_tool_name() -> None:
     """the reply carries the tool in readable form, which the caller hashes itself."""
     endpoint = _endpoint()
-    decoded = _decode_attach_reply(_encode_attach_reply(endpoint))
+    decoded = decode_attach_reply(encode_attach_reply(endpoint))
     assert decoded == endpoint
     assert decoded.tool == "tools.scrape-zone_alpha.1-0-0"
 
 
 def test_attach_reply_refuses_a_version_this_caller_cannot_speak() -> None:
     """a version outside the supported range is refused before a byte moves."""
-    ahead = _encode_attach_reply(
+    ahead = encode_attach_reply(
         PipeEndpoint(
             tool="t",
             pod_id="p",
@@ -248,14 +258,14 @@ def test_attach_reply_refuses_a_version_this_caller_cannot_speak() -> None:
         )
     )
     with pytest.raises(PipeProtocolError, match="outside"):
-        _decode_attach_reply(ahead)
+        decode_attach_reply(ahead)
     assert MIN_PIPE_PROTOCOL_VERSION <= PIPE_PROTOCOL_VERSION
 
 
 def test_attach_reply_refuses_a_malformed_envelope() -> None:
     """a reply missing a field is refused rather than defaulted."""
     with pytest.raises(PipeProtocolError, match="malformed"):
-        _decode_attach_reply(b'{"tool": "t"}')
+        decode_attach_reply(b'{"tool": "t"}')
 
 
 # --------------------------------------------------------------------------
@@ -287,7 +297,7 @@ async def test_stream_splits_at_the_negotiated_chunk_size() -> None:
 
     await owner.send(b"z" * 200)
     down = endpoint.subject("down").path
-    bodies = [_decode_frame(payload)[2] for subject, payload in bus.published if subject == down]
+    bodies = [decode_frame(payload)[2] for subject, payload in bus.published if subject == down]
     assert [len(b) for b in bodies] == [64, 64, 64, 8]
     assert await caller.receive() == b"z" * 64
 
@@ -335,8 +345,8 @@ async def test_a_lost_frame_raises_and_names_the_stream() -> None:
     dropped: list[int] = []
 
     def _drop_second_data_frame(subject: str, payload: bytes) -> bool:
-        tag, seq, _ = _decode_frame(payload)
-        if subject == down and tag == _TAG_DATA and seq == 2:
+        tag, seq, _ = decode_frame(payload)
+        if subject == down and tag == TAG_DATA and seq == 2:
             dropped.append(seq)
             return True
         return False
@@ -362,7 +372,7 @@ async def test_a_lost_final_frame_is_caught_by_the_close() -> None:
     owner, caller = await _wired_pair(bus, endpoint)
 
     down = endpoint.subject("down").path
-    bus.suppress = lambda subject, payload: subject == down and _decode_frame(payload)[0:2] == (_TAG_DATA, 2)
+    bus.suppress = lambda subject, payload: subject == down and decode_frame(payload)[0:2] == (TAG_DATA, 2)
     await owner.send(b"0" * 16)
     await owner.send_close()
 
@@ -376,7 +386,7 @@ async def test_an_unknown_tag_is_refused_rather_than_skipped() -> None:
     endpoint = _endpoint()
     _owner, caller = await _wired_pair(bus, endpoint)
 
-    await bus.deliver(endpoint.subject("down").path, _encode_frame(0x7F, 1, b""))
+    await bus.deliver(endpoint.subject("down").path, encode_frame(0x7F, 1, b""))
     with pytest.raises(PipeProtocolError, match="unknown frame tag 0x7f"):
         await caller.receive()
 
@@ -399,7 +409,7 @@ async def test_a_faulted_stream_refuses_further_sends() -> None:
     endpoint = _endpoint()
     owner, _caller = await _wired_pair(bus, endpoint)
 
-    await bus.deliver(endpoint.subject("up").path, _encode_frame(0x7F, 1, b""))
+    await bus.deliver(endpoint.subject("up").path, encode_frame(0x7F, 1, b""))
     with pytest.raises(PipeProtocolError):
         await owner.send(b"more")
 
@@ -484,7 +494,7 @@ async def test_credit_acknowledgement_is_cumulative() -> None:
     dropped_acks: list[bytes] = []
 
     def _drop_credit(subject: str, payload: bytes) -> bool:
-        if subject == up and _decode_frame(payload)[0] == _TAG_CREDIT:
+        if subject == up and decode_frame(payload)[0] == TAG_CREDIT:
             dropped_acks.append(payload)
             return True
         return False
@@ -512,7 +522,7 @@ async def test_a_peer_that_ignores_credit_faults_rather_than_buffering() -> None
 
     down = endpoint.subject("down").path
     for seq in range(1, 5):
-        await bus.deliver(down, _encode_frame(_TAG_DATA, seq, b"w" * 64))
+        await bus.deliver(down, encode_frame(TAG_DATA, seq, b"w" * 64))
 
     with pytest.raises(PipeError, match="past the 128-byte window"):
         await caller.receive()
@@ -525,7 +535,7 @@ async def test_a_ready_frame_consumes_no_data_sequence() -> None:
     owner, caller = await _wired_pair(bus, endpoint)
 
     # the caller's open() already sent one ready frame; a second changes nothing.
-    await bus.deliver(endpoint.subject("up").path, _encode_frame(_TAG_READY, 0, b""))
+    await bus.deliver(endpoint.subject("up").path, encode_frame(TAG_READY, 0, b""))
     await owner.send(b"first")
     assert await caller.receive() == b"first"
 
@@ -539,8 +549,8 @@ async def test_an_error_frame_consumes_no_data_sequence() -> None:
     await owner.send(b"one")
     await owner.send_error(RuntimeError("boom"))
     down = endpoint.subject("down").path
-    tags = [_decode_frame(payload)[0:2] for subject, payload in bus.published if subject == down]
-    assert tags == [(_TAG_DATA, 1), (_TAG_ERROR, 0)]
+    tags = [decode_frame(payload)[0:2] for subject, payload in bus.published if subject == down]
+    assert tags == [(TAG_DATA, 1), (TAG_ERROR, 0)]
 
 
 # --------------------------------------------------------------------------
@@ -570,9 +580,7 @@ def test_endpoint_refuses_non_positive_limits() -> None:
 def test_attach_reply_refuses_an_incoherent_pair_from_the_owner() -> None:
     """the invariant holds against a peer as well as against a local caller."""
     with pytest.raises(PipeProtocolError, match="exceeds the credit window"):
-        _decode_attach_reply(
-            b'{"tool": "t", "pod_id": "p", "nonce": "n", "max_chunk": 128, "credit": 64, "version": 1}'
-        )
+        decode_attach_reply(b'{"tool": "t", "pod_id": "p", "nonce": "n", "max_chunk": 128, "credit": 64, "version": 1}')
 
 
 # --------------------------------------------------------------------------

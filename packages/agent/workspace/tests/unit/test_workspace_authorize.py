@@ -47,7 +47,7 @@ from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
     authorize_workspace_access,
 )
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceEntity,
 )
 

@@ -43,7 +43,7 @@ dependencies = [
 # an L1-SQLite-only process does not, and `nkeys` ships no wheels, so not
 # installing it is the difference between a wheel install and a source build.
 nats = ["3tears-nats[client]>=0.58.0,<0.59.0"]
-tracing = ["opentelemetry-api>=1.20"]
+tracing = ["opentelemetry-api>=1.20,<2"]
 # needed by :func:`threetears.core.egress.SocksEgress` / :func:`WarpEgress`, which build
 # ``socks5://`` proxy URLs. httpx routes those through socksio and raises ImportError without
 # it. Declared as an extra rather than a hard dependency because the overwhelming majority of

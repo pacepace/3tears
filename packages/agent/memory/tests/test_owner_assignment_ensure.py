@@ -101,6 +101,8 @@ def _pool() -> AsyncMock:
     pool.fetchrow = AsyncMock(return_value=None)
     pool.fetch = AsyncMock(return_value=[])
     pool.execute = AsyncMock(return_value="INSERT 0 1")
+    # the role assignment's insert returns the id it inserted (ON CONFLICT DO NOTHING RETURNING)
+    pool.fetchval = AsyncMock(side_effect=lambda sql, *args: args[1] if "INSERT INTO role_assignments" in sql else None)
     return pool
 
 
@@ -229,8 +231,8 @@ async def test_ensure_writes_the_group_the_membership_and_the_assignment(
 
     assert pools["groups"].execute.await_count == 1
     assert pools["group_members"].execute.await_count == 1
-    assert pools["role_assignments"].execute.await_count == 1
-    assert namespace_id in pools["role_assignments"].execute.await_args.args
+    assert pools["role_assignments"].fetchval.await_count == 1
+    assert namespace_id in pools["role_assignments"].fetchval.await_args.args
 
 
 @pytest.mark.asyncio
@@ -258,4 +260,4 @@ async def test_ensure_skips_every_write_when_the_owner_role_is_unseeded(
     assert pools["groups"].fetchrow.await_count == 0
     assert pools["groups"].execute.await_count == 0
     assert pools["group_members"].execute.await_count == 0
-    assert pools["role_assignments"].execute.await_count == 0
+    assert pools["role_assignments"].fetchval.await_count == 0

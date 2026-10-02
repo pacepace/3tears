@@ -49,6 +49,7 @@ from threetears.agent.wake.types import (
     WakeTrigger,
 )
 from threetears.conversations.migrations import register as register_conversations
+from threetears.core.collections import CallerTransaction
 from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -93,6 +94,12 @@ def _collections(pool: asyncpg.Pool) -> tuple[WakeScheduleCollection, WakeFireCo
     registry.configure(l3_pool=pool)
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     return WakeScheduleCollection(registry=registry, config=cfg), WakeFireCollection(registry=registry, config=cfg)
+
+
+def _tick_collections(pool: asyncpg.Pool) -> dict[str, Any]:
+    """the ``schedules=`` / ``fires=`` a tick with no NATS client runs on."""
+    schedules, fires = _collections(pool)
+    return {"schedules": schedules, "fires": fires}
 
 
 async def _seed_schedule(
@@ -238,7 +245,7 @@ class TestProtectedTrigger:
                 assert trigger.fire_id == fire_id
                 return WakeDispatchResult(status="fired")
 
-            await wake_tick_job(pool, None, dispatch)
+            await wake_tick_job(pool, None, dispatch, **_tick_collections(pool))
             assert len(seen) == 1
             assert seen[0].protected is True
             row = await pool.fetchrow(
@@ -328,7 +335,7 @@ class TestProtectedDoors:
             agent = _new_uuid()
             _conv, doomed = await _seed_schedule(pool, agent_id=agent, protected=True)
             _conv2, survivor = await _seed_schedule(pool, agent_id=_new_uuid(), protected=True)
-            async with pool.acquire() as conn, conn.transaction():
+            async with pool.acquire() as conn, CallerTransaction(conn):
                 await delete_protected(collection=schedules, agent_id=agent, schedule_id=doomed, conn=conn)
             assert await pool.fetchval("SELECT count(*) FROM agent_wake_schedules WHERE schedule_id = $1", doomed) == 0
             # the gate did not outlive that transaction
@@ -502,7 +509,7 @@ class TestPermitAndLimits:
                     trigger, fire_id, pool_, handler=handler, permit=not_now, start_conversation=start
                 )
 
-            await wake_tick_job(pool, None, dispatch)
+            await wake_tick_job(pool, None, dispatch, **_tick_collections(pool))
             status, started_conversation = await pool.fetchrow(
                 "SELECT status, started_conversation_id FROM wake_fires WHERE schedule_id = $1", sid
             )
@@ -599,7 +606,7 @@ class TestFireConversationLink:
             async def dispatch(trigger: WakeTrigger, fire_id: UUID, pool_: object) -> WakeDispatchResult:
                 return await dispatch_wake(trigger, fire_id, pool_, handler=handler, start_conversation=start)
 
-            await wake_tick_job(pool, None, dispatch)
+            await wake_tick_job(pool, None, dispatch, **_tick_collections(pool))
             fire = await pool.fetchrow(
                 "SELECT fire_id, status, started_conversation_id FROM wake_fires WHERE schedule_id = $1", sid
             )
@@ -639,7 +646,7 @@ class TestFireConversationLink:
             async def dispatch(trigger: WakeTrigger, fire_id: UUID, pool_: object) -> WakeDispatchResult:
                 return await dispatch_wake(trigger, fire_id, pool_, handler=_Boom(), start_conversation=start)
 
-            await wake_tick_job(pool, None, dispatch)
+            await wake_tick_job(pool, None, dispatch, **_tick_collections(pool))
             fire = await pool.fetchrow(
                 "SELECT status, started_conversation_id FROM wake_fires WHERE schedule_id = $1", sid
             )
@@ -672,7 +679,7 @@ class TestFireConversationLink:
             async def dispatch(trigger: WakeTrigger, fire_id: UUID, pool_: object) -> WakeDispatchResult:
                 return await dispatch_wake(trigger, fire_id, pool_, handler=handler, start_conversation=start)
 
-            await wake_tick_job(pool, None, dispatch)
+            await wake_tick_job(pool, None, dispatch, **_tick_collections(pool))
             fire = await pool.fetchrow(
                 "SELECT status, started_conversation_id FROM wake_fires WHERE schedule_id = $1", sid
             )
@@ -723,7 +730,7 @@ class TestReaper:
             async def dispatch(_trigger: WakeTrigger, _fire_id: UUID, _pool: object) -> WakeDispatchResult:
                 raise AssertionError("nothing is due")
 
-            await wake_tick_job(pool, None, dispatch, on_reaped=on_reaped)
+            await wake_tick_job(pool, None, dispatch, on_reaped=on_reaped, **_tick_collections(pool))
             by_fire = {r.fire_id: r for r in heard}
             assert set(by_fire) == {lost, lost_early}
             assert by_fire[lost] == ReapedFire(conversation_id=conv, fire_id=lost, started_conversation_id=started)
@@ -744,7 +751,7 @@ class TestReaper:
             async def dispatch(_trigger: WakeTrigger, _fire_id: UUID, _pool: object) -> WakeDispatchResult:
                 raise AssertionError("nothing is due")
 
-            await wake_tick_job(pool, None, dispatch, on_reaped=on_reaped)
+            await wake_tick_job(pool, None, dispatch, on_reaped=on_reaped, **_tick_collections(pool))
             assert (await _fire_row(pool, lost))["status"] == "failed"
         finally:
             await pool.close()

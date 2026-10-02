@@ -608,7 +608,9 @@ class CollectionRegistry:
                 # doubles) that predate this method.
                 return
 
-            l1.delete_by_id(message.table, entity_id, pk_cols)
+            # through the collection, not the backend: a read of the key in flight on this pod read
+            # it before the eviction, and the collection's fence is what stops it caching that.
+            collection.evict_from_cache_sync(entity_id)
 
         # SubscribeError propagates deliberately: cache coherence is not
         # optional, so a process that cannot subscribe must fail its startup

@@ -36,6 +36,7 @@ from threetears.core.collections.asyncpg_init import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.exceptions import ConcurrentModificationError
 
 from .conftest import AsyncpgStore
 
@@ -186,6 +187,63 @@ class TestScheduleRoundTrip:
             assert resumed is not None
             assert resumed.status == "active"
             assert resumed.next_fire_at == future
+        finally:
+            await pool.close()
+
+    async def test_a_save_of_a_row_paused_since_it_was_read_is_refused(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """the fenced UPDATE against Postgres: an edit read before a pause cannot resume it."""
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            coll = _build_schedule_collection(pool)
+            conv = _new_uuid()
+            sched = _new_uuid()
+            now = datetime.now(UTC)
+            await coll.save_entity(
+                coll.create(
+                    {
+                        "conversation_id": conv,
+                        "schedule_id": sched,
+                        "user_id": _new_uuid(),
+                        "agent_id": _new_uuid(),
+                        "schedule_type": "interval",
+                        "schedule_config": {"seconds": 60},
+                        "next_fire_at": now,
+                        "name": "before",
+                        "date_created": now,
+                        "date_updated": now,
+                    },
+                ),
+            )
+            stale = await coll.get((conv, sched))
+            assert stale is not None
+
+            await coll.pause(conv, sched)
+            stale.name = "after"
+            with pytest.raises(ConcurrentModificationError):
+                await coll.save_entity(stale)
+
+            row = await pool.fetchrow(
+                "SELECT status, name FROM agent_wake_schedules WHERE conversation_id = $1 AND schedule_id = $2",
+                conv,
+                sched,
+            )
+            assert row is not None
+            assert row["status"] == "paused"
+            assert row["name"] == "before"
+
+            fresh = await coll.get((conv, sched))
+            assert fresh is not None
+            fresh.name = "after"
+            await coll.save_entity(fresh)
+            renamed = await coll.get((conv, sched))
+            assert renamed is not None
+            assert renamed.name == "after"
+            assert renamed.status == "paused"
+            assert renamed.schedule_config == {"seconds": 60}
         finally:
             await pool.close()
 

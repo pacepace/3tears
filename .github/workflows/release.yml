@@ -115,7 +115,12 @@ jobs:
     needs: tag-on-main
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth 0: the API-growth gate in tests/enforcement compares against the latest
+      # vX.Y.Z tag and refuses, rather than skips, when it cannot see one -- a manual
+      # dispatch's shallow checkout carries no tags at all.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v8.2.0
         with:
@@ -170,14 +175,12 @@ jobs:
             TAG="${GITHUB_REF#refs/tags/v}"
           fi
           echo "Verifying the workspace is at ${TAG} in lockstep."
-          # Single source of truth: scripts/bump-version.sh --verify
-          # checks every place the version string lives (pyproject *.19,
-          # test_smoke.py *.5, docker-bake.hcl VERSION + image tags).
-          # If `bump-version.sh X.Y.Z` is the inverse "set everything to
-          # X.Y.Z", `--verify X.Y.Z` is "confirm everything is at X.Y.Z".
-          # Extending coverage only needs editing one place (the script);
-          # this workflow step automatically inherits.
-          ./scripts/bump-version.sh --verify "$TAG"
+          # Single source of truth: `bump-version.sh verify` checks every place
+          # the version string lives (every member pyproject and its intra-family
+          # bounds, the smoke-test assertions, docker-bake.hcl VERSION + image
+          # tags), as listed in [tool.threetears-release]. A bump writes the same
+          # list, so extending coverage is one edit there; this step inherits it.
+          ./scripts/bump-version.sh verify "$TAG"
 
       - name: Build all workspace packages
         # Builds every workspace member's sdist + wheel into a single dist/.

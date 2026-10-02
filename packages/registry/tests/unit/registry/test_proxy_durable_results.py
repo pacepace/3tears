@@ -37,9 +37,9 @@ from threetears.nats import (
 from threetears.registry.catalog import ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallAccepted, ProxyCallResponse
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
-from ._dispatch_auth import DEFAULT_AGENT_ID, make_authed_request, make_proxy
+from .dispatch_auth import DEFAULT_AGENT_ID, make_authed_request, make_proxy
 
 _NS = "test"
 _LONG = 1200.0

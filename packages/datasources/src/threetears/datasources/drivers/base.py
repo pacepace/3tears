@@ -13,10 +13,10 @@ The ABC is intentionally minimal:
   is how the contract stays honest across four very different backends.
 - **Every method is ``async def``** even when the backend library is sync.
   Sync-bridged drivers (Redshift / Snowflake / BigQuery) route through
-  :class:`threetears.datasources.drivers._sync_bridge.AsyncSyncBridge`.
+  :class:`threetears.datasources.drivers.sync_bridge.AsyncSyncBridge`.
 - **``$1``-style placeholders** are the contract; concrete drivers
   translate to their dialect via
-  :func:`threetears.datasources.drivers._util._translate_placeholders`.
+  :func:`threetears.datasources.drivers.sql_fragments.translate_placeholders`.
 - **Cancellation propagation** is mandatory and routes through
   :meth:`Driver._with_cancellation` so all four drivers share one
   implementation rather than three drifting copies.
@@ -37,7 +37,7 @@ Observability contract (DS-09-11):
 - ``datasource.driver.cache.{hit,miss}{datasource_name}`` -- counters
   (sync-bridged drivers only)
 
-The :func:`_observed` decorator wraps method bodies to emit the always-on
+The :func:`observed` decorator wraps method bodies to emit the always-on
 duration + error metrics. Cache / saturation / cancellation-fired
 metrics are driver-specific and emitted manually by the concrete driver.
 
@@ -74,6 +74,7 @@ __all__ = [
     "TableRow",
     "Transaction",
     "TransactionContext",
+    "observed",
 ]
 
 log = get_logger(__name__)
@@ -251,7 +252,7 @@ def _build_coverage_by_dimension_sql(
 
 
 # ---------------------------------------------------------------------------
-# @_observed decorator (DS-09-11)
+# @observed decorator (DS-09-11)
 # ---------------------------------------------------------------------------
 
 
@@ -353,7 +354,7 @@ def _get_error_counter(driver_type: str) -> Any:
     return result
 
 
-def _observed(driver_type: str) -> Callable[[F], F]:
+def observed(driver_type: str) -> Callable[[F], F]:
     """decorator factory: wrap an async driver method with standard metric emission.
 
     emits :data:`datasource.driver.query.duration` (histogram) on every
@@ -380,7 +381,7 @@ def _observed(driver_type: str) -> Callable[[F], F]:
 
     def decorator(fn: F) -> F:
         if not inspect.iscoroutinefunction(fn):
-            raise TypeError(f"@_observed only wraps async functions; {fn.__qualname__} is not async")
+            raise TypeError(f"@observed only wraps async functions; {fn.__qualname__} is not async")
 
         @functools.wraps(fn)
         async def async_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
@@ -737,7 +738,7 @@ class Driver(ABC):
     placeholder convention (DS-09-04):
         callers always pass ``$1``-style positional placeholders. each
         concrete driver translates internally via
-        :func:`threetears.datasources.drivers._util._translate_placeholders`
+        :func:`threetears.datasources.drivers.sql_fragments.translate_placeholders`
         to its backend's expected dialect (``%s`` for pyformat /
         Redshift, ``:1`` for numeric, ``@p1`` for BigQuery named-at).
 
@@ -791,7 +792,7 @@ class Driver(ABC):
 
     observability contract (DS-09-11):
         concrete drivers SHOULD decorate query-emitting methods with
-        :func:`_observed` to get the standard duration + error metrics
+        :func:`observed` to get the standard duration + error metrics
         for free. additional cache / saturation / cancellation-fired
         metrics are emitted manually.
 
@@ -1048,7 +1049,7 @@ class Driver(ABC):
         data, not a measured zero. this method returns the raw counts
         (:class:`ColumnCoverage`); the caller decides the verdict. CONCRETE on the
         ABC (portable SQL routed through :meth:`fetch`) so every backend inherits
-        it; it does NOT carry its own ``@_observed`` because the inner
+        it; it does NOT carry its own ``@observed`` because the inner
         :meth:`fetch` it delegates to is already instrumented.
 
         :param schema: schema name of the table to scan

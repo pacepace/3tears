@@ -45,8 +45,8 @@ from threetears.agent.workspace.tools.helpers import (
     Sha256Mismatch,
     WorkspaceNotFound,
     _resolve_validators,
-    _resolve_workspace,
-    _write_file_atomic,
+    resolve_workspace,
+    write_file_atomic,
     authorize_workspace,
     authorize_workspace_file,
     workspace_audit_identity,
@@ -89,7 +89,7 @@ class DocSetTool(TearsTool):
     resolves workspace, enforces sandbox write BEFORE any DB access,
     dispatches the :class:`FormatHandler` by file suffix, loads the tree,
     calls ``handler.set(tree, jsonpath, value)``, and writes the dumped
-    text through :func:`_write_file_atomic` with OCC. comments and key
+    text through :func:`write_file_atomic` with OCC. comments and key
     order survive because the handler owns round-trip fidelity.
     """
 
@@ -129,7 +129,7 @@ class DocSetTool(TearsTool):
         :param namespace: NATS subject namespace for audit subject
         :ptype namespace: str | None
         :param validators: per-pattern validator entries forwarded to
-            :func:`_write_file_atomic`; validators see the post-dump
+            :func:`write_file_atomic`; validators see the post-dump
             bytes (same contract as fs_*) so structural vs byte-level
             tools share one validator surface
         :ptype validators: list[ValidatorEntry] | None
@@ -167,7 +167,7 @@ class DocSetTool(TearsTool):
 
         result: ToolResult
         try:
-            workspace = await _resolve_workspace(
+            workspace = await resolve_workspace(
                 workspace_arg,
                 self._context_provider(),
                 self._workspaces,
@@ -220,7 +220,7 @@ class DocSetTool(TearsTool):
                         old_sha = existing.sha256
                         old_size = len(existing.content)
                         correlation_id = uuid7()
-                        new_version, new_sha256 = await _write_file_atomic(
+                        new_version, new_sha256 = await write_file_atomic(
                             db_pool=self._db_pool,
                             workspace=workspace,
                             relative_path=relative_path,

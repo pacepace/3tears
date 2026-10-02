@@ -50,11 +50,15 @@ from threetears.knowledge import (
 #: Every table the concept visibility scan reads. The RBAC pair is not optional:
 #: the visibility clause JOINs them, so a REVOKED GRANT must evict the cached
 #: result rather than linger until the TTL. Declaring only the data table would
-#: turn a staleness window into an authorization one.
-_CONCEPT_SCAN_DEPENDS_ON = ("concepts", "datasource_tables", "role_assignments", "group_members")
+#: turn a staleness window into an authorization one. ``datasources`` is read by the
+#: KNW-77 origin-link subquery of a datasource-scoped scan; the hub writes that link
+#: through ``CapabilitySourceCollection.save_entity`` with its NATS client, which
+#: broadcasts on ``datasources``, so linking or unlinking a datasource evicts the
+#: widened (or narrowed) knowledge set instead of serving it until the TTL.
+_CONCEPT_SCAN_DEPENDS_ON = ("concepts", "datasource_tables", "datasources", "role_assignments", "group_members")
 
 #: Same, for the entry scan.
-_ENTRY_SCAN_DEPENDS_ON = ("playbook_entries", "role_assignments", "group_members")
+_ENTRY_SCAN_DEPENDS_ON = ("playbook_entries", "datasources", "role_assignments", "group_members")
 
 
 def _scan_cache_for(collection: Any) -> Any:
@@ -409,15 +413,14 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
             now = monotonic()
             cached = None if cache is None else cache.get(cache_key, now_monotonic=now)
             if cached is None:
+                # the token is taken BEFORE the read: a write evicted while the read is in
+                # flight makes put() refuse, instead of caching the pre-write rows where
+                # that eviction can no longer reach them.
+                token = None if cache is None else cache.begin_read(_ENTRY_SCAN_DEPENDS_ON)
                 fetched = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
                 cached = [dict(row) for row in fetched]
-                if cache is not None:
-                    cache.put(
-                        cache_key,
-                        cached,
-                        depends_on=_ENTRY_SCAN_DEPENDS_ON,
-                        now_monotonic=now,
-                    )
+                if cache is not None and token is not None:
+                    cache.put(cache_key, cached, token=token, now_monotonic=now)
             for row in cached:
                 result.append(_row_to_snapshot(row))
         return result
@@ -653,15 +656,14 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
             now = monotonic()
             cached = None if cache is None else cache.get(cache_key, now_monotonic=now)
             if cached is None:
+                # the token is taken BEFORE the read: a write evicted while the read is in
+                # flight makes put() refuse, instead of caching the pre-write rows where
+                # that eviction can no longer reach them.
+                token = None if cache is None else cache.begin_read(_CONCEPT_SCAN_DEPENDS_ON)
                 fetched = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
                 cached = [dict(row) for row in fetched]
-                if cache is not None:
-                    cache.put(
-                        cache_key,
-                        cached,
-                        depends_on=_CONCEPT_SCAN_DEPENDS_ON,
-                        now_monotonic=now,
-                    )
+                if cache is not None and token is not None:
+                    cache.put(cache_key, cached, token=token, now_monotonic=now)
             for row in cached:
                 result.append(_row_to_concept_snapshot(row))
         return result

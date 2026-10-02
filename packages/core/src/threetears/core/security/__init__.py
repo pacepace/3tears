@@ -15,10 +15,16 @@ public surface:
   :class:`IdentityKeyNotFoundError` (the recoverable kid-not-in-cache signal a verifier reacts to
   with a reactive JWKS refresh) /
   :func:`sign_identity_token` / :func:`verify_identity_token` / :func:`build_jwks` /
-  :func:`generate_signing_keypair` — Hub-issued EdDSA-signed JWS asserting a VERIFIED caller
+  :func:`generate_signing_keypair` / :data:`IDENTITY_REFUSED` (the one code every door answers a
+  forwarded identity that does not verify) — Hub-issued EdDSA-signed JWS asserting a VERIFIED caller
   identity, verified against the Hub JWKS before RBAC (platform-auth Option B).
   :class:`~threetears.core.security.jwks_provider.CachedHubJwksProvider` fetches + caches that
   JWKS over NATS so a verifier's ``jwks_provider()`` returns it with no hot-path IO.
+- proxy assertions (``proxy_assertion``): :func:`mint_proxy_assertion` /
+  :func:`verify_proxy_assertion` / :data:`TOOL_PROXY_ASSERTION_UNVERIFIED` (the code a tool pod
+  answers a call that could not show it came through the registry for this body and this pod) /
+  :data:`TOOL_POP_LEDGER_UNAVAILABLE` (the code the registry and a tool pod both answer when the
+  replay ledger their single-use check depends on cannot be reached).
 """
 
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
@@ -28,6 +34,8 @@ from threetears.core.security.identity_minter import (
     static_token_provider,
 )
 from threetears.core.security.identity_token import (
+    IDENTITY_REFUSED,
+    IDENTITY_REFUSED_MESSAGE,
     PLATFORM_CUSTOMER_SENTINEL,
     IdentityClaims,
     IdentityKeyNotFoundError,
@@ -44,6 +52,10 @@ from threetears.core.security.identity_token import (
 from threetears.core.security.jwks_provider import CachedHubJwksProvider
 from threetears.core.security.pop import access_token_hash, make_pop_proof, verify_pop_proof
 from threetears.core.security.proxy_assertion import (
+    TOOL_POP_LEDGER_UNAVAILABLE,
+    TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE,
+    TOOL_PROXY_ASSERTION_UNVERIFIED,
+    TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
     ProxyAssertionClaims,
     mint_proxy_assertion,
     verify_proxy_assertion,
@@ -83,7 +95,13 @@ __all__ = [
     "seal",
     # identity tokens
     "DEFAULT_IDENTITY_TTL_SECONDS",
+    "IDENTITY_REFUSED",
+    "IDENTITY_REFUSED_MESSAGE",
     "PLATFORM_CUSTOMER_SENTINEL",
+    "TOOL_POP_LEDGER_UNAVAILABLE",
+    "TOOL_POP_LEDGER_UNAVAILABLE_MESSAGE",
+    "TOOL_PROXY_ASSERTION_UNVERIFIED",
+    "TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE",
     "CachedHubJwksProvider",
     "IdentityClaims",
     "IdentityKeyNotFoundError",

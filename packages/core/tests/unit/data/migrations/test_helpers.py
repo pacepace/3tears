@@ -41,7 +41,7 @@ from threetears.core.data.migrations.helpers import (
     replace_primary_key,
 )
 
-from ._fake_store import FakeDataStore
+from .fake_store import FakeDataStore
 
 __all__: list[str] = []
 

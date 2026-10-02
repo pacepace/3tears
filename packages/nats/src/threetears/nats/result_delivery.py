@@ -52,14 +52,11 @@ __all__ = [
 
 #: the longest a call may run and still be answered on the request/reply inbox.
 #:
-#: A responder that owes a synchronous reply defers its scheduled re-auth until the reply is out
-#: (``ToolServer.drain_before_reauth``), and that deferral is bounded -- waiting past the JWT's real
-#: deadline trades a lost reply for a dead connection, which is strictly worse. This is that bound, so
-#: a call the caller CHOSE to run synchronously always fits inside the window the responder is willing
-#: to hold the connection open for. It must stay <= the renewal drain grace
-#: (:data:`threetears.nats.credential_renewal.REAUTH_BUFFER_SECONDS`); a test in the agent-tools
-#: package holds the two in that relation, since the drain that depends on it lives there and
-#: nothing else relates them.
+#: NATS lets only the connection that RECEIVED a request answer it, so a responder's credential
+#: renewal keeps the replaced connection open for the replies it still owes
+#: (:meth:`threetears.nats.NatsClient.renew_connection`), for as long as the responder declares its
+#: longest reply may take -- and a pod that answers tool calls declares this. A call past it is
+#: answered on the pod's durable result subject instead, which no connection change can strand.
 SYNC_REPLY_BUDGET_SECONDS = 30.0
 
 #: how long a caller waits for the responder to ACCEPT an asynchronous call.

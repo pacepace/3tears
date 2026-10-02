@@ -17,7 +17,7 @@ import pytest
 from threetears.nats import IncomingMessage
 from threetears.observe import InflightRequestsGauge
 
-from ._dispatch_auth import make_proxy
+from .dispatch_auth import make_proxy
 
 
 def _malformed_msg() -> IncomingMessage:

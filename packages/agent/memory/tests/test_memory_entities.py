@@ -117,7 +117,8 @@ class TestMemoryEntityWithCollection:
         coll, cache = mock_collection
         data = _sample_data()
 
-        entity = MemoryEntity(data, is_new=False, collection=coll)
+        # a new entity lives in L1, so its setters write through.
+        entity = MemoryEntity(data, is_new=True, collection=coll)
 
         entity.content = "Updated content"
         assert entity.content == "Updated content"

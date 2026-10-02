@@ -1,8 +1,9 @@
 """Unit tests for Dream consolidation (A5, v0.15.0).
 
-Covers the pure clustering + modal-type helpers exhaustively, and the
-:class:`DreamService.run_consolidation` orchestration against mocked
-Collections + a stubbed reflector / embedder (no database). The live
+Covers the clustering + modal-type rules exhaustively and the
+:class:`DreamService.run_consolidation` orchestration, all through
+``run_consolidation`` against mocked Collections + a stubbed reflector /
+embedder (no database). The live
 end-to-end merge is in ``tests/integration/test_dream_consolidation.py``.
 """
 
@@ -18,8 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from threetears.agent.memory.dream import (
     ConsolidationResult,
     DreamService,
-    _cluster_by_cosine,
-    _modal_type,
 )
 from threetears.agent.memory.events import MemoryConsolidatedEvent
 from threetears.agent.memory.types import MemoryConfig
@@ -134,49 +133,74 @@ def _make_service(
     return service, memories, edges
 
 
-# -- Pure helpers -------------------------------------------------------------
+# -- Clustering + modal type, read off what a pass merged -----------------------
+
+
+async def _merged_groups(
+    embeddings: list[list[float]],
+    *,
+    threshold: float,
+) -> list[list[int]]:
+    """run one pass over candidates with ``embeddings``; return the merged groups.
+
+    each group is the sorted candidate indices one gist superseded, which is the
+    clustering made observable: only a cluster of at least the minimum size
+    (two) is merged, so a singleton never appears.
+    """
+    candidates = [_candidate(content=f"m{i}", embedding=e) for i, e in enumerate(embeddings)]
+    index_of = {c["memory_id"]: i for i, c in enumerate(candidates)}
+    service, memories, _edges = _make_service(
+        candidates=candidates,
+        config=MemoryConfig(consolidation_cluster_threshold=threshold),
+    )
+    await service.run_consolidation(_AID, customer_id=_CUID, user_id=_UID)
+    return sorted(
+        sorted(index_of[m] for m in call.kwargs["source_memory_ids"])
+        for call in memories.mark_superseded.call_args_list
+    )
 
 
 class TestClusterByCosine:
-    def test_near_duplicates_group_dissimilar_separate(self) -> None:
-        # two near-identical vectors + one orthogonal.
-        embeddings = [[1.0, 0.0], [0.99, 0.01], [0.0, 1.0]]
-        clusters = _cluster_by_cosine(embeddings, threshold=0.85)
-        sizes = sorted(len(c) for c in clusters)
-        assert sizes == [1, 2]
-        # the pair is the near-duplicate one (indices 0 and 1).
-        pair = next(c for c in clusters if len(c) == 2)
-        assert sorted(pair) == [0, 1]
+    async def test_near_duplicates_group_dissimilar_separate(self) -> None:
+        # two near-identical vectors + one orthogonal: only the pair merges.
+        assert await _merged_groups([[1.0, 0.0], [0.99, 0.01], [0.0, 1.0]], threshold=0.85) == [[0, 1]]
 
-    def test_transitive_chain_forms_one_cluster(self) -> None:
+    async def test_transitive_chain_forms_one_cluster(self) -> None:
         # a~b, b~c, but a not directly ~c: union-find still unions all three.
-        embeddings = [[1.0, 0.0], [0.9, 0.44], [0.7, 0.71]]
-        clusters = _cluster_by_cosine(embeddings, threshold=0.80)
-        assert len(clusters) == 1
-        assert sorted(clusters[0]) == [0, 1, 2]
+        assert await _merged_groups([[1.0, 0.0], [0.9, 0.44], [0.7, 0.71]], threshold=0.80) == [[0, 1, 2]]
 
-    def test_all_singletons_when_below_threshold(self) -> None:
-        embeddings = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]
-        clusters = _cluster_by_cosine(embeddings, threshold=0.85)
-        assert sorted(len(c) for c in clusters) == [1, 1, 1]
+    async def test_all_singletons_when_below_threshold(self) -> None:
+        assert await _merged_groups([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]], threshold=0.85) == []
 
-    def test_zero_vector_never_unions(self) -> None:
-        embeddings = [[0.0, 0.0], [1.0, 0.0], [1.0, 0.0]]
-        clusters = _cluster_by_cosine(embeddings, threshold=0.85)
-        # the two identical non-zero vectors group; the zero vector is alone.
-        assert sorted(len(c) for c in clusters) == [1, 2]
+    async def test_zero_vector_never_unions(self) -> None:
+        # the two identical non-zero vectors group; the zero vector stays alone.
+        assert await _merged_groups([[0.0, 0.0], [1.0, 0.0], [1.0, 0.0]], threshold=0.85) == [[1, 2]]
 
-    def test_empty(self) -> None:
-        assert _cluster_by_cosine([], threshold=0.85) == []
+    async def test_empty(self) -> None:
+        service, memories, _edges = _make_service(candidates=[])
+        result = await service.run_consolidation(_AID, customer_id=_CUID, user_id=_UID)
+        assert result.memories_considered == 0
+        assert result.clusters_formed == 0
+        memories.mark_superseded.assert_not_called()
+
+
+async def _gist_type(types: list[str]) -> str:
+    """the ``type_memory`` the gist of one cluster of ``types`` is minted with."""
+    candidates = [_candidate(content=f"m{i}", embedding=[1.0, 0.0], type_memory=t) for i, t in enumerate(types)]
+    service, memories, _edges = _make_service(candidates=candidates)
+    await service.run_consolidation(_AID, customer_id=_CUID, user_id=_UID)
+    gist_type = memories.create.call_args.args[0]["type_memory"]
+    assert isinstance(gist_type, str)
+    return gist_type
 
 
 class TestModalType:
-    def test_majority_wins(self) -> None:
-        assert _modal_type(["fact", "fact", "preference"]) == "fact"
+    async def test_majority_wins(self) -> None:
+        assert await _gist_type(["fact", "fact", "preference"]) == "fact"
 
-    def test_tie_breaks_by_declaration_order(self) -> None:
+    async def test_tie_breaks_by_declaration_order(self) -> None:
         # preference is declared before fact in MemoryType -> wins the tie.
-        assert _modal_type(["fact", "preference"]) == "preference"
+        assert await _gist_type(["fact", "preference"]) == "preference"
 
 
 # -- Orchestration ------------------------------------------------------------

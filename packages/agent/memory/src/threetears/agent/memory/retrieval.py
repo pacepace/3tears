@@ -52,66 +52,6 @@ __all__ = [
 ]
 
 
-def _recency_decay(created: datetime, half_life_hours: float) -> float:
-    """Exponential recency decay (1.0 = just created, ~0.37 at half-life).
-
-    :param created: creation timestamp; must be timezone-aware UTC
-        (every datetime in the platform is aware-UTC after
-        collections-task-05; passing naive raises TypeError on the
-        ``now - created`` subtract)
-    :ptype created: datetime
-    :param half_life_hours: half-life in hours
-    :ptype half_life_hours: float
-    :return: decay factor in (0, 1]
-    :rtype: float
-    """
-    now = datetime.now(timezone.utc)
-    hours_ago = max((now - created).total_seconds() / 3600, 0.0)
-    return math.exp(-hours_ago / half_life_hours)
-
-
-def _build_fts_query(text: str, min_len: int = 3, max_len: int = 500) -> str | None:
-    """Prepare text for ``websearch_to_tsquery``. Returns None if too short.
-
-    :param text: raw text
-    :ptype text: str
-    :param min_len: minimum length to survive
-    :ptype min_len: int
-    :param max_len: truncation cap
-    :ptype max_len: int
-    :return: cleaned text or ``None``
-    :rtype: str | None
-    """
-    text = text.strip()
-    if len(text) < min_len:
-        return None
-    return text[:max_len]
-
-
-def _normalize_fts_scores(
-    candidates: list[dict[str, Any]],
-    key: str = "fts_rank",
-) -> None:
-    """Min-max normalize FTS ranks in-place to [0, 1].
-
-    :param candidates: candidate rows (mutated)
-    :ptype candidates: list[dict[str, Any]]
-    :param key: score column
-    :ptype key: str
-    :return: nothing
-    :rtype: None
-    """
-    scores = [c.get(key, 0.0) for c in candidates]
-    lo, hi = min(scores), max(scores)
-    span = hi - lo
-    for c in candidates:
-        raw = c.get(key, 0.0)
-        if span > 0:
-            c[key] = (raw - lo) / span
-        elif hi > 0:
-            c[key] = 1.0
-
-
 def _cosine_sim(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors.
 

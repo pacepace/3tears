@@ -21,6 +21,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from threetears.core.serialization import json_datetime
+
 __all__ = [
     "PinnedWorkspace",
     "clear_pin",
@@ -83,7 +85,7 @@ async def set_pin(
     date_pinned = datetime.now(UTC)
     metadata = {
         "workspace_name": workspace_name,
-        "date_pinned": date_pinned.isoformat(),
+        "date_pinned": json_datetime(date_pinned, field="date_pinned"),
         "pinned_by_actor_id": str(pinned_by_actor_id),  # convert at border: persisted context-item metadata field
     }
     await context.save_item_by_type_and_key(

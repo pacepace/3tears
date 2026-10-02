@@ -7,10 +7,11 @@ policy applies:
 - seed-on-enter: :func:`_seed_l3_from_disk` via the public :func:`bind`
   context manager. exercises the noop-when-populated gate for L3_WINS
   and the full create/update/delete mirror for DISK_WINS.
-- during-window live watcher: :func:`_handle_watch_batch` driven
-  directly with synthesized :func:`watchfiles.awatch` batches. the
-  production :func:`_watch_loop` forwards awatch's output into the
-  same helper so direct calls are faithful to the runtime path.
+- during-window live watcher: synthesized :func:`watchfiles.awatch`
+  batches delivered to an open :func:`bind` window through a scripted
+  change source (``bind(watch_changes=...)``), so the window's own
+  watcher loop and batch handler apply them exactly as they apply the
+  operating system's events.
 
 the fakes mirror the style of :mod:`test_bind_import_from_disk` -- a
 live-view ``find_by_workspace`` keyed to the fake connection's
@@ -21,7 +22,8 @@ seed transaction just committed.
 from __future__ import annotations
 
 import hashlib
-from collections import deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -32,17 +34,14 @@ import pytest
 from watchfiles import Change
 
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
-from threetears.agent.workspace.materialize import (
-    _handle_watch_batch,
-    bind,
-)
-from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+from threetears.agent.workspace.materialize import bind
+from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceEntity,
     FakeWorkspaceFile,
@@ -52,6 +51,7 @@ from packages.agent.workspace.tests._helpers.workspace_shims import (
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
 )
+from packages.agent.workspace.tests.helpers.scripted_watch import ScriptedWatch
 
 
 def _sha(content: bytes) -> str:
@@ -661,41 +661,61 @@ async def test_disk_wins_seed_always_imports_from_disk(
 # ---------------------------------------------------------------------------
 
 
-async def _call_watch_batch(
+@asynccontextmanager
+async def _window(
     h: dict[str, Any],
     *,
-    batch: set[tuple[Change, str]],
     on_conflict: BindConflictPolicy,
-    just_wrote: deque[tuple[str, str]] | None = None,
-) -> list[str]:
-    """drive :func:`_handle_watch_batch` directly against the harness.
+    watch: ScriptedWatch,
+) -> AsyncIterator[Path]:
+    """an open bind window over the harness whose watcher reads ``watch``.
 
     :param h: harness dict
     :ptype h: dict[str, Any]
-    :param batch: synthesized awatch event set
-    :ptype batch: set[tuple[Change, str]]
-    :param on_conflict: policy to pass through
+    :param on_conflict: policy to pass into :func:`bind`
     :ptype on_conflict: BindConflictPolicy
-    :param just_wrote: bounded round-trip guard deque
-    :ptype just_wrote: deque[tuple[str, str]] | None
-    :return: list of mutated relative paths
-    :rtype: list[str]
+    :param watch: the scripted change source the window's watcher drives
+    :ptype watch: ScriptedWatch
+    :return: the bound disk root
+    :rtype: AsyncIterator[Path]
     """
-    disk_root = h["bind_root"] / h["workspace"].name
-    disk_root.mkdir(parents=True, exist_ok=True)
-    if just_wrote is None:
-        just_wrote = deque(maxlen=256)
-    return await _handle_watch_batch(
-        batch=batch,
-        workspace=h["workspace"],
-        disk_root=disk_root,
-        resolved_root=disk_root.resolve(),
+    async with bind(
+        agent_id=h["agent_id"],
+        workspace_id=h["workspace_id"],
+        sandbox=h["sandbox"],
+        lease=h["lease"],
+        workspace_collection=h["workspace_coll"],
+        workspace_file_collection=h["file_coll"],
+        workspace_file_version_collection=h["version_coll"],
         db_pool=h["pool"],
         actor_id=h["actor_id"],
         correlation_id=h["correlation_id"],
-        just_wrote=just_wrote,
         on_conflict=on_conflict,
-    )
+        watch_changes=watch,
+    ) as disk_root:
+        yield disk_root
+
+
+async def _deliver(
+    h: dict[str, Any],
+    watch: ScriptedWatch,
+    batch: set[tuple[Change, str]],
+) -> list[tuple[str, tuple[Any, ...]]]:
+    """deliver ``batch`` to the open window and return the journal rows it wrote.
+
+    :param h: harness dict
+    :ptype h: dict[str, Any]
+    :param watch: the window's scripted change source
+    :ptype watch: ScriptedWatch
+    :param batch: synthesized awatch event set
+    :ptype batch: set[tuple[Change, str]]
+    :return: the ``workspace_file_versions`` inserts the watcher made for the batch
+    :rtype: list[tuple[str, tuple[Any, ...]]]
+    """
+    executions = h["pool"].conn.executions
+    before = len(executions)
+    await watch.deliver(batch)
+    return [e for e in executions[before:] if "INSERT INTO workspace_file_versions" in e[0]]
 
 
 @pytest.mark.asyncio
@@ -712,20 +732,16 @@ async def test_l3_wins_watch_skips_modify_events(tmp_path: Path) -> None:
         tmp_path,
         initial_files=[_FakeFile("m.txt", content, _sha(content), 1)],
     )
-    disk_root = h["bind_root"] / h["workspace"].name
-    disk_root.mkdir(parents=True, exist_ok=True)
-    target = disk_root / "m.txt"
-    target.write_bytes(b"externally-rewritten")
+    watch = ScriptedWatch()
+    async with _window(h, on_conflict=BindConflictPolicy.L3_WINS, watch=watch) as disk_root:
+        target = disk_root / "m.txt"
+        target.write_bytes(b"externally-rewritten")
 
-    changed = await _call_watch_batch(
-        h,
-        batch={(Change.modified, str(target))},
-        on_conflict=BindConflictPolicy.L3_WINS,
-    )
-    assert changed == []
-    # no journal insert from the watcher.
-    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
-    assert journal == []
+        journal = await _deliver(h, watch, {(Change.modified, str(target))})
+
+        # no journal insert from the watcher, and L3 still holds its own content.
+        assert journal == []
+        assert h["pool"].conn.head_by_path["m.txt"]["content"] == content
 
 
 @pytest.mark.asyncio
@@ -740,21 +756,17 @@ async def test_l3_wins_watch_imports_added_for_new_paths(
     :rtype: None
     """
     h = _harness(tmp_path, initial_files=[])
-    disk_root = h["bind_root"] / h["workspace"].name
-    disk_root.mkdir(parents=True, exist_ok=True)
-    target = disk_root / "fresh.txt"
-    target.write_bytes(b"brand-new")
+    watch = ScriptedWatch()
+    async with _window(h, on_conflict=BindConflictPolicy.L3_WINS, watch=watch) as disk_root:
+        target = disk_root / "fresh.txt"
+        target.write_bytes(b"brand-new")
 
-    changed = await _call_watch_batch(
-        h,
-        batch={(Change.added, str(target))},
-        on_conflict=BindConflictPolicy.L3_WINS,
-    )
-    assert changed == ["fresh.txt"]
-    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
-    assert len(journal) == 1
-    assert journal[0][1][2] == "fresh.txt"
-    assert journal[0][1][6] == "create"
+        journal = await _deliver(h, watch, {(Change.added, str(target))})
+
+        assert len(journal) == 1
+        assert journal[0][1][2] == "fresh.txt"
+        assert journal[0][1][6] == "create"
+        assert h["pool"].conn.head_by_path["fresh.txt"]["content"] == b"brand-new"
 
 
 @pytest.mark.asyncio
@@ -777,19 +789,15 @@ async def test_l3_wins_watch_skips_added_for_existing_paths(
         tmp_path,
         initial_files=[_FakeFile("e.txt", l3_content, _sha(l3_content), 1)],
     )
-    disk_root = h["bind_root"] / h["workspace"].name
-    disk_root.mkdir(parents=True, exist_ok=True)
-    target = disk_root / "e.txt"
-    target.write_bytes(b"external-overwrite")
+    watch = ScriptedWatch()
+    async with _window(h, on_conflict=BindConflictPolicy.L3_WINS, watch=watch) as disk_root:
+        target = disk_root / "e.txt"
+        target.write_bytes(b"external-overwrite")
 
-    changed = await _call_watch_batch(
-        h,
-        batch={(Change.added, str(target))},
-        on_conflict=BindConflictPolicy.L3_WINS,
-    )
-    assert changed == []
-    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
-    assert journal == []
+        journal = await _deliver(h, watch, {(Change.added, str(target))})
+
+        assert journal == []
+        assert h["pool"].conn.head_by_path["e.txt"]["content"] == l3_content
 
 
 @pytest.mark.asyncio
@@ -806,22 +814,16 @@ async def test_l3_wins_watch_skips_deleted_events(tmp_path: Path) -> None:
         tmp_path,
         initial_files=[_FakeFile("d.txt", content, _sha(content), 1)],
     )
-    disk_root = h["bind_root"] / h["workspace"].name
-    disk_root.mkdir(parents=True, exist_ok=True)
-    target = disk_root / "d.txt"
-    target.write_bytes(content)
-    target.unlink()
+    watch = ScriptedWatch()
+    async with _window(h, on_conflict=BindConflictPolicy.L3_WINS, watch=watch) as disk_root:
+        target = disk_root / "d.txt"
+        target.unlink()
 
-    changed = await _call_watch_batch(
-        h,
-        batch={(Change.deleted, str(target))},
-        on_conflict=BindConflictPolicy.L3_WINS,
-    )
-    assert changed == []
-    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
-    assert journal == []
-    # head row still present: L3 is authoritative.
-    assert "d.txt" in h["pool"].conn.head_by_path
+        journal = await _deliver(h, watch, {(Change.deleted, str(target))})
+
+        assert journal == []
+        # head row still present: L3 is authoritative.
+        assert "d.txt" in h["pool"].conn.head_by_path
 
 
 @pytest.mark.asyncio
@@ -846,30 +848,34 @@ async def test_disk_wins_watch_imports_all(tmp_path: Path) -> None:
             _FakeFile("b.txt", content_b, _sha(content_b), 1),
         ],
     )
+    # disk matches L3 when the window opens, so the DISK_WINS seed has nothing to mirror.
     disk_root = h["bind_root"] / h["workspace"].name
     disk_root.mkdir(parents=True, exist_ok=True)
-    # modify a.txt on disk.
-    target_a = disk_root / "a.txt"
-    target_a.write_bytes(b"v2")
-    # delete b.txt on disk.
-    target_b = disk_root / "b.txt"
-    target_b.write_bytes(content_b)
-    target_b.unlink()
+    (disk_root / "a.txt").write_bytes(content_a)
+    (disk_root / "b.txt").write_bytes(content_b)
+    watch = ScriptedWatch()
+    async with _window(h, on_conflict=BindConflictPolicy.DISK_WINS, watch=watch) as bound:
+        # modify a.txt on disk.
+        target_a = bound / "a.txt"
+        target_a.write_bytes(b"v2")
+        # delete b.txt on disk.
+        target_b = bound / "b.txt"
+        target_b.unlink()
 
-    changed = await _call_watch_batch(
-        h,
-        batch={
-            (Change.modified, str(target_a)),
-            (Change.deleted, str(target_b)),
-        },
-        on_conflict=BindConflictPolicy.DISK_WINS,
-    )
-    assert set(changed) == {"a.txt", "b.txt"}
-    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
-    update_rows = [row for row in journal if row[1][6] == "update"]
-    delete_rows = [row for row in journal if row[1][6] == "delete"]
-    assert len(update_rows) == 1 and update_rows[0][1][2] == "a.txt"
-    assert len(delete_rows) == 1 and delete_rows[0][1][2] == "b.txt"
-    # head_by_path reflects: a.txt updated, b.txt removed.
-    assert h["pool"].conn.head_by_path["a.txt"]["sha256"] == _sha(b"v2")
-    assert "b.txt" not in h["pool"].conn.head_by_path
+        journal = await _deliver(
+            h,
+            watch,
+            {
+                (Change.modified, str(target_a)),
+                (Change.deleted, str(target_b)),
+            },
+        )
+
+        assert {row[1][2] for row in journal} == {"a.txt", "b.txt"}
+        update_rows = [row for row in journal if row[1][6] == "update"]
+        delete_rows = [row for row in journal if row[1][6] == "delete"]
+        assert len(update_rows) == 1 and update_rows[0][1][2] == "a.txt"
+        assert len(delete_rows) == 1 and delete_rows[0][1][2] == "b.txt"
+        # head_by_path reflects: a.txt updated, b.txt removed.
+        assert h["pool"].conn.head_by_path["a.txt"]["sha256"] == _sha(b"v2")
+        assert "b.txt" not in h["pool"].conn.head_by_path

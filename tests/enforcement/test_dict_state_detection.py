@@ -78,6 +78,20 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scan_cache.py",
+        class_name="ScanCache",
+        attr_name="_evictions",
+        rationale=(
+            "per-table count of THIS process's scan-cache evictions, which a ScanReadToken is "
+            "compared against to refuse a result read before an eviction and stored after it. "
+            "it orders reads in this process against evictions in this process -- every pod's "
+            "writes reach it through drop_for_table, locally or via the listener -- so a shared "
+            "copy would count evictions of caches that are not this one. keyed by table name, "
+            "bounded by the tables the pod's scans depend on, and a restart correctly starts "
+            "from zero with an empty cache and no read in flight"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/utils/yugabyte_pool_recycler.py",
         class_name="YugabytePoolRecycler",
         attr_name="_expired_at_by_trigger",
@@ -100,6 +114,18 @@ _ALLOWLIST = (
             "cross-POD single-flight is a separate mechanism and does use NATS "
             "(nats_distributed_lock); this map is only the in-process half, and entries are "
             "dropped as soon as nobody holds or awaits a key"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/base.py",
+        class_name="_L1Fence",
+        attr_name="_keys",
+        rationale=(
+            "the reads and writes of each key in flight in THIS process, ordering this process's "
+            "own L1 writes against each other: L1 is per-process, so the state ordering writes to "
+            "it is too, and a shared or durable copy would order writes to a cache no other pod "
+            "has. the L2 revision is the cross-pod half of the same fence. an entry lives only "
+            "while an operation on its key is in flight and is dropped when the last one ends"
         ),
     ),
     DictStateAllowlistEntry(
@@ -128,6 +154,18 @@ _ALLOWLIST = (
         class_name="PackageMigrations",
         attr_name="_versions",
         rationale=("static config, migration callables registered once at startup"),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/data/migrations/registry.py",
+        class_name="PackageMigrations",
+        attr_name="_descriptions",
+        rationale=(
+            "static config written in lockstep with _versions: the ledger description of each "
+            "registered version, fixed by the code at import time (a function __name__ or a "
+            "step's explicit text). Every pod derives the same map from the same code, so there "
+            "is nothing for pods to disagree about and nothing a restart can lose; the durable "
+            "copy is already the _schema_migrations.description column the runner compares it to"
+        ),
     ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/data/migrations/registry.py",
@@ -222,6 +260,18 @@ _ALLOWLIST = (
             "the revision of each deleted key's marker -- the other half of the double's storage "
             "beside _entries, since a real delete publishes a message whose revision a fenced "
             "write depends on. Same test-double rationale as FakeKvBucket._entries above"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeKvBucket",
+        attr_name="_key_watchers",
+        rationale=(
+            "the asyncio queues of each open watch_key iterator, keyed by the key it watches, "
+            "standing in for the server-side consumers a real watch creates. The values are live "
+            "in-process queues bound to one event loop, which no backend can serialise, and they "
+            "live exactly as long as the iterator that registered them -- same test-double "
+            "rationale as FakeKvBucket._entries above"
         ),
     ),
     DictStateAllowlistEntry(

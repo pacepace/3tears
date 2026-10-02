@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
 
 from threetears.core.backends.sql import SqlL3Backend
-from threetears.core.cache.base import _CACHED_AT_COLUMN
+from threetears.core.cache.base import CACHED_AT_COLUMN
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
@@ -154,10 +154,9 @@ def l1_backend() -> SQLiteBackend:
     b = SQLiteBackend(db_name=f"test_coll_{uuid.uuid4().hex[:8]}")
     b.initialize(_make_metadata())
     yield b
-    from threetears.core._bridge import drain, shutdown
+    from threetears.core.testing.bridge import drain_and_shutdown_bridge
 
-    drain()
-    shutdown()
+    drain_and_shutdown_bridge()
     b.reset()
 
 
@@ -886,6 +885,17 @@ class TestInvalidateCache:
         assert f"{_TEST_SCOPE}.test_entities.e1" not in nats.store
 
 
+class _RawPool:
+    """a raw asyncpg-shaped pool reduced to one attribute the wrapper does not define.
+
+    :class:`SqlL3Backend` forwards every attribute it lacks to the pool it wraps -- the raw-SQL
+    escape hatch -- so reading ``copy_records_to_table`` through the wrapper names the pool it wraps.
+    """
+
+    def __init__(self) -> None:
+        self.copy_records_to_table = object()
+
+
 class TestL3PoolAccessor:
     """verify the public ``l3_pool`` attribute exposes the pool the
     registry handed the collection at construction time.
@@ -908,20 +918,21 @@ class TestL3PoolAccessor:
 
     def test_l3_pool_returns_registry_pool_by_default(self, config_always: DefaultCoreConfig) -> None:
         """collection.l3_pool is the SAME backend the registry resolves, wrapping the configured pool."""
-        sentinel_pool = object()
+        sentinel_pool = _RawPool()
         reg = CollectionRegistry()
         reg.configure(l3_pool=sentinel_pool)
         coll = StubCollection(reg, config_always)
         # identity-stable: the collection sees the exact backend the registry resolves
         assert coll.l3_pool is reg.get_l3_pool("test_entities")
-        # the raw pool the collection hands the hub's ad-hoc-SQL seam is the configured one
+        # the raw pool the collection hands the hub's ad-hoc-SQL seam is the configured one:
+        # the wrapper forwards what it does not define to it
         assert isinstance(coll.l3_pool, SqlL3Backend)
-        assert coll.l3_pool._pool is sentinel_pool  # noqa: SLF001 -- introspect the wrapper's raw pool
+        assert coll.l3_pool.copy_records_to_table is sentinel_pool.copy_records_to_table
 
     def test_l3_pool_respects_per_collection_override(self, config_always: DefaultCoreConfig) -> None:
         """per-collection pool override wins over the registry default."""
-        default_pool = object()
-        override_pool = object()
+        default_pool = _RawPool()
+        override_pool = _RawPool()
         reg = CollectionRegistry()
         reg.configure(l3_pool=default_pool)
         # override must be registered BEFORE BaseCollection.__init__ reads it;
@@ -930,7 +941,7 @@ class TestL3PoolAccessor:
         reg.bind_table("test_entities", l3_pool=override_pool)
         coll = StubCollection(reg, config_always)
         assert isinstance(coll.l3_pool, SqlL3Backend)
-        assert coll.l3_pool._pool is override_pool  # noqa: SLF001 -- introspect the wrapper's raw pool
+        assert coll.l3_pool.copy_records_to_table is override_pool.copy_records_to_table
 
     def test_l3_pool_none_when_registry_has_no_pool(self, config_always: DefaultCoreConfig) -> None:
         """collection.l3_pool is None when the registry has no pool.
@@ -1455,7 +1466,7 @@ class TestCacheAgeStampOnLowerTierReads:
         """Read the stamp straight from SQLite, since every read strips it."""
         conn = backend.get_connection()
         row = conn.execute(
-            f'SELECT "{_CACHED_AT_COLUMN}" FROM test_entities WHERE id = ?',
+            f'SELECT "{CACHED_AT_COLUMN}" FROM test_entities WHERE id = ?',
             (entity_id,),
         ).fetchone()
         return None if row is None else row[0]
@@ -1525,15 +1536,15 @@ class TestCacheAgeStampOnLowerTierReads:
 
         entity = await coll.get("p4")
         assert entity is not None
-        assert _CACHED_AT_COLUMN not in entity.to_dict()
+        assert CACHED_AT_COLUMN not in entity.to_dict()
 
         row = coll.get_row_sync("p4")
         assert row is not None
-        assert _CACHED_AT_COLUMN not in row
+        assert CACHED_AT_COLUMN not in row
 
         ensured = await coll.ensure("p4")
         assert ensured is not None
-        assert _CACHED_AT_COLUMN not in ensured
+        assert CACHED_AT_COLUMN not in ensured
 
 
 class TestL1MaxAgePolicy:
@@ -1600,7 +1611,7 @@ class TestL1MaxAgePolicy:
             {"id": "m1", "name": "PeerWrote", "score": 2}
         ).encode()
         conn = l1_backend.get_connection()
-        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m1"))
+        conn.execute(f'UPDATE test_entities SET "{CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m1"))
 
         entity = await coll.get("m1")
 
@@ -1629,7 +1640,7 @@ class TestL1MaxAgePolicy:
             {"id": "m2", "name": "PeerWrote", "score": 2}
         ).encode()
         conn = l1_backend.get_connection()
-        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m2"))
+        conn.execute(f'UPDATE test_entities SET "{CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m2"))
 
         entity = await coll.get("m2")
 
@@ -1649,7 +1660,7 @@ class TestExpiryDoesNotBreakNonRepairingReads:
     @staticmethod
     def _age_out(backend: SQLiteBackend, entity_id: str) -> None:
         conn = backend.get_connection()
-        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
+        conn.execute(f'UPDATE test_entities SET "{CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
 
     @pytest.mark.asyncio
     async def test_a_field_write_survives_an_aged_out_row(
@@ -1753,8 +1764,8 @@ class TestAnOlderL1BackendStillWorks:
     ) -> None:
         backend = self._PreExpiryBackend()
         backend.rows["old1"] = {"id": "old1", "name": "kept"}
+        registry.bind_table("test_entities", l1_backend=backend)
         coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
-        coll._l1 = backend  # noqa: SLF001 - substituting the tier under test
 
         row = coll.get_row_sync("old1")
 
@@ -1774,8 +1785,8 @@ class TestAnOlderL1BackendStillWorks:
         registry.set_l1_max_age("test_entities", 30.0)
         backend = self._PreExpiryBackend()
         backend.rows["old2"] = {"id": "old2", "name": "kept"}
+        registry.bind_table("test_entities", l1_backend=backend)
         coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
-        coll._l1 = backend  # noqa: SLF001 - substituting the tier under test
         coll.l3_pool = object()
 
         assert coll.get_row_sync("old2") is not None
@@ -1793,8 +1804,8 @@ class TestAnOlderL1BackendStillWorks:
         registry.set_l1_max_age("test_entities", 30.0)
         backend = self._PreExpiryBackend()
         backend.rows["old3"] = {"id": "old3", "name": "kept"}
+        registry.bind_table("test_entities", l1_backend=backend)
         coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
-        coll._l1 = backend  # noqa: SLF001 - substituting the tier under test
         coll.l3_pool = object()
 
         with pytest.raises(TypeError):
@@ -1818,7 +1829,7 @@ class TestTheBoundReachesTheSubscriptReadPath:
     @staticmethod
     def _age_out(backend: SQLiteBackend, entity_id: str) -> None:
         conn = backend.get_connection()
-        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
+        conn.execute(f'UPDATE test_entities SET "{CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
 
     @pytest.mark.asyncio
     async def test_the_entity_subscript_expires_and_pulls_through(

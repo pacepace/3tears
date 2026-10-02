@@ -34,14 +34,20 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 
+from typing import TYPE_CHECKING
+
 from threetears.core.coordination import KVLease
 from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    from threetears.nats.kv import KvCapable
 
 __all__ = [
     "SESSION_CLAIM_REFRESH",
     "SESSION_CLAIM_TTL",
     "SessionClaim",
     "claim_session",
+    "operator_session_lease",
     "session_claim_key",
 ]
 
@@ -59,6 +65,34 @@ SESSION_CLAIM_TTL = timedelta(seconds=45)
 #: A third of the TTL, so two consecutive renewals can fail without the claim lapsing. One
 #: missed renewal is a blip; three in a row is a pod that cannot defend what it holds.
 SESSION_CLAIM_REFRESH = timedelta(seconds=15)
+
+
+def operator_session_lease(nats_client: KvCapable, *, key_scope: str, pod_id: str | None = None) -> KVLease:
+    """The lease a platform hands :func:`claim_session`: bind-only, on the platform's shared leases bucket.
+
+    A display claim runs in a TOOL pod, and a pod holds no stream-management verb -- ``STREAM.CREATE``
+    carries ``sources`` in its body, so a pod allowed to create a bucket could copy any stream on the
+    bus into it. The bucket is the lease's default ``leases``, which the connection materialises as
+    ``{ns}-leases``: the one name a tool pod is granted, and the one the hub declares at startup. A
+    lease built any other way either asks for a create the pod's grant refuses -- a JetStream deadline
+    on the first claim -- or names a bucket nothing grants, which is the same deadline later.
+
+    **Keyed under the pod's own scope.** Every tool pod binds that one bucket and is granted only the
+    keys under its own scope, so each claim is ``{key_scope}.{digest}``: replicas of one pod contend
+    for one key, and no pod can read, steal or release another pod's claim.
+
+    :param nats_client: the pod's connected NATS client
+    :ptype nats_client: KvCapable
+    :param key_scope: this pod's key scope -- ``kv_key_scope_for(Principal.TOOL_POD, pod_id=...)``
+        over its ``tool_pods.id``, the scope its grant on the bucket is narrowed to
+    :ptype key_scope: str
+    :param pod_id: this pod's holder identity; ``None`` lets the lease mint one per process
+    :ptype pod_id: str | None
+    :return: a lease that binds the hub-declared bucket and never creates one
+    :rtype: KVLease
+    :raises ValueError: when ``key_scope`` is not one literal subject token
+    """
+    return KVLease(nats_client, pod_id=pod_id, create_if_missing=False, key_scope=key_scope)
 
 
 def session_claim_key(session_id: str) -> str:
@@ -133,7 +167,8 @@ async def claim_session(
     to hours, and a caller that cannot have the display wants to say so to its operator now.
 
     :param lease: the coordination primitive, constructor-injected by the platform in the same
-        style as every other collaborator in this package. ``None`` claims nothing -- see below.
+        style as every other collaborator in this package -- in a pod, the bind-only lease
+        :func:`operator_session_lease` builds. ``None`` claims nothing -- see below.
     :ptype lease: KVLease | None
     :param session_id: the session whose display is being claimed
     :ptype session_id: str

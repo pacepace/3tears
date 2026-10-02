@@ -6,6 +6,7 @@ and serves them via NATS. intended for use as tool pod main process.
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
 from importlib.util import find_spec
 
@@ -374,7 +375,10 @@ def main() -> None:
     :return: None
     :rtype: None
     """
-    _BuiltinToolBootstrap("builtin-tool-server").run()
+    _BuiltinToolBootstrap(
+        "builtin-tool-server",
+        version=importlib.metadata.version("3tears-agent-tools"),
+    ).run()
 
 
 if __name__ == "__main__":

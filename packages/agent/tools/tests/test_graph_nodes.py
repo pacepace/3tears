@@ -19,8 +19,6 @@ from threetears.search.contracts import (
 )
 
 from threetears.agent.tools.graph_nodes import (
-    _DEFAULT_SAVEABLE_TOOLS,
-    _MAX_SAVED_CANDIDATES,
     create_context_enrichment_node,
     create_context_save_node,
 )
@@ -313,17 +311,31 @@ class TestTheDefaultSetMatchesWhatIsActuallyBound:
     tools' real bound names rather than restating a string.
     """
 
-    def test_the_builtins_bound_names_are_in_the_default_set(self) -> None:
+    @pytest.mark.asyncio
+    async def test_the_builtins_bound_names_save_under_the_defaults(self) -> None:
         from threetears.agent.tools.builtin.web_fetch import WebFetchTool
         from threetears.agent.tools.builtin.web_search import WebSearchTool
 
-        assert WebSearchTool(base_url="http://searx.local").mcp_name() in _DEFAULT_SAVEABLE_TOOLS
-        assert WebFetchTool().mcp_name() in _DEFAULT_SAVEABLE_TOOLS
+        for bound_name in (WebSearchTool(base_url="http://searx.local").mcp_name(), WebFetchTool().mcp_name()):
+            mock_cm = AsyncMock()
+            mock_cm.save_tool_result = AsyncMock(return_value="ctx-0")
 
-    def test_the_bare_names_are_not_what_the_default_set_holds(self) -> None:
+            node = create_context_save_node(context_manager=mock_cm)
+            await node({"messages": [ToolMessage(content="page", tool_call_id="tc1", name=bound_name)]})
+
+            mock_cm.save_tool_result.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_bare_names_save_nothing_under_the_defaults(self) -> None:
         # The exact shape of the bug: these look right and match nothing.
-        assert "web_search" not in _DEFAULT_SAVEABLE_TOOLS
-        assert "web_fetch" not in _DEFAULT_SAVEABLE_TOOLS
+        for bare_name in ("web_search", "web_fetch"):
+            mock_cm = AsyncMock()
+            mock_cm.save_tool_result = AsyncMock()
+
+            node = create_context_save_node(context_manager=mock_cm)
+            await node({"messages": [ToolMessage(content="page", tool_call_id="tc1", name=bare_name)]})
+
+            mock_cm.save_tool_result.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_bound_name_saves_under_the_defaults(self) -> None:
@@ -436,14 +448,28 @@ class TestWhatStructureAddsToWhatIsStored:
     async def test_the_candidate_record_is_bounded(self) -> None:
         mock_cm = AsyncMock()
         mock_cm.save_tool_result = AsyncMock(return_value="ctx-7")
-        many = [_candidate(f"https://example.gov/{i}") for i in range(_MAX_SAVED_CANDIDATES + 5)]
+        many = [_candidate(f"https://example.gov/{i}") for i in range(8)]
+
+        node = create_context_save_node(context_manager=mock_cm, max_saved_candidates=3)
+        await node({"messages": [_structured_message(*many)]})
+
+        record = _saved_kwargs(mock_cm)["metadata"]["search_results"]
+        assert record["candidates"] == [{"identity": f"https://example.gov/{i}", "title": "a page"} for i in range(3)]
+        assert record["candidate_count"] == 8
+        assert record["candidates_truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_default_bound_keeps_a_large_result_set_short(self) -> None:
+        mock_cm = AsyncMock()
+        mock_cm.save_tool_result = AsyncMock(return_value="ctx-7b")
+        many = [_candidate(f"https://example.gov/{i}") for i in range(200)]
 
         node = create_context_save_node(context_manager=mock_cm)
         await node({"messages": [_structured_message(*many)]})
 
         record = _saved_kwargs(mock_cm)["metadata"]["search_results"]
-        assert len(record["candidates"]) == _MAX_SAVED_CANDIDATES
-        assert record["candidate_count"] == _MAX_SAVED_CANDIDATES + 5
+        assert 0 < len(record["candidates"]) < 200
+        assert record["candidate_count"] == 200
         assert record["candidates_truncated"] is True
 
     @pytest.mark.asyncio

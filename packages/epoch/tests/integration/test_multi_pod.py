@@ -211,7 +211,8 @@ async def test_pull_on_stale_recovers_missed_broadcast(
         await _connect_pod(nats_container, "pod-b-no-sub") as pod_b_nc,
     ):
         writer = EpochClient(pg_pool, writer_nc)
-        listener_b = EpochListener(pod_b_nc, EpochClient(pg_pool, pod_b_nc))
+        pod_b_counter = EpochClient(pg_pool, pod_b_nc)
+        listener_b = EpochListener(pod_b_nc, pod_b_counter)
 
         subject = _subject("stale-pull")
         cb_b_calls: list[int] = []
@@ -219,11 +220,10 @@ async def test_pull_on_stale_recovers_missed_broadcast(
         async def cb_b(epoch: int, _payload: dict[str, object] | None) -> None:
             cb_b_calls.append(epoch)
 
-        # deliberately DO NOT subscribe pod B to the broadcast subject.
-        # prime its last-seen manually as if cold-started after an outage.
-        primed = await listener_b._epoch_client.current(subject)  # noqa: SLF001
-        listener_b._last_seen[subject.path] = primed  # noqa: SLF001
-        assert primed == 0
+        # deliberately DO NOT subscribe pod B to the broadcast subject. it starts where a pod
+        # cold-started after an outage starts: having seen nothing, at the counter's zero.
+        assert await pod_b_counter.current(subject) == 0
+        assert listener_b.last_seen(subject) == 0
 
         # writer bumps; broadcast goes nowhere reachable to pod B.
         await writer.bump(subject)
@@ -269,8 +269,9 @@ async def test_per_message_echo_recovers_missed_broadcast(
         async def cb(epoch: int, _payload: dict[str, object] | None) -> None:
             cb_calls.append(epoch)
 
-        # deliberately do NOT subscribe; rely on the echo path entirely.
-        listener._last_seen[subject.path] = 0  # noqa: SLF001
+        # deliberately do NOT subscribe; rely on the echo path entirely. a listener that has
+        # seen nothing starts at zero.
+        assert listener.last_seen(subject) == 0
 
         new_epoch = await writer.bump(subject)
         assert new_epoch == 1
@@ -303,7 +304,8 @@ async def test_monotonicity_under_concurrent_writers(
     ):
         w1 = EpochClient(pg_pool, w1_nc)
         w2 = EpochClient(pg_pool, w2_nc)
-        listener = EpochListener(pod_nc, EpochClient(pg_pool, pod_nc))
+        pod_counter = EpochClient(pg_pool, pod_nc)
+        listener = EpochListener(pod_nc, pod_counter)
 
         subject = _subject("monotonic")
         observed: list[int] = []
@@ -327,7 +329,7 @@ async def test_monotonicity_under_concurrent_writers(
         await asyncio.sleep(0.5)
 
         # every bump landed: the counter itself reports 50
-        counted = await listener._epoch_client.current(subject)  # noqa: SLF001
+        counted = await pod_counter.current(subject)
         assert counted == 50
 
         # observed deliveries must be strictly monotonic (some may have

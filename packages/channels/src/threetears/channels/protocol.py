@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
+from uuid import UUID
 
 __all__ = [
     "Attachment",
@@ -118,6 +119,13 @@ class ChannelMessage:
         its native source. consumers can use this for number /
         currency / date formatting hints in tool output.
     :ptype user_locale: str | None
+    :param attachment_ids: ids of objects the sender already uploaded to the host
+        and now attaches to this message, in the order attached. distinct from
+        ``attachments``, which carries a platform's own files by value: these are
+        references the host catalogued at upload time, so the host -- not this
+        package -- decides whether the sender may attach each one before it
+        routes the message.
+    :ptype attachment_ids: list[UUID]
     """
 
     channel_type: str
@@ -137,6 +145,7 @@ class ChannelMessage:
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     user_timezone: str | None = None
     user_locale: str | None = None
+    attachment_ids: list[UUID] = field(default_factory=list)
 
 
 @dataclass

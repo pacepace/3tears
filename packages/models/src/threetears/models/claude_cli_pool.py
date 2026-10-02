@@ -83,6 +83,12 @@ from typing import Any
 
 from uuid_utils import uuid7
 
+from threetears.models._claude_sdk_internals import (
+    cli_process_pid,
+    install_tool_server,
+    remove_tool_server,
+    send_control_request,
+)
 from threetears.observe import BuildOnce, get_logger
 
 __all__ = [
@@ -601,36 +607,13 @@ def launch_key(options: Any, token: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _sdk_process_pid(client: Any) -> Any:
-    """the CLI subprocess's pid as the SDK holds it, or ``None`` when its internals have moved.
-
-    the SDK offers no public accessor: the process object sits on the private ``_transport`` and
-    its private ``_process``. read here as attributes under a reasoned SLF001 pragma -- the
-    spelling every check sees -- rather than through ``getattr`` with the names as strings, which
-    hid the dependency from all of them. :func:`_discover_pid` falls back to ``/proc`` when this is
-    ``None``.
-
-    :param client: the connected ``ClaudeSDKClient``
-    :ptype client: Any
-    :return: whatever the SDK's process object reports as its pid, or ``None``
-    :rtype: Any
-    """
-    result: Any = None
-    try:
-        result = client._transport._process.pid  # noqa: SLF001 -- the SDK exposes its CLI process nowhere else
-    except AttributeError:
-        # NOSILENT: the SDK's internals moved; the caller falls back to scanning /proc for this
-        # session's marker, and warns only if that finds nothing either.
-        result = None
-    return result
-
-
 def _discover_pid(client: Any, marker: str) -> int | None:
     """The CLI subprocess's pid, from the SDK if it will say, else from ``/proc``.
 
-    The SDK's transport holds the process object two private attributes down. The marker is unique
-    per session, so scanning ``/proc`` for it finds the same process and keeps pid tracking working
-    if the SDK's internals move.
+    The SDK holds the process object two private attributes down
+    (:func:`threetears.models._claude_sdk_internals.cli_process_pid`). The marker is unique per
+    session, so scanning ``/proc`` for it finds the same process and keeps pid tracking working if
+    the SDK's internals move.
 
     :param client: the connected ``ClaudeSDKClient``
     :ptype client: Any
@@ -639,7 +622,7 @@ def _discover_pid(client: Any, marker: str) -> int | None:
     :return: the pid, or ``None`` when it cannot be determined
     :rtype: int | None
     """
-    pid = _sdk_process_pid(client)
+    pid = cli_process_pid(client)
     if isinstance(pid, int):
         return pid
     for candidate in _live_pids():
@@ -887,8 +870,8 @@ class PooledCliSession:
             raise ClaudeCliSessionError(f"this Claude CLI was launched without the agent {agent!r}")
         if agent != self.agent:
             try:
-                await self.client._query._send_control_request(  # noqa: SLF001 -- the SDK exposes no agent switch
-                    {"subtype": "apply_flag_settings", "settings": {"agent": agent}}, timeout=30.0
+                await send_control_request(
+                    self.client, {"subtype": "apply_flag_settings", "settings": {"agent": agent}}, timeout=30.0
                 )
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the SDK raises bare Exception for a refused control request; a CLI that cannot switch cannot serve any prompt the pool keys it for
                 error = ClaudeCliSessionError(f"the Claude CLI could not switch agent: {exc}")
@@ -902,12 +885,14 @@ class PooledCliSession:
             if model and model != self._model:
                 await self.client.set_model(model)
                 self._model = model
-            query = self.client._query  # noqa: SLF001 -- the SDK exposes no public server swap
-            await query._send_control_request({"subtype": "mcp_set_servers", "servers": {}}, timeout=30.0)  # noqa: SLF001
-            query.sdk_mcp_servers.pop(TOOL_SERVER_NAME, None)
+            await send_control_request(self.client, {"subtype": "mcp_set_servers", "servers": {}}, timeout=30.0)
+            remove_tool_server(self.client, TOOL_SERVER_NAME)
             if tool_server is not None:
-                query.sdk_mcp_servers[TOOL_SERVER_NAME] = bind_tool_server_to_context(tool_server, call_context)
-                await query._send_control_request(  # noqa: SLF001
+                install_tool_server(
+                    self.client, TOOL_SERVER_NAME, bind_tool_server_to_context(tool_server, call_context)
+                )
+                await send_control_request(
+                    self.client,
                     {
                         "subtype": "mcp_set_servers",
                         "servers": {TOOL_SERVER_NAME: {"type": "sdk", "name": TOOL_SERVER_NAME}},
@@ -931,9 +916,8 @@ class PooledCliSession:
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
         try:
-            query = self.client._query  # noqa: SLF001 -- the SDK exposes no public server swap
-            query.sdk_mcp_servers.pop(TOOL_SERVER_NAME, None)
-            await query._send_control_request({"subtype": "mcp_set_servers", "servers": {}}, timeout=timeout)  # noqa: SLF001
+            remove_tool_server(self.client, TOOL_SERVER_NAME)
+            await send_control_request(self.client, {"subtype": "mcp_set_servers", "servers": {}}, timeout=timeout)
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any failure means the session cannot be trusted idle; the pool disposes it
             raise ClaudeCliSessionError(f"could not release the Claude CLI's tools: {exc}") from exc
 
@@ -950,9 +934,10 @@ class PooledCliSession:
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
         try:
-            query = self.client._query  # noqa: SLF001 -- the SDK exposes no rewind of the conversation
-            answer = await query._send_control_request(  # noqa: SLF001
-                {"subtype": "rewind_conversation", "target_message_uuid": first_message_uuid}, timeout=timeout
+            answer = await send_control_request(
+                self.client,
+                {"subtype": "rewind_conversation", "target_message_uuid": first_message_uuid},
+                timeout=timeout,
             )
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any failure means the conversation may not be empty; the pool stops the session
             error = ClaudeCliSessionError(f"the Claude CLI failed to rewind: {exc}")

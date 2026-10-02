@@ -24,6 +24,35 @@ deltas applied). Multi-row scans (``list_due_for_tick``,
 addressable and would not benefit from L1 row caching -- the row
 cache still serves ``get((conv_id, id))`` calls uniformly.
 
+**Every targeted UPDATE on a schedule or subscription evicts the row from
+every cache tier, on every replica, once L3 has it.** Those rows are read by
+primary key through ``get`` -- the schedule and webhook tools read before
+every edit, pause, resume and delete -- and ``get`` answers from L1, then L2,
+before L3. An UPDATE that bypassed ``save_entity`` and left the tiers alone
+left every replica that had read the row serving the old one, and the tools'
+edit path then saved that old row back over L3: a paused schedule resumed, a
+tick-expired one-shot re-armed, a rotated webhook secret restored. The
+eviction runs however the UPDATE ended, since one that raised may still have
+reached L3. An UPDATE joined to a caller's transaction is settled by the
+:class:`~threetears.core.collections.CallerTransaction` when it ends instead. Both
+are :meth:`~threetears.core.collections.BaseCollection.bypassing_write`, the core
+owner of the rule.
+
+**A multi-row scan caches nothing.** ``list_*``, ``find_by_id`` and
+``latest_for_schedule`` read L3 outside the per-key fence ``get`` reads under. The entities
+they return are loaded entities, which hold their own rows and write no cache tier
+(:class:`~threetears.core.entities.base.BaseEntity`), so a concurrent write cannot leave L1
+stale behind them and an eviction cannot empty them under a caller still reading them.
+
+**Fire rows are the exception, and why is a claim about their readers.** No
+code reads a ``wake_fires`` row by primary key:
+:meth:`WakeFireCollection.latest_for_schedule`,
+:meth:`WakeFireCollection.list_for_schedule`,
+:meth:`WakeFireCollection.list_for_conversation` and
+:meth:`WakeFireCollection.count_in_window` all read L3, so a fire UPDATE has
+no cached copy anyone is served. A future by-pk reader of fires must add the
+eviction these UPDATEs do not do.
+
 ``schedule_config`` JSONB shape per ``schedule_type`` (validation
 lives in the agent-tools shard, not at the DB layer):
 
@@ -51,6 +80,7 @@ from threetears.agent.wake.entities import (
     WebhookSubscriptionEntity,
 )
 from threetears.agent.wake.types import ReapedFire
+from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.serialization import (
     deserialize_from_json,
@@ -265,11 +295,48 @@ def _build_upsert_sql(
     )
 
 
+def _build_fenced_update_sql(
+    table: str,
+    update_cols: Sequence[str],
+    pk_cols: Sequence[str],
+) -> str:
+    """Build an update-only statement fenced on the ``date_updated`` the row was read with.
+
+    Positional parameters bind to ``pk_cols`` then ``update_cols`` in declared order, then the
+    fence last. The statement updates only a row that still carries the fence value, so a save
+    built from a row read before another writer changed it -- or deleted it -- updates nothing
+    rather than writing that change away, and never re-inserts a deleted row.
+
+    :param table: table name
+    :ptype table: str
+    :param update_cols: columns the save writes
+    :ptype update_cols: Sequence[str]
+    :param pk_cols: primary-key columns, matched in the ``WHERE`` clause
+    :ptype pk_cols: Sequence[str]
+    :return: SQL string ready for ``execute()``
+    :rtype: str
+    """
+    set_clause = ", ".join(f"{c} = ${len(pk_cols) + i + 1}" for i, c in enumerate(update_cols))
+    where_clause = " AND ".join(f"{c} = ${i + 1}" for i, c in enumerate(pk_cols))
+    fence_position = len(pk_cols) + len(update_cols) + 1
+    return f"UPDATE {table} SET {set_clause} WHERE {where_clause} AND date_updated = ${fence_position}"
+
+
 _AGENT_WAKE_SCHEDULES_UPSERT_SQL = _build_upsert_sql(
     "agent_wake_schedules",
     _SCHEDULE_INSERT_COLUMNS,
     _SCHEDULE_UPDATE_COLUMNS,
     ("conversation_id", "schedule_id"),
+)
+
+
+_SCHEDULE_PK_COLUMNS: tuple[str, ...] = ("conversation_id", "schedule_id")
+
+
+_AGENT_WAKE_SCHEDULES_FENCED_UPDATE_SQL = _build_fenced_update_sql(
+    "agent_wake_schedules",
+    _SCHEDULE_UPDATE_COLUMNS,
+    _SCHEDULE_PK_COLUMNS,
 )
 
 
@@ -286,6 +353,16 @@ _WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL = _build_upsert_sql(
     _SUBSCRIPTION_INSERT_COLUMNS,
     _SUBSCRIPTION_UPDATE_COLUMNS,
     ("conversation_id", "subscription_id"),
+)
+
+
+_SUBSCRIPTION_PK_COLUMNS: tuple[str, ...] = ("conversation_id", "subscription_id")
+
+
+_WEBHOOK_SUBSCRIPTIONS_FENCED_UPDATE_SQL = _build_fenced_update_sql(
+    "webhook_subscriptions",
+    _SUBSCRIPTION_UPDATE_COLUMNS,
+    _SUBSCRIPTION_PK_COLUMNS,
 )
 
 
@@ -378,26 +455,38 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         *,
         conn: Any = None,
     ) -> int:
-        """Upsert a schedule row.
+        """Insert a new schedule row, or update an existing one only as it was read.
+
+        With ``original_timestamp`` -- the ``date_updated`` the row carried when it was read, which
+        :meth:`BaseCollection.save_entity` passes for every entity read from a tier -- the write is
+        an update-only statement fenced on that value. The schedule tools save the whole row they
+        read, and between that read and this write the tick can claim and expire the row, another
+        replica can pause or resume it, or it can be deleted; each of those moves
+        ``date_updated`` or removes the row, so the save updates nothing and ``save_entity``
+        raises :class:`~threetears.core.exceptions.ConcurrentModificationError` instead of
+        writing the change away. Without it (a new row) the unfenced upsert runs.
 
         :param data: row dict keyed by column name; must carry both pk
             columns and every non-nullable column
         :ptype data: dict[str, Any]
-        :param original_timestamp: ignored (no CAS fence -- schedule
-            updates are idempotent in the upsert path)
+        :param original_timestamp: the ``date_updated`` the row was read with, or ``None`` for an
+            insert
         :ptype original_timestamp: Any
         :param conn: optional asyncpg-compatible connection
         :ptype conn: Any
-        :return: rows affected (1 on success)
+        :return: rows affected (1 on success, 0 when the row changed or was deleted since it was
+            read)
         :rtype: int
         """
-        del original_timestamp
-        params = _schedule_insert_params(data)
         target = conn if conn is not None else self.l3_pool
         if target is None:
             return 0
-        await target.execute(_AGENT_WAKE_SCHEDULES_UPSERT_SQL, *params)
-        return 1
+        if original_timestamp is None:
+            await target.execute(_AGENT_WAKE_SCHEDULES_UPSERT_SQL, *_schedule_insert_params(data))
+            return 1
+        params = [_schedule_value_for_column(col, data) for col in _SCHEDULE_PK_COLUMNS + _SCHEDULE_UPDATE_COLUMNS]
+        status = await target.execute(_AGENT_WAKE_SCHEDULES_FENCED_UPDATE_SQL, *params, original_timestamp)
+        return parse_rowcount(status)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a schedule row by composite pk.
@@ -468,7 +557,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             now,
             limit,
         )
-        return [WakeScheduleEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_active_for_conversation(
         self,
@@ -496,7 +585,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "ORDER BY next_fire_at ASC NULLS LAST",
             conversation_id,
         )
-        return [WakeScheduleEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_for_conversation(
         self,
@@ -521,7 +610,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "ORDER BY date_created DESC",
             conversation_id,
         )
-        return [WakeScheduleEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def count_active_for_conversation(
         self,
@@ -644,27 +733,30 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         """
         if self.l3_pool is None:
             return None
-        if last_fired_at is None:
-            # cache-bypass: targeted UPDATE on the next_fire_at column.
-            await self.l3_pool.execute(
-                "UPDATE agent_wake_schedules "
-                "SET next_fire_at = $3, date_updated = now() "
-                "WHERE conversation_id = $1 AND schedule_id = $2",
-                conversation_id,
-                schedule_id,
-                next_fire_at,
-            )
-        else:
-            # cache-bypass: targeted UPDATE with both timestamps.
-            await self.l3_pool.execute(
-                "UPDATE agent_wake_schedules "
-                "SET next_fire_at = $3, last_fired_at = $4, date_updated = now() "
-                "WHERE conversation_id = $1 AND schedule_id = $2",
-                conversation_id,
-                schedule_id,
-                next_fire_at,
-                last_fired_at,
-            )
+        async with self.bypassing_write((conversation_id, schedule_id)):
+            if last_fired_at is None:
+                # cache-bypass: targeted UPDATE on the next_fire_at column; the row is evicted
+                # from every tier once it lands.
+                await self.l3_pool.execute(
+                    "UPDATE agent_wake_schedules "
+                    "SET next_fire_at = $3, date_updated = now() "
+                    "WHERE conversation_id = $1 AND schedule_id = $2",
+                    conversation_id,
+                    schedule_id,
+                    next_fire_at,
+                )
+            else:
+                # cache-bypass: targeted UPDATE with both timestamps; the row is evicted from
+                # every tier once it lands.
+                await self.l3_pool.execute(
+                    "UPDATE agent_wake_schedules "
+                    "SET next_fire_at = $3, last_fired_at = $4, date_updated = now() "
+                    "WHERE conversation_id = $1 AND schedule_id = $2",
+                    conversation_id,
+                    schedule_id,
+                    next_fire_at,
+                    last_fired_at,
+                )
         return None
 
     async def pause(
@@ -685,14 +777,16 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted UPDATE on status column.
-        await self.l3_pool.execute(
-            "UPDATE agent_wake_schedules "
-            "SET status = 'paused', next_fire_at = NULL, date_updated = now() "
-            "WHERE conversation_id = $1 AND schedule_id = $2 AND status = 'active'",
-            conversation_id,
-            schedule_id,
-        )
+        async with self.bypassing_write((conversation_id, schedule_id)):
+            # cache-bypass: targeted UPDATE on status column; the row is evicted from every
+            # tier once it lands.
+            await self.l3_pool.execute(
+                "UPDATE agent_wake_schedules "
+                "SET status = 'paused', next_fire_at = NULL, date_updated = now() "
+                "WHERE conversation_id = $1 AND schedule_id = $2 AND status = 'active'",
+                conversation_id,
+                schedule_id,
+            )
         return None
 
     async def resume(
@@ -715,8 +809,12 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         (:func:`threetears.agent.wake.rate_limit.resume_schedule_serialized`)
         bind the UPDATE to the same transaction that holds the
         per-conversation advisory lock + active-count, so the
-        re-activation cap holds atomically. When ``conn`` is ``None`` the
-        UPDATE runs on the pool (the direct, non-cap path).
+        re-activation cap holds atomically. That transaction must be
+        opened through :class:`~threetears.core.collections.CallerTransaction`,
+        which evicts the row from every cache tier once it ends: the row is
+        not final until then. When ``conn`` is ``None`` the UPDATE runs on
+        the pool (the direct, non-cap path) and the row is evicted as soon
+        as it lands.
 
         :param conversation_id: partition column
         :ptype conversation_id: UUID
@@ -725,23 +823,28 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         :param next_fire_at: when the resumed schedule should next fire
         :ptype next_fire_at: datetime
         :param conn: optional asyncpg-compatible connection (binds the
-            UPDATE to a caller-owned transaction)
+            UPDATE to a caller-owned transaction opened by
+            :class:`~threetears.core.collections.CallerTransaction`)
         :ptype conn: Any
         :return: nothing
         :rtype: None
+        :raises ValueError: if ``conn`` is given and its transaction was not
+            opened by :class:`~threetears.core.collections.CallerTransaction`
         """
+        sql = (
+            "UPDATE agent_wake_schedules "
+            "SET status = 'active', next_fire_at = $3, date_updated = now() "
+            "WHERE conversation_id = $1 AND schedule_id = $2 AND status != 'expired'"
+        )
         target = conn if conn is not None else self.l3_pool
         if target is None:
             return None
-        # cache-bypass: targeted UPDATE flipping paused -> active.
-        await target.execute(
-            "UPDATE agent_wake_schedules "
-            "SET status = 'active', next_fire_at = $3, date_updated = now() "
-            "WHERE conversation_id = $1 AND schedule_id = $2 AND status != 'expired'",
-            conversation_id,
-            schedule_id,
-            next_fire_at,
-        )
+        # joined to ``conn``, the row is enrolled in the caller's transaction before the write and
+        # settled when it ends; on the pool it is evicted once the UPDATE lands, however it ended.
+        async with self.bypassing_write((conversation_id, schedule_id), conn=conn):
+            # cache-bypass: targeted UPDATE flipping paused -> active; the row is evicted from
+            # every tier once it is final.
+            await target.execute(sql, conversation_id, schedule_id, next_fire_at)
         return None
 
     async def claim_and_reschedule(
@@ -792,21 +895,26 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         """
         if self.l3_pool is None:
             return False
-        # cache-bypass: atomic CAS UPDATE; the row cache is invalidated
-        # naturally on the next read via the partition-aware fetch
-        # path.
-        claimed = await self.l3_pool.fetchval(
-            "UPDATE agent_wake_schedules "
-            "SET next_fire_at = $1, last_fired_at = $2, date_updated = $2, status = $3 "
-            "WHERE conversation_id = $4 AND schedule_id = $5 AND next_fire_at = $6 "
-            "RETURNING schedule_id",
-            computed_next_fire,
-            now,
-            new_status,
-            conversation_id,
-            schedule_id,
-            expected_next_fire,
-        )
+        # A won claim evicts the row from every tier: nothing reads a cached row back into place
+        # otherwise, and the schedule tools save the row they read -- a stale one re-arms an
+        # expired one-shot. A lost claim changed nothing and evicts nothing; one that raised may
+        # have landed, so it evicts.
+        async with self.bypassing_write((conversation_id, schedule_id)) as write:
+            # cache-bypass: atomic CAS UPDATE; the row is evicted from every tier once it lands.
+            claimed = await self.l3_pool.fetchval(
+                "UPDATE agent_wake_schedules "
+                "SET next_fire_at = $1, last_fired_at = $2, date_updated = $2, status = $3 "
+                "WHERE conversation_id = $4 AND schedule_id = $5 AND next_fire_at = $6 "
+                "RETURNING schedule_id",
+                computed_next_fire,
+                now,
+                new_status,
+                conversation_id,
+                schedule_id,
+                expected_next_fire,
+            )
+            if claimed is None:
+                write.unchanged()
         return claimed is not None
 
     async def mark_expired(
@@ -829,14 +937,16 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted UPDATE on status column.
-        await self.l3_pool.execute(
-            "UPDATE agent_wake_schedules "
-            "SET status = 'expired', next_fire_at = NULL, date_updated = now() "
-            "WHERE conversation_id = $1 AND schedule_id = $2",
-            conversation_id,
-            schedule_id,
-        )
+        async with self.bypassing_write((conversation_id, schedule_id)):
+            # cache-bypass: targeted UPDATE on status column; the row is evicted from every
+            # tier once it lands.
+            await self.l3_pool.execute(
+                "UPDATE agent_wake_schedules "
+                "SET status = 'expired', next_fire_at = NULL, date_updated = now() "
+                "WHERE conversation_id = $1 AND schedule_id = $2",
+                conversation_id,
+                schedule_id,
+            )
         return None
 
 
@@ -901,7 +1011,9 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
 
         :param data: row dict keyed by column name
         :ptype data: dict[str, Any]
-        :param original_timestamp: ignored
+        :param original_timestamp: always ``None``: ``wake_fires`` has no ``date_updated``
+            column, so an entity read from it carries no fence. Fires are written once as new
+            rows and finalized by targeted UPDATEs, never re-saved from a read.
         :ptype original_timestamp: Any
         :param conn: optional asyncpg-compatible connection
         :ptype conn: Any
@@ -1000,7 +1112,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             schedule_id,
             limit,
         )
-        return [WakeFireEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def list_for_conversation(
         self,
@@ -1031,7 +1143,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             conversation_id,
             limit,
         )
-        return [WakeFireEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def latest_for_schedule(
         self,
@@ -1065,7 +1177,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         )
         if row is None:
             return None
-        return WakeFireEntity(dict(row), is_new=False, collection=self)
+        return self.entity_class(dict(row), is_new=False, collection=self)
 
     async def create_dispatching(
         self,
@@ -1132,8 +1244,8 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         del fire_source, execution_mode
         if self.l3_pool is None:
             return None
-        # cache-bypass: write-path; the row cache is read-mostly and
-        # invalidated naturally on the next fetch.
+        # cache-bypass: INSERT of a fresh fire_id, which no cache can hold. No code reads a
+        # fire row by primary key (see the module docstring), so no tier needs settling.
         await self.l3_pool.execute(
             "INSERT INTO wake_fires "
             "(conversation_id, fire_id, schedule_id, webhook_subscription_id, "
@@ -1176,7 +1288,9 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         :return: ``True`` when the fire was still in flight and is now linked
         :rtype: bool
         """
-        # cache-bypass: a targeted UPDATE inside the caller's transaction.
+        # cache-bypass: a targeted UPDATE inside the caller's transaction. No code reads a fire row
+        # by primary key -- every fire reader queries L3 (see the module docstring) -- so no cached
+        # copy of this row is ever served and none is evicted.
         linked = await conn.fetchval(
             "UPDATE wake_fires SET started_conversation_id = $3 "
             "WHERE conversation_id = $1 AND fire_id = $2 AND status = 'dispatching' "
@@ -1227,7 +1341,9 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted UPDATE on the terminal-state columns.
+        # cache-bypass: targeted UPDATE on the terminal-state columns. No code reads a fire row
+        # by primary key -- every fire reader queries L3 (see the module docstring) -- so no
+        # cached copy of this row is ever served and none is evicted.
         await self.l3_pool.execute(
             "UPDATE wake_fires "
             "SET status = $1, output_text = $2, latency_ms = $3, "
@@ -1276,7 +1392,9 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted UPDATE on the failure columns.
+        # cache-bypass: targeted UPDATE on the failure columns. No code reads a fire row by
+        # primary key -- every fire reader queries L3 (see the module docstring) -- so no cached
+        # copy of this row is ever served and none is evicted.
         await self.l3_pool.execute(
             "UPDATE wake_fires SET status = 'failed', error = $1, latency_ms = $2 "
             "WHERE conversation_id = $3 AND fire_id = $4 AND status = 'dispatching'",
@@ -1317,8 +1435,9 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         # cannot apply by construction. ``conversation_id`` is named in the
         # RETURNING clause so the partition-column enforcement walker sees
         # it as a static literal.
-        # cache-bypass: bulk terminal-state UPDATE across partitions; not
-        # pk-addressable, so the L1 row cache cannot serve or invalidate it.
+        # cache-bypass: bulk terminal-state UPDATE across partitions. No code reads a fire row
+        # by primary key -- every fire reader queries L3 (see the module docstring) -- so no
+        # cached copy of a reaped row is ever served and none is evicted.
         rows = await self.l3_pool.fetch(
             "UPDATE wake_fires SET status = 'failed', error = $1 "
             "WHERE status = 'dispatching' AND actual_fired_at < $2 "
@@ -1436,26 +1555,40 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         *,
         conn: Any = None,
     ) -> int:
-        """Upsert a subscription row.
+        """Insert a new subscription row, or update an existing one only as it was read.
+
+        With ``original_timestamp`` the write is an update-only statement fenced on the
+        ``date_updated`` the row was read with (see :meth:`WakeScheduleCollection.save_to_store`).
+        The webhook tools save the whole row they read, secret included; a rotation, a pause, or
+        a fire stamping ``last_fired_at`` between that read and this write moves ``date_updated``,
+        so the save updates nothing and ``save_entity`` raises
+        :class:`~threetears.core.exceptions.ConcurrentModificationError` rather than restoring
+        the secret the rotation replaced. Without it (a new row) the unfenced upsert runs.
 
         :param data: row dict keyed by column name; must carry both pk
             columns and every non-nullable column (including
             ``secret_ciphertext`` bytes)
         :ptype data: dict[str, Any]
-        :param original_timestamp: ignored
+        :param original_timestamp: the ``date_updated`` the row was read with, or ``None`` for an
+            insert
         :ptype original_timestamp: Any
         :param conn: optional asyncpg-compatible connection
         :ptype conn: Any
-        :return: rows affected
+        :return: rows affected (1 on success, 0 when the row changed or was deleted since it was
+            read)
         :rtype: int
         """
-        del original_timestamp
-        params = _subscription_insert_params(data)
         target = conn if conn is not None else self.l3_pool
         if target is None:
             return 0
-        await target.execute(_WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL, *params)
-        return 1
+        if original_timestamp is None:
+            await target.execute(_WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL, *_subscription_insert_params(data))
+            return 1
+        params = [
+            _subscription_value_for_column(col, data) for col in _SUBSCRIPTION_PK_COLUMNS + _SUBSCRIPTION_UPDATE_COLUMNS
+        ]
+        status = await target.execute(_WEBHOOK_SUBSCRIPTIONS_FENCED_UPDATE_SQL, *params, original_timestamp)
+        return parse_rowcount(status)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a subscription row by composite pk.
@@ -1512,7 +1645,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         )
         if row is None:
             return None
-        return WebhookSubscriptionEntity(dict(row), is_new=False, collection=self)
+        return self.entity_class(dict(row), is_new=False, collection=self)
 
     async def find_for_agent(
         self,
@@ -1589,7 +1722,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
             "ORDER BY date_created DESC",
             conversation_id,
         )
-        return [WebhookSubscriptionEntity(dict(row), is_new=False, collection=self) for row in rows]
+        return [self.entity_class(dict(row), is_new=False, collection=self) for row in rows]
 
     async def rotate_secret(
         self,
@@ -1616,15 +1749,18 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted UPDATE on a single bytes column.
-        await self.l3_pool.execute(
-            "UPDATE webhook_subscriptions "
-            "SET secret_ciphertext = $3, date_updated = now() "
-            "WHERE conversation_id = $1 AND subscription_id = $2",
-            conversation_id,
-            subscription_id,
-            bytes(new_ciphertext),
-        )
+        async with self.bypassing_write((conversation_id, subscription_id)):
+            # cache-bypass: targeted UPDATE on a single bytes column; the row is evicted from
+            # every tier once it lands. A cached pre-rotation row would otherwise be saved back
+            # by the next edit, restoring the secret this replaced.
+            await self.l3_pool.execute(
+                "UPDATE webhook_subscriptions "
+                "SET secret_ciphertext = $3, date_updated = now() "
+                "WHERE conversation_id = $1 AND subscription_id = $2",
+                conversation_id,
+                subscription_id,
+                bytes(new_ciphertext),
+            )
         return None
 
     async def pause(
@@ -1635,14 +1771,16 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         """Flip ``status`` to ``'paused'``. Idempotent."""
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted UPDATE on status.
-        await self.l3_pool.execute(
-            "UPDATE webhook_subscriptions "
-            "SET status = 'paused', date_updated = now() "
-            "WHERE conversation_id = $1 AND subscription_id = $2",
-            conversation_id,
-            subscription_id,
-        )
+        async with self.bypassing_write((conversation_id, subscription_id)):
+            # cache-bypass: targeted UPDATE on status; the row is evicted from every tier once
+            # it lands.
+            await self.l3_pool.execute(
+                "UPDATE webhook_subscriptions "
+                "SET status = 'paused', date_updated = now() "
+                "WHERE conversation_id = $1 AND subscription_id = $2",
+                conversation_id,
+                subscription_id,
+            )
         return None
 
     async def resume(
@@ -1653,14 +1791,16 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         """Flip ``status`` to ``'active'``. Idempotent."""
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted UPDATE on status.
-        await self.l3_pool.execute(
-            "UPDATE webhook_subscriptions "
-            "SET status = 'active', date_updated = now() "
-            "WHERE conversation_id = $1 AND subscription_id = $2",
-            conversation_id,
-            subscription_id,
-        )
+        async with self.bypassing_write((conversation_id, subscription_id)):
+            # cache-bypass: targeted UPDATE on status; the row is evicted from every tier once
+            # it lands.
+            await self.l3_pool.execute(
+                "UPDATE webhook_subscriptions "
+                "SET status = 'active', date_updated = now() "
+                "WHERE conversation_id = $1 AND subscription_id = $2",
+                conversation_id,
+                subscription_id,
+            )
         return None
 
     async def record_fire(
@@ -1688,15 +1828,17 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted UPDATE on the timestamp column.
-        await self.l3_pool.execute(
-            "UPDATE webhook_subscriptions "
-            "SET last_fired_at = $3, date_updated = now() "
-            "WHERE conversation_id = $1 AND subscription_id = $2",
-            conversation_id,
-            subscription_id,
-            fired_at,
-        )
+        async with self.bypassing_write((conversation_id, subscription_id)):
+            # cache-bypass: targeted UPDATE on the timestamp column; the row is evicted from
+            # every tier once it lands.
+            await self.l3_pool.execute(
+                "UPDATE webhook_subscriptions "
+                "SET last_fired_at = $3, date_updated = now() "
+                "WHERE conversation_id = $1 AND subscription_id = $2",
+                conversation_id,
+                subscription_id,
+                fired_at,
+            )
         return None
 
 

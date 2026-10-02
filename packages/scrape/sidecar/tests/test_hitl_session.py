@@ -13,6 +13,7 @@ and the bug it invites only appears when two callers interleave.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import hitl
@@ -56,31 +57,73 @@ class _FakeBrowser:
         self.serial = 0
 
 
+class _FakeContexts(hitl.BrowserContexts):
+    """The session layer's three CDP operations, recorded against a :class:`_FakeBrowser`.
+
+    Each operation delegates to a replaceable coroutine (``open_impl``, ``dispose_impl``,
+    ``export_impl``) so a test can make one of them fail, hang or wedge while the manager
+    under test is the real one, built through its constructor.
+    """
+
+    def __init__(self, browser: _FakeBrowser) -> None:
+        self.browser = browser
+
+        async def _open(_browser: Any, url: str, nav_steps: Any, session_state: Any = None) -> tuple[Any, Any]:
+            # Yields, and that is load-bearing rather than incidental. The real helper does
+            # several CDP round trips, so it suspends here; a fake that returns without ever
+            # awaiting lets every task run to completion uninterrupted, and the read-then-write
+            # race this fixture exists to expose becomes structurally unreachable. Verified by
+            # removing the manager's lock and watching the concurrency test fail.
+            await asyncio.sleep(0)
+            browser.serial += 1
+            ctx = f"ctx-{browser.serial}"
+            browser.contexts.append(ctx)
+            return object(), ctx
+
+        async def _dispose(_browser: Any, context_id: Any) -> None:
+            browser.disposed.append(context_id)
+
+        async def _export(_browser: Any, _tab: Any, _context_id: Any) -> dict[str, Any]:
+            return {"cookies": [], "origins": []}
+
+        self.open_impl: Callable[..., Awaitable[tuple[Any, Any]]] = _open
+        self.dispose_impl: Callable[..., Awaitable[None]] = _dispose
+        self.export_impl: Callable[..., Awaitable[dict[str, Any]]] = _export
+
+    async def open(
+        self, browser: Any, url: str, nav_steps: Any, session_state: dict[str, Any] | None = None
+    ) -> tuple[Any, Any]:
+        return await self.open_impl(browser, url, nav_steps, session_state)
+
+    async def dispose(self, browser: Any, context_id: Any) -> None:
+        await self.dispose_impl(browser, context_id)
+
+    async def export_state(self, browser: Any, tab: Any, context_id: Any) -> dict[str, Any]:
+        return await self.export_impl(browser, tab, context_id)
+
+
 @pytest.fixture()
-def manager(monkeypatch: pytest.MonkeyPatch) -> SessionManager:
+def browser() -> _FakeBrowser:
+    """The one browser every operation in a test is recorded against."""
+    return _FakeBrowser()
+
+
+@pytest.fixture()
+def contexts(browser: _FakeBrowser) -> _FakeContexts:
+    """The CDP operations the manager is constructed with, replaceable per test."""
+    return _FakeContexts(browser)
+
+
+def _manager(browser: _FakeBrowser, contexts: _FakeContexts, **overrides: Any) -> SessionManager:
+    """A manager with the browser, display and CDP operations faked, through its constructor."""
+    kwargs: dict[str, Any] = {"max_slots": 2, "ttl_seconds": 100.0, **overrides}
+    return SessionManager(vnc=_FakeVnc(), browser_provider=lambda: browser, contexts=contexts, **kwargs)
+
+
+@pytest.fixture()
+def manager(browser: _FakeBrowser, contexts: _FakeContexts) -> SessionManager:
     """A manager with the browser and display faked, and CDP calls intercepted."""
-    browser = _FakeBrowser()
-
-    async def _fake_open(_browser: Any, url: str, nav_steps: Any, session_state: Any = None) -> tuple[Any, Any]:
-        # Yields, and that is load-bearing rather than incidental. The real helper does
-        # several CDP round trips, so it suspends here; a fake that returns without ever
-        # awaiting lets every task run to completion uninterrupted, and the read-then-write
-        # race this fixture exists to expose becomes structurally unreachable. Verified by
-        # removing the manager's lock and watching the concurrency test fail.
-        await asyncio.sleep(0)
-        browser.serial += 1
-        ctx = f"ctx-{browser.serial}"
-        browser.contexts.append(ctx)
-        return object(), ctx
-
-    async def _fake_dispose(_browser: Any, context_id: Any) -> None:
-        browser.disposed.append(context_id)
-
-    monkeypatch.setattr(hitl, "_open_isolated", _fake_open)
-    monkeypatch.setattr(hitl, "_dispose_context", _fake_dispose)
-    mgr = SessionManager(vnc=_FakeVnc(), browser_provider=lambda: browser, max_slots=2, ttl_seconds=100.0)
-    mgr.browser = browser  # type: ignore[attr-defined]  -- test handle
-    return mgr
+    return _manager(browser, contexts)
 
 
 async def test_opening_a_session_brings_up_the_display_and_mints_a_token(manager: SessionManager) -> None:
@@ -159,7 +202,9 @@ async def test_each_tab_gets_its_own_context(manager: SessionManager) -> None:
     assert a.context_id != b.context_id, "two targets shared one browser context"
 
 
-async def test_completing_a_tab_frees_its_slot_and_drops_its_context(manager: SessionManager) -> None:
+async def test_completing_a_tab_frees_its_slot_and_drops_its_context(
+    manager: SessionManager, browser: _FakeBrowser
+) -> None:
     """The slot has to come back, or the budget is a one-way countdown to a dead session."""
     session = await manager.open(now=1000.0)
     a = await manager.open_tab(session, target_id="a", url="https://a.example")
@@ -168,7 +213,7 @@ async def test_completing_a_tab_frees_its_slot_and_drops_its_context(manager: Se
     await manager.complete_tab(session, a.tab_id)
 
     assert session.free_slots() == 1
-    assert a.context_id in manager.browser.disposed  # type: ignore[attr-defined]
+    assert a.context_id in browser.disposed
     # And the freed slot is genuinely reusable, not merely counted.
     await manager.open_tab(session, target_id="c", url="https://c.example")
     assert session.free_slots() == 0
@@ -180,7 +225,9 @@ async def test_completing_an_unknown_tab_is_refused(manager: SessionManager) -> 
         await manager.complete_tab(session, "not-a-tab")
 
 
-async def test_the_reaper_closes_an_abandoned_session_and_drops_every_context(manager: SessionManager) -> None:
+async def test_the_reaper_closes_an_abandoned_session_and_drops_every_context(
+    manager: SessionManager, browser: _FakeBrowser
+) -> None:
     """A hard TTL, because an operator who walks away leaves a live authenticated browser.
 
     An idle timeout cannot tell "walked away" from "reading carefully", so the only bound that
@@ -194,7 +241,7 @@ async def test_the_reaper_closes_an_abandoned_session_and_drops_every_context(ma
     assert await manager.reap(now=1101.0) is True
 
     assert manager.current() is None
-    assert len(manager.browser.disposed) == 2, "the reaped session leaked browser contexts"  # type: ignore[attr-defined]
+    assert len(browser.disposed) == 2, "the reaped session leaked browser contexts"
     assert not manager.vnc.health()  # type: ignore[union-attr]
 
 
@@ -269,7 +316,7 @@ async def test_a_non_ascii_id_or_token_is_refused_rather_than_crashing(manager: 
 
 
 async def test_a_tab_that_fails_to_open_does_not_keep_its_slot(
-    manager: SessionManager, monkeypatch: pytest.MonkeyPatch
+    manager: SessionManager, contexts: _FakeContexts
 ) -> None:
     """The reservation must not outlive the attempt it was reserving for.
 
@@ -283,7 +330,7 @@ async def test_a_tab_that_fails_to_open_does_not_keep_its_slot(
         await asyncio.sleep(0)
         raise RuntimeError("navigation failed")
 
-    monkeypatch.setattr(hitl, "_open_isolated", _explode)
+    contexts.open_impl = _explode
     with pytest.raises(RuntimeError, match="navigation failed"):
         await manager.open_tab(session, target_id="doomed", url="https://x.example")
 
@@ -291,7 +338,7 @@ async def test_a_tab_that_fails_to_open_does_not_keep_its_slot(
     assert session.tabs == {}
 
 
-async def test_a_slow_tab_open_does_not_block_the_session(manager: SessionManager, monkeypatch) -> None:
+async def test_a_slow_tab_open_does_not_block_the_session(manager: SessionManager, contexts: _FakeContexts) -> None:
     """The lock must not span the navigation, or the model this session documents is false.
 
     "Backgrounding a slow target still holds its slot" only works if a slow target does not
@@ -307,7 +354,7 @@ async def test_a_slow_tab_open_does_not_block_the_session(manager: SessionManage
         await release.wait()
         return object(), "ctx-slow"
 
-    monkeypatch.setattr(hitl, "_open_isolated", _slow)
+    contexts.open_impl = _slow
     task = asyncio.create_task(manager.open_tab(session, target_id="slow", url="https://slow.example"))
     await asyncio.wait_for(started.wait(), timeout=1.0)
 
@@ -323,7 +370,9 @@ async def test_a_slow_tab_open_does_not_block_the_session(manager: SessionManage
     assert session.free_slots() == session.max_slots - 1
 
 
-async def test_teardown_drops_contexts_stops_the_display_and_is_idempotent(manager: SessionManager) -> None:
+async def test_teardown_drops_contexts_stops_the_display_and_is_idempotent(
+    manager: SessionManager, browser: _FakeBrowser
+) -> None:
     """Teardown is what an error handler and a reaper both call, so it must not raise twice."""
     session = await manager.open(now=1000.0)
     await manager.open_tab(session, target_id="a", url="https://a.example")
@@ -333,12 +382,12 @@ async def test_teardown_drops_contexts_stops_the_display_and_is_idempotent(manag
     await manager.close()
 
     assert manager.current() is None
-    assert len(manager.browser.disposed) == 1  # type: ignore[attr-defined]
+    assert len(browser.disposed) == 1
     assert not manager.vnc.health()  # type: ignore[union-attr]
 
 
 async def test_a_context_that_will_not_dispose_does_not_block_the_rest_of_teardown(
-    manager: SessionManager, monkeypatch: pytest.MonkeyPatch
+    manager: SessionManager, contexts: _FakeContexts
 ) -> None:
     """One stuck context must not strand the display and every other tab.
 
@@ -353,7 +402,7 @@ async def test_a_context_that_will_not_dispose_does_not_block_the_rest_of_teardo
     async def _explode(_browser: Any, _context_id: Any) -> None:
         raise RuntimeError("CDP is not answering")
 
-    monkeypatch.setattr(hitl, "_dispose_context", _explode)
+    contexts.dispose_impl = _explode
     await manager.close(session)
 
     assert manager.current() is None
@@ -380,7 +429,7 @@ async def test_exported_local_storage_is_actually_restored(monkeypatch: pytest.M
         "origins": [{"origin": "https://example.gov/page", "localStorage": '{"cf_token": "earned", "n": "2"}'}],
     }
 
-    await hitl._apply_origin_storage(_Tab(), state)
+    await hitl.apply_origin_storage(_Tab(), state)
 
     joined = " ".join(e for _, e in written)
     assert "cf_token" in joined
@@ -403,7 +452,7 @@ async def test_storage_is_not_written_into_the_wrong_origin() -> None:
             written.append(expression)
 
     state = {"origins": [{"origin": "https://example.gov/page", "localStorage": '{"k": "v"}'}]}
-    await hitl._apply_origin_storage(_Tab(), state)
+    await hitl.apply_origin_storage(_Tab(), state)
 
     assert written == []
 
@@ -423,7 +472,7 @@ async def test_a_value_with_quotes_does_not_break_the_expression() -> None:
             written.append(expression)
 
     nasty = '{"k": "va\\"lue\\u0027); alert(1); //"}'
-    await hitl._apply_origin_storage(_Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": nasty}]})
+    await hitl.apply_origin_storage(_Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": nasty}]})
 
     assert len(written) == 1
     # The payload is inside a JSON string literal rather than loose in the source.
@@ -441,9 +490,7 @@ async def test_unparseable_storage_is_skipped_without_losing_the_cookies() -> No
         async def evaluate(self, expression: str, **_kw: Any) -> None:
             raise AssertionError("should not have been called")
 
-    await hitl._apply_origin_storage(
-        _Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": "{oh no"}]}
-    )
+    await hitl.apply_origin_storage(_Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": "{oh no"}]})
 
 
 async def test_a_page_that_refuses_script_does_not_fail_the_restore() -> None:
@@ -455,12 +502,12 @@ async def test_a_page_that_refuses_script_does_not_fail_the_restore() -> None:
         async def evaluate(self, expression: str, **_kw: Any) -> None:
             raise RuntimeError("script evaluation is blocked")
 
-    await hitl._apply_origin_storage(
+    await hitl.apply_origin_storage(
         _Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": '{"a":"1"}'}]}
     )
 
 
-async def test_a_wedged_export_does_not_defer_the_reaper(manager: SessionManager, monkeypatch) -> None:
+async def test_a_wedged_export_does_not_defer_the_reaper(manager: SessionManager, contexts: _FakeContexts) -> None:
     """The completion path's CDP work must not span the lock either.
 
     Sibling of the slow-OPEN test above, and the same failure at the other end of a tab's
@@ -475,12 +522,12 @@ async def test_a_wedged_export_does_not_defer_the_reaper(manager: SessionManager
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def _wedged(_tab: Any) -> dict[str, Any] | None:
+    async def _wedged(_browser: Any, _tab: Any, _context_id: Any) -> dict[str, Any]:
         started.set()
         await release.wait()
         return {"cookies": []}
 
-    monkeypatch.setattr(manager, "_export_state", _wedged)
+    contexts.export_impl = _wedged
     task = asyncio.create_task(manager.complete_tab(session, tab.tab_id))
     await asyncio.wait_for(started.wait(), timeout=1.0)
 
@@ -495,7 +542,7 @@ async def test_a_wedged_export_does_not_defer_the_reaper(manager: SessionManager
     await asyncio.wait_for(task, timeout=1.0)
 
 
-async def test_a_tab_whose_export_hangs_still_gives_up_its_slot(manager: SessionManager, monkeypatch) -> None:
+async def test_a_tab_whose_export_hangs_still_gives_up_its_slot(browser: _FakeBrowser, contexts: _FakeContexts) -> None:
     """Popping is the claim, so a browser that stops answering costs the state and not the slot.
 
     A hang rather than a raise, because a hang is the only failure that can actually get here:
@@ -507,39 +554,45 @@ async def test_a_tab_whose_export_hangs_still_gives_up_its_slot(manager: Session
     broken, and a bounded working set that cannot be reclaimed is just a smaller ceiling on
     the same leak.
     """
-    monkeypatch.setattr(hitl, "_COMPLETE_TAB_TIMEOUT_SECONDS", 0.05)
+    manager = _manager(browser, contexts, complete_tab_timeout_seconds=0.05)
     session = await manager.open(now=1000.0)
     tab = await manager.open_tab(session, target_id="t", url="https://example.gov/a")
     before = session.free_slots()
 
-    async def _hangs(_tab: Any) -> dict[str, Any] | None:
+    async def _hangs(_browser: Any, _tab: Any, _context_id: Any) -> dict[str, Any]:
         await asyncio.sleep(3600)
         return {"cookies": []}
 
-    monkeypatch.setattr(manager, "_export_state", _hangs)
+    contexts.export_impl = _hangs
     completed = await asyncio.wait_for(manager.complete_tab(session, tab.tab_id), timeout=2.0)
 
     assert completed.exported_state is None, "a hung export yields no state rather than hanging the caller"
     assert session.free_slots() == before + 1, "and the slot comes back regardless"
 
 
-async def test_export_state_never_raises_into_a_completion(manager: SessionManager, monkeypatch) -> None:
+async def test_export_state_never_raises_into_a_completion(manager: SessionManager, contexts: _FakeContexts) -> None:
     """The contract the narrowed catch in complete_tab depends on.
 
     `complete_tab` catches only TimeoutError. That is correct exactly as long as this holds,
-    so it is asserted here rather than assumed -- if `_export_state` ever starts propagating,
-    this fails and names the reason instead of a completion blowing up in production.
+    so it is asserted here rather than assumed -- if the export ever starts propagating, this
+    fails and names the reason instead of a completion blowing up in production.
+
+    Asserted through `complete_tab` itself, the caller whose narrowed catch depends on the
+    promise: an export that raised would reach this test as an exception, and one that keeps
+    its promise yields a completed tab carrying no state.
     """
     session = await manager.open(now=1000.0)
     tab = await manager.open_tab(session, target_id="t", url="https://example.gov/a")
+    before = session.free_slots()
 
     async def _boom(*_a: Any, **_k: Any) -> dict[str, Any]:
         raise RuntimeError("the browser stopped answering")
 
-    monkeypatch.setattr(hitl, "_export_context_state", _boom)
-    state = await manager._export_state(session.tabs[tab.tab_id])
+    contexts.export_impl = _boom
+    completed = await manager.complete_tab(session, tab.tab_id)
 
-    assert state is None, "a failing export returns None rather than raising into the completion"
+    assert completed.exported_state is None, "a failing export yields no state rather than raising into the completion"
+    assert session.free_slots() == before + 1, "and the completion still frees the slot"
 
 
 class TestCredentialsAreNotRenderable:

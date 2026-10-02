@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Any, NamedTuple, TYPE_CHECKING
 
 import asyncpg
 from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 
+from threetears.core.backends.schema_sql import json_default
 from threetears.core.collections.l2_order import l2_order_of
+from threetears.core.exceptions import CorruptCacheEntry
 from threetears.observe import get_logger
 
 __all__ = [
@@ -187,7 +190,7 @@ class WriteBuffer:
                     "key": l1_key,
                     "table_name": table_name,
                     "entity_id": str(entity_id),
-                    "data": json.dumps(data, default=str),
+                    "data": json.dumps(data, default=json_default),
                     "retries": retries,
                     "date_updated": datetime.now(UTC).isoformat(),
                 },
@@ -199,7 +202,7 @@ class WriteBuffer:
         async with self._lock:
             self._add_locked(table_name, entity_id, data, retries)
 
-    async def drain(self) -> list[PendingWrite]:
+    async def drain(self, decode: Callable[[str, str], dict[str, Any]] | None = None) -> list[PendingWrite]:
         """Claim all un-claimed pending writes for flushing.
 
         marks the returned writes in-flight so a concurrent drain cannot
@@ -210,6 +213,16 @@ class WriteBuffer:
         write is acked — so a crash mid-flush replays the write instead of
         losing it from both tiers.
 
+        with an L1 backend every claimed row is read back from its JSON text -- on the same
+        process's next drain as well as after a crash -- so its UUIDs, instants, Decimals and
+        bytes arrive as the strings the encoder wrote. ``decode`` turns that text back into the
+        typed row the write was made with; :func:`flush_pending` passes one that rehydrates
+        through the owning collection's ``decode_row``. a row ``decode`` cannot read is handed on as
+        parsed JSON and logged, so the flush's retry budget decides its fate instead of one
+        unreadable row stopping every drain.
+
+        :param decode: ``(table_name, json_text) -> row``, or ``None`` for plain ``json.loads``
+        :ptype decode: Callable[[str, str], dict[str, Any]] | None
         :return: pending writes newly claimed by this call
         :rtype: list[PendingWrite]
         """
@@ -222,7 +235,11 @@ class WriteBuffer:
                     if key in self._in_flight:
                         continue
                     raw_data = row["data"]
-                    parsed_data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+                    parsed_data = (
+                        _decoded_row(row["table_name"], row["entity_id"], raw_data, decode)
+                        if isinstance(raw_data, str)
+                        else raw_data
+                    )
                     claimed.append(
                         PendingWrite(
                             table_name=row["table_name"],
@@ -307,6 +324,82 @@ class WriteBuffer:
     def pending_count(self) -> int:
         """Return the number of pending writes in the buffer."""
         return len(self._buf)
+
+
+def _decoded_row(
+    table_name: str,
+    entity_id: str,
+    text: str,
+    decode: Callable[[str, str], dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """one buffered row read back from its JSON text, typed when a decoder is given.
+
+    :param table_name: the row's destination table
+    :ptype table_name: str
+    :param entity_id: the row's entity id, as the buffer stores it
+    :ptype entity_id: str
+    :param text: the stored JSON text
+    :ptype text: str
+    :param decode: the typed decoder, or ``None`` for plain ``json.loads``
+    :ptype decode: Callable[[str, str], dict[str, Any]] | None
+    :return: the row
+    :rtype: dict[str, Any]
+    """
+    result: dict[str, Any] | None = None
+    if decode is not None:
+        try:
+            result = decode(table_name, text)
+        except (ValueError, TypeError, CorruptCacheEntry) as exc:
+            # the flush retry budget governs it from here: its L3 write fails on the untyped
+            # values, is retried, and is dropped with a permanent-failure log if it never lands
+            log.error(
+                "buffered write could not be rehydrated by its table's collection; flushing it as "
+                "parsed JSON. inspect the write_buffer row for a value its column type cannot hold",
+                extra={"extra_data": {"table": table_name, "entity_id": entity_id, "error": str(exc)}},
+            )
+    if result is None:
+        result = json.loads(text)
+    return result
+
+
+def _collection_decoder(registry: CollectionRegistry) -> Callable[[str, str], dict[str, Any]]:
+    """the decoder :func:`flush_pending` hands :meth:`WriteBuffer.drain`: the owning collection's own decode.
+
+    Every registered collection decodes the text through
+    :meth:`~threetears.core.collections.base.BaseCollection.decode_row`: its codec, then its
+    declared instants rehydrated aware (a legacy naive or ``str(dt)`` spelling read as UTC). A
+    :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection`'s codec types every
+    declared column besides; a durable-store, dynamic or hand-written collection gets at least its
+    instants back typed. Both encoders the text could have come from write the one stored form
+    (:func:`~threetears.core.backends.schema_sql.json_default`). A table with no registered
+    collection gets the parsed JSON: without a collection there is nothing to type it by.
+
+    :param registry: the registry resolving a table to its collection
+    :ptype registry: CollectionRegistry
+    :return: ``(table_name, json_text) -> row``
+    :rtype: Callable[[str, str], dict[str, Any]]
+    """
+
+    def decode(table_name: str, text: str) -> dict[str, Any]:
+        """rehydrate one buffered row through its table's collection.
+
+        :param table_name: the row's destination table
+        :ptype table_name: str
+        :param text: the stored JSON text
+        :ptype text: str
+        :return: the typed row, or the parsed JSON when the table has no collection
+        :rtype: dict[str, Any]
+        :raises CorruptCacheEntry: when a declared instant will not parse
+        """
+        collection = registry.get_collection(table_name)
+        result: dict[str, Any]
+        if collection is not None:
+            result = collection.decode_row(text.encode("utf-8"))
+        else:
+            result = json.loads(text)
+        return result
+
+    return decode
 
 
 def _orders_after(pending: dict[str, Any], incoming: dict[str, Any]) -> bool:
@@ -694,7 +787,7 @@ async def flush_pending(
     :return: number of entities successfully persisted (both paths summed).
     :rtype: int
     """
-    pending = await write_buffer.drain()
+    pending = await write_buffer.drain(decode=_collection_decoder(registry))
     if not pending:
         return 0
 

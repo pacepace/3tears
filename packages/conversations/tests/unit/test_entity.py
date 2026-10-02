@@ -348,10 +348,10 @@ class TestConversationSetterWithCollection:
         self,
         mock_collection: tuple[MagicMock, dict[str, dict[str, object]]],
     ) -> None:
-        """setter routes the new value through the collection."""
+        """setter routes the new value through the collection, for an entity that lives in L1 (a new one)."""
         coll, _ = mock_collection
         data = _sample_data()
-        entity = Conversation(data, is_new=False, collection=coll)
+        entity = Conversation(data, is_new=True, collection=coll)
 
         entity.status = "closed"
 

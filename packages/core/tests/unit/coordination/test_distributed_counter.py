@@ -239,3 +239,32 @@ class TestCasContention:
         result = await counter.increment("k")
 
         assert result == 2
+
+
+class TestOwnerScopedCounterKeys:
+    """a counter over a SHARED bucket keys every count under its owner's scope."""
+
+    _SCOPE = "agent_pod-019470a8b5c37def81230000000000aa"
+
+    async def test_counts_land_under_the_scope_and_read_back_through_it(self) -> None:
+        client = FakeNatsClient()
+        counter = DistributedCounter(client, bucket_name="ratelimits", key_scope=self._SCOPE)  # type: ignore[arg-type]
+        assert await counter.increment("http.u1") == 1
+        assert await counter.increment("http.u1", delta=2) == 3
+        assert await counter.decrement("http.u1") == 2
+        assert await counter.get("http.u1") == 2
+        bucket = await client.kv_bucket(name="ratelimits")
+        assert await bucket.get(key=f"{self._SCOPE}.http.u1") is not None
+        assert await bucket.get(key="http.u1") is None
+
+    async def test_two_owners_count_apart_in_one_bucket(self) -> None:
+        client = FakeNatsClient()
+        mine = DistributedCounter(client, bucket_name="ratelimits", key_scope=self._SCOPE)  # type: ignore[arg-type]
+        theirs = DistributedCounter(client, bucket_name="ratelimits", key_scope="agent_pod-other")  # type: ignore[arg-type]
+        await mine.increment("k")
+        assert await theirs.get("k") == 0
+
+    @pytest.mark.parametrize("scope", ["", "a.b", "a*", ">"])
+    def test_a_scope_that_is_not_one_literal_token_is_refused(self, scope: str) -> None:
+        with pytest.raises(ValueError, match="key_scope"):
+            DistributedCounter(FakeNatsClient(), bucket_name="ratelimits", key_scope=scope)  # type: ignore[arg-type]

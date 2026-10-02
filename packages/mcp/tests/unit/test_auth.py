@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -17,6 +18,38 @@ from threetears.mcp.auth import (
 # ---------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------
+
+#: how long a test waits for the catch-up loop to tick; a bound on a hang, never a pacing sleep.
+_TICK_DEADLINE_SECONDS = 5.0
+
+
+def _counting_catch_up(ticks: int, *, first_raises: BaseException | None = None) -> tuple[AsyncMock, asyncio.Event]:
+    """a ``catch_up`` stand-in that sets an event once it has been awaited *ticks* times.
+
+    The catch-up loop runs on a timer, so a test that slept a fixed while and then counted
+    ticks failed whenever the machine was slow enough to fit fewer ticks into the sleep. The
+    test waits on this event instead, bounded by :data:`_TICK_DEADLINE_SECONDS`.
+
+    :param ticks: the call count at which the event is set
+    :ptype ticks: int
+    :param first_raises: raised by the first call instead of returning, when given
+    :ptype first_raises: BaseException | None
+    :return: the mock and the event
+    :rtype: tuple[AsyncMock, asyncio.Event]
+    """
+    reached = asyncio.Event()
+    calls = 0
+
+    async def _tick(*_args: Any, **_kwargs: Any) -> int:
+        nonlocal calls
+        calls += 1
+        if calls >= ticks:
+            reached.set()
+        if calls == 1 and first_raises is not None:
+            raise first_raises
+        return 0
+
+    return AsyncMock(side_effect=_tick), reached
 
 
 def _make_listener_capturing_subscribe() -> tuple[Any, Any, list[Any], list[Any]]:
@@ -46,6 +79,18 @@ def _make_listener_capturing_subscribe() -> tuple[Any, Any, list[Any], list[Any]
     fake_listener.subscribe = AsyncMock(side_effect=_subscribe)
     fake_listener.catch_up = AsyncMock(return_value=0)
     return fake_client, fake_listener, captured, captured_resets
+
+
+_CATCHUP_TASK_NAME = "mcp-rbac-catchup-loop"
+
+
+def _running_catchup_loops() -> list[asyncio.Task[Any]]:
+    """the live catch-up loop tasks on the running event loop.
+
+    the authorizer names its periodic task, so its presence is observable
+    from the event loop without reaching into the authorizer.
+    """
+    return [task for task in asyncio.all_tasks() if task.get_name() == _CATCHUP_TASK_NAME and not task.done()]
 
 
 async def _build_started_authorizer(
@@ -364,8 +409,10 @@ class TestLocalGrantAuthorizer:
         """stop() cancels the spawned tick; second stop is a no-op."""
         loader = AsyncMock(return_value=[])
         authz, _ = await _build_started_authorizer(loader=loader)
+        assert len(_running_catchup_loops()) == 1
         # first stop() cancels the task.
         await authz.stop()
+        assert _running_catchup_loops() == []
         # second stop() is safe (no-op).
         await authz.stop()
 
@@ -378,14 +425,14 @@ class TestLocalGrantAuthorizerCatchupTick:
         """the spawned tick calls EpochListener.catch_up on every interval.
 
         constructs the authorizer with a tiny interval and asserts
-        catch_up was called at least once before stop. proves the
+        catch_up was called at least twice before stop. proves the
         background task wires the right method, even if we don't
         wait for many ticks.
         """
-        import asyncio
 
         loader = AsyncMock(return_value=[])
         client, listener, _, _ = _make_listener_capturing_subscribe()
+        listener.catch_up, ticked = _counting_catch_up(2)
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
             epoch_client=client,
@@ -394,9 +441,9 @@ class TestLocalGrantAuthorizerCatchupTick:
         )
         await authz.start()
         try:
-            # let the loop run a couple of ticks.
-            await asyncio.sleep(0.05)
-            assert listener.catch_up.await_count >= 1
+            # wait for a couple of ticks, however long the machine takes to schedule them.
+            await asyncio.wait_for(ticked.wait(), timeout=_TICK_DEADLINE_SECONDS)
+            assert listener.catch_up.await_count >= 2
             # the tick uses Subjects.mcp_rbac_epoch as the subject.
             from threetears.nats import Subjects
 
@@ -412,19 +459,11 @@ class TestLocalGrantAuthorizerCatchupTick:
         proves the narrow exception scope around catch_up keeps the
         safety net alive across a transient L3 / NATS hiccup.
         """
-        import asyncio
 
         loader = AsyncMock(return_value=[])
         client, listener, _, _ = _make_listener_capturing_subscribe()
         # first catch_up raises; subsequent ones return 0.
-        listener.catch_up = AsyncMock(
-            side_effect=[
-                RuntimeError("transient"),
-                0,
-                0,
-                0,
-            ]
-        )
+        listener.catch_up, survived = _counting_catch_up(2, first_raises=RuntimeError("transient"))
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
             epoch_client=client,
@@ -433,8 +472,8 @@ class TestLocalGrantAuthorizerCatchupTick:
         )
         await authz.start()
         try:
-            await asyncio.sleep(0.05)
-            # at least 2 calls means the loop survived the first error.
+            # a second call means the loop survived the first one's error.
+            await asyncio.wait_for(survived.wait(), timeout=_TICK_DEADLINE_SECONDS)
             assert listener.catch_up.await_count >= 2
         finally:
             await authz.stop()
@@ -480,7 +519,7 @@ class TestLocalGrantAuthorizerOptionalEpoch:
             # cache primed (loader called once at start)
             assert loader.await_count == 1
             # no catchup task in single-process mode
-            assert authz._catchup_task is None  # noqa: SLF001
+            assert _running_catchup_loops() == []
         finally:
             await authz.stop()
 

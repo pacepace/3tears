@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import gc
 import json
 import os
 import subprocess
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -107,6 +109,8 @@ class FakeSession:
         self.released = 0
         self.start_ticks: int | None = None
         self.contexts: list[Any] = []
+        #: The context each dispose ran in, so a test can tell which task stopped the session.
+        self.dispose_contexts: list[contextvars.Context] = []
         #: The loop the session was started on, so a test can tell which loop started it.
         self.loop = asyncio.get_running_loop()
         FakeSession.instances.append(self)
@@ -155,6 +159,7 @@ class FakeSession:
         del grace_seconds
         if self.closed:
             return
+        self.dispose_contexts.append(contextvars.copy_context())
         self.closed = True
         if self.dispose_delay:
             await asyncio.sleep(self.dispose_delay)
@@ -193,10 +198,105 @@ def _pool(**kwargs: Any) -> ClaudeCliPool:
 async def _spares_started(pool: ClaudeCliPool) -> None:
     """wait for every spare the pool is starting in the background.
 
+    A spare starts in a task of its own once a call has returned, so the test waits for every
+    other task on the loop to finish -- except the reader loops of scripted CLIs
+    (:data:`_CLI_READERS`), which run until their session is stopped. The pools these tests build
+    have no idle reaper (``idle_ttl_seconds=0``), so a spare is the only other background work.
+
     :param pool: the pool
     :ptype pool: ClaudeCliPool
     """
-    await asyncio.gather(*list(pool._spares))  # noqa: SLF001 -- a spare starts in a background task the test must let finish
+    del pool
+    # re-read after each completion: a reader created by a spare that is still connecting registers
+    # itself on its first step, so a snapshot taken before that step names it as background work.
+    while others := asyncio.all_tasks() - {asyncio.current_task()} - set(_CLI_READERS):
+        await asyncio.wait(others, return_when=asyncio.FIRST_COMPLETED)
+
+
+#: The reader task of every scripted CLI a test connected (:func:`_scripted_cli`). Each runs for its
+#: session's life, so waiting for background work must not wait for them.
+_CLI_READERS: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
+
+
+async def _reaped(session: FakeSession, *, deadline_seconds: float = 5.0) -> None:
+    """wait until the pool's idle reaper has stopped ``session``.
+
+    The reaper runs no more often than once a second, whatever the TTL, so this polls rather than
+    sleeping a fixed time.
+
+    :param session: the idle session the reaper should stop
+    :ptype session: FakeSession
+    :param deadline_seconds: how long to wait before failing
+    :ptype deadline_seconds: float
+    :raises AssertionError: when the reaper has not stopped it by the deadline
+    """
+    deadline = time.monotonic() + deadline_seconds
+    while session.disposals == 0:
+        assert time.monotonic() < deadline, "the idle reaper never stopped a session past its TTL"
+        await asyncio.sleep(0.05)
+
+
+def _start_ticks(pid: int) -> int | None:
+    """a process's start time in clock ticks, read from ``/proc`` independently of the pool.
+
+    :param pid: the process
+    :ptype pid: int
+    :return: field 22 of ``/proc/<pid>/stat``, or ``None`` when it cannot be read
+    :rtype: int | None
+    """
+    try:
+        raw = open(f"/proc/{pid}/stat", encoding="utf-8").read()
+    except OSError:
+        return None
+    return int(raw[raw.rfind(")") + 2 :].split()[19])
+
+
+def _children_of(pid: int) -> list[int]:
+    """the processes whose parent is ``pid``, read from ``/proc`` independently of the pool.
+
+    :param pid: the parent
+    :ptype pid: int
+    :return: the child pids
+    :rtype: list[int]
+    """
+    children: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            raw = open(f"/proc/{entry}/stat", encoding="utf-8").read()
+        except OSError:
+            continue
+        if int(raw[raw.rfind(")") + 2 :].split()[1]) == pid:
+            children.append(int(entry))
+    return children
+
+
+async def _pooling_is_on(pool: ClaudeCliPool, options: Any = None) -> bool:
+    """whether the pool still takes a call on, rather than refusing it because pooling is off.
+
+    A pool that turned pooling off refuses every checkout before it starts or prepares anything;
+    any other outcome -- the call served, or its session failing to prepare -- is pooling at work.
+
+    :param pool: the pool
+    :ptype pool: ClaudeCliPool
+    :param options: the call's launch options, default ones when ``None``
+    :ptype options: Any
+    :return: ``False`` only when the pool refused the call as pooling being off
+    :rtype: bool
+    """
+    try:
+        async with pool.checkout(options or Options(), token=TOKEN, tool_server=None):
+            pass
+    except ClaudeCliPoolExhausted as exc:
+        if "pooling is off" in str(exc):
+            return False
+        raise
+    except ClaudeCliSessionError:
+        # NOSILENT: the pool took the call on and started or prepared a session for it; a session
+        # that then fails is the outcome some of these scripted CLIs are built to produce.
+        return True
+    return True
 
 
 async def _call(pool: ClaudeCliPool, options: Any = None, **checkout: Any) -> FakeSession:
@@ -339,12 +439,23 @@ class TestTheSystemPromptIsSwitchedAsAnAgent:
         await pool.aclose()
 
     async def test_a_key_holds_a_bounded_number_of_prompts(self) -> None:
+        """Each new prompt starts a CLI defining every prompt its key holds; the count stops growing
+        at the bound, and from then on the least recently used prompt is the one dropped."""
         pool = _pool(per_key=64, max_sessions=64)
-        for number in range(claude_cli_pool._MAX_AGENTS_PER_KEY + 3):  # noqa: SLF001 -- the bound under test
+        attempts = 100
+        defined: list[int] = []
+        for number in range(attempts):
             await _call(pool, Options(system_prompt=f"persona {number}"))
+            defined.append(len(FakeSession.instances[-1].options.agents))
+        bound = max(defined)
+        assert bound < attempts, "a key kept every prompt it was ever sent"
+        assert defined == [*range(1, bound + 1), *[bound] * (attempts - bound)], (
+            "the count did not grow one per prompt and then hold at the bound"
+        )
         newest = FakeSession.instances[-1]
-        assert len(newest.options.agents) == claude_cli_pool._MAX_AGENTS_PER_KEY  # noqa: SLF001
-        assert agent_name("persona 0") not in newest.options.agents, "the least recently used prompt stayed"
+        assert set(newest.options.agents) == {
+            agent_name(f"persona {number}") for number in range(attempts - bound, attempts)
+        }, "the prompts kept are not the most recently used ones"
         await pool.aclose()
 
     def test_a_system_prompt_is_not_part_of_the_launch_key(self) -> None:
@@ -611,21 +722,25 @@ class TestTheCapsHold:
         """A turn stopped during the seconds a CLI takes to start must not strand its slot:
         a slot lost there is lost for the life of the process."""
         starting = asyncio.Event()
+        starts = 0
 
-        async def slow_factory(options: Any, *, key: str) -> Any:
-            starting.set()
-            await asyncio.sleep(3600)
+        async def first_start_hangs(options: Any, *, key: str) -> Any:
+            nonlocal starts
+            starts += 1
+            if starts == 1:
+                starting.set()
+                await asyncio.sleep(3600)
             return FakeSession(options, key)
 
-        pool = _pool(per_key=1, session_factory=slow_factory)
+        pool = _pool(per_key=1, session_factory=first_start_hangs)
         task = asyncio.create_task(self._borrow_once(pool))
         await starting.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         assert pool.live_count == 0
-        pool._start = _factory  # noqa: SLF001 -- the next start should succeed
         await self._borrow_once(pool)
+        assert len(FakeSession.instances) == 1, "the key's only slot was still held by the cancelled start"
         await pool.aclose()
 
     async def test_a_cli_that_will_not_start_frees_the_slot(self) -> None:
@@ -657,8 +772,7 @@ class TestNothingOutlivesTheProcess:
         pool = _pool(idle_ttl_seconds=0.01)
         async with pool.checkout(Options(), token=TOKEN, tool_server=None):
             pass
-        await asyncio.sleep(0.02)
-        await pool._reap_once()  # noqa: SLF001
+        await _reaped(FakeSession.instances[0])
         assert FakeSession.instances[0].disposals == 1
         assert pool.live_count == 0
         await pool.aclose()
@@ -666,12 +780,14 @@ class TestNothingOutlivesTheProcess:
     async def test_the_reaper_does_not_inherit_the_request_that_started_it(self) -> None:
         probe: contextvars.ContextVar[str] = contextvars.ContextVar("request_probe", default="none")
         probe.set("the-request-that-started-it")
-        pool = _pool(idle_ttl_seconds=600.0)
+        pool = _pool(idle_ttl_seconds=0.01)
         try:
             async with pool.checkout(Options(), token=TOKEN, tool_server=None):
                 pass
-            assert pool._reaper is not None  # noqa: SLF001
-            assert pool._reaper.get_context().get(probe, "none") == "none"  # noqa: SLF001
+            session = FakeSession.instances[0]
+            await _reaped(session)
+            [stopped_in] = session.dispose_contexts
+            assert stopped_in.get(probe, "none") == "none", "the reaper carries the request that started it"
         finally:
             await pool.aclose()
 
@@ -733,7 +849,7 @@ class TestTheOrphanSweep:
     def test_it_leaves_a_live_owners_cli_alone(self) -> None:
         if not os.path.isdir("/proc"):
             pytest.skip("the sweep needs /proc")
-        own = f"{os.getpid()}:{claude_cli_pool._process_start_ticks(os.getpid()) or 0}:mine"  # noqa: SLF001
+        own = f"{os.getpid()}:{_start_ticks(os.getpid()) or 0}:mine"
         child = self._marked_child(own)
         try:
             sweep_orphaned_claude_clis(grace_seconds=1.0)
@@ -757,11 +873,20 @@ class TestTheOrphanSweep:
             bystander.wait(timeout=5)
 
     def test_a_recycled_pid_does_not_make_a_stale_cli_look_owned(self) -> None:
+        """A marker naming a LIVE pid with a start time that is not that process's is an orphan: the
+        owner it names is gone and its pid was reused. The live owner's own CLI is pinned above."""
         if not os.path.isdir("/proc"):
             pytest.skip("the sweep needs /proc")
-        assert claude_cli_pool._owner_is_alive(f"{os.getpid()}:1:x") is False  # noqa: SLF001
-        real_ticks = claude_cli_pool._process_start_ticks(os.getpid())  # noqa: SLF001
-        assert claude_cli_pool._owner_is_alive(f"{os.getpid()}:{real_ticks}:x") is True  # noqa: SLF001
+        assert _start_ticks(os.getpid()) != 1, "this process cannot stand in for a recycled pid"
+        stale = self._marked_child(f"{os.getpid()}:1:stale")
+        try:
+            assert sweep_orphaned_claude_clis(grace_seconds=1.0) >= 1
+            stale.wait(timeout=5)
+            assert stale.poll() is not None, "a CLI whose owner's pid was recycled looked owned"
+        finally:
+            if stale.poll() is None:
+                stale.kill()
+                stale.wait(timeout=5)
 
     def test_killing_a_cli_takes_its_children_with_it(self) -> None:
         if not os.path.isdir("/proc"):
@@ -771,7 +896,7 @@ class TestTheOrphanSweep:
             deadline = time.monotonic() + 5
             children: list[int] = []
             while time.monotonic() < deadline:
-                children = claude_cli_pool._descendants(parent.pid)  # noqa: SLF001
+                children = _children_of(parent.pid)
                 if children:
                     break
                 time.sleep(0.05)
@@ -1001,7 +1126,7 @@ class TestTheSdkSurfaceMoving:
             with pytest.raises(ClaudeCliSessionError):
                 async with pool.checkout(Options(), token=TOKEN, tool_server=None):
                     pass
-        assert pool._broken is False  # noqa: SLF001
+        assert await _pooling_is_on(pool), "ordinary failures turned pooling off"
         await pool.aclose()
 
 
@@ -1011,13 +1136,10 @@ class TestAToolCallThroughTheSdksOwnDispatch:
     second conversation holds it. A handler on the borrowed session must run in the borrower's."""
 
     async def test_the_borrowers_config_is_the_one_a_handler_sees(self) -> None:
-        pytest.importorskip("claude_agent_sdk")
+        sdk = pytest.importorskip("claude_agent_sdk")
         from claude_agent_sdk import create_sdk_mcp_server
         from claude_agent_sdk import tool as sdk_tool
-        from claude_agent_sdk._internal.query import Query
         from langchain_core.runnables.config import ensure_config, var_child_runnable_config
-
-        from threetears.models.claude_cli_pool import bind_tool_server_to_context
 
         seen_config: list[str | None] = []
 
@@ -1028,29 +1150,89 @@ class TestAToolCallThroughTheSdksOwnDispatch:
 
         instance = create_sdk_mcp_server(name="langchain-tools", version="1.0.0", tools=[confirm])["instance"]
 
+        class CliSendingOneToolCall(sdk.Transport):  # type: ignore[misc,name-defined]
+            """the CLI's end of stdin/stdout: answers the SDK's own control requests, sends one
+            ``tools/call`` when told to, and records the SDK's answer to it."""
+
+            def __init__(self) -> None:
+                self.inbox: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+                self.answered = asyncio.Event()
+                self.answers: list[dict[str, Any]] = []
+
+            async def connect(self) -> None:
+                return None
+
+            async def write(self, data: str) -> None:
+                message = json.loads(data)
+                if message.get("type") == "control_request":
+                    # the SDK's initialize handshake and the checkout's mcp_set_servers: answered as
+                    # the CLI does
+                    response = {"subtype": "success", "request_id": message["request_id"], "response": {}}
+                    await self.inbox.put({"type": "control_response", "response": response})
+                elif message.get("type") == "control_response":
+                    self.answers.append(message)
+                    self.answered.set()
+
+            def send_tool_call(self) -> None:
+                self.inbox.put_nowait(
+                    {
+                        "type": "control_request",
+                        "request_id": "call-1",
+                        "request": {
+                            "subtype": "mcp_message",
+                            "server_name": "langchain-tools",
+                            "message": {
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "tools/call",
+                                "params": {"name": "confirm", "arguments": {"x": "y"}},
+                            },
+                        },
+                    }
+                )
+
+            async def read_messages(self) -> Any:
+                while (message := await self.inbox.get()) is not None:
+                    yield message
+
+            async def close(self) -> None:
+                await self.inbox.put(None)
+
+            def is_ready(self) -> bool:
+                return True
+
+            async def end_input(self) -> None:
+                return None
+
         def become(who: str) -> None:
             var_child_runnable_config.set({"configurable": {"who": who}})
 
+        transport = CliSendingOneToolCall()
+        client = sdk.ClaudeSDKClient(transport=transport)
+
+        # Conversation A connects the CLI: the SDK's reader task, and every tool call it spawns,
+        # carries A's context.
         reader_context = contextvars.Context()
         reader_context.run(become, "A")
+        await asyncio.create_task(client.connect(), context=reader_context)
+
+        session = PooledCliSession(client, key="k", pid=None, marker="m")
 
         async def borrower() -> None:
+            # the pool's own checkout path: the borrower's tool server, bound to its context
             become("B")
-            query = Query.__new__(Query)
-            query.sdk_mcp_servers = {
-                "langchain-tools": bind_tool_server_to_context(instance, contextvars.copy_context())
-            }
-            message = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": "confirm", "arguments": {"x": "y"}},
-            }
-            await asyncio.create_task(query._handle_sdk_mcp_request("langchain-tools", message), context=reader_context)  # noqa: SLF001
+            await session.prepare(model=None, tool_server=instance, call_context=contextvars.copy_context())
 
         await asyncio.create_task(borrower())
+        try:
+            transport.send_tool_call()
+            await asyncio.wait_for(transport.answered.wait(), timeout=5)
+        finally:
+            await client.disconnect()
 
         assert seen_config == ["B"], "the handler saw the conversation that started the CLI"
+        [answer] = transport.answers
+        assert answer["response"]["subtype"] == "success", f"the SDK did not route the call: {answer!r}"
 
 
 class TestReturningASessionIsBounded:
@@ -1075,24 +1257,6 @@ class TestReturningASessionIsBounded:
             session_store: Any = None
 
         assert not poolable(WithStore(session_store=object()))
-
-
-class TestTheSdkPidRead:
-    """the CLI pid is read off the SDK's own process object while its internals still hold it."""
-
-    def test_the_pid_the_sdk_holds_is_returned(self) -> None:
-        from types import SimpleNamespace
-
-        client = SimpleNamespace(_transport=SimpleNamespace(_process=SimpleNamespace(pid=4321)))
-
-        assert claude_cli_pool._discover_pid(client, "marker") == 4321  # noqa: SLF001
-
-    def test_internals_that_moved_read_as_no_pid_rather_than_raising(self) -> None:
-        """the fallback to /proc depends on this answering None, not on it raising."""
-        from types import SimpleNamespace
-
-        for client in (SimpleNamespace(), SimpleNamespace(_transport=None), SimpleNamespace(_transport=object())):
-            assert claude_cli_pool._sdk_process_pid(client) is None  # noqa: SLF001
 
 
 class TestAPoolServesOneEventLoop:
@@ -1329,7 +1493,7 @@ class TestAStrandedSessionIsStoppedWithoutItsLoop:
         a pid cannot be forced to recycle portably, so the stopped CLI's recorded identity is
         paired with a different live process's pid -- exactly what the pool holds after reuse.
         """
-        if claude_cli_pool._process_start_ticks(os.getpid()) is None:  # noqa: SLF001
+        if _start_ticks(os.getpid()) is None:
             pytest.skip("a process's start time is read from /proc")
         bystander = subprocess.Popen(["sleep", "60"])
         try:
@@ -1338,7 +1502,7 @@ class TestAStrandedSessionIsStoppedWithoutItsLoop:
             session = PooledCliSession(object(), key="k", pid=cli.pid, marker="m")
             assert session.start_ticks is not None
             assert session.still_ours(), "the CLI it started must be recognised while it runs"
-            assert session.start_ticks != claude_cli_pool._process_start_ticks(bystander.pid)  # noqa: SLF001
+            assert session.start_ticks != _start_ticks(bystander.pid)
             cli.kill()
             cli.wait(timeout=5)
             assert not session.still_ours(), "a CLI that exited is not still running"
@@ -1534,29 +1698,27 @@ class TestTheLearnedPromptsAreBounded:
     the schema and other options, so an unbounded table grew with every one of them for the life of
     the process."""
 
-    @staticmethod
-    def _keys(pool: ClaudeCliPool) -> set[str]:
-        return set(pool._prompts)  # noqa: SLF001 -- the table under test has no public accessor
-
     async def test_a_key_whose_last_cli_is_gone_keeps_no_prompts(self) -> None:
+        """The next CLI the key starts defines only the prompt of the call that starts it."""
         pool = _pool(idle_ttl_seconds=0.01)
-        await _call(pool, Options(system_prompt="persona A"))
-        assert len(self._keys(pool)) == 1
-        await asyncio.sleep(0.02)
-        await pool._reap_once()  # noqa: SLF001
+        first = await _call(pool, Options(system_prompt="persona A"))
+        await _reaped(first)
         assert pool.live_count == 0
-        assert self._keys(pool) == set(), "a key with no CLI kept its prompts"
+        second = await _call(pool, Options(system_prompt="persona B"))
+        assert second.options.agents == {agent_name("persona B"): "persona B"}, "a key with no CLI kept its prompts"
         await pool.aclose()
 
     async def test_a_call_that_falls_back_leaves_no_prompts(self) -> None:
         pool = _pool(max_sessions=1, per_key=1)
+        other_key = {"permission_mode": "other key"}
         async with pool.checkout(Options(system_prompt="held"), token=TOKEN, tool_server=None):
             with pytest.raises(ClaudeCliPoolExhausted):
-                async with pool.checkout(
-                    Options(system_prompt="other", permission_mode="other key"), token=TOKEN, tool_server=None
-                ):
+                async with pool.checkout(Options(system_prompt="other", **other_key), token=TOKEN, tool_server=None):
                     pass
-            assert len(self._keys(pool)) == 1, "the call that ran on its own CLI left its prompt behind"
+        later = await _call(pool, Options(system_prompt="third", **other_key))
+        assert later.options.agents == {agent_name("third"): "third"}, (
+            "the call that ran on its own CLI left its prompt behind"
+        )
         await pool.aclose()
 
     async def test_a_spare_keeps_the_prompts_it_defines(self) -> None:
@@ -1565,15 +1727,31 @@ class TestTheLearnedPromptsAreBounded:
         await _spares_started(pool)
         spare = FakeSession.instances[1]
         assert spare.options.agents == {agent_name("persona A"): "persona A"}, "the spare lost the key's prompts"
-        [key] = self._keys(pool)
-        assert pool._prompts[key] == {agent_name("persona A"): "persona A"}  # noqa: SLF001
+        newer = await _call(pool, Options(system_prompt="persona B"))
+        assert newer is not spare, "a spare without the call's prompt served it"
+        assert newer.options.agents == {
+            agent_name("persona A"): "persona A",
+            agent_name("persona B"): "persona B",
+        }, "the key forgot the prompt its spare defines"
         await pool.aclose()
 
     async def test_closing_the_pool_drops_every_prompt(self) -> None:
+        """A closed pool keeps no caller's prompt alive."""
+
+        class _Prompt(str):
+            """a prompt this test can hold weakly."""
+
+        prompt = _Prompt("persona held only by the pool")
+        held = weakref.ref(prompt)
         pool = _pool()
-        await _call(pool, Options(system_prompt="persona A"))
+        await _call(pool, Options(system_prompt=prompt))
+        del prompt
+        FakeSession.instances = []
+        gc.collect()
+        assert held() is not None, "nothing held the prompt, so its release proves nothing"
         await pool.aclose()
-        assert self._keys(pool) == set()
+        gc.collect()
+        assert held() is None, "a closed pool still holds a caller's prompt"
 
 
 class TestARefusalThatRepeatsTurnsPoolingOff:
@@ -1633,7 +1811,7 @@ class TestARefusalThatRepeatsTurnsPoolingOff:
         for _ in range(5):
             await _call(pool)
             await _spares_started(pool)
-        assert pool._broken is False, "a clean reset in between did not restart the count"  # noqa: SLF001 -- the latch has no public reader
+        assert await _pooling_is_on(pool), "a clean reset in between did not restart the count"
         await pool.aclose()
 
 
@@ -1676,7 +1854,8 @@ class TestTheRealSessionMarksARefusalStructural:
 
 def _scripted_cli(behaviour: dict[str, str]) -> Any:
     """a session factory whose sessions are REAL :class:`PooledCliSession` objects over the SDK's real
-    ``Query``, talking the control protocol to a scripted CLI.
+    ``ClaudeSDKClient``, talking the control protocol to a scripted CLI through the client's public
+    ``transport`` argument.
 
     ``behaviour`` maps a control request's subtype to how the CLI treats it: ``"refuse"`` answers
     an error response (the SDK raises a bare ``Exception``), ``"silent"`` never answers (the SDK
@@ -1689,7 +1868,6 @@ def _scripted_cli(behaviour: dict[str, str]) -> Any:
     :rtype: Any
     """
     sdk = pytest.importorskip("claude_agent_sdk")
-    from claude_agent_sdk._internal.query import Query
 
     class ScriptedTransport(sdk.Transport):  # type: ignore[misc,name-defined]
         """the CLI's end of stdin/stdout, answering each control request as scripted."""
@@ -1718,6 +1896,10 @@ def _scripted_cli(behaviour: dict[str, str]) -> Any:
             await self.inbox.put({"type": "control_response", "response": response})
 
         async def read_messages(self) -> Any:
+            # the task iterating this is the SDK's reader loop for this CLI's life
+            reader = asyncio.current_task()
+            if reader is not None:
+                _CLI_READERS.add(reader)
             while (message := await self.inbox.get()) is not None:
                 yield message
 
@@ -1730,25 +1912,9 @@ def _scripted_cli(behaviour: dict[str, str]) -> Any:
         async def end_input(self) -> None:
             return None
 
-    class ScriptedClient:
-        """the parts of ``ClaudeSDKClient`` a pooled session drives, over the SDK's real ``Query``."""
-
-        def __init__(self) -> None:
-            self._query = Query(ScriptedTransport(), is_streaming_mode=True)
-
-        async def set_model(self, model: str | None) -> None:
-            await self._query._send_control_request({"subtype": "set_model", "model": model})  # noqa: SLF001 -- what the SDK's set_model sends
-
-        async def query(self, prompt: Any, session_id: str = "default") -> None:
-            async for message in prompt:
-                await self._query.transport.write(json.dumps({"session_id": session_id, **message}) + "\n")
-
-        async def disconnect(self) -> None:
-            await self._query.close()
-
     async def factory(options: Any, *, key: str) -> PooledCliSession:
-        client = ScriptedClient()
-        await client._query.start()  # noqa: SLF001 -- the scripted client's own query
+        client = sdk.ClaudeSDKClient(transport=ScriptedTransport())
+        await client.connect()
         session = PooledCliSession(client, key=key, pid=None, marker="m")
         session.agents = frozenset(getattr(options, "agents", None) or {})
         return session
@@ -1779,7 +1945,7 @@ class TestOnlyARefusalCountsTowardTurningPoolingOff:
             except ClaudeCliSessionError:
                 assert "apply_flag_settings" in behaviour, "only a failed switch fails the call itself"
             await _spares_started(pool)
-        assert pool._broken is False, "a transient failure turned pooling off"  # noqa: SLF001 -- the latch has no public reader
+        assert await _pooling_is_on(pool), "a transient failure turned pooling off"
         await pool.aclose()
 
     @pytest.mark.parametrize(

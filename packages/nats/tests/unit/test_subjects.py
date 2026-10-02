@@ -26,20 +26,20 @@ def _reset_namespace(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     ContextVar that reset itself per test), so this fixture clears it after each
     test to keep tests isolated from one another.
     """
-    from threetears.nats.subjects import _reset_default_namespace
+    from threetears.nats.testing import reset_default_namespace
 
     monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
     set_default_namespace(_TEST_NAMESPACE)
     yield
-    _reset_default_namespace()
+    reset_default_namespace()
 
 
 def test_get_default_namespace_raises_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
     """with no env var and no explicit set, resolution raises."""
-    from threetears.nats.subjects import _reset_default_namespace
+    from threetears.nats.testing import reset_default_namespace
 
     monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
-    _reset_default_namespace()
+    reset_default_namespace()
     with pytest.raises(NamespaceNotConfiguredError):
         get_default_namespace()
 
@@ -49,9 +49,9 @@ def test_namespace_overridable_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "prod14")
     # set_default_namespace was called in fixture so env wins only after we reset
     # the explicit process-wide value; verify the fallback path by clearing it.
-    from threetears.nats.subjects import _reset_default_namespace
+    from threetears.nats.testing import reset_default_namespace
 
-    _reset_default_namespace()
+    reset_default_namespace()
     assert get_default_namespace() == "prod14"
 
 
@@ -307,6 +307,12 @@ def test_audit_event_rejects_empty() -> None:
         Subjects.audit_event("")
 
 
+def test_audit_event_takes_an_explicit_namespace() -> None:
+    """a publisher or consumer routing audit on a per-call namespace names it, not the bound one."""
+    assert Subjects.audit_event("tool.call", namespace="prod").path == "prod.audit.tool.call"
+    assert Subjects.audit_deadletter(namespace="prod").path == "prod.audit-deadletter"
+
+
 def test_l3_subjects() -> None:
     """l3 broker subject builders produce documented shapes.
 
@@ -529,3 +535,14 @@ def test_knowledge_draft_subject_honors_namespace() -> None:
     assert Subjects.knowledge_draft().path == "staging.knowledge.draft"
     set_default_namespace("3tears")
     assert Subjects.knowledge_draft().path == "3tears.knowledge.draft"
+
+
+def test_credential_refusal_sits_under_the_principals_own_inbox() -> None:
+    assert Subjects.credential_refusal("_INBOX_agent_pod_a1").path == "_INBOX_agent_pod_a1.credential-refused"
+
+
+@pytest.mark.parametrize("inbox_prefix", ["", "_INBOX_agent_pod_*", "_INBOX.>", "_INBOX a"])
+def test_credential_refusal_needs_a_literal_inbox_prefix(inbox_prefix: str) -> None:
+    """a wildcard would publish one principal's refusal to every inbox it matched."""
+    with pytest.raises(ValueError, match="literal inbox prefix"):
+        Subjects.credential_refusal(inbox_prefix)

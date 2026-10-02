@@ -136,7 +136,10 @@ class DurableStore(Protocol):
         :ptype on_conflict: str
         :param cas: optimistic-lock fence — the pre-modification ``date_updated`` the
             update must still match; a mismatch yields **0 rows affected** (the caller
-            raises ``ConcurrentModificationError``). ``None`` for inserts.
+            raises ``ConcurrentModificationError``). ``None`` for inserts. A non-``None``
+            value says the caller READ the row as existing, so the write must be
+            update-only: a row deleted since that read (an erasure, a retire) is a
+            mismatch too, and must yield 0 rows rather than be re-inserted.
         :ptype cas: datetime | None
         :param conn: optional backend-specific transaction handle the write binds to so
             it commits atomically with the caller's other operations; ``None`` uses the

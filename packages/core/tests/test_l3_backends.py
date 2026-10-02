@@ -206,13 +206,15 @@ async def test_sql_durable_store_generates_expected_sql() -> None:
     )
     assert params == ("e1", "Bob")
 
-    # upsert with a CAS fence → adds WHERE table.date_updated = $n
+    # upsert with a CAS fence → UPDATE only, fenced on pk AND date_updated. a fence value
+    # means the row was read as existing, so a row deleted since then is NOT re-inserted
     pool = _RecordingPool()
     ts = datetime(2026, 1, 1, tzinfo=UTC)
     await SqlL3Backend(pool).upsert("widgets", {"id": "e1", "date_updated": ts}, pk=["id"], cas=ts)
     sql, params = pool.calls[-1]
-    assert sql.endswith('WHERE "widgets"."date_updated" = $3')
-    assert params == ("e1", ts, ts)
+    assert sql == 'UPDATE "widgets" SET "date_updated" = $1 WHERE "id" = $2 AND "date_updated" = $3'
+    assert "INSERT" not in sql
+    assert params == (ts, "e1", ts)
 
     # delete → DELETE … WHERE pk (composite)
     pool = _RecordingPool()
@@ -229,12 +231,20 @@ async def test_sql_durable_store_generates_expected_sql() -> None:
     assert pool.calls[-1][0] == 'SELECT * FROM "widgets"'
 
 
-def test_sql_l3_backend_rejects_injecting_identifiers() -> None:
-    from threetears.core.backends.sql import _quote_ident
+@pytest.mark.asyncio
+async def test_sql_l3_backend_rejects_injecting_identifiers() -> None:
+    """a quote in a table or column name must not slip into generated SQL: the call refuses it unsent."""
+    pool = _RecordingPool()
+    await SqlL3Backend(pool).scan("widgets", {"name": "x"})
+    assert pool.calls[-1][0] == 'SELECT * FROM "widgets" WHERE "name" = $1'
 
-    assert _quote_ident("name") == '"name"'
-    with pytest.raises(ValueError):  # a quote in a column name must not slip into generated SQL
-        _quote_ident('id"; DROP TABLE x; --')
+    hostile = 'id"; DROP TABLE x; --'
+    pool = _RecordingPool()
+    with pytest.raises(ValueError):
+        await SqlL3Backend(pool).scan("widgets", {hostile: 1})
+    with pytest.raises(ValueError):
+        await SqlL3Backend(pool).delete(hostile, {"id": 1})
+    assert pool.calls == [], "a refused identifier reached the pool"
 
 
 class _InMemoryDurableStore:
@@ -267,8 +277,8 @@ class _InMemoryDurableStore:
     ) -> int:
         t = self.tables.setdefault(table, {})
         key = tuple(row[c] for c in sorted(pk))
-        if cas is not None and key in t and t[key].get("date_updated") != cas:
-            return 0  # optimistic-lock miss
+        if cas is not None and (key not in t or t[key].get("date_updated") != cas):
+            return 0  # optimistic-lock miss, or the row read as existing is gone
         t[key] = dict(row)
         return 1
 

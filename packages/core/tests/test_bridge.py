@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import weakref
 
 import pytest
 
-from threetears.core import _bridge
+from threetears.core import fire_and_forget
+from threetears.core.testing import drain_and_shutdown_bridge
 
 
 @pytest.mark.asyncio
@@ -17,29 +19,36 @@ async def test_fire_and_forget_survives_gc_on_running_loop() -> None:
     asyncio keeps only a weak reference to a task returned by ``create_task``.
     Without a strong reference held elsewhere, a ``gc.collect()`` before the
     task gets a chance to run can finalize it, silently dropping the coroutine.
-    The bridge must hold a strong reference until the task completes.
+    The bridge must hold a strong reference until the task completes -- and
+    only until then, or every scheduled task leaks.
+
+    The task waits on a future nothing else references, so the event loop holds
+    no strong reference to it either: if the bridge did not hold one, the
+    collection below would reclaim it.
     """
-    completed = asyncio.Event()
+    tasks: list[weakref.ref[asyncio.Task[object]]] = []
 
     async def _work() -> None:
-        # yield control so the task is still pending when gc runs below
-        await asyncio.sleep(0.05)
-        completed.set()
+        task = asyncio.current_task()
+        assert task is not None
+        tasks.append(weakref.ref(task))
+        await asyncio.get_running_loop().create_future()
 
-    _bridge.fire_and_forget(_work())
+    fire_and_forget(_work())
+    await asyncio.sleep(0)  # the task starts and suspends on its unreferenced future
 
-    # the task must be tracked while pending
-    assert len(_bridge._pending_tasks) == 1
-
-    # force a collection cycle while the task is still pending; a weakly-held
-    # task would be eligible for finalization here
     gc.collect()
+    pending = tasks[0]()
+    assert pending is not None, "the pending task was garbage-collected: nothing held it"
+    assert not pending.done()
 
-    await asyncio.wait_for(completed.wait(), timeout=1.0)
+    pending.cancel()
+    await asyncio.wait({pending})
+    del pending
+    await asyncio.sleep(0)  # the done callback runs
 
-    # done callback must clear the strong reference to avoid leaking tasks
-    await asyncio.sleep(0)
-    assert len(_bridge._pending_tasks) == 0
+    gc.collect()
+    assert tasks[0]() is None, "the finished task is still held: every scheduled task would leak"
 
 
 @pytest.mark.asyncio
@@ -50,7 +59,7 @@ async def test_fire_and_forget_propagates_side_effect() -> None:
     async def _work() -> None:
         box.append(1)
 
-    _bridge.fire_and_forget(_work())
+    fire_and_forget(_work())
 
     for _ in range(100):
         if box:
@@ -67,20 +76,24 @@ def test_fire_and_forget_without_running_loop_uses_background() -> None:
     async def _work() -> None:
         box.append(7)
 
-    _bridge.fire_and_forget(_work())
-    _bridge.drain()
+    fire_and_forget(_work())
+    drain_and_shutdown_bridge()
 
     assert box == [7]
 
 
 def test_threads_first_bridging_at_once_share_one_background_loop(monkeypatch: pytest.MonkeyPatch) -> None:
-    """concurrent first callers of ``sync_await`` all run on ONE background loop.
+    """concurrent first callers of the bridge, from threads with no running loop, share ONE background loop.
 
     the lazy start checked ``is_running()``, which stays False between ``Thread.start()``
     and the new thread entering ``run_forever``. a caller that took the lock in that gap
     saw no running loop and started a second one, replacing the first -- and any
     loop-bound resource (a connection pool) made on one loop fails when used from the
     other. the loop here is slow to start, so the gap is certainly open.
+
+    driven through ``fire_and_forget``, the bridge's public entry: from a thread with no
+    running loop it starts (or reuses) the background loop exactly as the synchronous
+    collection accessors do.
     """
     import threading
     import time
@@ -92,21 +105,20 @@ def test_threads_first_bridging_at_once_share_one_background_loop(monkeypatch: p
             time.sleep(0.05)
             super().run_forever()
 
-    _bridge.shutdown()
+    drain_and_shutdown_bridge()
     monkeypatch.setattr(asyncio, "new_event_loop", _SlowStartingLoop)
     threads_count = 16
     start = threading.Barrier(threads_count)
     loops: list[asyncio.AbstractEventLoop] = []
     record = threading.Lock()
 
-    async def _which_loop() -> asyncio.AbstractEventLoop:
-        return asyncio.get_running_loop()
+    async def _record_loop() -> None:
+        with record:
+            loops.append(asyncio.get_running_loop())
 
     def call() -> None:
         start.wait()
-        loop = _bridge.sync_await(_which_loop())
-        with record:
-            loops.append(loop)
+        fire_and_forget(_record_loop())
 
     try:
         workers = [threading.Thread(target=call) for _ in range(threads_count)]
@@ -114,9 +126,12 @@ def test_threads_first_bridging_at_once_share_one_background_loop(monkeypatch: p
             worker.start()
         for worker in workers:
             worker.join(timeout=30)
+        deadline = time.monotonic() + 30
+        while len(loops) < threads_count and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert len(loops) == threads_count
         assert len({id(loop) for loop in loops}) == 1
         bridge_threads = [t for t in threading.enumerate() if t.name == "threetears-async-bridge"]
         assert len(bridge_threads) == 1, f"{len(bridge_threads)} background loops are running"
     finally:
-        _bridge.shutdown()
+        drain_and_shutdown_bridge()

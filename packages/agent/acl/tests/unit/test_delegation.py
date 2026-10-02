@@ -41,7 +41,7 @@ from threetears.agent.acl import (
     resolve_held_permissions,
 )
 
-from ._fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeStore, make_cache
 
 
 # ---------------------------------------------------------------------------

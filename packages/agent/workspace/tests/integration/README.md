@@ -28,7 +28,7 @@ would see.
 
 The fake DB pool is a pattern-matching in-memory stand-in defined in
 `conftest.py`. It recognizes every SQL statement the production write
-paths issue (`_write_file_atomic`, `_capture_back`, lifecycle tool
+paths issue (`write_file_atomic`, `_capture_back`, lifecycle tool
 inserts); an unrecognized statement raises `NotImplementedError` so
 drift from production SQL fails loudly rather than silently no-opping.
 

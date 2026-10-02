@@ -106,6 +106,8 @@ async def webhook_receive(
     signature_header: str | None,
     source_ip: str | None,
     pool: Any,
+    subscriptions: WebhookSubscriptionCollection,
+    fires: WakeFireCollection,
     encryption_service: EncryptionService,
     handler: HandlerCallback,
     default_rate_limit_per_minute: int = 60,
@@ -153,8 +155,17 @@ async def webhook_receive(
     :param source_ip: client IP for the allow-list check; ``None``
         bypasses the regex check (caller has no IP info)
     :ptype source_ip: str | None
-    :param pool: asyncpg pool the Collections + dispatcher share
+    :param pool: asyncpg pool the dispatcher reads through
     :ptype pool: Any
+    :param subscriptions: the host process's subscription collection, built once on the
+        registry that carries its NATS client and runs its invalidation listener. A fire stamps
+        ``last_fired_at`` through it, and that eviction reaches the other replicas only through
+        that client: a collection on a registry with no client evicts nothing beyond this
+        process, and every other replica keeps serving -- and its webhook tools keep saving back
+        -- the pre-fire row
+    :ptype subscriptions: WebhookSubscriptionCollection
+    :param fires: the host process's fire collection, on the same registry
+    :ptype fires: WakeFireCollection
     :param encryption_service: consumer-supplied encryption service
         used to decrypt ``secret_ciphertext``
     :ptype encryption_service: EncryptionService
@@ -198,19 +209,7 @@ async def webhook_receive(
     """
     receive_at = now if now is not None else datetime.now(UTC)
     emitter = get_wake_emitter()
-    # local imports keep the receiver's module-load cost cheap when
-    # the platform isn't actually serving webhooks (test runners,
-    # CLI tools, etc.). Same pattern as dispatch_wake's lazy
-    # CollectionRegistry construction.
-    from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
-    from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
-
-    registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
-    cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
-
-    subs = WebhookSubscriptionCollection(registry=registry, config=cfg)
-    sub = await subs.find_by_id(subscription_id)
+    sub = await subscriptions.find_by_id(subscription_id)
     if sub is None or sub.status != "active":
         log.info(
             EVENT_WEBHOOK_REJECTED,
@@ -314,7 +313,6 @@ async def webhook_receive(
             )
 
     # Rate-limit -------------------------------------------------------
-    fires = WakeFireCollection(registry=registry, config=cfg)
     cap = sub.rate_limit_per_minute or default_rate_limit_per_minute
     try:
         window_count = await _count_recent_fires_for_subscription(
@@ -474,7 +472,7 @@ async def webhook_receive(
             latency_ms=result.latency_ms,
             display_suppressed=result.display_suppressed,
         )
-        await subs.record_fire(
+        await subscriptions.record_fire(
             sub.conversation_id,
             subscription_id,
             fired_at=receive_at,

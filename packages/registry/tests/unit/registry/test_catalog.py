@@ -12,7 +12,7 @@ import pytest
 from threetears.nats import Subjects
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
 _AGENT_A = UUID("01948a00-aaaa-7000-8000-00000000000a")
 _AGENT_B = UUID("01948a00-aaaa-7000-8000-00000000000b")
@@ -249,6 +249,37 @@ class TestCatalogEntry:
             "verified_publisher",
             "definitions",
         }
+
+    def test_every_stored_instant_takes_the_one_stored_form(self) -> None:
+        """the KV entry spells each instant as every storage tier does, fixed width with its offset."""
+        when = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
+        entry = _make_entry()
+        entry.date_registered = when
+        entry.endpoints[0].date_last_heartbeat = when
+        for announcement in entry.endpoints[0].definitions.values():
+            announcement.first_announced = when
+            announcement.last_announced = when
+
+        data = entry.to_dict()
+
+        canonical = "2026-10-01T12:30:00.000000+00:00"
+        assert data["date_registered"] == canonical
+        assert data["endpoints"][0]["date_last_heartbeat"] == canonical
+        announced = data["endpoints"][0]["definitions"]
+        assert announced
+        assert all(item["first_announced"] == item["last_announced"] == canonical for item in announced)
+
+    def test_an_entry_stored_in_the_older_spelling_still_reads(self) -> None:
+        """entries written with ``isoformat()`` before the one stored form parse to the same instants."""
+        when = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
+        data = _make_entry().to_dict()
+        data["date_registered"] = when.isoformat()
+        data["endpoints"][0]["date_last_heartbeat"] = when.isoformat()
+
+        restored = CatalogEntry.from_dict(data)
+
+        assert restored.date_registered == when
+        assert restored.endpoints[0].date_last_heartbeat == when
 
     def test_entry_to_dict_roundtrip(self) -> None:
         """CatalogEntry serializes and deserializes correctly."""

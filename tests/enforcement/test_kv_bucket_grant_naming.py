@@ -14,7 +14,7 @@ than raising, indistinguishable from an unreachable broker.
 ``test_user_jwt_scoped_grant_live.py`` exists for that shape. Remove a grant something
 does need and you get the same silence.
 
-:mod:`threetears.nats._diagnostics` now names this cause in the log -- from the
+:mod:`threetears.nats.diagnostics` now names this cause in the log -- from the
 server's own refusal frame, and again at the deadline -- so the diagnosis is no
 longer only in a reader's head. It does not make the grant correct, which is what
 this guard is for: a log line an operator must read at the right moment is a worse
@@ -57,11 +57,15 @@ _POD_ID = "01947100-0000-7000-8000-0000000000b1"
 
 
 @pytest.fixture(autouse=True)
-def _namespace(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Bind the subject namespace so grants render with a known prefix."""
-    from threetears.nats import subjects
+def _namespace() -> None:
+    """Bind the subject namespace so grants render with a known prefix.
 
-    monkeypatch.setattr(subjects, "_default_namespace", _NAMESPACE)
+    Through the public setter; the root ``conftest.py`` clears the process-wide value
+    before and after every test, so it does not leak into a neighbour.
+    """
+    from threetears.nats.subjects import set_default_namespace
+
+    set_default_namespace(_NAMESPACE)
 
 
 def test_the_lease_bucket_a_tool_pod_is_granted_is_the_one_kvlease_opens() -> None:
@@ -139,8 +143,19 @@ def test_the_epoch_bucket_the_pods_are_granted_is_the_one_epochclient_opens() ->
     Both halves live in this repository, which is what makes them comparable
     here: ``EpochClient`` names the bucket suffix, and ``subject_permissions``
     grants it to the three principals that bump or read an epoch.
+
+    The client's side is read from the bucket it actually asks the connection for, through its
+    public ``bucket_identity``, rather than from the constant it is built from: that is the name
+    ``kv_bucket`` prefixes and the broker materialises.
     """
-    from threetears.epoch.client import _EPOCH_BUCKET
+    import asyncio
+
+    from threetears.epoch.client import EpochClient
+
+    opened = _RecordingKvConnection()
+    asyncio.run(EpochClient(pool=object(), nats_client=opened).bucket_identity())  # type: ignore[arg-type]
+    assert len(opened.bucket_names) == 1, f"bucket_identity opened {opened.bucket_names}, expected one bucket"
+    epoch_bucket = opened.bucket_names[0]
 
     for principal, kwargs in (
         (Principal.AGENT_POD, {"agent_id": _AGENT_ID, "pod_id": "pod-1", "conn_id": "conn-1"}),
@@ -148,66 +163,108 @@ def test_the_epoch_bucket_the_pods_are_granted_is_the_one_epochclient_opens() ->
         (Principal.GATEWAY, {"conn_id": "conn-1"}),
     ):
         granted = kv_bucket_names(build_permissions(principal, **kwargs))
-        assert f"{_NAMESPACE}-{_EPOCH_BUCKET}" in granted, (
+        assert f"{_NAMESPACE}-{epoch_bucket}" in granted, (
             f"{principal} is not granted the epoch bucket "
-            f"('{_NAMESPACE}-{_EPOCH_BUCKET}'); it holds {list(granted)}. Every epoch read "
+            f"('{_NAMESPACE}-{epoch_bucket}'); it holds {list(granted)}. Every epoch read "
             f"and bump from this principal would block to its deadline and read as an "
             f"unreachable broker."
         )
 
 
-def test_the_checkpoint_l2_grant_matches_the_bucket_a_host_opens() -> None:
-    """The checkpointer's L2 grant and the bucket its opener materialises must agree.
+def test_no_pod_is_granted_the_bucket_the_checkpointer_l2_defaults_to() -> None:
+    """The shared checkpoint bucket is granted to NO pod, and the saver's default names it.
 
-    ``ThreeTierCheckpointSaver`` takes ``l2_bucket`` as a SUFFIX (default
-    ``_DEFAULT_L2_BUCKET``) and the host opens it through
-    :meth:`~threetears.nats.kv.KvCapable.kv_bucket`, which layers ``{namespace}-``
-    over whatever it is given. So the bucket that exists is ``{ns}-checkpoints``,
-    and a grant naming ``checkpoints`` bare covers nothing.
+    ``ThreeTierCheckpointSaver`` defaults ``l2_bucket`` to a suffix which
+    ``kv_bucket`` materialises as ``{ns}-checkpoints`` -- one bucket keyed
+    ``[<customer>/]<thread>[.<ns>]`` with no owner token, so a grant on it was a read of every
+    agent's conversation state. Nothing on the platform reads or writes it: the agent runtime's
+    checkpointer runs on L3 alone, and a host that wants a checkpoint L2 declares a coordination
+    bucket of its own and passes it as ``l2_bucket`` (the survey's is ``{ns}-{scope}-checkpoints``).
 
-    Pinned as a PAIR, and read out of the saver's own default rather than
-    restated, for the reason this file exists: the mismatch is silent. A missing
-    KV grant does not raise -- the open blocks to its deadline and surfaces as an
-    unreachable broker -- so a host that soft-degrades its checkpointer build runs
-    with no checkpointer at all until the first graph call, which then fails as
-    something else entirely.
+    Pinned as a PAIR, read out of the saver's own default, so a pod that ever opens the default
+    finds it ungranted in a test rather than as a JetStream deadline in production.
     """
-    from threetears.langgraph.checkpoint import _DEFAULT_L2_BUCKET
+    import inspect
 
-    assert "-" not in _DEFAULT_L2_BUCKET and "_" not in _DEFAULT_L2_BUCKET, (
-        f"{_DEFAULT_L2_BUCKET!r} looks like it has baked in a namespace of its own; it is a "
+    from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+
+    default_l2_bucket = inspect.signature(ThreeTierCheckpointSaver.__init__).parameters["l2_bucket"].default
+    assert isinstance(default_l2_bucket, str) and default_l2_bucket, (
+        f"ThreeTierCheckpointSaver's l2_bucket default is {default_l2_bucket!r}, not a bucket suffix"
+    )
+    assert "-" not in default_l2_bucket and "_" not in default_l2_bucket, (
+        f"{default_l2_bucket!r} looks like it has baked in a namespace of its own; it is a "
         f"SUFFIX that kv_bucket prefixes."
     )
-    granted = kv_bucket_names(build_permissions(Principal.AGENT_POD, agent_id=_AGENT_ID, pod_id=_POD_ID))
-    assert f"{_NAMESPACE}-{_DEFAULT_L2_BUCKET}" in granted, (
-        f"an agent pod is not granted the bucket its checkpointer L2 actually opens "
-        f"('{_NAMESPACE}-{_DEFAULT_L2_BUCKET}'); it holds {list(granted)}."
-    )
-    assert _DEFAULT_L2_BUCKET not in granted, (
-        f"the checkpoint grant is still the bare name '{_DEFAULT_L2_BUCKET}', which names a "
-        f"bucket no host opens through kv_bucket."
-    )
+    for principal in (Principal.AGENT_POD, Principal.TOOL_POD):
+        granted = kv_bucket_names(_permissions_for(principal))  # type: ignore[arg-type]
+        assert f"{_NAMESPACE}-{default_l2_bucket}" not in granted, (
+            f"{principal} is granted the shared checkpoint bucket ('{_NAMESPACE}-{default_l2_bucket}'), "
+            f"which carries every agent's thread state under keys no grant can narrow to one owner."
+        )
 
 
-def test_the_audit_stream_an_agent_consumes_is_the_one_it_is_granted() -> None:
-    """An agent that runs an audit consumer must be granted the stream it declares.
+def test_the_shared_pod_buckets_are_granted_under_the_scope_their_openers_key_with() -> None:
+    """Each shared pod bucket's grant names the bucket its opener opens, narrowed to the opener's scope.
+
+    ``KV_OWNER_KEYS`` narrows every route to ``{scope}.>``, so the opener must key with the SAME
+    scope the grant was minted with, or every call on the bucket blocks to its deadline. Both
+    sides live here: the tool server derives the nonce scope from its pod id, the memory extractor
+    opens ``ratelimits`` by default, ``KVLease`` opens ``leases`` by default.
+    """
+    from threetears.agent.memory.extraction import MemoryExtractor
+    from threetears.agent.tools.server import ToolServer
+    from threetears.core.coordination.lease import KVLease
+    from threetears.nats import Subjects
+    from threetears.nats.subject_permissions import JsCapability, kv_key_scope_for
+
+    import inspect
+    from uuid import UUID
+
+    def owner_scope_of(permissions: object, bucket: str) -> str | None:
+        found = [r for r in permissions.js_resources if r.name == bucket]  # type: ignore[attr-defined]
+        assert len(found) == 1, (bucket, found)
+        assert found[0].capability is JsCapability.KV_OWNER_KEYS, found[0]
+        return found[0].scope
+
+    agent = _permissions_for(Principal.AGENT_POD)
+    tool = _permissions_for(Principal.TOOL_POD)
+    in_process = ToolServer(nats_url="nats://x", pod_id=Subjects.agent_inprocess_pod_id(UUID(_AGENT_ID), "i1"))
+    tool_pod = ToolServer(nats_url="nats://x", pod_id=_POD_ID)
+    assert owner_scope_of(agent, f"{_NAMESPACE}-proxy_assertion_nonces") == in_process.assertion_nonce_key_scope
+    assert owner_scope_of(tool, f"{_NAMESPACE}-proxy_assertion_nonces") == tool_pod.assertion_nonce_key_scope
+
+    ratelimits = inspect.signature(MemoryExtractor.__init__).parameters["rate_limit_bucket"].default
+    assert owner_scope_of(agent, f"{_NAMESPACE}-{ratelimits}") == kv_key_scope_for(
+        Principal.AGENT_POD, agent_id=_AGENT_ID
+    )
+
+    leases = KVLease(nats_client=object(), pod_id="probe").bucket_name  # type: ignore[arg-type]
+    assert owner_scope_of(tool, f"{_NAMESPACE}-{leases}") == kv_key_scope_for(Principal.TOOL_POD, pod_id=_POD_ID)
+
+
+def test_an_agent_pod_publishes_audit_events_and_holds_no_grant_on_the_audit_stream() -> None:
+    """An agent pod EMITS audit events and consumes none, so it holds no grant on the stream.
 
     ``AGENT_POD`` is granted ``audit.tool.call`` as a PUBLISH subject, which is the
-    emitting half. A pod that also CONSUMES its own audit events calls
-    ``ensure_jetstream_stream`` on ``{ns}-audit``, and JetStream stream create/update
-    is a control-plane grant, not a subject grant -- so publish succeeding says
-    nothing about whether the consumer can bind.
+    emitting half, and a JetStream publish needs nothing more: it is a core publish
+    acknowledged on the publisher's own inbox. The audit stream is declared and
+    consumed by the hub (``start_audit_persister``), and no pod runs a consumer on it.
 
-    Pinned because the failure is silent from the emitting side: the publishes keep
-    returning, the stream is never created, and every envelope the consumer was meant
-    to durably record is dropped.
+    Least privilege, and the reason this pin changed: a consumer grant on
+    ``{ns}-audit`` let a pod create a consumer over EVERY agent's audit events --
+    other customers' included -- and a stream-management grant let it create the
+    stream it then read. The emitting half is pinned beside the absence so the
+    narrowing cannot be mistaken for dropping the publish.
     """
     granted = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_ID, pod_id=_POD_ID)
     streams = [r.stream_name for r in granted.js_resources]
-    assert f"KV_{_NAMESPACE}-audit" not in streams, "the audit stream is a plain stream, not a KV bucket"
-    assert f"{_NAMESPACE}-audit" in streams, (
-        f"an agent pod is not granted the audit stream it declares ('{_NAMESPACE}-audit'); it holds {streams}."
+    assert f"{_NAMESPACE}-audit" not in streams, (
+        f"an agent pod holds a JetStream grant on the audit stream ('{_NAMESPACE}-audit'), which it only "
+        f"publishes to; it holds {streams}."
     )
+    assert f"KV_{_NAMESPACE}-audit" not in streams, "the audit stream is a plain stream, not a KV bucket"
+    assert f"{_NAMESPACE}.audit.tool.call" in granted.publish, "the agent pod must still emit its audit events"
 
 
 #: representative ids per principal, so every member of the enum resolves to a concrete
@@ -274,3 +331,59 @@ def test_the_collections_bucket_every_principal_holds_is_the_one_basecollection_
         f"{principal}'s collections grant is the bare name {suffix!r}, which names a bucket no "
         f"host opens through kv_bucket."
     )
+
+
+class _IdentityBucket:
+    """an epoch bucket whose first ``create`` wins, so ``bucket_identity`` returns at once."""
+
+    async def create(self, *, key: str, value: bytes, ttl: object = None) -> int | None:
+        """accept the identity mint.
+
+        :param key: the reserved identity key
+        :ptype key: str
+        :param value: the minted identity
+        :ptype value: bytes
+        :param ttl: unused
+        :ptype ttl: object
+        :return: a revision, meaning the create won
+        :rtype: int | None
+        """
+        return 1
+
+    async def get(self, *, key: str) -> bytes | None:
+        """never reached: the create always wins.
+
+        :param key: the reserved identity key
+        :ptype key: str
+        :return: nothing stored
+        :rtype: bytes | None
+        """
+        return None
+
+
+class _RecordingKvConnection:
+    """a connection that records every bucket name a caller asks ``kv_bucket`` to open.
+
+    :ivar bucket_names: the ``name`` of each ``kv_bucket`` call, in order
+    """
+
+    def __init__(self) -> None:
+        """start with no bucket opened.
+
+        :return: nothing
+        :rtype: None
+        """
+        self.bucket_names: list[str] = []
+
+    async def kv_bucket(self, *, name: str, ttl: object = None) -> _IdentityBucket:
+        """record the suffix the caller opens and hand back a bucket.
+
+        :param name: the bucket suffix ``kv_bucket`` would prefix with the namespace
+        :ptype name: str
+        :param ttl: unused
+        :ptype ttl: object
+        :return: an identity bucket
+        :rtype: _IdentityBucket
+        """
+        self.bucket_names.append(name)
+        return _IdentityBucket()

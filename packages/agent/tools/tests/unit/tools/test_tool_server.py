@@ -21,6 +21,12 @@ from threetears.agent.tools.server import (
     ToolManifestEntry,
     ToolServer,
 )
+from threetears.core.security import (
+    IDENTITY_REFUSED,
+    IDENTITY_REFUSED_MESSAGE,
+    TOOL_PROXY_ASSERTION_UNVERIFIED,
+    TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE,
+)
 from threetears.core.security.identity_token import (
     IdentityClaims,
     build_jwks,
@@ -30,12 +36,12 @@ from threetears.core.security.identity_token import (
 from threetears.media.contracts import ObjectHandle
 from threetears.nats import IncomingMessage
 
-from packages.agent.tools.tests.unit.tools._pod_auth import RecordingNatsClient
+from packages.agent.tools.tests.unit.tools.pod_auth import RecordingNatsClient
 from threetears.core.testing.replay_guard import FakeReplayGuard
-from packages.agent.tools.tests.unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
-from packages.agent.tools.tests.unit.tools._pod_auth import mint_user_assertion as _pod_mint_hub_token
-from packages.agent.tools.tests.unit.tools._pod_auth import recording_tool_server as _recording_tool_server
-from packages.agent.tools.tests.unit.tools._pod_auth import signed_call_payload as _signed_call_payload
+from packages.agent.tools.tests.unit.tools.pod_auth import jwks_provider as _pod_jwks_provider
+from packages.agent.tools.tests.unit.tools.pod_auth import mint_user_assertion as _pod_mint_hub_token
+from packages.agent.tools.tests.unit.tools.pod_auth import recording_tool_server as _recording_tool_server
+from packages.agent.tools.tests.unit.tools.pod_auth import signed_call_payload as _signed_call_payload
 
 
 # -- helpers --
@@ -390,7 +396,7 @@ class TestToolServerServe:
 
     @pytest.mark.asyncio
     async def test_the_self_provisioned_assertion_guard_is_bound_before_the_pod_is_reachable(self) -> None:
-        """the pod creates its nonce bucket at start, not at the first call it answers.
+        """the pod binds its nonce bucket at start, not at the first call it answers.
 
         After a broker restart the guard refuses every assertion issued before its bucket's
         creation time plus its reach. Left to the first call, the bucket is created by that call,
@@ -434,6 +440,49 @@ class TestToolServerServe:
         assert "kv_bucket:proxy_assertion_nonces" in order, order
         assert "subscribe" in order, order
         assert order.index("kv_bucket:proxy_assertion_nonces") < order.index("subscribe"), order
+
+    @pytest.mark.asyncio
+    async def test_the_self_provisioned_assertion_guard_binds_and_never_creates(self) -> None:
+        """a pod holds no STREAM.CREATE: the hub declares the nonce bucket, the pod binds it.
+
+        ``STREAM.CREATE`` carries ``sources`` in its body, so a pod allowed to create a bucket of its
+        own could copy any stream on the bus into it. The guard the server builds itself therefore
+        opens bind-only.
+        """
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod-guard-bind-only",
+        )
+        server.register(StubTool())
+
+        opened: list[dict[str, Any]] = []
+
+        def _open_bucket(**kwargs: Any) -> AsyncMock:
+            opened.append(kwargs)
+            return AsyncMock()
+
+        mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
+        mock_nc.is_connected = True
+        mock_nc.kv_bucket = AsyncMock(side_effect=_open_bucket)
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.05)
+            await server.shutdown()
+            await asyncio.sleep(0.05)
+            serve_task.cancel()
+            try:
+                await serve_task
+            except asyncio.CancelledError:
+                pass
+
+        nonces = [kwargs for kwargs in opened if kwargs["name"] == "proxy_assertion_nonces"]
+        assert nonces, opened
+        assert all(kwargs["create_if_missing"] is False for kwargs in nonces), nonces
 
     @pytest.mark.asyncio
     async def test_an_injected_assertion_guard_is_bound_before_the_pod_is_reachable(self) -> None:
@@ -1661,7 +1710,8 @@ class TestToolServerIdentityVerification:
         await server.handle_call(self._msg(agent_id=uuid4(), token=None))
         response = self._response(rec)
         assert response["success"] is False
-        assert "identity verification failed" in response["error"]
+        assert response["error_code"] == IDENTITY_REFUSED
+        assert response["error"] == IDENTITY_REFUSED_MESSAGE
 
     @pytest.mark.asyncio
     async def test_enforce_accepts_valid_matching_token(self) -> None:
@@ -1743,7 +1793,8 @@ class TestToolServerIdentityVerification:
         await server.handle_call(self._msg(agent_id=uuid4(), customer_id=uuid4(), token=token))
         response = self._response(rec)
         assert response["success"] is False
-        assert "identity verification failed" in response["error"]
+        assert response["error_code"] == IDENTITY_REFUSED
+        assert response["error"] == IDENTITY_REFUSED_MESSAGE
 
 
 class TestToolServerProxyAssertionVerification:
@@ -1851,7 +1902,8 @@ class TestToolServerProxyAssertionVerification:
         await server.handle_call(self._msg(token=self._token(priv), assertion=None, correlation_id=str(uuid4())))
         response = self._response(rec)
         assert response["success"] is False
-        assert "proxy assertion verification failed" in response["error"]
+        assert response["error_code"] == TOOL_PROXY_ASSERTION_UNVERIFIED
+        assert response["error"] == TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE
 
     @pytest.mark.asyncio
     async def test_enforce_rejects_an_assertion_for_a_different_body(self) -> None:
@@ -1893,9 +1945,10 @@ class TestToolServerProxyAssertionVerification:
         )
         response = self._response(rec)
         # the call is rejected at the proxy-assertion gate (the missing guard makes it fail closed);
-        # the wire error carries the gate name + exception type, not the internal message.
+        # the wire error is the gate's one code and message; which check refused stays in the log.
         assert response["success"] is False
-        assert "proxy assertion verification failed" in response["error"]
+        assert response["error_code"] == TOOL_PROXY_ASSERTION_UNVERIFIED
+        assert response["error"] == TOOL_PROXY_ASSERTION_UNVERIFIED_MESSAGE
 
 
 class _PodRekeyingProvider:
@@ -2005,7 +2058,8 @@ class TestToolServerReactiveJwksRefresh:
         assert provider.refresh_calls == 0  # NO reactive refresh on an expired token
         response = json.loads(rec.last_reply[1].model_dump_json())
         assert response["success"] is False
-        assert "identity verification failed" in response["error"]
+        assert response["error_code"] == IDENTITY_REFUSED
+        assert response["error"] == IDENTITY_REFUSED_MESSAGE
 
 
 class TestToolServerVerificationObservability:
@@ -2206,3 +2260,71 @@ class TestNatsConnectAuthToken:
         assert kwargs["user"] == "u"
         assert kwargs["password"] == "p"
         assert "auth_token" not in kwargs
+
+
+class TestAssertionNoncesAreOwnerScoped:
+    """the self-provisioned nonce guard keys every nonce under the pod's own scope.
+
+    ``proxy_assertion_nonces`` is one bucket every pod binds, and each pod is granted only the keys
+    under its own scope -- the owning agent's for an in-process server, the ``tool_pods.id``'s for a
+    tool pod. A guard keyed any other way has every record refused by the grant.
+    """
+
+    _AGENT = UUID("019470a8-b5c3-7def-8123-0000000000aa")
+    _TOOL_POD = "01947100-0000-7000-8000-0000000000aa"
+
+    def test_an_in_process_server_scopes_by_its_owning_agent(self) -> None:
+        from threetears.nats import Principal, Subjects, kv_key_scope_for
+
+        server = ToolServer(nats_url="nats://x", pod_id=Subjects.agent_inprocess_pod_id(self._AGENT, "i1"))
+        assert server.assertion_nonce_key_scope == kv_key_scope_for(Principal.AGENT_POD, agent_id=self._AGENT)
+
+    def test_a_tool_pod_scopes_by_its_pod_id(self) -> None:
+        from threetears.nats import Principal, kv_key_scope_for
+
+        server = ToolServer(nats_url="nats://x", pod_id=self._TOOL_POD)
+        assert server.assertion_nonce_key_scope == kv_key_scope_for(Principal.TOOL_POD, pod_id=self._TOOL_POD)
+
+    def test_a_pod_id_no_platform_principal_carries_keys_its_nonces_unscoped(self) -> None:
+        # a non-uuid pod id cannot be minted a platform grant at all, so it runs on a bus of its own
+        server = ToolServer(nats_url="nats://x", pod_id="test-pod-slug")
+        assert server.assertion_nonce_key_scope is None
+
+    @pytest.mark.asyncio
+    async def test_the_guard_serve_builds_carries_the_scope(self) -> None:
+        from threetears.nats import Principal, kv_key_scope_for
+
+        built: list[dict[str, Any]] = []
+
+        class _SpyGuard(FakeReplayGuard):
+            def __init__(self, _client: Any, **kwargs: Any) -> None:
+                built.append(kwargs)
+                super().__init__()
+
+        server = ToolServer(nats_url="nats://localhost:9999", pod_id=self._TOOL_POD)
+        server.register(StubTool())
+        mock_nc = AsyncMock()
+        mock_nc.renew_credential = MagicMock()  # synchronous on the real client
+        mock_nc.is_connected = True
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+
+        with (
+            patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc),
+            patch("threetears.agent.tools.server.ReplayGuard", _SpyGuard),
+        ):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.05)
+            await server.shutdown()
+            await asyncio.sleep(0.05)
+            serve_task.cancel()
+            try:
+                await serve_task
+            except asyncio.CancelledError:
+                pass
+
+        assert [kwargs["key_scope"] for kwargs in built] == [
+            kv_key_scope_for(Principal.TOOL_POD, pod_id=self._TOOL_POD)
+        ]
+        assert built[0]["bucket_name"] == "proxy_assertion_nonces"

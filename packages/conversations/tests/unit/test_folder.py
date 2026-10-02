@@ -125,6 +125,9 @@ class _CoherentConversationsCollection(ConversationsCollection):
         """
         self.l3_pool = postgres_pool
         self._l1 = None
+        # no L2 bucket: ``save_entity`` then takes its unfenced L2 write, which is the
+        # ``_save_to_l2`` seam this harness records.
+        self._nats_client = None
         self._write_buffer = None
         self._flush_strategy = FlushStrategy.ALWAYS
         self._flush_tables = frozenset()
@@ -577,6 +580,9 @@ class TestConversationFolderId:
                 "folder_id": folder_id,
                 "status": "active",
                 "summary": None,
+                # a row read from L3 carries every declared column, the trigger-maintained
+                # search_vector included; without it the save reads the row back from the pool
+                "search_vector": None,
                 "date_created": now,
                 "date_updated": now,
                 "date_last_message": None,

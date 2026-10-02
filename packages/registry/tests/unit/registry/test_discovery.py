@@ -15,7 +15,7 @@ from threetears.registry.discovery import (
     DiscoveryHandler,
 )
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
 
 @pytest.fixture(autouse=True)

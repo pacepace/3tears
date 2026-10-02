@@ -255,12 +255,17 @@ class HealthStatus:
         short-circuit yields a partial list when any check fails -- a
         downstream check's absence means "we never got that far")
     :ptype components: list[ComponentStatus]
+    :param version: release version of the service answering, or ``None`` when its consumer
+        passed none; a captured payload then names which build answered, which is what an
+        operator comparing two pods mid-rollout needs
+    :ptype version: str | None
     """
 
     service: str
     tier: HealthTier
     healthy: bool
     components: list[ComponentStatus] = field(default_factory=list)
+    version: str | None = None
 
 
 class HealthServer:
@@ -295,6 +300,11 @@ class HealthServer:
         HTTP listener they already run. ``None`` leaves ``/metrics``
         returning ``404``
     :ptype metrics_provider: Callable[[], tuple[str, bytes]] | None
+    :param version: release version of the running service (its own installed distribution's
+        version), echoed on the :class:`HealthStatus` JSON body and the startup log line.
+        optional so a consumer that passes none keeps working; its body then carries
+        ``"version": null``. the plain-text probe body never changes
+    :ptype version: str | None
     """
 
     #: path -> tier the probe routes answer.
@@ -320,6 +330,7 @@ class HealthServer:
         checks: list[HealthCheck] | None = None,
         host: str = "0.0.0.0",  # noqa: S104 -- kube/compose probes reach the pod by IP
         metrics_provider: MetricsProvider | None = None,
+        version: str | None = None,
     ) -> None:
         """initialize health server with the supplied checks.
 
@@ -335,6 +346,8 @@ class HealthServer:
         :param metrics_provider: optional ``() -> (content_type, body)``
             callable served on ``GET /metrics``; ``None`` -> route 404s
         :ptype metrics_provider: Callable[[], tuple[str, bytes]] | None
+        :param version: release version echoed on status JSON and the startup log
+        :ptype version: str | None
         :return: nothing
         :rtype: None
         """
@@ -343,6 +356,7 @@ class HealthServer:
         self._service_name = service_name
         self._checks: list[HealthCheck] = list(checks) if checks else []
         self._metrics_provider = metrics_provider
+        self._version = version
         self._server: asyncio.base_events.Server | None = None
 
     @property
@@ -354,6 +368,11 @@ class HealthServer:
     def service_name(self) -> str:
         """return the service identifier echoed on status responses."""
         return self._service_name
+
+    @property
+    def version(self) -> str | None:
+        """return the release version echoed on status responses, or ``None`` when not given."""
+        return self._version
 
     def register_check(self, check: HealthCheck) -> None:
         """append a check to the list evaluated on every probe.
@@ -417,6 +436,7 @@ class HealthServer:
             tier=tier,
             healthy=all_healthy,
             components=components,
+            version=self._version,
         )
 
     async def start(self) -> None:
@@ -440,6 +460,8 @@ class HealthServer:
             "health server listening",
             extra={
                 "extra_data": {
+                    "service": self._service_name,
+                    "version": self._version,
                     "host": self._host,
                     "port": self._port,
                     "live_checks": [c.name for c in self._checks if c.tier is HealthTier.LIVE],

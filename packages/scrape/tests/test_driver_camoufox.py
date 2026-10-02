@@ -10,7 +10,13 @@ lives in test_driver_contract.py, not here.
 from __future__ import annotations
 
 import pytest
-from packages.scrape.tests._driver_log_helpers import driver_warnings
+from packages.scrape.tests.camoufox_fakes import (
+    FakeCamoufoxBrowser,
+    FakeCamoufoxNetworkResponse,
+    FakeCamoufoxPage,
+    FakeCamoufoxResponse,
+)
+from packages.scrape.tests.driver_log_helpers import driver_warnings
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -18,205 +24,18 @@ from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.drivers.camoufox import CamoufoxDriver, CamoufoxDriverError
 
 
-# parity-exempt: hand-rolled subset stub of Playwright's third-party Locator (only scroll_into_view_if_needed, the only surface CamoufoxDriver calls)
-class _FakeCamoufoxLocator:
-    def __init__(self, selector: str, *, scroll_into_view_calls: list[dict], scroll_into_view_exc=None) -> None:
-        self._selector = selector
-        self._scroll_into_view_calls = scroll_into_view_calls
-        self._scroll_into_view_exc = scroll_into_view_exc
-
-    async def scroll_into_view_if_needed(self, *, timeout=None):
-        self._scroll_into_view_calls.append({"selector": self._selector, "timeout": timeout})
-        if self._scroll_into_view_exc is not None:
-            raise self._scroll_into_view_exc
-
-
-# parity-exempt: hand-rolled subset stub of Playwright's third-party Mouse (only wheel, the only surface CamoufoxDriver calls)
-class _FakeCamoufoxMouse:
-    def __init__(self, *, wheel_calls: list[dict]) -> None:
-        self._wheel_calls = wheel_calls
-
-    async def wheel(self, delta_x, delta_y):
-        self._wheel_calls.append({"delta_x": delta_x, "delta_y": delta_y})
-
-
-# parity-exempt: hand-rolled subset stub of Playwright's third-party Page (only goto/wait_for_selector/click/fill/wait_for_timeout/locator/mouse/viewport_size/content/url/close/on, the only surface CamoufoxDriver calls)
-class _FakeCamoufoxPage:
-    def __init__(
-        self,
-        *,
-        goto_result=None,
-        goto_exc=None,
-        wait_for_exc=None,
-        click_exc=None,
-        fill_exc=None,
-        scroll_into_view_exc=None,
-        evaluate_returns=None,
-        evaluate_exc=None,
-        html="<html>ok</html>",
-        url=None,
-        network_responses=None,
-        viewport_size=None,
-    ):
-        self._goto_result = goto_result
-        self._goto_exc = goto_exc
-        self._wait_for_exc = wait_for_exc
-        self._click_exc = click_exc
-        self._fill_exc = fill_exc
-        self._scroll_into_view_exc = scroll_into_view_exc
-        self._evaluate_returns = list(evaluate_returns) if evaluate_returns is not None else []
-        self._evaluate_exc = evaluate_exc
-        self._html = html
-        self.url = url or "https://example.gov/final"
-        self.viewport_size = viewport_size or {"width": 1920, "height": 1080}
-        self.goto_calls: list[dict] = []
-        self.wait_for_calls: list[dict] = []
-        self.click_calls: list[dict] = []
-        self.fill_calls: list[dict] = []
-        self.wait_for_timeout_calls: list[int] = []
-        self.scroll_into_view_calls: list[dict] = []
-        self.wheel_calls: list[dict] = []
-        self.evaluate_calls: list[str] = []
-        self.mouse = _FakeCamoufoxMouse(wheel_calls=self.wheel_calls)
-        self.closed = False
-        # Simulates the responses Playwright would have fired via page.on("response", ...)
-        # during navigation -- goto() replays these into the registered handler.
-        self._network_responses = network_responses or []
-        self._response_handler = None
-
-    async def goto(self, url, *, timeout=None, wait_until=None):
-        self.goto_calls.append({"url": url, "timeout": timeout, "wait_until": wait_until})
-        if self._goto_exc is not None:
-            raise self._goto_exc
-        if self._response_handler is not None:
-            for resp in self._network_responses:
-                self._response_handler(resp)
-        return self._goto_result
-
-    async def wait_for_selector(self, selector, *, timeout=None):
-        self.wait_for_calls.append({"selector": selector, "timeout": timeout})
-        if self._wait_for_exc is not None:
-            raise self._wait_for_exc
-
-    async def click(self, selector, *, timeout=None):
-        self.click_calls.append({"selector": selector, "timeout": timeout})
-        if self._click_exc is not None:
-            raise self._click_exc
-
-    async def fill(self, selector, value, *, timeout=None):
-        self.fill_calls.append({"selector": selector, "value": value, "timeout": timeout})
-        if self._fill_exc is not None:
-            raise self._fill_exc
-
-    async def wait_for_timeout(self, ms):
-        self.wait_for_timeout_calls.append(ms)
-
-    def locator(self, selector):
-        return _FakeCamoufoxLocator(
-            selector,
-            scroll_into_view_calls=self.scroll_into_view_calls,
-            scroll_into_view_exc=self._scroll_into_view_exc,
-        )
-
-    async def evaluate(self, expression):
-        self.evaluate_calls.append(expression)
-        if self._evaluate_exc is not None:
-            raise self._evaluate_exc
-        return self._evaluate_returns.pop(0) if self._evaluate_returns else None
-
-    async def content(self):
-        return self._html
-
-    async def close(self):
-        self.closed = True
-
-    def on(self, event, handler):
-        if event == "response":
-            self._response_handler = handler
-
-
-# parity-exempt: hand-rolled subset stub of Playwright's third-party Request (only .resource_type/.method/.post_data, the only attributes CamoufoxDriver reads)
-class _FakeCamoufoxRequest:
-    def __init__(self, resource_type: str, method: str = "GET", post_data: str | None = None) -> None:
-        self.resource_type = resource_type
-        self.method = method
-        # Playwright's own name and its own "no body" value -- None for every GET.
-        self.post_data = post_data
-
-
-# parity-exempt: hand-rolled subset stub of Playwright's third-party Response used for network-capture (only .request/.status/.url/.text()/.body()/.all_headers(), the only surface CamoufoxDriver's capture_network path reads)
-class _FakeCamoufoxNetworkResponse:
-    def __init__(
-        self,
-        *,
-        url: str,
-        status: int = 200,
-        resource_type: str = "xhr",
-        body: str = "{}",
-        content_type: str = "application/json",
-        text_exc: Exception | None = None,
-        headers_exc: Exception | None = None,
-        method: str = "GET",
-        post_data: str | None = None,
-    ):
-        self.url = url
-        self.status = status
-        self.request = _FakeCamoufoxRequest(resource_type, method=method, post_data=post_data)
-        self._body = body
-        self._content_type = content_type
-        self._text_exc = text_exc
-        self._headers_exc = headers_exc
-
-    async def text(self):
-        if self._text_exc is not None:
-            raise self._text_exc
-        if isinstance(self._body, bytes):
-            return self._body.decode()  # mirrors Playwright: UTF-8 only, raises UnicodeDecodeError
-        return self._body
-
-    async def body(self):
-        if isinstance(self._body, bytes):
-            return self._body
-        return self._body.encode()
-
-    async def all_headers(self):
-        if self._headers_exc is not None:
-            raise self._headers_exc
-        return {"content-type": self._content_type}
-
-
-# parity-exempt: hand-rolled subset stub of Playwright's third-party Response (only .status, the only attribute CamoufoxDriver reads)
-class _FakeCamoufoxResponse:
-    def __init__(self, status: int) -> None:
-        self.status = status
-
-
-# parity-exempt: hand-rolled subset stub of Playwright's third-party Browser (only new_page(), the only method CamoufoxDriver calls)
-class _FakeCamoufoxBrowser:
-    def __init__(self, page: _FakeCamoufoxPage | list[_FakeCamoufoxPage]) -> None:
-        self._pages = page if isinstance(page, list) else [page]
-        self.new_page_calls = 0
-
-    async def new_page(self):
-        # Repeats the last page if new_page() is called more times than pages
-        # were supplied -- single-page callers never need to think about this.
-        result = self._pages[min(self.new_page_calls, len(self._pages) - 1)]
-        self.new_page_calls += 1
-        return result
-
-
 class TestCamoufoxDriverName:
     def test_name(self):
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(_FakeCamoufoxPage()))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(FakeCamoufoxPage()))
         assert driver.name == "camoufox"
 
 
 class TestCamoufoxDriverRender:
     async def test_render_success_returns_rendered_page(self):
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200), html="<html>real</html>", url="https://example.gov/page"
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200), html="<html>real</html>", url="https://example.gov/page"
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov/page")
 
@@ -236,8 +55,8 @@ class TestCamoufoxDriverRender:
         Without this assertion the warning was executed by the contract suite and checked by
         nothing, so deleting it left the suite green.
         """
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.camoufox"):
             await driver.render("https://example.gov", session_state={"cookies": [{"name": "s"}]})
@@ -251,8 +70,8 @@ class TestCamoufoxDriverRender:
 
     async def test_no_session_state_says_nothing(self, caplog):
         """A warning on every ordinary render would be noise that trains the reader to ignore it."""
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.camoufox"):
             await driver.render("https://example.gov")
@@ -260,8 +79,8 @@ class TestCamoufoxDriverRender:
         assert driver_warnings(caplog, "camoufox") == []
 
     async def test_render_converts_seconds_to_milliseconds(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov", timeout=9.5)
 
@@ -269,16 +88,16 @@ class TestCamoufoxDriverRender:
         assert page.goto_calls[0]["wait_until"] == "load"
 
     async def test_render_waits_for_selector_when_given(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov", timeout=5.0, wait_for=".content")
 
         assert page.wait_for_calls == [{"selector": ".content", "timeout": 5000.0}]
 
     async def test_render_skips_wait_for_selector_when_omitted(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov")
 
@@ -286,8 +105,8 @@ class TestCamoufoxDriverRender:
 
     async def test_render_new_page_per_call_never_reused(self):
         """The sidecar backend's own hard-won lesson: never reuse a tab across requests."""
-        pages = [_FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200)) for _ in range(2)]
-        browser = _FakeCamoufoxBrowser(pages)
+        pages = [FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200)) for _ in range(2)]
+        browser = FakeCamoufoxBrowser(pages)
         driver = CamoufoxDriver(browser=browser)
 
         await driver.render("https://example.gov/one")
@@ -298,8 +117,8 @@ class TestCamoufoxDriverRender:
         assert pages[1].closed is True
 
     async def test_render_raises_on_navigation_timeout(self):
-        page = _FakeCamoufoxPage(goto_exc=PlaywrightTimeoutError("navigation timed out"))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_exc=PlaywrightTimeoutError("navigation timed out"))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render("https://example.gov")
@@ -308,8 +127,8 @@ class TestCamoufoxDriverRender:
         assert page.closed is True  # still closed even on failure
 
     async def test_render_raises_on_navigation_failure(self):
-        page = _FakeCamoufoxPage(goto_exc=PlaywrightError("navigation crashed"))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_exc=PlaywrightError("navigation crashed"))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render("https://example.gov")
@@ -318,10 +137,10 @@ class TestCamoufoxDriverRender:
         assert page.closed is True
 
     async def test_render_raises_on_wait_for_timeout(self):
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200), wait_for_exc=PlaywrightTimeoutError("selector never appeared")
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200), wait_for_exc=PlaywrightTimeoutError("selector never appeared")
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render("https://example.gov", wait_for=".missing")
@@ -332,28 +151,28 @@ class TestCamoufoxDriverRender:
 
 class TestCamoufoxDriverNetworkCapture:
     async def test_capture_network_false_by_default_returns_no_calls(self):
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
-            network_responses=[_FakeCamoufoxNetworkResponse(url="https://example.gov/api/notices")],
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
+            network_responses=[FakeCamoufoxNetworkResponse(url="https://example.gov/api/notices")],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov")
 
         assert result.network_calls == []  # handler never registered when capture_network=False
 
     async def test_captures_a_real_json_xhr_response(self):
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
             network_responses=[
-                _FakeCamoufoxNetworkResponse(
+                FakeCamoufoxNetworkResponse(
                     url="https://example.gov/api/notices",
                     resource_type="xhr",
                     body='{"notices": [1, 2]}',
                 )
             ],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov", capture_network=True)
 
@@ -367,10 +186,10 @@ class TestCamoufoxDriverNetworkCapture:
 
     async def test_captures_a_post_requests_payload(self):
         """A POST-read API's payload is its query -- without it the call cannot be replayed."""
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
             network_responses=[
-                _FakeCamoufoxNetworkResponse(
+                FakeCamoufoxNetworkResponse(
                     url="https://api.example.gov/api/Grids/GetData",
                     resource_type="xhr",
                     body='{"data": {"items": [{"id": 1}]}}',
@@ -379,7 +198,7 @@ class TestCamoufoxDriverNetworkCapture:
                 )
             ],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         call = (await driver.render("https://portal.example.gov", capture_network=True)).network_calls[0]
 
@@ -388,22 +207,22 @@ class TestCamoufoxDriverNetworkCapture:
 
     async def test_a_get_reports_no_request_payload(self):
         """None, not "" -- "had no body" and "had an empty body" are different facts."""
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
-            network_responses=[_FakeCamoufoxNetworkResponse(url="https://example.gov/api/rows", body='{"rows": []}')],
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
+            network_responses=[FakeCamoufoxNetworkResponse(url="https://example.gov/api/rows", body='{"rows": []}')],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         call = (await driver.render("https://example.gov", capture_network=True)).network_calls[0]
 
         assert call.request_body is None
 
     async def test_captures_fetch_resource_type_too(self):
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
-            network_responses=[_FakeCamoufoxNetworkResponse(url="https://example.gov/api/data", resource_type="fetch")],
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
+            network_responses=[FakeCamoufoxNetworkResponse(url="https://example.gov/api/data", resource_type="fetch")],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov", capture_network=True)
 
@@ -411,42 +230,42 @@ class TestCamoufoxDriverNetworkCapture:
 
     async def test_non_api_resource_types_are_not_captured(self):
         """Images/scripts/stylesheets are never a "backend API" signal."""
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
             network_responses=[
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/style.css", resource_type="stylesheet"),
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/logo.png", resource_type="image"),
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/app.js", resource_type="script"),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/style.css", resource_type="stylesheet"),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/logo.png", resource_type="image"),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/app.js", resource_type="script"),
             ],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov", capture_network=True)
 
         assert result.network_calls == []
 
     async def test_non_json_bodies_are_not_captured(self):
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
             network_responses=[
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/html-fragment", body="<div>not json</div>"),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/api/html-fragment", body="<div>not json</div>"),
             ],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov", capture_network=True)
 
         assert result.network_calls == []
 
     async def test_a_failed_body_fetch_does_not_drop_other_captured_calls(self):
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
             network_responses=[
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/broken", text_exc=PlaywrightError("gone")),
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/good", body='{"ok": true}'),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/api/broken", text_exc=PlaywrightError("gone")),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/api/good", body='{"ok": true}'),
             ],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov", capture_network=True)
 
@@ -459,14 +278,14 @@ class TestCamoufoxDriverNetworkCapture:
         # whole render, discarding every other captured call on the page. Observed live against two
         # state disclosure portals whose JSON carries an 0xA9 copyright sign.
         cp1252_json = '{"agency": "Dept \xa9 2025", "ok": true}'.encode("cp1252")
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
             network_responses=[
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/latin", body=cp1252_json),
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/good", body='{"ok": true}'),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/api/latin", body=cp1252_json),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/api/good", body='{"ok": true}'),
             ],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov", capture_network=True)
 
@@ -482,30 +301,30 @@ class TestCamoufoxDriverNetworkCapture:
         # like any other unusable response, never crash the render and never be silently mojibaked
         # into plausible-looking but corrupted values.
         undecodable = b'{"x": \x81\x8d\x8f}'  # unmapped in cp1252, invalid in UTF-8
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
             network_responses=[
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/broken", body=undecodable),
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/good", body='{"ok": true}'),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/api/broken", body=undecodable),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/api/good", body='{"ok": true}'),
             ],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov", capture_network=True)
 
         assert [c.url for c in result.network_calls] == ["https://example.gov/api/good"]
 
     async def test_a_failed_headers_fetch_does_not_drop_other_captured_calls(self):
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200),
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200),
             network_responses=[
-                _FakeCamoufoxNetworkResponse(
+                FakeCamoufoxNetworkResponse(
                     url="https://example.gov/api/broken", body='{"ok": true}', headers_exc=PlaywrightError("gone")
                 ),
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/good", body='{"ok": true}'),
+                FakeCamoufoxNetworkResponse(url="https://example.gov/api/good", body='{"ok": true}'),
             ],
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov", capture_network=True)
 
@@ -513,25 +332,31 @@ class TestCamoufoxDriverNetworkCapture:
         assert result.network_calls[0].url == "https://example.gov/api/good"
 
     async def test_capture_bounded_by_max_network_calls(self):
-        from threetears.scrape.drivers.camoufox import _MAX_NETWORK_CALLS
-
-        responses = [
-            _FakeCamoufoxNetworkResponse(url=f"https://example.gov/api/{i}") for i in range(_MAX_NETWORK_CALLS + 5)
-        ]
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), network_responses=responses)
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        responses = [FakeCamoufoxNetworkResponse(url=f"https://example.gov/api/{i}") for i in range(8)]
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), network_responses=responses)
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page), max_network_calls=3)
 
         result = await driver.render("https://example.gov", capture_network=True)
 
-        assert len(result.network_calls) == _MAX_NETWORK_CALLS
+        assert [call.url for call in result.network_calls] == [f"https://example.gov/api/{i}" for i in range(3)]
+
+    async def test_the_default_bound_matches_the_nodriver_sidecar(self):
+        """Thirty, the sidecar's own bound: one more response than that is dropped."""
+        responses = [FakeCamoufoxNetworkResponse(url=f"https://example.gov/api/{i}") for i in range(31)]
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), network_responses=responses)
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
+
+        result = await driver.render("https://example.gov", capture_network=True)
+
+        assert len(result.network_calls) == 30
 
 
 class TestCamoufoxDriverNavSteps:
     """Multi-step navigation capability (2026-07-14)."""
 
     async def test_no_nav_steps_executes_nothing(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov")
 
@@ -541,56 +366,56 @@ class TestCamoufoxDriverNavSteps:
         assert page.scroll_into_view_calls == []
 
     async def test_click_step_clicks_the_selector(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov", nav_steps=[NavStep(action="click", selector="#search")])
 
         assert page.click_calls == [{"selector": "#search", "timeout": 30.0 * 1000}]
 
     async def test_fill_step_fills_the_selector_with_value(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov", nav_steps=[NavStep(action="fill", selector="#q", value="Maine")])
 
         assert page.fill_calls == [{"selector": "#q", "value": "Maine", "timeout": 30.0 * 1000}]
 
     async def test_wait_for_step_waits_for_the_selector(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov", nav_steps=[NavStep(action="wait_for", selector=".results")])
 
         assert page.wait_for_calls == [{"selector": ".results", "timeout": 30.0 * 1000}]
 
     async def test_scroll_into_view_step_scrolls_the_selector(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov", nav_steps=[NavStep(action="scroll_into_view", selector="#chart")])
 
         assert page.scroll_into_view_calls == [{"selector": "#chart", "timeout": 30.0 * 1000}]
 
     async def test_scroll_page_step_scrolls_by_percent_of_viewport_height(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), viewport_size={"width": 1920, "height": 1000})
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), viewport_size={"width": 1920, "height": 1000})
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov", nav_steps=[NavStep(action="scroll_page", value="50")])
 
         assert page.wheel_calls == [{"delta_x": 0, "delta_y": 500.0}]
 
     async def test_scroll_page_step_uses_the_default_amount_when_value_omitted(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), viewport_size={"width": 1920, "height": 1000})
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), viewport_size={"width": 1920, "height": 1000})
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov", nav_steps=[NavStep(action="scroll_page")])
 
         assert page.wheel_calls == [{"delta_x": 0, "delta_y": 250.0}]
 
     async def test_scroll_page_step_non_int_value_raises_nav_step_failed(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render("https://example.gov", nav_steps=[NavStep(action="scroll_page", value="not-a-number")])
@@ -599,8 +424,8 @@ class TestCamoufoxDriverNavSteps:
         assert page.wheel_calls == []
 
     async def test_evaluate_step_runs_the_expression_and_records_the_result(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), evaluate_returns=[{"foo": "bar"}])
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), evaluate_returns=[{"foo": "bar"}])
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render(
             "https://example.gov", nav_steps=[NavStep(action="evaluate", value="({foo: 'bar'})")]
@@ -610,8 +435,8 @@ class TestCamoufoxDriverNavSteps:
         assert result.eval_results == [{"foo": "bar"}]
 
     async def test_evaluate_step_records_each_step_result_in_order(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), evaluate_returns=[1, 2])
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), evaluate_returns=[1, 2])
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render(
             "https://example.gov",
@@ -621,16 +446,16 @@ class TestCamoufoxDriverNavSteps:
         assert result.eval_results == [1, 2]
 
     async def test_no_evaluate_steps_leaves_eval_results_empty(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         result = await driver.render("https://example.gov")
 
         assert result.eval_results == []
 
     async def test_evaluate_step_js_exception_raises_nav_step_failed(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), evaluate_exc=PlaywrightError("boom"))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), evaluate_exc=PlaywrightError("boom"))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render("https://example.gov", nav_steps=[NavStep(action="evaluate", value="throw 1")])
@@ -638,16 +463,16 @@ class TestCamoufoxDriverNavSteps:
         assert exc_info.value.code == "nav_step_failed"
 
     async def test_wait_ms_step_sleeps_for_the_given_duration(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render("https://example.gov", nav_steps=[NavStep(action="wait_ms", ms=500)])
 
         assert page.wait_for_timeout_calls == [500]
 
     async def test_steps_execute_in_order_before_the_final_wait_for(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.render(
             "https://example.gov",
@@ -664,8 +489,8 @@ class TestCamoufoxDriverNavSteps:
         assert page.wait_for_calls == [{"selector": ".final", "timeout": 30.0 * 1000}]
 
     async def test_click_step_selector_never_appearing_raises_nav_step_failed(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), click_exc=PlaywrightTimeoutError("gone"))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), click_exc=PlaywrightTimeoutError("gone"))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render("https://example.gov", nav_steps=[NavStep(action="click", selector="#missing")])
@@ -673,8 +498,8 @@ class TestCamoufoxDriverNavSteps:
         assert exc_info.value.code == "nav_step_failed"
 
     async def test_fill_step_selector_never_appearing_raises_nav_step_failed(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), fill_exc=PlaywrightTimeoutError("gone"))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), fill_exc=PlaywrightTimeoutError("gone"))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render(
@@ -684,8 +509,8 @@ class TestCamoufoxDriverNavSteps:
         assert exc_info.value.code == "nav_step_failed"
 
     async def test_wait_for_step_selector_never_appearing_raises_nav_step_failed(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), wait_for_exc=PlaywrightTimeoutError("gone"))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), wait_for_exc=PlaywrightTimeoutError("gone"))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render("https://example.gov", nav_steps=[NavStep(action="wait_for", selector="#missing")])
@@ -693,10 +518,10 @@ class TestCamoufoxDriverNavSteps:
         assert exc_info.value.code == "nav_step_failed"
 
     async def test_scroll_into_view_step_selector_never_appearing_raises_nav_step_failed(self):
-        page = _FakeCamoufoxPage(
-            goto_result=_FakeCamoufoxResponse(200), scroll_into_view_exc=PlaywrightTimeoutError("gone")
+        page = FakeCamoufoxPage(
+            goto_result=FakeCamoufoxResponse(200), scroll_into_view_exc=PlaywrightTimeoutError("gone")
         )
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render(
@@ -709,8 +534,8 @@ class TestCamoufoxDriverNavSteps:
         """The final wait_for/settle-wait must not run when an earlier nav
         step already failed -- the page was never successfully driven to
         where that wait_for's selector would even make sense."""
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), click_exc=PlaywrightTimeoutError("gone"))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200), click_exc=PlaywrightTimeoutError("gone"))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError):
             await driver.render(
@@ -724,8 +549,8 @@ class TestCamoufoxDriverNavSteps:
         dataclass -- an invalid value can still reach here (e.g. a typo'd
         action decoded from stored config); the driver must reject it
         loudly, not silently no-op or crash with an unrelated error."""
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render(
@@ -745,7 +570,7 @@ class TestCamoufoxDriverLazyLaunch:
         class _FakeAsyncCamoufox:
             def __init__(self, **kwargs):
                 launched.append(kwargs)
-                self._browser = _FakeCamoufoxBrowser(_FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200)))
+                self._browser = FakeCamoufoxBrowser(FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200)))
 
             async def __aenter__(self):
                 return self._browser
@@ -763,8 +588,8 @@ class TestCamoufoxDriverLazyLaunch:
         assert launched[0] == {"headless": True}
 
     async def test_close_is_a_noop_when_browser_was_injected(self):
-        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
-        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+        page = FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=FakeCamoufoxBrowser(page))
 
         await driver.close()  # must not raise; injected browser's lifecycle isn't ours
 
@@ -774,7 +599,7 @@ class TestCamoufoxDriverLazyLaunch:
         # parity-exempt: hand-rolled subset stub of camoufox's third-party AsyncCamoufox (only the async-context-manager surface CamoufoxDriver._ensure_browser calls)
         class _FakeAsyncCamoufox:
             def __init__(self, **kwargs):
-                self._browser = _FakeCamoufoxBrowser(_FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200)))
+                self._browser = FakeCamoufoxBrowser(FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200)))
 
             async def __aenter__(self):
                 return self._browser
@@ -791,16 +616,44 @@ class TestCamoufoxDriverLazyLaunch:
         assert exited == [True]
 
 
+async def _launch_options(driver: CamoufoxDriver, monkeypatch) -> dict:
+    """Render once through *driver* and return the options its browser was launched with.
+
+    Camoufox is replaced at its import site by a stub that records its constructor
+    arguments, so this is what a real launch would have been handed.
+    """
+    launched: list[dict] = []
+
+    # parity-exempt: hand-rolled subset stub of camoufox's third-party AsyncCamoufox (only the async-context-manager surface CamoufoxDriver._ensure_browser calls)
+    class _RecordingAsyncCamoufox:
+        def __init__(self, **kwargs):
+            launched.append(kwargs)
+            self._browser = FakeCamoufoxBrowser(FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200)))
+
+        async def __aenter__(self):
+            return self._browser
+
+        async def __aexit__(self, *exc_info):
+            return None
+
+    monkeypatch.setattr("camoufox.async_api.AsyncCamoufox", _RecordingAsyncCamoufox)
+    await driver.render("https://example.gov")
+    await driver.close()
+    assert len(launched) == 1
+    return launched[0]
+
+
 class TestTheExitReachesTheBrowserLaunch:
     """The half the driver contract cannot see: whether the launch actually carries the exit.
 
     `test_driver_contract.py` pins that an exit given to this driver comes back on the
     `RenderedPage`. That round trip passes against an INJECTED browser, so it says nothing
     about whether a real launch would have been proxied -- which is the whole of what this
-    driver was missing. These read the launch options directly.
+    driver was missing. These render through a launch the driver performs itself and read
+    the options that launch was given.
     """
 
-    def test_a_proxy_exit_becomes_a_playwright_proxy_option(self) -> None:
+    async def test_a_proxy_exit_becomes_a_playwright_proxy_option(self, monkeypatch) -> None:
         """Camoufox is Firefox via Playwright, so the exit is `proxy={"server": ...}`.
 
         :return: nothing
@@ -810,17 +663,20 @@ class TestTheExitReachesTheBrowserLaunch:
 
         driver = CamoufoxDriver(egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"))
 
-        assert driver._launch_proxy_options() == {"proxy": {"server": "socks5://127.0.0.1:9050"}}  # noqa: SLF001
+        assert await _launch_options(driver, monkeypatch) == {
+            "headless": True,
+            "proxy": {"server": "socks5://127.0.0.1:9050"},
+        }
 
-    def test_no_exit_expresses_no_opinion(self) -> None:
+    async def test_no_exit_expresses_no_opinion(self, monkeypatch) -> None:
         """`None` must leave the launch alone rather than inventing a proxy key.
 
         :return: nothing
         :rtype: None
         """
-        assert CamoufoxDriver()._launch_proxy_options() == {}  # noqa: SLF001
+        assert await _launch_options(CamoufoxDriver(), monkeypatch) == {"headless": True}
 
-    def test_a_direct_exit_does_not_become_a_proxy_server(self) -> None:
+    async def test_a_direct_exit_does_not_become_a_proxy_server(self, monkeypatch) -> None:
         """`direct://` is Chromium's spelling and would be a bogus host to Firefox.
 
         Forwarding it as a Playwright `server` would make Playwright try to resolve
@@ -834,19 +690,25 @@ class TestTheExitReachesTheBrowserLaunch:
 
         driver = CamoufoxDriver(egress=DirectEgress())
 
-        assert driver._launch_proxy_options() == {}  # noqa: SLF001
+        assert await _launch_options(driver, monkeypatch) == {"headless": True}
 
-    def test_the_direct_sentinel_is_the_one_egress_actually_returns(self) -> None:
+    async def test_the_direct_sentinel_is_the_one_egress_actually_returns(self, monkeypatch) -> None:
         """Pins the two sides together rather than against a literal typed twice.
 
         If `DirectEgress` ever changed its spelling, a hard-coded `"direct://"` in this
-        driver would silently start forwarding it as a real proxy server.
+        driver would silently start forwarding it as a real proxy server. Asserted on the
+        launch itself: `DirectEgress` must return a non-``None`` argument (so the launch is
+        decided by the driver recognising that spelling, not by the no-argument branch),
+        and the launch that results must still carry no proxy.
 
         :return: nothing
         :rtype: None
         """
         from threetears.core.egress import DirectEgress
 
-        from threetears.scrape.drivers.camoufox import _DIRECT_PROXY_ARG  # noqa: SLF001
+        egress = DirectEgress()
+        assert egress.browser_proxy_arg() is not None
 
-        assert DirectEgress().browser_proxy_arg() == _DIRECT_PROXY_ARG
+        launch = await _launch_options(CamoufoxDriver(egress=egress), monkeypatch)
+
+        assert "proxy" not in launch

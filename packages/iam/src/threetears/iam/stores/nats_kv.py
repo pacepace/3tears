@@ -211,7 +211,7 @@ class NatsKvStateStore:
         return _strip_internal(_live(_decode(raw), self._clock()))
 
 
-async def state_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvStateStore:
+async def state_store(nc: KvCapable, *, name: str, ttl: timedelta, create_if_missing: bool = True) -> NatsKvStateStore:
     """Open (or rebind) ``name`` and wrap it as a :class:`NatsKvStateStore`.
 
     Resolved per call rather than held: :meth:`~threetears.nats.kv.KvCapable.kv_bucket` caches
@@ -254,13 +254,23 @@ async def state_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvStat
         passed to :meth:`NatsKvStateStore.put`. The per-call value is what expires an
         individual entry; this is what eventually removes it.
     :ptype ttl: timedelta
+    :param create_if_missing: ``True`` (the default) DECLARES the bucket, creating it when
+        absent; ``False`` only BINDS a bucket another identity declared and never issues
+        STREAM.CREATE. a process whose grant on the bucket is key-addressed only holds no
+        stream-admin verb, and a refused create is never answered -- it costs the whole
+        JetStream deadline before the bind that would have succeeded.
+    :ptype create_if_missing: bool
     :return: the store.
     :rtype: NatsKvStateStore
     """
-    return NatsKvStateStore(await nc.kv_bucket(name=name, ttl=ttl, storage="memory"))
+    return NatsKvStateStore(
+        await nc.kv_bucket(name=name, ttl=ttl, storage="memory", create_if_missing=create_if_missing)
+    )
 
 
-async def ticket_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvTicketStore:
+async def ticket_store(
+    nc: KvCapable, *, name: str, ttl: timedelta, create_if_missing: bool = True
+) -> NatsKvTicketStore:
     """Open (or rebind) ``name`` and wrap it as a :class:`NatsKvTicketStore`.
 
     Same per-call resolution as :func:`state_store`, and MEMORY storage for the same reason:
@@ -275,7 +285,15 @@ async def ticket_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvTic
     :param ttl: bucket TTL -- the storage reaper, and the ceiling on every ticket issued
         from the store. Each ticket's own ``ttl`` expires it; this eventually removes it.
     :ptype ttl: timedelta
+    :param create_if_missing: ``True`` (the default) DECLARES the bucket, creating it when
+        absent; ``False`` only BINDS a bucket another identity declared and never issues
+        STREAM.CREATE. a process whose grant on the bucket is key-addressed only holds no
+        stream-admin verb, and a refused create is never answered -- it costs the whole
+        JetStream deadline before the bind that would have succeeded.
+    :ptype create_if_missing: bool
     :return: the store.
     :rtype: NatsKvTicketStore
     """
-    return NatsKvTicketStore(await nc.kv_bucket(name=name, ttl=ttl, storage="memory"))
+    return NatsKvTicketStore(
+        await nc.kv_bucket(name=name, ttl=ttl, storage="memory", create_if_missing=create_if_missing)
+    )

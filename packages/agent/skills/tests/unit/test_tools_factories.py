@@ -7,7 +7,7 @@ spinning up Postgres. The full happy-path lifecycle (create -> list ->
 introspect -> update -> delete) lands in the integration suite where
 real Collections run.
 
-Fake parity: ``_FakeSkillsCollection`` and ``_FakeInvocationsCollection``
+Fake parity: ``FakeSkillsCollection`` and ``FakeInvocationsCollection``
 declare their parity contract via subclass declaration so the canonical
 fake-parity walker accepts them in ``strict`` mode.
 """
@@ -21,9 +21,10 @@ from uuid import UUID
 import pytest
 from uuid_utils import uuid7
 
-from threetears.agent.skills.entities import (
-    AgentSkillEntity,
-    AgentSkillInvocationEntity,
+from packages.agent.skills.tests.unit.skill_fakes import (
+    FakeInvocationsCollection,
+    FakeRegistry,
+    FakeSkillsCollection,
 )
 from threetears.agent.skills.tools import (
     SkillEligibleTool,
@@ -45,233 +46,6 @@ def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
 
 
-# --- Fakes ---
-
-
-# parity-with: threetears.agent.skills.collections.AgentSkillCollection
-# parity-exempt: AgentSkillCollection subset for the eight tool factory unit tests; the tools call only create/save_entity/get/delete/find_by_name_for_user/list_for_user/count_for_user/increment_outcome_counts and the three-tier-cache + l2/l3 SQL methods on the production class are not part of the tool API contract
-class _FakeSkillsCollection:
-    """In-memory stand-in for the public surface of :class:`AgentSkillCollection`.
-
-    Implements the slice the tool factories call: ``create`` /
-    ``save_entity`` / ``get`` / ``delete`` / ``find_by_name_for_user``
-    / ``list_for_user`` / ``count_for_user``. Constructs entities with
-    ``collection=None`` so the cache-write path in
-    :meth:`BaseEntity.__init__` falls back to transient dict storage
-    -- no L1 / L2 / L3 wiring needed for unit tests.
-    """
-
-    def __init__(self) -> None:
-        self.rows: dict[tuple[UUID, UUID], dict[str, Any]] = {}
-
-    def create(self, data: dict[str, Any]) -> AgentSkillEntity:
-        return AgentSkillEntity(dict(data), is_new=True, collection=None)
-
-    async def save_entity(self, entity: Any, **kwargs: Any) -> int:
-        data = entity.to_dict()
-        self.rows[(data["agent_id"], data["skill_id"])] = dict(data)
-        return 1
-
-    async def get(self, entity_id: Any) -> AgentSkillEntity | None:
-        agent_id, skill_id = entity_id
-        row = self.rows.get((agent_id, skill_id))
-        if row is None:
-            return None
-        return AgentSkillEntity(dict(row), is_new=False, collection=None)
-
-    async def delete(self, entity_id: Any) -> bool:
-        agent_id, skill_id = entity_id
-        self.rows.pop((agent_id, skill_id), None)
-        return True
-
-    async def find_by_name_for_user(
-        self,
-        agent_id: UUID,
-        user_id: UUID,
-        name: str,
-    ) -> AgentSkillEntity | None:
-        for row in self.rows.values():
-            if row["agent_id"] == agent_id and row["user_id"] == user_id and row["name"] == name:
-                return AgentSkillEntity(dict(row), is_new=False, collection=None)
-        return None
-
-    async def list_for_user(
-        self,
-        agent_id: UUID,
-        user_id: UUID,
-        *,
-        enabled_only: bool = True,
-        tag_filter: Any = None,
-        query: str | None = None,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> list[AgentSkillEntity]:
-        results: list[AgentSkillEntity] = []
-        needle = (query or "").lower().strip() if query else None
-        for row in self.rows.values():
-            if row["agent_id"] != agent_id or row["user_id"] != user_id:
-                continue
-            if enabled_only and not row.get("enabled", True):
-                continue
-            if tag_filter:
-                row_tags = list(row.get("tags") or [])
-                if not any(t in row_tags for t in tag_filter):
-                    continue
-            if needle:
-                hay = f"{row.get('name', '')} {row.get('summary', '')} {row.get('body', '') or ''}".lower()
-                if needle not in hay:
-                    continue
-            results.append(AgentSkillEntity(dict(row), is_new=False, collection=None))
-        return results[offset : offset + limit]
-
-    async def count_for_user(
-        self,
-        agent_id: UUID,
-        user_id: UUID,
-        *,
-        enabled_only: bool = True,
-        tag_filter: Any = None,
-        query: str | None = None,
-    ) -> int:
-        needle = (query or "").lower().strip() if query else None
-        count = 0
-        for row in self.rows.values():
-            if row["agent_id"] != agent_id or row["user_id"] != user_id:
-                continue
-            if enabled_only and not row.get("enabled", True):
-                continue
-            if tag_filter:
-                row_tags = list(row.get("tags") or [])
-                if not any(t in row_tags for t in tag_filter):
-                    continue
-            if needle:
-                hay = f"{row.get('name', '')} {row.get('summary', '')} {row.get('body', '') or ''}".lower()
-                if needle not in hay:
-                    continue
-            count += 1
-        return count
-
-    async def increment_outcome_counts(
-        self,
-        agent_id: UUID,
-        skill_id: UUID,
-        outcome: str,
-    ) -> None:
-        row = self.rows.get((agent_id, skill_id))
-        if row is None:
-            return
-        if outcome == "success":
-            row["success_count"] = row.get("success_count", 0) + 1
-        elif outcome == "failure":
-            row["failure_count"] = row.get("failure_count", 0) + 1
-            row["last_failure_at"] = datetime.now(UTC)
-        else:
-            raise ValueError(f"increment_outcome_counts: outcome must be 'success' or 'failure'; got {outcome!r}")
-
-
-# parity-with: threetears.agent.skills.collections.AgentSkillInvocationCollection
-# parity-exempt: AgentSkillInvocationCollection subset for skill_invoke + skill_report_outcome unit coverage; the tools call only create/save_entity/record/list_for_conversation/set_outcome so the cache/persistence methods on the production class are out of scope
-class _FakeInvocationsCollection:
-    """In-memory stand-in for :class:`AgentSkillInvocationCollection`."""
-
-    def __init__(self) -> None:
-        self.rows: dict[tuple[UUID, UUID], dict[str, Any]] = {}
-
-    def create(self, data: dict[str, Any]) -> AgentSkillInvocationEntity:
-        return AgentSkillInvocationEntity(dict(data), is_new=True, collection=None)
-
-    async def save_entity(self, entity: Any, **kwargs: Any) -> int:
-        data = entity.to_dict()
-        self.rows[(data["agent_id"], data["invocation_id"])] = dict(data)
-        return 1
-
-    async def record(
-        self,
-        agent_id: UUID,
-        invocation: AgentSkillInvocationEntity,
-    ) -> None:
-        await self.save_entity(invocation)
-
-    async def list_for_conversation(
-        self,
-        agent_id: UUID,
-        conversation_id: UUID,
-        *,
-        limit: int = 20,
-    ) -> list[AgentSkillInvocationEntity]:
-        matches = [
-            AgentSkillInvocationEntity(dict(row), is_new=False, collection=None)
-            for row in self.rows.values()
-            if row["agent_id"] == agent_id and row["conversation_id"] == conversation_id
-        ]
-        matches.sort(key=lambda e: e.invoked_at, reverse=True)
-        return matches[:limit]
-
-    async def set_outcome(
-        self,
-        agent_id: UUID,
-        invocation_id: UUID,
-        *,
-        outcome: str,
-        source: str,
-    ) -> None:
-        row = self.rows.get((agent_id, invocation_id))
-        if row is None:
-            return
-        row["outcome"] = outcome
-        row["outcome_source"] = source
-
-    def latest(self) -> dict[str, Any] | None:
-        if not self.rows:
-            return None
-        return list(self.rows.values())[-1]
-
-
-# parity-with: threetears.agent.skills.tools.SkillRegistryClient
-# parity-exempt: in-memory SkillRegistryClient implementation; the production protocol is the SkillRegistryClient defined in tools.py and the fake declares parity-with via the marker on the class, but the strict walker also requires this entry to satisfy the cross-file Protocol lookup
-class _FakeRegistry:
-    """In-memory implementation of :class:`SkillRegistryClient`."""
-
-    def __init__(
-        self,
-        *,
-        permitted_tools: set[str] | None = None,
-        skill_eligible: list[SkillEligibleTool] | None = None,
-        introspect_payloads: dict[str, SkillToolIntrospect] | None = None,
-    ) -> None:
-        self._permitted = permitted_tools or set()
-        self._skill_eligible = list(skill_eligible or [])
-        self._introspect = dict(introspect_payloads or {})
-        self.acl_calls: list[tuple[UUID, UUID, str]] = []
-
-    async def acl_permits(
-        self,
-        *,
-        user_id: UUID,
-        agent_id: UUID,
-        tool_name: str,
-    ) -> bool:
-        self.acl_calls.append((user_id, agent_id, tool_name))
-        return tool_name in self._permitted
-
-    async def list_skill_eligible_tools(
-        self,
-        *,
-        actor_user_id: UUID,
-        actor_agent_id: UUID,
-    ) -> list[SkillEligibleTool]:
-        return list(self._skill_eligible)
-
-    async def get_tool_introspect(
-        self,
-        *,
-        actor_user_id: UUID,
-        actor_agent_id: UUID,
-        mcp_name: str,
-    ) -> SkillToolIntrospect | None:
-        return self._introspect.get(mcp_name)
-
-
 # --- skill_create ---
 
 
@@ -291,8 +65,8 @@ class TestSkillCreate:
         agent_id: UUID,
         user_id: UUID,
     ) -> None:
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry()
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry()
         [tool] = load_skill_create_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -318,8 +92,8 @@ class TestSkillCreate:
         agent_id: UUID,
         user_id: UUID,
     ) -> None:
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry()
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry()
         [tool] = load_skill_create_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -336,8 +110,8 @@ class TestSkillCreate:
         agent_id: UUID,
         user_id: UUID,
     ) -> None:
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry()  # nothing permitted
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry()  # nothing permitted
         [tool] = load_skill_create_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -361,8 +135,8 @@ class TestSkillCreate:
         agent_id: UUID,
         user_id: UUID,
     ) -> None:
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry(permitted_tools={"mcp.shell"})
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry(permitted_tools={"mcp.shell"})
         [tool] = load_skill_create_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -384,8 +158,8 @@ class TestSkillCreate:
         agent_id: UUID,
         user_id: UUID,
     ) -> None:
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry()
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry()
         [tool] = load_skill_create_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -407,8 +181,8 @@ class TestSkillCreate:
         agent_id: UUID,
         user_id: UUID,
     ) -> None:
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry()
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry()
         [tool] = load_skill_create_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -433,8 +207,8 @@ class TestSkillList:
     async def test_empty_returns_message(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry()
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry()
         [tool] = load_skill_list_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -447,7 +221,7 @@ class TestSkillList:
     async def test_union_prose_and_tool(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         # seed one prose skill
         skill_id = _new_uuid()
         coll.rows[(agent_id, skill_id)] = {
@@ -472,7 +246,7 @@ class TestSkillList:
             "date_created": datetime.now(UTC),
             "date_updated": datetime.now(UTC),
         }
-        reg = _FakeRegistry(
+        reg = FakeRegistry(
             skill_eligible=[
                 SkillEligibleTool(mcp_name="loki.query", summary="Query Loki logs"),
             ],
@@ -492,8 +266,8 @@ class TestSkillList:
     async def test_kind_filter_prose_only(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry(
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry(
             skill_eligible=[SkillEligibleTool(mcp_name="loki.query", summary="x")],
         )
         [tool] = load_skill_list_tool(
@@ -511,7 +285,7 @@ class TestSkillList:
         agent_id = _new_uuid()
         user_a = _new_uuid()
         user_b = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = _new_uuid()
         coll.rows[(agent_id, skill_id)] = {
             "skill_id": skill_id,
@@ -535,7 +309,7 @@ class TestSkillList:
             "date_created": datetime.now(UTC),
             "date_updated": datetime.now(UTC),
         }
-        reg = _FakeRegistry()
+        reg = FakeRegistry()
         [tool] = load_skill_list_tool(
             agent_id=agent_id,
             user_id=user_a,
@@ -555,7 +329,7 @@ class TestSkillList:
         """
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         # Seed 10 prose skills
         for i in range(10):
             sid = _new_uuid()
@@ -581,7 +355,7 @@ class TestSkillList:
                 "date_created": datetime.now(UTC),
                 "date_updated": datetime.now(UTC),
             }
-        reg = _FakeRegistry(
+        reg = FakeRegistry(
             skill_eligible=[
                 SkillEligibleTool(mcp_name="loki.query", summary="Query Loki logs"),
                 SkillEligibleTool(mcp_name="mcp.shell", summary="Shell access"),
@@ -606,7 +380,7 @@ class TestSkillList:
 
 
 async def _seed_skill(
-    coll: _FakeSkillsCollection,
+    coll: FakeSkillsCollection,
     *,
     agent_id: UUID,
     user_id: UUID,
@@ -646,7 +420,7 @@ class TestSkillGet:
     async def test_happy_path(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         [tool] = load_skill_get_tool(
             agent_id=agent_id,
@@ -661,7 +435,7 @@ class TestSkillGet:
         agent_id = _new_uuid()
         owner = _new_uuid()
         other = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=owner)
         [tool] = load_skill_get_tool(
             agent_id=agent_id,
@@ -675,7 +449,7 @@ class TestSkillGet:
     async def test_invalid_id_returns_error(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         [tool] = load_skill_get_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -690,9 +464,9 @@ class TestSkillUpdate:
     async def test_partial_update(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
-        reg = _FakeRegistry()
+        reg = FakeRegistry()
         [tool] = load_skill_update_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -711,9 +485,9 @@ class TestSkillUpdate:
         agent_id = _new_uuid()
         owner = _new_uuid()
         other = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=owner)
-        reg = _FakeRegistry()
+        reg = FakeRegistry()
         [tool] = load_skill_update_tool(
             agent_id=agent_id,
             user_id=other,
@@ -727,9 +501,9 @@ class TestSkillUpdate:
     async def test_acl_recheck_on_tool_additions_change(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
-        reg = _FakeRegistry()  # nothing permitted
+        reg = FakeRegistry()  # nothing permitted
         [tool] = load_skill_update_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -746,9 +520,9 @@ class TestSkillUpdate:
         """Clearing body while tool lists are empty triggers the CHECK."""
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
-        reg = _FakeRegistry()
+        reg = FakeRegistry()
         [tool] = load_skill_update_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -764,7 +538,7 @@ class TestSkillDelete:
     async def test_happy_path(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         [tool] = load_skill_delete_tool(
             agent_id=agent_id,
@@ -779,7 +553,7 @@ class TestSkillDelete:
         agent_id = _new_uuid()
         owner = _new_uuid()
         other = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=owner)
         [tool] = load_skill_delete_tool(
             agent_id=agent_id,
@@ -813,8 +587,8 @@ class TestSkillInvoke:
         agent_id = _new_uuid()
         user_id = _new_uuid()
         conv_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         state = _ActiveState()
         [tool] = load_skill_invoke_tool(
@@ -840,8 +614,8 @@ class TestSkillInvoke:
         agent_id = _new_uuid()
         user_id = _new_uuid()
         conv_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         already = _new_uuid()
         state = _ActiveState()
@@ -864,8 +638,8 @@ class TestSkillInvoke:
         agent_id = _new_uuid()
         user_id = _new_uuid()
         conv_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         skill_id = await _seed_skill(
             coll,
             agent_id=agent_id,
@@ -892,8 +666,8 @@ class TestSkillInvoke:
         agent_id = _new_uuid()
         user_id = _new_uuid()
         conv_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         skill_id = await _seed_skill(
             coll,
             agent_id=agent_id,
@@ -918,8 +692,8 @@ class TestSkillInvoke:
     async def test_no_conversation_id_rejected(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         state = _ActiveState()
         [tool] = load_skill_invoke_tool(
@@ -949,8 +723,8 @@ class TestSkillInvoke:
         agent_id = _new_uuid()
         user_id = _new_uuid()
         conv_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
 
         def boom(_: UUID) -> None:
@@ -979,8 +753,8 @@ class TestSkillReportOutcome:
         agent_id = _new_uuid()
         user_id = _new_uuid()
         conv_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         state = _ActiveState()
         [invoke_tool] = load_skill_invoke_tool(
@@ -1015,8 +789,8 @@ class TestSkillReportOutcome:
         agent_id = _new_uuid()
         user_id = _new_uuid()
         conv_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         state = _ActiveState()
         [invoke_tool] = load_skill_invoke_tool(
@@ -1049,8 +823,8 @@ class TestSkillReportOutcome:
         agent_id = _new_uuid()
         user_id = _new_uuid()
         conv_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         state = _ActiveState()
         [invoke_tool] = load_skill_invoke_tool(
@@ -1077,8 +851,8 @@ class TestSkillReportOutcome:
     async def test_no_active_skill_rejected(self) -> None:
         agent_id = _new_uuid()
         conv_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         [tool] = load_skill_report_outcome_tool(
             agent_id=agent_id,
             conversation_id_resolver=lambda: conv_id,
@@ -1093,8 +867,8 @@ class TestSkillReportOutcome:
     async def test_no_conversation_id_rejected(self) -> None:
         agent_id = _new_uuid()
         active_skill_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         [tool] = load_skill_report_outcome_tool(
             agent_id=agent_id,
             conversation_id_resolver=lambda: None,
@@ -1114,8 +888,8 @@ class TestSkillReportOutcome:
         agent_id = _new_uuid()
         conv_id = _new_uuid()
         active_skill_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        inv = _FakeInvocationsCollection()
+        coll = FakeSkillsCollection()
+        inv = FakeInvocationsCollection()
         [tool] = load_skill_report_outcome_tool(
             agent_id=agent_id,
             conversation_id_resolver=lambda: conv_id,
@@ -1135,9 +909,9 @@ class TestSkillIntrospect:
     async def test_prose_skill_by_uuid(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
-        reg = _FakeRegistry()
+        reg = FakeRegistry()
         [tool] = load_skill_introspect_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -1153,9 +927,9 @@ class TestSkillIntrospect:
     async def test_prose_skill_by_name(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         await _seed_skill(coll, agent_id=agent_id, user_id=user_id, name="manual-deploy")
-        reg = _FakeRegistry()
+        reg = FakeRegistry()
         [tool] = load_skill_introspect_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -1168,8 +942,8 @@ class TestSkillIntrospect:
     async def test_tool_skill_via_registry(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry(
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry(
             introspect_payloads={
                 "loki.query": SkillToolIntrospect(
                     mcp_name="loki.query",
@@ -1198,9 +972,9 @@ class TestSkillIntrospect:
         """Per Implementation note 7: prose-skill takes precedence."""
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         await _seed_skill(coll, agent_id=agent_id, user_id=user_id, name="loki.query")
-        reg = _FakeRegistry(
+        reg = FakeRegistry(
             introspect_payloads={
                 "loki.query": SkillToolIntrospect(
                     mcp_name="loki.query",
@@ -1223,8 +997,8 @@ class TestSkillIntrospect:
     async def test_not_found(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry()
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry()
         [tool] = load_skill_introspect_tool(
             agent_id=agent_id,
             user_id=user_id,
@@ -1240,8 +1014,8 @@ class TestSkillIntrospect:
 
 
 def _tool_factories(
-    coll: _FakeSkillsCollection,
-    reg: _FakeRegistry,
+    coll: FakeSkillsCollection,
+    reg: FakeRegistry,
     *,
     agent_id: UUID,
     user_id: UUID,
@@ -1262,9 +1036,9 @@ class TestToolCallSkill:
 
     async def test_create_tool_only_skill(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         create, _, get = _tool_factories(
-            coll, _FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
+            coll, FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
         )
         out = await create.ainvoke(
             {"name": "errors", "summary": "last hour's errors", "tool": "loki.query", "arguments": {"q": "error"}}
@@ -1280,9 +1054,9 @@ class TestToolCallSkill:
 
     async def test_create_with_body_and_tool_refused(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         create, _, _ = _tool_factories(
-            coll, _FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
+            coll, FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
         )
         out = await create.ainvoke({"name": "both", "summary": "s", "body": "steps", "tool": "loki.query"})
         assert out.startswith("[TOOL ERROR] skill_create:")
@@ -1291,8 +1065,8 @@ class TestToolCallSkill:
 
     async def test_create_arguments_without_tool_refused(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
-        create, _, _ = _tool_factories(coll, _FakeRegistry(), agent_id=agent_id, user_id=user_id)
+        coll = FakeSkillsCollection()
+        create, _, _ = _tool_factories(coll, FakeRegistry(), agent_id=agent_id, user_id=user_id)
         out = await create.ainvoke({"name": "orphan", "summary": "s", "body": "steps", "arguments": {"q": 1}})
         assert "[TOOL ERROR]" in out
         assert "arguments need a tool" in out
@@ -1300,8 +1074,8 @@ class TestToolCallSkill:
 
     async def test_create_tool_needs_acl(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry()  # nothing permitted
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry()  # nothing permitted
         create, _, _ = _tool_factories(coll, reg, agent_id=agent_id, user_id=user_id)
         out = await create.ainvoke({"name": "denied", "summary": "s", "tool": "mcp.shell"})
         assert "[TOOL ERROR]" in out
@@ -1311,9 +1085,9 @@ class TestToolCallSkill:
 
     async def test_create_oversized_arguments_refused(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         create, _, _ = _tool_factories(
-            coll, _FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
+            coll, FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
         )
         out = await create.ainvoke(
             {"name": "big", "summary": "s", "tool": "loki.query", "arguments": {"q": "x" * (33 * 1024)}}
@@ -1323,10 +1097,10 @@ class TestToolCallSkill:
 
     async def test_update_adding_tool_to_body_skill_refused(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         _, update, _ = _tool_factories(
-            coll, _FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
+            coll, FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
         )
         out = await update.ainvoke({"skill_id": str(skill_id), "tool": "loki.query"})
         assert "not both" in out
@@ -1335,10 +1109,10 @@ class TestToolCallSkill:
 
     async def test_update_turns_body_skill_into_tool_skill(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
         _, update, _ = _tool_factories(
-            coll, _FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
+            coll, FakeRegistry(permitted_tools={"loki.query"}), agent_id=agent_id, user_id=user_id
         )
         out = await update.ainvoke(
             {"skill_id": str(skill_id), "body": "", "tool": "loki.query", "arguments": {"q": "warn"}}
@@ -1349,10 +1123,10 @@ class TestToolCallSkill:
 
     async def test_update_empty_tool_removes_tool_and_arguments(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id, body=None)
         coll.rows[(agent_id, skill_id)].update({"tool": "loki.query", "arguments": {"q": "x"}})
-        _, update, _ = _tool_factories(coll, _FakeRegistry(), agent_id=agent_id, user_id=user_id)
+        _, update, _ = _tool_factories(coll, FakeRegistry(), agent_id=agent_id, user_id=user_id)
         out = await update.ainvoke({"skill_id": str(skill_id), "tool": "", "body": "now steps"})
         assert "[TOOL ERROR]" not in out
         row = coll.rows[(agent_id, skill_id)]
@@ -1360,10 +1134,10 @@ class TestToolCallSkill:
 
     async def test_update_arguments_keep_existing_tool(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
+        coll = FakeSkillsCollection()
         skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id, body=None)
         coll.rows[(agent_id, skill_id)].update({"tool": "loki.query", "arguments": {"q": "x"}})
-        reg = _FakeRegistry()
+        reg = FakeRegistry()
         _, update, _ = _tool_factories(coll, reg, agent_id=agent_id, user_id=user_id)
         out = await update.ainvoke({"skill_id": str(skill_id), "arguments": {"q": "y"}})
         assert "[TOOL ERROR]" not in out
@@ -1378,8 +1152,8 @@ class TestToolSkillsAreOfferedOnlyWhenTheyCanRun:
 
     async def test_the_fields_are_not_in_the_schema_by_default(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry(permitted_tools={"loki.query"})
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry(permitted_tools={"loki.query"})
         [create] = load_skill_create_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
         [update] = load_skill_update_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
         for tool_obj in (create, update):
@@ -1389,8 +1163,8 @@ class TestToolSkillsAreOfferedOnlyWhenTheyCanRun:
 
     async def test_a_tool_skill_passed_anyway_is_refused_and_nothing_is_written(self) -> None:
         agent_id, user_id = _new_uuid(), _new_uuid()
-        coll = _FakeSkillsCollection()
-        reg = _FakeRegistry(permitted_tools={"loki.query"})
+        coll = FakeSkillsCollection()
+        reg = FakeRegistry(permitted_tools={"loki.query"})
         [create] = load_skill_create_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
         out = await create.coroutine(name="errors", summary="s", tool="loki.query", arguments={"q": "error"})  # type: ignore[misc]
         assert out == f"[TOOL ERROR] skill_create: {TOOL_SKILLS_NOT_OFFERED}"

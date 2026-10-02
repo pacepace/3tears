@@ -9,9 +9,8 @@ these tests pin:
 1. ``serve`` asks the client to renew only when the pod OWNS its connection and the auth-callout
    minted its credential -- a static or anonymous credential never expires;
 2. the TTL comes from the pod's environment, read every cycle;
-3. before each renewal the pod drains the replies it still owes, since a reply cannot be delivered once
-   the connection that received its request is gone, and the renewal loop credits that drain when it
-   judges whether the cadence can carry a synchronous call;
+3. the longest request the pod declares is the synchronous reply budget: a renewal keeps the replaced
+   connection open that long, so a reply owed for a call that arrived on it still leaves on it;
 4. an injected (agent-owned) connection is renewed by its owner, so the pod never double-drives it.
 """
 
@@ -24,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from threetears.agent.tools.server import ToolServer
-from threetears.nats import REAUTH_BUFFER_SECONDS, SYNC_REPLY_BUDGET_SECONDS
+from threetears.nats import SYNC_REPLY_BUDGET_SECONDS
 
 _TTL_ENV = "FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS"
 
@@ -98,10 +97,9 @@ class TestServeWiring:
 
         mock_nc.renew_credential.assert_called_once()
         kwargs = mock_nc.renew_credential.call_args.kwargs
-        assert kwargs["before_renewal"] == server.drain_before_reauth
+        # the replaced connection is held for every reply the synchronous budget admits.
         assert kwargs["longest_request_seconds"] == SYNC_REPLY_BUDGET_SECONDS
-        # the drain's slack is credited to the cadence, so the one judge of the TTL sees it.
-        assert kwargs["drain_grace_seconds"] == REAUTH_BUFFER_SECONDS
+        assert set(kwargs) == {"ttl_seconds", "longest_request_seconds"}
 
     @pytest.mark.asyncio
     async def test_a_static_credential_is_never_renewed(self) -> None:

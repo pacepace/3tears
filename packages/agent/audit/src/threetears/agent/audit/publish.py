@@ -26,8 +26,9 @@ redelivered envelope repeats its ``id``, which is the row's primary key.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import UUID
 
-from threetears.nats import Subject
+from threetears.nats import Subjects
 from threetears.observe import get_logger
 
 from threetears.agent.audit.envelope import AuditEvent
@@ -49,9 +50,16 @@ async def publish_audit(
     *,
     nats_client: JetStreamPublisher | None,
     namespace: str,
+    tool_pod_id: UUID | None = None,
 ) -> None:
     """
     publish one audit envelope on ``{namespace}.audit.{event_type}``.
+
+    a TOOL POD passes its ``tool_pods.id`` as ``tool_pod_id`` and the envelope rides
+    :meth:`threetears.nats.Subjects.tool_pod_audit_event` instead --
+    ``{namespace}.audit.tool_pod.{tool_pod_id}.{event_type}``, the one audit subtree a tool pod is
+    granted for its own events. The event type and the envelope are unchanged; the hub's collector
+    reads the actor off that subject.
 
     durable transport: the envelope is JetStream-published (persisted to
     the ``{ns}-audit`` stream + ``PubAck`` awaited), so it survives a
@@ -79,13 +87,20 @@ async def publish_audit(
     :param namespace: NATS subject namespace (environment-scoped
         prefix from ``THREETEARS_NATS_SUBJECT_NAMESPACE``)
     :ptype namespace: str
+    :param tool_pod_id: the publishing tool pod's ``tool_pods.id``, or ``None`` for every
+        principal that is not a tool pod
+    :ptype tool_pod_id: UUID | None
     :return: nothing
     :rtype: None
     """
     if nats_client is None:
         # bootstrap / test scenario; explicit no-op
         return
-    subject = Subject.raw(f"{namespace}.audit.{event.event_type}")
+    subject = (
+        Subjects.audit_event(event.event_type, namespace=namespace)
+        if tool_pod_id is None
+        else Subjects.tool_pod_audit_event(tool_pod_id, event.event_type, namespace=namespace)
+    )
     try:
         # serialize at the border and JetStream-publish for durability:
         # the envelope is persisted to the ``{ns}-audit`` stream and the

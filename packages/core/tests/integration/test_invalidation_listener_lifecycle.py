@@ -56,9 +56,21 @@ class _StubCollection:
     a real :class:`BaseCollection` would drag an L3 store and a config into a
     test whose subject is the subscription lifecycle. the listener looks up
     ``table_name`` (to register), ``primary_key_columns`` (to check the
-    message's pk arity) and ``delete_l2_entry`` (to evict this pod's own scoped
-    L2 entry), and touches nothing else on the way to the L1 eviction.
+    message's pk arity), ``delete_l2_entry`` (to evict this pod's own scoped
+    L2 entry) and ``evict_from_cache_sync`` (to evict the row from this pod's
+    L1, through the collection so a read in flight does not re-cache it), and
+    touches nothing else.
     """
+
+    def __init__(self, l1: SQLiteBackend) -> None:
+        """hold the pod's L1, which the eviction removes the row from.
+
+        :param l1: the pod's L1 backend
+        :ptype l1: SQLiteBackend
+        :return: nothing
+        :rtype: None
+        """
+        self._l1 = l1
 
     @property
     def table_name(self) -> str:
@@ -87,6 +99,17 @@ class _StubCollection:
         :rtype: bool
         """
         return False
+
+    def evict_from_cache_sync(self, entity_id: object) -> bool:
+        """drop the row from this pod's L1.
+
+        :param entity_id: pk value (or 1-tuple) the invalidation names
+        :ptype entity_id: object
+        :return: always ``True`` -- the stub always holds an L1
+        :rtype: bool
+        """
+        self._l1.delete_by_id(_TABLE, entity_id, ("id",))
+        return True
 
 
 @pytest.fixture
@@ -126,7 +149,7 @@ def _make_pod() -> tuple[CollectionRegistry, SQLiteBackend]:
     l1.initialize(_make_metadata())
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, kv_key_scope="test-principal")
-    registry.register(_StubCollection())
+    registry.register(_StubCollection(l1))
     return registry, l1
 
 

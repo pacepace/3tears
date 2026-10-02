@@ -39,9 +39,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from threetears.agent.wake.collections import WakeFireCollection, WebhookSubscriptionCollection
 from threetears.agent.wake.config import DEFAULT_WAKE_CONFIG
 from threetears.agent.wake.entities import WebhookSubscriptionEntity
 from threetears.agent.wake.webhook_adapter import WebhookReceiveResult
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.channels.webhook import (
     DEFAULT_MAX_PAYLOAD_BYTES,
     DEFAULT_SIGNATURE_HEADER,
@@ -82,14 +85,32 @@ class _NullHandler:
         raise AssertionError(msg)
 
 
+def _collections() -> tuple[WebhookSubscriptionCollection, WakeFireCollection]:
+    """the subscription + fire collections a receiver runs on, over a registry with no tiers."""
+    registry = CollectionRegistry()
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    return (
+        WebhookSubscriptionCollection(registry=registry, config=config),
+        WakeFireCollection(registry=registry, config=config),
+    )
+
+
 def _build_receiver(
     *,
     signature_header: str | None = None,
     max_payload_bytes: int | None = None,
+    collections: tuple[WebhookSubscriptionCollection, WakeFireCollection] | None = None,
 ) -> WebhookReceiver:
-    """Construct a receiver with stub dependencies suitable for routing tests."""
+    """Construct a receiver with stub dependencies suitable for routing tests.
+
+    The collections sit on a registry with no tiers: every test patches
+    ``find_by_id`` and stubs ``webhook_receive``, so nothing reaches them.
+    """
+    subscriptions, fires = collections if collections is not None else _collections()
     kwargs: dict[str, Any] = {
         "pool": object(),
+        "subscriptions": subscriptions,
+        "fires": fires,
         "encryption_service": _IdentityEncryption(),
         "handler": _NullHandler(),
         "wake_config": DEFAULT_WAKE_CONFIG,
@@ -212,25 +233,75 @@ class TestVerifyGenericHmacSha256:
 # ============================================================
 
 
+def _status_for(receiver: WebhookReceiver, *, scheme: str, payload: bytes, signature: str) -> int:
+    """the status the mounted receiver answers a delivery to a subscription of ``scheme`` with.
+
+    The subscription carries the secret ``test-secret``; the wake adapter is stubbed to accept,
+    so the status says only what the receiver's verifier for ``scheme`` decided: 202 accepted,
+    403 rejected, 400 no verifier registered for the scheme.
+
+    :param receiver: the receiver under test
+    :ptype receiver: WebhookReceiver
+    :param scheme: the subscription row's ``verification_scheme``
+    :ptype scheme: str
+    :param payload: the delivered body
+    :ptype payload: bytes
+    :param signature: the signature header's value
+    :ptype signature: str
+    :return: the HTTP status
+    :rtype: int
+    """
+
+    async def _accepting_adapter(**_kwargs: Any) -> WebhookReceiveResult:
+        return WebhookReceiveResult(status_code=202, fire_id=uuid4(), message="ok")
+
+    with (
+        _patch_subscription_lookup(_build_subscription(verification_scheme=scheme, secret_plaintext="test-secret")),
+        patch("threetears.agent.wake.webhook_adapter.webhook_receive", _accepting_adapter),
+    ):
+        response = TestClient(_make_app(receiver)).post(
+            f"/webhooks/{uuid4()}", content=payload, headers={DEFAULT_SIGNATURE_HEADER: signature}
+        )
+    status: int = response.status_code
+    return status
+
+
+def _hmac_signature(payload: bytes, secret: bytes = b"test-secret") -> str:
+    """a valid ``generic_hmac_sha256`` signature header value for ``payload``."""
+    return "sha256=" + hmac.new(secret, payload, sha256).hexdigest()
+
+
 class TestRegisterVerifier:
-    """Pluggable :data:`Verifier` registry behaviour."""
+    """Pluggable :data:`Verifier` registry behaviour, observed through what a delivery is answered."""
 
     def test_default_scheme_is_preregistered(self) -> None:
         receiver = _build_receiver()
         # The default ``generic_hmac_sha256`` scheme is wired at
         # construction time so subscriptions land with a working
-        # verifier without consumer ceremony.
-        assert receiver._verifiers["generic_hmac_sha256"] is verify_generic_hmac_sha256  # noqa: SLF001
+        # verifier without consumer ceremony: a correct HMAC is accepted
+        # and a wrong one refused, with nothing registered by the caller.
+        payload = b'{"hello": "world"}'
+        assert (
+            _status_for(receiver, scheme="generic_hmac_sha256", payload=payload, signature=_hmac_signature(payload))
+            == 202
+        )
+        assert (
+            _status_for(receiver, scheme="generic_hmac_sha256", payload=payload, signature="sha256=" + "0" * 64) == 403
+        )
 
     def test_register_custom_scheme(self) -> None:
         receiver = _build_receiver()
+        seen: list[str] = []
 
         def _github_stub(secret: bytes, payload: bytes, signature_value: str) -> bool:
-            del secret, payload, signature_value
+            del secret, payload
+            seen.append(signature_value)
             return True
 
+        assert _status_for(receiver, scheme="github", payload=b"{}", signature="vendor=1") == 400  # not yet known
         receiver.register_verifier("github", _github_stub)
-        assert receiver._verifiers["github"] is _github_stub  # noqa: SLF001
+        assert _status_for(receiver, scheme="github", payload=b"{}", signature="vendor=1") == 202
+        assert seen == ["vendor=1"]
 
     def test_register_overrides_existing(self) -> None:
         receiver = _build_receiver()
@@ -240,7 +311,12 @@ class TestRegisterVerifier:
             return False
 
         receiver.register_verifier("generic_hmac_sha256", _replacement)
-        assert receiver._verifiers["generic_hmac_sha256"] is _replacement  # noqa: SLF001
+        # a signature the default verifier accepts is refused: the replacement decided
+        payload = b'{"hello": "world"}'
+        assert (
+            _status_for(receiver, scheme="generic_hmac_sha256", payload=payload, signature=_hmac_signature(payload))
+            == 403
+        )
 
 
 # ============================================================
@@ -378,7 +454,8 @@ class TestRegistryDispatch:
         """When the verifier succeeds the adapter MUST be invoked with
         ``pre_verified=True`` so it skips its inline HMAC compute.
         """
-        receiver = _build_receiver()
+        subscriptions, fires = _collections()
+        receiver = _build_receiver(collections=(subscriptions, fires))
 
         def _always_accept(secret: bytes, payload: bytes, signature_value: str) -> bool:
             del secret, payload, signature_value
@@ -413,6 +490,11 @@ class TestRegistryDispatch:
 
         assert r.status_code == 202
         assert captured["pre_verified"] is True
+        # the adapter runs on the receiver's own collections -- the host process's, whose
+        # registry carries the NATS client a fire's eviction is broadcast through -- never on
+        # collections it builds per request with no client.
+        assert captured["subscriptions"] is subscriptions
+        assert captured["fires"] is fires
         # The receiver forwards the raw signature header to the
         # adapter (so the adapter still records it for auditing /
         # logging downstream).

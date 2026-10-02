@@ -21,7 +21,7 @@ from threetears.nats import IncomingMessage, Subjects, set_default_namespace
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.discovery import DiscoverRequest, DiscoverResponse, DiscoverToolEntry, DiscoveryHandler
 
-from ._copies import definition, endpoint, entry
+from .copy_entries import definition, endpoint, entry
 
 __all__: list[str] = []
 

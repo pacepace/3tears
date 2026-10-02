@@ -15,6 +15,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import build_select_clause
 from threetears.observe import get_logger
 
@@ -303,7 +304,13 @@ class DuckDBBackend:
         return [dict(zip(columns, row)) for row in rows]
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
-        """Serialize a Python value for DuckDB storage based on column type."""
+        """Serialize a Python value for DuckDB storage based on column type.
+
+        JSON values encode with the storage handler every tier shares
+        (:func:`~threetears.core.backends.schema_sql.json_default`), as the SQLite L1 does: a
+        nested UUID, Decimal or datetime is cached as the string the other tiers store, where a
+        bare ``json.dumps`` raised on it.
+        """
         if value is None:
             return None
 
@@ -312,7 +319,7 @@ class DuckDBBackend:
         if isinstance(value, enum.Enum):
             result = value.value
         elif isinstance(value, dict):
-            result = json.dumps(value)
+            result = json.dumps(value, default=json_default)
         elif isinstance(value, _UUID_TYPES):
             result = str(value)
         elif isinstance(value, datetime):
@@ -322,7 +329,7 @@ class DuckDBBackend:
         elif isinstance(value, Decimal):
             result = float(value)
         elif isinstance(value, (tuple, list)):
-            result = json.dumps(list(value))
+            result = json.dumps(list(value), default=json_default)
         elif isinstance(value, bytes):
             result = value.hex()
 

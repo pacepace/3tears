@@ -33,7 +33,7 @@ Placeholder style
     DB-API ``%s`` positional placeholders (pyformat). callers pass
     ``$N``-style placeholders per the ABC contract; the driver
     translates via
-    :func:`threetears.datasources.drivers._util._translate_placeholders`
+    :func:`threetears.datasources.drivers.sql_fragments.translate_placeholders`
     with target ``"pyformat"`` -- the SAME helper the
     :class:`RedshiftDriver` already calls. DO NOT reimplement the
     regex dance.
@@ -47,7 +47,7 @@ Cancellation mechanism
 
 Sync-to-async bridge
     ``snowflake.connector`` is blocking DB-API; route every call
-    through :class:`threetears.datasources.drivers._sync_bridge.AsyncSyncBridge`
+    through :class:`threetears.datasources.drivers.sync_bridge.AsyncSyncBridge`
     (the SAME bridge :class:`RedshiftDriver` already uses). size from
     :attr:`SnowflakeConnectionConfig.pool_size`-ish or a separate
     ``executor_max_workers`` field if added in shard 08 follow-up.
@@ -103,7 +103,7 @@ Secret handling
 
 Observability
     decorate query-emitting methods with
-    :func:`threetears.datasources.drivers.base._observed`
+    :func:`threetears.datasources.drivers.base.observed`
     (``driver_type="snowflake"``). cancellation.fired / .failed,
     cache.{hit,miss}, executor.saturation are manual emissions
     mirroring the :class:`RedshiftDriver` pattern.
@@ -157,7 +157,7 @@ class SnowflakeDriver(Driver):
     implementation does. read this module's top-of-file docstring
     before writing the implementation -- the helpers to reuse
     (:class:`AsyncSyncBridge`, :meth:`Driver._with_cancellation`,
-    :func:`_translate_placeholders`, the :func:`_observed`
+    :func:`translate_placeholders`, the :func:`observed`
     decorator) and the anti-patterns to avoid (raw
     :class:`ThreadPoolExecutor` instantiation, inline pool literals,
     swallowed cancellation) are all documented there.
@@ -170,7 +170,7 @@ class SnowflakeDriver(Driver):
         lives on ``config.datasource_type`` via the union
     :param datasource_name: human-readable datasource name surfaced
         as the ``datasource_name`` attribute on every OTel metric
-        emitted by :func:`_observed` (when the impl lands). defaults
+        emitted by :func:`observed` (when the impl lands). defaults
         to ``"unknown"`` so callers that don't have the name in scope
         still produce valid metric streams
     :ptype datasource_name: str
@@ -243,7 +243,7 @@ class SnowflakeDriver(Driver):
         ``TO_NUMBER(SUBSTR(MD5(k), 1, 8), 'XXXXXXXX')`` -- Snowflake's own
         spelling of the hash-to-number step Postgres does through ``bit(32)``
         and Redshift through ``STRTOL``. The key expression itself is shared:
-        :func:`threetears.datasources.drivers._util.build_relation_key_expression`.
+        :func:`threetears.datasources.drivers.sql_fragments.build_relation_key_expression`.
 
         :param relation: schema-qualified relation name, a TRUSTED identifier
         :ptype relation: str

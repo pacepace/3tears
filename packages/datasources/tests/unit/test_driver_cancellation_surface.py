@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import inspect
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -43,7 +44,8 @@ from threetears.datasources.drivers import base as driver_base_module
 from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
 from threetears.datasources.entities import DataSourceType
 
-from ._helpers.driver_shims import PoolAcquireHandle
+from .helpers.driver_shims import PoolAcquireHandle
+from .helpers.fake_driver import FakeDriver
 
 #: attribute names that would mean "this driver cancels an in-flight
 #: statement itself". the public one does not exist on
@@ -209,10 +211,24 @@ class TestBackendCancellationSurface:
         """asyncpg's only cancellation verbs are private protocol machinery.
 
         naming them explicitly documents what the alternative option
-        would have had to reach for, and fails if the names move.
+        would have had to reach for, and fails if the names move. read
+        from the installed source, like the protocol pin below: nothing
+        in this package touches asyncpg's private members, and a pin
+        on them has no reason to start.
         """
-        assert callable(asyncpg.Connection._cancel)  # noqa: SLF001 -- asyncpg's private verb IS the subject
-        assert callable(asyncpg.Connection._cancel_current_command)  # noqa: SLF001 -- likewise
+        connection_source = Path(inspect.getfile(asyncpg.Connection)).read_text()
+        connection_class = next(
+            node
+            for node in ast.walk(ast.parse(connection_source))
+            if isinstance(node, ast.ClassDef) and node.name == "Connection"
+        )
+        methods = {
+            node.name for node in connection_class.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert {"_cancel", "_cancel_current_command"} <= methods
+        # non-vacuity: the walk reads real methods, not every name.
+        assert "fetch" in methods
+        assert "cancel" not in methods
 
     def test_asyncpg_cancels_on_its_own_when_the_waiter_is_cancelled(self) -> None:
         """asyncpg's protocol re-requests cancellation itself; the driver need not.
@@ -357,11 +373,13 @@ class TestAsyncpgDriverCancellationAgainstRealSurface:
         block = asyncio.Event()
         pool = _build_blocking_pool(block)
         conn = pool.recorded_conn
-        driver = AsyncpgDriver(postgres_config, external_pool=pool)
+        # the shared helper every driver routes through, reached through the
+        # test driver's public seam rather than a concrete driver's internals.
+        driver = FakeDriver()
 
         async def _run() -> Any:
             """route a blocking statement through the shared helper with the old callback."""
-            return await driver._with_cancellation(  # noqa: SLF001 -- exercising the shared helper directly
+            return await driver.run_with_cancellation(
                 lambda: conn.fetch("SELECT pg_sleep(30)"),
                 cancel_callback=lambda: conn.cancel(),
             )

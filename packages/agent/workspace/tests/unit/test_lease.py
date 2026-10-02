@@ -1,7 +1,7 @@
 """unit tests for threetears.agent.workspace.lease.WorkspaceFileLease.
 
-covers key namespacing, length-bounded sha256 fallback, env-driven
-default bucket name, round-trip acquire/release through fake NATS KV,
+covers key namespacing, length-bounded sha256 fallback, the agent's own
+bind-only bucket, round-trip acquire/release through fake NATS KV,
 and unwrapped propagation of :class:`LeaseUnavailable`.
 """
 
@@ -16,9 +16,15 @@ from uuid import UUID, uuid4
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.agent.workspace.lease import WorkspaceFileLease
 from threetears.core.coordination import LeaseHandle, LeaseUnavailable
+from threetears.nats.subject_permissions import Principal, kv_key_scope_for
 
 
 _SAMPLE_WORKSPACE_ID = UUID("019470a8-b5c3-7def-8123-456789abcdef")
+_AGENT_ID = UUID("019470a8-b5c3-7def-8123-0000000000a1")
+_OTHER_AGENT_ID = UUID("019470a8-b5c3-7def-8123-0000000000a2")
+
+#: the bucket the hub declares for ``_AGENT_ID``, as the lease hands it to ``kv_bucket``.
+_BUCKET = f"{kv_key_scope_for(Principal.AGENT_POD, agent_id=_AGENT_ID)}-workspace-locks"
 
 
 class TestMakeKey:
@@ -26,15 +32,15 @@ class TestMakeKey:
 
     def test_short_path_produces_raw_key(self) -> None:
         """key under MAX_KEY_LEN is returned verbatim under workspace: prefix."""
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake, namespace="ns")
+        fake = FakeNatsClient(declared_buckets=(_BUCKET,))
+        lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID)
         result = lease.make_key(_SAMPLE_WORKSPACE_ID, "foo.yaml")
         assert result == f"workspace:{_SAMPLE_WORKSPACE_ID.hex}:foo.yaml"
 
     def test_long_path_produces_sha256_bounded_key(self) -> None:
         """path pushing raw key over MAX_KEY_LEN produces sha256 form."""
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake, namespace="ns")
+        fake = FakeNatsClient(declared_buckets=(_BUCKET,))
+        lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID)
         long_path = "A" * 500
         result = lease.make_key(_SAMPLE_WORKSPACE_ID, long_path)
         expected_digest = hashlib.sha256(long_path.encode("utf-8")).hexdigest()
@@ -43,8 +49,8 @@ class TestMakeKey:
 
     def test_sha256_form_is_shorter_than_raw_when_path_is_huge(self) -> None:
         """sha256 form bounds total length irrespective of input path length."""
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake, namespace="ns")
+        fake = FakeNatsClient(declared_buckets=(_BUCKET,))
+        lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID)
         huge_path = "x" * 10000
         result = lease.make_key(_SAMPLE_WORKSPACE_ID, huge_path)
         # workspace:{32}:sha256:{64} = 10 + 32 + 8 + 64 = 114
@@ -53,8 +59,8 @@ class TestMakeKey:
 
     def test_threshold_boundary_raw_form_still_used(self) -> None:
         """key exactly at MAX_KEY_LEN still takes the raw branch."""
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake, namespace="ns")
+        fake = FakeNatsClient(declared_buckets=(_BUCKET,))
+        lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID)
         # raw = "workspace:{hex}:{relative}" — len(prefix) = 10 + 32 + 1 = 43
         prefix_len = len(f"workspace:{_SAMPLE_WORKSPACE_ID.hex}:")
         filler_len = WorkspaceFileLease.MAX_KEY_LEN - prefix_len
@@ -65,27 +71,32 @@ class TestMakeKey:
 
 
 class TestBucketName:
-    """default bucket name derives from namespace arg or env fallback."""
+    """the lock bucket is the AGENT's own, declared by the hub; the lease binds it and creates nothing.
 
-    def test_explicit_namespace_forms_workspace_locks_bucket(self) -> None:
-        """namespace='acme' -> bucket 'acme_workspace_locks'."""
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake, namespace="acme")
-        assert lease.bucket_name == "acme_workspace_locks"
+    The lock keys name workspace ids and file paths, so a bucket every agent shared would let any
+    agent list another customer's paths and create or delete any lock. The bucket is composed under
+    the agent's authenticated scope exactly as the agent's grant composes it.
+    """
 
-    def test_env_namespace_forms_workspace_locks_bucket(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """THREETEARS_NATS_SUBJECT_NAMESPACE=prod14 -> 'prod14_workspace_locks'."""
-        monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "prod14")
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake)
-        assert lease.bucket_name == "prod14_workspace_locks"
+    def test_the_bucket_is_the_agents_own_workspace_locks_bucket(self) -> None:
+        """the name the lease hands kv_bucket is the one the agent pod is granted."""
+        lease = WorkspaceFileLease(FakeNatsClient(), agent_id=_AGENT_ID)
+        assert lease.bucket_name == _BUCKET
+        assert lease.bucket_name == f"{kv_key_scope_for(Principal.AGENT_POD, agent_id=_AGENT_ID)}-workspace-locks"
 
-    def test_env_unset_falls_back_to_workspace_locks(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """env unset + no arg -> unscoped 'workspace_locks' (no KeyError)."""
-        monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
+    def test_two_agents_never_share_a_bucket(self) -> None:
+        """one agent's lease cannot name another agent's locks."""
+        other = WorkspaceFileLease(FakeNatsClient(), agent_id=_OTHER_AGENT_ID)
+        assert other.bucket_name != _BUCKET
+
+    async def test_the_lease_binds_and_never_declares(self) -> None:
+        """a bucket the hub never declared is refused, not created: a pod holds no stream verb."""
         fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake)
-        assert lease.bucket_name == "workspace_locks"
+        lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID, pod_id="pod-test")
+        with pytest.raises(KeyError):
+            await lease.acquire(_SAMPLE_WORKSPACE_ID, "a.yaml", max_wait_seconds=0)
+        with pytest.raises(KeyError):
+            await fake.kv_bucket(name=_BUCKET, create_if_missing=False)
 
 
 class TestAcquireRoundTrip:
@@ -93,8 +104,8 @@ class TestAcquireRoundTrip:
 
     async def test_acquire_returns_lease_handle_with_namespaced_key(self) -> None:
         """acquire() returns handle whose key is the namespaced workspace key."""
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-test")
+        fake = FakeNatsClient(declared_buckets=(_BUCKET,))
+        lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID, pod_id="pod-test")
         handle = await lease.acquire(_SAMPLE_WORKSPACE_ID, "a/b.yaml", ttl_seconds=30)
         assert isinstance(handle, LeaseHandle)
         assert handle.holder == "pod-test"
@@ -103,22 +114,22 @@ class TestAcquireRoundTrip:
         await handle.release()
 
     async def test_acquire_uses_namespaced_bucket_in_jetstream(self) -> None:
-        """acquire opens the '{namespace}_workspace_locks' bucket on fake wrapper."""
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-test")
+        """acquire writes into the agent's own workspace-locks bucket the hub declared."""
+        fake = FakeNatsClient(declared_buckets=(_BUCKET,))
+        lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID, pod_id="pod-test")
         handle = await lease.acquire(_SAMPLE_WORKSPACE_ID, "a.yaml")
-        bucket = await fake.kv_bucket(name="ns_workspace_locks")
+        bucket = await fake.kv_bucket(name=_BUCKET, create_if_missing=False)
         value = await bucket.get(key=handle.key)
         assert value is not None
         await handle.release()
 
     async def test_release_removes_entry_from_bucket(self) -> None:
         """handle.release() removes the key from the backing bucket."""
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-test")
+        fake = FakeNatsClient(declared_buckets=(_BUCKET,))
+        lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID, pod_id="pod-test")
         handle = await lease.acquire(_SAMPLE_WORKSPACE_ID, "a.yaml")
         await handle.release()
-        bucket = await fake.kv_bucket(name="ns_workspace_locks")
+        bucket = await fake.kv_bucket(name=_BUCKET, create_if_missing=False)
         # the wrapper bucket returns ``None`` on miss instead of raising
         # KeyNotFoundError; the lease's release path leaves the entry
         # gone so ``get`` should yield ``None``.
@@ -126,8 +137,8 @@ class TestAcquireRoundTrip:
 
     async def test_async_context_manager_releases_on_exit(self) -> None:
         """async with handle releases lease cleanly on context exit."""
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-test")
+        fake = FakeNatsClient(declared_buckets=(_BUCKET,))
+        lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID, pod_id="pod-test")
         handle = await lease.acquire(_SAMPLE_WORKSPACE_ID, "a.yaml")
         async with handle:
             pass
@@ -139,9 +150,9 @@ class TestExceptionPassthrough:
 
     async def test_fail_fast_on_contention_raises_lease_unavailable(self) -> None:
         """second acquire with max_wait_seconds=0 on held key raises LeaseUnavailable."""
-        fake = FakeNatsClient()
-        first = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-1")
-        second = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-2")
+        fake = FakeNatsClient(declared_buckets=(_BUCKET,))
+        first = WorkspaceFileLease(fake, agent_id=_AGENT_ID, pod_id="pod-1")
+        second = WorkspaceFileLease(fake, agent_id=_AGENT_ID, pod_id="pod-2")
         held = await first.acquire(_SAMPLE_WORKSPACE_ID, "contended.yaml", ttl_seconds=30)
         try:
             with pytest.raises(LeaseUnavailable):
@@ -162,8 +173,8 @@ class TestDifferentWorkspacesDoNotCollide:
         self,
     ) -> None:
         """same relative_path across two workspace_ids produces distinct keys."""
-        fake = FakeNatsClient()
-        lease = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-1")
+        fake = FakeNatsClient(declared_buckets=(_BUCKET,))
+        lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID, pod_id="pod-1")
         ws_a = uuid4()
         ws_b = uuid4()
         handle_a = await lease.acquire(ws_a, "shared.yaml", ttl_seconds=30)

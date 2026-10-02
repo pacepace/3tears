@@ -18,12 +18,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
 from threetears.scrape.collections import (
+    ScrapeCollection,
     ScrapeExtractionCollection,
     ScrapeRecipeCollection,
     ScrapeTarget,
@@ -290,7 +292,9 @@ async def test_target_falls_back_to_in_memory_dict_when_no_l3_configured(
     target = coll.create({"target_id": "warn_act_ca", "url": "https://example.gov/ca"})
     await target.save()
 
-    assert coll._rows["warn_act_ca"]["url"] == "https://example.gov/ca"
+    stored = await coll.fetch_from_store("warn_act_ca")
+    assert stored is not None
+    assert stored["url"] == "https://example.gov/ca"
     fetched = await coll.get("warn_act_ca")
     assert fetched is not None
     assert fetched.url == "https://example.gov/ca"
@@ -331,7 +335,7 @@ async def test_target_delete_removes_from_in_memory_dict(
 
     await coll.delete("warn_act_pa")
 
-    assert "warn_act_pa" not in coll._rows
+    assert await coll.fetch_from_store("warn_act_pa") is None
 
 
 class TestInMemoryL3FallbackWarning:
@@ -343,37 +347,40 @@ class TestInMemoryL3FallbackWarning:
     it), but it is now observable.
     """
 
-    @pytest.fixture(autouse=True)
-    def _reset_warned_tables(self):
-        """Clear the class-level guard around each test.
+    @staticmethod
+    def _fresh_table(base: type[ScrapeCollection]) -> type[ScrapeCollection]:
+        """A collection over a table no other test has touched.
 
-        The guard is deliberately class-level and process-wide (see
-        ``ScrapeCollection._warn_in_memory_l3``), which is exactly what makes
-        it order-dependent under pytest: whichever test ran first would be the
-        only one to see a warning. Reset per test so each asserts against a
-        clean slate rather than against test-execution order.
+        The once-per-table guard is deliberately class-level and process-wide
+        (see ``ScrapeCollection._warn_in_memory_l3``), which is exactly what
+        makes it order-dependent under pytest: whichever test touched a table
+        first would be the only one to see a warning. Each test therefore uses
+        its own table -- a subclass naming a unique one, keeping the base
+        table's name as its prefix -- so each asserts against a clean slate
+        rather than against test-execution order.
         """
-        for cls in (ScrapeTargetCollection, ScrapeRecipeCollection):
-            cls._in_memory_l3_warned_tables = frozenset()
-        yield
-        for cls in (ScrapeTargetCollection, ScrapeRecipeCollection):
-            cls._in_memory_l3_warned_tables = frozenset()
+        unique = f"{base(CollectionRegistry(), DefaultCoreConfig()).table_name}_{uuid4().hex}"
+
+        def _table_name(_self: object) -> str:
+            return unique
+
+        return type(f"{base.__name__}Fresh", (base,), {"table_name": property(_table_name)})
 
     @staticmethod
     def _fallback_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
         return [r.getMessage() for r in caplog.records if "in-memory dict" in r.getMessage()]
 
-    def test_warns_once_across_repeated_access_on_one_collection(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_warns_once_across_repeated_access_on_one_collection(self, caplog: pytest.LogCaptureFixture) -> None:
         registry = CollectionRegistry()
-        collection = ScrapeTargetCollection(registry, DefaultCoreConfig())
+        collection = self._fresh_table(ScrapeTargetCollection)(registry, DefaultCoreConfig())
         with caplog.at_level("WARNING"):
             for _ in range(5):
-                assert collection._durable_store is None
+                assert await collection.fetch_from_store("absent") is None
         warnings = self._fallback_warnings(caplog)
         assert len(warnings) == 1, f"expected one warning across 5 accesses, got {len(warnings)}"
         assert "scrape_targets" in warnings[0]
 
-    def test_a_second_collection_over_the_same_table_does_not_warn_again(
+    async def test_a_second_collection_over_the_same_table_does_not_warn_again(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The contract that matters, and the reason the guard is class-level.
@@ -386,29 +393,33 @@ class TestInMemoryL3FallbackWarning:
         """
         registry = CollectionRegistry()
         config = DefaultCoreConfig()
+        collection_class = self._fresh_table(ScrapeTargetCollection)
         with caplog.at_level("WARNING"):
-            assert ScrapeTargetCollection(registry, config)._durable_store is None
-            assert ScrapeTargetCollection(registry, config)._durable_store is None
+            assert await collection_class(registry, config).fetch_from_store("absent") is None
+            assert await collection_class(registry, config).fetch_from_store("absent") is None
         warnings = self._fallback_warnings(caplog)
         assert len(warnings) == 1, f"a rebuilt collection re-warned: got {len(warnings)} warnings, expected 1"
 
-    def test_a_different_table_still_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_a_different_table_still_warns(self, caplog: pytest.LogCaptureFixture) -> None:
         """Keyed on table_name, not silenced globally after the first warning:
         a second table is genuinely new information for an operator."""
         registry = CollectionRegistry()
         config = DefaultCoreConfig()
         with caplog.at_level("WARNING"):
-            assert ScrapeTargetCollection(registry, config)._durable_store is None
-            assert ScrapeRecipeCollection(registry, config)._durable_store is None
+            assert await self._fresh_table(ScrapeTargetCollection)(registry, config).fetch_from_store("absent") is None
+            assert await self._fresh_table(ScrapeRecipeCollection)(registry, config).fetch_from_store("absent") is None
         warnings = self._fallback_warnings(caplog)
         assert len(warnings) == 2
         assert any("scrape_targets" in m for m in warnings)
         assert any("scrape_recipes" in m for m in warnings)
 
-    def test_no_warning_when_a_real_l3_pool_is_wired(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_no_warning_when_a_real_l3_pool_is_wired(self, caplog: pytest.LogCaptureFixture) -> None:
         registry = CollectionRegistry()
-        registry.configure(l3_pool=FakeDurableStore())
-        collection = ScrapeTargetCollection(registry, DefaultCoreConfig())
+        store = FakeDurableStore()
+        registry.configure(l3_pool=store)
+        collection = self._fresh_table(ScrapeTargetCollection)(registry, DefaultCoreConfig())
         with caplog.at_level("WARNING"):
-            assert collection._durable_store is not None
+            target = collection.create({"target_id": "wired", "url": "https://example.gov/wired"})
+            await target.save()
+            assert await collection.fetch_from_store("wired") is not None
         assert not self._fallback_warnings(caplog)

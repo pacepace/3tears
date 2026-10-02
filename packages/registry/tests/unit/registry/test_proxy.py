@@ -16,9 +16,9 @@ from threetears.nats import RESULT_ACK_TIMEOUT_SECONDS, IncomingMessage, Subject
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallResponse
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
-from ._dispatch_auth import (
+from .dispatch_auth import (
     DEFAULT_AGENT_ID,
     DEFAULT_CORRELATION_ID,
     make_authed_request,
@@ -154,7 +154,7 @@ def _make_nats_msg(
 
 
 # the enforce-only auth scaffolding (a JWKS-wired proxy + authenticated token+pop requests) is
-# shared across the registry dispatch-test modules; see ``_dispatch_auth``. v0.13.9 made the proxy
+# shared across the registry dispatch-test modules; see ``dispatch_auth``. v0.13.9 made the proxy
 # verify identity + pop UNCONDITIONALLY and fail-closed, so every request a dispatch test drives
 # must be authenticated. these thin aliases keep the test bodies below reading the same as before.
 _DEFAULT_CORRELATION_ID = DEFAULT_CORRELATION_ID

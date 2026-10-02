@@ -23,7 +23,7 @@ from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.l1_cache import create_registry_l1_backend
 
-from ._copies import uniform_entry
+from .copy_entries import uniform_entry
 
 
 # -- helpers --

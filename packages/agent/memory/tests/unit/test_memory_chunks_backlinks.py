@@ -5,7 +5,7 @@ Covers the additive surface from transcript-chunks-task-A:
 - :class:`MemoryChunkEntity` exposes ``memory_id``, ``message_id_start``,
   ``message_id_end`` properties with the correct nullability semantics.
 - :class:`MemoryChunkCollection` schema declares the new columns.
-- The shared ``_chunk_row_to_dict`` helper round-trips the new fields.
+- A chunk hybrid search carries the new fields through to its results.
 
 End-to-end SQL coverage (the four new collection methods +
 hybrid_search cursor paging) lives in the integration suite at
@@ -15,14 +15,14 @@ hybrid_search cursor paging) lives in the integration suite at
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 
-from threetears.agent.memory.collections import (
-    MemoryChunkCollection,
-    _chunk_row_to_dict,
-)
+from threetears.agent.memory.collections import MemoryChunkCollection
 from threetears.agent.memory.entities import MemoryChunkEntity
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 
 
 # -- Entity property semantics ------------------------------------------------
@@ -169,28 +169,45 @@ class TestMemoryChunkCollectionSchema:
         assert by_name["message_id_end"].nullable is True
 
 
-# -- Helper round-trip --------------------------------------------------------
+# -- Search results carry the backlinks -----------------------------------------
 
 
-# parity-with: asyncpg.Record
-class _FakeRow:
-    """Minimal asyncpg.Record stand-in: dict subscript only.
+class _ChunkSearchPool:
+    """L3 pool stand-in answering a chunk hybrid search's vector and keyword legs."""
 
-    ``_chunk_row_to_dict`` only ever subscripts the row by column name;
-    this fake re-implements the one operation we need. ``asyncpg.Record``
-    is a C-extension class we can't subclass directly from Python.
-    """
+    def __init__(self, vector_rows: list[dict[str, Any]], fts_rows: list[dict[str, Any]]) -> None:
+        self.vector_rows = vector_rows
+        self.fts_rows = fts_rows
 
-    def __init__(self, **kwargs: object) -> None:
-        self._d = dict(kwargs)
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        _ = params
+        return list(self.fts_rows if "ts_rank_cd" in sql else self.vector_rows)
 
-    def __getitem__(self, key: str) -> object:
-        return self._d[key]
+
+async def _search(
+    vector_rows: list[dict[str, Any]], fts_rows: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=_ChunkSearchPool(vector_rows, fts_rows or []))
+    chunks = MemoryChunkCollection(
+        registry=registry,
+        config=DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""),
+    )
+    return await chunks.hybrid_search(
+        user_id=uuid.uuid7(),
+        agent_id=uuid.uuid7(),
+        customer_id=uuid.uuid7(),
+        embedding=[1.0, 0.0],
+        user_text="hello world",
+        candidate_k=10,
+        similarity_threshold=0.0,
+        chunk_signal_weights={"semantic": 0.8, "keyword": 0.2},
+    )
 
 
 class TestChunkRowToDict:
     @pytest.fixture
-    def base_row(self) -> dict[str, object]:
+    def base_row(self) -> dict[str, Any]:
         return {
             "chunk_id": uuid.uuid7(),
             "content": "verbatim text",
@@ -205,27 +222,33 @@ class TestChunkRowToDict:
             "embedding": None,
         }
 
-    def test_transcript_chunk_fields_round_trip(self, base_row: dict[str, object]) -> None:
+    async def test_transcript_chunk_fields_round_trip(self, base_row: dict[str, Any]) -> None:
         start = uuid.uuid7()
         end = uuid.uuid7()
         base_row["message_id_start"] = start
         base_row["message_id_end"] = end
-        result = _chunk_row_to_dict(_FakeRow(**base_row), score_key="similarity", score_value=0.5)
+        (result,) = await _search([{**base_row, "similarity": 0.5}])
         assert result["message_id_start"] == str(start)
         assert result["message_id_end"] == str(end)
         assert result["memory_id"] == str(base_row["memory_id"])
 
-    def test_document_chunk_has_null_message_backlinks(self, base_row: dict[str, object]) -> None:
-        result = _chunk_row_to_dict(_FakeRow(**base_row), score_key="similarity", score_value=0.5)
+    async def test_document_chunk_has_null_message_backlinks(self, base_row: dict[str, Any]) -> None:
+        (result,) = await _search([{**base_row, "similarity": 0.5}])
         assert result["message_id_start"] is None
         assert result["message_id_end"] is None
 
-    def test_score_key_semantic_seeds_similarity(self, base_row: dict[str, object]) -> None:
-        result = _chunk_row_to_dict(_FakeRow(**base_row), score_key="similarity", score_value=0.42)
+    async def test_score_key_semantic_seeds_similarity(self, base_row: dict[str, Any]) -> None:
+        # a row the vector leg found and the keyword leg did not.
+        (result,) = await _search([{**base_row, "similarity": 0.42}])
         assert result["similarity"] == 0.42
         assert result["fts_rank"] == 0.0
 
-    def test_score_key_fts_rank_seeds_fts_rank(self, base_row: dict[str, object]) -> None:
-        result = _chunk_row_to_dict(_FakeRow(**base_row), score_key="fts_rank", score_value=0.71)
-        assert result["fts_rank"] == 0.71
-        assert result["similarity"] == 0.0
+    async def test_score_key_fts_rank_seeds_fts_rank(self, base_row: dict[str, Any]) -> None:
+        # rows only the keyword leg found carry a keyword rank (min-max normalised
+        # across the pool) and no semantic similarity.
+        other = {**base_row, "chunk_id": uuid.uuid7()}
+        results = await _search([], [{**base_row, "fts_rank": 0.71}, {**other, "fts_rank": 0.0}])
+        by_id = {r["chunk_id"]: r for r in results}
+        assert by_id[base_row["chunk_id"]]["fts_rank"] == 1.0
+        assert by_id[base_row["chunk_id"]]["similarity"] == 0.0
+        assert by_id[other["chunk_id"]]["similarity"] == 0.0

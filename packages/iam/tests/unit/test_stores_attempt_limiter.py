@@ -24,6 +24,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.iam.stores import AttemptLimiter
 from threetears.iam.stores.attempt_limiter import CollectionAttemptLimiter
+from threetears.nats import KvError
 
 _WINDOW = timedelta(minutes=15)
 
@@ -145,15 +146,29 @@ async def test_concurrent_failures_all_count(nats: FakeNatsClient) -> None:
     assert (await limiter.check("someone")).count == 20
 
 
-async def test_defaults_to_fail_closed(nats: FakeNatsClient) -> None:
+class _UnreachableKv(FakeNatsClient):
+    """a client whose bucket refuses every operation, the way an unreachable broker does."""
+
+    async def kv_bucket(self, **kwargs: Any) -> Any:
+        del kwargs
+        raise KvError("kv down")
+
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+        return None
+
+
+async def test_defaults_to_fail_closed() -> None:
     """A limiter with nothing authoritative behind it must not silently admit on a KV
     outage. The default posture is what a caller gets when nobody thought about it."""
-    limiter = _limiter(nats)
-    assert limiter._counter.fail_open is False  # noqa: SLF001
+    limiter = _limiter(_UnreachableKv())
+    with pytest.raises(KvError):
+        await limiter.record_failure("someone")
 
 
-async def test_fail_open_is_available_for_a_layered_throttle(nats: FakeNatsClient) -> None:
-    assert _limiter(nats, fail_open=True)._counter.fail_open is True  # noqa: SLF001
+async def test_fail_open_is_available_for_a_layered_throttle() -> None:
+    limiter = _limiter(_UnreachableKv(), fail_open=True)
+    window = await limiter.record_failure("someone")
+    assert (window.count, window.limited) == (0, False)
 
 
 # --- window semantics, driven through the clock seam ------------------------------------
@@ -178,9 +193,7 @@ class _Clock:
 
 
 def _clocked_limiter(nats: FakeNatsClient, clock: _Clock, **overrides: object) -> CollectionAttemptLimiter:
-    limiter = _limiter(nats, **overrides)
-    limiter._counter._clock = clock  # noqa: SLF001 - the seam exists for exactly this
-    return limiter
+    return _limiter(nats, clock=clock, **overrides)
 
 
 async def test_the_window_is_anchored_at_the_first_failure_not_the_wall_clock(

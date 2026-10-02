@@ -4,8 +4,8 @@ Holds four things, not one:
 
 - :class:`L1Backend`, the protocol every L1 backend implements.
 - :data:`MISSING`, the cache-miss sentinel (distinct from a cached ``None``).
-- The cached-at stamp: :data:`_CACHED_AT_COLUMN`, the tables exempt from it, and
-  :func:`_entry_is_fresh`, which is the single copy of the max-age predicate so
+- The cached-at stamp: :data:`CACHED_AT_COLUMN`, the tables exempt from it, and
+  :func:`entry_is_fresh`, which is the single copy of the max-age predicate so
   two backends cannot disagree about what "expired" means.
 - :func:`build_select_clause`, shared SQL construction.
 """
@@ -16,15 +16,18 @@ from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
+    "CACHED_AT_COLUMN",
     "L1Backend",
     "MISSING",
+    "TABLES_WITHOUT_CACHE_STAMP",
     "build_select_clause",
+    "entry_is_fresh",
 ]
 
 MISSING = object()
 """Sentinel for cache miss. Distinct from None (which is a valid cached value)."""
 
-_CACHED_AT_COLUMN = "_3t_cached_at"
+CACHED_AT_COLUMN = "_3t_cached_at"
 """Reserved L1 column holding the monotonic reading at which a row was pulled through.
 
 Injected into generated entity tables by the backend, never declared by a
@@ -39,7 +42,7 @@ what it holds: a blanket injection under that name would emit a duplicate
 column, and a blanket strip under it would break the scan cache's own read.
 """
 
-_TABLES_WITHOUT_CACHE_STAMP: frozenset[str] = frozenset(
+TABLES_WITHOUT_CACHE_STAMP: frozenset[str] = frozenset(
     {
         # Not entity caches. They ride the same L1 backend but are internal
         # bookkeeping with their own lifetimes: the scan cache already has
@@ -60,7 +63,7 @@ _TABLES_WITHOUT_CACHE_STAMP: frozenset[str] = frozenset(
 """Tables the cache stamp is never injected into."""
 
 
-def _entry_is_fresh(
+def entry_is_fresh(
     stored_at_monotonic: float | None,
     *,
     now_monotonic: float,
@@ -71,13 +74,9 @@ def _entry_is_fresh(
     Shared by the age-bounded cache tiers so the rule cannot drift
     between them, the same reason :func:`build_select_clause` is shared.
 
-    Underscored, and therefore private to ``threetears.core``, on
-    purpose. A name is only as internal as its spelling makes it: absence
-    from ``__all__`` restricts no import, so a sibling package could
-    couple to it with nothing in the intra-family bounds recording that
-    it had. Nothing outside this package needs it, and declaring it
-    public would oblige the whole family to a minor bump to add a helper
-    that changes no consumer's API.
+    Public because more than one module calls it -- ``cache/sqlite.py`` and
+    ``collections/scan_cache.py`` -- and a leading underscore is a stability
+    contract that a sibling module of the package may not bind to.
 
     Both readings come from :func:`time.monotonic` in the *same*
     process. That is what makes this safe where a wall-clock comparison

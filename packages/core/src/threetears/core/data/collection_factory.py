@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 from threetears.core.backends.protocol import parse_rowcount
@@ -39,6 +39,34 @@ _COLUMN_TYPE_TO_PYTHON: dict[str, type] = {
 }
 
 
+def _refuse_naive_instants(table_name: str, data: dict[str, Any], instant_columns: frozenset[str]) -> None:
+    """refuse a row whose ``timestamptz`` column holds a naive datetime, before it reaches L3.
+
+    asyncpg's codec reads a naive datetime bound to ``timestamptz`` as the HOST's local time, so the
+    stored instant would shift by the writer's offset -- invisible on a UTC host, hours off on any
+    other, and authoritative-looking either way. The L2 encoder refuses the same value
+    (:func:`~threetears.core.serialization.json_datetime`), so both tiers answer it alike.
+
+    :param table_name: the table, named in the refusal
+    :ptype table_name: str
+    :param data: the row about to be written
+    :ptype data: dict[str, Any]
+    :param instant_columns: the table's ``timestamptz`` columns
+    :ptype instant_columns: frozenset[str]
+    :return: None
+    :rtype: None
+    :raises ValueError: naming the first column holding a naive value
+    """
+    for column in sorted(instant_columns):
+        value = data.get(column)
+        if isinstance(value, datetime) and value.utcoffset() is None:
+            raise ValueError(
+                f"refusing to store a naive datetime in '{table_name}.{column}' ({value.isoformat()}): a "
+                f"timestamptz column names an instant, and the driver would read this one as the host's local "
+                f"time. produce it timezone-aware -- datetime.now(UTC), or attach the zone it was measured in"
+            )
+
+
 def _build_field_types(table_def: TableDef) -> dict[str, type]:
     """build field_types mapping from TableDef columns for deserialization.
 
@@ -55,6 +83,33 @@ def _build_field_types(table_def: TableDef) -> dict[str, type]:
         python_type = _COLUMN_TYPE_TO_PYTHON.get(col.column_type, str)
         result[col.name] = python_type
     return result
+
+
+def _stored_row(data: dict[str, Any], wall_clock_columns: frozenset[str]) -> dict[str, Any]:
+    """``data`` with each naive value of a ``timestamp`` column spelled as its wall-clock text.
+
+    A ``timestamp`` column holds a wall-clock value with no zone BY DECLARATION -- a product's
+    table can only declare ``timestamp`` -- so a naive value there is the column's own shape, not
+    a producer bug, and the storage encoder (which refuses a naive datetime) must not meet it. It
+    is written fixed-width without an offset (``2026-10-01T12:30:00.000000``) and reads back naive
+    through :func:`~threetears.core.serialization.deserialize_from_json`, as L3 returns it. An
+    aware value, or any value in a ``timestamptz`` column, goes to the encoder as it is.
+
+    :param data: the row about to be cached
+    :ptype data: dict[str, Any]
+    :param wall_clock_columns: the table's ``timestamp`` columns
+    :ptype wall_clock_columns: frozenset[str]
+    :return: a copy with those values spelled out
+    :rtype: dict[str, Any]
+    """
+    return {
+        key: (
+            value.isoformat(timespec="microseconds")
+            if key in wall_clock_columns and isinstance(value, datetime) and value.tzinfo is None
+            else value
+        )
+        for key, value in data.items()
+    }
 
 
 def _build_fetch_sql(table_name: str, pk_column: str) -> str:
@@ -207,7 +262,7 @@ def create_dynamic_collection(
     - fetch_from_store: SELECT * WHERE pk = $1
     - save_to_store: INSERT ... ON CONFLICT DO UPDATE
     - delete_from_store: DELETE WHERE pk = $1
-    - serialize: serialize_to_json
+    - serialize: serialize_to_json, a ``timestamp`` column's naive value as its wall-clock text
     - deserialize: deserialize_from_json with field_types from TableDef
 
     initializes the L1 backend with SQLAlchemy metadata derived from
@@ -233,6 +288,8 @@ def create_dynamic_collection(
     field_types = _build_field_types(table_def)
     column_names = [col.name for col in table_def.columns]
     vector_columns = frozenset(col.name for col in table_def.columns if col.column_type == "vector")
+    wall_clock_columns = frozenset(col.name for col in table_def.columns if col.column_type == "timestamp")
+    instant_columns = frozenset(col.name for col in table_def.columns if col.column_type == "timestamptz")
     fetch_sql = _build_fetch_sql(tbl_name, pk_column)
     upsert_sql = _build_upsert_sql(tbl_name, column_names, pk_column, vector_columns)
     delete_sql = _build_delete_sql(tbl_name, pk_column)
@@ -252,6 +309,9 @@ def create_dynamic_collection(
         """dynamically generated collection for table."""
 
         primary_key_column: str = pk_column
+        # a ``timestamptz`` column names an instant: normalised aware on every cache write and
+        # rehydrated on every L2 read, as any collection's declared timestamp columns are
+        datetime_columns: ClassVar[frozenset[str]] = instant_columns
 
         @property
         def table_name(self) -> str:
@@ -328,7 +388,9 @@ def create_dynamic_collection(
             :ptype conn: Any
             :return: number of rows affected, ``0`` when no L3 backend is wired
             :rtype: int
+            :raises ValueError: when a ``timestamptz`` column holds a naive datetime
             """
+            _refuse_naive_instants(tbl_name, data, instant_columns)
             executor: Any = conn if conn is not None else self.l3_pool
             if executor is None:
                 return 0
@@ -356,8 +418,9 @@ def create_dynamic_collection(
             :ptype data: dict[str, Any]
             :return: JSON-encoded bytes
             :rtype: bytes
+            :raises ValueError: when a datetime outside a ``timestamp`` column is naive
             """
-            result = serialize_to_json(data)
+            result = serialize_to_json(_stored_row(data, wall_clock_columns))
             return result
 
         def deserialize(self, data: bytes) -> dict[str, Any]:

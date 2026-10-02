@@ -540,6 +540,103 @@ class TestJsonResponse:
         assert json.loads(body)["healthy"] is True
 
 
+class TestVersion:
+    """the running service's release version, echoed on the JSON body and the status accessor.
+
+    a captured probe payload names WHICH release answered it, so an operator comparing two
+    pods mid-rollout reads the version off the probe instead of the image tag. optional:
+    a consumer that passes none still serves the same body, with ``version`` null.
+    """
+
+    @pytest.mark.asyncio
+    async def test_json_body_carries_version_on_both_tiers(self) -> None:
+        """``version`` is on the live and the ready JSON body."""
+        port = _free_port()
+        server = HealthServer(
+            port=port,
+            service_name="test-service",
+            host="127.0.0.1",
+            version="1.2.3",
+            checks=[HealthCheck(name="nats", probe=lambda: True, tier=HealthTier.LIVE)],
+        )
+        await server.start()
+        try:
+            _, live_body = await _http_get("127.0.0.1", port, "/healthz/live?format=json")
+            _, ready_body = await _http_get("127.0.0.1", port, "/healthz/ready?format=json")
+        finally:
+            await server.stop()
+        assert json.loads(live_body)["version"] == "1.2.3"
+        assert json.loads(ready_body)["version"] == "1.2.3"
+
+    @pytest.mark.asyncio
+    async def test_json_body_carries_version_when_unhealthy(self) -> None:
+        """a 503 still names the release that answered it -- that is when it matters most."""
+        port = _free_port()
+        server = HealthServer(
+            port=port,
+            service_name="test-service",
+            host="127.0.0.1",
+            version="1.2.3",
+            checks=[HealthCheck(name="nats", probe=lambda: False, tier=HealthTier.LIVE)],
+        )
+        await server.start()
+        try:
+            status, body = await _http_get("127.0.0.1", port, "/healthz/live?format=json")
+        finally:
+            await server.stop()
+        assert status == 503
+        assert json.loads(body)["version"] == "1.2.3"
+
+    @pytest.mark.asyncio
+    async def test_version_is_null_when_not_given(self) -> None:
+        """a consumer passing no version keeps working; the absence is explicit, not invented."""
+        async with _Server(HealthCheck(name="nats", probe=lambda: True, tier=HealthTier.LIVE)) as s:
+            status, body = await s.get("/healthz/live?format=json")
+        assert status == 200
+        assert json.loads(body)["version"] is None
+
+    @pytest.mark.asyncio
+    async def test_get_status_carries_version(self) -> None:
+        """the in-process accessor carries the version consumers render on their own routes."""
+        server = HealthServer(
+            port=_free_port(),
+            service_name="test-service",
+            host="127.0.0.1",
+            version="1.2.3",
+        )
+        status = await server.get_status(HealthTier.READY)
+        assert status.version == "1.2.3"
+        assert server.version == "1.2.3"
+
+    @pytest.mark.asyncio
+    async def test_plain_text_body_is_unchanged(self) -> None:
+        """the probe text body stays ``ok`` -- kube and compose probes read status codes, not JSON."""
+        port = _free_port()
+        plain = HealthServer(port=port, service_name="test-service", host="127.0.0.1", version="1.2.3")
+        await plain.start()
+        try:
+            _, versioned_body = await _http_get("127.0.0.1", port, "/healthz/live")
+        finally:
+            await plain.stop()
+        async with _Server() as s:
+            _, unversioned_body = await s.get("/healthz/live")
+        assert versioned_body == unversioned_body
+
+    @pytest.mark.asyncio
+    async def test_startup_log_names_the_version(self, caplog: pytest.LogCaptureFixture) -> None:
+        """the listening line names the release, so a boot log answers "which build is this"."""
+        port = _free_port()
+        server = HealthServer(port=port, service_name="test-service", host="127.0.0.1", version="1.2.3")
+        with caplog.at_level("INFO", logger="threetears.observe.health"):
+            await server.start()
+        await server.stop()
+        records = [r for r in caplog.records if r.getMessage() == "health server listening"]
+        assert len(records) == 1
+        extra_data = records[0].__dict__["extra_data"]
+        assert extra_data["version"] == "1.2.3"
+        assert extra_data["service"] == "test-service"
+
+
 class TestErrorPaths:
     """unknown paths / methods."""
 

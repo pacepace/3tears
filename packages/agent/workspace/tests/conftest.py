@@ -27,9 +27,9 @@ def _bind_test_subject_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "3tears")
 
 
-# shared test-infra lives under ``tests/_helpers/`` and is imported by its repo-root name::
+# shared test-infra lives under ``tests/helpers/`` and is imported by its repo-root name::
 #
-#     from packages.agent.workspace.tests._helpers.asyncpg_shims import FakeAsyncpgConnection
+#     from packages.agent.workspace.tests.helpers.asyncpg_shims import FakeAsyncpgConnection
 #
 # so the fake-protocol-parity walker has a single canonical class per shell type to subclass
 # against. this directory is deliberately NOT put on ``sys.path``: its ``unit`` /

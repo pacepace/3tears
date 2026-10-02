@@ -9,18 +9,12 @@ replaces its outstanding probe instead of queuing another one.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.scheduled_jobs.collections import (
-    _JOB_INSERT_COLUMNS,
-    ScheduledJobCollection,
-    _job_insert_params,
-)
-from threetears.scheduled_jobs.migrations.v001_create_scheduled_jobs import _CREATE_SCHEDULED_JOBS_SQL
+from threetears.scheduled_jobs.collections import ScheduledJobCollection
 
 from threetears.scrape.reprobe import REPROBE_JOB_KIND, ScheduledJobsReprobeScheduler, reprobe_job_id
 
@@ -36,7 +30,9 @@ class _FakeJobCollection(ScheduledJobCollection):
     where the framework stamps ``date_created`` and ``date_updated``, and stubbing it out
     skips that -- which is how a row missing a ``NOT NULL`` column passed every test in this
     file while failing at the real border. Cutting in one layer lower means the captured row
-    is the one that would actually have been bound.
+    is the one that would actually have been bound. Whether that row survives the table's
+    constraints is the database's question, answered in
+    ``integration/test_reprobe_booking_l3.py``.
     """
 
     def __init__(self) -> None:
@@ -51,69 +47,6 @@ class _FakeJobCollection(ScheduledJobCollection):
 
     async def delete_from_store(self, entity_id: Any) -> None:
         self.saved.pop(self.normalize_pk(entity_id), None)
-
-
-def _not_null_job_columns() -> frozenset[str]:
-    """Every ``scheduled_jobs`` column the migration declares ``NOT NULL``, read from the DDL.
-
-    Derived rather than transcribed. A hand-copied list is a second copy of a schema that
-    lives in another package, and the failure mode of a stale copy is the quiet one: a column
-    added there with ``NOT NULL`` would simply not be checked here, which is precisely the
-    class of bug this test exists to catch.
-
-    The upsert binds every column positionally, so a server-side DEFAULT never applies -- a
-    key this adapter forgets to set is bound as an explicit NULL and the constraint fires.
-
-    Anchored, because a parser feeding ``assert not nulls`` fails open: an empty or shortened
-    derivation is indistinguishable from a pass, which would move the quiet drift this exists
-    to prevent from the copy into the parser. A multi-word type (``TIMESTAMP WITH TIME ZONE``,
-    ``NUMERIC(10, 2)``), a wrapped ``NOT NULL``, or a DDL built by concatenation would each
-    shrink the set silently. The anchors are three columns whose absence means the regex, not
-    the schema, has changed.
-
-    Reads three private names across a package boundary (this, plus ``_JOB_INSERT_COLUMNS``
-    and ``_job_insert_params``). Accepted deliberately: the alternative is a second copy of
-    another package's schema, and a stale copy fails silently where a renamed private symbol
-    fails at import.
-    """
-    body = _CREATE_SCHEDULED_JOBS_SQL[_CREATE_SCHEDULED_JOBS_SQL.index("(") :]
-    derived = frozenset(re.findall(r"^\s*([a-z_]+)\s+[A-Z]", body, re.MULTILINE)) & frozenset(
-        re.findall(r"^\s*([a-z_]+)\s+\S+\s+NOT NULL", body, re.MULTILINE)
-    )
-    anchors = {"partition_key", "job_id", "date_updated"}
-    assert anchors <= derived, (
-        f"the NOT NULL derivation lost known columns {sorted(anchors - derived)}, so it would "
-        f"pass vacuously -- the DDL's shape changed under the regex"
-    )
-    return derived
-
-
-@pytest.mark.asyncio
-async def test_the_booked_row_binds_a_value_for_every_not_null_column() -> None:
-    """The bind path, which every other test in this file goes around.
-
-    Nothing else in this file reaches the projection that turns a row dict into the upsert's
-    positional params, and that is exactly where a hand-built row gets judged. It is also why
-    ``_FakeJobCollection`` cuts in at ``save_to_store`` rather than ``save_entity``: the
-    latter is where the stamping below happens, so intercepting it skips the very step the
-    row has to survive. ``save_entity`` stamps ``date_created`` for a
-    new entity but stamps ``date_updated`` only when the key is already present or the entity
-    is not new, so this adapter must supply it. The column is ``NOT NULL DEFAULT now()`` and
-    the default cannot rescue it: the upsert writes every column unconditionally, so a
-    missing key binds an explicit NULL.
-
-    The failure this pins is silent, not loud. ``TargetCircuit._book_reprobe`` catches and
-    logs, so a constraint violation here does not fail a fetch -- it just means an
-    event-driven deployment books no re-probes at all, which is the entire purpose of the
-    ``[reprobe]`` extra, and the health row's ``blocked_until`` goes on looking correct.
-    """
-    jobs = _FakeJobCollection()
-    await ScheduledJobsReprobeScheduler(jobs).schedule_reprobe(target_id="warn_oh", delay_seconds=900.0)
-    (row,) = jobs.saved.values()
-
-    bound = dict(zip(_JOB_INSERT_COLUMNS, _job_insert_params(row), strict=True))
-    nulls = sorted(col for col in _not_null_job_columns() if bound.get(col) is None)
-    assert not nulls, f"NOT NULL column(s) bound as NULL, so every booking raises at the border: {nulls}"
 
 
 @pytest.mark.asyncio

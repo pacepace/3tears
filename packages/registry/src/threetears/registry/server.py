@@ -11,6 +11,7 @@ usage: python -m threetears.registry.server
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import os
 import signal
 from collections.abc import Awaitable, Callable
@@ -51,6 +52,7 @@ from threetears.registry.auth import (
     AllowAllLimitGuard,
     EndpointUsageEmitter,
     LimitGuard,
+    RegistryIdentity,
     ToolPodAuthenticator,
 )
 from threetears.registry.config import (
@@ -63,10 +65,17 @@ if TYPE_CHECKING:
     from threetears.registry.rbac_stack import RegistryRbacStack
 
 __all__ = [
+    "IdentityTokenProvider",
     "RegistryServer",
     "build_heartbeat_collection_registry",
     "nats_connect",
 ]
+
+#: what every host factory that builds an L3 backend receives beside the connection: the bound
+#: :meth:`~threetears.registry.auth.RegistryIdentity.token` of the one identity this process
+#: holds, or ``None`` when no host identity is configured. A provider rather than a value because
+#: the host re-mints the token in place, and a captured value is expired within the hour.
+IdentityTokenProvider = Callable[[], str | None]
 
 _logger = get_logger(__name__)
 
@@ -199,15 +208,23 @@ class RegistryServer:
         heartbeat_timeout: float | None = None,
         call_timeout: float | None = None,
         kv_bucket: str = "tool_catalog",
-        rbac_authorizer_factory: ("Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None") = None,
+        identity_factory: "Callable[[NatsClient], Awaitable[RegistryIdentity]] | None" = None,
+        rbac_authorizer_factory: (
+            "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[AgentToolAuthorizer]] | None"
+        ) = None,
         pod_authenticator: ToolPodAuthenticator | None = None,
-        pod_authenticator_factory: ("Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None") = None,
+        pod_authenticator_factory: (
+            "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[ToolPodAuthenticator | None]] | None"
+        ) = None,
         health_port: int | None = None,
         limit_guard: "LimitGuard | None" = None,
-        limit_guard_factory: ("Callable[[NatsClient], Awaitable[LimitGuard | None]] | None") = None,
+        limit_guard_factory: (
+            "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[LimitGuard | None]] | None"
+        ) = None,
         usage_emitter: "EndpointUsageEmitter | None" = None,
         usage_emitter_factory: ("Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None") = None,
         on_shutdown: "Callable[[], Awaitable[None]] | None" = None,
+        version: str | None = None,
     ) -> None:
         """initialize registry server.
 
@@ -238,15 +255,23 @@ class RegistryServer:
             ``rbac_authorizer_factory=None`` and the swap step is
             skipped.
         :ptype authorizer: AgentToolAuthorizer
+        :param identity_factory: optional async factory taking the connected
+            :class:`NatsClient` and returning the host-minted
+            :class:`~threetears.registry.auth.RegistryIdentity` this process presents on its L3
+            reads. invoked ONCE from :meth:`serve`, before every other factory, which each
+            receive its bound ``token``; closed by :meth:`shutdown`. ``None`` (the pure-3tears /
+            dev default) hands every factory ``None``, and a factory that needs a token refuses
+        :ptype identity_factory: Callable[[NatsClient], Awaitable[RegistryIdentity]] | None
         :param rbac_authorizer_factory: optional async factory taking
-            the connected :class:`NatsClient` and returning the
+            the connected :class:`NatsClient` and the identity token provider
+            (:data:`IdentityTokenProvider`, or ``None``) and returning the
             production authorizer. invoked from :meth:`serve` after
             the NATS connection is up + before the catalog handlers
             register their subscriptions, so by the time tool calls
             arrive the authorizer slot already holds the rbac
             implementation. ``None`` keeps the constructor-supplied
             ``authorizer`` for the whole serve loop.
-        :ptype rbac_authorizer_factory: Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None
+        :ptype rbac_authorizer_factory: Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[AgentToolAuthorizer]] | None
         :param pod_authenticator: tool-pod REGISTRATION authenticator, threaded into the
             :class:`~threetears.registry.registration.RegistrationHandler`. verifies each pod's
             self-minted identity JWT (carried on the manifest) against the pod's stored key and
@@ -256,13 +281,14 @@ class RegistryServer:
             pass this or a factory to CLOSE open mode.
         :ptype pod_authenticator: ToolPodAuthenticator | None
         :param pod_authenticator_factory: optional async factory taking the connected
-            :class:`NatsClient` and returning the pod authenticator (or ``None`` to keep open mode).
+            :class:`NatsClient` and the identity token provider, and returning the pod
+            authenticator (or ``None`` to keep open mode).
             invoked from :meth:`serve` after NATS connects + before the handlers register, mirroring
             ``rbac_authorizer_factory``, so a factory whose authenticator needs a live connection (a
             NATS-proxy-backed tool_pods read) can build against it. takes precedence over
             ``pod_authenticator`` when both are set. ``None`` keeps the constructor-supplied
             ``pod_authenticator`` for the whole serve loop.
-        :ptype pod_authenticator_factory: Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None
+        :ptype pod_authenticator_factory: Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[ToolPodAuthenticator | None]] | None
         :param health_port: port the readiness HealthServer binds to;
             defaults to THREETEARS_REGISTRY_HEALTH_PORT env var,
             falling back to 8000. each container in the platform's
@@ -285,14 +311,15 @@ class RegistryServer:
             wires.
         :ptype limit_guard: LimitGuard | None
         :param limit_guard_factory: optional async factory taking the connected
-            :class:`NatsClient` and returning the pre-call spend gate (or ``None`` to keep the
+            :class:`NatsClient` and the identity token provider, and returning the pre-call spend
+            gate (or ``None`` to keep the
             constructor-supplied ``limit_guard``). invoked from :meth:`serve` after NATS connects
             + before the handlers register (alongside ``pod_authenticator_factory``), so a guard
             whose counter reads run over the live connection (the aibots Hub's
             NATS-proxy-backed ``KvCallLimitGuard``) can build against it. takes precedence over
             ``limit_guard`` when both are set. ``None`` keeps the constructor-supplied
             ``limit_guard`` (``AllowAllLimitGuard`` by default) for the whole serve loop.
-        :ptype limit_guard_factory: Callable[[NatsClient], Awaitable[LimitGuard | None]] | None
+        :ptype limit_guard_factory: Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[LimitGuard | None]] | None
         :param usage_emitter: post-call endpoint-usage emit seam threaded into the
             :class:`~threetears.registry.proxy.CallProxy`. ``None`` (the pure-3tears / dev default)
             means no per-call usage event is published -- the standalone registry has no usage
@@ -305,6 +332,11 @@ class RegistryServer:
             whose publish path needs the live connection can build against it. takes precedence over
             ``usage_emitter`` when both are set. ``None`` keeps the constructor-supplied ``usage_emitter``.
         :ptype usage_emitter_factory: Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None
+        :param version: release version the health server echoes on its JSON body and startup
+            log. ``python -m threetears.registry`` passes the installed ``3tears-registry``
+            distribution's version; ``None`` (an embedding caller that passes none) leaves the
+            body's ``version`` null
+        :ptype version: str | None
         """
         from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
 
@@ -330,6 +362,10 @@ class RegistryServer:
         self._kv_bucket = kv_bucket
         self._authorizer = authorizer
         self._limit_guard: LimitGuard = limit_guard if limit_guard is not None else AllowAllLimitGuard()
+        self._identity_factory = identity_factory
+        # the one host identity this process holds, built by `apply_identity_factory` and closed
+        # by `shutdown`. None until then, and for good when no factory is configured.
+        self._identity: RegistryIdentity | None = None
         self._rbac_authorizer_factory = rbac_authorizer_factory
         self._pod_authenticator = pod_authenticator
         self._pod_authenticator_factory = pod_authenticator_factory
@@ -356,6 +392,7 @@ class RegistryServer:
         # returns only the authorizer -- so `RegistryRbacStack.close()` had no production
         # caller anywhere and its subscriptions outlived the server that made them.
         self._on_shutdown = on_shutdown
+        self._version = version
         self._health_server: HealthServer | None = None
         self._inflight_gauge: InflightRequestsGauge | None = None
         self._shutdown_event = asyncio.Event()
@@ -394,6 +431,43 @@ class RegistryServer:
         # log that does not say who is speaking cannot answer that.
         await bind_collections_bucket(nc, component="registry")
 
+    async def apply_identity_factory(self, nc: "NatsClient") -> RegistryIdentity | None:
+        """build the host identity this process presents on its L3 reads, once.
+
+        Every factory after this one that builds an L3 backend -- the rbac stack's, the pod
+        authenticator's, the limit guard's -- receives the SAME identity's bound ``token``, so
+        one process performs one host handshake and runs one refresh loop however many backends
+        it builds. :meth:`shutdown` closes it. Extracted from :meth:`serve` for the reason the
+        other ``apply_*`` methods are: tests drive it without the serve loop.
+
+        no-op when no factory is set.
+
+        :param nc: connected NATS client the host handshakes over
+        :ptype nc: NatsClient
+        :return: the identity (also held for shutdown), or ``None`` when no factory is set
+        :rtype: RegistryIdentity | None
+        :raises RegistryIdentityUnavailableError: from the host, when it cannot obtain a token --
+            at wiring time, rather than on the first read of a backend that looked built
+        """
+        if self._identity_factory is not None:
+            self._identity = await self._identity_factory(nc)
+            _logger.info(
+                "registry identity built by the host (L3 requests carry a host-minted token)",
+                extra={"extra_data": {"identity": type(self._identity).__name__}},
+            )
+        return self._identity
+
+    def _identity_token_provider(self) -> IdentityTokenProvider | None:
+        """the bound token provider every L3-building factory receives, or ``None``.
+
+        :return: the identity's bound ``token``, or ``None`` when no identity is held
+        :rtype: IdentityTokenProvider | None
+        """
+        result: IdentityTokenProvider | None = None
+        if self._identity is not None:
+            result = self._identity.token
+        return result
+
     async def apply_rbac_factory(
         self,
         nc: "NatsClient",
@@ -425,7 +499,7 @@ class RegistryServer:
         """
         result: "AgentToolAuthorizer | None" = None
         if self._rbac_authorizer_factory is not None:
-            result = await self._rbac_authorizer_factory(nc)
+            result = await self._rbac_authorizer_factory(nc, self._identity_token_provider())
             self._authorizer = result
         return result
 
@@ -452,7 +526,7 @@ class RegistryServer:
         :rtype: ToolPodAuthenticator | None
         """
         if self._pod_authenticator_factory is not None:
-            self._pod_authenticator = await self._pod_authenticator_factory(nc)
+            self._pod_authenticator = await self._pod_authenticator_factory(nc, self._identity_token_provider())
         return self._pod_authenticator
 
     async def apply_limit_guard_factory(
@@ -479,7 +553,9 @@ class RegistryServer:
         :rtype: LimitGuard
         """
         if self._limit_guard_factory is not None:
-            self._limit_guard = await self._limit_guard_factory(nc) or AllowAllLimitGuard()
+            self._limit_guard = (
+                await self._limit_guard_factory(nc, self._identity_token_provider()) or AllowAllLimitGuard()
+            )
         return self._limit_guard
 
     async def apply_usage_emitter_factory(
@@ -526,6 +602,10 @@ class RegistryServer:
         # call opens the bucket first hands its handle to every collection after it. Both
         # registries in this process are wired downstream of this line.
         await self.open_collections_bucket(self._nc)
+
+        # the host identity FIRST: every factory below that builds an L3 backend receives its
+        # bound token, so the host handshakes once for the whole process.
+        await self.apply_identity_factory(self._nc)
 
         # swap in the production rbac authorizer now that NATS is up.
         # extracted to a method so tests can drive the same code path
@@ -622,6 +702,11 @@ class RegistryServer:
         ``max_msgs_per_subject=1`` matters as much as the age bound: each subject is minted for one
         call and answered once, so a retried delivery must replace its predecessor rather than leave a
         stale first answer for the waiter to collect.
+
+        The stream is on memory storage, so a NATS restart deletes it. It is declared once, here, and
+        the NATS client re-creates it with this same config after every reconnect
+        (:meth:`threetears.nats.NatsClient.ensure_jetstream_stream`); before it did, every tool call
+        after a broker restart failed with ``stream not found`` until the registry was restarted.
 
         :return: nothing
         :rtype: None
@@ -799,10 +884,23 @@ class RegistryServer:
         # the consumer's devx preflight. port 8000 matches the inherited upstream
         # hub Dockerfile HEALTHCHECK so the same probe works whether the container
         # runs as the hub, the registry, or any other consumer of that base.
-        health_server = HealthServer(
+        health_server = self._build_health_server(inflight_gauge)
+        await health_server.start()
+        self._health_server = health_server
+
+    def _build_health_server(self, inflight_gauge: InflightRequestsGauge) -> HealthServer:
+        """build the registry's canonical health server, NOT yet started.
+
+        :param inflight_gauge: the proxy's in-flight gauge served on ``/metrics``
+        :ptype inflight_gauge: InflightRequestsGauge
+        :return: configured health server carrying this registry's version
+        :rtype: HealthServer
+        """
+        result = HealthServer(
             port=self._health_port,
             service_name="registry",
             metrics_provider=inflight_gauge.render,
+            version=self._version,
             checks=[
                 # key liveness on REAL NATS health (is_closed / is_healthy), NOT
                 # is_connected -- the latter is a stale-socket flag that stays True
@@ -833,7 +931,7 @@ class RegistryServer:
                 ),
                 # readiness gate: report NOT-READY until the Hub JWKS cache has had its first
                 # successful fetch. before it warms, the proxy verifies every identity token against
-                # an EMPTY keyset and rejects fail-closed (TOOL_IDENTITY_UNVERIFIED), so a k8s
+                # an EMPTY keyset and rejects fail-closed (IDENTITY_REFUSED), so a k8s
                 # readiness probe that flipped ready too early would route calls the proxy is
                 # guaranteed to fail. gating on is_warmed keeps the registry out of rotation until it
                 # can actually verify a token.
@@ -844,8 +942,7 @@ class RegistryServer:
                 ),
             ],
         )
-        await health_server.start()
-        self._health_server = health_server
+        return result
 
     def _install_signal_handlers(self) -> None:
         """install SIGINT and SIGTERM handlers for graceful shutdown."""
@@ -893,6 +990,12 @@ class RegistryServer:
         # invalidation subscriptions.
         if self._on_shutdown is not None:
             await self._on_shutdown()
+        # the host identity LAST of the components, because everything above reads through its
+        # token, and before the connection closes, because the host's refresh loop handshakes
+        # over it. Without this the refresh loop outlived the server that started it.
+        if self._identity is not None:
+            await self._identity.close()
+            self._identity = None
 
         if self._nc is not None:
             await self._nc.shutdown()
@@ -954,7 +1057,7 @@ def _run_server() -> None:
     )
 
     authorizer: AgentToolAuthorizer
-    rbac_authorizer_factory: "Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None" = None
+    rbac_authorizer_factory: "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[AgentToolAuthorizer]] | None" = None
     # Bound HERE, above the mode branch, and not inside the rbac arm that fills it. The
     # teardown closure below reads it unconditionally, so binding it in one arm made
     # `shutdown()` raise `NameError` under `THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true` and
@@ -991,7 +1094,7 @@ def _run_server() -> None:
 
         authorizer = DenyAllAuthorizer()
 
-        async def _rbac_factory(nc: NatsClient) -> AgentToolAuthorizer:
+        async def _rbac_factory(nc: NatsClient, identity_token: IdentityTokenProvider | None) -> AgentToolAuthorizer:
             from threetears.registry.l1_cache import (
                 create_registry_l1_backend,
             )
@@ -1006,12 +1109,9 @@ def _run_server() -> None:
                 "THREETEARS_NATS_SUBJECT_NAMESPACE",
                 "3tears",
             )
-            # BEFORE the stack, because the stack refuses to build without a token.
-            # This is the first of the four factories `serve()` applies, so the host
-            # provider is established here and every later consumer in this process
-            # (the pod authenticator's and the limit guard's own proxy pools) reuses
-            # the same held token rather than handshaking again.
-            identity_token = await _resolve_identity_token_provider(nc)
+            # the server built the host identity before calling this, and hands every
+            # L3-building factory the same bound token. None means no host identity is
+            # configured, which the stack refuses at wiring time.
             l1_backend = create_registry_l1_backend()
             stack = build_registry_rbac_stack(
                 nats_client=nc,
@@ -1049,38 +1149,40 @@ def _run_server() -> None:
 
     server = RegistryServer(
         authorizer=authorizer,
+        identity_factory=_resolve_identity_factory(),
         rbac_authorizer_factory=rbac_authorizer_factory,
         on_shutdown=_close_rbac_stacks,
         pod_authenticator_factory=_resolve_pod_authenticator_factory(),
         limit_guard_factory=_resolve_limit_guard_factory(),
         usage_emitter_factory=_resolve_usage_emitter_factory(),
+        version=importlib.metadata.version("3tears-registry"),
     )
     asyncio.run(server.serve())
 
 
-async def _resolve_identity_token_provider(nc: NatsClient) -> "Callable[[], str | None] | None":
-    """resolve + invoke the host's identity-token provider factory, if one is configured.
+def _resolve_identity_factory() -> "Callable[[NatsClient], Awaitable[RegistryIdentity]] | None":
+    """resolve the host's identity factory from a configurable plugin path, if one is configured.
 
     3tears stays host-agnostic, and identity is the sharpest case of that: the token the
     L3 broker demands is minted by the HOST, over a handshake protocol 3tears does not
-    define and against a principal store 3tears cannot read. So the provider is supplied
+    define and against a principal store 3tears cannot read. So the factory is supplied
     out-of-band via ``THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY``, a
     ``module:callable`` dotted path pointing at a host-provided async factory --
-    ``Callable[[NatsClient], Awaitable[Callable[[], str | None]]]`` -- invoked here once
-    the connection is up. The aibots Hub points it at
+    ``Callable[[NatsClient], Awaitable[RegistryIdentity]]`` -- which
+    :meth:`RegistryServer.serve` invokes ONCE when the connection is up and
+    :meth:`RegistryServer.shutdown` closes. The aibots Hub points it at
     ``aibots.hub.tools.registry_identity:identity_token_provider_factory``, which signs a
-    connect JWT with the registry's own key, performs the Hub handshake, and returns a
-    holder's ``get`` so a re-minted token is picked up without rewiring.
+    connect JWT with the registry's own key, performs the Hub handshake and starts the
+    refresh loop that keeps the token fresh until the server closes it.
 
-    UNSET -> ``None``, which :func:`~threetears.registry.rbac_stack.build_registry_rbac_stack`
-    turns into a wiring-time refusal. That is deliberate rather than a degraded mode: unlike
-    the other three hooks there is no weaker-but-working fallback, because a broker that
-    refuses an unidentified request leaves nothing to fall back TO.
+    UNSET -> ``None``: every factory receives no token provider, and
+    :func:`~threetears.registry.rbac_stack.build_registry_rbac_stack` turns that into a
+    wiring-time refusal. That is deliberate rather than a degraded mode: unlike the other
+    three hooks there is no weaker-but-working fallback, because a broker that refuses an
+    unidentified request leaves nothing to fall back TO.
 
-    :param nc: the registry's connected canonical NATS client
-    :ptype nc: NatsClient
-    :return: the host's zero-arg token provider, or ``None`` when the env var is unset
-    :rtype: Callable[[], str | None] | None
+    :return: the resolved factory, or ``None`` when the env var is unset
+    :rtype: Callable[[NatsClient], Awaitable[RegistryIdentity]] | None
     :raises ValueError: when the env var is set but not a ``module:callable`` dotted path
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured identity plugin must crash startup, never silently drop to unidentified)
@@ -1088,7 +1190,7 @@ async def _resolve_identity_token_provider(nc: NatsClient) -> "Callable[[], str 
     import importlib
 
     spec = os.environ.get("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", "").strip()
-    result: "Callable[[], str | None] | None" = None
+    result: "Callable[[NatsClient], Awaitable[RegistryIdentity]] | None" = None
     if spec:
         module_name, sep, attr = spec.partition(":")
         if not module_name or not sep or not attr:
@@ -1097,16 +1199,17 @@ async def _resolve_identity_token_provider(nc: NatsClient) -> "Callable[[], str 
                 f"'module:callable' dotted path; got {spec!r}"
             )
         module = importlib.import_module(module_name)
-        factory = getattr(module, attr)
-        result = await factory(nc)
+        result = getattr(module, attr)
         _logger.info(
-            "registry identity-token provider wired (L3 requests carry a host-minted token)",
+            "registry identity factory wired (L3 requests will carry a host-minted token)",
             extra={"extra_data": {"factory": spec}},
         )
     return result
 
 
-def _resolve_pod_authenticator_factory() -> "Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None":
+def _resolve_pod_authenticator_factory() -> (
+    "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[ToolPodAuthenticator | None]] | None"
+):
     """resolve the tool-pod REGISTRATION authenticator factory from a configurable plugin path.
 
     3tears stays host-agnostic: the standalone registry cannot know how a given deployment stores
@@ -1115,12 +1218,13 @@ def _resolve_pod_authenticator_factory() -> "Callable[[NatsClient], Awaitable[To
     points at a host-provided factory (e.g. the aibots Hub's
     ``aibots.hub.tools.registry_auth:pod_authenticator_factory``, which verifies each pod's
     self-minted identity JWT against the pod's stored public key). the referenced object is the async
-    factory itself -- ``Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]]`` -- invoked by
-    :meth:`RegistryServer.serve` once NATS is up. UNSET -> ``None`` -> OPEN registration mode (the
+    factory itself -- ``Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[ToolPodAuthenticator |
+    None]]`` -- invoked by :meth:`RegistryServer.serve` once NATS is up, with the process's one identity
+    token provider. UNSET -> ``None`` -> OPEN registration mode (the
     pure-3tears / dev default; nothing to verify against without a host identity store).
 
     :return: the resolved factory, or ``None`` when the env var is unset
-    :rtype: Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None
+    :rtype: Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[ToolPodAuthenticator | None]] | None
     :raises ValueError: when the env var is set but not a ``module:callable`` dotted path
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured authenticator plugin must crash startup, never silently drop to open mode)
@@ -1128,7 +1232,7 @@ def _resolve_pod_authenticator_factory() -> "Callable[[NatsClient], Awaitable[To
     import importlib
 
     spec = os.environ.get("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", "").strip()
-    result: "Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None" = None
+    result: "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[ToolPodAuthenticator | None]] | None" = None
     if spec:
         module_name, sep, attr = spec.partition(":")
         if not module_name or not sep or not attr:
@@ -1144,7 +1248,9 @@ def _resolve_pod_authenticator_factory() -> "Callable[[NatsClient], Awaitable[To
     return result
 
 
-def _resolve_limit_guard_factory() -> "Callable[[NatsClient], Awaitable[LimitGuard | None]] | None":
+def _resolve_limit_guard_factory() -> (
+    "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[LimitGuard | None]] | None"
+):
     """resolve the pre-call spend-gate factory from a configurable plugin path.
 
     3tears stays host-agnostic: the standalone registry has no counter backend, so the limit-guard
@@ -1152,12 +1258,12 @@ def _resolve_limit_guard_factory() -> "Callable[[NatsClient], Awaitable[LimitGua
     ``module:callable`` dotted path the operator points at a host-provided factory (the aibots Hub's
     ``aibots.hub.tools.registry_auth:limit_guard_factory``, which builds a NATS-proxy-backed
     ``KvCallLimitGuard`` over the usage counters). the referenced object is the async factory itself
-    -- ``Callable[[NatsClient], Awaitable[LimitGuard | None]]`` -- invoked by
-    :meth:`RegistryServer.serve` once NATS is up. UNSET -> ``None`` -> the constructor default
+    -- ``Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[LimitGuard | None]]`` -- invoked by
+    :meth:`RegistryServer.serve` once NATS is up, with the process's one identity token provider. UNSET -> ``None`` -> the constructor default
     ``AllowAllLimitGuard`` (the pure-3tears / dev default; no counter store to enforce against).
 
     :return: the resolved factory, or ``None`` when the env var is unset
-    :rtype: Callable[[NatsClient], Awaitable[LimitGuard | None]] | None
+    :rtype: Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[LimitGuard | None]] | None
     :raises ValueError: when the env var is set but not a ``module:callable`` dotted path
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured limit-guard plugin must crash startup, never silently drop to allow-all)
@@ -1165,7 +1271,7 @@ def _resolve_limit_guard_factory() -> "Callable[[NatsClient], Awaitable[LimitGua
     import importlib
 
     spec = os.environ.get("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "").strip()
-    result: "Callable[[NatsClient], Awaitable[LimitGuard | None]] | None" = None
+    result: "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[LimitGuard | None]] | None" = None
     if spec:
         module_name, sep, attr = spec.partition(":")
         if not module_name or not sep or not attr:

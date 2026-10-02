@@ -72,6 +72,8 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from threetears.observe import get_logger
 
+from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -118,6 +120,8 @@ class ReplayGuard:
         ttl_seconds: int,
         verifier_future_tolerance: timedelta,
         anchor: "ReplayAnchor | None" = None,
+        create_if_missing: bool = True,
+        key_scope: str | None = None,
     ) -> None:
         """configure the guard; the bucket is opened by :meth:`bind`, which a service calls at start.
 
@@ -147,7 +151,22 @@ class ReplayGuard:
             only a NATS client, and a minute of refused internal RPC that retries does not
             justify wiring durable storage into them
         :ptype anchor: ReplayAnchor | None
-        :raises ValueError: when ``ttl_seconds`` is not positive or the tolerance is negative
+        :param create_if_missing: ``True`` (the default) DECLARES the bucket, creating it when
+            absent -- and recreating it after a broker wipe; ``False`` only BINDS a bucket another
+            identity declared and never issues STREAM.CREATE. A pod holds no stream-management verb,
+            so a pod's guard binds, and after a wipe it refuses every artifact until the declarer
+            (the hub) has recreated the bucket -- failing closed, never recording into nothing
+        :ptype create_if_missing: bool
+        :param key_scope: the owner scope every nonce key leads with (``{key_scope}.{digest}``),
+            for a ledger kept in a bucket SHARED by many owners -- the platform's
+            ``proxy_assertion_nonces``, which every pod binds and in which each pod is granted only
+            the keys under its own :func:`~threetears.nats.subject_permissions.kv_key_scope_for`.
+            ``None`` keys by the digest alone, for a bucket this ledger has to itself. Owners never
+            share a ledger this way, which is sound because an assertion is bound to the one pod it
+            was issued for: its replay to another owner fails verification before the guard is asked
+        :ptype key_scope: str | None
+        :raises ValueError: when ``ttl_seconds`` is not positive, the tolerance is negative, or
+            ``key_scope`` is not one literal subject token
         """
         if ttl_seconds <= 0:
             raise ValueError(f"ReplayGuard ttl_seconds must be positive, got {ttl_seconds}")
@@ -155,11 +174,13 @@ class ReplayGuard:
             raise ValueError(
                 f"ReplayGuard verifier_future_tolerance must not be negative, got {verifier_future_tolerance}"
             )
+        self._key_scope = validated_key_scope(key_scope, primitive="ReplayGuard")
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = timedelta(seconds=ttl_seconds)
         self._verifier_future_tolerance = verifier_future_tolerance
         self._anchor = anchor
+        self._create_if_missing = create_if_missing
         # Read once, at bind, and kept: the anchor is a fact about this ledger's whole history, so
         # re-reading it per artifact would put a durable round trip on the hot path to learn
         # something that cannot change while the process runs. A failed read stays None and is
@@ -323,7 +344,7 @@ class ReplayGuard:
                 )
 
     async def bind(self) -> None:
-        """open this guard's KV bucket, creating it when absent. Idempotent and async-safe.
+        """open this guard's KV bucket, creating it when absent unless built bind-only. Idempotent and async-safe.
 
         **A service calls this at startup, before it serves any artifact.** After a wipe the
         guard refuses every artifact issued before its bucket's creation time plus the refusal
@@ -394,7 +415,7 @@ class ReplayGuard:
                     bucket = await self._client.kv_bucket(
                         name=self._bucket_name,
                         ttl=self._ttl,
-                        create_if_missing=True,
+                        create_if_missing=self._create_if_missing,
                         history=1,
                     )
                     # after the bucket exists, so a first run stamps a moment no earlier than its
@@ -423,7 +444,11 @@ class ReplayGuard:
         :return: whether a hook was registered
         :rtype: bool
         """
-        hooked = callable(getattr(type(self._client), "add_reconnect_callback", None))
+        # A BIND-ONLY guard hooks nothing: the touch exists to RECREATE a wiped bucket, which such
+        # a guard cannot do. It would only wait for the declarer (the bind waits for an absent
+        # bucket), and it would wait inside the client's reconnect callbacks, which run one after
+        # another -- holding up every hook registered after it. Its next record re-binds anyway.
+        hooked = self._create_if_missing and callable(getattr(type(self._client), "add_reconnect_callback", None))
         if hooked:
             hooking = cast("_ReconnectHooking", self._client)
             hooking.add_reconnect_callback(self._rebind_after_reconnect)
@@ -459,7 +484,12 @@ class ReplayGuard:
                     },
                 )
 
-    @staticmethod
-    def _key(nonce: str) -> str:
-        """hash the nonce into a fixed-length, KV-safe key (also avoids storing the raw nonce)."""
-        return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+    def _key(self, nonce: str) -> str:
+        """hash the nonce into a fixed-length, KV-safe key (also avoids storing the raw nonce).
+
+        :param nonce: the nonce to key
+        :ptype nonce: str
+        :return: the digest, led by the owner scope when the guard has one
+        :rtype: str
+        """
+        return owner_scoped_key(self._key_scope, hashlib.sha256(nonce.encode("utf-8")).hexdigest())

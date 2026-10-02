@@ -32,18 +32,31 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from threetears.core.backends.schema_sql import json_default
+
 __all__ = ["init_connection", "register_jsonb_text_codec"]
 
 
 def _encoder(value: Any) -> str:
     """encode a Python value as JSON text for the ``jsonb`` codec.
 
+    Through :func:`~threetears.core.backends.schema_sql.json_default`, the handler L2 and L1
+    use, so a nested UUID, Decimal, date or datetime is stored as the same string at every
+    tier -- a datetime in :func:`~threetears.core.serialization.json_datetime`'s one form. This
+    codec used ``default=str``, which stored ``2026-10-01 12:30:00+00:00`` where the other tiers
+    stored ``2026-10-01T12:30:00+00:00``; rows written then keep that form, and every reader
+    parses both (:meth:`datetime.fromisoformat`).
+
+    A type the handler does not cover is now refused here, as L2 and L1 already refused it,
+    where ``default=str`` stored its ``str()``.
+
     :param value: dict / list / scalar / None
     :ptype value: Any
     :return: JSON text
     :rtype: str
+    :raises TypeError: when ``value`` holds a type the storage handler does not cover
     """
-    return json.dumps(value, default=str)
+    return json.dumps(value, default=json_default)
 
 
 async def register_jsonb_text_codec(conn: Any) -> None:

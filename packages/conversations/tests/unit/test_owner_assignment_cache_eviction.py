@@ -26,7 +26,7 @@ from threetears.conversations.authorize import (
     ensure_conversation_owner_assignment,
 )
 
-from ._rbac_rows import RbacRows
+from .rbac_rows import RbacRows
 
 
 class _RecordingPublisher:

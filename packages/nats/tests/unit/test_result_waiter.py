@@ -1,13 +1,16 @@
-"""An answer must survive a reconnect on EITHER end of the wire.
+"""An answer must survive a reconnect on EITHER end of the wire -- and reach only its caller.
 
 The production failure was a responder losing the right to publish: ``allow_responses`` belongs to the
 connection that received the request, and the credential refresh that keeps a pod authenticated is a
 reconnect, so a 92-second scan finished with exit 0 and 68KB of results it could never deliver.
 
 Moving the answer onto a subject the responder holds a standing grant on fixes that half. These tests
-cover the other half -- the CALLER. If the caller's own connection cycles while it waits, or the
-server reaps the ephemeral consumer underneath it, an answer that is sitting in the stream must still
-be collected. Otherwise the loss has been relocated rather than ended.
+cover the other half -- the CALLER. If the caller's consumer is lost while it waits, an answer that is
+sitting in the stream must still be collected. Otherwise the loss has been relocated rather than ended.
+
+And the caller collects it the one way a pod's grant admits: a NAMED consumer whose filter rides in
+its create subject, PUSHED to the caller's own inbox. A pull consumer needs ``CONSUMER.MSG.NEXT``,
+which reaches any consumer on the stream by name -- the registry's over every pod's results included.
 """
 
 from __future__ import annotations
@@ -24,90 +27,158 @@ from threetears.nats.client import JetStreamResultWaiter
 
 pytestmark = pytest.mark.asyncio
 
-_SUBJECT = Subject.raw("3tears.tools.result.pod-A.call-1")
+_SUBJECT = Subject.raw("3tears.tools.reply.019470a8-b5c3-7def-8123-0000000000aa.call-1")
 _STREAM = "3tears-tools-results"
 
 
 class _Msg:
-    """one delivered JetStream message; records whether the waiter acked it."""
+    """one message pushed to the waiter's inbox; records whether the waiter acked it."""
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, headers: dict[str, str] | None = None) -> None:
         self.data = data
+        self.headers = headers
         self.acked = False
 
     async def ack(self) -> None:
         self.acked = True
 
 
-class _PullSub:
-    """a nats-py pull subscription whose fetch behaviour each test scripts.
+def _heartbeat() -> _Msg:
+    return _Msg(b"", {"Status": "100", "Description": "Idle Heartbeat"})
 
-    ``script`` is consumed one entry per ``fetch``: a ``_Msg`` is delivered, an exception is raised,
-    and ``None`` means "nothing yet" (which nats-py signals as a TimeoutError).
+
+class _Sub:
+    """a core inbox subscription whose deliveries each test scripts.
+
+    ``script`` is consumed one entry per ``next_msg``: a ``_Msg`` is delivered, an exception is
+    raised, and ``None`` means "nothing yet" (which nats-py signals as a TimeoutError).
     """
 
     def __init__(self, script: list[Any]) -> None:
         self._script = list(script)
-        self.fetches = 0
+        self.polls = 0
         self.unsubscribed = False
 
-    async def fetch(self, batch: int, timeout: float) -> list[Any]:
-        self.fetches += 1
-        if not self._script:
-            raise NatsTimeoutError
-        step = self._script.pop(0)
+    async def next_msg(self, timeout: float) -> Any:
+        self.polls += 1
+        step = self._script.pop(0) if self._script else None
         if step is None:
+            # nothing delivered: nats-py waits out the timeout, then raises
+            await asyncio.sleep(timeout)
             raise NatsTimeoutError
         if isinstance(step, BaseException):
             raise step
-        return [step]
+        return step
 
     async def unsubscribe(self) -> None:
         self.unsubscribed = True
 
 
-class _Js:
-    """a JetStream context handing out a scripted pull subscription per subscribe call."""
+class _Raw:
+    """a nats-py client handing out one scripted subscription per inbox subscribe."""
 
-    def __init__(self, subs: list[Any]) -> None:
+    def __init__(self, subs: list[_Sub]) -> None:
         self._subs = list(subs)
-        self.configs: list[Any] = []
-        self.subscribe_calls = 0
-        self.streams: list[str | None] = []
+        self.inboxes: list[str] = []
+        self.subscribed: list[str] = []
 
-    async def pull_subscribe(self, subject: str, *, stream: str | None = None, config: Any = None) -> Any:
-        self.subscribe_calls += 1
-        self.configs.append(config)
-        self.streams.append(stream)
+    def new_inbox(self) -> str:
+        inbox = f"_INBOX_agent_pod_x.{len(self.inboxes)}"
+        self.inboxes.append(inbox)
+        return inbox
+
+    async def subscribe(self, subject: str) -> _Sub:
+        self.subscribed.append(subject)
         if not self._subs:
             raise RuntimeError("no scripted subscription left")
-        step = self._subs.pop(0)
-        if isinstance(step, BaseException):
-            raise step
-        return step
+        return self._subs.pop(0)
 
 
-def _waiter(js: _Js, *, poll: float = 0.01) -> JetStreamResultWaiter:
+class _RawWithJetStream(_Raw):
+    """a scripted nats-py client that also hands out one JetStream context, as a live one does."""
+
+    def __init__(self, subs: list[_Sub], js: _Js) -> None:
+        super().__init__(subs)
+        self._js = js
+
+    def jetstream(self) -> _Js:
+        return self._js
+
+
+class _Js:
+    """a JetStream context recording every consumer create; each may be scripted to fail."""
+
+    def __init__(self, failures: list[BaseException | None] | None = None) -> None:
+        self._failures = list(failures or [])
+        self.creates: list[tuple[str, Any]] = []
+        self.pulls = 0
+
+    async def add_consumer(self, stream: str, config: Any = None) -> Any:
+        self.creates.append((stream, config))
+        failure = self._failures.pop(0) if self._failures else None
+        if failure is not None:
+            raise failure
+        return object()
+
+    async def pull_subscribe(self, *args: Any, **kwargs: Any) -> Any:
+        self.pulls += 1
+        raise AssertionError("a pod may not pull: CONSUMER.MSG.NEXT reaches any consumer by name")
+
+
+def _waiter(
+    raw: _Raw, js: _Js, *, poll: float = 0.01, heartbeat: float = 60.0, rebuild_backoff: float = 1.0
+) -> JetStreamResultWaiter:
     return JetStreamResultWaiter(
-        js=js,
+        connection=lambda: raw,
+        jetstream=lambda: js,
         subject=_SUBJECT,
         stream=_STREAM,
         inactive_threshold_seconds=600.0,
         poll_seconds=poll,
+        heartbeat_seconds=heartbeat,
+        rebuild_backoff_seconds=rebuild_backoff,
     )
 
 
 async def test_the_answer_is_returned_and_acked() -> None:
-    """the ordinary case: the tool finishes, the answer is collected, the message is acked."""
-    sub = _PullSub([None, _Msg(b"68KB of results")])
-    js = _Js([sub])
-    waiter = _waiter(js)
+    """the ordinary case: the tool finishes, the answer is pushed, collected and acked."""
+    answer = _Msg(b"68KB of results")
+    sub = _Sub([None, _heartbeat(), answer])
+    waiter = _waiter(_Raw([sub]), _Js())
     await waiter.open()
 
     payload = await waiter.wait(timeout=timedelta(seconds=5))
 
     assert payload == b"68KB of results"
-    assert sub.fetches == 2
+    assert answer.acked
+
+
+async def test_the_consumer_is_named_filtered_and_pushed_to_the_callers_own_inbox() -> None:
+    """the one consumer shape a pod's grant admits.
+
+    A name plus a filter makes nats-py issue ``CONSUMER.CREATE.{stream}.{name}.{filter}``, the form
+    nats-server checks against the body; the deliver subject is the inbox this connection subscribed
+    before the create, so nothing the consumer pushes can arrive before anything listens.
+    """
+    raw = _Raw([_Sub([])])
+    js = _Js()
+    await _waiter(raw, js).open()
+
+    stream, config = js.creates[0]
+    assert stream == _STREAM
+    assert config.name and config.name.startswith("result-waiter-")
+    assert config.filter_subject == _SUBJECT.path
+    assert config.deliver_subject == raw.inboxes[0] == raw.subscribed[0]
+    assert config.durable_name is None
+    assert js.pulls == 0
+
+
+async def test_every_consumer_gets_a_fresh_name() -> None:
+    """two waiters -- or one waiter's rebuild -- never collide on a consumer name."""
+    js = _Js()
+    await _waiter(_Raw([_Sub([])]), js).open()
+    await _waiter(_Raw([_Sub([])]), js).open()
+    assert js.creates[0][1].name != js.creates[1][1].name
 
 
 async def test_the_consumer_is_created_before_the_wait_begins() -> None:
@@ -116,12 +187,12 @@ async def test_the_consumer_is_created_before_the_wait_begins() -> None:
     the caller opens the waiter before dispatching the call, so there is no window in which the
     answer could be published with nothing yet listening for it.
     """
-    js = _Js([_PullSub([])])
-    waiter = _waiter(js)
+    js = _Js()
+    waiter = _waiter(_Raw([_Sub([])]), js)
 
-    assert js.subscribe_calls == 0
+    assert js.creates == []
     await waiter.open()
-    assert js.subscribe_calls == 1
+    assert len(js.creates) == 1
 
 
 async def test_the_consumer_reads_from_the_start_of_the_stream() -> None:
@@ -133,90 +204,126 @@ async def test_the_consumer_reads_from_the_start_of_the_stream() -> None:
     """
     from nats.js.api import AckPolicy, DeliverPolicy
 
-    js = _Js([_PullSub([])])
-    await _waiter(js).open()
+    js = _Js()
+    await _waiter(_Raw([_Sub([])]), js).open()
 
-    config = js.configs[0]
+    config = js.creates[0][1]
     assert config.deliver_policy == DeliverPolicy.ALL
-    assert config.filter_subject == _SUBJECT.path
     assert config.ack_policy == AckPolicy.EXPLICIT
+    assert config.max_ack_pending == 1
 
 
-async def test_the_stream_is_named_explicitly() -> None:
-    """naming the stream avoids the ``$JS.API.STREAM.NAMES`` lookup, which nobody is granted.
-
-    an ungranted JetStream call does not fail fast with a denial -- it blocks to its deadline, which
-    reads as an unreachable broker rather than a missing permission.
-    """
-    js = _Js([_PullSub([])])
-    await _waiter(js).open()
-    assert js.streams == [_STREAM]
+async def test_the_consumer_heartbeats_so_its_loss_is_noticed() -> None:
+    """a pushed consumer the server lost delivers nothing and says nothing; the heartbeat says so."""
+    js = _Js()
+    await _waiter(_Raw([_Sub([])]), js, heartbeat=7.0).open()
+    assert js.creates[0][1].idle_heartbeat == 7.0
 
 
 async def test_the_consumer_outlives_the_call_it_is_waiting_for() -> None:
-    """the ephemeral consumer's keepalive must exceed the whole wait budget.
+    """the consumer's keepalive must exceed the whole wait budget.
 
     a threshold shorter than the call means the server reaps the consumer mid-tool and the answer
     arrives with nothing bound to receive it -- the original bug, re-created on the consumer side.
+
+    Driven through :meth:`NatsClient.jetstream_result_waiter`, the method that derives the
+    keepalive from the wait budget, so the margin it adds is what is checked.
     """
-    from threetears.nats.client import NatsClient, _RESULT_WAITER_KEEPALIVE_MARGIN_SECONDS
+    from threetears.nats.client import NatsClient
 
-    js = _Js([_PullSub([])])
-    waiter = JetStreamResultWaiter(
-        js=js,
-        subject=_SUBJECT,
-        stream=_STREAM,
-        inactive_threshold_seconds=1200.0 + _RESULT_WAITER_KEEPALIVE_MARGIN_SECONDS,
-        poll_seconds=5.0,
-    )
-    await waiter.open()
+    js = _Js()
+    raw = _RawWithJetStream([_Sub([])], js)
+    client = NatsClient(raw=raw, namespace="3tears", client_name="t")  # type: ignore[arg-type]
 
-    assert js.configs[0].inactive_threshold > 1200.0
-    assert callable(NatsClient.jetstream_result_waiter)
+    waiter = await client.jetstream_result_waiter(subject=_SUBJECT, stream=_STREAM, wait_budget=timedelta(seconds=1200))
+    await waiter.close()
+
+    assert js.creates[0][1].inactive_threshold > 1200.0
 
 
-async def test_a_reconnect_mid_wait_does_not_discard_the_answer() -> None:
-    """THE OTHER HALF OF THE BUG. A caller-side reconnect must not lose a computed result.
+async def test_a_refused_create_leaves_no_subscription_behind() -> None:
+    """a create the grant refuses fails the open, and the inbox it subscribed is dropped."""
+    sub = _Sub([])
+    waiter = _waiter(_Raw([sub]), _Js([RuntimeError("consumer create refused")]))
 
-    After the transport cycles, the server-side ephemeral consumer may be gone and the next fetch
-    fails with something other than "nothing yet". Giving up there would throw away an answer the
-    stream is still holding -- the same loss as before, moved to the receiving end. So the consumer is
-    rebuilt and the wait continues.
+    with pytest.raises(RuntimeError, match="refused"):
+        await waiter.open()
+    assert sub.unsubscribed
+
+
+async def test_a_consumer_that_goes_quiet_is_replaced_and_the_answer_still_collected() -> None:
+    """THE OTHER HALF OF THE BUG. A lost consumer must not lose a computed result.
+
+    After a broker restart the consumer may be gone, and a pushed consumer that no longer exists
+    neither delivers nor heartbeats. Waiting on it forever would throw away an answer the stream is
+    still holding -- the same loss as before, moved to the receiving end. So once it misses its
+    heartbeats it is replaced, and the replacement reads the answer from the start of the stream.
     """
-    dead = _PullSub([ConnectionResetError("connection closed")])
-    revived = _PullSub([_Msg(b"delivered after the reconnect")])
-    js = _Js([dead, revived])
-    waiter = _waiter(js)
+    quiet = _Sub([None, None, None, None, None, None])
+    revived = _Sub([_Msg(b"delivered after the reconnect")])
+    raw = _Raw([quiet, revived])
+    js = _Js()
+    waiter = _waiter(raw, js, poll=0.01, heartbeat=0.01)
     await waiter.open()
 
     payload = await waiter.wait(timeout=timedelta(seconds=5))
 
     assert payload == b"delivered after the reconnect"
-    assert js.subscribe_calls == 2, "the waiter did not rebuild its consumer after the failed fetch"
-    assert dead.unsubscribed
+    assert len(js.creates) == 2, "the waiter did not replace its quiet consumer"
+    assert quiet.unsubscribed
+
+
+async def test_heartbeats_keep_a_live_consumer() -> None:
+    """a consumer that is heartbeating is alive and is not replaced while the tool runs."""
+    sub = _Sub([_heartbeat(), _heartbeat(), _heartbeat(), _heartbeat(), _Msg(b"done")])
+    js = _Js()
+    waiter = _waiter(_Raw([sub]), js, heartbeat=60.0)
+    await waiter.open()
+
+    assert await waiter.wait(timeout=timedelta(seconds=5)) == b"done"
+    assert len(js.creates) == 1
+
+
+async def test_a_consumer_the_server_ended_is_replaced_at_once() -> None:
+    """``409 Consumer Deleted`` and its kin end the consumer; waiting out its heartbeats is pointless."""
+    ended = _Sub([_Msg(b"", {"Status": "409", "Description": "Consumer Deleted"})])
+    revived = _Sub([_Msg(b"eventually")])
+    js = _Js()
+    waiter = _waiter(_Raw([ended, revived]), js)
+    await waiter.open()
+
+    assert await waiter.wait(timeout=timedelta(seconds=5)) == b"eventually"
+    assert len(js.creates) == 2
+
+
+async def test_a_failed_delivery_replaces_the_consumer() -> None:
+    """a subscription that fails is replaced rather than ending the wait."""
+    broken = _Sub([ConnectionResetError("connection closed")])
+    revived = _Sub([_Msg(b"delivered after the blip")])
+    js = _Js()
+    waiter = _waiter(_Raw([broken, revived]), js)
+    await waiter.open()
+
+    assert await waiter.wait(timeout=timedelta(seconds=5)) == b"delivered after the blip"
+    assert broken.unsubscribed
 
 
 async def test_a_failed_rebuild_is_retried_rather_than_fatal() -> None:
     """a broker still coming back must not end the wait on the first failed rebuild."""
-    js = _Js(
-        [
-            _PullSub([RuntimeError("consumer gone")]),
-            RuntimeError("broker still down"),
-            _PullSub([_Msg(b"eventually")]),
-        ]
-    )
-    waiter = _waiter(js)
+    js = _Js([None, RuntimeError("broker still down"), None])
+    raw = _Raw([_Sub([RuntimeError("consumer gone")]), _Sub([]), _Sub([_Msg(b"eventually")])])
+    waiter = _waiter(raw, js, rebuild_backoff=0.0)
     await waiter.open()
 
     payload = await waiter.wait(timeout=timedelta(seconds=5))
 
     assert payload == b"eventually"
+    assert len(js.creates) == 3
 
 
 async def test_an_answer_that_never_comes_ends_at_the_deadline() -> None:
     """the wait is bounded: a pod that died mid-tool must not hang its caller forever."""
-    js = _Js([_PullSub([])])
-    waiter = _waiter(js)
+    waiter = _waiter(_Raw([_Sub([])]), _Js())
     await waiter.open()
 
     with pytest.raises(RequestTimeoutError, match=_SUBJECT.path):
@@ -225,7 +332,7 @@ async def test_an_answer_that_never_comes_ends_at_the_deadline() -> None:
 
 async def test_wait_before_open_is_a_programming_error() -> None:
     """waiting on a consumer that was never created would silently time out every call."""
-    waiter = _waiter(_Js([]))
+    waiter = _waiter(_Raw([]), _Js())
     with pytest.raises(RuntimeError, match="before open"):
         await waiter.wait(timeout=timedelta(seconds=0.05))
 
@@ -233,15 +340,15 @@ async def test_wait_before_open_is_a_programming_error() -> None:
 async def test_close_is_idempotent_and_never_raises() -> None:
     """close runs in the caller's ``finally`` while it already holds its answer.
 
-    the ephemeral consumer ages out on its own threshold, so a failing unsubscribe leaks nothing
-    durable and must not turn a successful call into an error.
+    the consumer ages out on its own threshold, so a failing unsubscribe leaks nothing durable and
+    must not turn a successful call into an error.
     """
 
-    class _Hostile(_PullSub):
+    class _Hostile(_Sub):
         async def unsubscribe(self) -> None:
             raise RuntimeError("broker unreachable")
 
-    waiter = _waiter(_Js([_Hostile([])]))
+    waiter = _waiter(_Raw([_Hostile([])]), _Js())
     await waiter.open()
 
     await waiter.close()
@@ -249,14 +356,14 @@ async def test_close_is_idempotent_and_never_raises() -> None:
 
 
 async def test_cancellation_is_not_swallowed_as_a_transport_blip() -> None:
-    """shutdown must end the wait, not be mistaken for a fetch failure and retried forever."""
+    """shutdown must end the wait, not be mistaken for a delivery failure and retried forever."""
 
-    class _Hangs(_PullSub):
-        async def fetch(self, batch: int, timeout: float) -> list[Any]:
+    class _Hangs(_Sub):
+        async def next_msg(self, timeout: float) -> Any:
             await asyncio.sleep(3600)
-            return []
+            return None
 
-    waiter = _waiter(_Js([_Hangs([])]))
+    waiter = _waiter(_Raw([_Hangs([])]), _Js())
     await waiter.open()
     task = asyncio.create_task(waiter.wait(timeout=timedelta(seconds=60)))
     await asyncio.sleep(0.01)
@@ -264,3 +371,34 @@ async def test_cancellation_is_not_swallowed_as_a_transport_blip() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_a_credential_renewal_mid_wait_moves_the_consumer_to_the_successor() -> None:
+    """a renewal retires the connection the waiter's consumer was made on; the answer is still collected.
+
+    the replacement is made on whichever connection is current when it is made -- the successor --
+    and reads the stream from the start, so an answer published while the move happened is there.
+    """
+    from nats.errors import ConnectionClosedError
+
+    answer = _Msg(b"the answer")
+    replaced = _Raw([_Sub([None, ConnectionClosedError()])])
+    successor = _Raw([_Sub([answer])])
+    current = {"connection": replaced}
+    js = _Js()
+    waiter = JetStreamResultWaiter(
+        connection=lambda: current["connection"],
+        jetstream=lambda: js,
+        subject=_SUBJECT,
+        stream=_STREAM,
+        inactive_threshold_seconds=600.0,
+        poll_seconds=0.01,
+        heartbeat_seconds=60.0,
+    )
+    await waiter.open()
+    current["connection"] = successor  # the renewal: the client's connection is now the successor
+
+    assert await waiter.wait(timeout=timedelta(seconds=2)) == b"the answer"
+    assert answer.acked
+    assert len(successor.subscribed) == 1
+    assert len(js.creates) == 2

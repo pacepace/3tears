@@ -21,7 +21,10 @@ What this pins:
 - a stored order ahead of anything the bucket can write is refused loudly, not dropped silently;
 - the write buffer keeps the newer of two orders for one row, whichever arrived last;
 - a read that seeds L2 from L3 never replaces a value a compare-and-swap put there meanwhile;
-- a write that did not win a compare-and-swap stores no order.
+- a write that did not win a compare-and-swap stores no order;
+- a winner whose persist answers after a later swap -- this replica's own, or a peer's whose
+  broadcast already evicted this L1 -- leaves no older row cached in L1, while an uncontended
+  winner still serves its own write from L1.
 """
 
 from __future__ import annotations
@@ -84,11 +87,18 @@ class _Store:
         self.rows: dict[str, dict[str, Any]] = {}
         self.held = asyncio.Event()
         self._write_holds: list[asyncio.Event] = []
+        self._ack_holds: list[asyncio.Event] = []
         self._fetch_holds: list[asyncio.Event] = []
 
     def hold_next_write(self) -> asyncio.Event:
         release = asyncio.Event()
         self._write_holds.append(release)
+        return release
+
+    def hold_next_write_ack(self) -> asyncio.Event:
+        """land the next write at once, then hold its answer: a commit whose response is in flight."""
+        release = asyncio.Event()
+        self._ack_holds.append(release)
         return release
 
     def hold_next_fetch(self) -> asyncio.Event:
@@ -124,6 +134,7 @@ class _Store:
         if stored_order is not None and stored_order >= incoming:
             return 0
         self.rows[str(data["id"])] = dict(data)
+        await self._pass(self._ack_holds)
         return 1
 
 
@@ -472,3 +483,73 @@ class TestOnlyASwapStoresAnOrder:
         copied = with_l2_order({"id": _ID, "members": '["x"]'}, L2Order(datetime(2026, 9, 26, tzinfo=UTC), 9))
         await coll.save_entity(coll.create(copied))
         assert l2_order_of(store.rows[_ID]) is None, "a write that won no swap stored an order it copied"
+
+
+class _BroadcastingNats(_Nats):
+    """the shared bucket, and the invalidation broadcast delivered to every listening replica."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._subscribers: list[tuple[Any, Any]] = []
+
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+        for cb, message_type in list(self._subscribers):
+            await cb(message_type.model_validate_json(message.model_dump_json()))
+
+    async def subscribe_typed(self, *, subject: Any, cb: Any, message_type: Any, **_: Any) -> object:
+        self._subscribers.append((cb, message_type))
+        return object()
+
+
+class TestASwapAnsweredLateLeavesNoOlderRowInL1:
+    """a winner whose persist answers after a later swap must not cache its row over the later one.
+
+    The L1 write follows the L3 persist, and the persist is a round trip. A later swap -- this
+    replica's own, or a peer's whose broadcast evicts this replica's L1 -- can complete inside that
+    round trip. Caching the earlier winner's row after it leaves L1 behind L2 with nothing left to
+    evict it: every read on this replica is served the older value.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_superseded_winner_on_the_same_replica_leaves_the_later_row_served(self) -> None:
+        nats, store = _Nats(), _Store()
+        coll, _ = _replica(_Synchronous, nats, store)
+        await _reverse_delivery(coll, coll, store, _add("x"), _add("y"))
+        served = await coll.get(_ID)
+        assert served is not None
+        assert _members(served.to_dict()) == ["x", "y"], "the earlier winner cached its row over the later one"
+
+    @pytest.mark.asyncio
+    async def test_a_winner_whose_commit_answers_late_leaves_the_later_row_served(self) -> None:
+        nats, store = _Nats(), _Store()
+        coll, _ = _replica(_Synchronous, nats, store)
+        release = store.hold_next_write_ack()
+        store.held.clear()
+        held = asyncio.create_task(coll.l2_cas_mutate(_ID, _add("x")))
+        await store.held.wait()  # "x" is committed in L3; its answer is in flight
+        await coll.l2_cas_mutate(_ID, _add("y"))
+        release.set()
+        await held
+        assert _members(store.rows[_ID]) == ["x", "y"]
+        served = await coll.get(_ID)
+        assert served is not None
+        assert _members(served.to_dict()) == ["x", "y"], "the earlier winner cached its row over the later one"
+
+    @pytest.mark.asyncio
+    async def test_a_peers_later_swap_is_not_undone_by_this_replicas_late_answer(self) -> None:
+        nats, store = _BroadcastingNats(), _Store()
+        slow, slow_registry = _replica(_Synchronous, nats, store)
+        peer, peer_registry = _replica(_Synchronous, nats, store)
+        await slow_registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+        await peer_registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+        await _reverse_delivery(slow, peer, store, _add("x"), _add("y"))
+        served = await slow.get(_ID)
+        assert served is not None
+        assert _members(served.to_dict()) == ["x", "y"], "a late answer cached a row the peer's broadcast retracted"
+
+    @pytest.mark.asyncio
+    async def test_the_newest_winner_still_serves_its_own_write_from_l1(self) -> None:
+        nats, store = _Nats(), _Store()
+        coll, _ = _replica(_Synchronous, nats, store)
+        await coll.l2_cas_mutate(_ID, _add("x"))
+        assert coll.exists_in_cache_sync(_ID), "an uncontended winner no longer caches its own row"

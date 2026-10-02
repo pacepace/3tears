@@ -1218,14 +1218,21 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         when the grant was already present, instead of treating every re-check as
         a fresh materialization.
 
-        the underlying ``role_assignments`` table does NOT carry a
-        unique constraint over the lookup tuple (only ``id`` is PK)
-        so this method does a SELECT-then-INSERT under a single
-        round-trip pattern rather than ``ON CONFLICT (...) DO
-        UPDATE``. a concurrent inserter can race; the worst case is
-        two physical rows for the same logical grant, which the
-        evaluator treats as a no-op duplicate. callers serialize
-        admin-path writes themselves so the race is theoretical.
+        **Concurrency.** The lookup and the insert are two statements, and
+        the race between them is not theoretical: every hub replica runs
+        this at the same moment for the same tool manifest, and on the aibots
+        hub that left grants held twice (cobalt-dev, 2026-09-30). This
+        package declares no table, so it cannot put a unique index under the
+        natural key itself; the deploying application declares one (the
+        aibots hub's v121: ``(group_id, role_id, scope_namespace_id,
+        managed_by)`` for namespace scope, ``(group_id, role_id,
+        managed_by)`` for ``all``). Given that index, this method is
+        race-safe: the INSERT is ``ON CONFLICT DO NOTHING``, so the loser's
+        insert is absorbed, and the loser reads the row that won -- by the
+        natural key in EITHER partition, oldest first -- and answers
+        ``created=False``. Without such an index nothing is absorbed and two
+        racing callers can both insert, which the evaluator reads as one
+        grant; declare the index.
 
         the ``scope_type`` argument maps to :class:`ScopeType`:
 
@@ -1257,7 +1264,9 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         :rtype: tuple[UUID, bool]
         :raises ValueError: if ``scope_type`` is unsupported or
             ``scope_id`` shape mismatches the scope
-        :raises RuntimeError: if no L3 pool is bound
+        :raises RuntimeError: if no L3 pool is bound, or an insert was absorbed by a
+            unique index while no row holds the natural key (a unique index this
+            method does not know, conflicting on something other than the grant)
         """
         if scope_type not in ("namespace", "all"):
             raise ValueError(
@@ -1302,7 +1311,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         else:
             new_id = uuid7()
             now = datetime.now(UTC)
-            await self.l3_pool.execute(
+            inserted = await self.l3_pool.fetchval(
                 """
                 INSERT INTO role_assignments (
                     row_scope, assignment_id, role_id, group_id, scope_type,
@@ -1312,6 +1321,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, $8
                 )
+                ON CONFLICT DO NOTHING
+                RETURNING assignment_id
                 """,
                 row_scope,
                 new_id,
@@ -1322,8 +1333,48 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 now,
                 managed_by,
             )
-            result = new_id
-            created = True
+            if inserted is not None:
+                result = inserted
+                created = True
+            else:
+                # a concurrent ensure inserted the same grant between the lookup and
+                # this insert, and the deploying app's natural-key index absorbed ours
+                winner = await self.l3_pool.fetchval(
+                    """
+                    SELECT assignment_id FROM role_assignments
+                     WHERE group_id = $1
+                       AND role_id = $2
+                       AND scope_type = $3
+                       AND scope_namespace_id IS NOT DISTINCT FROM $4
+                       AND managed_by = $5
+                     ORDER BY date_granted ASC, assignment_id ASC
+                     LIMIT 1
+                    """,
+                    group_id,
+                    role_id,
+                    scope_type,
+                    scope_id,
+                    managed_by,
+                )
+                if winner is None:
+                    raise RuntimeError(
+                        f"role assignment ({group_id}, {role_id}, {scope_type}, {scope_id}, {managed_by}) was "
+                        "not inserted: a unique index absorbed it, yet no row holds that grant; the conflict "
+                        "is on something other than the grant's natural key"
+                    )
+                log.info(
+                    "role assignment ensure lost a concurrent insert of the same grant; answering the row that won",
+                    extra={
+                        "extra_data": {
+                            "group_id": f"{group_id}",
+                            "role_id": f"{role_id}",
+                            "scope_type": scope_type,
+                            "assignment_id": f"{winner}",
+                        }
+                    },
+                )
+                result = winner
+                created = False
         return result, created
 
     async def delete_by_group_and_scope(

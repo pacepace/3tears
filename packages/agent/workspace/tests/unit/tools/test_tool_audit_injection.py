@@ -40,13 +40,13 @@ from threetears.agent.workspace.tools.workspace_create import WorkspaceCreateToo
 from threetears.agent.workspace.tools.workspace_delete import WorkspaceDeleteTool
 from threetears.agent.workspace.tools.workspace_reset import WorkspaceResetTool
 from threetears.agent.workspace.tools.workspace_rollback import WorkspaceRollbackTool
-from packages.agent.workspace.tests._helpers.asyncpg_shims import (
+from packages.agent.workspace.tests.helpers.asyncpg_shims import (
     FakeAsyncpgAcquireCM,
     FakeAsyncpgConnection,
     FakeAsyncpgPool,
     FakeAsyncpgTransaction,
 )
-from packages.agent.workspace.tests._helpers.workspace_shims import (
+from packages.agent.workspace.tests.helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,
@@ -635,10 +635,10 @@ async def test_workspace_rollback_publishes_single_audit_event(
     ws = _FakeWorkspaceEntity(id=ws_id, name="ws", current_version=5)
     nats = _FakeNats()
 
-    # pool where _resolve_ref sees no matching row -> rollback becomes
+    # pool where resolve_ref sees no matching row -> rollback becomes
     # a no-op on file writes; the single summary audit event still fires
     pool = _FakePool()
-    pool.conn.head_row = None  # _resolve_ref returns None -> skip
+    pool.conn.head_row = None  # resolve_ref returns None -> skip
     tool = WorkspaceRollbackTool(
         workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
         workspace_file_collection=_FakeFileCollection(

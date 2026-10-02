@@ -40,21 +40,44 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from dataclasses import dataclass
 from typing import Final, Literal
 from uuid import UUID
 
+from threetears.nats.credential_refusal import CREDENTIAL_REFUSAL_SUBJECT_TOKEN
+from threetears.nats.renewal_request import CREDENTIAL_RENEWAL_SUBJECT_TOKEN
 from threetears.nats.errors import NamespaceNotConfiguredError
 
 __all__ = [
+    "DEAD_LETTER_ORIGINAL_SUBJECT_HEADER",
+    "TOOL_POD_AUDIT_TOKEN",
     "PipeDirection",
     "Subject",
     "SubjectKind",
     "Subjects",
     "get_default_namespace",
+    "parse_tool_pod_audit_subject",
     "sanitize_subject_segment",
     "set_default_namespace",
 ]
+
+#: the header a durable consumer's dead letter carries naming the subject the message ARRIVED ON.
+#: A dead letter is republished on one fixed subject, so without this the original subject -- the
+#: part the broker authorised, and the only part a consumer can hold a payload's claims to -- is
+#: gone. Written by the consumer wrapper from the delivered message, never from the payload, so it
+#: is as trustworthy as the dead-letter subject's own publish grant.
+DEAD_LETTER_ORIGINAL_SUBJECT_HEADER: Final[str] = "Threetears-Original-Subject"
+
+#: the token after ``{ns}.audit`` that leads every audit subject a TOOL POD publishes about its
+#: own work: ``{ns}.audit.tool_pod.<tool_pods.id>.<event_type>``. The hub records its own
+#: ``tool_pod.create`` / ``tool_pod.update`` / ``tool_pod.delete`` events under the same token, and
+#: the two never meet: a pod subject's next token is a canonical uuid, which no event verb is.
+TOOL_POD_AUDIT_TOKEN: Final[str] = "tool_pod"
+
+#: the pod token of a tool pod's own audit subject: the canonical uuid, exactly as ``str(UUID)``
+#: renders it, so one pod has one spelling and the grant and the subject cannot disagree.
+_POD_ID_TOKEN: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 PipeDirection = Literal["up", "down"]
@@ -117,9 +140,10 @@ def _reset_default_namespace() -> None:
 
     test-isolation helper. the module global carries process-wide, so -- unlike
     the retired ContextVar, which reset itself as each test's task context went
-    out of scope -- it does NOT clear between tests on its own. autouse fixtures
-    call this to restore the unconfigured state so one test cannot leak a
-    namespace into the next.
+    out of scope -- it does NOT clear between tests on its own. host test suites
+    reach it through :func:`threetears.nats.testing.reset_default_namespace`,
+    from autouse fixtures, to restore the unconfigured state so one test cannot
+    leak a namespace into the next.
 
     :return: nothing
     :rtype: None
@@ -289,6 +313,30 @@ class Subject:
         if not full_subject:
             raise ValueError("full_subject must be non-empty")
         return cls(path=full_subject, kind=kind)
+
+
+def parse_tool_pod_audit_subject(subject: str, *, namespace: str) -> tuple[UUID, str] | None:
+    """read the publishing pod and the event type off a tool pod's own audit subject.
+
+    The inverse of :meth:`Subjects.tool_pod_audit_event`. Anything else -- another namespace, another
+    audit family, a pod token that is not a canonical uuid, or no event type after it --
+    answers ``None``, so a caller can tell "a tool pod published this" from every other subject.
+
+    :param subject: the concrete subject a message arrived on
+    :ptype subject: str
+    :param namespace: the subject namespace the caller consumes under
+    :ptype namespace: str
+    :return: ``(pod_id, event_type)``, or ``None`` when ``subject`` is not a tool pod's own audit
+        subject
+    :rtype: tuple[UUID, str] | None
+    """
+    prefix = f"{namespace}.audit.{TOOL_POD_AUDIT_TOKEN}."
+    result: tuple[UUID, str] | None = None
+    if subject.startswith(prefix):
+        pod_token, _, event_type = subject.removeprefix(prefix).partition(".")
+        if _POD_ID_TOKEN.fullmatch(pod_token) and event_type:
+            result = (UUID(pod_token), event_type)
+    return result
 
 
 def _ns() -> str:
@@ -1291,11 +1339,15 @@ class Subjects:
     # ------------------------------------------------------------------
 
     @classmethod
-    def audit_event(cls, event_type: str) -> Subject:
+    def audit_event(cls, event_type: str, *, namespace: str | None = None) -> Subject:
         """publish subject for one audit event.
 
         :param event_type: dotted event type (e.g. ``workspace.doc_set``)
         :ptype event_type: str
+        :param namespace: the subject namespace; the bound default when omitted. explicit for a
+            publisher or consumer that routes audit on a per-call namespace, as ``publish_audit``
+            and the hub's collector do
+        :ptype namespace: str | None
         :return: subject ``{ns}.audit.{event_type}`` (event_type passed through verbatim — its dots are part of the addressable subject hierarchy)
         :rtype: Subject
         :raises ValueError: if event_type is empty
@@ -1305,7 +1357,8 @@ class Subjects:
         # NOTE: event_type intentionally NOT sanitized — its dots are
         # the namespace separators audit consumers subscribe against
         # (e.g. wildcard `3tears.audit.workspace.>` for workspace events).
-        return Subject(path=f"{_ns()}.audit.{event_type}", kind="point")
+        ns = namespace if namespace is not None else _ns()
+        return Subject(path=f"{ns}.audit.{event_type}", kind="point")
 
     @classmethod
     def audit_wildcard(cls, *, area: str | None = None) -> Subject:
@@ -1324,7 +1377,86 @@ class Subjects:
         return result
 
     @classmethod
-    def audit_deadletter(cls) -> Subject:
+    def credential_refusal(cls, inbox_prefix: str) -> Subject:
+        """the subject a principal is told on that the auth-callout refused its credential on purpose.
+
+        Under the principal's own inbox prefix, which its grant always admits, and which no other
+        principal may subscribe. Not namespaced: inboxes are not. See
+        :mod:`threetears.nats.credential_refusal`.
+
+        :param inbox_prefix: the principal's inbox prefix (:func:`threetears.nats.inbox_prefix_for`)
+        :ptype inbox_prefix: str
+        :return: subject ``{inbox_prefix}.credential-refused``
+        :rtype: Subject
+        :raises ValueError: if ``inbox_prefix`` is empty or carries a wildcard
+        """
+        if not inbox_prefix or any(char in inbox_prefix for char in "*> "):
+            raise ValueError(f"credential_refusal needs a literal inbox prefix, got {inbox_prefix!r}")
+        return Subject(path=f"{inbox_prefix}.{CREDENTIAL_REFUSAL_SUBJECT_TOKEN}", kind="point")
+
+    @classmethod
+    def credential_renewal_request(cls, inbox_prefix: str) -> Subject:
+        """the subject a principal is asked on to renew its credential now.
+
+        Under the principal's own inbox prefix, like :meth:`credential_refusal`. Not namespaced:
+        inboxes are not. See :mod:`threetears.nats.renewal_request`.
+
+        :param inbox_prefix: the principal's inbox prefix (:func:`threetears.nats.inbox_prefix_for`)
+        :ptype inbox_prefix: str
+        :return: subject ``{inbox_prefix}.credential-renew``
+        :rtype: Subject
+        :raises ValueError: if ``inbox_prefix`` is empty or carries a wildcard
+        """
+        if not inbox_prefix or any(char in inbox_prefix for char in "*> "):
+            raise ValueError(f"credential_renewal_request needs a literal inbox prefix, got {inbox_prefix!r}")
+        return Subject(path=f"{inbox_prefix}.{CREDENTIAL_RENEWAL_SUBJECT_TOKEN}", kind="point")
+
+    @classmethod
+    def tool_pod_audit_event(cls, pod_id: str | UUID, event_type: str, *, namespace: str | None = None) -> Subject:
+        """publish subject for one audit event a tool pod records about its OWN work.
+
+        The pod's id rides in the subject in canonical uuid form, so the broker -- which
+        grants each tool pod only its own :meth:`tool_pod_audit_wildcard` -- is what vouches for
+        the publisher, and the hub's collector reads the actor off the subject rather than off the
+        envelope. The event type keeps its dots, as in :meth:`audit_event`.
+
+        :param pod_id: the publishing tool pod's ``tool_pods.id``
+        :ptype pod_id: str | UUID
+        :param event_type: dotted event type (e.g. ``collector.promoted``)
+        :ptype event_type: str
+        :param namespace: the subject namespace; the bound default when omitted. explicit for a
+            publisher that routes audit on a per-call namespace, as ``publish_audit`` does
+        :ptype namespace: str | None
+        :return: subject ``{ns}.audit.tool_pod.{pod_id}.{event_type}``
+        :rtype: Subject
+        :raises ValueError: if ``pod_id`` is not a uuid or ``event_type`` is empty
+        """
+        if not event_type:
+            raise ValueError("event_type must be non-empty")
+        prefix = cls.tool_pod_audit_wildcard(pod_id, namespace=namespace).path.removesuffix(">")
+        return Subject(path=f"{prefix}{event_type}", kind="point")
+
+    @classmethod
+    def tool_pod_audit_wildcard(cls, pod_id: str | UUID, *, namespace: str | None = None) -> Subject:
+        """every audit subject ONE tool pod may publish about its own work.
+
+        :param pod_id: the tool pod's ``tool_pods.id``
+        :ptype pod_id: str | UUID
+        :param namespace: the subject namespace; the bound default when omitted
+        :ptype namespace: str | None
+        :return: subject ``{ns}.audit.tool_pod.{pod_id}.>``
+        :rtype: Subject
+        :raises ValueError: if ``pod_id`` is not a uuid -- a token rendered from anything else is
+            not provably one pod's
+        """
+        # convert at border: the pod id becomes one subject token, canonicalised first so a pod
+        # given in upper case or without hyphens still names its one granted subtree
+        pod_token = str(pod_id if isinstance(pod_id, UUID) else UUID(str(pod_id)))
+        ns = namespace if namespace is not None else _ns()
+        return Subject(path=f"{ns}.audit.{TOOL_POD_AUDIT_TOKEN}.{pod_token}.>", kind="pattern")
+
+    @classmethod
+    def audit_deadletter(cls, *, namespace: str | None = None) -> Subject:
         """dead-letter subject for audit envelopes the consumer exhausted.
 
         an audit envelope that stays un-persistable after the durable
@@ -1334,10 +1466,13 @@ class Subjects:
         in the ``{ns}-audit`` stream (which is declared over this subject too)
         with no consumer draining it: inspectable, not lost, not looping.
 
+        :param namespace: the subject namespace; the bound default when omitted
+        :ptype namespace: str | None
         :return: subject ``{ns}.audit-deadletter``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.audit-deadletter", kind="point")
+        ns = namespace if namespace is not None else _ns()
+        return Subject(path=f"{ns}.audit-deadletter", kind="point")
 
     # ------------------------------------------------------------------
     # workspaces

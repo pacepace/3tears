@@ -228,17 +228,43 @@ class TestListSkillEligibleToolNamespaces:
         assert [e.id for e in result] == [permitted_row["namespace_id"]]
 
 
-class TestPrivateFilteredHelperRejectsUnknownColumn:
-    """defense in depth: the f-string interpolation accepts only the
-    whitelisted column names; anything else raises ``ValueError``."""
+class TestNoCallerInputReachesTheEligibilitySql:
+    """defense in depth: the eligibility column is interpolated into the SQL text, so the text
+    each public query issues must be one fixed statement per column, carrying nothing the caller
+    supplied and naming only its own whitelisted column."""
+
+    @staticmethod
+    async def _issued_sql(method_name: str) -> list[str]:
+        """the SQL one public eligibility query issues for two different actors.
+
+        :param method_name: the public query to drive
+        :ptype method_name: str
+        :return: the statement text of each of the two fetches
+        :rtype: list[str]
+        """
+        pool = AsyncMock()
+        pool.fetch.return_value = []
+        coll = _make_collection(NamespaceCollection, l3_pool=pool)
+        query = getattr(coll, method_name)
+        with patch(
+            "threetears.agent.acl.evaluator.evaluate_decision",
+            new=AsyncMock(return_value=True),
+        ):
+            for _ in range(2):
+                await query(actor_user_id=uuid7(), actor_agent_id=uuid7(), cache=MagicMock())
+        return [call.args[0] for call in pool.fetch.await_args_list]
 
     @pytest.mark.asyncio
-    async def test_unknown_filter_column_raises(self) -> None:
-        coll = _make_collection(NamespaceCollection, l3_pool=AsyncMock())
-        with pytest.raises(ValueError):
-            await coll._list_tool_namespaces_filtered(  # noqa: SLF001
-                actor_user_id=uuid7(),
-                actor_agent_id=uuid7(),
-                cache=MagicMock(),
-                filter_column="DROP TABLE",
-            )
+    async def test_each_query_issues_one_fixed_statement_naming_only_its_column(self) -> None:
+        tool_sql = await self._issued_sql("list_tool_namespaces_for_actor")
+        skill_sql = await self._issued_sql("list_skill_eligible_tool_namespaces")
+
+        assert len(tool_sql) == 2
+        assert len(skill_sql) == 2
+        # identical for two different actors: nothing about the caller reaches the text.
+        assert tool_sql[0] == tool_sql[1]
+        assert skill_sql[0] == skill_sql[1]
+        # the two statements differ in the eligibility column and nothing else.
+        assert tool_sql[0].replace("tool_eligible", "skill_eligible") == skill_sql[0]
+        assert "skill_eligible" not in tool_sql[0]
+        assert "tool_eligible" not in skill_sql[0]

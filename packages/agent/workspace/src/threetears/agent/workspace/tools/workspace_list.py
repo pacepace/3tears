@@ -59,7 +59,7 @@ class WorkspaceListTool(TearsTool):
     first. the ``name`` is the canonical namespace name
     (``workspace.<uuid>``) so subsequent tool calls can either quote the
     raw form or extract the uuid suffix and pass it as the workspace
-    argument; tools accept either via :func:`_resolve_workspace`.
+    argument; tools accept either via :func:`resolve_workspace`.
     """
 
     def __init__(

@@ -32,7 +32,7 @@ from uuid import uuid7
 
 import pytest
 
-from threetears.datasources.drivers._util import _translate_placeholders
+from threetears.datasources.drivers.sql_fragments import translate_placeholders
 from threetears.datasources.query_client import (
     DatasourceQueryResult,
     IncompleteReadError,
@@ -524,7 +524,7 @@ class TestThePredicateIsPortableAndBound:
     async def test_the_predicate_survives_translation_for_every_driver_style(self) -> None:
         """The property the emitted spelling exists to satisfy, asserted instead of the spelling.
 
-        Every driver normalises placeholders through `_translate_placeholders`, which knows
+        Every driver normalises placeholders through `translate_placeholders`, which knows
         ``$N`` and nothing else. This suite's warehouse records SQL rather than executing it, so
         a predicate the drivers cannot translate looks identical here to one they can -- which
         is how a `?` predicate passed for as long as it did, with a test asserting the very
@@ -540,7 +540,7 @@ class TestThePredicateIsPortableAndBound:
         predicate = warehouse.pages[1]
         expected = len(warehouse.page_params[1])
         for style, marker in (("pyformat", "%s"), ("numeric", ":"), ("named-at", "@p")):
-            translated = _translate_placeholders(predicate, style)
+            translated = translate_placeholders(predicate, style)
             assert "$" not in translated, f"{style} left an untranslated placeholder: {translated}"
             assert translated.count(marker) == expected, (
                 f"{style} produced {translated.count(marker)} placeholders for {expected} parameters"
@@ -608,12 +608,18 @@ class TestArgumentsThatCannotDescribeACompleteRead:
         :rtype: None
         """
         import inspect
-
-        from threetears.datasources.query_client import _HUB_ROW_CAP
+        import re
 
         default = inspect.signature(read_all).parameters["page_size"].default
+        # the cap as the refusal states it to a caller, read from the front door.
+        with pytest.raises(ValueError) as excinfo:
+            await _read(_PagingWarehouse([]), page_size=10**9)
+        stated = re.search(r"row cap of (\d+)", str(excinfo.value))
+        assert stated is not None, str(excinfo.value)
 
-        assert default + 1 <= _HUB_ROW_CAP
+        assert default + 1 <= int(stated.group(1))
+        # and a read on the default is admitted, and reads the relation.
+        assert len(await _read(_PagingWarehouse([_row("s00", "2026-01")]))) == 1
 
     @pytest.mark.asyncio
     async def test_a_runaway_read_is_bounded(self) -> None:

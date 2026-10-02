@@ -35,10 +35,13 @@ import asyncio
 import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Final
 
-from threetears.core.serialization import deserialize_from_json, serialize_to_json
+from threetears.core.serialization import deserialize_from_json, json_datetime, serialize_to_json
 from threetears.observe import get_logger
+
+from threetears.core.coordination._owner_scope import owner_scoped_key, validated_key_scope
 
 if TYPE_CHECKING:
     # From the submodule, not the package: these three are Protocols that
@@ -78,6 +81,15 @@ _CAS_MAX_RETRIES: Final[int] = 30
 
 #: full-jitter backoff bound between CAS retries, seconds.
 _CAS_RETRY_BACKOFF_SECONDS: Final[float] = 0.02
+
+
+def _utc_now() -> datetime:
+    """the wall clock, timezone-aware UTC: :class:`TokenBucket`'s default clock.
+
+    :return: the current instant
+    :rtype: datetime
+    """
+    return datetime.now(UTC)
 
 
 class TokenBucketConflict(RuntimeError):
@@ -136,10 +148,12 @@ def _encode_state(tokens: float, last_refill: datetime) -> bytes:
     :ptype tokens: float
     :param last_refill: timezone-aware datetime this token count is as-of
     :ptype last_refill: datetime
-    :return: JSON-encoded bytes suitable for a KV value
+    :return: JSON-encoded bytes suitable for a KV value, the instant in
+        :func:`~threetears.core.serialization.json_datetime`'s one stored form
     :rtype: bytes
+    :raises ValueError: if ``last_refill`` is naive (a naive ``clock``)
     """
-    payload: dict[str, Any] = {"tokens": tokens, "last_refill": last_refill.isoformat()}
+    payload: dict[str, Any] = {"tokens": tokens, "last_refill": json_datetime(last_refill, field="last_refill")}
     return serialize_to_json(payload)
 
 
@@ -185,6 +199,10 @@ class TokenBucket:
         refill_rate: float,
         capacity: float,
         kv_ttl: timedelta | None = _DEFAULT_KV_TTL,
+        create_if_missing: bool = True,
+        clock: Callable[[], datetime] = _utc_now,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        key_scope: str | None = None,
     ) -> None:
         """configure the bucket; defer KV bucket binding until first use.
 
@@ -209,10 +227,34 @@ class TokenBucket:
             unbounded (e.g. per-user keys), since an abandoned key then
             lingers in the KV bucket forever
         :ptype kv_ttl: timedelta | None
+        :param create_if_missing: ``True`` (the default) DECLARES the KV bucket, creating it
+            when absent; ``False`` only BINDS a bucket another identity declared, and never
+            issues STREAM.CREATE -- for a process whose grant on the bucket is key-addressed
+            only, where a refused create would cost the full JetStream deadline first
+        :ptype create_if_missing: bool
+        :param clock: timezone-aware UTC wall clock every refill and deadline is read from.
+            A wall clock, not a monotonic one: the refill instant is stored in the shared KV
+            value and read by every pod, so it must be a time every pod agrees on. Injectable
+            so a test can drive time rather than wait for it
+        :ptype clock: Callable[[], datetime]
+        :param sleep: how a blocking claim, and a retry after a lost compare-and-swap, waits.
+            ``asyncio.sleep`` by default; a replacement must yield to the loop rather than
+            block it. Injected alongside ``clock``: a test that drives the clock must also own
+            the sleeping, or a blocking claim would sleep in real time against a clock that
+            never moves
+        :ptype sleep: Callable[[float], Awaitable[None]]
+        :param key_scope: the owner scope every bucket-state key leads with (``{key_scope}.{key}``),
+            for a KV bucket SHARED by many owners -- the platform's ``ratelimits``, which every agent
+            pod binds and in which each pod is granted only the keys under its own
+            :func:`~threetears.nats.subject_permissions.kv_key_scope_for` scope. ``None`` keys by the
+            caller's key alone, for a bucket this limiter's owner has to itself
+        :ptype key_scope: str | None
         :return: none
         :rtype: None
-        :raises ValueError: if refill_rate or capacity is not positive
+        :raises ValueError: if refill_rate or capacity is not positive, or ``key_scope`` is not one
+            literal subject token
         """
+        self._key_scope = validated_key_scope(key_scope, primitive="TokenBucket")
         if refill_rate <= 0:
             raise ValueError(f"refill_rate must be positive, got {refill_rate}")
         if capacity <= 0:
@@ -222,6 +264,9 @@ class TokenBucket:
         self._refill_rate = refill_rate
         self._capacity = capacity
         self._kv_ttl = kv_ttl
+        self._create_if_missing = create_if_missing
+        self._clock = clock
+        self._sleep = sleep
         self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -270,17 +315,18 @@ class TokenBucket:
         if tokens > self._capacity:
             raise ValueError(f"cannot claim {tokens} tokens: exceeds bucket capacity {self._capacity}")
         bucket = await self._ensure_bucket()
-        deadline = datetime.now(UTC) + timedelta(seconds=max_wait_seconds) if max_wait_seconds > 0 else None
+        stored = owner_scoped_key(self._key_scope, key)
+        deadline = self._clock() + timedelta(seconds=max_wait_seconds) if max_wait_seconds > 0 else None
         while True:
-            result = await self._attempt(bucket, key, tokens)
+            result = await self._attempt(bucket, stored, tokens)
             if result.claimed:
                 return result
             if deadline is None:
                 return result
-            remaining = (deadline - datetime.now(UTC)).total_seconds()
+            remaining = (deadline - self._clock()).total_seconds()
             if remaining <= 0:
                 return result
-            await asyncio.sleep(max(0.0, min(result.retry_after_seconds, remaining)))
+            await self._sleep(max(0.0, min(result.retry_after_seconds, remaining)))
 
     async def refund(self, key: str = "default", *, tokens: float = 1.0) -> float:
         """Put back tokens claimed for work that never happened. Returns the resulting count.
@@ -314,9 +360,10 @@ class TokenBucket:
             return -1.0
         try:
             bucket = await self._ensure_bucket()
+            stored = owner_scoped_key(self._key_scope, key)
             for attempt in range(_CAS_MAX_RETRIES):
-                now = datetime.now(UTC)
-                entry = await bucket.get_entry(key=key)
+                now = self._clock()
+                entry = await bucket.get_entry(key=stored)
                 if entry is None:
                     # No key means nothing was ever consumed from it; a refund would be
                     # inventing budget rather than returning it.
@@ -326,11 +373,11 @@ class TokenBucket:
                 elapsed = max(0.0, (now - state.last_refill).total_seconds())
                 current = min(self._capacity, state.tokens + elapsed * self._refill_rate)
                 restored = min(self._capacity, current + tokens)
-                if await bucket.update(key=key, value=_encode_state(restored, now), revision=revision) is not None:
+                if await bucket.update(key=stored, value=_encode_state(restored, now), revision=revision) is not None:
                     return restored
                 if attempt < _CAS_MAX_RETRIES - 1:
                     backoff = random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS)  # noqa: S311 - jitter, not security
-                    await asyncio.sleep(backoff)
+                    await self._sleep(backoff)
             log.warning("token bucket: exhausted CAS retries refunding %s tokens to %r", tokens, key)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a refund runs while the caller is already unwinding; raising would turn a self-healing throughput dip into a lost error. Logged with its traceback below
             log.exception("token bucket: could not refund %s tokens to %r; it will refill instead", tokens, key)
@@ -356,7 +403,7 @@ class TokenBucket:
         :raises TokenBucketConflict: if the CAS retry budget is exhausted
         """
         for attempt in range(_CAS_MAX_RETRIES):
-            now = datetime.now(UTC)
+            now = self._clock()
             entry = await bucket.get_entry(key=key)
             if entry is None:
                 current_tokens = self._capacity
@@ -388,7 +435,7 @@ class TokenBucket:
                 return TokenClaimResult(claimed=True, tokens_remaining=new_tokens, retry_after_seconds=0.0)
             if attempt < _CAS_MAX_RETRIES - 1:
                 backoff = random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS)  # noqa: S311 - jitter, not security
-                await asyncio.sleep(backoff)
+                await self._sleep(backoff)
         raise TokenBucketConflict(f"exhausted {_CAS_MAX_RETRIES} CAS retries claiming from bucket {key!r}")
 
     async def _ensure_bucket(self) -> "KvBucketLike":
@@ -401,8 +448,12 @@ class TokenBucket:
                     name=self._bucket_name,
                     ttl=self._kv_ttl,
                     storage="memory",
-                    create_if_missing=True,
+                    create_if_missing=self._create_if_missing,
                     history=1,
                 )
-                log.info("TokenBucket bound bucket %s", self._bucket_name)
+                log.info(
+                    "TokenBucket bound bucket %s (create_if_missing=%s)",
+                    self._bucket_name,
+                    self._create_if_missing,
+                )
         return self._bucket

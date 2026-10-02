@@ -2,164 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Any
-from uuid import UUID, uuid4
+import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 import threetears.agent.workspace.tools  # noqa: F401  -- registers builders
-from threetears.agent.acl import (
-    AclCache,
-    GroupMembership,
-    Namespace,
-    Role,
-    RoleAssignment,
-)
 from threetears.agent.tools.base_tool import TearsTool
-from threetears.agent.workspace.factory import _TOOL_BUILDERS, build_workspace_tools
-from packages.agent.workspace.tests._helpers.asyncpg_shims import FakeAsyncpgPool
-from packages.agent.workspace.tests._helpers.workspace_shims import (
-    FakeWorkspaceContext,
-    FakeWorkspaceSandbox,
-)
+from threetears.agent.workspace.factory import build_workspace_tools
+from packages.agent.workspace.tests.helpers.factory_deps import minimal_tool_deps
 
-
-# parity-exempt: workspace-collection subset for the workspace tools factory test; the test exercises factory wiring only and does not call collection methods directly
-class _FakeCollection:
-    """minimal collection stub satisfying the WorkspaceListTool/UseTool deps."""
-
-    async def find_by_agent(self, agent_id: Any) -> list[Any]:
-        return []
-
-    async def find_by_agent_and_name(self, agent_id: Any, name: str) -> Any:
-        return None
-
-    async def find_by_workspace(self, workspace_id: Any) -> list[Any]:
-        return []
-
-
-class _FakeContext(FakeWorkspaceContext):
-    """sentinel context object returned by the provider closure."""
-
-
-class _FakeSandbox(FakeWorkspaceSandbox):
-    """sandbox stub for tools that accept it but never invoke it in build."""
-
-
-class _FakePool(FakeAsyncpgPool):
-    """asyncpg pool stub for tools that accept it but never invoke it in build."""
-
-
-class _NoopMembershipLoader:
-    """membership loader stub yielding empty memberships."""
-
-    async def load_for_user(
-        self,
-        user_id: UUID,
-    ) -> tuple[GroupMembership, ...]:
-        del user_id
-        return ()
-
-    async def load_for_agent(
-        self,
-        agent_id: UUID,
-    ) -> tuple[GroupMembership, ...]:
-        del agent_id
-        return ()
-
-    async def load_for_group(self, group_id: UUID) -> tuple[GroupMembership, ...]:
-        """return parent-group memberships -- none; these fixtures use flat groups.
-
-        :param group_id: child group UUID
-        :ptype group_id: UUID
-        :return: empty tuple
-        :rtype: tuple[GroupMembership, ...]
-        """
-        return ()
-
-
-class _NoopGrantLoader:
-    """grant loader stub yielding empty grants."""
-
-    async def load_assignments_for_groups(
-        self,
-        group_ids: tuple[UUID, ...],
-        namespace: Namespace,
-    ) -> tuple[RoleAssignment, ...]:
-        del group_ids, namespace
-        return ()
-
-    async def load_roles(
-        self,
-        role_ids: tuple[UUID, ...],
-    ) -> dict[UUID, Role]:
-        del role_ids
-        return {}
-
-    async def load_groups(
-        self,
-        group_ids: tuple[UUID, ...],
-    ) -> dict[UUID, object]:
-        del group_ids
-        return {}
-
-
-def _make_acl_cache() -> AclCache:
-    """build a real :class:`AclCache` with noop loaders for factory tests."""
-    return AclCache(
-        membership_loader=_NoopMembershipLoader(),
-        grant_loader=_NoopGrantLoader(),
-        ttl_seconds=60,
-    )
-
-
-# parity-exempt: NamespaceCollection subset for the workspace tools factory test exposing only the get_by_name lookup the namespace-emit surface uses
-class _FakeNamespaceCollection:
-    """stub that satisfies the ``namespace_collection`` shape at build time.
-
-    :class:`WorkspaceCreateTool` captures the reference at construction
-    and only dereferences ``entity_class`` / ``save_entity`` inside
-    :meth:`execute`. factory tests never drive a create, so the
-    collection attribute exists purely to keep the constructor happy.
-    """
-
-    async def save_entity(self, entity: Any) -> None:
-        """no-op save placeholder for the factory builder path."""
-        del entity
-
-    class entity_class:  # noqa: N801 -- matches BaseCollection attribute
-        """dummy entity class placeholder for construction tests."""
-
-        def __init__(
-            self,
-            data: Any,
-            *,
-            is_new: bool,
-            collection: Any,
-        ) -> None:
-            """capture kwargs for parity with the real entity signature."""
-            self.data = data
-            self.is_new = is_new
-            self.collection = collection
-
-
-def _minimal_deps() -> dict[str, Any]:
-    """build the minimum deps bundle every workspace tool requires."""
-    return {
-        "acl_cache": _make_acl_cache(),
-        "namespace_collection": _FakeNamespaceCollection(),
-        "workspace_collection": _FakeCollection(),
-        "workspace_file_collection": _FakeCollection(),
-        "workspace_file_version_collection": _FakeCollection(),
-        "sandbox": _FakeSandbox(),
-        "agent_id": uuid4(),
-        "context_provider": lambda: _FakeContext(),
-        "db_pool": _FakePool(),
-    }
+#: the repo root, where ``packages.`` resolves as a namespace package for the subprocess probe.
+_REPO_ROOT = Path(__file__).resolve().parents[6]
 
 
 def test_tool_builders_registry_has_nineteen_after_history_tools() -> None:
-    """importing the tools subpackage must register all nineteen tools.
+    """importing the tools subpackage must register all nineteen tools, each once.
 
     six meta + lifecycle (shards 09+10) plus four fs_* tools (shard 11)
     plus three doc_* tools (shard 12) plus four history tools (shard 13:
@@ -167,12 +27,14 @@ def test_tool_builders_registry_has_nineteen_after_history_tools() -> None:
     live-sync tool that landed alongside bind's watcher, plus the
     flush_to_disk one-shot that projects L3 back onto disk.
     """
-    assert len(_TOOL_BUILDERS) == 19
+    names = [t.mcp_name() for t in build_workspace_tools(**minimal_tool_deps())]
+    assert len(names) == 19
+    assert len(set(names)) == 19
 
 
 def test_build_workspace_tools_returns_nineteen_tools() -> None:
     """build_workspace_tools instantiates every registered builder."""
-    tools = build_workspace_tools(**_minimal_deps())
+    tools = build_workspace_tools(**minimal_tool_deps())
 
     assert len(tools) == 19
     assert all(isinstance(t, TearsTool) for t in tools)
@@ -180,7 +42,7 @@ def test_build_workspace_tools_returns_nineteen_tools() -> None:
 
 def test_build_workspace_tools_includes_each_expected_mcp_name() -> None:
     """built tools include exactly the nineteen expected mcp_name strings."""
-    tools = build_workspace_tools(**_minimal_deps())
+    tools = build_workspace_tools(**minimal_tool_deps())
 
     names = {t.mcp_name() for t in tools}
     assert names == {
@@ -208,8 +70,8 @@ def test_build_workspace_tools_includes_each_expected_mcp_name() -> None:
 
 def test_build_workspace_tools_returns_fresh_instances() -> None:
     """each call returns new instances; tools are not singletons."""
-    first = build_workspace_tools(**_minimal_deps())
-    second = build_workspace_tools(**_minimal_deps())
+    first = build_workspace_tools(**minimal_tool_deps())
+    second = build_workspace_tools(**minimal_tool_deps())
 
     first_ids = {id(t) for t in first}
     second_ids = {id(t) for t in second}
@@ -218,52 +80,77 @@ def test_build_workspace_tools_returns_fresh_instances() -> None:
 
 def test_build_workspace_tools_tolerates_missing_optional_deps() -> None:
     """unused deps default to None so callers can pass only what tools need."""
-    deps = _minimal_deps()
+    deps = minimal_tool_deps()
     tools = build_workspace_tools(**deps)
 
     assert len(tools) == 19
 
 
+#: registers a sentinel builder in a fresh interpreter, builds, and reports what came back. the
+#: registry is process-wide with no way to remove a builder, so the probe runs where adding one
+#: cannot leak into any other test's count.
+_REGISTRATION_PROBE = """
+import json
+from typing import Any
+
+import threetears.agent.workspace.tools  # registers the shipped builders
+from threetears.agent.tools.base_tool import TearsTool
+from threetears.agent.workspace.factory import build_workspace_tools, register_tool_builder
+from packages.agent.workspace.tests.helpers.factory_deps import minimal_tool_deps
+
+
+class SentinelTool(TearsTool):
+    async def execute(self, **kwargs: Any) -> Any:
+        return None
+
+    def mcp_schema(self) -> Any:
+        return None
+
+    def mcp_name(self) -> str:
+        return "threetears.workspace.sentinel"
+
+    def mcp_version(self) -> str:
+        return "0.0"
+
+
+calls: list[list[str]] = []
+
+
+def build(**kwargs: Any) -> SentinelTool:
+    calls.append(sorted(kwargs))
+    return SentinelTool()
+
+
+register_tool_builder(build)
+register_tool_builder(build)
+names = [t.mcp_name() for t in build_workspace_tools(**minimal_tool_deps())]
+print(json.dumps({"names": names, "calls": calls}))
+"""
+
+
 def test_register_tool_builder_appends_to_registry() -> None:
-    """register_tool_builder appends the builder so it is emitted on next build."""
-    from threetears.agent.workspace.factory import register_tool_builder
+    """register_tool_builder appends the builder so it is emitted on next build, once.
 
-    sentinel_calls: list[dict[str, Any]] = []
-
-    class _SentinelTool(TearsTool):
-        async def execute(self, **kwargs: Any) -> Any:  # pragma: no cover - not exercised
-            return None
-
-        def mcp_schema(self) -> Any:  # pragma: no cover - not exercised
-            return None
-
-        def mcp_name(self) -> str:
-            # Fake test tool name; uses the canonical dotted
-            # ``threetears.workspace.<segment>`` shape so the enforcement
-            # test's ``_NAMESPACE_PREFIX`` check accepts it. The bare
-            # ``sentinel`` segment is intentionally NOT prefixed with
-            # a leading underscore (the previous form was
-            # ``threetears.workspace._sentinel`` which read as a private
-            # dunder-style name to readers and was worth dropping).
-            return "threetears.workspace.sentinel"
-
-        def mcp_version(self) -> str:
-            return "0.0"
-
-    def _build(**kwargs: Any) -> _SentinelTool:
-        sentinel_calls.append(kwargs)
-        return _SentinelTool()
-
-    initial = list(_TOOL_BUILDERS)
-    register_tool_builder(_build)
-    try:
-        tools = build_workspace_tools(**_minimal_deps())
-        assert any(t.mcp_name() == "threetears.workspace.sentinel" for t in tools)
-        assert len(sentinel_calls) == 1
-    finally:
-        # restore the registry so test ordering does not affect counts
-        _TOOL_BUILDERS.clear()
-        _TOOL_BUILDERS.extend(initial)
+    the sentinel's mcp_name uses the canonical dotted
+    ``threetears.workspace.<segment>`` shape so the enforcement test's
+    ``_NAMESPACE_PREFIX`` check would accept it; registering the same
+    builder object twice is a no-op, so it is built exactly once.
+    """
+    probe = subprocess.run(
+        [sys.executable, "-c", _REGISTRATION_PROBE],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    report = json.loads(probe.stdout.strip().splitlines()[-1])
+    assert report["names"].count("threetears.workspace.sentinel") == 1
+    assert len(report["names"]) == 20
+    # the builder was handed the whole canonical dependency bundle.
+    [received] = report["calls"]
+    assert "acl_cache" in received and "workspace_collection" in received
 
 
 @pytest.mark.parametrize(
@@ -292,7 +179,7 @@ def test_register_tool_builder_appends_to_registry() -> None:
 )
 def test_each_expected_mcp_name_present(expected: str) -> None:
     """each of the nineteen required mcp_name strings is emitted."""
-    tools = build_workspace_tools(**_minimal_deps())
+    tools = build_workspace_tools(**minimal_tool_deps())
 
     names = [t.mcp_name() for t in tools]
     assert expected in names

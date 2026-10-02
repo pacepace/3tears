@@ -20,19 +20,18 @@ assertion doesn't apply to it the same way).
 from __future__ import annotations
 
 import json
-import logging
 
 import httpx
 import pytest
-from packages.scrape.tests._driver_log_helpers import driver_warnings
+from packages.scrape.tests.driver_log_helpers import driver_warnings
 
 from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
-from threetears.scrape.drivers.api import ApiDriver
+from threetears.scrape.drivers.api import ApiDriver, ApiDriverError
 from threetears.scrape.drivers.camoufox import CamoufoxDriver
-from threetears.scrape.drivers.document import DocumentDriver
-from threetears.scrape.drivers.listing_detail import ListingDetailDriver
+from threetears.scrape.drivers.document import DocumentDriver, DocumentDriverError
+from threetears.scrape.drivers.listing_detail import ListingDetailDriver, ListingDetailDriverError
 from threetears.scrape.drivers.multi_document import MultiDocumentDriver
-from threetears.scrape.drivers.nodriver_download import NodriverDownloadDriver
+from threetears.scrape.drivers.nodriver_download import NodriverDownloadDriver, NodriverDownloadError
 from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
 
 _PAGE_HTML = "<html><body>contract test page</body></html>"
@@ -374,9 +373,9 @@ async def _render_camoufox_driver(egress):
     # Reusing the camoufox suite's own browser/page doubles rather than growing a second
     # pair here: two hand-written stand-ins for one Playwright surface drift, and this file
     # already imports a sibling test helper the same way.
-    from packages.scrape.tests.test_driver_camoufox import _FakeCamoufoxBrowser, _FakeCamoufoxPage
+    from packages.scrape.tests.camoufox_fakes import FakeCamoufoxBrowser, FakeCamoufoxPage
 
-    return await CamoufoxDriver(browser=_FakeCamoufoxBrowser(_FakeCamoufoxPage()), egress=egress).render(
+    return await CamoufoxDriver(browser=FakeCamoufoxBrowser(FakeCamoufoxPage()), egress=egress).render(
         "https://example.gov/x"
     )
 
@@ -447,29 +446,74 @@ def test_every_driver_that_accepts_an_exit_is_covered_above() -> None:
 # accept-and-ignore backend at once is what stops the fourth round.
 # ---------------------------------------------------------------------------
 
+_SOLVE = {"cookies": [{"name": "s", "value": "solved"}]}
+
+
+def _unavailable_client() -> httpx.AsyncClient:
+    """A client every request through which is answered 503.
+
+    Each accept-and-ignore backend reports the dropped solve BEFORE it does any I/O, so what
+    the fetch returns is irrelevant to the warning; answering 503 keeps every render offline
+    and makes each one end in its driver's own documented error, which is asserted.
+    """
+    return httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(503, text="unavailable")))
+
+
+#: (driver factory, logger module, the error a 503 ends that render in -- or ``None`` when the
+#: backend renders from an injected browser and succeeds).
 _DROPS_THE_SOLVE = [
-    pytest.param(lambda: ApiDriver(), "api", id="api"),
-    pytest.param(lambda: DocumentDriver(), "document", id="document"),
+    pytest.param(lambda: ApiDriver(client=_unavailable_client()), "api", ApiDriverError, id="api"),
+    pytest.param(lambda: DocumentDriver(client=_unavailable_client()), "document", DocumentDriverError, id="document"),
     pytest.param(
         lambda: ListingDetailDriver(
             row_selector="tr",
             listing_field_columns={0: "employer"},
             detail_link_column=0,
             detail_field_labels={"Employer": "employer"},
+            client=_unavailable_client(),
         ),
         "listing_detail",
+        ListingDetailDriverError,
         id="listing-detail",
     ),
-    pytest.param(lambda: NodriverDownloadDriver("http://sidecar:8088"), "nodriver_download", id="nodriver-download"),
-    pytest.param(lambda: CamoufoxDriver(), "camoufox", id="camoufox"),
+    pytest.param(
+        lambda: NodriverDownloadDriver("http://sidecar:8088", client=_unavailable_client()),
+        "nodriver_download",
+        NodriverDownloadError,
+        id="nodriver-download",
+    ),
+    pytest.param(lambda: CamoufoxDriver(browser=_ContractFakeBrowser()), "camoufox", None, id="camoufox"),
 ]
 
 
-class TestADroppedSolveIsNeverSilent:
-    """Every backend that cannot apply a session must say so, not just the reviewed one."""
+async def _render_with_solve(driver: ScrapeDriver, url: str, error: type[Exception] | None) -> None:
+    """Render *url* through *driver* with a human's solve attached, as a caller would.
 
-    @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
-    def test_it_warns_when_a_solve_is_dropped(self, caplog, make_driver, module: str) -> None:
+    :param driver: backend under test
+    :ptype driver: ScrapeDriver
+    :param url: url to render
+    :ptype url: str
+    :param error: the error this backend's render ends in offline, or ``None`` if it succeeds
+    :ptype error: type[Exception] | None
+    :return: nothing
+    :rtype: None
+    """
+    if error is None:
+        await driver.render(url, session_state=_SOLVE)
+        return
+    with pytest.raises(error):
+        await driver.render(url, session_state=_SOLVE)
+
+
+class TestADroppedSolveIsNeverSilent:
+    """Every backend that cannot apply a session must say so, not just the reviewed one.
+
+    Driven through ``render(session_state=...)``, the way a caller hands a solve over, so a
+    backend that stopped calling the base-class warning from its own render fails here.
+    """
+
+    @pytest.mark.parametrize(("make_driver", "module", "error"), _DROPS_THE_SOLVE)
+    async def test_it_warns_when_a_solve_is_dropped(self, caplog, make_driver, module: str, error) -> None:
         """Asserted on the emitted record, so deleting the call fails this.
 
         The failure being excluded is silent: a successful render is returned, the page is the
@@ -478,24 +522,23 @@ class TestADroppedSolveIsNeverSilent:
         """
         driver = make_driver()
         with caplog.at_level("WARNING", logger=f"threetears.scrape.drivers.{module}"):
-            driver._warn_dropped_session_state(
-                "https://example.gov/x", logging.getLogger(f"threetears.scrape.drivers.{module}")
-            )
+            await _render_with_solve(driver, "https://example.gov/x", error)
 
         assert [r for r in driver_warnings(caplog, module) if "cannot apply it" in r.getMessage()], (
             f"{module} dropped a human's solve without saying so; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
         )
 
-    @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
-    def test_one_origin_is_reported_once_however_many_documents_it_has(self, caplog, make_driver, module: str) -> None:
+    @pytest.mark.parametrize(("make_driver", "module", "error"), _DROPS_THE_SOLVE)
+    async def test_one_origin_is_reported_once_however_many_documents_it_has(
+        self, caplog, make_driver, module: str, error
+    ) -> None:
         """Per render is a storm: `MultiDocumentDriver` forwards a solve once per document, so
         one listing emitted a warning per document up to the cap, and a warning that repeats
         that way trains its reader to filter it out."""
         driver = make_driver()
-        log = logging.getLogger(f"threetears.scrape.drivers.{module}")
         with caplog.at_level("WARNING", logger=f"threetears.scrape.drivers.{module}"):
             for i in range(5):
-                driver._warn_dropped_session_state(f"https://example.gov/doc{i}.pdf", log)
+                await _render_with_solve(driver, f"https://example.gov/doc{i}.pdf", error)
 
         emitted = [r for r in driver_warnings(caplog, module) if "cannot apply it" in r.getMessage()]
         assert len(emitted) == 1, f"{module} warned {len(emitted)} times for one origin"
@@ -508,8 +551,8 @@ class TestADroppedSolveIsNeverSilent:
             f"the message describes a cardinality the code no longer has: {emitted[0].getMessage()}"
         )
 
-    @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
-    def test_a_second_site_is_still_reported(self, caplog, make_driver, module: str) -> None:
+    @pytest.mark.parametrize(("make_driver", "module", "error"), _DROPS_THE_SOLVE)
+    async def test_a_second_site_is_still_reported(self, caplog, make_driver, module: str, error) -> None:
         """The opposite failure, and the one that is silent rather than noisy.
 
         `ScrapeTool` builds its driver map once and reuses it for the life of the process, so
@@ -518,10 +561,9 @@ class TestADroppedSolveIsNeverSilent:
         belongs to, so it is the unit that makes this true exactly once per site.
         """
         driver = make_driver()
-        log = logging.getLogger(f"threetears.scrape.drivers.{module}")
         with caplog.at_level("WARNING", logger=f"threetears.scrape.drivers.{module}"):
-            driver._warn_dropped_session_state("https://first.example/a", log)
-            driver._warn_dropped_session_state("https://second.example/a", log)
+            await _render_with_solve(driver, "https://first.example/a", error)
+            await _render_with_solve(driver, "https://second.example/a", error)
 
         emitted = [r for r in driver_warnings(caplog, module) if "cannot apply it" in r.getMessage()]
         assert len(emitted) == 2, (
@@ -529,24 +571,28 @@ class TestADroppedSolveIsNeverSilent:
             "silent after the first, which is the failure this cardinality exists to avoid"
         )
 
-    def test_the_download_driver_does_not_tell_you_to_use_the_thing_it_is(self, caplog) -> None:
+    async def test_the_download_driver_does_not_tell_you_to_use_the_thing_it_is(self, caplog) -> None:
         """It IS sidecar-backed, so the default advice names what it already is.
 
         The endpoint it posts to carries no session state, which is the actual reason and the
         actual remedy -- generic advice that happens to be wrong is worse than none, because a
         reader who follows it changes nothing and concludes the warning was noise.
         """
-        driver = NodriverDownloadDriver("http://sidecar:8088")
-        log = logging.getLogger("threetears.scrape.drivers.nodriver_download")
+        driver = NodriverDownloadDriver("http://sidecar:8088", client=_unavailable_client())
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
-            driver._warn_dropped_session_state("https://example.gov/f.pdf", log)
+            await _render_with_solve(driver, "https://example.gov/f.pdf", NodriverDownloadError)
 
         message = driver_warnings(caplog, "nodriver_download")[0].getMessage()
         assert "/v1/download" in message, f"the remedy was not made specific to this driver: {message}"
         assert "Use the nodriver sidecar driver" not in message
 
 
-async def test_the_dropped_solve_memory_does_not_grow_without_bound() -> None:
+#: Far above any sane cap on remembered origins, and still small enough to run in a unit test.
+#: The bound is asserted to take effect somewhere below this, not at a particular value.
+_ORIGINS_PROBED = 4096
+
+
+async def test_the_dropped_solve_memory_does_not_grow_without_bound(caplog) -> None:
     """The resource guard, which was the one added branch nothing asserted.
 
     A long-lived process scraping a wide set of sites would otherwise hold one origin string
@@ -554,51 +600,71 @@ async def test_the_dropped_solve_memory_does_not_grow_without_bound() -> None:
     the cap left the suite green while the CHANGELOG claimed the bound, which is the shape where
     a documented guarantee quietly stops being true.
 
-    Asserted on the observed size after exceeding the cap, not on the constant: a bound that is
-    configured and never enforced is exactly the failure worth excluding.
+    Asserted on what the bound DOES rather than on the constant: once the remembered set is
+    full it is cleared, so the first site ever reported is forgotten and reported again. An
+    unbounded set would remember it forever and never re-report it, however many sites passed.
+    A bound that is configured and never enforced is exactly the failure worth excluding.
     """
-    from threetears.scrape import driver as driver_mod
+    driver = ApiDriver(client=_unavailable_client())
+    first = "https://s0.example/a"
 
-    d = ApiDriver()
-    log = logging.getLogger("threetears.scrape.drivers.api")
-    for i in range(driver_mod._MAX_WARNED_ORIGINS + 25):
-        d._warn_dropped_session_state(f"https://s{i}.example/a", log)
+    def first_site_reported() -> bool:
+        return any(
+            "cannot apply it" in r.getMessage() and first in r.getMessage() for r in driver_warnings(caplog, "api")
+        )
 
-    assert d._warned_dropped_origins is not None
-    assert len(d._warned_dropped_origins) <= driver_mod._MAX_WARNED_ORIGINS, (
-        f"remembered {len(d._warned_dropped_origins)} origins against a cap of "
-        f"{driver_mod._MAX_WARNED_ORIGINS}; the set grows with every site the process ever sees"
+    reported_again_after: int | None = None
+    with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
+        await _render_with_solve(driver, first, ApiDriverError)
+        assert first_site_reported()
+        for sites_seen in range(1, _ORIGINS_PROBED):
+            await _render_with_solve(driver, f"https://s{sites_seen}.example/a", ApiDriverError)
+            caplog.clear()
+            # Re-rendering a remembered site neither reports nor changes what is remembered, so
+            # this probe does not disturb the set it is observing.
+            await _render_with_solve(driver, first, ApiDriverError)
+            if first_site_reported():
+                reported_again_after = sites_seen
+                break
+
+    assert reported_again_after is not None, (
+        f"the first site was still remembered after {_ORIGINS_PROBED} distinct sites; the set of "
+        "reported origins grows with every site the process ever sees"
     )
 
 
-def test_urls_with_no_parseable_origin_stay_distinct() -> None:
-    """The fallback branch the docstring's whole design argument rests on, and it had no test.
+async def test_urls_with_no_parseable_origin_stay_distinct(caplog) -> None:
+    """The fallback branch the docstring's whole design argument rests on, asserted by what is reported.
 
     `robots._origin_of` returns None for these, deliberately, so it can decline to apply a
     site's rules to something that is not a site. Here the value is only ever a dedupe key, so
     None would collapse every unparseable url into ONE bucket -- the first would be reported
     and the rest silenced. Falling back to the url keeps them distinct, which is what makes the
-    two helpers' different return types a decision rather than an accident.
+    two helpers' different return types a decision rather than an accident. The ordinary case
+    still keys on the origin rather than the path: two paths on one site report once.
     """
-    from threetears.scrape.driver import _origin_of
+    driver = ApiDriver(client=_unavailable_client())
 
-    assert _origin_of("not a url at all") == "not a url at all"
-    assert _origin_of("file.pdf") != _origin_of("other.pdf"), (
-        "two unparseable urls collapsed to one dedupe key, so only the first would be reported"
-    )
-    assert _origin_of("https://example.gov/a") == _origin_of("https://example.gov/b"), (
-        "the ordinary case still keys on the origin rather than the path"
-    )
+    with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
+        await _render_with_solve(driver, "file.pdf", ApiDriverError)
+        await _render_with_solve(driver, "other.pdf", ApiDriverError)
+        unparseable = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
+        caplog.clear()
+        await _render_with_solve(driver, "https://example.gov/a", ApiDriverError)
+        await _render_with_solve(driver, "https://example.gov/b", ApiDriverError)
+        one_site = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
+
+    assert len(unparseable) == 2, "two unparseable urls collapsed to one dedupe key, so only the first was reported"
+    assert len(one_site) == 1, "two paths on one origin were each reported; the key is the path, not the origin"
 
 
 async def test_two_unparseable_urls_are_each_reported(caplog) -> None:
     """The behaviour that branch exists for, asserted through the warning rather than the helper."""
-    driver = ApiDriver()
-    log = logging.getLogger("threetears.scrape.drivers.api")
+    driver = ApiDriver(client=_unavailable_client())
 
     with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
-        driver._warn_dropped_session_state("garbage-one", log)
-        driver._warn_dropped_session_state("garbage-two", log)
+        await _render_with_solve(driver, "garbage-one", ApiDriverError)
+        await _render_with_solve(driver, "garbage-two", ApiDriverError)
 
     emitted = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
     assert len(emitted) == 2, (

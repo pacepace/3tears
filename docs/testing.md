@@ -68,7 +68,7 @@ on its own is not a report.
 subscription (`packages/models/tests/live/`): a batch of structured calls that must all answer in
 their schema, and the session pool's live proofs -- a reused pooled CLI shows the next call
 nothing of the last, and one pooled CLI switches between system prompts, each checked to have run
-on the pool. A change to `providers/_claude_cli.py` or `claude_cli_pool.py` is covered by it.
+on the pool. A change to `providers/claude_cli.py` or `claude_cli_pool.py` is covered by it.
 `test.sh` collects these tests and skips them:
 it needs a subscription token (`CLAUDE_CODE_OAUTH_TOKEN`, from `claude setup-token`) and spends
 real usage, so it is opt-in (`THREETEARS_LIVE_CLAUDE_CLI=1`, which the script sets). Every other
@@ -96,7 +96,7 @@ declares what production protocol it stands in for. Three routes, in order of pr
    wrapped rationale exempts nothing.
 
 Workspace tests centralise their asyncpg and workspace-entity shells under
-`packages/agent/workspace/tests/_helpers/`, so per-test inline fakes need only a one-line
+`packages/agent/workspace/tests/helpers/`, so per-test inline fakes need only a one-line
 subclass declaration.
 
 **Exempt in place, not in `tests/enforcement/_fake_parity_exemptions.txt`.** That file still
