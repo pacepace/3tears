@@ -116,6 +116,15 @@ jobs:
         if: steps.scope.outputs.needed == 'true'
         run: uv run pytest packages/ tests/ -m "not integration" -v
 
+      # The step above only ever sees the OpenTelemetry uv.lock pins, which is always recent, so a
+      # declared floor can fall behind the code with everything green. It did: observe imported a
+      # name first shipped in opentelemetry-sdk 1.39 while declaring >=1.28, and a consumer pinned
+      # to 1.36 failed at import. This runs the OpenTelemetry tests at exactly the declared floor.
+      # tests/enforcement/test_otel_floor.py fails if this step goes away.
+      - name: Test observe at its declared OpenTelemetry floor
+        if: steps.scope.outputs.needed == 'true'
+        run: ./scripts/test-otel-floor.sh -v
+
   # The `integration` marker, which nothing ran until 2026-08-18.
   #
   # Why a separate job with SERVICE CONTAINERS rather than testcontainers: the

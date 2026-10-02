@@ -21,6 +21,20 @@ and `error` onto the call response; the platform rendered every such refusal as 
   a success. Upper case, like every platform code, so one condition has one spelling on the wire;
   closed, so every code a tool can name is one the platform's error map can be held total over.
 
+### Observe: the OpenTelemetry floor is what the code imports, and CI tests at it
+
+- **Dependency floor raised: `3tears-observe[otel]` now requires `opentelemetry-api`,
+  `opentelemetry-sdk` and `opentelemetry-exporter-otlp` `>=1.39`** (was `>=1.28`).
+  `threetears.observe._otel_internals` imports `opentelemetry.sdk._logs.export.LogRecordExporter`,
+  which first shipped in opentelemetry-sdk 1.39.0, so any install below it failed at import. A
+  consumer pinning an older OpenTelemetry must move to 1.39 or later; the three move together.
+- **New: `scripts/test-otel-floor.sh`**, run by CI's `check` job. It reads the `otel` extra's floors
+  and runs observe's OpenTelemetry tests in an isolated environment pinned to exactly those
+  versions, so a floor that falls behind the code goes red here instead of in a consumer.
+- **New enforcement: `tests/enforcement/test_otel_floor.py`** -- every OpenTelemetry requirement in
+  the workspace states a `>=` floor, api/sdk/exporter declared together share one floor, the root
+  dev install matches observe's floor, and CI still runs the floor script.
+
 ### Core: a naive datetime is refused at every storage encoder; one stored form everywhere
 
 Owner ruling, 2026-10-01: one stored form for a datetime inside JSON -- ISO 8601, aware UTC, six
