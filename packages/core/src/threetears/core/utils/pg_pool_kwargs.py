@@ -116,7 +116,7 @@ import ssl
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 import asyncpg
 
@@ -126,6 +126,7 @@ from threetears.core.config import (
     POOL_START_RETRY_FIRST_DELAY_SECONDS,
     POOL_START_RETRY_MAX_DELAY_SECONDS,
 )
+from threetears.core.utils._asyncpg_internals import raised_while_parsing_connect_parameters
 from threetears.observe import get_logger
 from threetears.observe.resilience import retry_bounded
 
@@ -227,40 +228,50 @@ def redact_dsn(dsn: str) -> str:
     decode it, which is more actionable than an empty log field.
 
     the function is deliberately tolerant: pool creation must never
-    fail because logging cannot parse the DSN. a DSN whose password
-    breaks the URL -- an unescaped ``?`` or ``#`` ends the netloc inside
-    the password, leaving a piece of it where the port belongs -- is
-    ``<unparseable>`` rather than an identity built from that piece.
+    fail because logging cannot parse the DSN.
+
+    an identity is rendered only when the DSN parses, its port parses,
+    and every ``@`` in it lies inside the netloc; anything else is
+    ``<unparseable>``. a URL parser reads ``user:p@ss?word@host``
+    consistently -- host ``ss``, query ``word@host`` -- and is still
+    wrong about where the password ends: an ``@`` after the netloc means
+    the userinfo cannot be placed. a valid DSN with an ``@`` in its query
+    is ``<unparseable>`` too: fail-safe, by design.
 
     :param dsn: raw asyncpg DSN / libpq connection URL
     :ptype dsn: str
     :return: credential-free connection identity, or ``<unparseable>``
     :rtype: str
     """
-    if not dsn:
-        return "<unparseable>"
     result = "<unparseable>"
-    try:
-        parts = urlsplit(dsn)
-    except ValueError:
-        parts = None
-    if parts is not None and "@" in dsn.split("://", 1)[-1] and "@" not in parts.netloc:
-        # the userinfo's ``@`` landed outside the netloc: the URL split inside the password.
-        parts = None
-    if parts is not None:
-        host = parts.hostname
-        port: int | None = None
+    parts = None
+    port: int | None = None
+    if dsn:
         try:
+            parts = urlsplit(dsn)
             port = parts.port
         except ValueError:
-            host = None
-        if host:
-            user = parts.username or ""
-            path = parts.path.lstrip("/") if parts.path else ""
-            userhost = f"{user}@{host}" if user else host
-            hostport = f"{userhost}:{port}" if port is not None else userhost
-            result = f"{hostport}/{path}" if path else hostport
+            parts = None
+    if parts is not None and parts.hostname and _every_at_in_netloc(dsn, parts):
+        user = parts.username or ""
+        path = parts.path.lstrip("/") if parts.path else ""
+        userhost = f"{user}@{parts.hostname}" if user else parts.hostname
+        hostport = f"{userhost}:{port}" if port is not None else userhost
+        result = f"{hostport}/{path}" if path else hostport
     return result
+
+
+def _every_at_in_netloc(dsn: str, parts: SplitResult) -> bool:
+    """whether every ``@`` in ``dsn`` is inside its netloc, so the userinfo's end is not in doubt.
+
+    :param dsn: the DSN
+    :ptype dsn: str
+    :param parts: ``urlsplit(dsn)``
+    :ptype parts: SplitResult
+    :return: ``True`` when no ``@`` falls in the path, query or fragment
+    :rtype: bool
+    """
+    return dsn.count("@") == parts.netloc.count("@")
 
 
 def log_pool_created(
@@ -674,25 +685,17 @@ def _describe_error(error: BaseException) -> str:
     return result
 
 
-#: the asyncpg function that turns a DSN and its connect arguments into addresses and parameters,
-#: and where every error that can quote what was sent is raised: the DSN's own parse
-#: (``urllib.parse``, ``int()`` of a port, the query string), the host list, ``sslmode`` and the
-#: other connect options. ``asyncpg.connect_utils._parse_connect_arguments`` calls it AFTER its own
-#: checks of ``command_timeout`` and the statement-cache sizes, whose messages quote only those
-#: values. read from asyncpg 0.31's ``connect_utils.py``; asyncpg's ``ClientConfigurationError`` is
-#: raised nowhere else.
-_ASYNCPG_PARAMETER_PARSER = ("asyncpg.connect_utils", "_parse_connect_dsn_and_args")
-
-
 def _is_connection_parameter_error(error: ValueError) -> bool:
     """whether ``error`` is asyncpg refusing the DSN or connect options it was given.
 
     a :class:`~asyncpg.exceptions.ClientConfigurationError` always is. a plain ``ValueError`` is when
-    it was raised inside :data:`_ASYNCPG_PARAMETER_PARSER` -- read off the traceback's frames, a
-    public interpreter surface, not asyncpg's. anything else is not: a bad ``command_timeout``
-    (checked before the DSN is parsed), a caller hook's own ``ValueError``, an ``OSError`` that is
-    also a ``ValueError`` (a server certificate that does not verify). an error from the pool's
-    ``init`` or ``setup`` never reaches the connect hook at all.
+    asyncpg's DSN and connect-option parser is on its traceback
+    (:func:`~threetears.core.utils._asyncpg_internals.raised_while_parsing_connect_parameters`, the
+    one owner of that asyncpg-private name). anything else is not: a bad ``command_timeout``
+    (asyncpg checks it before it parses the DSN, and its message quotes only that value), a caller
+    hook's own ``ValueError``, an ``OSError`` that is also a ``ValueError`` (a server certificate
+    that does not verify). an error from the pool's ``init`` or ``setup`` never reaches the connect
+    hook at all.
 
     :param error: what a connect raised
     :ptype error: ValueError
@@ -701,13 +704,9 @@ def _is_connection_parameter_error(error: ValueError) -> bool:
     """
     result = False
     if not isinstance(error, OSError):
-        result = isinstance(error, asyncpg.exceptions.ClientConfigurationError)
-        frame = error.__traceback__
-        while frame is not None and not result:
-            code = frame.tb_frame.f_code
-            module = frame.tb_frame.f_globals.get("__name__")
-            result = (module, code.co_name) == _ASYNCPG_PARAMETER_PARSER
-            frame = frame.tb_next
+        result = isinstance(
+            error, asyncpg.exceptions.ClientConfigurationError
+        ) or raised_while_parsing_connect_parameters(error)
     return result
 
 
@@ -744,14 +743,15 @@ def _withheld_message(target: str | None) -> str:
 
 
 def _withheld(error: ValueError, target: str | None) -> ValueError:
-    """``error``'s type carrying the fixed :data:`_WITHHELD_CLIENT_ERROR` message instead of its text.
+    """the error to raise in place of a connection-parameter error, carrying :data:`_WITHHELD_CLIENT_ERROR`.
 
-    the type is kept, so a caller that catches ``ClientConfigurationError`` or its own
-    ``ValueError`` subclass still does. a type that cannot be built from one message falls back to
-    its nearest base the wrapper knows -- ``ClientConfigurationError`` for an asyncpg client error,
-    ``ValueError`` otherwise -- and the message then names the original type.
+    a :class:`~asyncpg.exceptions.ClientConfigurationError` keeps its type, so a caller that catches
+    it still does; a subclass that cannot be built from one message is raised as
+    ``ClientConfigurationError`` itself, the message naming the subclass. any other parameter error
+    is the plain ``ValueError`` asyncpg's DSN parsing raises (``int()`` of a port,
+    ``urllib.parse``), and is raised as one.
 
-    :param error: the client-side error
+    :param error: the connection-parameter error
     :ptype error: ValueError
     :param target: ``user@host:port/database`` from the caller's keywords, or ``None``
     :ptype target: str | None
@@ -759,14 +759,12 @@ def _withheld(error: ValueError, target: str | None) -> ValueError:
     :rtype: ValueError
     """
     message = _withheld_message(target)
-    result: ValueError
-    try:
-        result = type(error)(message)
-    except TypeError:
-        base: type[ValueError] = ValueError
-        if isinstance(error, asyncpg.exceptions.ClientConfigurationError):
-            base = asyncpg.exceptions.ClientConfigurationError
-        result = base(f"{type(error).__name__}: {message}")
+    result: ValueError = ValueError(message)
+    if isinstance(error, asyncpg.exceptions.ClientConfigurationError):
+        try:
+            result = type(error)(message)
+        except TypeError:
+            result = asyncpg.exceptions.ClientConfigurationError(f"{type(error).__name__}: {message}")
     return result
 
 
@@ -835,8 +833,7 @@ async def create_pool_with_startup_timeout(
     :raises asyncpg.exceptions.ClientConfigurationError: a connect option asyncpg refuses, as its own
         type with the fixed message
     :raises ValueError: when the bounds are inconsistent (see :func:`resolve_pool_connect_timeout`);
-        a DSN asyncpg cannot parse, as its own type with the fixed message (a type that cannot be
-        built from one message is raised as ``ValueError``); or a ``ValueError`` from anywhere else
+        a DSN asyncpg cannot parse, with the fixed message; or a ``ValueError`` from anywhere else
         (a bad ``command_timeout``, a pool shape, a hook, ``init``), as itself
     :raises TypeError: when ``create_pool_kwargs`` carries ``timeout``
     """

@@ -102,7 +102,11 @@ package's test fixture `make_pool` among them) are unchanged by this release.
     cannot be built from one message is raised as `ClientConfigurationError` (or `ValueError`)
     naming it.
   - The boundary is asyncpg's own: a plain `ValueError` is a parameter error when it is raised
-    inside `asyncpg.connect_utils._parse_connect_dsn_and_args`, read off the traceback. Anything
+    inside `asyncpg.connect_utils._parse_connect_dsn_and_args`, read off the traceback by comparing
+    frames with that function's code object. asyncpg exposes no public boundary, so the name is
+    confined to `threetears.core.utils._asyncpg_internals` (verified against asyncpg 0.31.0, present
+    in the declared floor 0.30.0): a rename fails its import, and its own test pins the boundary
+    against the installed asyncpg. Anything
     else raises as itself with its own text and cause: a bad `command_timeout` or statement-cache
     size (asyncpg checks those before it parses the DSN, and its message quotes only that value),
     a caller hook's own `ValueError`, an error from the pool's `init` or `setup`, a bad pool
@@ -110,10 +114,14 @@ package's test fixture `make_pool` among them) are unchanged by this release.
   - Any other client-side failure becomes a `PoolStartupTimeoutError` naming only its class, with
     no cause.
   - `redact_dsn` returns `<unparseable>` for any DSN whose userinfo it cannot place safely, rather
-    than an identity that may carry a piece of the password: one whose password breaks the URL
-    (it raised a `ValueError` quoting the piece the URL parser took for a port, and for
-    `user:12?x@host` it named `12` the port), and also a valid DSN with an `@` after the netloc,
-    such as `?user=me@server`. Fail-safe, by design.
+    than an identity that may carry a piece of the password. It renders `user@host:port/database`
+    only when the DSN parses, its port parses, and every `@` in it lies inside the netloc;
+    otherwise `<unparseable>`. A URL parser reads `user:p@ss?word@host` consistently (host `ss`,
+    query `word@host`) and is still wrong about where the password ends; the `@` rule refuses it,
+    and its `#` and `/` variants. Before, it raised a `ValueError` quoting the piece of a password
+    the parser took for a port, and for `user:12?x@host` it named `12` the port. A valid DSN with
+    an `@` after the netloc (`?user=me@server`) is `<unparseable>` too: fail-safe, by design. No
+    other path derives an identity from a DSN.
 - **Added: `PoolStartupTimeoutError.attempts` and `.connect_timeout_seconds`.** The message names
   the budget, the attempts and the last failure's class.
 - **Added: `resolve_pool_connect_timeout(startup_timeout, connect_timeout=None)`**, in

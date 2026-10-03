@@ -110,6 +110,46 @@ class TestRedactDsn:
         # urlsplit is tolerant; anything that does not give a hostname returns the sentinel
         assert redact_dsn("not-a-dsn") == "<unparseable>"
 
+    @pytest.mark.parametrize(
+        ("dsn", "pieces"),
+        [
+            pytest.param("postgresql://u:p@SSZ?WRD9@127.0.0.1:5432/d", ("SSZ", "ssz", "WRD9"), id="at-then-question"),
+            pytest.param("postgresql://u:p@SSZ#WRD9@127.0.0.1:5432/d", ("SSZ", "ssz", "WRD9"), id="at-then-hash"),
+            pytest.param("postgresql://u:p@SSZ/WRD9@127.0.0.1:5432/d", ("SSZ", "ssz", "WRD9"), id="at-then-slash"),
+            pytest.param(
+                "postgresql://u:pa@SSFRAG?word@127.0.0.1:5432/d",
+                ("SSFRAG", "ssfrag", "word"),
+                id="at-fragment-question",
+            ),
+            pytest.param("postgresql://u:pa?ssWORD@127.0.0.1:5432/d", ("ssWORD", "WORD"), id="raw-question"),
+            pytest.param("postgresql://u:12?x@127.0.0.1:5432/d", ("12",), id="numeric-piece-as-port"),
+            pytest.param("postgresql://db.example.com:5432/d?user=me@server", ("server",), id="at-in-query"),
+        ],
+    )
+    def test_a_dsn_whose_userinfo_cannot_be_placed_is_unparseable(self, dsn: str, pieces: tuple[str, ...]) -> None:
+        """a URL parser can read a password-carrying DSN consistently and still be wrong about where the password ends."""
+        identity = redact_dsn(dsn)
+        assert identity == "<unparseable>"
+        for piece in pieces:
+            assert piece not in identity
+
+    def test_a_percent_encoded_password_renders(self) -> None:
+        """an encoded ``@`` or ``:`` in the password leaves the netloc unambiguous, and the password unshown."""
+        identity = redact_dsn("postgresql://u:se%40SSZ%3AWRD9@127.0.0.1:5432/d")
+        assert identity == "u@127.0.0.1:5432/d"
+
+    def test_a_normal_dsn_with_a_query_renders(self) -> None:
+        """an ordinary DSN, query and all, renders its identity."""
+        assert redact_dsn("postgresql://user:pw@db.example.com:5432/analytics?sslmode=require") == (
+            "user@db.example.com:5432/analytics"
+        )
+
+    def test_a_mixed_case_host_and_uppercase_scheme_still_render(self) -> None:
+        """a valid DSN the URL parser normalizes (it lowercases the host) is placed beyond doubt and renders."""
+        assert redact_dsn("POSTGRESQL://user:pw@DB.Example.com:5432/analytics") == (
+            "user@db.example.com:5432/analytics"
+        )
+
 
 class TestResolvePoolConnectTimeout:
     """one wedged connect must cost a fraction of the startup budget, never all of it."""
@@ -609,6 +649,11 @@ class TestCreatePoolWithStartupTimeout:
                 ("pa?ssWORD", "ssWORD", "WORD"),
                 id="unescaped-question-mark",
             ),
+            pytest.param(
+                "postgresql://u:pa@SSFRAG?word@127.0.0.1:1/d",
+                ("pa@SSFRAG?word", "SSFRAG", "ssfrag", "word"),
+                id="at-then-question-mark",
+            ),
         ],
     )
     async def test_a_dsn_asyncpg_cannot_parse_raises_without_its_text(
@@ -787,11 +832,20 @@ class TestCreatePoolWithStartupTimeout:
             )
         assert 'password authentication failed for user "u"' in str(exc_info.value)
 
-    async def test_a_socket_error_is_reported_with_its_errno(self) -> None:
-        """a refused connect is named by its class and errno -- not its text, which can carry the address."""
+    async def test_a_socket_error_is_reported_with_its_errno(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a socket error is named by its class and errno -- not its text, which can carry the address.
+
+        a resolver that says the name does not exist fails the start on its first attempt, so the
+        error's own message carries the description rather than a budget summary.
+        """
+
+        async def no_such_name(*args: object, **kwargs: object) -> list[object]:
+            raise socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided, or not known")
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", no_such_name)
         with pytest.raises(PoolStartupTimeoutError) as exc_info:
             await create_pool_with_startup_timeout(
-                f"postgresql://u:p@127.0.0.1:{_unused_port()}/d",
+                "postgresql://u:p@db.not-there.example:5432/d",
                 startup_timeout=1.0,
                 connect_timeout=0.3,
                 min_size=1,
@@ -799,10 +853,9 @@ class TestCreatePoolWithStartupTimeout:
                 ssl=False,
             )
         cause = exc_info.value.__cause__
-        assert isinstance(cause, OSError)
-        assert cause.errno is not None
-        # the budget lapses in a pause or mid-connect; either way, the last refusal was logged with its errno.
-        assert type(cause).__name__ in str(exc_info.value)
+        assert isinstance(cause, socket.gaierror)
+        assert f"gaierror [errno {socket.EAI_NONAME}]" in str(exc_info.value)
+        assert "nodename nor servname" not in str(exc_info.value)
 
     async def test_a_retried_socket_error_is_logged_with_its_errno(self, caplog: pytest.LogCaptureFixture) -> None:
         """each retry's WARNING names the socket error by class and errno."""
@@ -820,19 +873,62 @@ class TestCreatePoolWithStartupTimeout:
         assert len(retries) == 1, retries
         assert re.search(r"error=ConnectionRefusedError \[errno \d+\] ", retries[0]), retries
 
-    def test_redact_dsn_survives_a_password_that_breaks_the_url(self) -> None:
-        """``redact_dsn`` is the tolerant identity for logs: a stray ``?`` in a password must not raise from it."""
-        identity = redact_dsn("postgresql://u:pa?ssWORD@127.0.0.1:5432/d")
-        assert "ssWORD" not in identity
-        assert "pa" not in identity.replace("<unparseable>", "")
+    @pytest.mark.parametrize(
+        ("password", "pieces"),
+        [
+            pytest.param("p@SSZ?WRD9", ("SSZ", "ssz", "WRD9"), id="at-then-question"),
+            pytest.param("p@SSZ#WRD9", ("SSZ", "ssz", "WRD9"), id="at-then-hash"),
+            pytest.param("p@SSZ/WRD9", ("SSZ", "ssz", "WRD9"), id="at-then-slash"),
+            pytest.param("pa@SSFRAG?word", ("SSFRAG", "ssfrag", "word"), id="at-fragment-question"),
+            pytest.param("pa?ssWORD", ("ssWORD", "WORD"), id="raw-question"),
+            pytest.param("se%40SSZ%3AWRD9", ("SSZ", "ssz", "WRD9", "%40"), id="percent-encoded"),
+        ],
+    )
+    async def test_no_password_shape_reaches_an_error_a_log_line_or_the_identity(
+        self,
+        password: str,
+        pieces: tuple[str, ...],
+        silent_server: _SilentServer,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """whatever asyncpg makes of the DSN, nothing the wrapper reports holds a piece of the password.
 
-    def test_redact_dsn_does_not_name_a_numeric_piece_of_a_password_as_the_port(self) -> None:
-        """for ``u:12?x@host`` the URL parser reads host ``u`` and port ``12`` -- a piece of the password."""
-        assert redact_dsn("postgresql://u:12?x@127.0.0.1:5432/d") == "<unparseable>"
+        a DSN asyncpg reads as a host lookup is answered ``EAI_NONAME`` by a patched resolver, so the
+        test never depends on the machine's DNS.
+        """
 
-    def test_redact_dsn_cannot_place_an_at_after_the_netloc_and_says_so(self) -> None:
-        """a valid DSN with ``@`` in its query is ``<unparseable>`` too: fail-safe, by design."""
-        assert redact_dsn("postgresql://db.example.com:5432/d?user=me@server") == "<unparseable>"
+        async def no_such_name(host: object, *args: object, **kwargs: object) -> list[object]:
+            raise socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided, or not known")
+
+        real_getaddrinfo = asyncio.get_running_loop().getaddrinfo
+
+        async def resolve_loopback_only(host: object, *args: object, **kwargs: object) -> list[object]:
+            if host == "127.0.0.1":
+                return list(await real_getaddrinfo(host, *args, **kwargs))
+            return await no_such_name(host, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", resolve_loopback_only)
+        raised: BaseException | None = None
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+            try:
+                await create_pool_with_startup_timeout(
+                    f"postgresql://u:{password}@127.0.0.1:{silent_server.port}/d",
+                    startup_timeout=1.0,
+                    connect_timeout=0.3,
+                    min_size=1,
+                    max_size=1,
+                    ssl=False,
+                )
+            except (ValueError, PoolStartupTimeoutError) as exc:
+                raised = exc
+        assert raised is not None, "a pool started against a server that never answers"
+        reported = [str(raised), *[r.getMessage() for r in caplog.records]]
+        reported += [str(getattr(r, "extra_data", "")) for r in caplog.records]
+        if isinstance(raised, PoolStartupTimeoutError):
+            reported.append(raised.db_identity)
+        for piece in pieces:
+            assert not [line for line in reported if piece in line], (piece, reported)
 
     async def test_a_missing_certificate_file_is_retried_and_named(self) -> None:
         """a missing root certificate cannot be told from a missing socket; the error names its class."""

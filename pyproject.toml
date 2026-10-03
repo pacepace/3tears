@@ -258,6 +258,12 @@ ignore = ["N818", "N811"]
 # not accept and to lift the login timeout ``connect()`` leaves on the socket. this module is the
 # one owner of that access. paired entry in tests/enforcement/_underscore_exemptions.txt.
 "packages/datasources/src/threetears/datasources/drivers/_redshift_connector_internals.py" = ["SLF001"]
+
+# asyncpg exposes no public boundary between parsing a DSN and its connect options and the rest of
+# a connect; the pool start withholds the text of errors raised inside the parser
+# (``asyncpg.connect_utils._parse_connect_dsn_and_args``) and keeps every other error's. this
+# module is the one owner of that name. paired entry in tests/enforcement/_underscore_exemptions.txt.
+"packages/core/src/threetears/core/utils/_asyncpg_internals.py" = ["SLF001"]
 # Claude Agent SDK private members -- ClaudeSDKClient._query and ._transport,
 # Query._send_control_request, SubprocessCLITransport._process -- confined to this one module.
 # The SDK has no public agent switch, tool-server swap, conversation rewind or CLI pid; nothing
