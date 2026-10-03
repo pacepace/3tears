@@ -42,6 +42,20 @@ from threetears.core.utils.pg_pool_kwargs import (
 
 _LOGGER = "threetears.core.utils.pg_pool_kwargs"
 
+#: the message a client-side error is re-raised with when only a DSN named the target.
+_WITHHELD_WITHOUT_TARGET = (
+    "invalid connection configuration (details withheld: they may contain credentials); "
+    "check host, port, user, database and sslmode"
+)
+
+
+def _withheld_for(target: str) -> str:
+    """the message a client-side error is re-raised with when keywords named ``target``."""
+    return (
+        f"invalid connection configuration for {target} (details withheld: they may contain credentials); "
+        "check host, port, user, database and sslmode"
+    )
+
 
 class TestGetPgPoolKwargs:
     """resolved kwargs dict carries the documented default + env override."""
@@ -470,7 +484,7 @@ class TestCreatePoolWithStartupTimeout:
     async def test_a_client_configuration_error_raises_as_itself(self, silent_server: _SilentServer) -> None:
         """an invalid ``sslmode`` is the caller's mistake, not an unreachable database."""
         started = time.monotonic()
-        with pytest.raises(asyncpg.exceptions.ClientConfigurationError, match="sslmode"):
+        with pytest.raises(asyncpg.exceptions.ClientConfigurationError) as exc_info:
             await create_pool_with_startup_timeout(
                 f"postgresql://u:p@127.0.0.1:{silent_server.port}/d?sslmode=bogus",
                 startup_timeout=5.0,
@@ -479,6 +493,8 @@ class TestCreatePoolWithStartupTimeout:
             )
         assert time.monotonic() - started < 1.0
         assert silent_server.accepted == 0
+        # the library's text is withheld; the fixed message names no target, because only a DSN was given.
+        assert str(exc_info.value) == _WITHHELD_WITHOUT_TARGET
 
     async def test_a_dsn_whose_password_breaks_the_url_logs_no_part_of_it(
         self, caplog: pytest.LogCaptureFixture
@@ -533,6 +549,12 @@ class TestCreatePoolWithStartupTimeout:
             assert not [m for m in logged if fragment in m], logged
             assert fragment not in str(exc_info.value)
         assert type(raised(secret)).__name__ in str(exc_info.value)
+        # a socket error is chained as the cause; a client-side error is not, so its text rides no traceback.
+        if isinstance(raised(secret), OSError):
+            assert isinstance(exc_info.value.__cause__, OSError)
+        else:
+            assert exc_info.value.__cause__ is None
+            assert exc_info.value.__context__ is None
 
     async def test_a_unix_socket_that_does_not_exist_yet_is_retried_until_it_appears(self) -> None:
         """a Postgres still starting has not created its socket; the connect is retried until it has.
@@ -573,40 +595,72 @@ class TestCreatePoolWithStartupTimeout:
             await server.stop()
             shutil.rmtree(socket_dir, ignore_errors=True)
 
-    async def test_a_dsn_parse_error_that_quotes_the_password_is_reraised_without_it(
-        self, caplog: pytest.LogCaptureFixture
+    @pytest.mark.parametrize(
+        ("dsn", "pieces"),
+        [
+            pytest.param(
+                "postgresql://u:se@cret:TAIL@127.0.0.1/d",
+                ("se@cret:TAIL", "cret:TAIL", "TAIL", "cret"),
+                id="unescaped-at",
+            ),
+            pytest.param(
+                "postgresql://u:pa?ssWORD@127.0.0.1:1/d",
+                ("pa?ssWORD", "ssWORD", "WORD"),
+                id="unescaped-question-mark",
+            ),
+        ],
+    )
+    async def test_a_dsn_asyncpg_cannot_parse_raises_without_its_text(
+        self, dsn: str, pieces: tuple[str, ...], caplog: pytest.LogCaptureFixture
     ) -> None:
-        """asyncpg splits the netloc at the password's first ``@`` and quotes the port it cannot parse.
+        """asyncpg quotes the piece of a DSN it could not parse, and with a stray ``@`` or ``?`` that is the password.
 
-        for ``u:se@cret:TAIL@host`` the port is ``TAIL@127.0.0.1`` -- the tail of the password. the
-        caller still gets a ``ValueError``, the type it would have got, but not that text.
+        for ``u:se@cret:TAIL@host`` the port it reports is ``TAIL@127.0.0.1``; for ``u:pa?ssWORD@host``
+        the query field it reports is ``ssWORD@...``. the caller gets the type it would have got,
+        with a fixed message, and no log line quotes the library's text.
         """
         with caplog.at_level(logging.DEBUG, logger=_LOGGER), pytest.raises(ValueError) as exc_info:
+            await create_pool_with_startup_timeout(dsn, startup_timeout=1.0, min_size=1, max_size=1)
+        assert type(exc_info.value) is ValueError
+        assert str(exc_info.value) == _WITHHELD_WITHOUT_TARGET
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
+        logged = [r.getMessage() for r in caplog.records]
+        for piece in pieces:
+            assert not [m for m in logged if piece in m], logged
+        assert any("ValueError" in m and "details withheld" in m for m in logged), logged
+
+    async def test_a_percent_encoded_password_reaches_no_error_or_log(
+        self, silent_server: _SilentServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """asyncpg decodes a percent-encoded password; neither the encoded nor the decoded form is reported."""
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER), pytest.raises(PoolStartupTimeoutError) as exc_info:
             await create_pool_with_startup_timeout(
-                "postgresql://u:se@cret:TAIL@127.0.0.1/d",
+                f"postgresql://u:se%40cret%3ATAIL@127.0.0.1:{silent_server.port}/d",
+                pool_name="encoded",
                 startup_timeout=1.0,
+                connect_timeout=0.3,
                 min_size=1,
                 max_size=1,
+                ssl=False,
             )
-        assert type(exc_info.value) is ValueError
-        message = str(exc_info.value)
-        assert message, "the redacted error says nothing"
-        for fragment in ("se@cret:TAIL", "cret:TAIL", "TAIL"):
-            assert fragment not in message, message
-            assert not [r.getMessage() for r in caplog.records if fragment in r.getMessage()]
-        assert exc_info.value.__cause__ is None
-        assert exc_info.value.__context__ is None or "TAIL" not in str(exc_info.value.__context__)
+        reported = [str(exc_info.value), *[r.getMessage() for r in caplog.records]]
+        for piece in ("se%40cret%3ATAIL", "se@cret:TAIL", "cret", "TAIL", "%40"):
+            assert not [m for m in reported if piece in m], reported
 
-    async def test_a_client_configuration_error_keeps_its_type_and_loses_the_password(
-        self, silent_server: _SilentServer
+    async def test_a_client_configuration_error_keeps_its_type_and_names_only_the_keyword_target(
+        self, silent_server: _SilentServer, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """a ``ClientConfigurationError`` whose text quotes the password reaches the caller as one, without it."""
+        """a ``ClientConfigurationError`` reaches the caller as one, naming the target from the keywords, not its text."""
         secret = "pa:ss@word-TAIL"
 
         async def quoting_hook(*args: object, **kwargs: object) -> asyncpg.Connection:
             raise asyncpg.exceptions.ClientConfigurationError(f"cannot use option near {secret!r}")
 
-        with pytest.raises(asyncpg.exceptions.ClientConfigurationError) as exc_info:
+        with (
+            caplog.at_level(logging.DEBUG, logger=_LOGGER),
+            pytest.raises(asyncpg.exceptions.ClientConfigurationError) as exc_info,
+        ):
             await create_pool_with_startup_timeout(
                 startup_timeout=1.0,
                 min_size=1,
@@ -618,11 +672,90 @@ class TestCreatePoolWithStartupTimeout:
                 password=secret,
                 connect=quoting_hook,
             )
-        message = str(exc_info.value)
-        assert "cannot use option near" in message
-        for fragment in (secret, "word-TAIL", "TAIL"):
-            assert fragment not in message, message
+        target = f"u@127.0.0.1:{silent_server.port}/d"
+        assert str(exc_info.value) == _withheld_for(target)
         assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
+        logged = [r.getMessage() for r in caplog.records]
+        assert not [m for m in logged if "cannot use option" in m or "TAIL" in m], logged
+        assert any("ClientConfigurationError" in m and target in m for m in logged), logged
+
+    async def test_a_callers_own_value_error_subclass_keeps_its_type(self, silent_server: _SilentServer) -> None:
+        """a hook's own configuration error type reaches the caller as that type, with the fixed message."""
+
+        class WarehouseOptionError(ValueError):
+            """a caller's own configuration error."""
+
+        async def own_error_hook(*args: object, **kwargs: object) -> asyncpg.Connection:
+            raise WarehouseOptionError("option quoting se@cret")
+
+        with pytest.raises(WarehouseOptionError) as exc_info:
+            await create_pool_with_startup_timeout(
+                startup_timeout=1.0,
+                min_size=1,
+                max_size=1,
+                host="127.0.0.1",
+                port=silent_server.port,
+                user="u",
+                database="d",
+                connect=own_error_hook,
+            )
+        assert type(exc_info.value) is WarehouseOptionError
+        assert "se@cret" not in str(exc_info.value)
+
+    async def test_a_value_error_whose_type_takes_no_message_falls_back_to_value_error(
+        self, silent_server: _SilentServer
+    ) -> None:
+        """a subclass that cannot be built from one message is raised as its nearest base, ``ValueError``."""
+
+        class NeedsTwoArguments(ValueError):
+            """a configuration error with a constructor of its own."""
+
+            def __init__(self, option: str, value: str) -> None:
+                super().__init__(f"{option}={value}")
+
+        async def odd_error_hook(*args: object, **kwargs: object) -> asyncpg.Connection:
+            raise NeedsTwoArguments("password", "se@cret")
+
+        with pytest.raises(ValueError) as exc_info:
+            await create_pool_with_startup_timeout(
+                startup_timeout=1.0,
+                min_size=1,
+                max_size=1,
+                host="127.0.0.1",
+                port=silent_server.port,
+                user="u",
+                database="d",
+                connect=odd_error_hook,
+            )
+        assert type(exc_info.value) is ValueError
+        assert "se@cret" not in str(exc_info.value)
+        assert "NeedsTwoArguments" in str(exc_info.value)
+
+    async def test_a_server_answer_keeps_its_text(self, silent_server: _SilentServer) -> None:
+        """a refusal comes from the server and quotes nothing the client sent, so its text is kept."""
+
+        async def refused_hook(*args: object, **kwargs: object) -> asyncpg.Connection:
+            raise asyncpg.exceptions.InvalidPasswordError('password authentication failed for user "u"')
+
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                startup_timeout=1.0,
+                min_size=1,
+                max_size=1,
+                host="127.0.0.1",
+                port=silent_server.port,
+                user="u",
+                database="d",
+                connect=refused_hook,
+            )
+        assert 'password authentication failed for user "u"' in str(exc_info.value)
+
+    def test_redact_dsn_survives_a_password_that_breaks_the_url(self) -> None:
+        """``redact_dsn`` is the tolerant identity for logs: a stray ``?`` in a password must not raise from it."""
+        identity = redact_dsn("postgresql://u:pa?ssWORD@127.0.0.1:5432/d")
+        assert "ssWORD" not in identity
+        assert "pa" not in identity.replace("<unparseable>", "")
 
     async def test_a_missing_certificate_file_is_retried_and_named(self) -> None:
         """a missing root certificate cannot be told from a missing socket; the error names its class."""

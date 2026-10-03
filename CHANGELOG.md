@@ -68,10 +68,7 @@ package's test fixture `make_pool` among them) are unchanged by this release.
   on disk and for a unix socket a still-starting Postgres has not created yet, so a missing
   certificate file spends the budget and the final error names `FileNotFoundError`. Each retried
   failure logs a WARNING naming the attempt, the elapsed time, the error class and how many
-  connections it closed. An error's text is repeated in the log and the error only for a server
-  answer or a socket error, with any password it quotes replaced by `***`; for anything else
-  (asyncpg's client-side text can quote the DSN it failed to parse) only the class is given.
-  Once the pool has started, the wrapper keeps no record of the connections the pool opens.
+  connections it closed. Once the pool has started, the wrapper keeps no record of the connections the pool opens.
 - **Changed, in `threetears.datasources`: `AsyncpgDriver` starts its pool through the wrapper**,
   its connect guard (`_connect_one`) running inside the wrapper's hook. A start that fails on one
   of `pool_min_size` connects now closes the connections the others opened; before, a failed
@@ -85,10 +82,27 @@ package's test fixture `make_pool` among them) are unchanged by this release.
 - **Changed: a programming error is no longer wrapped.** A bad pool shape (`min_size > max_size`),
   a wrong argument, or a client configuration error (`asyncpg.exceptions.ClientConfigurationError`:
   a malformed DSN, an invalid `sslmode`) raises as itself. Only a database or network failure
-  becomes a `PoolStartupTimeoutError`. A client-side error whose text quotes the password -- or a
-  piece of it of four characters or more, as asyncpg does for a DSN like `user:se@cret:TAIL@host`,
-  whose port it reports as `TAIL@host` -- is raised as the same type with those replaced by
-  `***`, and without the original as its cause or context.
+  becomes a `PoolStartupTimeoutError`.
+- **Client-side errors withhold the library's text; server answers keep theirs.**
+  - A server answer -- a refused login, a missing database, too many connections, a server
+    starting -- keeps its text in the log and in `PoolStartupTimeoutError`, and stays its cause:
+    it comes from the server and never quotes what the client sent.
+  - A socket error is reported as its class and errno, and stays the cause.
+  - A client-side error describes what the client sent, and with a stray `@` or `?` in a
+    password that is the password: for `user:se@cret:TAIL@host` asyncpg reports the port as
+    `TAIL@host`, and for `user:pa?ssWORD@host` a query field `ssWORD@host`. A
+    `ClientConfigurationError`, a `ValueError` from a DSN asyncpg cannot parse, or a caller hook's
+    own `ValueError` is raised as its own type with the fixed message `invalid connection
+    configuration for <user>@<host>:<port>/<database> (details withheld: they may contain
+    credentials); check host, port, user, database and sslmode`, without the original as cause or
+    context, and is logged as its class and that message. The target comes only from the `host` /
+    `port` / `user` / `database` keywords and is left out when only a DSN was given. A type that
+    cannot be built from one message is raised as `ValueError` (or `ClientConfigurationError`)
+    naming it. Any other client-side failure becomes a `PoolStartupTimeoutError` naming only its
+    class, with no cause.
+  - `redact_dsn` no longer raises on a DSN whose password breaks the URL (it raised a
+    `ValueError` quoting the piece of the password the URL parser took for a port); it returns
+    `<unparseable>`.
 - **Added: `PoolStartupTimeoutError.attempts` and `.connect_timeout_seconds`.** The message names
   the budget, the attempts and the last failure's class.
 - **Added: `resolve_pool_connect_timeout(startup_timeout, connect_timeout=None)`**, in

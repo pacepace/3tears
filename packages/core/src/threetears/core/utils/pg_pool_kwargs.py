@@ -227,7 +227,10 @@ def redact_dsn(dsn: str) -> str:
     decode it, which is more actionable than an empty log field.
 
     the function is deliberately tolerant: pool creation must never
-    fail because logging cannot parse the DSN.
+    fail because logging cannot parse the DSN. a DSN whose password
+    breaks the URL -- an unescaped ``?`` or ``#`` ends the netloc inside
+    the password, leaving a piece of it where the port belongs -- is
+    ``<unparseable>`` rather than an identity built from that piece.
 
     :param dsn: raw asyncpg DSN / libpq connection URL
     :ptype dsn: str
@@ -241,11 +244,18 @@ def redact_dsn(dsn: str) -> str:
         parts = urlsplit(dsn)
     except ValueError:
         parts = None
+    if parts is not None and "@" in dsn.split("://", 1)[-1] and "@" not in parts.netloc:
+        # the userinfo's ``@`` landed outside the netloc: the URL split inside the password.
+        parts = None
     if parts is not None:
         host = parts.hostname
+        port: int | None = None
+        try:
+            port = parts.port
+        except ValueError:
+            host = None
         if host:
             user = parts.username or ""
-            port = parts.port
             path = parts.path.lstrip("/") if parts.path else ""
             userhost = f"{user}@{host}" if user else host
             hostport = f"{userhost}:{port}" if port is not None else userhost
@@ -390,9 +400,8 @@ def _is_retryable(error: Exception) -> bool:
 
 #: what the database or the network can answer a pool start with; each is reported as a
 #: :class:`PoolStartupTimeoutError`. anything else (a bad pool shape, a wrong argument) is a
-#: programming error and propagates unchanged -- and so does
-#: :class:`asyncpg.exceptions.ClientConfigurationError` (a malformed DSN, an invalid ``sslmode``),
-#: which is an ``InterfaceError`` but the caller's mistake, not an unreachable database.
+#: programming error and propagates unchanged. a client-side error met while connecting (see
+#: :class:`_ClientSideFailure`) is the caller's mistake too, and raises as its own type.
 _DATABASE_FAILURES: tuple[type[Exception], ...] = (
     TimeoutError,
     OSError,
@@ -400,11 +409,13 @@ _DATABASE_FAILURES: tuple[type[Exception], ...] = (
     asyncpg.exceptions.InterfaceError,
 )
 
-#: failures whose text the wrapper repeats in its log lines and its error: what the server
-#: answered, and what the socket layer said (an address, an errno). asyncpg's client-side text
-#: can quote the DSN it failed to parse -- password included -- so for anything else only the
-#: class is reported.
-_ERRORS_WITH_SAFE_TEXT: tuple[type[Exception], ...] = (asyncpg.exceptions.PostgresError, OSError)
+#: the message a client-side error is re-raised with, in place of the library's text. a client-side
+#: error -- a DSN asyncpg cannot parse, a connect option it refuses -- describes what the client
+#: SENT, and with a stray ``@`` or ``?`` in a password, what it sent and quotes is the password.
+_WITHHELD_CLIENT_ERROR = (
+    "invalid connection configuration{target} (details withheld: they may contain credentials); "
+    "check host, port, user, database and sslmode"
+)
 
 
 def resolve_pool_connect_timeout(startup_timeout: float, connect_timeout: float | None = None) -> float:
@@ -587,23 +598,19 @@ def _attempts_phrase(attempts: int) -> str:
     return f"{attempts} attempt" if attempts == 1 else f"{attempts} attempts"
 
 
-def _pool_identity(dsn: str | None, create_pool_kwargs: dict[str, Any]) -> str:
-    """the credential-free ``user@host:port/dbname`` a pool start is reported under.
+def _keyword_target(create_pool_kwargs: dict[str, Any]) -> str | None:
+    """``user@host:port/database`` from the ``host`` / ``port`` / ``user`` / ``database`` keywords, if any.
 
-    from the DSN when there is one (:func:`redact_dsn`), otherwise from the ``host`` / ``port`` /
-    ``user`` / ``database`` keywords a caller passed instead.
+    never from a DSN string: a DSN the URL parser misreads can put a piece of the password where
+    the host or port belongs.
 
-    :param dsn: the DSN, or ``None``
-    :ptype dsn: str | None
     :param create_pool_kwargs: the caller's ``create_pool`` keywords
     :ptype create_pool_kwargs: dict[str, Any]
-    :return: the identity, or ``<unparseable>`` when nothing names a host
-    :rtype: str
+    :return: the target, or ``None`` when no ``host`` keyword names one
+    :rtype: str | None
     """
-    result = "<unparseable>"
-    if dsn is not None:
-        result = redact_dsn(dsn)
-    elif create_pool_kwargs.get("host") is not None:
+    result: str | None = None
+    if create_pool_kwargs.get("host") is not None:
         user = create_pool_kwargs.get("user")
         port = create_pool_kwargs.get("port")
         database = create_pool_kwargs.get("database")
@@ -617,108 +624,97 @@ def _pool_identity(dsn: str | None, create_pool_kwargs: dict[str, Any]) -> str:
     return result
 
 
-#: the shortest piece of a password scrubbed from an error's text. asyncpg quotes pieces of a DSN it
-#: could not parse -- for ``user:se@cret:TAIL@host`` the port it reports is ``TAIL@host`` -- so every
-#: piece of a password this long is replaced, not only the whole of it. shorter pieces are too
-#: likely to be ordinary words in the message to tell apart.
-_SHORTEST_SCRUBBED_PIECE = 4
+def _pool_identity(dsn: str | None, create_pool_kwargs: dict[str, Any]) -> str:
+    """the credential-free ``user@host:port/dbname`` a pool start is reported under.
 
-
-def _secrets_in(dsn: str | None, create_pool_kwargs: dict[str, Any]) -> list[str]:
-    """the passwords a pool start was given, so an error quoting one can be scrubbed of it.
-
-    a DSN's password is read off its raw userinfo -- everything between ``://`` and the netloc's
-    LAST ``@`` -- rather than through :func:`urllib.parse.urlsplit`, which refuses the very DSNs
-    (an unescaped ``@`` or ``[`` in the password) whose errors quote a piece of it.
+    from the DSN when there is one (:func:`redact_dsn`), otherwise from the keywords a caller passed
+    instead (:func:`_keyword_target`).
 
     :param dsn: the DSN, or ``None``
     :ptype dsn: str | None
     :param create_pool_kwargs: the caller's ``create_pool`` keywords
     :ptype create_pool_kwargs: dict[str, Any]
-    :return: every non-empty password found
-    :rtype: list[str]
-    """
-    found: list[str] = []
-    keyword_password = create_pool_kwargs.get("password")
-    if isinstance(keyword_password, str) and keyword_password:
-        found.append(keyword_password)
-    if dsn is not None and "://" in dsn:
-        authority = dsn.split("://", 1)[1].split("?", 1)[0]
-        if "@" in authority:
-            userinfo = authority.rsplit("@", 1)[0]
-            if ":" in userinfo:
-                dsn_password = userinfo.split(":", 1)[1]
-                if dsn_password:
-                    found.append(dsn_password)
-    return found
-
-
-def _scrub(text: str, secrets: list[str]) -> str:
-    """``text`` with each password, and every piece of one at least :data:`_SHORTEST_SCRUBBED_PIECE` long, as ``***``.
-
-    :param text: an error's text
-    :ptype text: str
-    :param secrets: the passwords the pool start was given
-    :ptype secrets: list[str]
-    :return: the text with nothing of a password left in it
+    :return: the identity, or ``<unparseable>`` when nothing names a host
     :rtype: str
     """
-    pieces: set[str] = set()
-    for secret in secrets:
-        pieces.add(secret)
-        for start in range(len(secret)):
-            for end in range(start + _SHORTEST_SCRUBBED_PIECE, len(secret) + 1):
-                pieces.add(secret[start:end])
-    for piece in sorted(pieces, key=len, reverse=True):
-        text = text.replace(piece, "***")
-    return text
-
-
-def _describe_error(error: BaseException, secrets: list[str]) -> str:
-    """an error as the wrapper reports it: its class, and its text only when that text is safe.
-
-    the text of a server answer or a socket error is kept, with anything of a password it quotes
-    replaced (:func:`_scrub`); the text of anything else (asyncpg's client-side errors can quote
-    the DSN they failed to parse) is dropped, leaving the class.
-
-    :param error: the failure
-    :ptype error: BaseException
-    :param secrets: passwords to scrub from the text
-    :ptype secrets: list[str]
-    :return: ``ClassName: text`` or ``ClassName``
-    :rtype: str
-    """
-    result = type(error).__name__
-    text = str(error)
-    if isinstance(error, _ERRORS_WITH_SAFE_TEXT) and text:
-        result = f"{result}: {_scrub(text, secrets)}"
+    result = "<unparseable>"
+    if dsn is not None:
+        result = redact_dsn(dsn)
+    else:
+        keyword_target = _keyword_target(create_pool_kwargs)
+        if keyword_target is not None:
+            result = keyword_target
     return result
 
 
-def _without_secrets(error: ValueError, secrets: list[str]) -> ValueError | None:
-    """the client-side error the caller gets, of the same type, when its text quoted a password.
+def _describe_error(error: BaseException) -> str:
+    """an error as the wrapper reports it in its log lines and its :class:`PoolStartupTimeoutError`.
 
-    a DSN asyncpg cannot parse, or a connect option it refuses, raises as itself -- the caller's
-    mistake, not an unreachable database -- but its text can quote a piece of the password. this
-    returns the same error type carrying the scrubbed text, or ``None`` when there was nothing to
-    scrub and the original can be raised as it is. a ``ValueError`` subclass whose constructor is
-    not known is rebuilt as a plain ``ValueError`` naming the subclass.
+    a server answer (a refused login, a missing database, too many connections, a server starting)
+    keeps its text: it comes from the server and never quotes what the client sent. a socket error
+    is its class and errno. anything else is its class alone: client-side text can quote what was
+    sent, the password included.
 
-    :param error: the error an attempt raised
-    :ptype error: ValueError
-    :param secrets: the passwords the pool start was given
-    :ptype secrets: list[str]
-    :return: the scrubbed error, or ``None`` when nothing was scrubbed
-    :rtype: ValueError | None
+    :param error: the failure
+    :ptype error: BaseException
+    :return: ``ClassName: text``, ``ClassName [errno N]`` or ``ClassName``
+    :rtype: str
     """
-    text = str(error)
-    scrubbed = _scrub(text, secrets)
-    result: ValueError | None = None
-    if scrubbed != text:
-        if type(error) is ValueError or isinstance(error, asyncpg.exceptions.InterfaceError):
-            result = type(error)(scrubbed)
-        else:
-            result = ValueError(f"{type(error).__name__}: {scrubbed}")
+    result = type(error).__name__
+    if isinstance(error, asyncpg.exceptions.PostgresError) and str(error):
+        result = f"{result}: {error}"
+    elif isinstance(error, OSError) and error.errno is not None:
+        result = f"{result} [errno {error.errno}]"
+    return result
+
+
+class _ClientSideFailure(Exception):
+    """carries a client-side error out of a pool attempt, so the wrapper can re-raise it without its text.
+
+    a ``ValueError`` met while the attempt connects -- asyncpg's
+    :class:`~asyncpg.exceptions.ClientConfigurationError` for a connect option it refuses, a plain
+    ``ValueError`` for a DSN it cannot parse, a caller's hook's own -- describes what the client
+    sent. a ``ValueError`` that is also an ``OSError`` (a server certificate that does not verify) is
+    the network's answer and is not one of these.
+
+    :param error: the client-side error
+    :ptype error: ValueError
+    """
+
+    def __init__(self, error: ValueError) -> None:
+        """wrap ``error``.
+
+        :param error: the client-side error
+        :ptype error: ValueError
+        """
+        super().__init__(type(error).__name__)
+        self.error = error
+
+
+def _withheld(error: ValueError, target: str | None) -> ValueError:
+    """``error``'s type carrying the fixed :data:`_WITHHELD_CLIENT_ERROR` message instead of its text.
+
+    the type is kept, so a caller that catches ``ClientConfigurationError`` or its own
+    ``ValueError`` subclass still does. a type that cannot be built from one message falls back to
+    its nearest base the wrapper knows -- ``ClientConfigurationError`` for an asyncpg client error,
+    ``ValueError`` otherwise -- and the message then names the original type.
+
+    :param error: the client-side error
+    :ptype error: ValueError
+    :param target: ``user@host:port/database`` from the caller's keywords, or ``None``
+    :ptype target: str | None
+    :return: the error to raise in its place
+    :rtype: ValueError
+    """
+    message = _WITHHELD_CLIENT_ERROR.format(target=f" for {target}" if target is not None else "")
+    result: ValueError
+    try:
+        result = type(error)(message)
+    except TypeError:
+        base: type[ValueError] = ValueError
+        if isinstance(error, asyncpg.exceptions.ClientConfigurationError):
+            base = asyncpg.exceptions.ClientConfigurationError
+        result = base(f"{type(error).__name__}: {message}")
     return result
 
 
@@ -742,9 +738,17 @@ async def create_pool_with_startup_timeout(
     call is cut off at it.
 
     every failed attempt is logged at WARNING with its number, the elapsed time and the error
-    class. the DSN is redacted with :func:`redact_dsn` everywhere it is reported, and an error's
-    text is repeated only when it is a server answer or a socket error, with any password it
-    quotes replaced.
+    class. the DSN is redacted with :func:`redact_dsn` everywhere it is reported.
+
+    **client-side errors withhold the library's text; server answers keep theirs.** a server
+    answer (a refused login, a missing database, too many connections, a server starting) is
+    reported with its text, which comes from the server and never quotes what the client sent. a
+    socket error is reported as its class and errno. a client-side error -- a DSN asyncpg cannot
+    parse, a connect option it refuses, a ``ValueError`` from a caller's hook -- describes what was
+    sent, which with a stray ``@`` or ``?`` in a password is the password: it is raised as its own
+    type with a fixed message naming only the ``host`` / ``port`` / ``user`` / ``database``
+    keywords (never a target read from a DSN), with no cause or context, and logged as its class
+    and that message.
 
     a caller with its own connect hook passes it as ``connect``: the wrapper's hook calls it for
     every connection, so the bound, the record and the cleanup apply to it too. it receives
@@ -774,8 +778,11 @@ async def create_pool_with_startup_timeout(
     :raises PoolStartupTimeoutError: when the budget is spent without a started pool, or the
         attempt fails in a way no retry can clear (a refusal from the database, a certificate
         that does not verify, a host name that does not exist); it names the attempts made
-    :raises asyncpg.exceptions.ClientConfigurationError: a malformed DSN or connect option, as itself
-    :raises ValueError: when the bounds are inconsistent (see :func:`resolve_pool_connect_timeout`)
+    :raises asyncpg.exceptions.ClientConfigurationError: a connect option asyncpg refuses, as its own
+        type with the fixed message
+    :raises ValueError: when the bounds are inconsistent (see :func:`resolve_pool_connect_timeout`);
+        or a DSN asyncpg cannot parse, or a caller hook's own ``ValueError``, as its own type with the
+        fixed message (a type that cannot be built from one message is raised as ``ValueError``)
     :raises TypeError: when ``create_pool_kwargs`` carries ``timeout``
     """
     if "timeout" in create_pool_kwargs:
@@ -785,7 +792,7 @@ async def create_pool_with_startup_timeout(
     per_connect = resolve_pool_connect_timeout(startup_timeout, connect_timeout)
     opener: Callable[..., Awaitable[asyncpg.Connection]] = connect if connect is not None else asyncpg.connect
     identity = _pool_identity(dsn, create_pool_kwargs)
-    secrets = _secrets_in(dsn, create_pool_kwargs)
+    client_target = _keyword_target(create_pool_kwargs)
     # passed only when given: a caller naming ``host`` / ``port`` / ... starts the pool exactly as
     # its own ``asyncpg.create_pool`` call did.
     dsn_argument: dict[str, str] = {} if dsn is None else {"dsn": dsn}
@@ -805,6 +812,10 @@ async def create_pool_with_startup_timeout(
             connections.pool_started()
             started = True
             progress.attempt_in_flight = False
+        except ValueError as exc:
+            if isinstance(exc, OSError):
+                raise
+            raise _ClientSideFailure(exc) from None
         finally:
             if not started:
                 progress.closed_by_last_failure = connections.abandon(initialising)
@@ -816,7 +827,7 @@ async def create_pool_with_startup_timeout(
         elapsed = time.monotonic() - started_at
         log.warning(
             f"pg pool start attempt {attempt_number} failed: name={pool_name} identity={identity} "
-            f"error={_describe_error(error, secrets)} elapsed={elapsed:.2f}s budget={startup_timeout}s "
+            f"error={_describe_error(error)} elapsed={elapsed:.2f}s budget={startup_timeout}s "
             f"connect_timeout={per_connect}s closed={progress.closed_by_last_failure}; retrying in {pause:.2f}s",
             extra={
                 "extra_data": {
@@ -833,15 +844,19 @@ async def create_pool_with_startup_timeout(
             },
         )
 
-    def give_up(error: Exception, budget_expired: bool) -> tuple[PoolStartupTimeoutError, Exception]:
+    def give_up(error: Exception, budget_expired: bool) -> tuple[PoolStartupTimeoutError, Exception | None]:
         """the error a start that met a database or network failure ends with, and its cause; logged at ERROR.
+
+        the cause is the failure itself when it is a server answer, a socket error or a timeout, and
+        ``None`` otherwise: a client-side error's text, carried as the cause, would reach every
+        traceback the wrapper's own message keeps it out of.
 
         :param error: what ended the start
         :ptype error: Exception
         :param budget_expired: whether the startup budget ran out
         :ptype budget_expired: bool
-        :return: the error to raise, and the failure to raise it from
-        :rtype: tuple[PoolStartupTimeoutError, Exception]
+        :return: the error to raise, and the failure to raise it from (or ``None``)
+        :rtype: tuple[PoolStartupTimeoutError, Exception | None]
         """
         elapsed = time.monotonic() - started_at
         cause: Exception = error
@@ -856,12 +871,12 @@ async def create_pool_with_startup_timeout(
             message = (
                 f"failed to connect to database {identity} within {startup_timeout}s: "
                 f"{_attempts_phrase(progress.attempts)}, each connect bounded at {per_connect}s; "
-                f"last failure: {_describe_error(error, secrets)}"
+                f"last failure: {_describe_error(error)}"
             )
         else:
             message = (
                 f"failed to create database pool {identity} on attempt {progress.attempts} "
-                f"(not retried): {_describe_error(error, secrets)}"
+                f"(not retried): {_describe_error(error)}"
             )
         log.error(
             f"pg pool start failed: name={pool_name} {message}",
@@ -886,13 +901,15 @@ async def create_pool_with_startup_timeout(
             attempts=progress.attempts,
             connect_timeout_seconds=per_connect,
         )
-        return failure, cause
+        chained = cause if isinstance(cause, (asyncpg.exceptions.PostgresError, OSError)) else None
+        return failure, chained
 
     budget = asyncio.timeout(startup_timeout)
-    # a client-side error (a DSN asyncpg cannot parse, a connect option it refuses) raises as
-    # itself -- the caller's mistake, not an unreachable database -- but scrubbed of any password
-    # it quotes, and raised outside the handlers so the original is neither its cause nor its context.
-    redacted_client_error: ValueError | None = None
+    # each failure is raised OUTSIDE the handler that caught it, so the original is the new error's
+    # context only where it is chained on purpose (a server answer, a socket error).
+    failure: PoolStartupTimeoutError | None = None
+    cause: Exception | None = None
+    client_error: ValueError | None = None
     try:
         async with budget:
             pool = await retry_bounded(
@@ -903,19 +920,27 @@ async def create_pool_with_startup_timeout(
                 deadline_seconds=startup_timeout,
                 on_retry=on_retry,
             )
+    except _ClientSideFailure as client_side:
+        # the caller's mistake, raised as its own type -- with a fixed message, because the
+        # library's text describes what was sent and can quote the password.
+        client_error = _withheld(client_side.error, client_target)
+        log.error(
+            f"pg pool start failed: name={pool_name} {type(client_side.error).__name__}: {client_error}",
+            extra={
+                "extra_data": {
+                    "pool_name": pool_name,
+                    "connection_target": client_target,
+                    "attempts": progress.attempts,
+                    "error_class": type(client_side.error).__name__,
+                }
+            },
+        )
     except _DATABASE_FAILURES as exc:
-        if not isinstance(exc, asyncpg.exceptions.ClientConfigurationError):
-            failure, cause = give_up(exc, budget.expired())
-            raise failure from cause
-        redacted_client_error = _without_secrets(exc, secrets)
-        if redacted_client_error is None:
-            raise
-    except ValueError as exc:
-        redacted_client_error = _without_secrets(exc, secrets)
-        if redacted_client_error is None:
-            raise
-    if redacted_client_error is not None:
-        raise redacted_client_error
+        failure, cause = give_up(exc, budget.expired())
+    if client_error is not None:
+        raise client_error
+    if failure is not None:
+        raise failure from cause
     if progress.attempts > 1:
         log.info(
             f"pg pool started on attempt {progress.attempts}: name={pool_name} identity={identity}",
