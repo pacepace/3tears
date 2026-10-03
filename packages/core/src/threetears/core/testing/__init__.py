@@ -48,10 +48,15 @@ from threetears.core.testing.sqla_parity import (
     index_signature,
     inline_fk_signatures,
 )
+from threetears.core.testing.tcp_proxy import PROXY_DROP, PROXY_FORWARD, PROXY_STALL, StallingTcpProxy
 
 __all__ = [
     "CONTAINER_STAGGER_ENV",
     "FAKE_DATABASE_NAME",
+    "PROXY_DROP",
+    "PROXY_FORWARD",
+    "PROXY_STALL",
+    "StallingTcpProxy",
     "assert_tables_equivalent",
     "check_docker_available",
     "column_signature",
