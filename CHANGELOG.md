@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A datasource's `require_documented_tables` flag persists
+
+- **Fixed, in `threetears.datasources`:** `CapabilitySourceCollection.schema` now declares
+  `require_documented_tables` (boolean, `NOT NULL`, server default `false`), the column hub migration
+  v076 adds to `datasources`. Without it the schema-driven upsert left the column out of every
+  statement and the L3 read did not select it, so the hub's `PATCH /admin/v1/datasources/{id}`
+  answered with the value it was sent while nothing was stored. A save that omits the field keeps
+  the stored value; the in-memory L1 table, derived from the schema, carries the column from the next
+  process start.
+
 ## v0.60.0 -- 2026-10-03
 
 ### A tool that did not do what it was asked says so as a failure
