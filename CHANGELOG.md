@@ -42,6 +42,63 @@ them as done.
   `testcontainers.nats.NatsContainer` waited through testcontainers' deprecated helpers, and every
   suite that started NATS carried two deprecation warnings.
 
+### A gateway refusal's own code rides the stream terminal
+
+`StreamErrorEvent` carried `code`, `message` and `duration_ms`. A turn the model gateway refused
+(for example `MODEL_NO_VISION`) terminated with an agent-level `code`, and the gateway's own code
+reached a stream or websocket consumer only inside `message`, where a consumer had to parse prose
+to find it.
+
+- **Added, in `threetears.langgraph` (module `streaming`): `StreamErrorEvent.gateway_code: str |
+  None = None`.** It holds the gateway's refusal code when the gateway refused the turn, and `None`
+  for any other failure. `code` still names the agent-level failure class. A payload without the
+  field still parses, with `gateway_code` set to `None`.
+- **Added: `StreamingResponse.error(..., gateway_code=None)`.** A caller publishing its own
+  terminal can set the field.
+- **Added: `StreamingResponse(..., gateway_code_reader=None)`.** This is an optional
+  `Callable[[BaseException], str | None]`. `run_graph` publishes the failure terminal itself, so
+  it is the path most failed turns take. On that path the reader is handed the failing exception,
+  and what it returns becomes `gateway_code`. It is injected for the same reason as
+  `error_classifier`: the exception that carries the code is the caller's own type. A reader that
+  raises degrades to `None` and is logged. It never costs the terminal event, and it never
+  replaces the exception that propagates. Cancellation never consults the reader.
+
+Every existing producer is unchanged and publishes `gateway_code: null`. A consumer that wants the
+code must read the new field. A host gets the code on `run_graph`'s terminal by passing
+`gateway_code_reader`.
+
+### An agent granted `media` boots clean, and `media_analyze` answers its first call
+
+Found live: every agent granted the `media` tool alias logged an ERROR at boot, and every first
+`media_analyze` call failed.
+
+- **Fixed, in `threetears.agent.tools.aliases`: `MEDIA_TOOLS` no longer names
+  `threetears.image_generation`.** The `media` alias now expands to `threetears.media_analyze`,
+  `threetears.parse_document` and `threetears.image_prep`. `image_generation` is a LangChain factory
+  (`create_image_generation_tool`) that needs host-supplied generation backends and host-side
+  persistence of the image it makes. It is not a `TearsTool`, so no `ToolServer` registers it and no
+  registry ever offers it. Naming it in the alias made the agent's readiness gate report a granted
+  pattern that matches no tool, an ERROR on every boot. The factory itself is unchanged; a host that
+  builds it binds it itself. A test now holds the alias to exactly the media tools a `ToolServer`
+  can register.
+- **Fixed, in `threetears.agent.tools.builtin.analyze_media`: the model no longer has to guess an
+  analyzer.** The input schema required `analyzer` and told the model no names, so it invented one
+  (`'GPT-4 Vision'`, `'Claude 3.5 Sonnet'`), read the real names from the error, and called again:
+  one wasted model round trip per analysis.
+  - `analyzer` is no longer required. Omitted, the call uses the first registered analyzer that
+    reads every resolved item: a text provider for a document, a transcriber for audio or video,
+    vision for an image. When none does, the error names the media's categories and each analyzer's
+    reach. When no analyzer is configured at all, it says that.
+  - `AnalyzeMediaTool.mcp_schema()` lists the registered analyzer names as the `analyzer` field's
+    `enum`, built from the instance's analyzers each time it is called. With none registered, the
+    field carries no `enum`. The LangChain tool from `create_analyze_media_tool` uses the same
+    schema.
+  - A named analyzer is still used exactly as named. An unknown name is still refused with the list
+    of choices. It is never swapped for another analyzer.
+
+  No public name was added or removed. The only behaviour change for an existing caller is that a
+  call without `analyzer`, which used to fail, now succeeds.
+
 ## v0.59.0 -- 2026-10-02
 
 ### An absent KV bucket raises its own typed error, and a raw nats-py handle's failures classify without importing nats-py
