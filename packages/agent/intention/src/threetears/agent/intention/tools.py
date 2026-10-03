@@ -506,7 +506,7 @@ async def load_intention_mark_surfaced_tool(
         # get would let one user mark another's want. treat a foreign /
         # missing want identically -- not-found, no existence leak.
         if entity is None or entity.user_id != user_id:
-            return f"No want found for [intention:{intention_id}]."
+            return f"[TOOL ERROR] No want found for [intention:{intention_id}]."
 
         now = datetime.now(UTC)
         entity.status = status

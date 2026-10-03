@@ -240,19 +240,25 @@ def nats_container(
         pytest.skip("Docker not available")
     stagger_container_start()
 
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415
+    # A plain container with a structured wait: ``testcontainers.nats.NatsContainer`` waits
+    # through the library's deprecated ``wait_container_is_ready`` / ``wait_for_logs``, and
+    # every suite that started NATS carried both deprecation warnings.
+    from testcontainers.core.container import DockerContainer  # noqa: PLC0415
+    from testcontainers.core.wait_strategies import LogMessageWaitStrategy  # noqa: PLC0415
 
     conf_dir = tmp_path_factory.mktemp("nats-conf")
     (conf_dir / "nats.conf").write_text(
         _nats_container_config(jetstream=nats_jetstream, system_account=nats_system_account), encoding="utf-8"
     )
     container = (
-        NatsContainer(jetstream=False)
+        DockerContainer("nats:latest")
+        .with_exposed_ports(4222, 8222)
         .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
         .with_command(["-c", "/etc/nats/nats.conf"])
+        .waiting_for(LogMessageWaitStrategy("Server is ready").with_startup_timeout(120))
     )
     with container:
-        yield container.nats_uri()
+        yield f"nats://{container.get_container_host_ip()}:{container.get_exposed_port(4222)}"
 
 
 def _nats_container_config(*, jetstream: bool, system_account: bool) -> str:
