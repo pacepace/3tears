@@ -499,6 +499,196 @@ class TestTableTemplateCollection:
 
 
 # ---------------------------------------------------------------------------
+# hub-table parity: the columns the 2026-10-03 drift left out
+# ---------------------------------------------------------------------------
+
+
+def _full_table_row() -> dict[str, Any]:
+    """a ``datasource_tables`` row naming every column the table has.
+
+    :return: the row
+    :rtype: dict[str, Any]
+    """
+    now = datetime.now(UTC)
+    return {
+        "id": uuid4(),
+        "datasource_id": uuid4(),
+        "schema_name": "public",
+        "table_name": "counties",
+        "description": "one row per county",
+        "row_count_approx": 3143,
+        "caveats": None,
+        "template_id": None,
+        "caveats_replaces_definition": False,
+        "column_hash": None,
+        "coverage_dimension": "state_code",
+        "date_introspected": now,
+        "date_described": None,
+        "date_created": now,
+        "date_updated": now,
+    }
+
+
+def _full_relation_row() -> dict[str, Any]:
+    """a ``datasource_relations`` row naming every column the table has.
+
+    :return: the row
+    :rtype: dict[str, Any]
+    """
+    now = datetime.now(UTC)
+    return {
+        "id": uuid4(),
+        "customer_id": uuid4(),
+        "name": "household",
+        "description": None,
+        "datasource_ids": [str(uuid4())],
+        "join_paths": [],
+        "edges": [{"name": "to_household", "steps": []}],
+        "aggregation_notes": None,
+        "caveats": None,
+        "date_created": now,
+        "date_updated": now,
+    }
+
+
+def _full_template_row() -> dict[str, Any]:
+    """a ``table_templates`` row naming every column the table has.
+
+    :return: the row
+    :rtype: dict[str, Any]
+    """
+    now = datetime.now(UTC)
+    return {
+        "id": uuid4(),
+        "customer_id": None,
+        "name": "geofacts",
+        "description": None,
+        "caveats": None,
+        "visibility": "public",
+        "origin_template_id": uuid4(),
+        "date_created": now,
+        "date_updated": now,
+    }
+
+
+class TestHubTableParity:
+    """the columns each hand-written Collection writes, reads back and decodes."""
+
+    def test_table_coverage_dimension_round_trips_through_l2(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceTableCollection(registry=registry, config=config)
+        row = _full_table_row()
+        assert coll.deserialize(coll.serialize(row))["coverage_dimension"] == "state_code"
+
+    def test_relation_customer_id_and_edges_decode_typed_from_l2(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceRelationCollection(registry=registry, config=config)
+        row = _full_relation_row()
+        decoded = coll.deserialize(coll.serialize(row))
+        assert decoded["customer_id"] == row["customer_id"]
+        assert isinstance(decoded["customer_id"], type(row["customer_id"]))
+        assert decoded["edges"] == row["edges"]
+
+    def test_template_visibility_and_origin_decode_typed_from_l2(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = TableTemplateCollection(registry=registry, config=config)
+        row = _full_template_row()
+        decoded = coll.deserialize(coll.serialize(row))
+        assert decoded["visibility"] == "public"
+        assert decoded["origin_template_id"] == row["origin_template_id"]
+        assert isinstance(decoded["origin_template_id"], type(row["origin_template_id"]))
+
+    def test_template_is_addressed_by_id_alone(self) -> None:
+        """hub v007 rebuilt the primary key on ``id``; a platform template has no customer."""
+        registry, config = _make_registry_and_config()
+        coll = TableTemplateCollection(registry=registry, config=config)
+        assert coll.primary_key_columns == ("id",)
+
+    async def test_template_save_without_visibility_is_refused_before_any_write(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = TableTemplateCollection(registry=registry, config=config)
+        pool = AsyncMock()
+        coll.l3_pool = pool
+        row = _full_template_row()
+        del row["visibility"]
+        with pytest.raises(ValueError, match="visibility"):
+            await coll.save_to_store(row)
+        pool.execute.assert_not_awaited()
+
+    async def test_template_upsert_conflicts_on_the_primary_key(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = TableTemplateCollection(registry=registry, config=config)
+        pool = AsyncMock()
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        coll.l3_pool = pool
+        await coll.save_to_store(_full_template_row())
+        sql = pool.execute.call_args.args[0]
+        assert "ON CONFLICT (id)" in sql
+        assert "visibility" in sql and "origin_template_id" in sql
+
+    @pytest.mark.parametrize(
+        ("cls", "row_factory", "dropped"),
+        [
+            (DataSourceTableCollection, _full_table_row, "description"),
+            (DataSourceRelationCollection, _full_relation_row, "edges"),
+            (TableTemplateCollection, _full_template_row, "caveats"),
+        ],
+    )
+    async def test_a_save_names_only_the_columns_its_row_carries(
+        self, cls: type[Any], row_factory: Any, dropped: str
+    ) -> None:
+        registry, config = _make_registry_and_config()
+        coll = cls(registry=registry, config=config)
+        pool = AsyncMock()
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        coll.l3_pool = pool
+        row = row_factory()
+        del row[dropped]
+        await coll.save_to_store(row)
+        sql = pool.execute.call_args.args[0]
+        assert dropped not in sql
+        assert len(pool.execute.call_args.args) - 1 == len(row)
+
+    async def test_a_row_short_of_an_insert_is_written_as_an_update_of_what_it_carries(self) -> None:
+        """postgres checks NOT NULL on an INSERT's proposed row before resolving a conflict."""
+        registry, config = _make_registry_and_config()
+        coll = DataSourceTableCollection(registry=registry, config=config)
+        pool = AsyncMock()
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        coll.l3_pool = pool
+        row_id = uuid4()
+        await coll.save_to_store({"id": row_id, "column_hash": "abc", "coverage_dimension": "state_code"})
+        sql, *params = pool.execute.call_args.args
+        assert sql == "UPDATE datasource_tables SET column_hash = $1 WHERE id = $2"
+        assert params == ["abc", row_id]
+
+    @pytest.mark.parametrize(
+        ("cls", "row_factory"),
+        [
+            (DataSourceRelationCollection, _full_relation_row),
+            (TableTemplateCollection, _full_template_row),
+        ],
+    )
+    def test_a_full_row_leaves_nothing_for_the_store_to_decide(self, cls: type[Any], row_factory: Any) -> None:
+        registry, config = _make_registry_and_config()
+        coll = cls(registry=registry, config=config)
+        assert coll.columns_decided_by_store(row_factory()) == ()
+
+    def test_a_row_missing_a_column_leaves_it_for_the_store_to_decide(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceRelationCollection(registry=registry, config=config)
+        row = _full_relation_row()
+        del row["edges"]
+        assert coll.columns_decided_by_store(row) == ("edges",)
+
+    def test_a_table_row_carrying_coverage_dimension_is_read_back(self) -> None:
+        """an update keeps the stored designation, so the row as sent may not be the row stored."""
+        registry, config = _make_registry_and_config()
+        coll = DataSourceTableCollection(registry=registry, config=config)
+        assert coll.columns_decided_by_store(_full_table_row()) == ("coverage_dimension",)
+
+
+# ---------------------------------------------------------------------------
 # get_by_natural_key (introspector lookup path)
 # ---------------------------------------------------------------------------
 

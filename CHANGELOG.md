@@ -28,6 +28,41 @@ text-only model -- therefore logged an ERROR on every such turn, and a host coul
 
 A host that passes no predicate is unchanged.
 
+### The datasource Collections write and read every column of the tables they serve
+
+Three Collections in `threetears.datasources.collections` wrote fewer columns than the hub's
+tables carry, and nothing compared a Collection with its table.
+
+- **Fixed: `TableTemplateCollection` is keyed on `id` alone.** Hub v007 rebuilt `table_templates`'
+  primary key on `id`, so the upsert's `ON CONFLICT (customer_id, id)` was refused by Postgres on
+  every save, and a read by `(customer_id, id)` could never find a platform template, whose
+  `customer_id` is NULL. **Breaking:** `primary_key_column` is now `"id"`, and `get`, `delete` and
+  `invalidate_cache` take the template UUID, not a `(customer_id, id)` tuple. No consumer called
+  them.
+- **Fixed: templates write `visibility` and `origin_template_id`.** A save without a `visibility`
+  now raises `ValueError` before anything is written; the column's `'private'` default is never
+  assumed, since writing it over a platform template hides it from every other customer.
+- **Fixed: relations write `customer_id` and `edges`** (hub v056). An L2 hit now decodes
+  `customer_id` as a `UUID`, not text.
+- **Fixed: tables write `coverage_dimension`** (hub v033), **on insert only.** An update never
+  writes it: the hub's admin PATCH and data-upgrade carry own an existing table's designation, and
+  the schema introspector saves back the row it prefetched, so writing its copy would undo a PATCH
+  that landed mid-pass. A save that carries the column reads the stored row back, so every tier and
+  the saved handle hold the designation L3 holds.
+- **Changed: these three upserts write only the columns a row carries.** A column the row does not
+  name keeps its stored value on an update and takes the table's default on an insert. It is never
+  reset to NULL or `'[]'`, which the old statements did to every column a row left out. A row
+  missing a `NOT NULL` column is written as a plain `UPDATE`, because Postgres checks `NOT NULL` on
+  an INSERT's proposed row before resolving the conflict. On a key no row holds, that update affects
+  0 rows and the save raises as before. Each of the three now answers `columns_decided_by_store`,
+  so a save reads back the columns the database decided rather than caching the row as sent.
+- **Added: an integration test of every Collection in the package against its hub table**
+  (`packages/datasources/tests/integration/test_collection_schema_parity_live.py`). The tables are
+  built the way the hub's migrations leave them, and every column in `information_schema` must be
+  written and read back by the Collection, or listed as hub-owned with a reason. The only hub-owned
+  columns are `datasources.spec`, `face_api`, `face_mcp`, `face_platform_tool` and `geo`, which a
+  Collection save must leave as it found them.
+
 ## v0.60.0 -- 2026-10-03
 
 ### A tool that did not do what it was asked says so as a failure

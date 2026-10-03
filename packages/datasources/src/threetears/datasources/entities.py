@@ -17,7 +17,7 @@ and matches the shape of the corresponding table in the platform schema:
 - :class:`DataSourceRelationEntity` -- cross-table join metadata
   (``datasource_relations``). flat PK ``id``.
 - :class:`TableTemplateEntity` -- reusable table-shape definition
-  (``table_templates``). composite PK ``(customer_id, id)``.
+  (``table_templates``). flat PK ``id`` (hub v007).
 
 plus the discriminator + lifecycle enums:
 
@@ -309,24 +309,21 @@ class DataSourceRelationEntity(BaseEntity):
 
 
 class TableTemplateEntity(BaseEntity):
-    """reusable table-shape definition scoped to one customer.
+    """reusable table-shape definition, customer-private or platform-owned.
 
-    composite-PK ``(customer_id, id)`` addressing so the hub's L1/L2/L3
-    lookup paths route correctly through the shared cache primitives;
-    ``BaseEntity`` derives that tuple from the collection's declared
-    ``primary_key_columns``, so no override lives here and
-    :attr:`BaseEntity.id` keeps returning the scalar template UUID.
-    fields match ``table_templates``: id, customer_id, name,
-    description, caveats, date_created, date_updated.
+    addressed by ``id`` alone (hub v007 rebuilt the primary key on
+    ``id``). fields match ``table_templates``: id, customer_id, name,
+    description, caveats, visibility, origin_template_id,
+    date_created, date_updated.
 
-    customer-scoping is a hard invariant: every template belongs to
-    exactly one customer, the unique index on ``(customer_id, name)``
-    keeps slug collisions inside a customer's namespace, and the
-    ``customer_id`` FK to ``customers`` cascades on customer
-    delete.
+    ``visibility`` is ``private`` with a ``customer_id``, or ``public``
+    / ``restricted`` with ``customer_id`` NULL (a CHECK constraint locks
+    the pairing). the unique index on ``(customer_id, name)`` keeps slug
+    collisions inside a customer's namespace, and the ``customer_id`` FK
+    to ``customers`` cascades on customer delete. ``origin_template_id``
+    points a promoted platform copy back at its customer source.
 
-    :param data: initial field data dictionary; must carry both
-        ``customer_id`` and ``id``
+    :param data: initial field data dictionary; must carry ``id``
     :ptype data: dict[str, Any]
     :param is_new: whether entity is newly created
     :ptype is_new: bool
