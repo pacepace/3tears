@@ -327,7 +327,7 @@ async def _search_by_ids(
             # for the ids that parsed, and nothing else would show that some were never looked up.
             log.debug("skipping unparseable id in batch", extra={"extra_data": {"raw_id": raw_id[:64]}})
     if not valid_uuids:
-        return "No valid UUIDs provided."
+        return "[TOOL ERROR] No valid UUIDs provided."
 
     parts: list[str] = []
 
@@ -395,7 +395,7 @@ async def _search_by_ids(
                 await ledger_callback(ckid, "chunk", title or row["content"])
 
     if not parts:
-        return "No items found for the provided IDs."
+        return "[TOOL ERROR] No items found for the provided IDs."
 
     found_ids: set[str] = set()
     for row in mem_rows:
@@ -515,7 +515,7 @@ async def load_memory_search_tool(
             )
 
         if not query:
-            return "Provide one of 'query', 'ids', or 'alias'."
+            return "[TOOL ERROR] Provide one of 'query', 'ids', or 'alias'."
 
         # v0.7.5: parse ISO date filters. Either bound may stand alone.
         def _parse_iso(label: str, raw: str | None) -> tuple[datetime | None, str | None]:

@@ -18,7 +18,9 @@ WORKSPACE = Path(__file__).resolve().parents[2]
 SOURCES = sorted(p for p in (WORKSPACE / "packages").rglob("src") if p.is_dir() and "/tests/" not in str(p))
 
 #: How a refusal opens. A line that opens this way and is not one belongs in ANSWERS.
-REFUSAL = re.compile(r"^(No |Nothing|Invalid|Not |Cannot|Can't|Failed|Import failed|Unknown|Only |Could not|Unable)")
+REFUSAL = re.compile(
+    r"^(No |Nothing|Invalid|Not |Cannot|Can't|Failed|Import failed|Unknown|Only |Could not|Unable|Provide )"
+)
 
 #: ``file:opening`` -> why it is an answer and not a refusal.
 ANSWERS: dict[str, str] = {
@@ -67,6 +69,22 @@ def _tool_functions(tree: ast.AST) -> list[ast.AsyncFunctionDef | ast.FunctionDe
         )
         if decorated or node.name in handed:
             found.append(node)
+    # a tool that returns a helper's result returns the helper's refusals: follow it, in this module
+    by_name = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef)}
+    seen = {id(f) for f in found}
+    queue = list(found)
+    while queue:
+        fn = queue.pop()
+        for node in ast.walk(fn):
+            value = node.value if isinstance(node, ast.Return) else None
+            if isinstance(value, ast.Await):
+                value = value.value
+            if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+                helper = by_name.get(value.func.id)
+                if helper is not None and id(helper) not in seen:
+                    seen.add(id(helper))
+                    found.append(helper)
+                    queue.append(helper)
     return found
 
 
@@ -109,8 +127,13 @@ def test_the_walk_has_teeth() -> None:
         "@tool('c')\n"
         "async def c() -> str:\n"
         "    return '[TOOL ERROR] Nothing changed'\n"
+        "async def _look(ids: list[str]) -> str:\n"
+        "    return 'No valid ids provided.'\n"
+        "@tool('d')\n"
+        "async def d(ids: list[str]) -> str:\n"
+        "    return await _look(ids)\n"
     )
-    assert [h.split(":")[1] for h in _plain_refusals(source, "x.py")] == ["4", "6"]
+    assert sorted(int(h.split(":")[1]) for h in _plain_refusals(source, "x.py")) == [4, 6, 12]
     for key in ANSWERS:
         path = WORKSPACE / key.split(":", 1)[0]
         assert path.is_file() and key.split(":", 1)[1] in path.read_text(), f"ANSWERS names what is not there: {key}"
