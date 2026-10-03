@@ -242,6 +242,11 @@ class StreamErrorEvent(BaseModel):
     :ptype message: str
     :param duration_ms: wall-clock milliseconds elapsed before failure
     :ptype duration_ms: int
+    :param gateway_code: the model gateway's own refusal code (e.g. ``MODEL_NO_VISION``) when
+        the turn failed because the gateway refused it; ``None`` for any other failure. ``code``
+        names the agent-level failure class, this names what the gateway said, so a consumer
+        branches on it without parsing ``message``
+    :ptype gateway_code: str | None
     """
 
     type: Literal["stream_error"] = "stream_error"
@@ -249,6 +254,7 @@ class StreamErrorEvent(BaseModel):
     code: str
     message: str
     duration_ms: int = 0
+    gateway_code: str | None = None
 
 
 class StreamInterruptEvent(BaseModel):
@@ -516,6 +522,7 @@ class StreamingResponse:
         conversation_id: UUID,
         start_time_monotonic: float | None = None,
         error_classifier: Callable[[BaseException], str] | None = None,
+        gateway_code_reader: Callable[[BaseException], str | None] | None = None,
     ) -> None:
         """initialize a streaming response bound to one transport target.
 
@@ -540,11 +547,19 @@ class StreamingResponse:
             to the caller's own layers -- this package deliberately does
             not depend on them to name an error
         :ptype error_classifier: collections.abc.Callable[[BaseException], str] | None
+        :param gateway_code_reader: optional reader of the model gateway's own refusal code off
+            a failing exception, carried on the :class:`StreamErrorEvent` that :meth:`run_graph`
+            publishes as ``gateway_code``; it answers ``None`` for a failure that is not a
+            gateway refusal. defaults to ``None``, which publishes no gateway code. injected for
+            the same reason as ``error_classifier``: the exception carrying the code is the
+            caller's type
+        :ptype gateway_code_reader: collections.abc.Callable[[BaseException], str | None] | None
         """
         self._transport = transport
         self._correlation_id = correlation_id
         self._conversation_id = conversation_id
         self._error_classifier = error_classifier
+        self._gateway_code_reader = gateway_code_reader
         self._explicit_start_monotonic = start_time_monotonic
         self._effective_start_monotonic: float | None = None
         self._accumulated_content: str = ""
@@ -820,7 +835,7 @@ class StreamingResponse:
         await self._publish(event)
 
     @traced
-    async def error(self, *, code: str, message: str) -> None:
+    async def error(self, *, code: str, message: str, gateway_code: str | None = None) -> None:
         """publish the failure terminal :class:`StreamErrorEvent` once.
 
         idempotent if a previous :meth:`error` already fired -- second
@@ -832,6 +847,9 @@ class StreamingResponse:
         :ptype code: str
         :param message: human-readable failure description
         :ptype message: str
+        :param gateway_code: the model gateway's own refusal code when the gateway refused the
+            turn; ``None`` (the default) for any other failure
+        :ptype gateway_code: str | None
         :return: nothing
         :rtype: None
         :raises StreamingResponseError: when ``end`` already fired
@@ -850,6 +868,7 @@ class StreamingResponse:
             code=code,
             message=message,
             duration_ms=duration_ms,
+            gateway_code=gateway_code,
         )
         await self._publish(event)
 
@@ -980,7 +999,9 @@ class StreamingResponse:
                 },
                 exc_info=True,
             )
-            await self.error(code=self._classified_code(exc), message=str(exc))
+            await self.error(
+                code=self._classified_code(exc), message=str(exc), gateway_code=self._read_gateway_code(exc)
+            )
             raise
         else:
             try:
@@ -998,7 +1019,9 @@ class StreamingResponse:
                     },
                     exc_info=True,
                 )
-                await self.error(code=self._classified_code(exc), message=str(exc))
+                await self.error(
+                    code=self._classified_code(exc), message=str(exc), gateway_code=self._read_gateway_code(exc)
+                )
                 raise
             if interrupt_payload is not _NO_INTERRUPT:
                 # the graph PAUSED on a human-in-the-loop interrupt rather than completing: stash the
@@ -1044,6 +1067,34 @@ class StreamingResponse:
                 )
                 code = DEFAULT_ERROR_CODE
         return code
+
+    def _read_gateway_code(self, exc: BaseException) -> str | None:
+        """read the model gateway's own refusal code off one failing exception.
+
+        same failure-path rule as :meth:`_classified_code`: a caller-supplied reader
+        that raises must not cost the terminal event or replace the exception the
+        caller is about to see, so a broken reader degrades to ``None`` and is logged.
+
+        :param exc: the exception that ended the run
+        :ptype exc: BaseException
+        :return: the gateway's code, or ``None`` when there is no reader, the failure is
+            not a gateway refusal, or the reader failed
+        :rtype: str | None
+        """
+        gateway_code: str | None = None
+        if self._gateway_code_reader is not None:
+            try:
+                gateway_code = self._gateway_code_reader(exc)
+            # prawduct:allow prawduct/broad-except -- caller-supplied reader on the failure path;
+            # any fault in it degrades to no gateway code rather than displacing the original
+            # exception, which is logged here and still propagates to the caller.
+            except Exception:
+                log.exception(
+                    "stream gateway-code reader failed; publishing no gateway code",
+                    extra={"extra_data": {"correlation_id": str(self._correlation_id)}},
+                )
+                gateway_code = None
+        return gateway_code
 
     def _compute_duration_ms(self) -> int:
         """compute milliseconds elapsed since the recorded start time.

@@ -88,6 +88,7 @@ from threetears.nats import (
 )
 from threetears.nats.errors import NatsClientError
 from threetears.observe import InflightRequestsGauge, clear_context, get_logger, traced
+from threetears.observe.resilience import retry_bounded
 
 __all__ = [
     "CallAccepted",
@@ -1789,43 +1790,48 @@ class ToolServer:
         :raises NatsClientError: when the platform does not admit the pod within the retry budget
         """
         budget = get_connect_retry_budget()
+        # positive by construction (:func:`get_connect_retry_backoff_cap` refuses anything else), so
+        # the retry's schedule never refuses itself before the first attempt.
         backoff_cap = get_connect_retry_backoff_cap()
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + budget
-        delay = 1.0
-        attempt = 0
-        client: NatsClient | None = None
-        while client is None:
-            attempt += 1
-            try:
-                client = await nats_connect(
+        attempts = 1
+
+        def _not_ready(exc: Exception, attempt: int, pause: float) -> None:
+            nonlocal attempts
+            attempts = attempt + 1
+            log.warning(
+                "tool pod NATS connect not ready (platform still starting?); retrying",
+                extra={
+                    "extra_data": {
+                        "pod_id": self._pod_id,
+                        "attempt": attempt,
+                        "retry_in_s": pause,
+                        "error": str(exc),
+                    }
+                },
+            )
+
+        try:
+            client: NatsClient = await retry_bounded(
+                lambda: nats_connect(
                     self._nats_url,
                     namespace=self._namespace,
                     user=self._nats_user,
                     password=self._nats_password,
                     auth_token=self._auth_token,
                     conn_id=self._pod_id,
-                )
-            except (NatsClientError, OSError) as exc:
-                if loop.time() >= deadline:
-                    log.error(
-                        "tool pod could not connect to NATS within the retry budget; failing loud",
-                        extra={"extra_data": {"pod_id": self._pod_id, "attempts": attempt, "budget_s": budget}},
-                    )
-                    raise
-                log.warning(
-                    "tool pod NATS connect not ready (platform still starting?); retrying",
-                    extra={
-                        "extra_data": {
-                            "pod_id": self._pod_id,
-                            "attempt": attempt,
-                            "retry_in_s": delay,
-                            "error": str(exc),
-                        }
-                    },
-                )
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, backoff_cap)
+                ),
+                retry_on=lambda exc: isinstance(exc, NatsClientError | OSError),
+                first_delay=min(1.0, backoff_cap),
+                max_delay=backoff_cap,
+                deadline_seconds=budget,
+                on_retry=_not_ready,
+            )
+        except NatsClientError, OSError:
+            log.error(
+                "tool pod could not connect to NATS within the retry budget; failing loud",
+                extra={"extra_data": {"pod_id": self._pod_id, "attempts": attempts, "budget_s": budget}},
+            )
+            raise
         return client
 
     @traced()

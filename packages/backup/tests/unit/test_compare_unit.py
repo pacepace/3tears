@@ -17,8 +17,16 @@ from threetears.backup.drivers import PostgresDriver, YugabyteDriver, driver_by_
 
 class TestUuid7UpperBound:
     def test_ids_minted_before_the_moment_sort_under_the_bound(self) -> None:
+        """the moment is read off the id itself, not off the wall clock.
+
+        CPython's ``uuid7`` is monotonic per process: once any earlier test minted ids under a clock
+        frozen ahead of real time (freezegun's ``tick``), every id minted afterwards carries that
+        later timestamp until real time catches up. Comparing against ``datetime.now()`` then failed
+        only when such a test happened to run first in the same process.
+        """
         earlier = uuid7()
-        bound = uuid7_upper_bound(datetime.now(UTC) + timedelta(seconds=1))
+        minted = datetime.fromtimestamp((earlier.int >> 80) / 1000, UTC)
+        bound = uuid7_upper_bound(minted + timedelta(seconds=1))
         assert earlier < bound
 
     def test_ids_minted_after_the_moment_sort_over_the_bound(self) -> None:

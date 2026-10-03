@@ -6,8 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.59.0 -- 2026-10-03
-
 ### Channels: a Discord bot can reach a user directly, and say how a reply will find it
 
 - **Added, `DiscordAdapter.send_direct(*, user_id, content) -> DirectMessageSent`:** opens (or
@@ -75,6 +73,284 @@ its own DDL, and the shapes drifted (a missing grant index left the hub's grants
 ### Intentions
 
 - **Added, `intention_log(..., on_logged=...)`:** a consumer hears of each new want it stores.
+
+## v0.60.0 -- 2026-10-03
+
+### A tool that did not do what it was asked says so as a failure
+
+A consumer reads a tool's failure only from the `[TOOL ERROR]` prefix
+(`threetears.agent.tools.utils.tool_error`); any other text is a call that worked. Refusals in
+the memory, identity, intention and tool-search tools answered in plain text, so every consumer
+recorded them as calls that worked, and an agent checking its own reply against the record read
+them as done.
+
+- **Changed, text a tool returns:** these now start with `[TOOL ERROR] `, the rest unchanged:
+  - `memory_recall`: `Invalid memory_id format: ...`, `No memory with that id that you can read.`,
+    `Invalid chunk_id_after format: ...`, `Invalid chunk_id_before format: ...`;
+  - `memory_search`: `No memory found with alias '...'.`, `No valid UUIDs provided.`,
+    `No items found for the provided IDs.`, `Provide one of 'query', 'ids', or 'alias'.`;
+  - `memory_add`: `Invalid memory_type '...'. Valid types: ...`;
+  - `chunk_recall`: `Invalid chunk_id format: ...`, `No passage with that id that you can read. ...`;
+  - `identity_propose`: `Unknown block_key '...'. ...`, `Could not propose a change to '...'.`;
+  - the intention tool's `No want found for [intention:...].`;
+  - `tool_search`: `Tool search did not finish in time. ...`, `Tool search failed. ...`.
+
+  A consumer that matches any of these sentences as written matches them with the prefix.
+  Empty searches and listings (`No relevant memories or documents found for this query.`,
+  `No passages matched.`, `No matching tools found.`, ...) are answers and are unchanged.
+- **Added, in `threetears.agent.skills`: `merged_skill_shape(entity, *, body, tool, arguments)`**,
+  a skill's body, tool and arguments after an update (an empty string removes a body or a tool;
+  removing the tool removes its arguments), the one rule `skill_update` and a consumer's REST route
+  both call; **and `validate_skill_arguments`** (in `threetears.agent.skills.tools`), the
+  arguments size check, public under that name.
+- **Enforcement:** `tests/enforcement/test_a_tool_that_did_not_do_it_says_so.py` walks every tool in
+  every package -- each `@tool` function, each one handed to `StructuredTool.from_function`, and the
+  same-module helpers they return -- and fails on a refusal returned as plain text.
+- **Tests:** the session NATS fixture starts a plain container with a structured log wait;
+  `testcontainers.nats.NatsContainer` waited through testcontainers' deprecated helpers, and every
+  suite that started NATS carried two deprecation warnings.
+
+### A gateway refusal's own code rides the stream terminal
+
+`StreamErrorEvent` carried `code`, `message` and `duration_ms`. A turn the model gateway refused
+(for example `MODEL_NO_VISION`) terminated with an agent-level `code`, and the gateway's own code
+reached a stream or websocket consumer only inside `message`, where a consumer had to parse prose
+to find it.
+
+- **Added, in `threetears.langgraph` (module `streaming`): `StreamErrorEvent.gateway_code: str |
+  None = None`.** It holds the gateway's refusal code when the gateway refused the turn, and `None`
+  for any other failure. `code` still names the agent-level failure class. A payload without the
+  field still parses, with `gateway_code` set to `None`.
+- **Added: `StreamingResponse.error(..., gateway_code=None)`.** A caller publishing its own
+  terminal can set the field.
+- **Added: `StreamingResponse(..., gateway_code_reader=None)`.** This is an optional
+  `Callable[[BaseException], str | None]`. `run_graph` publishes the failure terminal itself, so
+  it is the path most failed turns take. On that path the reader is handed the failing exception,
+  and what it returns becomes `gateway_code`. It is injected for the same reason as
+  `error_classifier`: the exception that carries the code is the caller's own type. A reader that
+  raises degrades to `None` and is logged. It never costs the terminal event, and it never
+  replaces the exception that propagates. Cancellation never consults the reader.
+
+Every existing producer is unchanged and publishes `gateway_code: null`. A consumer that wants the
+code must read the new field. A host gets the code on `run_graph`'s terminal by passing
+`gateway_code_reader`.
+
+### An agent granted `media` boots clean, and `media_analyze` answers its first call
+
+Found live: every agent granted the `media` tool alias logged an ERROR at boot, and every first
+`media_analyze` call failed.
+
+- **Fixed, in `threetears.agent.tools.aliases`: `MEDIA_TOOLS` no longer names
+  `threetears.image_generation`.** The `media` alias now expands to `threetears.media_analyze`,
+  `threetears.parse_document` and `threetears.image_prep`. `image_generation` is a LangChain factory
+  (`create_image_generation_tool`) that needs host-supplied generation backends and host-side
+  persistence of the image it makes. It is not a `TearsTool`, so no `ToolServer` registers it and no
+  registry ever offers it. Naming it in the alias made the agent's readiness gate report a granted
+  pattern that matches no tool, an ERROR on every boot. The factory itself is unchanged; a host that
+  builds it binds it itself. A test now holds the alias to exactly the media tools a `ToolServer`
+  can register.
+- **Fixed, in `threetears.agent.tools.builtin.analyze_media`: the model no longer has to guess an
+  analyzer.** The input schema required `analyzer` and told the model no names, so it invented one
+  (`'GPT-4 Vision'`, `'Claude 3.5 Sonnet'`), read the real names from the error, and called again:
+  one wasted model round trip per analysis.
+  - `analyzer` is no longer required. Omitted, the call uses the first registered analyzer that
+    reads every resolved item: a text provider for a document, a transcriber for audio or video,
+    vision for an image. When none does, the error names the media's categories and each analyzer's
+    reach. When no analyzer is configured at all, it says that.
+  - `AnalyzeMediaTool.mcp_schema()` lists the registered analyzer names as the `analyzer` field's
+    `enum`, built from the instance's analyzers each time it is called. With none registered, the
+    field carries no `enum`. The LangChain tool from `create_analyze_media_tool` uses the same
+    schema.
+  - A named analyzer is still used exactly as named. An unknown name is still refused with the list
+    of choices. It is never swapped for another analyzer.
+
+  No public name was added or removed. The only behaviour change for an existing caller is that a
+  call without `analyzer`, which used to fail, now succeeds.
+
+## v0.59.0 -- 2026-10-02
+
+### An absent KV bucket raises its own typed error, and a raw nats-py handle's failures classify without importing nats-py
+
+Every KV path raised a plain `KvError` whether the bucket did not exist or the call failed for any
+other reason. The two need different responses: an absent bucket is ANSWERED by the server and
+means its declarer has not declared it yet (wait for it), while a refused one is never answered and
+means a missing grant (fix it). Consumers told them apart by matching nats-py's exception class
+NAMES on `__cause__`, because their enforcement keeps `nats.*` imports out of production code.
+
+- **Added, in `threetears.nats` (module `errors`): `KvBucketNotFoundError(KvError)`**, carrying
+  `.bucket`, the fully-qualified name of the absent bucket. Raised by every 3tears KV path that
+  finds the bucket absent:
+  - a bind-only open -- `NatsClient.kv_bucket` / `NatsClient.ensure_kv_bucket` with
+    `create_if_missing=False`, and `NatsKvBucket.open` -- once its wait for the declarer is spent;
+  - a declaring open whose create went unanswered and whose bind found nothing;
+  - a bind that succeeded and whose stream was gone by the live-config read that follows it;
+  - an operation on a bound handle (`get`, `get_entry`, `get_latest`, `put`, `create`, `update`,
+    `delete`, `date_created`, `list_keys`, and the per-entry-TTL `put` / `update`) whose stream
+    vanished and could not be bound again;
+  - `threetears.core.collections.bucket.bind_collections_bucket` once its attempt budget is spent
+    and the last bind found the bucket absent; its message then names the declarer, not the grant.
+
+  It is still a `KvError`, so every existing `except KvError` keeps catching it unchanged. A
+  refused or unreachable bucket stays a plain `KvError`. Classification is by type, never by
+  message text.
+- **Added, in `threetears.nats` (module `raw_errors`), for a consumer holding a RAW nats-py KV
+  handle:**
+  - **`is_bucket_not_found(exc) -> bool`**: true for nats-py's `BucketNotFoundError`, its
+    `NoStreamResponseError` (a KV write no stream captures), its `NotFoundError` carrying
+    JetStream's stream-not-found code, and for `KvBucketNotFoundError`. False for a missing key,
+    a deadline, and a core no-responders error.
+  - **`is_key_not_found(exc) -> bool`**: true for nats-py's `KeyNotFoundError` and
+    `KeyDeletedError`; false for an absent bucket, though nats-py raises both through
+    `NotFoundError`.
+  - **`is_nats_error(exc) -> bool`**: true for any `nats.errors.Error`; false for a 3tears wrapper
+    error, which is already translated.
+  - **`JS_ERR_STREAM_NOT_FOUND`** (`10059`): the JetStream error code the stream-not-found
+    classification reads.
+
+  Resolved lazily like every other nats-py-backed name in `threetears.nats`, so importing the
+  package still does not load the client.
+- **Changed: the shipped fakes raise what the real client raises.** `FakeNatsClient.kv_bucket` and
+  `FakeNatsClient.ensure_kv_bucket` with `create_if_missing=False` raise `KvBucketNotFoundError` for
+  an absent bucket instead of `KeyError`; `ensure_kv_bucket` treats a vanished bucket as absent. A
+  `FakeKvBucket` operation through a bind-only handle (a bucket named in `declared_buckets`, or
+  bound through `ensure_kv_bucket(create_if_missing=False)`) on a vanished bucket raises
+  `KvBucketNotFoundError` and leaves the bucket absent, where it used to recreate it; a handle
+  that may create still heals. A declaring `ensure_kv_bucket` recreates a vanished bucket. New
+  `FakeKvBucket(..., may_create=True)`, `FakeKvBucket.may_create` and
+  `FakeKvBucket.set_may_create()` carry the handle's mode.
+
+  **Consumer action:** a test that asserted `pytest.raises(KeyError)` around a bind-only open of
+  an absent bucket over `FakeNatsClient` now gets `KvBucketNotFoundError`; assert that instead. A
+  test that vanished a bucket named in `declared_buckets` and expected the next operation to heal
+  it now has to declare it again (`ensure_kv_bucket`), as the real declarer does.
+
+### Fixed: a refusal an operation's self-heal meets is raised as itself, not as a `KvError`
+
+`KvConfigMismatch` and `StreamSubjectsOverlapError` are deliberately not `KvError`s, because the
+L2 accessors catch `KvError` and degrade. An open raised them as themselves, but a `NatsKvBucket`
+operation (`get`, `get_entry`, `get_latest`, `put`, `create`, `update`, `delete`, `date_created`)
+whose self-heal re-bound or recreated its bucket and met one wrapped it into a plain `KvError`, so
+the refusal was downgraded to a per-operation warning and the process ran on against a bucket it
+refuses. Those operations now raise both as themselves.
+
+### NATS: what a restart that lost its storage takes comes back after the reconnect, file storage too
+
+On Kubernetes a restarted NATS pod can come back without its JetStream volume, so a restart can
+delete FILE-storage streams and buckets as well as memory ones. v0.58.0 put back only the memory
+ones. Found live in a cold-start validation: after such a restart the hub's file-storage turn,
+delivery and audit streams were gone, the agent-router's durable turn consumer logged `stream not
+found` on every rebind, a tool-call turn spanning the restart failed after 122 s, and the registry
+answered `CATALOG_UNAVAILABLE` to every registration, so a restarted agent could not register its
+tools.
+
+- `NatsClient` now remembers every stream declared through `ensure_jetstream_stream` and every
+  bucket declared through `ensure_kv_bucket(create_if_missing=True)`, whatever its storage, and
+  creates each again with the config it was declared with after every reconnect. The same
+  create-only rule holds: a stream that survived (a plain restart keeps file storage) is a no-op,
+  and one live with a different config is left alone and logged. Durables the client bound on them
+  are bound again, as before. What comes back is EMPTY: messages and entries the restart took are
+  their owner's to write again.
+- A `kv_bucket()` open is still not remembered, even one that may create: it declares nothing, and
+  remembering it would let a process that is not the bucket's declarer create it after a restart
+  with a config (`allow_direct` unset) the declarer's create-only restoration then leaves in place.
+  Its own self-heal recreates it on first use, as before.
+- Registry: the catalog bucket (`tool_catalog`) has an owner, `CatalogPersistence`, which
+  `RegistryServer.serve` starts. It declares the bucket and warm-loads the catalog at start (in the
+  background when the bucket is unreachable then -- see the review fixes below), and after every
+  reconnect declares it again and writes the in-memory catalog back into it
+  (`ToolCatalog.restore_to_kv`), in the background, retried with capped backoff and logged at ERROR
+  until it lands. It does not go through `ensure_kv_bucket` because that path names the bucket
+  `{namespace}-tool_catalog`, which would orphan the persisted catalog and break every
+  deployment's `$KV.tool_catalog.>` grant, and because a bucket the client re-creates comes back
+  empty. The bind now creates only when the server answered that the bucket is absent; a timeout
+  or refusal is retried instead of answered with a create. The registry's result stream was
+  already restored (memory storage, since v0.58.0) and still is.
+- `FakeNatsClient.remembered_declarations` and `restart_broker` follow: a file-storage declaration
+  is remembered and put back, empty, like a memory one.
+
+**Consumer action:** a stream or bucket created through a raw `jetstream_context()` call
+(`add_stream`, `create_key_value`) is not remembered. Declare it through `ensure_jetstream_stream`
+/ `ensure_kv_bucket`, or re-declare it from an `add_reconnect_callback` hook. A test asserting that
+a file-storage declaration is NOT remembered (`remembered_declarations`) now sees it remembered.
+
+### Backup: a database dump that DDL raced is dumped again, and nothing else is retried
+
+Found live on a cold start: the hub's first scheduled cluster backup dumped `aibots` while an
+agent schema was being created in it, and `ysql_dump` failed with `schema with OID 17839 does not
+exist`. The dump tool reads the catalog's list of objects and then asks the server about each,
+and DDL landing between the two removes one from under it. The other databases dumped, the set
+was INCOMPLETE, and the cluster waited a whole interval for its next backup.
+
+- `ClusterBackup.create_backup` now takes that ONE database again -- inventory, snapshot and
+  dump -- when the failure is exactly this race, classified by
+  `threetears.backup.cluster.is_concurrent_ddl_failure`: a dump tool (`pg_dump`, `ysql_dump`)
+  that exited non-zero with standard error naming a catalog object by OID that vanished (`schema
+  with OID N does not exist`, `could not open relation with OID N`, `cache lookup failed for ...
+  N`). A timeout, a permission error, a store failure or any other message is attempted once, as
+  before. Each retry is logged at WARNING naming the database, the attempt and the tool's error.
+- Bounded by two new `BackupConfig` fields, also read by `from_env`:
+  `dump_concurrent_ddl_retries` (default 3; `THREETEARS_BACKUP_DUMP_CONCURRENT_DDL_RETRIES`) and
+  `dump_concurrent_ddl_retry_delay_seconds` (default 5.0, doubled before each later retry;
+  `THREETEARS_BACKUP_DUMP_CONCURRENT_DDL_RETRY_DELAY_SECONDS`). A database still failing after
+  them is recorded as failed, as before.
+- **Why the backup does not take the database's DDL lock instead:** the lock is exclusive and a
+  dump would hold it for its whole run, so every DDL job in the database -- an agent's schema, a
+  pod's tables -- would wait out a backup, and a caller that bounds that wait would be refused.
+  The decision is recorded once, in the `threetears.backup.cluster` module docstring.
+
+### NATS, registry, core: what the review of this release found, fixed
+
+- **One slow bucket open no longer stalls every other.** `NatsClient.kv_bucket` and
+  `ensure_kv_bucket` serialized every open in the process on one lock, held across a bind-only
+  open's wait for its declarer (up to `KvTimings.bind_wait_for_declarer_seconds`), so one absent
+  pod bucket stalled every other open, cache hits included. Opens now serialize per bucket name,
+  and a cached handle is answered without taking a lock.
+- **`list_keys` self-heals like every other operation.** A listing whose stream vanished now
+  re-opens the bucket once -- a declaring handle recreates it, a bind-only one waits for its
+  declarer -- and lists again, where it used to raise `KvBucketNotFoundError` at once. The re-open
+  runs outside the listing's own bound, on its own wait for the declarer, so a declarer that
+  stays away is reported as `KvBucketNotFoundError`, never as a listing timeout blaming the
+  consumer grant. That bound is now `KvTimings.key_listing_timeout_seconds` (default 30), one
+  per listing attempt.
+- **One owner translates a `NatsKvBucket` operation's failure.** The "refusals raise as
+  themselves, everything else becomes the typed `KvError`" rule lived in each of ten operations'
+  own `except` chain; it now lives in one place, so the next rule is applied once. The bind wait
+  for a declarer classifies an absence with `is_bucket_not_found` like every other path.
+- **New: `threetears.observe.retry_until_done`**, the "run until done, capped doubling backoff"
+  engine. The NATS client's restore after a reconnect and the registry's catalog restore both run
+  on it, with the same schedule, instead of two copies of the loop. Its bounded sibling, **new:
+  `threetears.observe.retry_bounded`**, retries the failures a caller classifies as retryable
+  within an attempt and/or deadline bound, lets a failure that paced itself retry at once, and
+  raises the last failure unchanged once the bound is spent. The KV bind's wait for a declarer,
+  `bind_collections_bucket` and a tool pod's first NATS connect run on it; no hand-rolled
+  doubling loop is left outside `threetears.observe.resilience`. `retry_bounded` refuses a schedule
+  it cannot back off on before its first attempt, so every setting that feeds one is refused where
+  it is read instead: `KvTimings` now refuses a non-positive deadline or pause and a longest pause
+  shorter than the first, naming the field (a zero bind wait still binds once), and
+  `THREETEARS_TOOL_POD_CONNECT_RETRY_BACKOFF_CAP` of zero or less is refused with a warning naming
+  it and the default used -- it had stopped a pod whose NATS was up from starting. The tool pod's
+  give-up log names how many connect attempts ran again.
+- **Waiting for an absent collections bucket has one owner.** `bind_collections_bucket` retried
+  an absence with its own backoff on top of the client's bind wait, multiplying what a missing
+  bucket costs. An absence is now retried at once (the bind paced it); other failures still back
+  off. The attempt budget's sizing note is stated relationally.
+- **A registry whose catalog bucket is unreachable at start no longer runs with persistence off.**
+  `CatalogPersistence.start` makes one attempt; on failure it logs at ERROR and hands over to the
+  same background restore a reconnect starts, which declares the bucket, loads it, and writes the
+  catalog back -- no reconnect needed. `ToolCatalog.load_from_kv` never replaces an entry the
+  catalog already holds, so a late load cannot overwrite a live registration.
+- **`ToolCatalog.restore_to_kv` writes what the catalog holds when it writes.** It used to work
+  from a snapshot, so a tool deregistered while the restore awaited an earlier write was written
+  back into the bucket.
+- A backup unit test compared a freshly minted `uuid7` against the wall clock, and failed whenever
+  a test that froze time ahead ran first in the process (CPython's `uuid7` is monotonic per
+  process). It now reads the moment off the id.
+
+### Enforcement: `threetears.nats.raw_errors` is part of the wrapper
+
+`raw_errors` classifies a raw nats-py handle's exceptions by their nats-py type, so it imports
+nats-py by design. The wrapper-usage gate now lists it with the other wrapper modules rather than
+failing on it; a nats-py import in any module outside that list still fails.
 
 ## v0.58.0 -- 2026-10-02
 

@@ -69,7 +69,11 @@ class _ScriptedServer:
         self.stream_by_subject: dict[str, str] = {}
 
     def restart(self) -> None:
-        """forget every stream and every consumer, as a memory-storage server restart does."""
+        """forget every stream and every consumer, as a restart that lost the broker's storage does.
+
+        Memory storage is always lost on a restart; on Kubernetes file storage can be too, so the
+        model forgets both. A restart that kept its file storage is a reconnect with no restart.
+        """
         self.streams.clear()
         self.consumers.clear()
 
@@ -214,18 +218,84 @@ async def test_a_memory_stream_wiped_by_a_restart_is_declared_again_with_its_own
 
 
 @pytest.mark.asyncio
-async def test_a_file_stream_is_not_declared_again() -> None:
-    """file storage survives a restart, so re-declaring it would only risk clobbering it."""
+async def test_a_file_stream_lost_with_the_brokers_storage_is_declared_again_with_its_own_config() -> None:
+    """on Kubernetes a NATS restart can lose its storage whatever the declared type.
+
+    Found live: after a restart that lost the JetStream volume, the hub's file-storage turn,
+    delivery and audit streams were gone and nothing put them back -- the agent-router's durable
+    turn consumer failed to bind with ``stream not found`` until the hub was restarted by hand.
+    """
     server = _ScriptedServer()
     client, reconnected = await _connected(server)
     await client.ensure_jetstream_stream(name="audit", subjects=[f"{_NS}.audit.>"], storage="file")
+    stream = f"{_NS}-audit"
+    declared = server.streams[stream]
+
+    server.restart()
+    await reconnected()
+    await _until(lambda: stream in server.streams)
+
+    assert server.streams[stream] == declared
+    assert declared.storage == StorageType.FILE
+    assert server.updated == [], "a re-declaration creates; it never updates"
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_file_stream_that_kept_its_storage_is_left_untouched() -> None:
+    """a plain restart keeps file storage: the re-declaration is the idempotent create, nothing more."""
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    await client.ensure_jetstream_stream(name="audit", subjects=[f"{_NS}.audit.>"], storage="file")
+    stream = f"{_NS}-audit"
+    declared = server.streams[stream]
     adds_before = len(server.added)
 
     await reconnected()
-    for _ in range(20):
-        await asyncio.sleep(0)
+    await _until(lambda: len(server.added) > adds_before)
 
-    assert len(server.added) == adds_before
+    assert server.streams[stream] == declared
+    assert server.updated == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_declared_file_kv_bucket_lost_with_the_brokers_storage_is_declared_again() -> None:
+    """the KV counterpart: a file-backed bucket its declarer owns comes back with the declared config."""
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    await client.ensure_kv_bucket(name="catalog", storage="file", history=1)
+    kv_stream = f"KV_{_NS}-catalog"
+    declared = server.streams[kv_stream]
+
+    server.restart()
+    await reconnected()
+    await _until(lambda: kv_stream in server.streams)
+
+    assert server.streams[kv_stream] == declared
+    assert declared.storage == StorageType.FILE
+    assert declared.allow_direct is True
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_pull_durable_on_a_lost_file_stream_is_bound_again() -> None:
+    """the agent-router's turn consumer: its stream back, the durable on it bound again."""
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    stream = await client.ensure_jetstream_stream(name="agents-turn", subjects=[f"{_NS}.audit.>"], storage="file")
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.audit_wildcard(), durable="agent-turn-router", cb=_ack, max_deliver=3, stream=stream
+    )
+
+    server.restart()
+    await reconnected()
+    await _until(lambda: stream in server.streams)
+    await consumer.fetch_and_process()
+
+    assert (stream, "agent-turn-router") in server.consumers
+    assert server.pull_binds == ["agent-turn-router", "agent-turn-router"]
+    await consumer.stop()
     await client.shutdown()
 
 
@@ -314,6 +384,46 @@ async def test_a_kv_bucket_only_bound_is_not_declared_by_the_binder() -> None:
 
     assert server.added == []
     await binder.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_kv_bucket_open_that_may_create_is_not_declared_again() -> None:
+    """only a declaration is put back. a kv_bucket() open declares nothing, even one that may create.
+
+    remembering it would let a process that is not the bucket's declarer create it after a restart
+    with the config it happened to open with -- ``allow_direct`` unset -- and the declarer's
+    create-only restoration would then leave that bucket in place.
+    """
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    await client.kv_bucket(name="opened", create_if_missing=True)
+
+    server.restart()
+    server.added.clear()
+    await reconnected()
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert [config.name for config in server.added] == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_bind_only_declaration_is_not_declared_again() -> None:
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    server.streams[f"KV_{_NS}-shared"] = build_kv_stream_config(
+        bucket=f"{_NS}-shared", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+    )
+    await client.ensure_kv_bucket(name="shared", create_if_missing=False)
+
+    server.restart()
+    await reconnected()
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert server.added == []
+    await client.shutdown()
 
 
 async def _ack(msg: Any) -> None:

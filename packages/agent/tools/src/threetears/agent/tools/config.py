@@ -233,10 +233,14 @@ def get_connect_retry_budget() -> float:
 def get_connect_retry_backoff_cap() -> float:
     """return the max backoff (seconds) between initial-connect retry attempts.
 
-    :return: seconds from THREETEARS_TOOL_POD_CONNECT_RETRY_BACKOFF_CAP or the platform default
+    a cap of zero or less is refused here, with a warning naming the variable, and the default
+    stands in: the retry's schedule cannot back off from it, and a value the retry refuses would stop
+    a pod whose NATS is up from starting at all.
+
+    :return: positive seconds from THREETEARS_TOOL_POD_CONNECT_RETRY_BACKOFF_CAP or the platform default
     :rtype: float
     """
-    return _env_float(
+    return _env_positive_float(
         "THREETEARS_TOOL_POD_CONNECT_RETRY_BACKOFF_CAP",
         _PLATFORM_DEFAULT_CONNECT_RETRY_BACKOFF_CAP,
     )

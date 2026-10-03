@@ -31,6 +31,7 @@ from threetears.core.data.collection_factory import create_dynamic_collection
 from threetears.core.data.schema import ColumnDef, TableDef
 from threetears.core.data.store import DataStore
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.nats.errors import KvBucketNotFoundError
 
 from .migrations.fake_store import FakeLockingPool
 
@@ -120,7 +121,7 @@ async def _opened_l2_on(client: FakeNatsClient, collection: Any) -> bool:
 
     A bind-only open succeeds only for a bucket something already created on that client, so it
     answers the question without creating anything itself; the fake refuses an absent one with
-    ``KeyError``.
+    ``KvBucketNotFoundError``, as the real client does.
 
     :param client: the L2 client to ask
     :ptype client: FakeNatsClient
@@ -131,7 +132,7 @@ async def _opened_l2_on(client: FakeNatsClient, collection: Any) -> bool:
     """
     try:
         await client.kv_bucket(name=collection.L2_BUCKET_SUFFIX, create_if_missing=False)
-    except KeyError:
+    except KvBucketNotFoundError:
         return False
     return True
 

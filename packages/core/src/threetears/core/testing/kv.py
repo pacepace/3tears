@@ -32,7 +32,15 @@ use:
   its revisions at 1, which is what a broker restart does to a memory-backed
   bucket once something has recreated it; :meth:`FakeKvBucket.vanish` leaves
   it absent until the next operation recreates it, as the real wrapper's
-  self-heal does.
+  self-heal does -- through a handle that may create it. Through a BIND-ONLY
+  handle (a bucket named in ``declared_buckets``, or bound with
+  ``ensure_kv_bucket(create_if_missing=False)``) the operation raises
+  :class:`threetears.nats.KvBucketNotFoundError` instead and the bucket stays
+  absent, as the real handle does once its wait for the declarer is spent.
+- a bind-only open of an absent bucket (``kv_bucket`` / ``ensure_kv_bucket``
+  with ``create_if_missing=False``) raises
+  :class:`threetears.nats.KvBucketNotFoundError`, which is a ``KvError``, as
+  the real client does.
 - :meth:`FakeKvBucket.become_unreachable` makes every operation raise a given
   error, before it touches state, until :meth:`FakeKvBucket.become_reachable`:
   an outage that loses nothing, as distinct from a vanished bucket.
@@ -44,8 +52,8 @@ use:
 - :meth:`FakeNatsClient.add_reconnect_callback` registers a hook and
   :meth:`FakeNatsClient.reconnect` runs every hook, as a real reconnect does.
 - :meth:`FakeNatsClient.ensure_kv_bucket` declares as the real client does, and remembers a
-  memory-storage declaration that may create; :meth:`FakeNatsClient.restart_broker` loses every
-  bucket, puts back only the remembered ones, then runs the reconnect hooks.
+  declaration that may create, on memory or file storage; :meth:`FakeNatsClient.restart_broker`
+  loses every bucket, puts back only the remembered ones, then runs the reconnect hooks.
 
 the fake stores data in a plain dict keyed by bucket name so multiple
 buckets created from the same client share no state. revision counter
@@ -62,6 +70,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iter
 from dataclasses import dataclass
 from typing import Any
 
+from threetears.nats.errors import KvBucketNotFoundError
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.observe import get_logger
 
@@ -109,6 +118,7 @@ class FakeKvBucket:
         ttl: timedelta | None = None,
         storage: str = "memory",
         direct: bool | None = None,
+        may_create: bool = True,
     ) -> None:
         """initialize empty fake bucket with zero revision counter.
 
@@ -131,10 +141,16 @@ class FakeKvBucket:
             by :attr:`direct` for the same reason: a pod granted ``DIRECT.GET`` on one key
             and not ``STREAM.MSG.GET`` blocks on every read of a bucket opened without them
         :ptype direct: bool | None
+        :param may_create: whether operations through this handle recreate the bucket once it has
+            vanished, as a real handle opened with ``create_if_missing=True`` does. ``False`` is a
+            bind-only handle, whose operations on a vanished bucket raise
+            :class:`threetears.nats.KvBucketNotFoundError` instead; see :meth:`set_may_create`
+        :ptype may_create: bool
         :return: None
         :rtype: None
         """
         self._bucket_name = bucket_name
+        self._may_create = may_create
         self._ttl = ttl
         self._storage = storage
         self._direct = direct
@@ -158,16 +174,25 @@ class FakeKvBucket:
 
         The yield is so ``gather()`` genuinely interleaves. An unreachable bucket raises before it
         touches any state, so nothing lands and nothing heals while it is down. The heal mirrors
-        the real wrapper, which recreates a vanished stream on the next operation through any
-        handle, so the recreated bucket's creation time is the moment of that operation.
+        the real wrapper, which recreates a vanished stream on the next operation through a handle
+        that may create it, so the recreated bucket's creation time is the moment of that
+        operation. A bind-only handle may not: the real one re-binds, finds nothing, and raises
+        once its wait for the declarer is spent, leaving the bucket absent.
 
         :return: None
         :rtype: None
         :raises Exception: the error :meth:`become_unreachable` was given, while it is set
+        :raises KvBucketNotFoundError: the bucket has vanished and this handle is bind-only
         """
         await _YieldOnce()
         if self._unreachable_error is not None:
             raise self._unreachable_error
+        if self._vanished and not self._may_create:
+            raise KvBucketNotFoundError(
+                f"KV bucket {self._bucket_name!r} does not exist, and this handle only binds it: its "
+                f"declarer must create it again",
+                bucket=self._bucket_name,
+            )
         if self._vanished:
             self._vanished = False
             self._date_created = datetime.now(UTC)
@@ -390,10 +415,13 @@ class FakeKvBucket:
         """lose the bucket the way a broker restart does, leaving it absent until next used.
 
         Where :meth:`wipe` models a bucket some other caller already recreated, this models the
-        moment in between: the entries are gone, and the next operation through any handle
-        recreates the bucket, taking that operation's moment as its creation time. That is what
-        the real wrapper's self-heal does, and it is the difference between recreating a bucket
-        when the broker comes back and recreating it whenever someone next happens to use it.
+        moment in between: the entries are gone, and the next operation through a handle that
+        may create (:attr:`may_create`) recreates the bucket, taking that operation's moment as its
+        creation time. That is what the real wrapper's self-heal does, and it is the difference
+        between recreating a bucket when the broker comes back and recreating it whenever someone
+        next happens to use it. Through a bind-only handle the operation raises
+        :class:`threetears.nats.KvBucketNotFoundError` instead, until a declaration puts the bucket
+        back, as the real bind-only handle does once its wait for the declarer is spent.
 
         :return: None
         :rtype: None
@@ -401,6 +429,29 @@ class FakeKvBucket:
         self._entries.clear()
         self._markers.clear()
         self._vanished = True
+
+    @property
+    def may_create(self) -> bool:
+        """whether operations through this handle recreate the bucket once it has vanished.
+
+        :return: ``True`` for a handle opened as the real ``create_if_missing=True`` one is
+        :rtype: bool
+        """
+        return self._may_create
+
+    def set_may_create(self, may_create: bool) -> None:
+        """record how the client's one handle on this bucket is now opened.
+
+        The real client caches one handle per bucket, and a declaration replaces it with one opened
+        the way the declaration asked -- ``create_if_missing=True`` heals a vanished bucket, a bind
+        does not. :class:`FakeNatsClient` calls this as its declarations do the same.
+
+        :param may_create: ``True`` when the handle may recreate the bucket
+        :ptype may_create: bool
+        :return: None
+        :rtype: None
+        """
+        self._may_create = may_create
 
     @property
     def is_vanished(self) -> bool:
@@ -657,7 +708,8 @@ class FakeNatsClient:
         :ptype bucket_age: timedelta | None
         :param declared_buckets: bucket names another identity has already declared, as the
             platform's hub declares every bucket a pod binds. A pod's primitives open bind-only
-            (``create_if_missing=False``), and a bind of a bucket nobody declared raises -- so a
+            (``create_if_missing=False``), and a bind of a bucket nobody declared raises
+            :class:`threetears.nats.KvBucketNotFoundError` -- so a
             test of pod code over this fake names the buckets the hub would have declared,
             rather than every such test failing with an absent bucket that has nothing to do with
             what it tests. Each is created in the default shape (no TTL, memory storage)
@@ -671,12 +723,13 @@ class FakeNatsClient:
         self._bucket_age = bucket_age
         self._buckets: dict[str, FakeKvBucket] = {}
         for name in declared_buckets:
-            self._buckets[name] = self._new_bucket(name=name, ttl=None, storage="memory", direct=None)
+            # declared by ANOTHER identity: this client only binds them, so it never recreates one
+            self._buckets[name] = self._new_bucket(name=name, ttl=None, storage="memory", direct=None, may_create=False)
         self.published: list[Any] = []
         self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
         self._reconnect_callbacks: list[Callable[[], Awaitable[None]]] = []
-        # what the real client's ``_memory_declarations`` holds: every memory-storage bucket this
-        # client declared through :meth:`ensure_kv_bucket` with a create, and so puts back after a
+        # what the real client remembers: every bucket this client declared through
+        # :meth:`ensure_kv_bucket` with a create, on memory or file storage, and so puts back after a
         # reconnect. names only -- the fake bucket carries its own config.
         self._remembered: set[str] = set()
 
@@ -684,10 +737,11 @@ class FakeNatsClient:
     def remembered_declarations(self) -> frozenset[str]:
         """every bucket this client would create again after a reconnect, as the real client does.
 
-        Exactly the memory-storage buckets declared through :meth:`ensure_kv_bucket` with
-        ``create_if_missing=True``. An ordinary :meth:`kv_bucket` open, a bind-only declaration
-        and a file-backed one are never remembered, so a test can assert which form a declarer
-        used rather than only that the bucket exists.
+        Exactly the buckets declared through :meth:`ensure_kv_bucket` with
+        ``create_if_missing=True``, whatever their storage: a restart can lose file storage as well
+        as memory (on Kubernetes the volume goes with the pod). An ordinary :meth:`kv_bucket` open
+        and a bind-only declaration are never remembered, so a test can assert which form a
+        declarer used rather than only that the bucket exists.
 
         :return: the remembered bucket names
         :rtype: frozenset[str]
@@ -708,11 +762,15 @@ class FakeNatsClient:
     async def restart_broker(self) -> None:
         """lose every bucket to a broker restart, put back the remembered ones, then run the reconnect hooks.
 
-        The real sequence on memory storage: every bucket loses its entries; the client creates
+        The real sequence on a restart that lost the broker's storage -- memory storage always, and
+        file storage too when the volume went with the pod, as it can on Kubernetes, so the fake
+        loses both: every bucket loses its entries; the client creates
         each declaration it remembers again, empty, before any hook it was given runs; every other
-        bucket stays absent until an operation through a handle recreates it (the wrapper's
-        self-heal, :meth:`FakeKvBucket.vanish`). Entries are never put back -- republishing them
-        is the declarer's job, and a test of that job runs it from a reconnect hook.
+        bucket stays absent until an operation through a handle that may create it recreates it
+        (the wrapper's self-heal, :meth:`FakeKvBucket.vanish`) -- through a bind-only handle the
+        operation raises :class:`threetears.nats.KvBucketNotFoundError` until a declaration puts
+        the bucket back. Entries are never put back -- republishing them is the declarer's job,
+        and a test of that job runs it from a reconnect hook.
 
         :return: None
         :rtype: None
@@ -834,15 +892,18 @@ class FakeNatsClient:
         :ptype history: int
         :param direct: recorded and reported by :attr:`FakeKvBucket.direct`; not applied
         :ptype direct: bool | None
-        :return: fake bucket
+        :return: fake bucket; the cached handle when this client opened the bucket before, as the real
+            client's cache returns it without asking the broker
         :rtype: FakeKvBucket
-        :raises KeyError: when ``create_if_missing=False`` and bucket absent
+        :raises KvBucketNotFoundError: when ``create_if_missing=False`` and the bucket was never created
         """
         del history
         bucket = self._buckets.get(name)
         if bucket is None:
             if not create_if_missing:
-                raise KeyError(f"bucket {name!r} not found")
+                raise KvBucketNotFoundError(
+                    f"KV bucket {name!r} does not exist, and this open only binds it", bucket=name
+                )
             bucket = self._new_bucket(
                 name=name, ttl=ttl if isinstance(ttl, timedelta) else None, storage=storage, direct=direct
             )
@@ -863,8 +924,8 @@ class FakeNatsClient:
 
         Mirrors :meth:`threetears.nats.NatsClient.ensure_kv_bucket`: a declaration shares the one
         handle :meth:`kv_bucket` hands out, a declaration of a live bucket takes the declared TTL
-        and ``direct`` with its entries kept, and a memory-storage declaration that may create is
-        remembered (:attr:`remembered_declarations`) and put back by :meth:`restart_broker`.
+        and ``direct`` with its entries kept, and a declaration that may create, whatever its
+        storage, is remembered (:attr:`remembered_declarations`) and put back by :meth:`restart_broker`.
 
         :param name: bucket suffix; the fake skips the namespace prefix
         :ptype name: str
@@ -880,22 +941,34 @@ class FakeNatsClient:
         :ptype create_if_missing: bool
         :return: the bucket, the same instance every later open receives
         :rtype: FakeKvBucket
-        :raises KeyError: when ``create_if_missing=False`` and the bucket is absent
+        :raises KvBucketNotFoundError: when ``create_if_missing=False`` and the bucket is absent --
+            never created, or lost to :meth:`FakeKvBucket.vanish` -- since a declaration asks the
+            broker rather than the client's cache
         """
         del history
         bucket = self._buckets.get(name)
-        if bucket is None and not create_if_missing:
-            raise KeyError(f"bucket {name!r} not found")
+        absent = bucket is None or bucket.is_vanished
+        if absent and not create_if_missing:
+            raise KvBucketNotFoundError(
+                f"KV bucket {name!r} does not exist, and this declaration only binds it", bucket=name
+            )
         if bucket is None:
             bucket = self._new_bucket(name=name, ttl=ttl, storage=storage, direct=direct)
             self._buckets[name] = bucket
         elif create_if_missing:
+            if bucket.is_vanished:
+                # the declaration creates the lost bucket now, empty, as the real one creates its stream
+                bucket.wipe()
             bucket.reconcile(ttl=ttl, direct=direct)
-        if create_if_missing and storage != "file":
+        # the real declaration replaces the client's one cached handle with one opened as it asked
+        bucket.set_may_create(create_if_missing)
+        if create_if_missing:
             self._remembered.add(name)
         return bucket
 
-    def _new_bucket(self, *, name: str, ttl: timedelta | None, storage: str, direct: bool | None) -> FakeKvBucket:
+    def _new_bucket(
+        self, *, name: str, ttl: timedelta | None, storage: str, direct: bool | None, may_create: bool = True
+    ) -> FakeKvBucket:
         """create one fake bucket, aged by ``bucket_age`` when the client was given one.
 
         :param name: bucket name
@@ -906,10 +979,12 @@ class FakeNatsClient:
         :ptype storage: str
         :param direct: recorded direct-get flag
         :ptype direct: bool | None
+        :param may_create: whether operations through the handle recreate a vanished bucket
+        :ptype may_create: bool
         :return: the bucket
         :rtype: FakeKvBucket
         """
-        bucket = FakeKvBucket(bucket_name=name, ttl=ttl, storage=storage, direct=direct)
+        bucket = FakeKvBucket(bucket_name=name, ttl=ttl, storage=storage, direct=direct, may_create=may_create)
         if self._bucket_age is not None:
             # `wipe` is how a creation time is placed, and on a bucket with no entries it
             # removes nothing -- so this ages the bucket without pretending anything was lost.

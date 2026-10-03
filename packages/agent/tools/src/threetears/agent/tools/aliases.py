@@ -14,10 +14,9 @@ groups intentionally model the way platform users think about tools:
   no API keys.
 * ``web`` -- web_search, web_fetch. opt-in because they hit the network
   and may not be wanted for every agent.
-* ``media`` -- analyze_media, parse_document, image_prep,
-  image_generation. opt-in because they need provider API keys
-  (analyze_media / image_generation) or heavy optional deps
-  (parse_document needs PyMuPDF + OCR stack) and incur cost.
+* ``media`` -- media_analyze, parse_document, image_prep. opt-in
+  because they need a vision model (media_analyze) or heavy optional
+  deps (parse_document needs PyMuPDF + OCR stack) and incur cost.
 * ``workspace`` -- the full 19-tool ``threetears.workspace.*`` bundle.
   opt-in because it mutates filesystem state under ``bind_root``.
 * ``workspace.fs`` / ``workspace.doc`` / ``workspace.lifecycle`` --
@@ -80,8 +79,13 @@ WEB_TOOLS: frozenset[str] = frozenset(
 #   the deps are installed, see ``agent.tools.serve``)
 # * ``threetears.image_prep`` -- TearsTool subclass under ``builtin/``;
 #   preprocessing / resizing for vision-input images, NOT generation
-# * ``threetears.image_generation`` -- StructuredTool factory under
-#   ``builtin/``; creates new images via Anthropic / OpenAI / etc.
+# every name here must be a TearsTool some ToolServer registers: an agent
+# granted ``media`` logs an ERROR at every boot for a name no tool answers.
+# ``threetears.image_generation`` is deliberately NOT here. it is a
+# LangChain factory (``create_image_generation_tool``) that needs
+# host-supplied generation backends and host-side persistence of the
+# image it makes, and it is not a TearsTool, so no ToolServer can
+# register it and no registry ever offers it to an agent.
 # the dotted form is canonical across the platform (matches NATS
 # subject hierarchy and module-path naming). when a downstream
 # provider rejects dots in tool names (notably Bedrock's
@@ -95,7 +99,6 @@ MEDIA_TOOLS: frozenset[str] = frozenset(
         "threetears.media_analyze",
         "threetears.parse_document",
         "threetears.image_prep",
-        "threetears.image_generation",
     }
 )
 

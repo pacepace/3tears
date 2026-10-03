@@ -14,6 +14,24 @@ FROM the manifest (:func:`~threetears.backup.drivers.driver_by_name`) — the fo
 dump is the only format that can read it back, and trusting the restoring process's own driver is
 how a gzipped plain-SQL dump ends up fed to ``pg_restore``.
 
+A DUMP AND A SCHEMA CHANGE IN ONE DATABASE CAN COLLIDE. The dump tool reads the catalog's list of
+objects and then asks the server about each one, so DDL landing between the two fails the dump with
+"schema with OID N does not exist" -- seen live on a cold start, when the first scheduled backup
+dumped ``aibots`` while an agent schema was being created. That one database is dumped again, with
+a fresh inventory and snapshot, when the failure is exactly that race
+(:func:`is_concurrent_ddl_failure`): bounded by ``BackupConfig.dump_concurrent_ddl_retries``, with
+doubling backoff, each retry logged. Nothing else is retried.
+
+WHY THE BACKUP DOES NOT TAKE THE DDL LOCK INSTEAD -- the one home of this decision; the config and
+the lock's own docstring point here. It could: the lock
+(:func:`threetears.core.data.migrations.database_ddl_lock`) is in ``threetears.core``, a dependency.
+But the lock is exclusive, and a dump would have to hold it for the dump's whole run, which grows
+with the database. Every other DDL job in that database -- the schema a newly created agent needs,
+the tables a pod declares -- then waits for the length of a backup, and a caller that bounds its
+wait for the lock (as a request path must) is refused for the whole of it. That moves the failure
+from a backup retried seconds later, which nobody waits on, to the provisioning a person is waiting
+for.
+
 Like the verifier, the database connection is injected (an ``asyncpg.connect``-shaped callable), so
 the orchestration stays unit-testable with fakes and the package keeps asyncpg out of its hard
 dependencies.
@@ -21,7 +39,10 @@ dependencies.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -37,10 +58,16 @@ from threetears.backup.config import BackupConfig
 from threetears.backup.drivers import DbDumpDriver, driver_by_name, driver_for_version
 from threetears.backup.gzip import gunzip_stream, gzip_stream
 from threetears.backup.manifest import BackupManifest, DatabaseDump, DatabaseFailure, TableCount, manifest_key
-from threetears.backup.process import feed_stdin, stream_stdout
+from threetears.backup.process import BackupToolError, feed_stdin, stream_stdout
 from threetears.backup.retention import BackupRecord, GfsRetention, RetentionDecision
 
-__all__ = ["ClusterBackup", "ManifestNotFoundError", "SetDeleteNotAllowedError", "replace_database"]
+__all__ = [
+    "ClusterBackup",
+    "ManifestNotFoundError",
+    "SetDeleteNotAllowedError",
+    "is_concurrent_ddl_failure",
+    "replace_database",
+]
 
 log = get_logger(__name__)
 
@@ -77,6 +104,50 @@ _TABLES_SQL = """
        AND table_schema NOT IN ('pg_catalog', 'information_schema')
      ORDER BY table_schema, table_name
 """
+
+
+#: The dump tools whose failures can be a race with concurrent DDL. A restore tool's never is.
+_DUMP_TOOLS = frozenset({"pg_dump", "ysql_dump"})
+
+#: What a dump tool says when DDL changed the catalog between the dump reading its list of
+#: objects and asking the server about one of them: the object it named by OID is gone. Each
+#: names an OID, because each is the server or the tool failing to find an object the dump's own
+#: catalog read had just returned. Observed live: "ysql_dump: error: schema with OID 17839 does
+#: not exist", while an agent schema was being created under the hub's DDL lock.
+_CONCURRENT_DDL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"schema with OID \d+ does not exist"),
+    re.compile(r"could not open relation with OID \d+"),
+    re.compile(r"cache lookup failed for [a-z ]+ \d+"),
+)
+
+
+def is_concurrent_ddl_failure(exc: BaseException) -> bool:
+    """Whether a database dump failed because DDL changed the catalog under it.
+
+    True only for a dump tool (``pg_dump``, ``ysql_dump``) that EXITED non-zero -- not a timeout or
+    any other synthetic outcome -- with standard error naming a catalog object, by OID, that
+    vanished mid-dump. Read from the exception or anything in its cause chain, since a store may
+    wrap the dump stream's failure.
+
+    :param exc: what dumping one database raised
+    :ptype exc: BaseException
+    :return: True when taking the dump again is the remedy
+    :rtype: bool
+    """
+    tool_error: BackupToolError | None = None
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and tool_error is None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, BackupToolError):
+            tool_error = current
+        current = current.__cause__ or current.__context__
+    return (
+        tool_error is not None
+        and os.path.basename(tool_error.tool) in _DUMP_TOOLS
+        and tool_error.returncode > 0
+        and any(pattern.search(tool_error.stderr) for pattern in _CONCURRENT_DDL_PATTERNS)
+    )
 
 
 class ManifestNotFoundError(LookupError):
@@ -245,72 +316,66 @@ class ClusterBackup:
                     }
                 },
             )
-            try:
-                db_dsn = replace_database(admin_dsn, database)
-                suffix = "dump" if driver.compressed else "dump.gz"
-                key = f"{set_root}/{database}.{driver.name}.{suffix}.enc"
-                async with self._inventory_snapshot(db_dsn, backup_id=backup_id, database=database) as (
-                    tables,
-                    snapshot,
-                ):
-                    consistent = snapshot is not None
-                    log.info(
-                        "cluster backup: inventory taken",
-                        extra={
-                            "extra_data": {
-                                "backup_id": str(backup_id),
-                                "database": database,
-                                "tables": len(tables),
-                                "snapshot_synchronized": consistent,
-                            }
-                        },
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    dump = await self._dump_database(
+                        driver, admin_dsn, database, set_root=set_root, backup_id=backup_id
                     )
-                    raw = driver.dump(
-                        db_dsn,
-                        env=self._env,
-                        timeout=self._config.dump_timeout_seconds,
-                        snapshot=snapshot,
+                except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
+                    # Deliberately broad, and deliberately NOT BaseException: the dump
+                    # tool fails in as many ways as the databases it reads (a catalog
+                    # inconsistency, a permission, a timeout, the store refusing a
+                    # put), and every one of them should cost that database and no
+                    # other. Cancellation is different -- a drained pod must abandon
+                    # the whole set, not record every remaining database as broken --
+                    # and CancelledError is a BaseException, so it passes through.
+                    if attempt <= self._config.dump_concurrent_ddl_retries and is_concurrent_ddl_failure(exc):
+                        # DDL in this database changed the catalog under the dump. Only this
+                        # database is taken again -- inventory, snapshot and dump -- and only
+                        # for this failure; the module docstring says why the backup does not
+                        # hold the DDL lock instead.
+                        delay = self._config.dump_concurrent_ddl_retry_delay_seconds * 2 ** (attempt - 1)
+                        log.warning(
+                            "cluster backup: database dump lost a race with concurrent DDL; dumping it again "
+                            "in %.1fs (retry %d of %d): %s",
+                            delay,
+                            attempt,
+                            self._config.dump_concurrent_ddl_retries,
+                            exc,
+                            extra={
+                                "extra_data": {
+                                    "backup_id": str(backup_id),
+                                    "database": database,
+                                    "attempt": attempt,
+                                    "error": str(exc),
+                                }
+                            },
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    log.exception(
+                        "cluster backup: database FAILED to dump; the set will be incomplete",
+                        extra={"extra_data": {"backup_id": str(backup_id), "database": database, "attempts": attempt}},
                     )
-                    hashing = _HashingStream(raw)
-                    stream: AsyncIterator[bytes] = hashing if driver.compressed else gzip_stream(hashing)
-                    await self._store.put(key, stream, content_type=_ENCRYPTED_CONTENT_TYPE)
-                size = await self._size_of(key)
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
-                # Deliberately broad, and deliberately NOT BaseException: the dump
-                # tool fails in as many ways as the databases it reads (a catalog
-                # inconsistency, a permission, a timeout, the store refusing a
-                # put), and every one of them should cost that database and no
-                # other. Cancellation is different -- a drained pod must abandon
-                # the whole set, not record every remaining database as broken --
-                # and CancelledError is a BaseException, so it passes through.
-                log.exception(
-                    "cluster backup: database FAILED to dump; the set will be incomplete",
-                    extra={"extra_data": {"backup_id": str(backup_id), "database": database}},
+                    failures.append(DatabaseFailure(database=database, error=f"{type(exc).__name__}: {exc}"))
+                    break
+                dumps.append(dump)
+                log.info(
+                    "cluster backup: database dumped",
+                    extra={
+                        "extra_data": {
+                            "backup_id": str(backup_id),
+                            "database": database,
+                            "key": dump.key,
+                            "tables": len(dump.tables),
+                            "size_bytes": dump.size_bytes,
+                            "attempts": attempt,
+                        }
+                    },
                 )
-                failures.append(DatabaseFailure(database=database, error=f"{type(exc).__name__}: {exc}"))
-                continue
-            dumps.append(
-                DatabaseDump(
-                    database=database,
-                    key=key,
-                    size_bytes=size,
-                    sha256=hashing.hexdigest,
-                    tables=tables,
-                    inventory_snapshot_consistent=consistent,
-                )
-            )
-            log.info(
-                "cluster backup: database dumped",
-                extra={
-                    "extra_data": {
-                        "backup_id": str(backup_id),
-                        "database": database,
-                        "key": key,
-                        "tables": len(tables),
-                        "size_bytes": size,
-                    }
-                },
-            )
+                break
 
         if not dumps:
             # Nothing was backed up. A manifest here would be an empty set
@@ -482,6 +547,55 @@ class ClusterBackup:
         log.info("backup set deleted", extra={"extra_data": {"backup_id": str(backup_id)}})
 
     # ------------------------------------------------------------------ internals
+
+    async def _dump_database(
+        self, driver: DbDumpDriver, admin_dsn: str, database: str, *, set_root: str, backup_id: UUID
+    ) -> DatabaseDump:
+        """Inventory one database inside a snapshot, dump it under that snapshot, and store the dump.
+
+        :param driver: the cluster's dump driver
+        :ptype driver: DbDumpDriver
+        :param admin_dsn: the dsn the database's own dsn is derived from
+        :ptype admin_dsn: str
+        :param database: the database to dump
+        :ptype database: str
+        :param set_root: the set's key prefix
+        :ptype set_root: str
+        :param backup_id: the set being taken
+        :ptype backup_id: UUID
+        :return: the stored dump's record
+        :rtype: DatabaseDump
+        :raises Exception: whatever the inventory, the dump tool or the store raised
+        """
+        db_dsn = replace_database(admin_dsn, database)
+        suffix = "dump" if driver.compressed else "dump.gz"
+        key = f"{set_root}/{database}.{driver.name}.{suffix}.enc"
+        async with self._inventory_snapshot(db_dsn, backup_id=backup_id, database=database) as (tables, snapshot):
+            consistent = snapshot is not None
+            log.info(
+                "cluster backup: inventory taken",
+                extra={
+                    "extra_data": {
+                        "backup_id": str(backup_id),
+                        "database": database,
+                        "tables": len(tables),
+                        "snapshot_synchronized": consistent,
+                    }
+                },
+            )
+            raw = driver.dump(db_dsn, env=self._env, timeout=self._config.dump_timeout_seconds, snapshot=snapshot)
+            hashing = _HashingStream(raw)
+            stream: AsyncIterator[bytes] = hashing if driver.compressed else gzip_stream(hashing)
+            await self._store.put(key, stream, content_type=_ENCRYPTED_CONTENT_TYPE)
+        size = await self._size_of(key)
+        return DatabaseDump(
+            database=database,
+            key=key,
+            size_bytes=size,
+            sha256=hashing.hexdigest,
+            tables=tables,
+            inventory_snapshot_consistent=consistent,
+        )
 
     async def _detect(self, dsn: str) -> DbDumpDriver:
         conn = await self._connect(dsn)

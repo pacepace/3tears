@@ -18,6 +18,7 @@ from datetime import timedelta
 import pytest
 from threetears.core.coordination import KVLease, LeaseUnavailable
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
+from threetears.nats.errors import KvBucketNotFoundError
 from threetears.scrape.operator_session import (
     SESSION_CLAIM_REFRESH,
     SESSION_CLAIM_TTL,
@@ -302,8 +303,8 @@ class TestAPodBindsTheLeaseBucketItNeverCreates:
 
         client = FakeNatsClient()
         lease = operator_session_lease(client, key_scope=_SCOPE, pod_id="pod-a")
-        with pytest.raises(KeyError):
+        with pytest.raises(KvBucketNotFoundError):
             async with claim_session(lease, "session-1", ttl=_TTL, refresh=_REFRESH):
                 pass
-        with pytest.raises(KeyError):
+        with pytest.raises(KvBucketNotFoundError):
             await client.kv_bucket(name="leases", create_if_missing=False)
