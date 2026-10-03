@@ -6,6 +6,62 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A pool start survives a connect that never answers
+
+`create_pool_with_startup_timeout` wrapped the whole of `asyncpg.create_pool` -- `min_size`
+connects -- in one 30s `wait_for`, and asyncpg's own per-connect timeout defaults to 60s. One
+connect whose backend never answered (a backend stalled under host memory pressure) spent the
+whole budget, nothing retried, and the pool failed: in an identity integration test twice in one
+day, seconds after a plain connect had migrated the same database, and at pod startup in
+production alike. A failed attempt also dropped its half-built pool with its other connections
+still open.
+
+- **Changed, breaking: `create_pool_with_startup_timeout(dsn, *, pool_name="db",
+  startup_timeout=30.0, connect_timeout=None, **create_pool_kwargs)`.** It now calls
+  `asyncpg.create_pool` itself, so it can bound each connect and close what a failed attempt
+  opened. The zero-argument `create` callable is gone. Migrate by moving the `create_pool`
+  arguments into the call:
+
+  ```python
+  # before
+  pool = await create_pool_with_startup_timeout(
+      lambda: asyncpg.create_pool(dsn, min_size=2, timeout=10, **get_pg_pool_kwargs()),
+      dsn=dsn, startup_timeout=30.0, pool_name="hub_l3",
+  )
+  # after
+  pool = await create_pool_with_startup_timeout(
+      dsn, pool_name="hub_l3", startup_timeout=30.0, connect_timeout=10,
+      min_size=2, **get_pg_pool_kwargs(),
+  )
+  ```
+
+  `timeout=` and `connect=` are refused with a `TypeError`: the wrapper owns both, and the
+  per-connect bound is `connect_timeout=`.
+- **Behaviour:** each connect is bounded at `connect_timeout`. An attempt that fails on a timed-out,
+  refused or dropped connect, or on a server that is starting, shutting down, or out of
+  connections or memory, closes every connection it opened -- including one still connecting,
+  which is cancelled, and one that completes after the attempt failed -- and a fresh attempt
+  starts after a pause doubling from 0.5s to 4s (`threetears.observe.retry_bounded`). No attempt
+  starts after `startup_timeout`, and the call is cut off at it. A wrong password or missing
+  database fails on the first attempt. Each retried failure logs a WARNING naming the attempt,
+  the elapsed time, the error class and how many connections it closed.
+- **Changed: a programming error is no longer wrapped.** A bad pool shape (`min_size > max_size`)
+  or wrong argument raises as itself. Only a database or network failure becomes a
+  `PoolStartupTimeoutError`.
+- **Added: `PoolStartupTimeoutError.attempts` and `.connect_timeout_seconds`.** The message names
+  the budget, the attempts and the last failure's class.
+- **Added: `resolve_pool_connect_timeout(startup_timeout, connect_timeout=None)`**, in
+  `threetears.core.utils`. With no `connect_timeout` it returns the smaller of
+  `DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS` (10s) and a third of the budget, so at least three
+  attempts fit. It refuses a `connect_timeout` that is not shorter than the budget, because that
+  is the defect.
+- **Added, in `threetears.core.config`: `DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS`,
+  `POOL_START_RETRY_FIRST_DELAY_SECONDS`, `POOL_START_RETRY_MAX_DELAY_SECONDS`.**
+- **Tests:** `packages/core/tests/integration/test_pool_startup_survives_stalled_connects.py`
+  puts a TCP proxy in front of a real Postgres that stalls, drops or delays chosen connections,
+  and counts the pool's backends from `pg_stat_activity`. The unit tests drive the wrapper
+  against a socket that never answers and a port nothing listens on.
+
 ## v0.60.0 -- 2026-10-03
 
 ### A tool that did not do what it was asked says so as a failure

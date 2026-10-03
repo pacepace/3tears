@@ -69,6 +69,27 @@ pod startup the day this helper grew that key. Override by merging::
     kwargs = {**get_pg_pool_kwargs(), "max_inactive_connection_lifetime": 60}
     pool = await asyncpg.create_pool(dsn, **kwargs)
 
+Starting a pool inside a budget
+-------------------------------
+
+a service that cannot run without its database starts the pool through
+:func:`create_pool_with_startup_timeout`, which calls ``asyncpg.create_pool``
+itself so it can bound every connect and close what a failed attempt opened::
+
+    pool = await create_pool_with_startup_timeout(
+        dsn,
+        pool_name="l3",
+        startup_timeout=30.0,
+        min_size=..., max_size=...,
+        server_settings=..., init=..., connection_class=...,
+        **get_pg_pool_kwargs(),
+    )
+
+each connect is bounded at :func:`resolve_pool_connect_timeout` (10s, or a
+third of a smaller budget), and an attempt that fails on a stalled, refused or
+dropped connect is retried until the budget is spent. ``timeout=`` is not
+passed; ``connect_timeout=`` is.
+
 Anti-patterns
 -------------
 
@@ -86,12 +107,19 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
 
-from threetears.core.config import DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
+import asyncpg
+
+from threetears.core.config import (
+    DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS,
+    POOL_START_RETRY_FIRST_DELAY_SECONDS,
+    POOL_START_RETRY_MAX_DELAY_SECONDS,
+)
 from threetears.observe import get_logger
+from threetears.observe.resilience import retry_bounded
 
 log = get_logger(__name__)
 
@@ -263,18 +291,15 @@ def log_pool_created(
 
 
 class PoolStartupTimeoutError(Exception):
-    """raised when ``create_pool_with_startup_timeout`` exceeds its budget.
+    """raised when ``create_pool_with_startup_timeout`` cannot start the pool.
 
-    carries structured context (``pool_name``, ``db_identity``,
-    ``startup_timeout_seconds``, ``elapsed_seconds``) so callers can
-    translate to their own structured-error type (Hub maps to
-    :class:`3tears.hub.common.errors.ConfigurationError`; other consumers
-    map to whatever their stack uses).
+    either the startup budget was spent on attempts the database never completed (a refused or
+    stalled connect, a server starting or out of connections), or the database refused in a way no
+    retry can clear (a wrong password, a missing database), which fails on the attempt that met it.
 
-    keeping this exception type in 3tears -- not in Hub -- breaks the
-    Hub-only coupling the original helper had on
-    :class:`ConfigurationError`. concrete error-translation belongs at
-    the consumer boundary.
+    carries structured context so callers can translate to their own structured-error type (Hub
+    maps to its ``ConfigurationError``; other consumers map to whatever their stack uses).
+    concrete error-translation belongs at the consumer boundary, which is why the type lives here.
 
     :param message: human-readable description
     :ptype message: str
@@ -282,10 +307,14 @@ class PoolStartupTimeoutError(Exception):
     :ptype pool_name: str
     :param db_identity: redacted db identity (no credentials)
     :ptype db_identity: str
-    :param startup_timeout_seconds: budget the call exceeded
+    :param startup_timeout_seconds: the overall budget
     :ptype startup_timeout_seconds: float
     :param elapsed_seconds: wall-clock seconds elapsed before the failure
     :ptype elapsed_seconds: float
+    :param attempts: how many pool-creation attempts began, the last of them the one that failed
+    :ptype attempts: int
+    :param connect_timeout_seconds: the bound each single connect ran under
+    :ptype connect_timeout_seconds: float
     """
 
     def __init__(
@@ -296,69 +325,350 @@ class PoolStartupTimeoutError(Exception):
         db_identity: str,
         startup_timeout_seconds: float,
         elapsed_seconds: float,
+        attempts: int,
+        connect_timeout_seconds: float,
     ) -> None:
         super().__init__(message)
         self.pool_name = pool_name
         self.db_identity = db_identity
         self.startup_timeout_seconds = startup_timeout_seconds
         self.elapsed_seconds = elapsed_seconds
+        self.attempts = attempts
+        self.connect_timeout_seconds = connect_timeout_seconds
 
 
-async def create_pool_with_startup_timeout[PoolT](
-    create: Callable[[], Awaitable[PoolT]],
-    *,
-    dsn: str,
-    startup_timeout: float = DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS,
-    pool_name: str = "db",
-) -> PoolT:
-    """invoke asyncpg pool factory bounded by an overall startup timeout.
+#: the share of the startup budget one connect may take when the caller names no connect bound: a
+#: third, so a connect whose backend never answers still leaves room for two more attempts.
+_DEFAULT_CONNECT_SHARE_OF_BUDGET = 3.0
 
-    wraps the caller-supplied ``asyncpg.create_pool(...)`` coroutine in
-    :func:`asyncio.wait_for` so an unreachable database produces a
-    structured :class:`PoolStartupTimeoutError` inside ``startup_timeout``
-    rather than blocking indefinitely on socket-level retries. the DSN
-    passed for logging is redacted with :func:`redact_dsn`; raw
-    credentials are never emitted.
+#: what a later attempt may not meet. the connect timed out (a backend that never answered), the
+#: socket failed or was refused, the server dropped the connection mid-handshake, or it answered
+#: that it is starting, shutting down, or out of connections or memory. anything else -- a wrong
+#: password, a missing database -- no retry can clear, and fails on the attempt that met it.
+_RETRYABLE: tuple[type[Exception], ...] = (
+    TimeoutError,
+    OSError,
+    asyncpg.exceptions.PostgresConnectionError,
+    asyncpg.exceptions.OperatorInterventionError,
+    asyncpg.exceptions.InsufficientResourcesError,
+)
 
-    :param create: zero-arg callable returning the ``asyncpg.create_pool`` awaitable
-    :ptype create: Callable[[], Awaitable[PoolT]]
-    :param dsn: DSN the pool is being created from, used for error context (redacted)
-    :ptype dsn: str
-    :param startup_timeout: max wall time in seconds before declaring the dependency unreachable
+#: what the database or the network can answer a pool start with; each is reported as a
+#: :class:`PoolStartupTimeoutError`. anything else (a bad pool shape, a wrong argument) is a
+#: programming error and propagates unchanged.
+_DATABASE_FAILURES: tuple[type[Exception], ...] = (
+    TimeoutError,
+    OSError,
+    asyncpg.exceptions.PostgresError,
+    asyncpg.exceptions.InterfaceError,
+)
+
+#: ``create_pool`` arguments the wrapper sets itself: ``timeout`` is ``connect_timeout``, and
+#: ``connect`` is how a failed attempt finds every connection it opened.
+_WRAPPER_OWNED_KWARGS: frozenset[str] = frozenset({"timeout", "connect"})
+
+
+def resolve_pool_connect_timeout(startup_timeout: float, connect_timeout: float | None = None) -> float:
+    """the bound one connect runs under while a pool starts inside ``startup_timeout``.
+
+    with no ``connect_timeout``: the smaller of :data:`DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS` and a
+    third of the budget, so at least three attempts fit. an explicit ``connect_timeout`` is used as
+    given, but must be shorter than the budget: one equal to it lets a single wedged connect spend
+    the whole budget with nothing retried, which is the defect this bound exists to remove.
+
+    :func:`create_pool_with_startup_timeout` resolves its bound here; a caller logging the pool's
+    configuration (:func:`log_pool_created`) resolves it the same way.
+
+    :param startup_timeout: the overall pool-start budget, in seconds (> 0)
     :ptype startup_timeout: float
-    :param pool_name: short identifier included in the error context (for example ``hub_l3``)
-    :ptype pool_name: str
-    :return: the created pool object returned by ``create``
-    :rtype: PoolT
-    :raises PoolStartupTimeoutError: if pool creation exceeds ``startup_timeout`` or raises a transport error
+    :param connect_timeout: an explicit per-connect bound, in seconds (> 0 and < ``startup_timeout``),
+        or ``None`` for the default
+    :ptype connect_timeout: float | None
+    :return: the per-connect bound in seconds
+    :rtype: float
+    :raises ValueError: when either bound is not positive, or ``connect_timeout`` is not shorter
+        than ``startup_timeout``
     """
+    if startup_timeout <= 0:
+        raise ValueError(f"startup_timeout must be positive, got {startup_timeout!r}")
+    if connect_timeout is not None and connect_timeout <= 0:
+        raise ValueError(f"connect_timeout must be positive, got {connect_timeout!r}")
+    if connect_timeout is not None and connect_timeout >= startup_timeout:
+        raise ValueError(
+            f"connect_timeout={connect_timeout}s must be shorter than startup_timeout={startup_timeout}s: "
+            f"one connect that never answers would spend the whole startup budget and leave nothing to retry"
+        )
+    result = connect_timeout
+    if result is None:
+        result = min(DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, startup_timeout / _DEFAULT_CONNECT_SHARE_OF_BUDGET)
+    return result
+
+
+class _AttemptAbandonedError(Exception):
+    """a connect that completed after its pool attempt had already failed; its connection is closed."""
+
+
+class _AttemptConnections:
+    """every connection one pool-creation attempt opens, so a failed attempt closes all of them.
+
+    passed to ``asyncpg.create_pool`` as its ``connect`` hook. asyncpg opens a pool's first
+    connection, then the rest of ``min_size`` together under ``asyncio.gather``, and a failed
+    connect fails the gather WITHOUT cancelling its siblings. the pool object that failed is then
+    dropped, so without this record a sibling already connected -- or one still connecting that
+    completes later -- holds a server backend nothing will ever close.
+    """
+
+    def __init__(self) -> None:
+        """start with nothing opened."""
+        self.opened: list[asyncpg.Connection] = []
+        self.connecting: set[asyncio.Task[Any]] = set()
+        self.abandoned = False
+
+    async def connect(self, *args: Any, **kwargs: Any) -> asyncpg.Connection:
+        """open one connection exactly as asyncpg would, recording it.
+
+        :param args: positional connect arguments asyncpg passes through (the dsn)
+        :ptype args: Any
+        :param kwargs: keyword connect arguments asyncpg passes through
+        :ptype kwargs: Any
+        :return: the new connection
+        :rtype: asyncpg.Connection
+        :raises _AttemptAbandonedError: when the attempt failed while this connect was in flight
+        """
+        task = asyncio.current_task()
+        if task is not None:
+            self.connecting.add(task)
+        try:
+            connection = await asyncpg.connect(*args, **kwargs)
+        finally:
+            if task is not None:
+                self.connecting.discard(task)
+        if self.abandoned:
+            connection.terminate()
+            raise _AttemptAbandonedError("pool attempt already failed; its late connection was closed")
+        self.opened.append(connection)
+        return connection
+
+    def abandon(self, pool: asyncpg.Pool) -> int:
+        """close everything the failed attempt opened and stop what it is still opening.
+
+        synchronous, so it completes even inside a task that is being cancelled.
+
+        :param pool: the attempt's pool, already through its failed initialisation
+        :ptype pool: asyncpg.Pool
+        :return: how many connections were closed or stopped mid-connect
+        :rtype: int
+        """
+        self.abandoned = True
+        current = asyncio.current_task()
+        stopped = 0
+        for task in list(self.connecting):
+            if task is not current and not task.done():
+                task.cancel()
+                stopped += 1
+        pool.terminate()
+        for connection in self.opened:
+            if not connection.is_closed():
+                connection.terminate()
+                stopped += 1
+        self.opened.clear()
+        return stopped
+
+
+class _PoolStartProgress:
+    """what the attempts so far have met, for the retry log and the final error."""
+
+    def __init__(self) -> None:
+        """no attempt yet."""
+        self.attempts = 0
+        self.attempt_in_flight = False
+        self.last_failure: Exception | None = None
+        self.closed_by_last_failure = 0
+
+    def where_the_budget_ran_out(self) -> str:
+        """``during attempt N`` or ``before attempt N could start``, for the final error.
+
+        :return: the phrase
+        :rtype: str
+        """
+        result = f"before attempt {self.attempts + 1} could start"
+        if self.attempt_in_flight:
+            result = f"during attempt {self.attempts}"
+        return result
+
+
+def _attempts_phrase(attempts: int) -> str:
+    """``1 attempt`` / ``3 attempts``.
+
+    :param attempts: attempt count
+    :ptype attempts: int
+    :return: the count with its noun
+    :rtype: str
+    """
+    return f"{attempts} attempt" if attempts == 1 else f"{attempts} attempts"
+
+
+async def create_pool_with_startup_timeout(
+    dsn: str,
+    *,
+    pool_name: str = "db",
+    startup_timeout: float = DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS,
+    connect_timeout: float | None = None,
+    **create_pool_kwargs: Any,
+) -> asyncpg.Pool:
+    """start an asyncpg pool, retrying stalled or refused connects, inside one startup budget.
+
+    ``asyncpg.create_pool`` opens ``min_size`` connections and fails if any one of them fails. this
+    wrapper bounds every single connect at ``connect_timeout`` (see
+    :func:`resolve_pool_connect_timeout`), and when an attempt fails in a way a later attempt may
+    not meet, closes everything that attempt opened and starts a fresh one after a doubling pause
+    (:func:`threetears.observe.retry_bounded`). so one backend that never answers costs one
+    per-connect timeout, not the budget. no attempt starts after ``startup_timeout``, and the whole
+    call is cut off at it.
+
+    every failed attempt is logged at WARNING with its number, the elapsed time and the error
+    class. the DSN is redacted with :func:`redact_dsn` everywhere it is reported.
+
+    :param dsn: the PostgreSQL DSN
+    :ptype dsn: str
+    :param pool_name: short identifier for logs and the error (for example ``hub_l3``)
+    :ptype pool_name: str
+    :param startup_timeout: max wall time in seconds before declaring the database unreachable
+    :ptype startup_timeout: float
+    :param connect_timeout: bound on one connect in seconds; ``None`` resolves it from the budget
+    :ptype connect_timeout: float | None
+    :param create_pool_kwargs: everything else ``asyncpg.create_pool`` takes (``min_size``,
+        ``max_size``, ``server_settings``, ``init``, ``connection_class``, the
+        :func:`get_pg_pool_kwargs` splat, ...), except ``timeout`` and ``connect``, which the wrapper sets
+    :ptype create_pool_kwargs: Any
+    :return: the started pool
+    :rtype: asyncpg.Pool
+    :raises PoolStartupTimeoutError: when the budget is spent without a started pool, or the
+        database refuses in a way no retry can clear; it names the attempts made
+    :raises ValueError: when the bounds are inconsistent (see :func:`resolve_pool_connect_timeout`)
+    :raises TypeError: when ``create_pool_kwargs`` carries ``timeout`` or ``connect``
+    """
+    owned = sorted(_WRAPPER_OWNED_KWARGS.intersection(create_pool_kwargs))
+    if owned:
+        raise TypeError(
+            f"create_pool_with_startup_timeout sets {owned} itself; "
+            f"pass the per-connect bound as connect_timeout=, not timeout="
+        )
+    per_connect = resolve_pool_connect_timeout(startup_timeout, connect_timeout)
     identity = redact_dsn(dsn)
+    progress = _PoolStartProgress()
     started_at = time.monotonic()
+
+    async def attempt() -> asyncpg.Pool:
+        progress.attempts += 1
+        connections = _AttemptConnections()
+        pool = asyncpg.create_pool(dsn, connect=connections.connect, timeout=per_connect, **create_pool_kwargs)
+        started = False
+        progress.attempt_in_flight = True
+        try:
+            await pool
+            started = True
+        finally:
+            progress.attempt_in_flight = False
+            if not started:
+                progress.closed_by_last_failure = connections.abandon(pool)
+        return pool
+
+    def on_retry(error: Exception, attempt_number: int, pause: float) -> None:
+        progress.last_failure = error
+        elapsed = time.monotonic() - started_at
+        log.warning(
+            f"pg pool start attempt {attempt_number} failed: name={pool_name} identity={identity} "
+            f"error={type(error).__name__}: {error} elapsed={elapsed:.2f}s budget={startup_timeout}s "
+            f"connect_timeout={per_connect}s closed={progress.closed_by_last_failure}; retrying in {pause:.2f}s",
+            extra={
+                "extra_data": {
+                    "pool_name": pool_name,
+                    "connection_identity": identity,
+                    "attempt": attempt_number,
+                    "error_class": type(error).__name__,
+                    "elapsed_seconds": elapsed,
+                    "startup_timeout_seconds": startup_timeout,
+                    "connect_timeout_seconds": per_connect,
+                    "connections_closed": progress.closed_by_last_failure,
+                    "retry_in_seconds": pause,
+                }
+            },
+        )
+
+    budget = asyncio.timeout(startup_timeout)
     try:
-        pool = await asyncio.wait_for(create(), timeout=startup_timeout)
-    except TimeoutError:
+        async with budget:
+            pool = await retry_bounded(
+                attempt,
+                retry_on=lambda error: isinstance(error, _RETRYABLE),
+                first_delay=POOL_START_RETRY_FIRST_DELAY_SECONDS,
+                max_delay=POOL_START_RETRY_MAX_DELAY_SECONDS,
+                deadline_seconds=startup_timeout,
+                on_retry=on_retry,
+            )
+    except _DATABASE_FAILURES as exc:
         elapsed = time.monotonic() - started_at
+        cause: BaseException = exc
+        if budget.expired():
+            cause = progress.last_failure if progress.last_failure is not None else exc
+            message = (
+                f"failed to connect to database {identity} within {startup_timeout}s: "
+                f"{_attempts_phrase(progress.attempts)}, each connect bounded at {per_connect}s; "
+                f"the budget ran out {progress.where_the_budget_ran_out()}, last failure: {type(cause).__name__}"
+            )
+        elif isinstance(exc, _RETRYABLE):
+            message = (
+                f"failed to connect to database {identity} within {startup_timeout}s: "
+                f"{_attempts_phrase(progress.attempts)}, each connect bounded at {per_connect}s; "
+                f"last failure: {type(exc).__name__}: {exc}"
+            )
+        else:
+            message = (
+                f"failed to create database pool {identity} on attempt {progress.attempts} "
+                f"({type(exc).__name__}, not retried): {exc}"
+            )
+        log.error(
+            f"pg pool start failed: name={pool_name} {message}",
+            extra={
+                "extra_data": {
+                    "pool_name": pool_name,
+                    "connection_identity": identity,
+                    "attempts": progress.attempts,
+                    "error_class": type(cause).__name__,
+                    "elapsed_seconds": elapsed,
+                    "startup_timeout_seconds": startup_timeout,
+                    "connect_timeout_seconds": per_connect,
+                }
+            },
+        )
         raise PoolStartupTimeoutError(
-            f"failed to connect to database {identity} within {startup_timeout}s",
+            message,
             pool_name=pool_name,
             db_identity=identity,
             startup_timeout_seconds=startup_timeout,
             elapsed_seconds=elapsed,
-        ) from None
-    except Exception as exc:
-        elapsed = time.monotonic() - started_at
-        raise PoolStartupTimeoutError(
-            f"failed to create database pool {identity}: {exc}",
-            pool_name=pool_name,
-            db_identity=identity,
-            startup_timeout_seconds=startup_timeout,
-            elapsed_seconds=elapsed,
-        ) from exc
+            attempts=progress.attempts,
+            connect_timeout_seconds=per_connect,
+        ) from cause
+    if progress.attempts > 1:
+        log.info(
+            f"pg pool started on attempt {progress.attempts}: name={pool_name} identity={identity}",
+            extra={
+                "extra_data": {
+                    "pool_name": pool_name,
+                    "connection_identity": identity,
+                    "attempts": progress.attempts,
+                    "elapsed_seconds": time.monotonic() - started_at,
+                }
+            },
+        )
     return pool
 
 
 __all__ = [
     "DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS",
+    "DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS",
     "DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS",
     "ENV_MAX_INACTIVE_LIFETIME",
     "PoolStartupTimeoutError",
@@ -366,4 +676,5 @@ __all__ = [
     "get_pg_pool_kwargs",
     "log_pool_created",
     "redact_dsn",
+    "resolve_pool_connect_timeout",
 ]
