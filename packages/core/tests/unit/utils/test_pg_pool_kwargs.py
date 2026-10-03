@@ -444,8 +444,21 @@ class TestCreatePoolWithStartupTimeout:
         assert "FileNotFoundError" in str(err)
         assert "hidden" not in str(err)
 
-    async def test_a_host_name_that_does_not_resolve_is_not_retried(self) -> None:
-        """a name the resolver says does not exist will not exist on the next attempt either."""
+    async def test_a_host_name_that_does_not_resolve_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a name the resolver says does not exist will not exist on the next attempt either.
+
+        the resolver is patched rather than asked: a machine with no DNS answers ``EAI_AGAIN`` for
+        any name, which is retried, and the test would fail for a reason that has nothing to do
+        with the rule.
+        """
+        lookups = 0
+
+        async def no_such_name(*args: object, **kwargs: object) -> list[object]:
+            nonlocal lookups
+            lookups += 1
+            raise socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided, or not known")
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", no_such_name)
         started = time.monotonic()
         with pytest.raises(PoolStartupTimeoutError) as exc_info:
             await create_pool_with_startup_timeout(
@@ -460,7 +473,10 @@ class TestCreatePoolWithStartupTimeout:
         err = exc_info.value
         assert time.monotonic() - started < 2.0
         assert err.attempts == 1
-        assert isinstance(err.__cause__, socket.gaierror)
+        assert lookups == 1
+        cause = err.__cause__
+        assert isinstance(cause, socket.gaierror)
+        assert cause.errno == socket.EAI_NONAME
         assert "not retried" in str(err)
 
     async def test_a_temporary_resolver_failure_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
