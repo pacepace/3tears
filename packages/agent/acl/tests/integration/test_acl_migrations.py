@@ -142,9 +142,9 @@ async def test_names_are_unique_within_their_scope(acl_pool: asyncpg.Pool) -> No
     await _role(acl_pool, "reader", one)
     with pytest.raises(asyncpg.UniqueViolationError):
         await _role(acl_pool, "reader")
+    # two servers may expose a tool of one name: the row is addressed by its id
     await _namespace(acl_pool, "tools/a")
-    with pytest.raises(asyncpg.UniqueViolationError):
-        await _namespace(acl_pool, "tools/a")
+    await _namespace(acl_pool, "tools/a")
 
 
 async def test_namespace_rows_keep_the_platform_rules(acl_pool: asyncpg.Pool) -> None:

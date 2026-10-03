@@ -41,8 +41,9 @@ its own DDL, and the shapes drifted (a missing grant index left the hub's grants
 
 - **Added, `threetears.agent.acl.migrations` (`agent_acl`, platform scope), v001:** `namespaces`,
   `groups`, `group_members`, `roles`, `role_assignments`, with the platform's rules: namespace
-  names unique (`owner_namespace` is a name with no foreign key: only a registry makes an agent's
-  own namespace row), non-workspace schema names unique, a
+  names not unique (two servers may expose a tool of one name; a row is addressed by its id) and
+  `owner_namespace` a name with no foreign key (only a registry makes an agent's own namespace
+  row); non-workspace schema names unique, a
   platform namespace one of the platform types; group and role names unique per owner scope;
   `managed_by` NOT NULL DEFAULT 'manual'; the grant natural-key unique indexes that make
   `ensure_group_role_assignment` race-safe. `agent_tools_platform` ALTERs `namespaces`: register

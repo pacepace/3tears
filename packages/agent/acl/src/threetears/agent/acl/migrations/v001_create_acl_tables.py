@@ -6,10 +6,12 @@ agent-acl v001: the five rbac tables the evaluator reads.
 (:mod:`threetears.agent.acl.collections`) and with the uniqueness the
 evaluator and the idempotent writers rely on:
 
-- a namespace's ``name`` is unique. ``owner_namespace`` is a name with no
-  foreign key: an agent's own namespace row exists only where a registry
-  registers agents, while the memory provisioner and identity name it
-  everywhere;
+- a namespace's ``name`` is not unique: two MCP servers may each expose a
+  tool of one name, and the row is addressed by ``namespace_id``. A
+  deployment that names its namespaces uniquely adds its own index.
+  ``owner_namespace`` is a name with no foreign key: an agent's own
+  namespace row exists only where a registry registers agents, while the
+  memory provisioner and identity name it everywhere;
   only workspace namespaces share a ``schema_name``; a platform namespace is
   one of the platform types;
 - a group's ``name`` is unique across platform rows and per customer, so
@@ -66,9 +68,7 @@ ACL_TABLES_DDL: tuple[str, ...] = (
         )
     )
     """,
-    # a namespace is addressed by name (``get_by_name``, a subtree grant, an owner reference), so
-    # the name is unique; only workspace rows may share a schema
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_namespaces_name ON namespaces (name)",
+    # only workspace rows may share a schema
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_namespaces_schema_name_non_workspace ON namespaces (schema_name) "
     "WHERE namespace_type <> 'workspace' AND schema_name IS NOT NULL",
     """
