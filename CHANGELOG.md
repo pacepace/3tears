@@ -42,6 +42,31 @@ them as done.
   `testcontainers.nats.NatsContainer` waited through testcontainers' deprecated helpers, and every
   suite that started NATS carried two deprecation warnings.
 
+### A gateway refusal's own code rides the stream terminal
+
+`StreamErrorEvent` carried `code`, `message` and `duration_ms`. A turn the model gateway refused
+(for example `MODEL_NO_VISION`) terminated with an agent-level `code`, and the gateway's own code
+reached a stream or websocket consumer only inside `message`, where a consumer had to parse prose
+to find it.
+
+- **Added, in `threetears.langgraph` (module `streaming`): `StreamErrorEvent.gateway_code: str |
+  None = None`.** It holds the gateway's refusal code when the gateway refused the turn, and `None`
+  for any other failure. `code` still names the agent-level failure class. A payload without the
+  field still parses, with `gateway_code` set to `None`.
+- **Added: `StreamingResponse.error(..., gateway_code=None)`.** A caller publishing its own
+  terminal can set the field.
+- **Added: `StreamingResponse(..., gateway_code_reader=None)`.** This is an optional
+  `Callable[[BaseException], str | None]`. `run_graph` publishes the failure terminal itself, so
+  it is the path most failed turns take. On that path the reader is handed the failing exception,
+  and what it returns becomes `gateway_code`. It is injected for the same reason as
+  `error_classifier`: the exception that carries the code is the caller's own type. A reader that
+  raises degrades to `None` and is logged. It never costs the terminal event, and it never
+  replaces the exception that propagates. Cancellation never consults the reader.
+
+Every existing producer is unchanged and publishes `gateway_code: null`. A consumer that wants the
+code must read the new field. A host gets the code on `run_graph`'s terminal by passing
+`gateway_code_reader`.
+
 ### An agent granted `media` boots clean, and `media_analyze` answers its first call
 
 Found live: every agent granted the `media` tool alias logged an ERROR at boot, and every first

@@ -1299,3 +1299,176 @@ class TestRunGraphErrorClassification:
         err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
         assert err[0].code == "AGENT_CANCELLED"
         assert consulted == []
+
+
+class _GatewayRefused(Exception):
+    """a failure carrying the gateway's own refusal code, the shape a host's gateway client raises."""
+
+    def __init__(self, gateway_code: str) -> None:
+        """record the refusal code.
+
+        :param gateway_code: the gateway's own code
+        :ptype gateway_code: str
+        """
+        self.gateway_code = gateway_code
+        super().__init__(f"gateway completion failed: {gateway_code}: the model cannot read images")
+
+
+def _read_gateway_code(exc: BaseException) -> str | None:
+    """the gateway code a host reads off its own exception type.
+
+    :param exc: the failing exception
+    :ptype exc: BaseException
+    :return: the gateway's code, or ``None`` when the failure is not a gateway refusal
+    :rtype: str | None
+    """
+    return exc.gateway_code if isinstance(exc, _GatewayRefused) else None
+
+
+class TestStreamErrorCarriesTheGatewayCode:
+    """a gateway refusal's own code rides the stream terminal as a field, not only in prose.
+
+    the terminal ``code`` names the AGENT-level failure class; a refusal the
+    model gateway answered also has the gateway's own code (``MODEL_NO_VISION``),
+    which before this field reached a stream or websocket consumer only inside
+    ``message``.
+    """
+
+    def test_gateway_code_defaults_to_none(self) -> None:
+        """an existing producer that never names one is unchanged."""
+        evt = StreamErrorEvent(correlation_id=_new_uuid(), code="AGENT_FAILED", message="boom")
+
+        assert evt.gateway_code is None
+        assert json.loads(evt.model_dump_json())["gateway_code"] is None
+
+    def test_gateway_code_round_trips_the_wire(self) -> None:
+        """serialized and parsed back through the discriminated union, the code survives."""
+        cid = _new_uuid()
+        payload = (
+            StreamErrorEvent(
+                correlation_id=cid,
+                code="GATEWAY_REFUSED",
+                message="the model cannot read images",
+                gateway_code="MODEL_NO_VISION",
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
+
+        evt = parse_stream_event(payload)
+
+        assert isinstance(evt, StreamErrorEvent)
+        assert evt.gateway_code == "MODEL_NO_VISION"
+        assert evt.code == "GATEWAY_REFUSED"
+
+    def test_a_payload_without_the_field_still_parses(self) -> None:
+        """a terminal from a producer that predates the field parses with no gateway code."""
+        payload = json.dumps(
+            {"type": "stream_error", "correlation_id": str(_new_uuid()), "code": "AGENT_FAILED", "message": "m"}
+        )
+
+        evt = parse_stream_event(payload)
+
+        assert isinstance(evt, StreamErrorEvent)
+        assert evt.gateway_code is None
+
+    async def test_error_publishes_the_gateway_code(self) -> None:
+        """``error(gateway_code=...)`` puts it on the published terminal."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(transport=transport, correlation_id=_new_uuid(), conversation_id=_new_uuid())
+        await stream.start()
+
+        await stream.error(code="GATEWAY_REFUSED", message="no vision", gateway_code="MODEL_NO_VISION")
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert len(err) == 1
+        assert err[0].gateway_code == "MODEL_NO_VISION"
+
+    async def test_error_without_a_gateway_code_publishes_none(self) -> None:
+        """the existing ``error(code=, message=)`` call shape publishes no gateway code."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(transport=transport, correlation_id=_new_uuid(), conversation_id=_new_uuid())
+        await stream.start()
+
+        await stream.error(code="AGENT_FAILED", message="boom")
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert err[0].gateway_code is None
+
+    async def test_run_graph_reads_the_gateway_code_off_the_failure(self) -> None:
+        """the dominant failure path -- run_graph's own terminal -- carries the gateway's code."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            gateway_code_reader=_read_gateway_code,
+        )
+
+        with pytest.raises(_GatewayRefused):
+            await stream.run_graph(_StubGraph(_GatewayRefused("MODEL_NO_VISION")), {}, {})
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert len(err) == 1
+        assert err[0].gateway_code == "MODEL_NO_VISION"
+
+    async def test_run_graph_failure_that_is_not_a_refusal_has_no_gateway_code(self) -> None:
+        """a reader answering ``None`` leaves the field empty."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            gateway_code_reader=_read_gateway_code,
+        )
+
+        with pytest.raises(RuntimeError):
+            await stream.run_graph(_StubGraph(RuntimeError("a bug")), {}, {})
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert err[0].gateway_code is None
+
+    async def test_a_broken_reader_does_not_cost_the_terminal_or_the_failure(self) -> None:
+        """a reader that raises degrades to no gateway code; the original failure still propagates."""
+
+        def _broken(exc: BaseException) -> str | None:
+            raise ValueError("reader itself is broken")
+
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            gateway_code_reader=_broken,
+        )
+
+        with pytest.raises(_GatewayRefused):
+            await stream.run_graph(_StubGraph(_GatewayRefused("MODEL_NO_VISION")), {}, {})
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert len(err) == 1
+        assert err[0].gateway_code is None
+        assert err[0].code == "AGENT_FAILED"
+
+    async def test_cancellation_reads_no_gateway_code(self) -> None:
+        """an orderly stop is not a refusal and never consults the reader."""
+        consulted: list[BaseException] = []
+
+        def _reader(exc: BaseException) -> str | None:
+            consulted.append(exc)
+            return "MODEL_NO_VISION"
+
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            gateway_code_reader=_reader,
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await stream.run_graph(_StubGraph(asyncio.CancelledError()), {}, {})
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert err[0].gateway_code is None
+        assert consulted == []
