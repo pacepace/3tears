@@ -468,6 +468,53 @@ class TestDiscordAdapterPostMessage:
         mock_client.login.assert_awaited_once()
 
 
+class TestDiscordAdapterSendDirect:
+    """tests for send_direct: a DM to a user id over REST, handing back what a reply will carry."""
+
+    @staticmethod
+    def _client_with_dm(mock_discord: MagicMock, *, sent_ids: list[int]) -> tuple[MagicMock, MagicMock]:
+        dm = MagicMock()
+        dm.id = 5550001
+        dm.send = AsyncMock(side_effect=[MagicMock(id=i) for i in sent_ids])
+        user = MagicMock()
+        user.create_dm = AsyncMock(return_value=dm)
+        mock_client = MagicMock()
+        mock_client.login = AsyncMock()
+        mock_client.start = AsyncMock()
+        mock_client.fetch_user = AsyncMock(return_value=user)
+        mock_discord.Client.return_value = mock_client
+        return mock_client, dm
+
+    @patch("threetears.channels.discord.discord")
+    async def test_send_direct_opens_the_dm_over_rest_and_returns_its_handles(self, mock_discord: MagicMock) -> None:
+        """the DM channel id and the sent message's id come back; no gateway is opened."""
+        from threetears.channels.discord import DirectMessageSent, DiscordAdapter
+
+        mock_client, dm = self._client_with_dm(mock_discord, sent_ids=[9990001])
+        adapter = DiscordAdapter(bot_token="bot-tok", router=_MockRouter())
+
+        sent = await adapter.send_direct(user_id="424242", content="the tide turns at nine")
+
+        assert sent == DirectMessageSent(channel_id="5550001", message_ids=("9990001",))
+        mock_client.login.assert_awaited_once_with("bot-tok")
+        mock_client.start.assert_not_awaited()
+        mock_client.fetch_user.assert_awaited_once_with(424242)
+        dm.send.assert_awaited_once_with(content="the tide turns at nine")
+
+    @patch("threetears.channels.discord.discord")
+    async def test_send_direct_splits_long_content_and_returns_every_id(self, mock_discord: MagicMock) -> None:
+        """content past discord's limit goes as several messages, each id handed back in order."""
+        from threetears.channels.discord import DiscordAdapter
+
+        _client, dm = self._client_with_dm(mock_discord, sent_ids=[1, 2])
+        adapter = DiscordAdapter(bot_token="bot-tok", router=_MockRouter())
+
+        sent = await adapter.send_direct(user_id="7", content="x" * 2500)
+
+        assert sent.message_ids == ("1", "2")
+        assert [len(c.kwargs["content"]) for c in dm.send.await_args_list] == [2000, 500]
+
+
 # ---------------------------------------------------------------------------
 # bot filtering tests
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ uses discord.Client with gateway intents for real-time message handling.
 from __future__ import annotations
 
 import io
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,8 +25,26 @@ from threetears.channels.protocol import (
 )
 
 __all__ = [
+    "DirectMessageSent",
     "DiscordAdapter",
 ]
+
+
+@dataclass(frozen=True)
+class DirectMessageSent:
+    """what a direct message to a user left behind: the handles a reply to it carries.
+
+    a reply in the same DM arrives with ``channel_id`` as its channel; a reply
+    to one of the sent messages arrives with that message's id as its
+    ``reply_to_id`` (:func:`_build_channel_message`). a caller files both, so
+    the reply finds the conversation that sent it.
+
+    :ivar channel_id: the direct-message channel between the bot and the user
+    :ivar message_ids: every message sent, in order (one per 2000-char chunk)
+    """
+
+    channel_id: str
+    message_ids: tuple[str, ...]
 
 
 class DiscordAdapter:
@@ -147,6 +166,34 @@ class DiscordAdapter:
             raise TypeError(f"discord target {target_id} is not messageable: {type(target).__name__}")
         for chunk in _split_message(content):
             await target.send(content=chunk)
+
+    async def send_direct(self, *, user_id: str, content: str) -> DirectMessageSent:
+        """send a direct message to a user out-of-band, and say what it left behind.
+
+        the bot opens (or reuses) its DM channel with the user over REST --
+        ``fetch_user`` then ``create_dm``, no gateway -- and posts the content,
+        split to discord's 2000-char limit. discord delivers it only to a user
+        who shares a server with the bot and accepts DMs from its members; a
+        refusal raises :class:`discord.Forbidden`, a user id that names nobody
+        :class:`discord.NotFound`.
+
+        :param user_id: the discord user id (a snowflake, as text)
+        :ptype user_id: str
+        :param content: message text in markdown
+        :ptype content: str
+        :return: the DM channel and the ids of the messages sent
+        :rtype: DirectMessageSent
+        """
+        await self._ensure_logged_in()
+        user = await self._client.fetch_user(int(user_id))
+        dm = await user.create_dm()
+        sent_ids: list[str] = []
+        for chunk in _split_message(content):
+            sent = await dm.send(content=chunk)
+            sent_ids.append(str(sent.id))  # convert at border: discord snowflake id handed back as text
+        channel_id = str(dm.id)  # convert at border: discord snowflake id handed back as text
+        result = DirectMessageSent(channel_id=channel_id, message_ids=tuple(sent_ids))
+        return result
 
     async def _on_ready(self) -> None:
         """handle discord on_ready event.

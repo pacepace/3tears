@@ -8,6 +8,15 @@ packages (bumped in lock-step).
 
 ## v0.59.0 -- 2026-10-03
 
+### Channels: a Discord bot can reach a user directly, and say how a reply will find it
+
+- **Added, `DiscordAdapter.send_direct(*, user_id, content) -> DirectMessageSent`:** opens (or
+  reuses) the bot's DM channel with a user over REST, without the gateway, sends the content split
+  to Discord's 2000-character limit, and returns the DM channel id and every sent message's id. A
+  reply in that DM carries the channel id; a reply to a sent message carries its id as
+  `reply_to_id`, so a caller that files both finds the conversation that reached out.
+- **Added, `threetears.channels.discord.DirectMessageSent`.**
+
 ### Memory: nothing an agent remembers is destroyed, and a permanent memory is never touched
 
 Extraction's UPDATE overwrote a memory in place and its DELETE hard-deleted it; `memory_add`
