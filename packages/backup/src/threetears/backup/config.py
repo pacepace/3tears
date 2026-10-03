@@ -43,6 +43,10 @@ class BackupConfig:
         targets rather than data. A backup that dumps one is backing up a copy of another
         database it already dumped, and paying for it twice; the defaults are the prefixes this
         package and its callers generate.
+    :param dump_concurrent_ddl_retries: how many more times one database's dump is taken when the
+        dump tool failed because DDL changed the catalog under it (>= 0; 0 never retries).
+    :param dump_concurrent_ddl_retry_delay_seconds: pause before the first such retry, doubled
+        before each later one (> 0).
     """
 
     passphrase: SecretStr
@@ -73,6 +77,18 @@ class BackupConfig:
     #: the set already contains, and dumping it back into the same set doubles
     #: the storage to preserve nothing.
     transient_database_prefixes: tuple[str, ...] = ("scratch_", "verify_restore_")
+    #: A dump reads the catalog's list of objects, then asks the server about each one, and DDL
+    #: running in the same database between the two -- an agent schema being created on a cold
+    #: start, found live -- fails it with "schema with OID N does not exist". Only that database's
+    #: dump is taken again, and only on that failure (``cluster.is_concurrent_ddl_failure``).
+    #: Three retries over 5 + 10 + 20 seconds outlasts the DDL a cold start runs; a database still
+    #: failing after them is recorded as failed, as every other dump failure is.
+    #:
+    #: The backup does not take the database's DDL lock instead: that lock is exclusive, a dump
+    #: holds what it guards for its whole run (13m34s measured on one live set), and the hub's DDL
+    #: callers wait 30s for it -- so agent provisioning would fail for the length of every backup.
+    dump_concurrent_ddl_retries: int = 3
+    dump_concurrent_ddl_retry_delay_seconds: float = 5.0
 
     def __post_init__(self) -> None:
         if not self.prefix or self.prefix != self.prefix.strip("/"):
@@ -86,6 +102,10 @@ class BackupConfig:
             raise ValueError("encryption_work_factor must be a power of two greater than 1")
         if not self.passphrase.get_secret_value():
             raise ValueError("passphrase must not be empty")
+        if self.dump_concurrent_ddl_retries < 0:
+            raise ValueError("dump_concurrent_ddl_retries must be >= 0")
+        if self.dump_concurrent_ddl_retry_delay_seconds <= 0:
+            raise ValueError("dump_concurrent_ddl_retry_delay_seconds must be > 0")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> BackupConfig:
@@ -107,12 +127,19 @@ class BackupConfig:
             allow_delete=_bool(source, "ALLOW_DELETE", default=False),
             dump_timeout_seconds=_int(source, "DUMP_TIMEOUT_SECONDS", 3600),
             encryption_work_factor=_int(source, "ENCRYPTION_WORK_FACTOR", 2**18),
+            dump_concurrent_ddl_retries=_int(source, "DUMP_CONCURRENT_DDL_RETRIES", 3),
+            dump_concurrent_ddl_retry_delay_seconds=_float(source, "DUMP_CONCURRENT_DDL_RETRY_DELAY_SECONDS", 5.0),
         )
 
 
 def _int(source: Mapping[str, str], suffix: str, default: int) -> int:
     raw = source.get(f"{_ENV_PREFIX}{suffix}")
     return default if raw is None else int(raw)
+
+
+def _float(source: Mapping[str, str], suffix: str, default: float) -> float:
+    raw = source.get(f"{_ENV_PREFIX}{suffix}")
+    return default if raw is None else float(raw)
 
 
 def _bool(source: Mapping[str, str], suffix: str, *, default: bool) -> bool:

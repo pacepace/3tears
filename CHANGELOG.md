@@ -111,6 +111,32 @@ tools.
 / `ensure_kv_bucket`, or re-declare it from an `add_reconnect_callback` hook. A test asserting that
 a file-storage declaration is NOT remembered (`remembered_declarations`) now sees it remembered.
 
+### Backup: a database dump that DDL raced is dumped again, and nothing else is retried
+
+Found live on a cold start: the hub's first scheduled cluster backup dumped `aibots` while an
+agent schema was being created in it, and `ysql_dump` failed with `schema with OID 17839 does not
+exist`. The dump tool reads the catalog's list of objects and then asks the server about each,
+and DDL landing between the two removes one from under it. The other databases dumped, the set
+was INCOMPLETE, and the cluster waited a whole interval for its next backup.
+
+- `ClusterBackup.create_backup` now takes that ONE database again -- inventory, snapshot and
+  dump -- when the failure is exactly this race, classified by
+  `threetears.backup.cluster.is_concurrent_ddl_failure`: a dump tool (`pg_dump`, `ysql_dump`)
+  that exited non-zero with standard error naming a catalog object by OID that vanished (`schema
+  with OID N does not exist`, `could not open relation with OID N`, `cache lookup failed for ...
+  N`). A timeout, a permission error, a store failure or any other message is attempted once, as
+  before. Each retry is logged at WARNING naming the database, the attempt and the tool's error.
+- Bounded by two new `BackupConfig` fields, also read by `from_env`:
+  `dump_concurrent_ddl_retries` (default 3; `THREETEARS_BACKUP_DUMP_CONCURRENT_DDL_RETRIES`) and
+  `dump_concurrent_ddl_retry_delay_seconds` (default 5.0, doubled before each later retry;
+  `THREETEARS_BACKUP_DUMP_CONCURRENT_DDL_RETRY_DELAY_SECONDS`). A database still failing after
+  them is recorded as failed, as before.
+- **Why the backup does not take the database's DDL lock instead.** It could: the lock is in
+  `threetears.core`. But the lock is exclusive, a dump would hold it for its whole run (13m34s
+  measured on one live set), and the hub's DDL callers wait 30 s for it, so every agent created
+  or tool-pod table declared during a backup would be refused with `DDL_LOCK_BUSY`. That moves the
+  failure from a backup retried seconds later to user-facing provisioning.
+
 ### Enforcement: `threetears.nats.raw_errors` is part of the wrapper
 
 `raw_errors` classifies a raw nats-py handle's exceptions by their nats-py type, so it imports
