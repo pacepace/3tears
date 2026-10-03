@@ -6,7 +6,10 @@ agent-acl v001: the five rbac tables the evaluator reads.
 (:mod:`threetears.agent.acl.collections`) and with the uniqueness the
 evaluator and the idempotent writers rely on:
 
-- a namespace's ``name`` is unique, and an ``owner_namespace`` names one;
+- a namespace's ``name`` is unique. ``owner_namespace`` is a name with no
+  foreign key: an agent's own namespace row exists only where a registry
+  registers agents, while the memory provisioner and identity name it
+  everywhere;
   only workspace namespaces share a ``schema_name``; a platform namespace is
   one of the platform types;
 - a group's ``name`` is unique across platform rows and per customer, so
@@ -68,18 +71,6 @@ ACL_TABLES_DDL: tuple[str, ...] = (
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_namespaces_name ON namespaces (name)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_namespaces_schema_name_non_workspace ON namespaces (schema_name) "
     "WHERE namespace_type <> 'workspace' AND schema_name IS NOT NULL",
-    """
-    DO $$
-    BEGIN
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint
-             WHERE conname = 'namespaces_owner_namespace_fkey' AND conrelid = to_regclass('namespaces')
-        ) THEN
-            ALTER TABLE namespaces ADD CONSTRAINT namespaces_owner_namespace_fkey
-                FOREIGN KEY (owner_namespace) REFERENCES namespaces (name);
-        END IF;
-    END $$
-    """,
     """
     CREATE TABLE IF NOT EXISTS groups (
         row_scope VARCHAR(20) NOT NULL,

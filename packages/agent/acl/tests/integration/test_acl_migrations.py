@@ -160,8 +160,8 @@ async def test_namespace_rows_keep_the_platform_rules(acl_pool: asyncpg.Pool) ->
         await _namespace(acl_pool, "tools/y", schema_name="only_mine")
     with pytest.raises(asyncpg.CheckViolationError):
         await _namespace(acl_pool, "agents/z", namespace_type="agent")  # a platform row is a platform type
-    with pytest.raises(asyncpg.ForeignKeyViolationError):
-        await _namespace(acl_pool, "tools/child", owner_namespace="tools/nobody")
+    # an owner is a name, not a row: an agent's own namespace exists only where a registry made it
+    await _namespace(acl_pool, "tools/child", owner_namespace="agents.nobody-registered")
 
 
 async def test_an_unstamped_grant_is_manual(acl_pool: asyncpg.Pool) -> None:
