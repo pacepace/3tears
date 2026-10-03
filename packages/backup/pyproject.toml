@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-backup"
-version = "0.59.0"
+version = "0.60.0"
 description = "Encrypted, GFS-rotated database backups to any ObjectStore, with restore verification"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -28,10 +28,10 @@ classifiers = [
 # structured logging; core is the one stored form of an instant (the manifest's
 # created_at).
 dependencies = [
-    "3tears>=0.59.0,<0.60.0",
-    "3tears-media-contracts>=0.59.0,<0.60.0",
-    "3tears-object-store>=0.59.0,<0.60.0",
-    "3tears-observe>=0.59.0,<0.60.0",
+    "3tears>=0.60.0,<0.61.0",
+    "3tears-media-contracts>=0.60.0,<0.61.0",
+    "3tears-object-store>=0.60.0,<0.61.0",
+    "3tears-observe>=0.60.0,<0.61.0",
 ]
 
 [project.urls]

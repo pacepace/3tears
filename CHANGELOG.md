@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.60.0 -- 2026-10-03
+
 ### A tool that did not do what it was asked says so as a failure
 
 A consumer reads a tool's failure only from the `[TOOL ERROR]` prefix
