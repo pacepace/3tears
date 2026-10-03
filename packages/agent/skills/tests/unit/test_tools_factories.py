@@ -662,6 +662,28 @@ class TestSkillInvoke:
         assert "wake" in out
         assert state.active is None
 
+    async def test_a_tool_call_skill_is_not_activated_and_says_what_to_do(self) -> None:
+        """A skill that is one tool call has no steps; activating it would change nothing."""
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        coll = FakeSkillsCollection()
+        skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id, body=None)
+        coll.rows[(agent_id, skill_id)]["tool"] = "threetears.current_time"
+        state = _ActiveState()
+        [tool] = load_skill_invoke_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=coll,
+            invocations_collection=FakeInvocationsCollection(),
+            conversation_id_resolver=_new_uuid,
+            active_skill_probe=state.probe,
+            active_skill_setter=state.setter,
+        )
+        out = await tool.ainvoke({"skill_id": str(skill_id)})
+        assert "[TOOL ERROR]" in out
+        assert "threetears.current_time" in out and "wake" in out
+        assert state.active is None
+
     async def test_disabled_rejected(self) -> None:
         agent_id = _new_uuid()
         user_id = _new_uuid()

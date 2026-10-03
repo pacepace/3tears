@@ -1570,6 +1570,15 @@ def load_skill_invoke_tool(
                 f"skill [skill:{entity.skill_id}] is disabled; re-enable via skill_update",
             )
 
+        if entity.tool:
+            # A tool-call skill has no steps to take on; activating it would
+            # change nothing, and the turn would read as if the skill ran.
+            return _tool_error(
+                "skill_invoke",
+                f"skill [skill:{entity.skill_id}] is one call to {entity.tool}; call {entity.tool} "
+                "yourself, or attach the skill to a wake to run it on a schedule",
+            )
+
         if entity.prompt_mode == "replace":
             return _tool_error(
                 "skill_invoke",
