@@ -6,6 +6,135 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.61.0 -- 2026-10-03
+
+### A pool start survives a connect that never answers
+
+`create_pool_with_startup_timeout` wrapped the whole of `asyncpg.create_pool` -- `min_size`
+connects -- in one 30s `wait_for`, and asyncpg's own per-connect timeout defaults to 60s. One
+connect whose backend never answered (a backend stalled under host memory pressure) spent the
+whole budget, nothing retried, and the pool failed. A failed attempt also dropped its half-built
+pool with its other connections still open.
+
+The failure that surfaced this was in the identity repo, not here: `IdentityCoreServer.start()`
+runs `apply_migrations` over a plain connect, then starts its pool through `identity_core`'s
+`create_db_pool`, which calls this wrapper. That start failed twice in one day in an identity
+integration test with `PoolStartupTimeoutError ... within 30.0s`, seconds after the migrations
+had run on the same database. It reaches identity when identity moves to 0.61.0 and updates
+`create_db_pool` to the new signature. In this repo, `AsyncpgDriver` now starts its pool through
+the wrapper (below); the other direct `asyncpg.create_pool` call sites (this repo's identity
+package's test fixture `make_pool` among them) are unchanged by this release.
+
+- **Changed, breaking: `create_pool_with_startup_timeout(dsn=None, *, pool_name="db",
+  startup_timeout=30.0, connect_timeout=None, connect=None, **create_pool_kwargs)`.** It now calls
+  `asyncpg.create_pool` itself, so it can bound each connect and close what a failed attempt
+  opened. The zero-argument `create` callable is gone. Migrate by moving the `create_pool`
+  arguments into the call:
+
+  ```python
+  # before
+  pool = await create_pool_with_startup_timeout(
+      lambda: asyncpg.create_pool(dsn, min_size=2, timeout=10, **get_pg_pool_kwargs()),
+      dsn=dsn, startup_timeout=30.0, pool_name="hub_l3",
+  )
+  # after
+  pool = await create_pool_with_startup_timeout(
+      dsn, pool_name="hub_l3", startup_timeout=30.0, connect_timeout=10,
+      min_size=2, **get_pg_pool_kwargs(),
+  )
+  ```
+
+  `timeout=` is refused with a `TypeError` naming it and `connect_timeout=`, the per-connect
+  bound. A caller's own `connect=` hook is kept: the wrapper's hook -- the one a failed attempt
+  closes its connections through -- calls it for every connection. It receives asyncpg's connect
+  arguments, `timeout` among them, and must pass them on; an exception of its own type (not
+  asyncpg's or the network's) propagates unretried and unwrapped, after the attempt's
+  connections are closed. A caller may pass `host=` / `port=` / `user=` / `database=` /
+  `password=` instead of a DSN; the error and the log name `user@host:port/database`.
+- **Changed, breaking: `PoolStartupTimeoutError(message, *, pool_name, db_identity,
+  startup_timeout_seconds, elapsed_seconds, attempts, connect_timeout_seconds)`.** The last two
+  keyword arguments are required. Code that constructs the error itself -- a test simulating a
+  failed pool start -- adds them: `attempts=1, connect_timeout_seconds=10.0`.
+- **Behaviour:** each connect is bounded at `connect_timeout`. An attempt that fails on a timed-out,
+  refused or dropped connect, or on a server that is starting, shutting down, or out of
+  connections or memory, closes every connection it opened -- including one still connecting,
+  which is cancelled, and one that completes after the attempt failed -- and a fresh attempt
+  starts after a pause doubling from 0.5s to 4s (`threetears.observe.retry_bounded`). No attempt
+  starts after `startup_timeout`, and the call is cut off at it. A wrong password, a missing
+  database, a host name the resolver says does not exist, or a server certificate that does not
+  verify fails on the first attempt. When the budget runs out, the error says whether it ran out
+  during an attempt or before the next could start. A temporary resolver failure (`EAI_AGAIN`)
+  is retried. A `FileNotFoundError` is retried: asyncpg raises it, identically, for an `sslrootcert` that is not
+  on disk and for a unix socket a still-starting Postgres has not created yet, so a missing
+  certificate file spends the budget and the final error names `FileNotFoundError`. Each retried
+  failure logs a WARNING naming the attempt, the elapsed time, the error class and how many
+  connections it closed. Once the pool has started, the wrapper keeps no record of the connections the pool opens.
+- **Changed, in `threetears.datasources`: `AsyncpgDriver` starts its pool through the wrapper**,
+  its connect guard (`_connect_one`) running inside the wrapper's hook. A start that fails on one
+  of `pool_min_size` connects now closes the connections the others opened; before, a failed
+  sibling left them open on a pool object nobody held. Each login is bounded at the platform's
+  per-connect timeout (10s; asyncpg's own default was 60s). The start's budget scales with the
+  work: 10s for each of `pool_min_size` logins plus one, and never less than the platform's 30s,
+  because logins under a connect guard run one at a time -- four nine-second warehouse logins
+  need 36s. The driver has no setting for either; its connection configs carry no connect or
+  startup timeout. A refused login still raises `DriverAuthError` with the server's reason.
+- **Changed: `3tears` declares `asyncpg>=0.30`**, the release `create_pool(connect=...)` arrived in.
+- **Changed: a programming error is no longer wrapped.** A bad pool shape (`min_size > max_size`),
+  a wrong argument, or a client configuration error (`asyncpg.exceptions.ClientConfigurationError`:
+  a malformed DSN, an invalid `sslmode`) raises as itself. Only a database or network failure
+  becomes a `PoolStartupTimeoutError`.
+- **Client-side errors withhold the library's text; server answers keep theirs.**
+  - A server answer -- a refused login, a missing database, too many connections, a server
+    starting -- keeps its text in the log and in `PoolStartupTimeoutError`, and stays its cause:
+    it comes from the server and never quotes what the client sent.
+  - A socket error is reported as its class and errno, and stays the cause.
+  - An error from asyncpg's connection-parameter handling -- a `ClientConfigurationError`, or a
+    `ValueError` raised while asyncpg parses the DSN and its connect options -- describes what
+    the client sent, and with a stray `@` or `?` in a password that is the password: for
+    `user:se@cret:TAIL@host` asyncpg reports the port as `TAIL@host`, and for
+    `user:pa?ssWORD@host` a query field `ssWORD@host`. Such an error is raised as its own type
+    with the fixed message `invalid connection configuration for <user>@<host>:<port>/<database>
+    (details withheld: they may contain credentials); check host, port, user, database and
+    sslmode`, without the original as cause or context. It is logged once, as its class and that
+    message, with the same structured keys as every other pool-start line (`connection_identity`,
+    `attempts`, `elapsed_seconds`, ...). The target in the message comes only from the `host` /
+    `port` / `user` / `database` keywords and is left out when only a DSN was given. A type that
+    cannot be built from one message is raised as `ClientConfigurationError` (or `ValueError`)
+    naming it.
+  - The boundary is asyncpg's own: a plain `ValueError` is a parameter error when it is raised
+    inside `asyncpg.connect_utils._parse_connect_dsn_and_args`, read off the traceback. Anything
+    else raises as itself with its own text and cause: a bad `command_timeout` or statement-cache
+    size (asyncpg checks those before it parses the DSN, and its message quotes only that value),
+    a caller hook's own `ValueError`, an error from the pool's `init` or `setup`, a bad pool
+    shape. A server error from `init` is a server answer like any other.
+  - Any other client-side failure becomes a `PoolStartupTimeoutError` naming only its class, with
+    no cause.
+  - `redact_dsn` returns `<unparseable>` for any DSN whose userinfo it cannot place safely, rather
+    than an identity that may carry a piece of the password: one whose password breaks the URL
+    (it raised a `ValueError` quoting the piece the URL parser took for a port, and for
+    `user:12?x@host` it named `12` the port), and also a valid DSN with an `@` after the netloc,
+    such as `?user=me@server`. Fail-safe, by design.
+- **Added: `PoolStartupTimeoutError.attempts` and `.connect_timeout_seconds`.** The message names
+  the budget, the attempts and the last failure's class.
+- **Added: `resolve_pool_connect_timeout(startup_timeout, connect_timeout=None)`**, in
+  `threetears.core.utils`. With no `connect_timeout` it returns the smaller of
+  `DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS` (10s) and a third of the budget, so one stalled
+  connect costs at most a third of it. It refuses a `connect_timeout` that is not shorter than
+  the budget, because that is the defect.
+- **Added, in `threetears.core.config`: `DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS`,
+  `POOL_START_RETRY_FIRST_DELAY_SECONDS`, `POOL_START_RETRY_MAX_DELAY_SECONDS`.**
+- **Added, in `threetears.core.testing`: `StallingTcpProxy`** (with `PROXY_FORWARD`,
+  `PROXY_STALL`, `PROXY_DROP`), a TCP proxy that stalls, drops or delays chosen connections and
+  counts the client sockets still open, for testing what a client does about a backend that
+  never answers. Its own behaviour is pinned by loopback unit tests that CI runs.
+- **Tests:** `packages/core/tests/integration/test_pool_startup_survives_stalled_connects.py`
+  and `packages/datasources/tests/integration/test_asyncpg_driver_pool_start_live.py` put
+  `StallingTcpProxy` in front of a real Postgres that stalls, drops or delays chosen connections,
+  and counts the pool's backends from `pg_stat_activity`. The unit tests drive the wrapper
+  against a socket that never answers, a port nothing listens on, a unix socket that appears
+  partway through, an unresolvable and a not-yet-resolvable host, and a TLS server whose
+  certificate the client does not trust.
+
 ### A datasource's `require_documented_tables` flag persists
 
 - **Fixed, in `threetears.datasources`:** `CapabilitySourceCollection.schema` now declares

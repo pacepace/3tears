@@ -7,6 +7,7 @@ beyond the ones core already declares (asyncpg, 3tears-observe).
 from threetears.core.utils.atomic_write import atomic_write, atomic_write_sync
 from threetears.core.utils.pg_pool_kwargs import (
     DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS,
+    DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS,
     ENV_MAX_INACTIVE_LIFETIME,
     PoolStartupTimeoutError,
@@ -14,6 +15,7 @@ from threetears.core.utils.pg_pool_kwargs import (
     get_pg_pool_kwargs,
     log_pool_created,
     redact_dsn,
+    resolve_pool_connect_timeout,
 )
 from threetears.core.utils.yugabyte_pool_recycler import (
     DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES,
@@ -30,6 +32,7 @@ from threetears.core.utils.yugabyte_pool_recycler import (
 __all__ = [
     "DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS",
     "DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES",
+    "DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS",
     "DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS",
     "ENV_MAX_INACTIVE_LIFETIME",
     "YUGABYTE_POOL_TRIGGERS",
@@ -47,4 +50,5 @@ __all__ = [
     "is_yugabyte_stale_table_shape",
     "log_pool_created",
     "redact_dsn",
+    "resolve_pool_connect_timeout",
 ]
