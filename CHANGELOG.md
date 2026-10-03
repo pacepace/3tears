@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.61.0 -- 2026-10-03
+
 ### A pool start survives a connect that never answers
 
 `create_pool_with_startup_timeout` wrapped the whole of `asyncpg.create_pool` -- `min_size`
