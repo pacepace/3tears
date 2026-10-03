@@ -76,7 +76,7 @@ async def load_identity_propose_tool(
     async def identity_propose(block_key: str, content: str, rationale: str) -> str:
         """Propose a change to one of your own identity blocks."""
         if block_key not in IDENTITY_BLOCK_KEY_VALUES:
-            return f"Unknown block_key '{block_key}'. Use one of: {', '.join(IDENTITY_BLOCK_KEY_VALUES)}."
+            return f"[TOOL ERROR] Unknown block_key '{block_key}'. Use one of: {', '.join(IDENTITY_BLOCK_KEY_VALUES)}."
         version = await propose(
             collection,
             authorizer,
@@ -90,7 +90,7 @@ async def load_identity_propose_tool(
             caller_agent_id=agent_id,
         )
         if version is None:
-            return f"Could not propose a change to '{block_key}'."
+            return f"[TOOL ERROR] Could not propose a change to '{block_key}'."
         tier = IDENTITY_BLOCK_TIERS[IdentityBlockKey(block_key)]
         if tier is IdentityTier.TIER_1:
             return (
