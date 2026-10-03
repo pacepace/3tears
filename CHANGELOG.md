@@ -6,6 +6,42 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.60.0 -- 2026-10-03
+
+### A tool that did not do what it was asked says so as a failure
+
+A consumer reads a tool's failure only from the `[TOOL ERROR]` prefix
+(`threetears.agent.tools.utils.tool_error`); any other text is a call that worked. Refusals in
+the memory, identity, intention and tool-search tools answered in plain text, so every consumer
+recorded them as calls that worked, and an agent checking its own reply against the record read
+them as done.
+
+- **Changed, text a tool returns:** these now start with `[TOOL ERROR] `, the rest unchanged:
+  - `memory_recall`: `Invalid memory_id format: ...`, `No memory with that id that you can read.`,
+    `Invalid chunk_id_after format: ...`, `Invalid chunk_id_before format: ...`;
+  - `memory_search`: `No memory found with alias '...'.`, `No valid UUIDs provided.`,
+    `No items found for the provided IDs.`, `Provide one of 'query', 'ids', or 'alias'.`;
+  - `memory_add`: `Invalid memory_type '...'. Valid types: ...`;
+  - `chunk_recall`: `Invalid chunk_id format: ...`, `No passage with that id that you can read. ...`;
+  - `identity_propose`: `Unknown block_key '...'. ...`, `Could not propose a change to '...'.`;
+  - the intention tool's `No want found for [intention:...].`;
+  - `tool_search`: `Tool search did not finish in time. ...`, `Tool search failed. ...`.
+
+  A consumer that matches any of these sentences as written matches them with the prefix.
+  Empty searches and listings (`No relevant memories or documents found for this query.`,
+  `No passages matched.`, `No matching tools found.`, ...) are answers and are unchanged.
+- **Added, in `threetears.agent.skills`: `merged_skill_shape(entity, *, body, tool, arguments)`**,
+  a skill's body, tool and arguments after an update (an empty string removes a body or a tool;
+  removing the tool removes its arguments), the one rule `skill_update` and a consumer's REST route
+  both call; **and `validate_skill_arguments`** (in `threetears.agent.skills.tools`), the
+  arguments size check, public under that name.
+- **Enforcement:** `tests/enforcement/test_a_tool_that_did_not_do_it_says_so.py` walks every tool in
+  every package -- each `@tool` function, each one handed to `StructuredTool.from_function`, and the
+  same-module helpers they return -- and fails on a refusal returned as plain text.
+- **Tests:** the session NATS fixture starts a plain container with a structured log wait;
+  `testcontainers.nats.NatsContainer` waited through testcontainers' deprecated helpers, and every
+  suite that started NATS carried two deprecation warnings.
+
 ## v0.59.0 -- 2026-10-02
 
 ### An absent KV bucket raises its own typed error, and a raw nats-py handle's failures classify without importing nats-py
