@@ -28,7 +28,7 @@ import pytest
 
 from threetears.core.coordination import DistributedCounter, KVLease, ReplayGuard, TokenBucket
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.nats import NatsClient
+from threetears.nats import KvBucketNotFoundError, NatsClient
 
 #: builds one primitive over ``client`` with the given create flag (``None`` = the default),
 #: and returns a coroutine function that makes the primitive open its bucket.
@@ -200,9 +200,9 @@ class TestBindOnly:
     @pytest.mark.parametrize("build", _PRIMITIVES)
     async def test_a_bind_only_primitive_does_not_create_an_absent_bucket(self, build: _Opener) -> None:
         client = FakeNatsClient()
-        with pytest.raises(KeyError):
+        with pytest.raises(KvBucketNotFoundError):
             await build(client, False)()
-        with pytest.raises(KeyError):
+        with pytest.raises(KvBucketNotFoundError):
             await client.kv_bucket(name="owned", create_if_missing=False)
 
 
@@ -219,5 +219,5 @@ class TestTheFakeClientModelsADeclarer:
     @pytest.mark.parametrize("build", _PRIMITIVES)
     async def test_an_undeclared_bucket_is_still_refused(self, build: _Opener) -> None:
         client = FakeNatsClient(declared_buckets=("someone-else",))
-        with pytest.raises(KeyError):
+        with pytest.raises(KvBucketNotFoundError):
             await build(client, False)()

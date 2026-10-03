@@ -42,6 +42,7 @@ from threetears.nats import (
 from threetears.observe import HealthCheck, HealthServer, HealthTier, InflightRequestsGauge, get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
+from threetears.registry.catalog_persistence import CatalogPersistence
 from threetears.registry.discovery import DiscoveryHandler
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
@@ -381,6 +382,7 @@ class RegistryServer:
             self._health_port = int(env_port) if env_port else 8000
         self._nc: "NatsClient | None" = None
         self._catalog = ToolCatalog()
+        self._catalog_persistence: CatalogPersistence | None = None
         self._collection_registry: CollectionRegistry | None = None
         self._heartbeat_collection: HeartbeatCollection | None = None
         self._registration_handler: RegistrationHandler | None = None
@@ -630,13 +632,7 @@ class RegistryServer:
         # self._usage_emitter. no-op (emit disabled) when unset.
         await self.apply_usage_emitter_factory(self._nc)
 
-        # the catalog KV bootstrap predates the wrapper's
-        # :meth:`NatsClient.kv_bucket` cache; we still go through the
-        # raw JetStream context here because the catalog persists JSON
-        # blobs keyed by tool full_name and is loaded with a custom
-        # iterator (``ToolCatalog.load_from_kv``) that expects a raw
-        # nats-py KeyValue handle. migrating the catalog persistence
-        # to NatsKvBucket is tracked as follow-up work.
+        # the authorizer initializes against the raw JetStream context.
         js = self._nc.jetstream_context()
 
         authorizer = self._authorizer
@@ -651,27 +647,11 @@ class RegistryServer:
                 "registry.authorizer_initialize",
             )
 
-        async def _ensure_kv_and_load_catalog() -> None:
-            """ensure KV bucket exists and load catalog from it."""
-            nonlocal js
-            try:
-                kv = await js.key_value(bucket=self._kv_bucket)
-            except Exception:
-                kv = await js.create_key_value(bucket=self._kv_bucket)
-                _logger.info(
-                    "created KV bucket",
-                    extra={"extra_data": {"bucket": self._kv_bucket}},
-                )
-            await self._catalog.load_from_kv(kv)
-            _logger.info(
-                "catalog loaded from KV",
-                extra={"extra_data": {"bucket": self._kv_bucket}},
-            )
-
-        await retry_with_backoff(
-            _ensure_kv_and_load_catalog,
-            "registry.kv_catalog_load",
-        )
+        # the catalog bucket's owner: declares it and warm-loads the catalog now, and after every
+        # NATS reconnect declares it again and writes the catalog back -- a restart that lost the
+        # broker's storage takes the bucket, and every registration fails until it is back.
+        self._catalog_persistence = CatalogPersistence(catalog=self._catalog, nc=self._nc, bucket=self._kv_bucket)
+        await self._catalog_persistence.start()
 
         await retry_with_backoff(
             self._ensure_result_stream,
@@ -705,10 +685,11 @@ class RegistryServer:
         call and answered once, so a retried delivery must replace its predecessor rather than leave a
         stale first answer for the waiter to collect.
 
-        The stream is on memory storage, so a NATS restart deletes it. It is declared once, here, and
-        the NATS client re-creates it with this same config after every reconnect
-        (:meth:`threetears.nats.NatsClient.ensure_jetstream_stream`); before it did, every tool call
-        after a broker restart failed with ``stream not found`` until the registry was restarted.
+        The stream is on memory storage, so a NATS restart deletes it. It is declared once, here,
+        through :meth:`threetears.nats.NatsClient.ensure_jetstream_stream`, whose declarations the
+        client re-creates with the same config after every reconnect, whatever their storage; before
+        it did, every tool call after a broker restart failed with ``stream not found`` until the
+        registry was restarted.
 
         :return: nothing
         :rtype: None
@@ -980,6 +961,8 @@ class RegistryServer:
             await self._heartbeat_subscriber.stop()
         if self._registration_handler is not None:
             await self._registration_handler.stop()
+        if self._catalog_persistence is not None:
+            await self._catalog_persistence.stop()
 
         # BEFORE the connection closes, and not optional. `startup` calls
         # `start_invalidation_listener`, and every other component it starts is stopped

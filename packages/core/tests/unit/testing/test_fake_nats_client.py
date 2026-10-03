@@ -14,6 +14,7 @@ import pytest
 from pydantic import BaseModel
 
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.nats.errors import KvBucketNotFoundError, KvError
 from threetears.nats.kv import KvDeclaring
 
 
@@ -254,20 +255,88 @@ async def test_a_declaration_reconciles_a_bucket_somebody_opened_first() -> None
 @pytest.mark.asyncio
 async def test_a_bind_only_declaration_of_an_absent_bucket_raises() -> None:
     client = FakeNatsClient()
-    with pytest.raises(KeyError, match="versions"):
+    with pytest.raises(KvBucketNotFoundError, match="versions") as caught:
         await client.ensure_kv_bucket(name="versions", create_if_missing=False)
+    assert caught.value.bucket == "versions"
 
 
 @pytest.mark.asyncio
-async def test_only_a_memory_declaration_that_may_create_is_remembered() -> None:
-    # the real client remembers exactly these and creates them again after every reconnect; an
-    # ordinary open, a bind-only declaration and a file-backed one are never remembered.
+async def test_a_bind_only_open_of_an_absent_bucket_raises_what_the_real_client_raises() -> None:
+    # the real client raises KvBucketNotFoundError, which is a KvError: code that degrades on
+    # KvError must see the same thing over the double, not a KeyError that escapes its catch.
+    client = FakeNatsClient()
+    with pytest.raises(KvBucketNotFoundError, match="versions") as caught:
+        await client.kv_bucket(name="versions", create_if_missing=False)
+    assert isinstance(caught.value, KvError)
+    assert caught.value.bucket == "versions"
+
+
+@pytest.mark.asyncio
+async def test_a_bind_only_declaration_of_a_vanished_bucket_raises() -> None:
+    # a declaration never reads the client's cache; it asks the broker, which no longer has it.
+    client = FakeNatsClient(declared_buckets=["hub-owned"])
+    bucket = await client.kv_bucket(name="hub-owned", create_if_missing=False)
+    bucket.vanish()
+    with pytest.raises(KvBucketNotFoundError, match="hub-owned"):
+        await client.ensure_kv_bucket(name="hub-owned", create_if_missing=False)
+
+
+@pytest.mark.asyncio
+async def test_a_bind_only_handle_on_a_vanished_bucket_raises_rather_than_recreating_it() -> None:
+    # the real bind-only handle re-binds, finds nothing, and raises once its wait for the declarer
+    # is spent: only the declarer may create the bucket. The double heals only a handle that may.
+    client = FakeNatsClient(declared_buckets=["hub-owned"])
+    bucket = await client.kv_bucket(name="hub-owned", create_if_missing=False)
+    await bucket.put(key="k", value=b"v")
+    bucket.vanish()
+
+    with pytest.raises(KvBucketNotFoundError, match="hub-owned"):
+        await bucket.get(key="k")
+    assert not client.bucket_exists("hub-owned"), "a bind-only handle must not have created the bucket"
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_brings_a_vanished_bucket_back_for_its_binders() -> None:
+    client = FakeNatsClient(declared_buckets=["hub-owned"])
+    bound = await client.kv_bucket(name="hub-owned", create_if_missing=False)
+    await bound.put(key="k", value=b"old")
+    await bound.put(key="k", value=b"older")
+    bound.vanish()
+    await client.ensure_kv_bucket(name="hub-owned")  # the declarer is back
+
+    assert client.bucket_exists("hub-owned")
+    assert await bound.put(key="k", value=b"v") == 1, "the redeclared bucket starts its revisions again"
+
+
+@pytest.mark.asyncio
+async def test_only_a_declaration_that_may_create_is_remembered_whatever_its_storage() -> None:
+    # the real client remembers exactly these and creates them again after every reconnect: a
+    # restart can lose file storage as well as memory (on Kubernetes the volume goes with the pod).
+    # an ordinary open and a bind-only declaration are never remembered.
     client = FakeNatsClient(declared_buckets=["hub-owned"])
     await client.ensure_kv_bucket(name="declared")
     await client.ensure_kv_bucket(name="durable", storage="file")
     await client.ensure_kv_bucket(name="hub-owned", create_if_missing=False)
     await client.kv_bucket(name="opened")
-    assert client.remembered_declarations == frozenset({"declared"})
+    assert client.remembered_declarations == frozenset({"declared", "durable"})
+
+
+@pytest.mark.asyncio
+async def test_a_file_declaration_comes_back_empty_after_a_restart_that_lost_its_storage() -> None:
+    client = FakeNatsClient()
+    durable = await client.ensure_kv_bucket(name="durable", storage="file")
+    await durable.put(key="k", value=b"v")
+    seen_by_hook: list[bool] = []
+
+    async def _hook() -> None:
+        seen_by_hook.append(client.bucket_exists("durable"))
+
+    client.add_reconnect_callback(_hook)
+    await client.restart_broker()
+
+    assert seen_by_hook == [True]
+    assert durable.keys() == ()
+    assert durable.storage == "file"
 
 
 @pytest.mark.asyncio

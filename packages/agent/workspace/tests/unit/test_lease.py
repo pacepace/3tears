@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.agent.workspace.lease import WorkspaceFileLease
 from threetears.core.coordination import LeaseHandle, LeaseUnavailable
+from threetears.nats.errors import KvBucketNotFoundError
 from threetears.nats.subject_permissions import Principal, kv_key_scope_for
 
 
@@ -93,9 +94,9 @@ class TestBucketName:
         """a bucket the hub never declared is refused, not created: a pod holds no stream verb."""
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake, agent_id=_AGENT_ID, pod_id="pod-test")
-        with pytest.raises(KeyError):
+        with pytest.raises(KvBucketNotFoundError):
             await lease.acquire(_SAMPLE_WORKSPACE_ID, "a.yaml", max_wait_seconds=0)
-        with pytest.raises(KeyError):
+        with pytest.raises(KvBucketNotFoundError):
             await fake.kv_bucket(name=_BUCKET, create_if_missing=False)
 
 

@@ -15,14 +15,14 @@ policy has.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.core.collections import bucket as bucket_module
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.bucket import COLLECTIONS_BIND_ATTEMPTS, bind_collections_bucket
-from threetears.nats.errors import KvConfigMismatch, KvError
+from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError
 
 
 class TestBindsRatherThanDeclares:
@@ -74,7 +74,7 @@ class TestTheTwoFailuresAreToldApart:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """a cold cluster races the declaring identity; that IS transient."""
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(
             side_effect=[KvError("bucket not found"), KvError("bucket not found"), MagicMock()],
@@ -89,7 +89,7 @@ class TestTheTwoFailuresAreToldApart:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """a bind that never succeeds must fail loud, not run on with L2 quietly off."""
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(side_effect=KvError("bucket not found"))
 
@@ -107,7 +107,7 @@ class TestTheTwoFailuresAreToldApart:
         the two causes need different fixes -- start the hub, or grant the principal --
         and the bind cannot tell them apart, so it names both.
         """
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(side_effect=KvError("bucket not found"))
 
@@ -125,7 +125,7 @@ class TestAttemptBudgetIsCallerOverridable:
 
     async def test_attempts_override_is_honoured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """without this, every failure test pays twenty real backoff steps."""
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(side_effect=KvError("bucket not found"))
 
@@ -133,3 +133,73 @@ class TestAttemptBudgetIsCallerOverridable:
             await bind_collections_bucket(nc, attempts=3)
 
         assert nc.ensure_kv_bucket.await_count == 3
+
+
+class TestAnAbsentBucketIsReportedAsOne:
+    """when every attempt found the bucket ABSENT, the exhaustion says so by type and names the declarer."""
+
+    async def test_an_absent_bucket_raises_the_typed_error_once_the_budget_is_spent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        nc = MagicMock()
+        nc.ensure_kv_bucket = AsyncMock(
+            side_effect=KvBucketNotFoundError("bucket does not exist", bucket="3tears-collections")
+        )
+
+        with pytest.raises(KvBucketNotFoundError) as excinfo:
+            await bind_collections_bucket(nc, component="tool-pod", attempts=2)
+
+        message = str(excinfo.value)
+        assert "tool-pod" in message
+        assert "has not run" in message
+        assert "grant does not cover" not in message, "an answered absence is not a missing grant"
+        assert excinfo.value.bucket == "3tears-collections"
+
+    async def test_a_last_failure_that_is_not_an_absence_stays_a_plain_kv_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+        nc = MagicMock()
+        nc.ensure_kv_bucket = AsyncMock(
+            side_effect=[KvBucketNotFoundError("absent", bucket="3tears-collections"), KvError("nats: timeout")]
+        )
+
+        with pytest.raises(KvError) as excinfo:
+            await bind_collections_bucket(nc, attempts=2)
+
+        assert not isinstance(excinfo.value, KvBucketNotFoundError)
+
+
+class TestWaitingForTheDeclarerHasOneOwner:
+    """the client's bind already waits, with its own backoff, for an absent bucket's declarer.
+
+    an outer backoff on top of that wait doubled the time a missing bucket costs and left the
+    sizing note describing neither. an absence is retried at once -- the inner wait paced it -- and
+    only a failure that is not an absence sleeps between attempts.
+    """
+
+    async def test_an_absence_is_retried_without_a_second_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sleep = AsyncMock()
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+        nc = MagicMock()
+        nc.ensure_kv_bucket = AsyncMock(
+            side_effect=[KvBucketNotFoundError("absent", bucket="3tears-collections"), MagicMock()]
+        )
+
+        await bind_collections_bucket(nc)
+
+        assert nc.ensure_kv_bucket.await_count == 2
+        sleep.assert_not_awaited()
+
+    async def test_another_failure_still_backs_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sleep = AsyncMock()
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+        nc = MagicMock()
+        nc.ensure_kv_bucket = AsyncMock(side_effect=[KvError("nats: timeout"), MagicMock()])
+
+        await bind_collections_bucket(nc)
+
+        sleep.assert_awaited_once()

@@ -24,15 +24,25 @@ only on err_code 10058 and otherwise falls through with no comparison at all.
 **Two failures, told apart, and neither is handled the way a generic retry helper would.**
 :func:`threetears.observe.resilience.retry_with_backoff` never raises, so wrapping this in it would
 downgrade a ``KvConfigMismatch`` to one log line and carry the process on into exactly the
-silently-broken state the raise exists to prevent.
+silently-broken state the raise exists to prevent. It runs on
+:func:`threetears.observe.resilience.retry_bounded` instead, which raises what it does not retry
+and, once the budget is spent, the last failure.
 
 - ``KvConfigMismatch`` -- the live bucket carries a configuration this process refuses. Retrying
   cannot clear it, so it propagates on the FIRST attempt and the process dies.
 - ``KvError`` -- the bind itself failed, and the dominant cause on a cold cluster is that the
   declaring identity has not run yet: the hub declares this bucket in its own lifespan and nothing
   sequences any other process behind it. That IS transient, and supervisors run these services on
-  bounded restart budgets a fast crash-loop burns through in seconds. So it is retried with bounded
-  exponential backoff, and raised once the budget is spent.
+  bounded restart budgets a fast crash-loop burns through in seconds. So it is retried, and raised
+  once the attempt budget is spent.
+
+**Waiting for the declarer has one owner: the client's bind.** A bind-only open of an ABSENT
+bucket already waits for its declarer, with its own backoff, for
+:attr:`~threetears.nats.kv.KvTimings.bind_wait_for_declarer_seconds` before it raises
+:class:`~threetears.nats.errors.KvBucketNotFoundError`. So an absence is retried here at once,
+with no pause of its own -- a second backoff on top of that wait only multiplied the time a missing
+bucket costs. Every other ``KvError`` (a refused or unanswered bind, which no inner wait paces) is
+retried after a doubling pause.
 
 The client parameter is typed :class:`~threetears.nats.kv.KvDeclaring`, the narrow "can declare
 or bind a bucket" slice, rather than the whole ``NatsClient``. That is what lets an in-memory
@@ -47,12 +57,12 @@ minted grant. A second literal for it would be a second source of truth.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Final
 
 from threetears.core.collections.base import BaseCollection
-from threetears.nats.errors import KvError
+from threetears.nats.errors import KvBucketNotFoundError, KvError
 from threetears.observe import get_logger
+from threetears.observe.resilience import retry_bounded
 
 if TYPE_CHECKING:
     from threetears.nats.kv import KvBucketLike, KvDeclaring
@@ -71,10 +81,13 @@ log = get_logger(__name__)
 #: base rather than spelled again here.
 COLLECTIONS_BUCKET_SUFFIX: Final[str] = BaseCollection.L2_BUCKET_SUFFIX
 
-#: how many times the eager BIND is retried before the process gives up. sized against the
+#: how many times the eager BIND is attempted before the process gives up. sized against the
 #: cold-cluster race it exists for: the hub declares the bucket in its own lifespan and nothing
 #: sequences a consumer behind it, so the first bind can precede the declaration by however long hub
-#: startup takes. the schedule below tops out at 30s, so 20 attempts span several minutes -- long
+#: startup takes. what the budget buys depends on the failure, and is stated relationally so it
+#: cannot go stale: an ABSENT bucket is waited for ``attempts x KvTimings.bind_wait_for_declarer_seconds``
+#: (the client's bind owns that wait); any other failure for the doubling schedule below, from
+#: ``COLLECTIONS_BIND_BACKOFF_SECONDS`` capped at ``COLLECTIONS_BIND_MAX_BACKOFF_SECONDS`` -- long
 #: enough for a hub doing migrations, short enough that a genuinely missing grant is reported rather
 #: than hung on forever.
 COLLECTIONS_BIND_ATTEMPTS: Final[int] = 20
@@ -105,42 +118,52 @@ async def bind_collections_bucket(
     :ptype component: str | None
     :param attempts: how many bind attempts the process spends before giving up
     :ptype attempts: int
-    :param backoff_seconds: delay before the second attempt; doubles thereafter
+    :param backoff_seconds: delay after the first failure that is not an absence; doubles thereafter
     :ptype backoff_seconds: float
     :param max_backoff_seconds: ceiling the doubling delay is clamped to
     :ptype max_backoff_seconds: float
     :return: the bound bucket handle, also installed in the client's bucket cache
     :rtype: KvBucketLike
-    :raises KvError: the bucket could not be bound within the attempt budget -- it does not exist
-        (nothing has declared it) or this principal is not granted it
+    :raises KvBucketNotFoundError: the last bind found the bucket absent -- nothing has declared it
+    :raises KvError: the bucket could not be bound within the attempt budget for another reason --
+        most often this principal is not granted it
     :raises KvConfigMismatch: the live bucket carries a configuration this process refuses; raised
         on the first attempt, because config drift does not heal
     """
-    backoff = backoff_seconds
-    failure: KvError | None = None
-    bucket: KvBucketLike | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            bucket = await nats_client.ensure_kv_bucket(name=COLLECTIONS_BUCKET_SUFFIX, create_if_missing=False)
-            failure = None
-            break
-        except KvError as exc:
-            failure = exc
-            if attempt == attempts:
-                break
-            log.warning(
-                "collections KV bucket not bindable yet, retrying: component=%s bucket=%s "
-                "attempt=%d/%d retry_in=%.1fs: %s",
-                component or "unnamed",
-                COLLECTIONS_BUCKET_SUFFIX,
-                attempt,
-                attempts,
-                backoff,
-                exc,
-            )
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, max_backoff_seconds)
-    if failure is not None or bucket is None:
+
+    def _not_bindable_yet(exc: Exception, attempt: int, pause: float) -> None:
+        log.warning(
+            "collections KV bucket not bindable yet, retrying: component=%s bucket=%s attempt=%d/%d retry_in=%.1fs: %s",
+            component or "unnamed",
+            COLLECTIONS_BUCKET_SUFFIX,
+            attempt,
+            attempts,
+            pause,
+            exc,
+        )
+
+    try:
+        bucket = await retry_bounded(
+            lambda: nats_client.ensure_kv_bucket(name=COLLECTIONS_BUCKET_SUFFIX, create_if_missing=False),
+            retry_on=lambda exc: isinstance(exc, KvError),
+            # an absence was already waited for by the bind itself (see the module docstring)
+            backs_off=lambda exc: not isinstance(exc, KvBucketNotFoundError),
+            first_delay=backoff_seconds,
+            max_delay=max_backoff_seconds,
+            max_attempts=attempts,
+            on_retry=_not_bindable_yet,
+        )
+    except KvBucketNotFoundError as failure:
+        # the server answered every last bind with "absent": no grant would fix that, so the
+        # message names only the declarer, and the type says it to a caller that branches on it.
+        raise KvBucketNotFoundError(
+            f"collections KV bucket {COLLECTIONS_BUCKET_SUFFIX!r} could not be bound by "
+            f"{component or 'unnamed'} after {attempts} attempts: it does not exist. this process BINDS "
+            f"the bucket and never declares it, so the declaring identity (the hub, in its lifespan) "
+            f"has not run, or has not run since NATS lost the bucket. last error: {failure}",
+            bucket=failure.bucket,
+        ) from failure
+    except KvError as failure:
         raise KvError(
             f"collections KV bucket {COLLECTIONS_BUCKET_SUFFIX!r} could not be bound by "
             f"{component or 'unnamed'} after "

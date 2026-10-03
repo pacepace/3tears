@@ -31,7 +31,7 @@ from threetears.core.coordination import replay_guard as replay_guard_module
 from threetears.core.coordination.replay_guard import CLOCK_DRIFT_ALLOWANCE
 from threetears.core.security import ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.testing import kv as fake_kv_module
-from threetears.nats import KvError
+from threetears.nats import KvBucketNotFoundError, KvError
 
 from threetears.core.testing.kv import FakeNatsClient
 
@@ -952,7 +952,7 @@ class TestRebindOnReconnect:
         _guard(client, bucket_name="pop_nonces")
         await client.reconnect()
         assert recorded.hooks == []
-        with pytest.raises(KeyError):
+        with pytest.raises(KvBucketNotFoundError):
             await client.kv_bucket(name="pop_nonces", create_if_missing=False)
 
     @pytest.mark.asyncio
