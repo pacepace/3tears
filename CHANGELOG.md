@@ -4,6 +4,45 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### Memory: nothing an agent remembers is destroyed, and a permanent memory is never touched
+
+Extraction's UPDATE overwrote a memory in place and its DELETE hard-deleted it; `memory_add`
+overwrote a near-duplicate. Each lost what the agent had remembered, with no trace of why.
+
+- **Added, `threetears.agent.memory.revisions`:** `supersede(memories, consolidations, *, agent_id,
+  source_ids, fields, rationale)` writes the replacing memory, links each old one to it in
+  `memory_consolidations` with the reason, and marks them superseded (out of ambient recall,
+  readable by id). `retract(memories, *, agent_id, memory_id, reason)` tags a memory `retracted`
+  with why and sets its salience to 0. `is_permanent(memory)` is what every writer asks first.
+  Dream's consolidation now writes through `supersede`.
+- **Changed, `MemoryExtractor`:** UPDATE is a `supersede` (rationale "revised by a later
+  conversation"); DELETE is a `retract`. New `consolidations_collection` argument: without it an
+  UPDATE is skipped, never written over. A permanent memory is never superseded or retracted: a
+  revision of one is written beside it.
+- **Changed, `memory_add`:** a near-duplicate is replaced through `supersede` (with
+  `consolidations_collection`, a new argument) or written beside the old one, never over it. New
+  `permanent` argument stores the memory `evergreen`.
+- **Added, `load_memory_keep_tool` / `memory_keep`:** pins a stored memory permanent. One way.
+- **Added, `MemoriesCollection.set_salience(agent_id, *, memory_ids, salience)`.**
+- **Changed, every search, dedup and Dream candidate query** skips a `retracted` memory.
+- **Changed, Dream's consolidation prompt** asks two judgments: `one_subject` (every source is about
+  the same person or thing, and the gist names no one they do not; false refuses the merge) and
+  `permanent` (the gist is stored `evergreen`). A reply without them reads as one subject, not
+  permanent.
+
+### Wakes and skills
+
+- **Added, `is_tool_only`:** a wake whose skill is one tool call runs it with no model and starts no
+  conversation for its fire; a skill with both steps and a tool is refused with how to switch. A
+  skill that is one tool call is not activated in a turn.
+- **Changed:** a skill tool takes the skill's name as well as its id.
+
+### Intentions
+
+- **Added, `intention_log(..., on_logged=...)`:** a consumer hears of each new want it stores.
+
 ## v0.58.0 -- 2026-10-02
 
 ### Security: a pod-signed proof's issue time may be 5 seconds ahead, not 60 -- a broker restart costs tool calls 10 seconds, not 65

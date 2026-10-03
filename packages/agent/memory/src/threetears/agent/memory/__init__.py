@@ -116,6 +116,7 @@ if TYPE_CHECKING:
         load_chunk_recall_tool,
         load_chunk_search_tool,
         load_memory_add_tool,
+        load_memory_keep_tool,
         load_memory_recall_tool,
         load_memory_search_tool,
     )
@@ -208,6 +209,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "load_chunk_recall_tool": ("threetears.agent.memory.tools", "load_chunk_recall_tool"),
     "load_chunk_search_tool": ("threetears.agent.memory.tools", "load_chunk_search_tool"),
     "load_memory_add_tool": ("threetears.agent.memory.tools", "load_memory_add_tool"),
+    "load_memory_keep_tool": ("threetears.agent.memory.tools", "load_memory_keep_tool"),
     "load_memory_recall_tool": ("threetears.agent.memory.tools", "load_memory_recall_tool"),
     "load_memory_search_tool": ("threetears.agent.memory.tools", "load_memory_search_tool"),
     "memory_namespace_id": ("threetears.agent.memory.authorize", "memory_namespace_id"),
@@ -287,6 +289,7 @@ __all__ = [
     "load_chunk_recall_tool",
     "load_chunk_search_tool",
     "load_memory_add_tool",
+    "load_memory_keep_tool",
     "load_memory_recall_tool",
     "load_memory_search_tool",
     "memory_consolidations_table",

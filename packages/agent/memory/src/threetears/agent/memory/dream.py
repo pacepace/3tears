@@ -38,21 +38,19 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.messages import HumanMessage, SystemMessage
 from threetears.langgraph.fence import mint_nonce, untrusted_fence, with_fence_rules
-from uuid_utils import uuid7
 
+from threetears.agent.memory.revisions import supersede
 from threetears.agent.memory.collections import (
     MemoriesCollection,
     MemoryConsolidationsCollection,
 )
 from threetears.agent.memory.embedding_utils import _safe_aembed_query
-from threetears.agent.memory.entities import MemoryConsolidationEntity, MemoryEntity
 from threetears.agent.memory.events import MemoryConsolidatedEvent
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
@@ -434,7 +432,17 @@ class DreamService:
         gist = await self._reflect(members, user_id=user_id, conversation_id=conversation_id)
         if gist is None:
             return None
-        gist_text, rationale = gist
+        gist_text, rationale, one_subject, permanent = gist
+        if not one_subject:
+            # The guard: memories that are similar but about different people or
+            # things are never merged, and a gist that names someone none of its
+            # sources mention is refused with them. The reflector judges both;
+            # nothing here matches names in text.
+            log.info(
+                "Dream consolidation skipped cluster: not about one subject",
+                extra={"extra_data": {"agent_id": str(agent_id), "source_count": len(source_ids)}},
+            )
+            return None
 
         embedding = await _safe_aembed_query(self._embedding_provider, gist_text)
         if embedding is None:
@@ -444,25 +452,12 @@ class DreamService:
             )
             return None
 
-        # UUID(str(...)) normalises uuid_utils.UUID -> stdlib uuid.UUID at the
-        # mint border (the package's canonical uuid7 pattern), so the gist id
-        # matches the stdlib-UUID typed collection surface and compares like
-        # with like against asyncpg-read ids.
-        gist_id = UUID(str(uuid7()))
-        # defensive DAG guard (the gist is freshly minted so nothing can
-        # reach it yet, but the guard also proves no source is itself a
-        # descendant of a prior gist in the chain).
-        await self._consolidations.assert_no_cycle(
-            agent_id,
-            consolidated_memory_id=gist_id,
-            source_memory_ids=source_ids,
-        )
-
-        now = datetime.now(UTC)
-        gist_entity: MemoryEntity = self._memories.create(
-            {
-                "memory_id": gist_id,
-                "agent_id": agent_id,
+        gist_id = await supersede(
+            self._memories,
+            self._consolidations,
+            agent_id=agent_id,
+            source_ids=source_ids,
+            fields={
                 "customer_id": customer_id,
                 "user_id": user_id,
                 "conversation_id": conversation_id,
@@ -470,31 +465,10 @@ class DreamService:
                 "content": gist_text,
                 "embedding": embedding,
                 "salience": self._config.consolidation_gist_salience_seed,
-                "date_created": now,
-                "date_updated": now,
-            }
-        )
-        await self._memories.save_entity(gist_entity)
-
-        # record the provenance edges (gist committed first so the composite
-        # FK targets exist), then supersede the sources.
-        for source_id in source_ids:
-            edge: MemoryConsolidationEntity = self._consolidations.create(
-                {
-                    "agent_id": agent_id,
-                    "consolidated_memory_id": gist_id,
-                    "source_memory_id": source_id,
-                    "rationale": rationale,
-                    "date_created": now,
-                    "date_updated": now,
-                }
-            )
-            await self._consolidations.save_entity(edge)
-
-        await self._memories.mark_superseded(
-            agent_id,
-            source_memory_ids=source_ids,
-            gist_id=gist_id,
+                # dream's own judgment that this should never fade or be merged again
+                "evergreen": permanent,
+            },
+            rationale=rationale,
         )
 
         await self._emit_consolidated_event(
@@ -513,8 +487,8 @@ class DreamService:
         *,
         user_id: UUID | None,
         conversation_id: UUID,
-    ) -> tuple[str, str | None] | None:
-        """call the reflector to synthesize a gist + rationale for a cluster.
+    ) -> tuple[str, str | None, bool, bool] | None:
+        """call the reflector to synthesize a gist + rationale for a cluster, and judge it.
 
         :param members: the cluster's source memory dicts
         :ptype members: list[dict[str, Any]]
@@ -522,9 +496,11 @@ class DreamService:
         :ptype user_id: UUID | None
         :param conversation_id: conversation for gateway-model attribution
         :ptype conversation_id: UUID
-        :return: ``(gist_text, rationale)`` or ``None`` on any failure /
-            empty gist (fail-safe: skip the cluster)
-        :rtype: tuple[str, str | None] | None
+        :return: ``(gist_text, rationale, one_subject, permanent)`` or ``None`` on any
+            failure / empty gist (fail-safe: skip the cluster). ``one_subject`` is the
+            reflector's word that the sources are about one person or thing and the gist
+            names no one they do not; ``permanent`` that the gist should never fade
+        :rtype: tuple[str, str | None, bool, bool] | None
         """
         # Stored memories: what they say came from conversations and tools, so
         # they are read as material, fenced, and the call is told so.
@@ -556,7 +532,10 @@ class DreamService:
                 return None
             rationale_raw = result.get("rationale")
             rationale = str(rationale_raw).strip() if rationale_raw else None
-            return gist_text, rationale
+            # absent means the old answer shape: one subject, not permanent
+            one_subject = result.get("one_subject", True) is not False
+            permanent = result.get("permanent") is True
+            return gist_text, rationale, one_subject, permanent
         except json.JSONDecodeError, KeyError:
             log.warning("Failed to parse Dream reflector response; skipping cluster")
             return None

@@ -112,8 +112,12 @@ Rules:
 - FACTUAL over interpretive — state what is known, not what it implies.
 - Do NOT invent facts absent from the sources.
 
+Two judgments:
+- one_subject: true only when every memory is about the same person or thing, and the gist names no one the memories do not. Similar memories about different people are false.
+- permanent: true only for a lasting truth that should never fade: who someone is, a standing commitment, something that would be wrong to forget.
+
 Return ONLY JSON, no other text:
-{{"gist": "the consolidated 1-2 sentence memory", "rationale": "one short sentence on why these merged"}}
+{{"gist": "the consolidated 1-2 sentence memory", "rationale": "one short sentence on why these merged", "one_subject": true, "permanent": false}}
 
 Memories to consolidate:
 {sources_section}"""
