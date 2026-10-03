@@ -34,7 +34,7 @@ from threetears.agent.wake.collections import (
     WakeScheduleCollection,
     WebhookSubscriptionCollection,
 )
-from threetears.agent.wake.dispatch import dispatch_wake
+from threetears.agent.wake.dispatch import dispatch_wake, is_tool_only
 from threetears.agent.wake.migrations import register as register_wake
 from threetears.agent.wake.protected import ProtectedWakeError, delete_protected, update_protected
 from threetears.agent.wake.rate_limit import ScheduleCapExceeded, create_schedule_serialized
@@ -617,6 +617,60 @@ class TestFireConversationLink:
             assert made["fire_id"] == fire["fire_id"]
             assert handler.triggers[0].started_conversation_id == made["conversation_id"]
             assert linked_when_handled == [made["conversation_id"]]
+        finally:
+            await pool.close()
+
+    @pytest.mark.parametrize(("skill", "converses"), [("tool", False), ("prose", True)])
+    async def test_a_tool_only_skill_fires_with_no_conversation_and_a_prose_one_with_one(
+        self, pg_schema: tuple[str, str], skill: str, converses: bool
+    ) -> None:
+        """A skill that only calls a tool has no model to converse with, so its fire starts no conversation."""
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            agent_id = _new_uuid()
+            skill_id = _new_uuid()
+            if skill == "tool":
+                await pool.execute(
+                    "INSERT INTO agent_skills (agent_id, skill_id, user_id, name, summary, tool, arguments) "
+                    "VALUES ($1, $2, $3, 'clock', 'the time', 'threetears.current_time', '{}'::jsonb)",
+                    agent_id,
+                    skill_id,
+                    _new_uuid(),
+                )
+            else:
+                await pool.execute(
+                    "INSERT INTO agent_skills (agent_id, skill_id, user_id, name, summary, body) "
+                    "VALUES ($1, $2, $3, 'muse', 'think', 'Think about the sea.')",
+                    agent_id,
+                    skill_id,
+                    _new_uuid(),
+                )
+            _conv, sid = await _seed_schedule(
+                pool, agent_id=agent_id, next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
+            )
+            await pool.execute("UPDATE agent_wake_schedules SET skill_id = $2 WHERE schedule_id = $1", sid, skill_id)
+            handler = _RecordingHandler()
+            started: list[UUID] = []
+
+            async def start(trigger: WakeTrigger, conn: Any) -> UUID:
+                new_id = _new_uuid()
+                started.append(new_id)
+                await conn.execute(
+                    "INSERT INTO fire_conversations (conversation_id, fire_id) VALUES ($1, $2)", new_id, trigger.fire_id
+                )
+                return new_id
+
+            async def dispatch(trigger: WakeTrigger, fire_id: UUID, pool_: object) -> WakeDispatchResult:
+                return await dispatch_wake(trigger, fire_id, pool_, handler=handler, start_conversation=start)
+
+            await wake_tick_job(pool, None, dispatch, **_tick_collections(pool))
+
+            [prepared] = handler.prepared
+            assert prepared.attached_skill is not None and prepared.attached_skill.skill_id == skill_id
+            assert is_tool_only(prepared.attached_skill) is not converses
+            assert bool(started) is converses
+            assert (handler.triggers[0].started_conversation_id is not None) is converses
         finally:
             await pool.close()
 
