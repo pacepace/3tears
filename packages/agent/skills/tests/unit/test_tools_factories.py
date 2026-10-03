@@ -457,7 +457,19 @@ class TestSkillGet:
         )
         out = await tool.ainvoke({"skill_id": "not-a-uuid"})
         assert "[TOOL ERROR]" in out
-        assert "invalid skill_id" in out
+        assert "no skill has the id or name" in out
+
+    async def test_a_skill_named_by_its_name_is_found(self) -> None:
+        """Models name skills by name as often as by id; a name must reach the skill."""
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        coll = FakeSkillsCollection()
+        await _seed_skill(coll, agent_id=agent_id, user_id=user_id, name="read_recent_timeline")
+        [tool] = load_skill_get_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll)
+        for raw in ("read_recent_timeline", "[skill:read_recent_timeline]"):
+            out = await tool.ainvoke({"skill_id": raw})
+            assert "[TOOL ERROR]" not in out, raw
+            assert "read_recent_timeline" in out
 
 
 class TestSkillUpdate:
