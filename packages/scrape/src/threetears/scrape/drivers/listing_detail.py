@@ -71,6 +71,7 @@ from bs4 import BeautifulSoup, Tag
 from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
+from .._private_hosts import PrivateHostRefusedError, refuse_private_hosts
 from ..driver import NavStep, RenderedPage, ScrapeDriver, egress_name
 from .api import _records_to_synthetic_table
 
@@ -271,6 +272,9 @@ class ListingDetailDriver(ScrapeDriver):
                 follow_redirects=True,
                 headers={"User-Agent": _DEFAULT_USER_AGENT},
                 transport=self._egress.httpx_transport() if self._egress is not None else None,
+                # Every request, redirect hops included, passes the SSRF guard when the
+                # calling tool has it on; see `threetears.scrape._private_hosts`.
+                event_hooks={"request": [refuse_private_hosts]},
             )
         try:
             try:
@@ -315,7 +319,10 @@ class ListingDetailDriver(ScrapeDriver):
                                     "listing_detail: one detail fetch returned an error status, using listing fields only",
                                     extra={"extra_data": {"url": detail_url, "status": detail_response.status_code}},
                                 )
-                        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                        except (httpx.ConnectError, httpx.TimeoutException, PrivateHostRefusedError) as exc:
+                            # A refused detail link degrades like an unreachable one: the
+                            # href is the page's choice, and one hostile row must not sink
+                            # its siblings. The guard has already logged it as a security event.
                             log.warning(
                                 "listing_detail: one detail fetch failed, using listing fields only",
                                 extra={"extra_data": {"url": detail_url, "error": str(exc)}},

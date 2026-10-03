@@ -86,6 +86,7 @@ from bs4 import BeautifulSoup
 from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
+from .._private_hosts import refuse_private_hosts
 from ..driver import NavStep, RenderedPage, ScrapeDriver, egress_name
 from ..extraction import NOTICE_DOCUMENT_CLASS
 from .api import ApiDriverError, _resolve_path
@@ -362,6 +363,9 @@ class MultiDocumentDriver(ScrapeDriver):
                 follow_redirects=True,
                 headers={"User-Agent": _DEFAULT_USER_AGENT},
                 transport=self._egress.httpx_transport() if self._egress is not None else None,
+                # Every request, redirect hops included, passes the SSRF guard when the
+                # calling tool has it on; see `threetears.scrape._private_hosts`.
+                event_hooks={"request": [refuse_private_hosts]},
             )
         try:
             try:
