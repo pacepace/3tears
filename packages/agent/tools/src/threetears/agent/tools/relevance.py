@@ -535,11 +535,12 @@ def create_tool_search_tool(
                 },
             )
             if outcome.fallback_reason == "latency_ceiling":
+                # a failure, so a caller records it as one: plain text read as a search that ran
                 return (
-                    "Tool search did not finish in time. Nothing was found and nothing was ruled out. "
+                    "[TOOL ERROR] Tool search did not finish in time. Nothing was found and nothing was ruled out. "
                     "Run the same search once more."
                 )
-            return "Tool search failed. Nothing was found and nothing was ruled out."
+            return "[TOOL ERROR] Tool search failed. Nothing was found and nothing was ruled out."
         if not matches:
             _log.info(
                 "tool_search: no matches",

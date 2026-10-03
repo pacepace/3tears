@@ -316,13 +316,10 @@ class AnalyzeMediaTool(TearsTool):
             },
             "analyzer": {
                 "type": "string",
-                "description": (
-                    "display name of analysis model to use. Pick one that reads images for images "
-                    "and documents, and one that transcribes for audio and video."
-                ),
+                "description": "analysis model to use; omit it to use the first one that reads this media",
             },
         },
-        "required": ["media_ids", "question", "analyzer"],
+        "required": ["media_ids", "question"],
     }
 
     def __init__(
@@ -375,9 +372,15 @@ class AnalyzeMediaTool(TearsTool):
         self,
         media_ids: list[str],
         question: str,
-        analyzer: str,
+        analyzer: str | None,
     ) -> str:
         """resolve analyzer and route media items through the per-category handlers.
+
+        a named analyzer is used exactly, and an unknown name is refused with the
+        choices: it is never swapped for another. an omitted one is the first
+        registered analyzer that reads every resolved item (:meth:`_default_analyzer`),
+        so a model that is not told a name -- or is told the names and picks none --
+        is answered on its first call.
 
         document items go through :meth:`_handle_document`,
         audio/video items through :meth:`_handle_audio_video`, and
@@ -389,8 +392,9 @@ class AnalyzeMediaTool(TearsTool):
         :ptype media_ids: list[str]
         :param question: prompt to send to the resolved analyzer
         :ptype question: str
-        :param analyzer: display name of the analyzer to invoke
-        :ptype analyzer: str
+        :param analyzer: display name of the analyzer to invoke, or ``None`` for
+            the first one that reads the media
+        :ptype analyzer: str | None
         :return: analysis text or formatted error string
         :rtype: str
         """
@@ -405,8 +409,7 @@ class AnalyzeMediaTool(TearsTool):
             },
         )
 
-        acfg = self._analyzers.get(analyzer)
-        if acfg is None:
+        if analyzer is not None and analyzer not in self._analyzers:
             available = ", ".join(self._analyzers.keys())
             return _tool_error(
                 "resolve analyzer",
@@ -419,6 +422,17 @@ class AnalyzeMediaTool(TearsTool):
             info = await self._storage.get_media(UUID(mid_str))
             if info:
                 media_info[mid_str] = info
+
+        if analyzer is None:
+            categories = sorted({info.media_category for info in media_info.values()})
+            analyzer = self._default_analyzer(categories)
+            if analyzer is None:
+                return _tool_error("resolve analyzer", self._no_default_analyzer(categories))
+            _log.debug(
+                "analyze_media analyzer omitted; using the first that reads the media",
+                extra={"extra_data": {"analyzer": analyzer, "categories": categories}},
+            )
+        acfg = self._analyzers[analyzer]
 
         # --- Document routing (use extracted text, not vision) ---
         for mid_str in media_ids:
@@ -483,6 +497,81 @@ class AnalyzeMediaTool(TearsTool):
             )
 
         return await self._handle_vision(media_ids, media_info, acfg, question, analyzer)
+
+    @staticmethod
+    def _reads(acfg: AnalyzerConfig, category: str) -> bool:
+        """whether an analyzer can answer about media of one category.
+
+        mirrors the routing in :meth:`_analyze`: a document is answered from its
+        text whatever the analyzer's declared categories, a recording needs a
+        transcriber, and anything else needs vision.
+
+        :param acfg: the analyzer
+        :ptype acfg: AnalyzerConfig
+        :param category: the media category (``image``, ``document``, ``audio``, ``video``)
+        :ptype category: str
+        :return: ``True`` when the analyzer reads that category
+        :rtype: bool
+        """
+        if category == "document":
+            result = acfg.text is not None
+        elif category in ("audio", "video"):
+            result = category in acfg.supported_categories and acfg.transcription is not None
+        else:
+            result = category in acfg.supported_categories and acfg.vision is not None
+        return result
+
+    def _default_analyzer(self, categories: list[str]) -> str | None:
+        """the first registered analyzer that reads every category, or ``None``.
+
+        with no media resolved there is nothing to match, so the first analyzer is
+        used and the routing that follows reports the missing media.
+
+        :param categories: the media categories of the resolved items
+        :ptype categories: list[str]
+        :return: the analyzer's display name, or ``None`` when none reads them all
+        :rtype: str | None
+        """
+        return next(
+            (name for name, acfg in self._analyzers.items() if all(self._reads(acfg, c) for c in categories)),
+            None,
+        )
+
+    def _no_default_analyzer(self, categories: list[str]) -> str:
+        """what the model is told when no analyzer was named and none reads the media.
+
+        :param categories: the media categories of the resolved items
+        :ptype categories: list[str]
+        :return: the sentence for the tool error
+        :rtype: str
+        """
+        if not self._analyzers:
+            result = "no analyzer is configured for this agent, so media cannot be analyzed."
+        else:
+            reach = "; ".join(
+                f"{name} ({', '.join(sorted(acfg.supported_categories))})" for name, acfg in self._analyzers.items()
+            )
+            result = f"No configured analyzer reads {', '.join(categories)} media. Analyzers: {reach}."
+        _log.warning(
+            "analyze_media has no analyzer for the media",
+            extra={"extra_data": {"categories": categories, "analyzers": list(self._analyzers)}},
+        )
+        return result
+
+    def _input_schema(self) -> dict[str, Any]:
+        """the input schema with the registered analyzers as the ``analyzer`` field's choices.
+
+        built per call from :attr:`_INPUT_SCHEMA`, never by mutating it: the class
+        attribute is shared by every instance. no analyzers means no ``enum`` at all,
+        since an empty one admits no value.
+
+        :return: the schema a model is bound with
+        :rtype: dict[str, Any]
+        """
+        properties = dict(self._INPUT_SCHEMA["properties"])
+        if self._analyzers:
+            properties["analyzer"] = {**properties["analyzer"], "enum": list(self._analyzers)}
+        return {**self._INPUT_SCHEMA, "properties": properties}
 
     async def _fire_callback(
         self,
@@ -998,14 +1087,15 @@ class AnalyzeMediaTool(TearsTool):
     async def execute(self, **kwargs: Any) -> ToolResult:
         """analyze media items using configured providers.
 
-        :param kwargs: must include 'media_ids', 'question', 'analyzer' keys
+        :param kwargs: must include 'media_ids' and 'question'; 'analyzer' is optional,
+            and absent or empty means the first analyzer that reads the media
         :ptype kwargs: Any
         :return: result containing analysis text or error
         :rtype: ToolResult
         """
         media_ids = kwargs.get("media_ids", [])
         question = kwargs.get("question", "")
-        analyzer = kwargs.get("analyzer", "")
+        analyzer = kwargs.get("analyzer") or None
         content = await self._analyze(media_ids, question, analyzer)
         success = not content.startswith("[analyze_media/")
         result = ToolResult(
@@ -1025,7 +1115,7 @@ class AnalyzeMediaTool(TearsTool):
             name=self.mcp_name(),
             version=self.mcp_version(),
             description="analyze images, documents, audio, and video using vision/transcription providers",
-            input_schema=self._INPUT_SCHEMA,
+            input_schema=self._input_schema(),
         )
         return result
 

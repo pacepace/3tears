@@ -37,6 +37,7 @@ from threetears.agent.skills.collections import (
     AgentSkillCollection,
     AgentSkillInvocationCollection,
     SkillShapeError,
+    merged_skill_shape,
     skill_shape_error,
 )
 from threetears.agent.skills.entities import (
@@ -131,5 +132,6 @@ __all__ = [
     "load_skill_update_tool",
     "register",
     "render_skill_body_block",
+    "merged_skill_shape",
     "skill_shape_error",
 ]

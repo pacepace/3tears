@@ -323,7 +323,7 @@ async def _search_by_ids(
             # for the ids that parsed, and nothing else would show that some were never looked up.
             log.debug("skipping unparseable id in batch", extra={"extra_data": {"raw_id": raw_id[:64]}})
     if not valid_uuids:
-        return "No valid UUIDs provided."
+        return "[TOOL ERROR] No valid UUIDs provided."
 
     parts: list[str] = []
 
@@ -391,7 +391,7 @@ async def _search_by_ids(
                 await ledger_callback(ckid, "chunk", title or row["content"])
 
     if not parts:
-        return "No items found for the provided IDs."
+        return "[TOOL ERROR] No items found for the provided IDs."
 
     found_ids: set[str] = set()
     for row in mem_rows:
@@ -488,7 +488,7 @@ async def load_memory_search_tool(
             except Exception as exc:
                 return _tool_error("memory_search", "alias", str(exc))
             if row is None:
-                return f"No memory found with alias '{alias}'."
+                return f"[TOOL ERROR] No memory found with alias '{alias}'."
             mid = str(row["memory_id"])
             ts = _fmt_dt(row.get("date_created"))
             preview = f"[memory:{mid}] [{row['type_memory']}]"
@@ -511,7 +511,7 @@ async def load_memory_search_tool(
             )
 
         if not query:
-            return "Provide one of 'query', 'ids', or 'alias'."
+            return "[TOOL ERROR] Provide one of 'query', 'ids', or 'alias'."
 
         # v0.7.5: parse ISO date filters. Either bound may stand alone.
         def _parse_iso(label: str, raw: str | None) -> tuple[datetime | None, str | None]:
@@ -877,13 +877,13 @@ async def load_memory_recall_tool(
             except Exception as exc:
                 return _tool_error("memory_recall", "alias", str(exc))
             if row is None:
-                return f"No memory found with alias '{alias}'."
+                return f"[TOOL ERROR] No memory found with alias '{alias}'."
             memory_id = str(row["memory_id"])
 
         try:
             mem_uuid = UUID(memory_id)
         except ValueError:
-            return f"Invalid memory_id format: {memory_id}"
+            return f"[TOOL ERROR] Invalid memory_id format: {memory_id}"
 
         # ── memory content ──────────────────────────────────────
         memory_content = await memories_collection.fetch_content_for_recall(
@@ -892,7 +892,7 @@ async def load_memory_recall_tool(
             agent_id=agent_id,
         )
         if memory_content is None:
-            return "No memory with that id that you can read."
+            return "[TOOL ERROR] No memory with that id that you can read."
 
         # ── chunks (mode dispatch) ──────────────────────────────
         chunks: list[dict[str, Any]] = []
@@ -951,7 +951,7 @@ async def load_memory_recall_tool(
                 try:
                     cur = UUID(chunk_id_after)
                 except ValueError:
-                    return f"Invalid chunk_id_after format: {chunk_id_after}"
+                    return f"[TOOL ERROR] Invalid chunk_id_after format: {chunk_id_after}"
                 chunks = await memory_chunk_collection.find_by_memory_id(
                     mem_uuid,
                     user_id=user_id,
@@ -966,7 +966,7 @@ async def load_memory_recall_tool(
                 try:
                     cur = UUID(chunk_id_before)
                 except ValueError:
-                    return f"Invalid chunk_id_before format: {chunk_id_before}"
+                    return f"[TOOL ERROR] Invalid chunk_id_before format: {chunk_id_before}"
                 chunks = await memory_chunk_collection.find_by_memory_id(
                     mem_uuid,
                     user_id=user_id,
@@ -1197,7 +1197,7 @@ async def load_memory_add_tool(
 
         mt = memory_type.lower().strip()
         if mt not in _VALID_MEMORY_TYPES:
-            return f"Invalid memory_type '{memory_type}'. Valid types: {', '.join(sorted(_VALID_MEMORY_TYPES))}"
+            return f"[TOOL ERROR] Invalid memory_type '{memory_type}'. Valid types: {', '.join(sorted(_VALID_MEMORY_TYPES))}"
 
         embedding = await _safe_aembed_query(embedding_provider, content)
         if embedding is None:
@@ -1416,7 +1416,7 @@ async def load_chunk_recall_tool(
         try:
             cid = UUID(chunk_id)
         except ValueError:
-            return f"Invalid chunk_id format: {chunk_id}"
+            return f"[TOOL ERROR] Invalid chunk_id format: {chunk_id}"
 
         # ``fetch_content_for_recall`` returns both content + memory_id
         # in one SELECT (the parent_memory_id is what makes chunk_recall
@@ -1428,7 +1428,7 @@ async def load_chunk_recall_tool(
             agent_id=agent_id,
         )
         if chunk_row is None:
-            return "No passage with that id that you can read. Use an id from a [chunk:<id>] line you were shown."
+            return "[TOOL ERROR] No passage with that id that you can read. Use an id from a [chunk:<id>] line you were shown."
         content, parent_memory_id = chunk_row
         return f"{content}\n\nFrom [memory:{parent_memory_id!s}]."
 

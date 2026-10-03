@@ -45,6 +45,7 @@ from uuid_utils import uuid7
 from threetears.agent.skills.collections import (
     AgentSkillCollection,
     AgentSkillInvocationCollection,
+    merged_skill_shape,
     skill_shape_error,
 )
 from threetears.agent.skills.entities import AgentSkillEntity
@@ -77,6 +78,7 @@ __all__ = [
     "load_skill_list_tool",
     "load_skill_report_outcome_tool",
     "load_skill_update_tool",
+    "validate_skill_arguments",
 ]
 
 
@@ -526,7 +528,7 @@ def _validate_body(body: str | None) -> str | None:
     return None
 
 
-def _validate_arguments(arguments: dict[str, Any] | None) -> str | None:
+def validate_skill_arguments(arguments: dict[str, Any] | None) -> str | None:
     """Return an error message when ``arguments`` exceeds the 32 KB cap.
 
     The shape rules (a JSON object, only with a tool) are
@@ -876,7 +878,7 @@ def load_skill_create_tool(
             _validate_summary(summary),
             _validate_body(body),
             skill_shape_error(body=stored_body, tool=stored_tool, arguments=arguments),
-            _validate_arguments(arguments),
+            validate_skill_arguments(arguments),
             _validate_trigger_keywords(trigger_keywords),
             _validate_tags(tag_values),
             _validate_tool_list("tool_additions", additions),
@@ -1278,7 +1280,7 @@ def load_skill_update_tool(
         if body is not None:
             validation_errors.append(_validate_body(body))
         if arguments is not None:
-            validation_errors.append(_validate_arguments(arguments))
+            validation_errors.append(validate_skill_arguments(arguments))
         if trigger_keywords is not None:
             validation_errors.append(_validate_trigger_keywords(trigger_keywords))
         if tags is not None:
@@ -1312,14 +1314,9 @@ def load_skill_update_tool(
         # Compute the merged final shape (for at-least-one-payload +
         # ACL re-validation on any tool list the caller changed).
         # An empty string removes a body or a tool; removing the tool removes its arguments too.
-        merged_body = (body or None) if body is not None else entity.body
-        merged_tool = (tool or None) if tool is not None else entity.tool
-        if arguments is not None:
-            merged_arguments: dict[str, Any] | None = dict(arguments)
-        elif tool == "":
-            merged_arguments = None
-        else:
-            merged_arguments = entity.arguments
+        merged_body, merged_tool, merged_arguments = merged_skill_shape(
+            entity, body=body, tool=tool, arguments=arguments
+        )
         merged_additions = list(tool_additions) if tool_additions is not None else list(entity.tool_additions)
         merged_restrictions = (
             list(tool_restrictions) if tool_restrictions is not None else list(entity.tool_restrictions)
