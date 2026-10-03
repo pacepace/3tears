@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.59.0 -- 2026-10-03
+
 ### Memory: nothing an agent remembers is destroyed, and a permanent memory is never touched
 
 Extraction's UPDATE overwrote a memory in place and its DELETE hard-deleted it; `memory_add`
