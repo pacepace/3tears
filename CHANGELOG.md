@@ -34,6 +34,24 @@ overwrote a near-duplicate. Each lost what the agent had remembered, with no tra
   `permanent` (the gist is stored `evergreen`). A reply without them reads as one subject, not
   permanent.
 
+### Migrations: the rbac tables and audit_events are 3tears' own
+
+Until now 3tears declared no Postgres table for rbac or audit: each deploying application wrote
+its own DDL, and the shapes drifted (a missing grant index left the hub's grants held twice).
+
+- **Added, `threetears.agent.acl.migrations` (`agent_acl`, platform scope), v001:** `namespaces`,
+  `groups`, `group_members`, `roles`, `role_assignments`, with the platform's rules: namespace
+  names unique, `owner_namespace` a foreign key to a name, non-workspace schema names unique, a
+  platform namespace one of the platform types; group and role names unique per owner scope;
+  `managed_by` NOT NULL DEFAULT 'manual'; the grant natural-key unique indexes that make
+  `ensure_group_role_assignment` race-safe. `agent_tools_platform` ALTERs `namespaces`: register
+  it with `depends_on=("agent_acl",)`. An application with its own tables adopts v001 by stamping
+  it once they match.
+- **Added, `threetears.agent.audit.migrations` (`agent_audit`, platform scope), v001:**
+  `audit_events` and its four indexes. The statements live in the migration, frozen;
+  `persist.AUDIT_EVENTS_DDL` reads them, so the runner and `ensure_audit_events_table` run one
+  definition.
+
 ### Wakes and skills
 
 - **Added, `is_tool_only`:** a wake whose skill is one tool call runs it with no model and starts no
