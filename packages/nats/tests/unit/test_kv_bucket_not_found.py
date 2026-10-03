@@ -471,6 +471,36 @@ class TestAListingsReopenRunsOnItsOwnDeadline:
         assert isinstance(raised, KvBucketNotFoundError), repr(raised)
 
 
+class TestKvTimingsRefusesAScheduleItsBindCannotRun:
+    """a bad timing is refused where the host builds it, naming the field -- never at a bind.
+
+    The bind's wait for its declarer runs on ``retry_bounded``, which refuses a schedule it cannot
+    back off on before its first attempt; a client carrying such timings would refuse every bind of a
+    bucket that is right there.
+    """
+
+    @pytest.mark.parametrize(
+        ("field", "overrides"),
+        [
+            ("bind_retry_first_delay_seconds", {"bind_retry_first_delay_seconds": 0.0}),
+            (
+                "bind_retry_max_delay_seconds",
+                {"bind_retry_first_delay_seconds": 1.0, "bind_retry_max_delay_seconds": 0.5},
+            ),
+            ("bind_wait_for_declarer_seconds", {"bind_wait_for_declarer_seconds": -1.0}),
+            ("op_timeout_seconds", {"op_timeout_seconds": 0.0}),
+            ("key_listing_timeout_seconds", {"key_listing_timeout_seconds": 0.0}),
+            ("timeout_remedy_log_interval_seconds", {"timeout_remedy_log_interval_seconds": -1.0}),
+        ],
+    )
+    def test_it_is_refused_naming_the_field(self, field: str, overrides: dict[str, float]) -> None:
+        with pytest.raises(ValueError, match=field):
+            KvTimings(**overrides)
+
+    def test_a_bind_wait_of_zero_binds_once(self) -> None:
+        assert KvTimings(bind_wait_for_declarer_seconds=0.0).bind_wait_for_declarer_seconds == 0.0
+
+
 class TestOneSlowOpenDoesNotStallTheOthers:
     """a bind-only open waiting for its declarer holds up callers of THAT bucket only."""
 

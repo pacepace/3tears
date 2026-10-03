@@ -218,6 +218,37 @@ class KvTimings:
     bind_retry_max_delay_seconds: float = 2.0
     key_listing_timeout_seconds: float = 30.0
 
+    def __post_init__(self) -> None:
+        """refuse timings the KV paths cannot run on, naming the field, where the host builds them.
+
+        the bind's wait for its declarer runs on
+        :func:`threetears.observe.resilience.retry_bounded`, which refuses a schedule it cannot back
+        off on before its first attempt -- so a bad pause carried to a bind would refuse every bind,
+        of a bucket that is right there. a zero bind wait is allowed: it binds once.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when a deadline or pause is not positive, the bind wait is negative, or
+            the longest pause is shorter than the first
+        """
+        for name in (
+            "op_timeout_seconds",
+            "timeout_remedy_log_interval_seconds",
+            "bind_retry_first_delay_seconds",
+            "key_listing_timeout_seconds",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"KvTimings.{name} must be positive, got {getattr(self, name)!r}")
+        if self.bind_wait_for_declarer_seconds < 0:
+            raise ValueError(
+                f"KvTimings.bind_wait_for_declarer_seconds must not be negative, got {self.bind_wait_for_declarer_seconds!r}"
+            )
+        if self.bind_retry_max_delay_seconds < self.bind_retry_first_delay_seconds:
+            raise ValueError(
+                f"KvTimings.bind_retry_max_delay_seconds ({self.bind_retry_max_delay_seconds!r}) must not be shorter "
+                f"than bind_retry_first_delay_seconds ({self.bind_retry_first_delay_seconds!r})"
+            )
+
 
 #: the production timings every client and bucket uses unless its host passes others.
 DEFAULT_KV_TIMINGS: Final[KvTimings] = KvTimings()
@@ -1660,6 +1691,9 @@ class NatsKvBucket:
         :return: the live keys, in stream order
         :rtype: list[str]
         :raises ValueError: when ``prefix`` carries a wildcard or whitespace
+        :raises KvBucketNotFoundError: when the bucket's stream is gone and could not be bound again --
+            a declaring handle could not recreate it, or a bind-only handle's declarer did not return
+            within ``KvTimings.bind_wait_for_declarer_seconds``
         :raises KvError: when the consumer cannot be created or the listing does not finish within
             its bound -- an ungranted create is never answered, so it arrives here as a timeout
         """
@@ -1674,9 +1708,8 @@ class NatsKvBucket:
         except KvBucketNotFoundError:
             # the stream is gone: re-open once, as every other operation does -- a declaring handle
             # recreates its bucket, a bind-only one waits for its declarer -- then list again. the
-            # re-open runs OUTSIDE the listing's bound, on its own wait for the declarer: inside it,
-            # the listing's deadline fired first and blamed a grant for what was an absence. a
-            # second absence is raised.
+            # re-open runs OUTSIDE the listing's bound, on its own wait for the declarer. a second
+            # absence is raised.
             await self._reopen()
             found = await self._list_keys_within_bound(stream=stream, filter_subject=filter_subject)
         return [key[len(subject_prefix) :] for key in found if key[len(subject_prefix) :].startswith(prefix)]

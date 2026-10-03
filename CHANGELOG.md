@@ -162,7 +162,13 @@ was INCOMPLETE, and the cluster waited a whole interval for its next backup.
   within an attempt and/or deadline bound, lets a failure that paced itself retry at once, and
   raises the last failure unchanged once the bound is spent. The KV bind's wait for a declarer,
   `bind_collections_bucket` and a tool pod's first NATS connect run on it; no hand-rolled
-  doubling loop is left outside `threetears.observe.resilience`.
+  doubling loop is left outside `threetears.observe.resilience`. `retry_bounded` refuses a schedule
+  it cannot back off on before its first attempt, so every setting that feeds one is refused where
+  it is read instead: `KvTimings` now refuses a non-positive deadline or pause and a longest pause
+  shorter than the first, naming the field (a zero bind wait still binds once), and
+  `THREETEARS_TOOL_POD_CONNECT_RETRY_BACKOFF_CAP` of zero or less is refused with a warning naming
+  it and the default used -- it had stopped a pod whose NATS was up from starting. The tool pod's
+  give-up log names how many connect attempts ran again.
 - **Waiting for an absent collections bucket has one owner.** `bind_collections_bucket` retried
   an absence with its own backoff on top of the client's bind wait, multiplying what a missing
   bucket costs. An absence is now retried at once (the bind paced it); other failures still back

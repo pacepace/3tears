@@ -1790,9 +1790,14 @@ class ToolServer:
         :raises NatsClientError: when the platform does not admit the pod within the retry budget
         """
         budget = get_connect_retry_budget()
+        # positive by construction (:func:`get_connect_retry_backoff_cap` refuses anything else), so
+        # the retry's schedule never refuses itself before the first attempt.
         backoff_cap = get_connect_retry_backoff_cap()
+        attempts = 1
 
         def _not_ready(exc: Exception, attempt: int, pause: float) -> None:
+            nonlocal attempts
+            attempts = attempt + 1
             log.warning(
                 "tool pod NATS connect not ready (platform still starting?); retrying",
                 extra={
@@ -1824,7 +1829,7 @@ class ToolServer:
         except NatsClientError, OSError:
             log.error(
                 "tool pod could not connect to NATS within the retry budget; failing loud",
-                extra={"extra_data": {"pod_id": self._pod_id, "budget_s": budget}},
+                extra={"extra_data": {"pod_id": self._pod_id, "attempts": attempts, "budget_s": budget}},
             )
             raise
         return client
