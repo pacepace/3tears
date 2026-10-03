@@ -1011,3 +1011,233 @@ class TestReferenceVisionRouting:
 
         assert "No valid media found" in result
         assert vision.analyze_ref_calls == []
+
+
+class TestTheModelNeedsNoGuessForTheAnalyzer:
+    """the first call succeeds: the model is told the analyzers, and may name none.
+
+    live, every first ``media_analyze`` call failed with ``Unknown analyzer 'GPT-4
+    Vision'``: the schema asked for a display name and told the model none, so it
+    guessed one, read the choices out of the error, and called again -- one wasted
+    model round trip per analysis.
+    """
+
+    @staticmethod
+    def _model_facing_parameters(tool: Any) -> dict[str, Any]:
+        """the parameters block a chat model is bound with for this tool.
+
+        :param tool: the LangChain tool the agent binds
+        :ptype tool: Any
+        :return: the function-calling ``parameters`` object
+        :rtype: dict[str, Any]
+        """
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        return convert_to_openai_tool(tool)["function"]["parameters"]
+
+    def test_the_schema_the_model_sees_lists_every_registered_analyzer(self) -> None:
+        """the analyzer field carries the registered names as its enum, in registration order."""
+        storage = FakeMediaStorage()
+        analyzers = {
+            "anthropic/claude-sonnet-4-5": AnalyzerConfig(
+                name="anthropic/claude-sonnet-4-5", vision=FakeVisionProvider()
+            ),
+            "whisper": AnalyzerConfig(
+                name="whisper",
+                transcription=FakeTranscriptionProvider(),
+                supported_categories={"audio", "video"},
+            ),
+        }
+        tool = create_analyze_media_tool({"storage": storage, "analyzers": analyzers}, "Analyze media.")
+
+        parameters = self._model_facing_parameters(tool)
+
+        assert parameters["properties"]["analyzer"]["enum"] == ["anthropic/claude-sonnet-4-5", "whisper"]
+
+    def test_the_analyzer_is_not_required(self) -> None:
+        """the model may leave the analyzer out; media and question remain required."""
+        storage = FakeMediaStorage()
+        tool = _make_tool(storage)
+
+        parameters = self._model_facing_parameters(tool)
+
+        assert "analyzer" in parameters["properties"]
+        assert "analyzer" not in parameters.get("required", [])
+        assert set(parameters["required"]) == {"media_ids", "question"}
+
+    def test_the_published_mcp_schema_carries_the_same_choices(self) -> None:
+        """the definition a ToolServer registers -- what a remote agent binds -- has the enum too."""
+        from threetears.agent.tools.builtin.analyze_media import AnalyzeMediaTool
+
+        tool = AnalyzeMediaTool(
+            storage=FakeMediaStorage(),
+            analyzers={"vision-a": AnalyzerConfig(name="vision-a", vision=FakeVisionProvider())},
+        )
+
+        schema = tool.mcp_schema().input_schema
+
+        assert schema["properties"]["analyzer"]["enum"] == ["vision-a"]
+        assert "analyzer" not in schema["required"]
+
+    def test_with_no_analyzer_registered_the_schema_has_no_empty_enum(self) -> None:
+        """an empty enum is a schema no value satisfies; it is left out instead."""
+        from threetears.agent.tools.builtin.analyze_media import AnalyzeMediaTool
+
+        schema = AnalyzeMediaTool(storage=FakeMediaStorage()).mcp_schema().input_schema
+
+        assert "enum" not in schema["properties"]["analyzer"]
+
+    def test_the_schema_does_not_share_state_between_tools(self) -> None:
+        """one tool's analyzers never leak into another tool's published schema."""
+        from threetears.agent.tools.builtin.analyze_media import AnalyzeMediaTool
+
+        first = AnalyzeMediaTool(
+            storage=FakeMediaStorage(),
+            analyzers={"one": AnalyzerConfig(name="one", vision=FakeVisionProvider())},
+        )
+        second = AnalyzeMediaTool(storage=FakeMediaStorage())
+
+        assert first.mcp_schema().input_schema["properties"]["analyzer"]["enum"] == ["one"]
+        assert "enum" not in second.mcp_schema().input_schema["properties"]["analyzer"]
+
+    @pytest.mark.asyncio
+    async def test_a_call_without_an_analyzer_succeeds_on_the_first_try(self) -> None:
+        """omitted, the one analyzer that reads images answers."""
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider("A red square.")
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
+        tool = _make_tool(storage, vision=vision)
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe"})
+
+        assert result.startswith("A red square.")
+        assert len(vision.analyze_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_omitted_analyzer_is_the_first_one_that_reads_the_media(self) -> None:
+        """with a transcriber registered first, an image goes to the analyzer that reads images."""
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider("Seen.")
+        transcription = FakeTranscriptionProvider()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
+        analyzers = {
+            "whisper": AnalyzerConfig(
+                name="whisper",
+                transcription=transcription,
+                supported_categories={"audio", "video"},
+            ),
+            "eyes": AnalyzerConfig(name="eyes", vision=vision),
+        }
+        tool = create_analyze_media_tool({"storage": storage, "analyzers": analyzers}, "Analyze")
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe"})
+
+        assert result.startswith("Seen.")
+        assert len(vision.analyze_calls) == 1
+        assert transcription.calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_omitted_analyzer_for_a_recording_is_the_transcriber(self) -> None:
+        """audio goes to the analyzer that transcribes, even when a vision analyzer is listed first."""
+        storage = FakeMediaStorage()
+        transcription = FakeTranscriptionProvider("Hello world.")
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "audio", "audio/mpeg"), b"audio-bytes", "audio/mpeg")
+        analyzers = {
+            "eyes": AnalyzerConfig(name="eyes", vision=FakeVisionProvider()),
+            "whisper": AnalyzerConfig(
+                name="whisper",
+                transcription=transcription,
+                supported_categories={"audio", "video"},
+            ),
+        }
+        tool = create_analyze_media_tool({"storage": storage, "analyzers": analyzers}, "Analyze")
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "What is said?"})
+
+        assert "Hello world." in result
+        assert len(transcription.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_omitted_analyzer_for_a_document_is_one_that_answers_text(self) -> None:
+        """a document goes to an analyzer with a text provider, skipping one without."""
+        storage = FakeMediaStorage()
+        text = FakeTextProvider("Revenue rose.")
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "document", "application/pdf", extraction_status="complete"))
+        storage.add_content(mid, "extracted_text", "Revenue rose 10%.")
+        analyzers = {
+            "eyes-only": AnalyzerConfig(name="eyes-only", vision=FakeVisionProvider()),
+            "reader": AnalyzerConfig(name="reader", vision=FakeVisionProvider(), text=text),
+        }
+        tool = create_analyze_media_tool({"storage": storage, "analyzers": analyzers}, "Analyze")
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Summarize"})
+
+        assert result.startswith("Revenue rose.")
+        assert len(text.answer_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_omitted_analyzer_with_none_able_says_which_can_do_what(self) -> None:
+        """no registered analyzer reads the media: the answer names the media and each analyzer's reach."""
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "audio", "audio/mpeg"), b"audio-bytes", "audio/mpeg")
+        vision = FakeVisionProvider()
+        tool = _make_tool(storage, vision=vision)
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "What is said?"})
+
+        assert result.startswith("[analyze_media/resolve analyzer]")
+        assert "audio" in result
+        assert "TestVision" in result
+        assert vision.analyze_calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_omitted_analyzer_with_none_registered_says_so(self) -> None:
+        """no analyzer configured at all is named as that, not as an unknown name."""
+        storage = FakeMediaStorage()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
+        tool = create_analyze_media_tool({"storage": storage, "analyzers": {}}, "Analyze")
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe"})
+
+        assert result.startswith("[analyze_media/resolve analyzer]")
+        assert "no analyzer is configured" in result
+
+    @pytest.mark.asyncio
+    async def test_a_wrong_analyzer_is_refused_with_the_choices_and_calls_nothing(self) -> None:
+        """a named analyzer is honoured exactly: a wrong one is refused, never silently swapped."""
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider()
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
+        tool = _make_tool(storage, vision=vision)
+
+        result = await tool.ainvoke({"media_ids": [str(mid)], "question": "Describe", "analyzer": "GPT-4 Vision"})
+
+        assert "Unknown analyzer 'GPT-4 Vision'" in result
+        assert "TestVision" in result
+        assert vision.analyze_calls == []
+
+    @pytest.mark.asyncio
+    async def test_the_tool_server_path_takes_a_call_without_an_analyzer(self) -> None:
+        """``execute`` -- what a ToolServer dispatches to -- succeeds with no analyzer argument."""
+        from threetears.agent.tools.builtin.analyze_media import AnalyzeMediaTool
+
+        storage = FakeMediaStorage()
+        vision = FakeVisionProvider("A red square.")
+        mid = uuid4()
+        storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
+        tool = AnalyzeMediaTool(
+            storage=storage,
+            analyzers={"eyes": AnalyzerConfig(name="eyes", vision=vision)},
+        )
+
+        result = await tool.execute(media_ids=[str(mid)], question="Describe")
+
+        assert result.success is True
+        assert result.content.startswith("A red square.")
