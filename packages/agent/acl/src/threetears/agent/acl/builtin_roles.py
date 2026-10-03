@@ -137,6 +137,8 @@ async def ensure_platform_builtin_tool_user_role(
             "ensure_platform_builtin_tool_user_role: role_collection "
             "has no l3_pool bound; cannot resolve or create the role",
         )
+    # cache-bypass: a lookup by name, which no cache tier is keyed on, made once
+    # at platform bootstrap through the Collection's own pool.
     existing = await pool.fetchrow(
         "SELECT role_id FROM roles WHERE name = $1",
         PLATFORM_BUILTIN_TOOL_USER_ROLE_NAME,
@@ -161,6 +163,8 @@ async def ensure_platform_builtin_tool_user_role(
     # caller that writes a roles-shaped permissions payload.
     import json as _json  # noqa: PLC0415
 
+    # cache-bypass: a row no tier holds yet, written once at platform bootstrap;
+    # a later read by id pulls it through the Collection's tiers.
     await pool.execute(
         "INSERT INTO roles ("
         "role_id, name, description, permissions, is_builtin, "
