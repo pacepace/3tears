@@ -195,6 +195,48 @@ class TestThePoolStartsDespiteStalledConnects:
         assert await _backends_settle_at(db_container, application_name, 0, within=5.0) == 0
 
 
+class TestAnErrorFromTheCallersInitKeepsItsOwnText:
+    """only asyncpg's connection-parameter handling has its text withheld; a caller's ``init`` is not that."""
+
+    async def test_a_value_error_from_init_raises_as_itself(self, db_container: str, application_name: str) -> None:
+        """``init`` runs on a connection that is already open; its ``ValueError`` says nothing about the DSN."""
+
+        async def init(connection: asyncpg.Connection) -> None:
+            raise ValueError("init rejected the session")
+
+        with pytest.raises(ValueError, match="init rejected the session"):
+            await create_pool_with_startup_timeout(
+                db_container,
+                startup_timeout=6.0,
+                min_size=1,
+                max_size=1,
+                init=init,
+                server_settings={"application_name": application_name},
+            )
+        assert await _backends_settle_at(db_container, application_name, 0, within=5.0) == 0
+
+    async def test_a_server_error_from_init_keeps_its_text_and_cause(
+        self, db_container: str, application_name: str
+    ) -> None:
+        """a statement ``init`` runs that the server rejects is a server answer: its text and its cause stand."""
+
+        async def init(connection: asyncpg.Connection) -> None:
+            await connection.execute("SELECT 1 / 0")
+
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                db_container,
+                startup_timeout=6.0,
+                min_size=1,
+                max_size=1,
+                init=init,
+                server_settings={"application_name": application_name},
+            )
+        assert "division by zero" in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, asyncpg.exceptions.DataError)
+        assert await _backends_settle_at(db_container, application_name, 0, within=5.0) == 0
+
+
 class TestAPoolThatCannotStartLeaksNothing:
     """every connect stalled: the failure arrives inside the budget, names its attempts, and holds no socket."""
 

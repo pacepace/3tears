@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import re
 import shutil
 import socket
 import ssl
@@ -680,16 +681,16 @@ class TestCreatePoolWithStartupTimeout:
         assert not [m for m in logged if "cannot use option" in m or "TAIL" in m], logged
         assert any("ClientConfigurationError" in m and target in m for m in logged), logged
 
-    async def test_a_callers_own_value_error_subclass_keeps_its_type(self, silent_server: _SilentServer) -> None:
-        """a hook's own configuration error type reaches the caller as that type, with the fixed message."""
+    async def test_a_callers_own_value_error_raises_as_itself(self, silent_server: _SilentServer) -> None:
+        """a hook's own ``ValueError`` is not asyncpg's connection-parameter handling: its type, text and context stand."""
 
         class WarehouseOptionError(ValueError):
             """a caller's own configuration error."""
 
         async def own_error_hook(*args: object, **kwargs: object) -> asyncpg.Connection:
-            raise WarehouseOptionError("option quoting se@cret")
+            raise WarehouseOptionError("warehouse option rejected")
 
-        with pytest.raises(WarehouseOptionError) as exc_info:
+        with pytest.raises(WarehouseOptionError, match="warehouse option rejected"):
             await create_pool_with_startup_timeout(
                 startup_timeout=1.0,
                 min_size=1,
@@ -700,16 +701,51 @@ class TestCreatePoolWithStartupTimeout:
                 database="d",
                 connect=own_error_hook,
             )
-        assert type(exc_info.value) is WarehouseOptionError
-        assert "se@cret" not in str(exc_info.value)
 
-    async def test_a_value_error_whose_type_takes_no_message_falls_back_to_value_error(
+    async def test_a_withheld_client_error_is_logged_with_the_keys_every_pool_start_line_carries(
+        self, silent_server: _SilentServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the ERROR line for a withheld client error is queryable like the rest, and names the type once."""
+        with (
+            caplog.at_level(logging.ERROR, logger=_LOGGER),
+            pytest.raises(asyncpg.exceptions.ClientConfigurationError),
+        ):
+            await create_pool_with_startup_timeout(
+                f"postgresql://u:p@127.0.0.1:{silent_server.port}/d?sslmode=bogus",
+                pool_name="keys",
+                startup_timeout=1.0,
+                min_size=1,
+                max_size=1,
+            )
+        (record,) = [r for r in caplog.records if r.levelno == logging.ERROR]
+        extra = record.extra_data
+        assert extra["pool_name"] == "keys"
+        assert extra["connection_identity"] == f"u@127.0.0.1:{silent_server.port}/d"
+        assert extra["error_class"] == "ClientConfigurationError"
+        for key in ("attempts", "elapsed_seconds", "startup_timeout_seconds", "connect_timeout_seconds"):
+            assert key in extra, extra
+        assert "connection_target" not in extra
+        assert record.getMessage().count("ClientConfigurationError") == 1, record.getMessage()
+
+    async def test_a_bad_command_timeout_raises_as_itself(self, silent_server: _SilentServer) -> None:
+        """asyncpg checks ``command_timeout`` before it parses the DSN, and its message quotes only that value."""
+        with pytest.raises(ValueError, match="invalid command_timeout value"):
+            await create_pool_with_startup_timeout(
+                f"postgresql://u:p@127.0.0.1:{silent_server.port}/d",
+                startup_timeout=1.0,
+                min_size=1,
+                max_size=1,
+                command_timeout=-1,
+            )
+        assert silent_server.accepted == 0
+
+    async def test_a_client_configuration_error_whose_type_takes_no_message_falls_back_to_its_base(
         self, silent_server: _SilentServer
     ) -> None:
-        """a subclass that cannot be built from one message is raised as its nearest base, ``ValueError``."""
+        """a ``ClientConfigurationError`` subclass that cannot be built from one message is raised as the base."""
 
-        class NeedsTwoArguments(ValueError):
-            """a configuration error with a constructor of its own."""
+        class NeedsTwoArguments(asyncpg.exceptions.ClientConfigurationError):
+            """a client configuration error with a constructor of its own."""
 
             def __init__(self, option: str, value: str) -> None:
                 super().__init__(f"{option}={value}")
@@ -717,7 +753,7 @@ class TestCreatePoolWithStartupTimeout:
         async def odd_error_hook(*args: object, **kwargs: object) -> asyncpg.Connection:
             raise NeedsTwoArguments("password", "se@cret")
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(asyncpg.exceptions.ClientConfigurationError) as exc_info:
             await create_pool_with_startup_timeout(
                 startup_timeout=1.0,
                 min_size=1,
@@ -728,9 +764,9 @@ class TestCreatePoolWithStartupTimeout:
                 database="d",
                 connect=odd_error_hook,
             )
-        assert type(exc_info.value) is ValueError
+        assert type(exc_info.value) is asyncpg.exceptions.ClientConfigurationError
+        assert str(exc_info.value) == f"NeedsTwoArguments: {_withheld_for(f'u@127.0.0.1:{silent_server.port}/d')}"
         assert "se@cret" not in str(exc_info.value)
-        assert "NeedsTwoArguments" in str(exc_info.value)
 
     async def test_a_server_answer_keeps_its_text(self, silent_server: _SilentServer) -> None:
         """a refusal comes from the server and quotes nothing the client sent, so its text is kept."""
@@ -751,11 +787,52 @@ class TestCreatePoolWithStartupTimeout:
             )
         assert 'password authentication failed for user "u"' in str(exc_info.value)
 
+    async def test_a_socket_error_is_reported_with_its_errno(self) -> None:
+        """a refused connect is named by its class and errno -- not its text, which can carry the address."""
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                f"postgresql://u:p@127.0.0.1:{_unused_port()}/d",
+                startup_timeout=1.0,
+                connect_timeout=0.3,
+                min_size=1,
+                max_size=1,
+                ssl=False,
+            )
+        cause = exc_info.value.__cause__
+        assert isinstance(cause, OSError)
+        assert cause.errno is not None
+        # the budget lapses in a pause or mid-connect; either way, the last refusal was logged with its errno.
+        assert type(cause).__name__ in str(exc_info.value)
+
+    async def test_a_retried_socket_error_is_logged_with_its_errno(self, caplog: pytest.LogCaptureFixture) -> None:
+        """each retry's WARNING names the socket error by class and errno."""
+        with caplog.at_level(logging.WARNING, logger=_LOGGER), pytest.raises(PoolStartupTimeoutError):
+            await create_pool_with_startup_timeout(
+                f"postgresql://u:p@127.0.0.1:{_unused_port()}/d",
+                pool_name="errno",
+                startup_timeout=1.0,
+                connect_timeout=0.3,
+                min_size=1,
+                max_size=1,
+                ssl=False,
+            )
+        retries = [r.getMessage() for r in caplog.records if "attempt 1 failed" in r.getMessage()]
+        assert len(retries) == 1, retries
+        assert re.search(r"error=ConnectionRefusedError \[errno \d+\] ", retries[0]), retries
+
     def test_redact_dsn_survives_a_password_that_breaks_the_url(self) -> None:
         """``redact_dsn`` is the tolerant identity for logs: a stray ``?`` in a password must not raise from it."""
         identity = redact_dsn("postgresql://u:pa?ssWORD@127.0.0.1:5432/d")
         assert "ssWORD" not in identity
         assert "pa" not in identity.replace("<unparseable>", "")
+
+    def test_redact_dsn_does_not_name_a_numeric_piece_of_a_password_as_the_port(self) -> None:
+        """for ``u:12?x@host`` the URL parser reads host ``u`` and port ``12`` -- a piece of the password."""
+        assert redact_dsn("postgresql://u:12?x@127.0.0.1:5432/d") == "<unparseable>"
+
+    def test_redact_dsn_cannot_place_an_at_after_the_netloc_and_says_so(self) -> None:
+        """a valid DSN with ``@`` in its query is ``<unparseable>`` too: fail-safe, by design."""
+        assert redact_dsn("postgresql://db.example.com:5432/d?user=me@server") == "<unparseable>"
 
     async def test_a_missing_certificate_file_is_retried_and_named(self) -> None:
         """a missing root certificate cannot be told from a missing socket; the error names its class."""

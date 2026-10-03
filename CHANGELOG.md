@@ -88,21 +88,32 @@ package's test fixture `make_pool` among them) are unchanged by this release.
     starting -- keeps its text in the log and in `PoolStartupTimeoutError`, and stays its cause:
     it comes from the server and never quotes what the client sent.
   - A socket error is reported as its class and errno, and stays the cause.
-  - A client-side error describes what the client sent, and with a stray `@` or `?` in a
-    password that is the password: for `user:se@cret:TAIL@host` asyncpg reports the port as
-    `TAIL@host`, and for `user:pa?ssWORD@host` a query field `ssWORD@host`. A
-    `ClientConfigurationError`, a `ValueError` from a DSN asyncpg cannot parse, or a caller hook's
-    own `ValueError` is raised as its own type with the fixed message `invalid connection
-    configuration for <user>@<host>:<port>/<database> (details withheld: they may contain
-    credentials); check host, port, user, database and sslmode`, without the original as cause or
-    context, and is logged as its class and that message. The target comes only from the `host` /
+  - An error from asyncpg's connection-parameter handling -- a `ClientConfigurationError`, or a
+    `ValueError` raised while asyncpg parses the DSN and its connect options -- describes what
+    the client sent, and with a stray `@` or `?` in a password that is the password: for
+    `user:se@cret:TAIL@host` asyncpg reports the port as `TAIL@host`, and for
+    `user:pa?ssWORD@host` a query field `ssWORD@host`. Such an error is raised as its own type
+    with the fixed message `invalid connection configuration for <user>@<host>:<port>/<database>
+    (details withheld: they may contain credentials); check host, port, user, database and
+    sslmode`, without the original as cause or context. It is logged once, as its class and that
+    message, with the same structured keys as every other pool-start line (`connection_identity`,
+    `attempts`, `elapsed_seconds`, ...). The target in the message comes only from the `host` /
     `port` / `user` / `database` keywords and is left out when only a DSN was given. A type that
-    cannot be built from one message is raised as `ValueError` (or `ClientConfigurationError`)
-    naming it. Any other client-side failure becomes a `PoolStartupTimeoutError` naming only its
-    class, with no cause.
-  - `redact_dsn` no longer raises on a DSN whose password breaks the URL (it raised a
-    `ValueError` quoting the piece of the password the URL parser took for a port); it returns
-    `<unparseable>`.
+    cannot be built from one message is raised as `ClientConfigurationError` (or `ValueError`)
+    naming it.
+  - The boundary is asyncpg's own: a plain `ValueError` is a parameter error when it is raised
+    inside `asyncpg.connect_utils._parse_connect_dsn_and_args`, read off the traceback. Anything
+    else raises as itself with its own text and cause: a bad `command_timeout` or statement-cache
+    size (asyncpg checks those before it parses the DSN, and its message quotes only that value),
+    a caller hook's own `ValueError`, an error from the pool's `init` or `setup`, a bad pool
+    shape. A server error from `init` is a server answer like any other.
+  - Any other client-side failure becomes a `PoolStartupTimeoutError` naming only its class, with
+    no cause.
+  - `redact_dsn` returns `<unparseable>` for any DSN whose userinfo it cannot place safely, rather
+    than an identity that may carry a piece of the password: one whose password breaks the URL
+    (it raised a `ValueError` quoting the piece the URL parser took for a port, and for
+    `user:12?x@host` it named `12` the port), and also a valid DSN with an `@` after the netloc,
+    such as `?user=me@server`. Fail-safe, by design.
 - **Added: `PoolStartupTimeoutError.attempts` and `.connect_timeout_seconds`.** The message names
   the budget, the attempts and the last failure's class.
 - **Added: `resolve_pool_connect_timeout(startup_timeout, connect_timeout=None)`**, in

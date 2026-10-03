@@ -505,6 +505,8 @@ class _AttemptConnections:
         :return: the new connection
         :rtype: asyncpg.Connection
         :raises _AttemptAbandonedError: when the attempt failed while this connect was in flight
+        :raises _ClientSideFailure: when asyncpg's connection-parameter handling refused what was
+            sent (see :func:`_is_connection_parameter_error`)
         """
         if self.state == _ATTEMPT_STARTED:
             started_pool_connection: asyncpg.Connection = await self.opener(*args, **kwargs)
@@ -514,6 +516,10 @@ class _AttemptConnections:
             self.connecting.add(task)
         try:
             connection = await self.opener(*args, **kwargs)
+        except ValueError as exc:
+            if not _is_connection_parameter_error(exc):
+                raise
+            raise _ClientSideFailure(exc) from None
         finally:
             if task is not None:
                 self.connecting.discard(task)
@@ -668,14 +674,49 @@ def _describe_error(error: BaseException) -> str:
     return result
 
 
-class _ClientSideFailure(Exception):
-    """carries a client-side error out of a pool attempt, so the wrapper can re-raise it without its text.
+#: the asyncpg function that turns a DSN and its connect arguments into addresses and parameters,
+#: and where every error that can quote what was sent is raised: the DSN's own parse
+#: (``urllib.parse``, ``int()`` of a port, the query string), the host list, ``sslmode`` and the
+#: other connect options. ``asyncpg.connect_utils._parse_connect_arguments`` calls it AFTER its own
+#: checks of ``command_timeout`` and the statement-cache sizes, whose messages quote only those
+#: values. read from asyncpg 0.31's ``connect_utils.py``; asyncpg's ``ClientConfigurationError`` is
+#: raised nowhere else.
+_ASYNCPG_PARAMETER_PARSER = ("asyncpg.connect_utils", "_parse_connect_dsn_and_args")
 
-    a ``ValueError`` met while the attempt connects -- asyncpg's
-    :class:`~asyncpg.exceptions.ClientConfigurationError` for a connect option it refuses, a plain
-    ``ValueError`` for a DSN it cannot parse, a caller's hook's own -- describes what the client
-    sent. a ``ValueError`` that is also an ``OSError`` (a server certificate that does not verify) is
-    the network's answer and is not one of these.
+
+def _is_connection_parameter_error(error: ValueError) -> bool:
+    """whether ``error`` is asyncpg refusing the DSN or connect options it was given.
+
+    a :class:`~asyncpg.exceptions.ClientConfigurationError` always is. a plain ``ValueError`` is when
+    it was raised inside :data:`_ASYNCPG_PARAMETER_PARSER` -- read off the traceback's frames, a
+    public interpreter surface, not asyncpg's. anything else is not: a bad ``command_timeout``
+    (checked before the DSN is parsed), a caller hook's own ``ValueError``, an ``OSError`` that is
+    also a ``ValueError`` (a server certificate that does not verify). an error from the pool's
+    ``init`` or ``setup`` never reaches the connect hook at all.
+
+    :param error: what a connect raised
+    :ptype error: ValueError
+    :return: ``True`` when its text describes what was sent and must be withheld
+    :rtype: bool
+    """
+    result = False
+    if not isinstance(error, OSError):
+        result = isinstance(error, asyncpg.exceptions.ClientConfigurationError)
+        frame = error.__traceback__
+        while frame is not None and not result:
+            code = frame.tb_frame.f_code
+            module = frame.tb_frame.f_globals.get("__name__")
+            result = (module, code.co_name) == _ASYNCPG_PARAMETER_PARSER
+            frame = frame.tb_next
+    return result
+
+
+class _ClientSideFailure(Exception):
+    """carries a connection-parameter error out of a pool attempt, so the wrapper can re-raise it without its text.
+
+    raised by the attempt's connect hook for what :func:`_is_connection_parameter_error` accepts:
+    asyncpg refusing the DSN or connect options it was given, whose text describes -- and with a
+    stray ``@`` or ``?`` in a password, quotes -- what the client sent.
 
     :param error: the client-side error
     :ptype error: ValueError
@@ -689,6 +730,17 @@ class _ClientSideFailure(Exception):
         """
         super().__init__(type(error).__name__)
         self.error = error
+
+
+def _withheld_message(target: str | None) -> str:
+    """the fixed message a connection-parameter error is re-raised and logged with.
+
+    :param target: ``user@host:port/database`` from the caller's keywords, or ``None``
+    :ptype target: str | None
+    :return: :data:`_WITHHELD_CLIENT_ERROR` naming ``target`` when there is one
+    :rtype: str
+    """
+    return _WITHHELD_CLIENT_ERROR.format(target=f" for {target}" if target is not None else "")
 
 
 def _withheld(error: ValueError, target: str | None) -> ValueError:
@@ -706,7 +758,7 @@ def _withheld(error: ValueError, target: str | None) -> ValueError:
     :return: the error to raise in its place
     :rtype: ValueError
     """
-    message = _WITHHELD_CLIENT_ERROR.format(target=f" for {target}" if target is not None else "")
+    message = _withheld_message(target)
     result: ValueError
     try:
         result = type(error)(message)
@@ -743,12 +795,14 @@ async def create_pool_with_startup_timeout(
     **client-side errors withhold the library's text; server answers keep theirs.** a server
     answer (a refused login, a missing database, too many connections, a server starting) is
     reported with its text, which comes from the server and never quotes what the client sent. a
-    socket error is reported as its class and errno. a client-side error -- a DSN asyncpg cannot
-    parse, a connect option it refuses, a ``ValueError`` from a caller's hook -- describes what was
-    sent, which with a stray ``@`` or ``?`` in a password is the password: it is raised as its own
-    type with a fixed message naming only the ``host`` / ``port`` / ``user`` / ``database``
-    keywords (never a target read from a DSN), with no cause or context, and logged as its class
-    and that message.
+    socket error is reported as its class and errno. an error from asyncpg's connection-parameter
+    handling (:func:`_is_connection_parameter_error`: a DSN it cannot parse, a connect option it
+    refuses) describes what was sent, which with a stray ``@`` or ``?`` in a password is the
+    password: it is raised as its own type with a fixed message naming only the ``host`` /
+    ``port`` / ``user`` / ``database`` keywords (never a target read from a DSN), with no cause or
+    context, and logged as its class and that message. anything else -- a bad ``command_timeout``,
+    a caller hook's own ``ValueError``, an error from ``init`` or ``setup``, a bad pool shape --
+    keeps its own text and cause.
 
     a caller with its own connect hook passes it as ``connect``: the wrapper's hook calls it for
     every connection, so the bound, the record and the cleanup apply to it too. it receives
@@ -781,8 +835,9 @@ async def create_pool_with_startup_timeout(
     :raises asyncpg.exceptions.ClientConfigurationError: a connect option asyncpg refuses, as its own
         type with the fixed message
     :raises ValueError: when the bounds are inconsistent (see :func:`resolve_pool_connect_timeout`);
-        or a DSN asyncpg cannot parse, or a caller hook's own ``ValueError``, as its own type with the
-        fixed message (a type that cannot be built from one message is raised as ``ValueError``)
+        a DSN asyncpg cannot parse, as its own type with the fixed message (a type that cannot be
+        built from one message is raised as ``ValueError``); or a ``ValueError`` from anywhere else
+        (a bad ``command_timeout``, a pool shape, a hook, ``init``), as itself
     :raises TypeError: when ``create_pool_kwargs`` carries ``timeout``
     """
     if "timeout" in create_pool_kwargs:
@@ -812,10 +867,6 @@ async def create_pool_with_startup_timeout(
             connections.pool_started()
             started = True
             progress.attempt_in_flight = False
-        except ValueError as exc:
-            if isinstance(exc, OSError):
-                raise
-            raise _ClientSideFailure(exc) from None
         finally:
             if not started:
                 progress.closed_by_last_failure = connections.abandon(initialising)
@@ -925,13 +976,17 @@ async def create_pool_with_startup_timeout(
         # library's text describes what was sent and can quote the password.
         client_error = _withheld(client_side.error, client_target)
         log.error(
-            f"pg pool start failed: name={pool_name} {type(client_side.error).__name__}: {client_error}",
+            f"pg pool start failed: name={pool_name} identity={identity} "
+            f"error={type(client_side.error).__name__}: {_withheld_message(client_target)}",
             extra={
                 "extra_data": {
                     "pool_name": pool_name,
-                    "connection_target": client_target,
+                    "connection_identity": identity,
                     "attempts": progress.attempts,
                     "error_class": type(client_side.error).__name__,
+                    "elapsed_seconds": time.monotonic() - started_at,
+                    "startup_timeout_seconds": startup_timeout,
+                    "connect_timeout_seconds": per_connect,
                 }
             },
         )
