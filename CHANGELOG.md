@@ -81,6 +81,16 @@ and its own `asyncpg.create_pool` call sites (this repo's identity package's tes
   partway through, an unresolvable and a not-yet-resolvable host, and a TLS server whose
   certificate the client does not trust.
 
+### A datasource's `require_documented_tables` flag persists
+
+- **Fixed, in `threetears.datasources`:** `CapabilitySourceCollection.schema` now declares
+  `require_documented_tables` (boolean, `NOT NULL`, server default `false`), the column hub migration
+  v076 adds to `datasources`. Without it the schema-driven upsert left the column out of every
+  statement and the L3 read did not select it, so the hub's `PATCH /admin/v1/datasources/{id}`
+  answered with the value it was sent while nothing was stored. A save that omits the field keeps
+  the stored value; the in-memory L1 table, derived from the schema, carries the column from the next
+  process start.
+
 ### A failure the caller caused logs a WARNING, not an ERROR with a traceback
 
 `StreamingResponse.run_graph` logged every failed turn as an ERROR with a full traceback. A turn
