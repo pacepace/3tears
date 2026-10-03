@@ -73,6 +73,37 @@ its own DDL, and the shapes drifted (a missing grant index left the hub's grants
 ### Intentions
 
 - **Added, `intention_log(..., on_logged=...)`:** a consumer hears of each new want it stores.
+### A datasource's `require_documented_tables` flag persists
+
+- **Fixed, in `threetears.datasources`:** `CapabilitySourceCollection.schema` now declares
+  `require_documented_tables` (boolean, `NOT NULL`, server default `false`), the column hub migration
+  v076 adds to `datasources`. Without it the schema-driven upsert left the column out of every
+  statement and the L3 read did not select it, so the hub's `PATCH /admin/v1/datasources/{id}`
+  answered with the value it was sent while nothing was stored. A save that omits the field keeps
+  the stored value; the in-memory L1 table, derived from the schema, carries the column from the next
+  process start.
+
+### A failure the caller caused logs a WARNING, not an ERROR with a traceback
+
+`StreamingResponse.run_graph` logged every failed turn as an ERROR with a full traceback. A turn
+the caller caused -- the gateway refusing `MODEL_NO_VISION` because the user sent an image to a
+text-only model -- therefore logged an ERROR on every such turn, and a host could not change it.
+
+- **Added, in `threetears.langgraph` (module `streaming`): `StreamingResponse(...,
+  expected_failure_predicate=None)`.** This is an optional `Callable[[BaseException], bool]`.
+  When it returns `True` for the failing exception, `run_graph` logs one WARNING with no traceback,
+  naming the exception class, the message, the terminal `code`, the `gateway_code` when there is
+  one, and the correlation and conversation ids. Any other failure logs an ERROR with its traceback,
+  as before. The published `StreamErrorEvent` is the same either way. It is injected for the same
+  reason as `error_classifier`: the exception types that say a failure is expected are the host's.
+  A predicate that raises is logged and treated as absent, so the failure logs at ERROR; it never
+  costs the terminal event and never replaces the exception that propagates. Cancellation never
+  consults it.
+- **Changed: both failures `run_graph` publishes follow the rule** -- the graph's own failure and a
+  failed post-run interrupt check. The ERROR line now also carries `conversation_id`, `code` and
+  `gateway_code`, and the interrupt-check line now carries `error_message`.
+
+A host that passes no predicate is unchanged.
 
 ## v0.60.0 -- 2026-10-03
 
