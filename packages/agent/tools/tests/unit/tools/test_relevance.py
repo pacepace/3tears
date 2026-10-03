@@ -529,7 +529,7 @@ async def test_tool_search_says_the_index_failed_rather_than_nothing_matched() -
 
     result_text = await search_tool.ainvoke({"query": "anything"})
 
-    assert result_text.startswith("Tool search failed")
+    assert result_text.startswith("[TOOL ERROR] Tool search failed")
     assert "Nothing was found and nothing was ruled out" in result_text
     assert hits == []
 
