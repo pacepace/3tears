@@ -523,6 +523,7 @@ class StreamingResponse:
         start_time_monotonic: float | None = None,
         error_classifier: Callable[[BaseException], str] | None = None,
         gateway_code_reader: Callable[[BaseException], str | None] | None = None,
+        expected_failure_predicate: Callable[[BaseException], bool] | None = None,
     ) -> None:
         """initialize a streaming response bound to one transport target.
 
@@ -554,12 +555,21 @@ class StreamingResponse:
             the same reason as ``error_classifier``: the exception carrying the code is the
             caller's type
         :ptype gateway_code_reader: collections.abc.Callable[[BaseException], str | None] | None
+        :param expected_failure_predicate: optional test of whether a failing exception is one
+            the caller caused and the platform answered correctly (a gateway refusing an image
+            sent to a text-only model, say). :meth:`run_graph` logs such a failure as one WARNING
+            with no traceback, and every other failure as an ERROR with its traceback; the
+            published :class:`StreamErrorEvent` is the same either way. defaults to ``None``,
+            which treats every failure as unexpected. injected for the same reason as
+            ``error_classifier``: the exception types that say so are the caller's
+        :ptype expected_failure_predicate: collections.abc.Callable[[BaseException], bool] | None
         """
         self._transport = transport
         self._correlation_id = correlation_id
         self._conversation_id = conversation_id
         self._error_classifier = error_classifier
         self._gateway_code_reader = gateway_code_reader
+        self._expected_failure_predicate = expected_failure_predicate
         self._explicit_start_monotonic = start_time_monotonic
         self._effective_start_monotonic: float | None = None
         self._accumulated_content: str = ""
@@ -926,8 +936,11 @@ class StreamingResponse:
         failure on non-stream paths (logging, metrics). the terminal's code
         comes from the constructor's ``error_classifier`` when one was given
         and :data:`DEFAULT_ERROR_CODE` otherwise; the message always carries
-        the cause. cancellation is exempt and terminates as
-        :data:`CANCELLED_ERROR_CODE`.
+        the cause. the failure logs as one WARNING without a traceback when
+        the constructor's ``expected_failure_predicate`` accepts it, and as an
+        ERROR with its traceback otherwise; the terminal is the same either
+        way. cancellation is exempt, consults none of the injected callables,
+        and terminates as :data:`CANCELLED_ERROR_CODE`.
 
         ``state`` is any LangGraph entry payload: a state ``dict`` for a
         fresh run, OR a resume directive (e.g. ``langgraph.types.Command``)
@@ -988,20 +1001,7 @@ class StreamingResponse:
             await self.error(code=CANCELLED_ERROR_CODE, message="agent run cancelled")
             raise
         except Exception as exc:
-            log.error(
-                "streaming graph execution failed",
-                extra={
-                    "extra_data": {
-                        "correlation_id": str(self._correlation_id),
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    }
-                },
-                exc_info=True,
-            )
-            await self.error(
-                code=self._classified_code(exc), message=str(exc), gateway_code=self._read_gateway_code(exc)
-            )
+            await self._fail_run(exc, log_message="streaming graph execution failed")
             raise
         else:
             try:
@@ -1009,19 +1009,7 @@ class StreamingResponse:
             except Exception as exc:
                 # a checkpointer-backed graph whose post-run state query FAILS must surface a real
                 # error terminal, never a silent empty StreamEndEvent.
-                log.error(
-                    "interrupt detection failed after graph completion",
-                    extra={
-                        "extra_data": {
-                            "correlation_id": str(self._correlation_id),
-                            "error_type": type(exc).__name__,
-                        }
-                    },
-                    exc_info=True,
-                )
-                await self.error(
-                    code=self._classified_code(exc), message=str(exc), gateway_code=self._read_gateway_code(exc)
-                )
+                await self._fail_run(exc, log_message="interrupt detection failed after graph completion")
                 raise
             if interrupt_payload is not _NO_INTERRUPT:
                 # the graph PAUSED on a human-in-the-loop interrupt rather than completing: stash the
@@ -1032,6 +1020,65 @@ class StreamingResponse:
             else:
                 await self.end()
         return final_state
+
+    async def _fail_run(self, exc: Exception, *, log_message: str) -> None:
+        """log one failed run at the level it deserves and publish its error terminal.
+
+        the terminal's code, gateway code and message do not depend on the level: a failure the
+        ``expected_failure_predicate`` accepts logs one WARNING with no traceback, any other
+        failure an ERROR with its traceback, and both publish the same :class:`StreamErrorEvent`.
+        the caller re-raises ``exc`` afterward.
+
+        :param exc: the exception that ended the run
+        :ptype exc: Exception
+        :param log_message: what failed, as the log line's message
+        :ptype log_message: str
+        :return: nothing
+        :rtype: None
+        """
+        code = self._classified_code(exc)
+        gateway_code = self._read_gateway_code(exc)
+        extra_data: dict[str, Any] = {
+            "correlation_id": str(self._correlation_id),
+            "conversation_id": str(self._conversation_id),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "code": code,
+        }
+        if gateway_code is not None:
+            extra_data["gateway_code"] = gateway_code
+        if self._is_expected_failure(exc):
+            log.warning(log_message, extra={"extra_data": extra_data})
+        else:
+            log.error(log_message, extra={"extra_data": extra_data}, exc_info=exc)
+        await self.error(code=code, message=str(exc), gateway_code=gateway_code)
+
+    def _is_expected_failure(self, exc: BaseException) -> bool:
+        """answer whether one failing exception is a failure the caller caused.
+
+        same failure-path rule as :meth:`_classified_code`: a caller-supplied predicate that
+        raises must not cost the terminal event or replace the exception the caller is about to
+        see, so a broken predicate is logged and treated as absent -- the failure is unexpected.
+
+        :param exc: the exception that ended the run
+        :ptype exc: BaseException
+        :return: ``True`` only when a predicate was given and it accepted ``exc``
+        :rtype: bool
+        """
+        expected = False
+        if self._expected_failure_predicate is not None:
+            try:
+                expected = bool(self._expected_failure_predicate(exc))
+            # prawduct:allow prawduct/broad-except -- caller-supplied predicate on the failure
+            # path; any fault in it degrades to "unexpected" rather than displacing the original
+            # exception, which is logged at ERROR by the caller and still propagates.
+            except Exception:
+                log.exception(
+                    "stream expected-failure predicate failed; logging the failure as unexpected",
+                    extra={"extra_data": {"correlation_id": str(self._correlation_id)}},
+                )
+                expected = False
+        return expected
 
     def _classified_code(self, exc: BaseException) -> str:
         """name the terminal error code for one failing exception.

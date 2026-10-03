@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A failure the caller caused logs a WARNING, not an ERROR with a traceback
+
+`StreamingResponse.run_graph` logged every failed turn as an ERROR with a full traceback. A turn
+the caller caused -- the gateway refusing `MODEL_NO_VISION` because the user sent an image to a
+text-only model -- therefore logged an ERROR on every such turn, and a host could not change it.
+
+- **Added, in `threetears.langgraph` (module `streaming`): `StreamingResponse(...,
+  expected_failure_predicate=None)`.** This is an optional `Callable[[BaseException], bool]`.
+  When it returns `True` for the failing exception, `run_graph` logs one WARNING with no traceback,
+  naming the exception class, the message, the terminal `code`, the `gateway_code` when there is
+  one, and the correlation and conversation ids. Any other failure logs an ERROR with its traceback,
+  as before. The published `StreamErrorEvent` is the same either way. It is injected for the same
+  reason as `error_classifier`: the exception types that say a failure is expected are the host's.
+  A predicate that raises is logged and treated as absent, so the failure logs at ERROR; it never
+  costs the terminal event and never replaces the exception that propagates. Cancellation never
+  consults it.
+- **Changed: both failures `run_graph` publishes follow the rule** -- the graph's own failure and a
+  failed post-run interrupt check. The ERROR line now also carries `conversation_id`, `code` and
+  `gateway_code`, and the interrupt-check line now carries `error_message`.
+
+A host that passes no predicate is unchanged.
+
 ## v0.60.0 -- 2026-10-03
 
 ### A tool that did not do what it was asked says so as a failure

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any
 from uuid import UUID
@@ -1472,3 +1473,239 @@ class TestStreamErrorCarriesTheGatewayCode:
         err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
         assert err[0].gateway_code is None
         assert consulted == []
+
+
+_STREAMING_LOGGER = "threetears.langgraph.streaming"
+
+
+def _run_failure_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """the records ``run_graph`` wrote about the failed run itself, not about a broken hook.
+
+    :param caplog: pytest log capture fixture
+    :ptype caplog: pytest.LogCaptureFixture
+    :return: the run-failure records, in order
+    :rtype: list[logging.LogRecord]
+    """
+    messages = {"streaming graph execution failed", "interrupt detection failed after graph completion"}
+    return [r for r in caplog.records if r.name == _STREAMING_LOGGER and r.getMessage() in messages]
+
+
+def _is_gateway_refusal(exc: BaseException) -> bool:
+    """the predicate a host passes: a refusal the caller caused is expected.
+
+    :param exc: the failing exception
+    :ptype exc: BaseException
+    :return: ``True`` when the failure is a gateway refusal
+    :rtype: bool
+    """
+    return isinstance(exc, _GatewayRefused)
+
+
+class TestRunGraphLogsAnExpectedFailureAsAWarning:
+    """a failure the caller caused logs one WARNING, not an ERROR with a traceback.
+
+    a user who sends an image to a text-only model gets the gateway's ``MODEL_NO_VISION``
+    refusal. that is the caller's doing, answered correctly, and it logged an ERROR with a full
+    traceback on every such turn. the host owns the exception types that say which failures are
+    expected, so it passes the predicate; this package only decides the level.
+    """
+
+    async def test_an_expected_failure_logs_one_warning_without_a_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the warning names the class, the codes and the turn; it carries no traceback."""
+        cid = _new_uuid()
+        conv = _new_uuid()
+        stream = StreamingResponse(
+            transport=_RecordingTransport(),
+            correlation_id=cid,
+            conversation_id=conv,
+            error_classifier=lambda exc: "GATEWAY_REFUSED",
+            gateway_code_reader=_read_gateway_code,
+            expected_failure_predicate=_is_gateway_refusal,
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=_STREAMING_LOGGER), pytest.raises(_GatewayRefused):
+            await stream.run_graph(_StubGraph(_GatewayRefused("MODEL_NO_VISION")), {}, {})
+
+        records = _run_failure_records(caplog)
+        assert [r.levelno for r in records] == [logging.WARNING]
+        [record] = records
+        assert record.exc_info is None
+        data = record.__dict__["extra_data"]
+        assert data["correlation_id"] == str(cid)
+        assert data["conversation_id"] == str(conv)
+        assert data["error_type"] == "_GatewayRefused"
+        assert data["code"] == "GATEWAY_REFUSED"
+        assert data["gateway_code"] == "MODEL_NO_VISION"
+        assert "MODEL_NO_VISION" in data["error_message"]
+        assert not [r for r in caplog.records if r.name == _STREAMING_LOGGER and r.levelno >= logging.ERROR]
+
+    async def test_the_published_terminal_is_the_same_either_way(self) -> None:
+        """the predicate decides the log level and nothing else a consumer can see."""
+        cid = _new_uuid()
+        published: list[StreamErrorEvent] = []
+        for predicate in (_is_gateway_refusal, None):
+            transport = _RecordingTransport()
+            stream = StreamingResponse(
+                transport=transport,
+                correlation_id=cid,
+                conversation_id=_new_uuid(),
+                error_classifier=lambda exc: "GATEWAY_REFUSED",
+                gateway_code_reader=_read_gateway_code,
+                expected_failure_predicate=predicate,
+            )
+            with pytest.raises(_GatewayRefused):
+                await stream.run_graph(_StubGraph(_GatewayRefused("MODEL_NO_VISION")), {}, {})
+            [err] = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+            published.append(err)
+
+        expected, unexpected = (e.model_dump(exclude={"duration_ms"}) for e in published)
+        assert expected == unexpected
+        assert expected["code"] == "GATEWAY_REFUSED"
+        assert expected["gateway_code"] == "MODEL_NO_VISION"
+
+    async def test_an_unexpected_failure_logs_an_error_with_its_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a predicate answering ``False`` keeps today's ERROR with ``exc_info``."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            expected_failure_predicate=_is_gateway_refusal,
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=_STREAMING_LOGGER), pytest.raises(RuntimeError):
+            await stream.run_graph(_StubGraph(RuntimeError("a bug")), {}, {})
+
+        [record] = _run_failure_records(caplog)
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], RuntimeError)
+        assert len([e for e in transport.events if isinstance(e, StreamErrorEvent)]) == 1
+
+    async def test_no_predicate_logs_every_failure_as_an_error(self, caplog: pytest.LogCaptureFixture) -> None:
+        """without a predicate nothing is expected: the default is unchanged."""
+        stream = StreamingResponse(
+            transport=_RecordingTransport(), correlation_id=_new_uuid(), conversation_id=_new_uuid()
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=_STREAMING_LOGGER), pytest.raises(_GatewayRefused):
+            await stream.run_graph(_StubGraph(_GatewayRefused("MODEL_NO_VISION")), {}, {})
+
+        [record] = _run_failure_records(caplog)
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is not None
+
+    async def test_the_predicate_receives_the_original_exception(self) -> None:
+        """the predicate is handed the exception itself, not a rendering of it."""
+        seen: list[BaseException] = []
+        raised = _GatewayRefused("MODEL_NO_VISION")
+
+        def _predicate(exc: BaseException) -> bool:
+            seen.append(exc)
+            return True
+
+        stream = StreamingResponse(
+            transport=_RecordingTransport(),
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            expected_failure_predicate=_predicate,
+        )
+
+        with pytest.raises(_GatewayRefused):
+            await stream.run_graph(_StubGraph(raised), {}, {})
+
+        assert seen == [raised]
+
+    async def test_a_broken_predicate_logs_the_error_and_still_publishes(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a predicate that raises is logged and treated as absent.
+
+        it never costs the terminal event and never replaces the exception that propagates.
+        """
+
+        def _broken(exc: BaseException) -> bool:
+            raise ValueError("predicate itself is broken")
+
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            gateway_code_reader=_read_gateway_code,
+            expected_failure_predicate=_broken,
+        )
+
+        with (
+            caplog.at_level(logging.DEBUG, logger=_STREAMING_LOGGER),
+            pytest.raises(_GatewayRefused, match="MODEL_NO_VISION"),
+        ):
+            await stream.run_graph(_StubGraph(_GatewayRefused("MODEL_NO_VISION")), {}, {})
+
+        [record] = _run_failure_records(caplog)
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], _GatewayRefused)
+        broken = [
+            r
+            for r in caplog.records
+            if r.name == _STREAMING_LOGGER and r.getMessage().startswith("stream expected-failure predicate failed")
+        ]
+        assert len(broken) == 1
+        assert broken[0].exc_info is not None
+        assert isinstance(broken[0].exc_info[1], ValueError)
+        [err] = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert err.gateway_code == "MODEL_NO_VISION"
+
+    async def test_cancellation_never_consults_the_predicate(self) -> None:
+        """an orderly stop is not a failure to grade."""
+        consulted: list[BaseException] = []
+
+        def _predicate(exc: BaseException) -> bool:
+            consulted.append(exc)
+            return True
+
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            expected_failure_predicate=_predicate,
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await stream.run_graph(_StubGraph(asyncio.CancelledError()), {}, {})
+
+        [err] = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert err.code == "AGENT_CANCELLED"
+        assert consulted == []
+
+    async def test_the_interrupt_detection_failure_follows_the_same_rule(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the other failure ``run_graph`` logs and publishes is graded the same way."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            gateway_code_reader=_read_gateway_code,
+            expected_failure_predicate=_is_gateway_refusal,
+        )
+        graph = _InterruptingGraph(
+            [{"event": "on_chain_end", "data": {"output": {}}}], _GatewayRefused("MODEL_NO_VISION")
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=_STREAMING_LOGGER), pytest.raises(_GatewayRefused):
+            await stream.run_graph(graph, {"messages": []}, {})
+
+        [record] = _run_failure_records(caplog)
+        assert record.levelno == logging.WARNING
+        assert record.exc_info is None
+        assert record.__dict__["extra_data"]["gateway_code"] == "MODEL_NO_VISION"
+        [err] = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert err.gateway_code == "MODEL_NO_VISION"
