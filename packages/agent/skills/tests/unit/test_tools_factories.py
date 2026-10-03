@@ -1126,6 +1126,8 @@ class TestToolCallSkill:
         )
         out = await update.ainvoke({"skill_id": str(skill_id), "tool": "loki.query"})
         assert "not both" in out
+        # and it says how to switch, since the agent came to make one
+        assert 'give body as "" with the tool' in out
         assert coll.rows[(agent_id, skill_id)]["body"] == "do the thing"
         assert coll.rows[(agent_id, skill_id)].get("tool") is None
 
