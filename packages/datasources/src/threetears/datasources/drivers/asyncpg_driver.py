@@ -35,8 +35,9 @@ design contract (datasource-task-10):
   :meth:`close`'s business, through ``Pool.close``.
 - DS-10-10: passwords resolve via :meth:`config.resolve_password`
   returning :class:`pydantic.SecretStr`; ``.get_secret_value()`` is
-  unwrapped at the LAST moment when handing to
-  :func:`asyncpg.create_pool`. no intermediate ``str`` variable.
+  unwrapped at the LAST moment when handing to the pool start
+  (:func:`threetears.core.utils.pg_pool_kwargs.create_pool_with_startup_timeout`).
+  no intermediate ``str`` variable.
 - DS-10-11: backend exceptions are wrapped in
   :class:`DriverConnectError` / :class:`DriverQueryError` with
   ``from None`` to break the cause chain. raw asyncpg errors
@@ -153,7 +154,11 @@ from typing import Any
 
 import asyncpg
 
-from threetears.core.utils.pg_pool_kwargs import get_pg_pool_kwargs
+from threetears.core.utils.pg_pool_kwargs import (
+    PoolStartupTimeoutError,
+    create_pool_with_startup_timeout,
+    get_pg_pool_kwargs,
+)
 from threetears.datasources.config import (
     AgentInternalConnectionConfig,
     PostgresConnectionConfig,
@@ -491,10 +496,17 @@ class AsyncpgDriver(Driver):
         ``max_inactive_connection_lifetime`` (carries the Yugabyte
         pgwire stale-connection guard).
 
+        the pool starts through
+        :func:`threetears.core.utils.pg_pool_kwargs.create_pool_with_startup_timeout`
+        with :meth:`_connect_one` as its connect hook: each login is
+        bounded at the platform's per-connect timeout, the start at the
+        platform's startup budget, and a start that fails on one of its
+        ``min_size`` connects closes the connections the others opened.
+
         the password is resolved through
         :meth:`config.resolve_password` which returns
         :class:`SecretStr`; ``.get_secret_value()`` is unwrapped at
-        the LAST moment when handed to ``asyncpg.create_pool``. no
+        the LAST moment when handed to the pool start. no
         intermediate ``str`` variable holds the value -- the whole
         point of :class:`SecretStr` is the value never lives in a
         plain string that could leak via logging.
@@ -552,7 +564,13 @@ class AsyncpgDriver(Driver):
             # every login the pool makes -- the first ``min_size`` and each one it
             # opens later to replace a closed connection -- goes through
             # ``_connect_one``, so a credential refused mid-life is paused too.
-            pool = await asyncpg.create_pool(
+            # the pool starts through the platform wrapper, which runs ``_connect_one``
+            # inside its own hook: each login is bounded, and a start that fails on one
+            # of its ``min_size`` connects closes the others instead of dropping a
+            # half-built pool with their server connections still open. a
+            # ``DriverConnectError`` from ``_connect_one`` is neither retried nor wrapped.
+            pool = await create_pool_with_startup_timeout(
+                pool_name=f"datasource_{self._datasource_name}",
                 host=cfg.host,
                 port=cfg.port,
                 database=cfg.database,
@@ -570,6 +588,15 @@ class AsyncpgDriver(Driver):
             # of a refusal); re-wrapping would read the server's reason off our
             # own exception and lose it.
             raise
+        except PoolStartupTimeoutError as exc:
+            # the pool start gave up: classify by what it met, so a refused
+            # login still reads as an auth error carrying the server's reason.
+            # ``from None`` for the same reason as below.
+            raise connect_error_from(
+                f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}",
+                exc.__cause__ if isinstance(exc.__cause__, Exception) else exc,
+                password=password,
+            ) from None
         except Exception as exc:
             # break the cause chain (``from None``) so the original
             # asyncpg error -- which sometimes embeds the password
@@ -583,7 +610,7 @@ class AsyncpgDriver(Driver):
                 exc,
                 password=password,
             ) from None
-        # asyncpg.create_pool can return None on edge cases; guard
+        # the pool start can return None on edge cases; guard
         # against the typing.
         if pool is None:
             raise DriverConnectError(f"connection returned no pool for {cfg.host}:{cfg.port}/{cfg.database}")

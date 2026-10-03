@@ -23,132 +23,26 @@ import time
 import uuid
 import weakref
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 import pytest
 
+from threetears.core.testing.tcp_proxy import PROXY_DROP, PROXY_STALL, StallingTcpProxy
 from threetears.core.utils.pg_pool_kwargs import PoolStartupTimeoutError, create_pool_with_startup_timeout
 
 pytestmark = pytest.mark.integration
 
 _LOGGER = "threetears.core.utils.pg_pool_kwargs"
 
-_FORWARD = "forward"
-_STALL = "stall"
-_DROP = "drop"
-
-
-@dataclass
-class _StallingProxy:
-    """a TCP proxy that misbehaves on chosen connections, numbered from 1 in accept order.
-
-    ``plan`` maps a connection number to ``stall`` (accept, read, never answer), ``drop`` (close at
-    once) or a delay in seconds (forward after waiting it); any other connection is forwarded.
-    """
-
-    upstream_host: str
-    upstream_port: int
-    plan: dict[int, str | float] = field(default_factory=dict)
-    accepted: int = 0
-    open_client_sockets: int = 0
-    port: int = 0
-    _server: asyncio.Server | None = None
-    _tasks: set[asyncio.Task[None]] = field(default_factory=set)
-
-    async def start(self) -> None:
-        """listen on an ephemeral loopback port."""
-        self._server = await asyncio.start_server(self._accept, host="127.0.0.1", port=0)
-        self.port = self._server.sockets[0].getsockname()[1]
-
-    async def stop(self) -> None:
-        """stop listening and end every connection still being served."""
-        if self._server is not None:
-            self._server.close()
-        for task in list(self._tasks):
-            task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-        if self._server is not None:
-            await self._server.wait_closed()
-
-    async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """serve one client connection according to the plan."""
-        self.accepted += 1
-        number = self.accepted
-        self.open_client_sockets += 1
-        task = asyncio.current_task()
-        if task is not None:
-            self._tasks.add(task)
-        try:
-            action = self.plan.get(number, _FORWARD)
-            if action == _STALL:
-                await _drain_until_eof(reader)
-            elif action == _DROP:
-                pass
-            else:
-                if isinstance(action, float):
-                    await asyncio.sleep(action)
-                await self._forward(reader, writer)
-        finally:
-            self.open_client_sockets -= 1
-            writer.close()
-            if task is not None:
-                self._tasks.discard(task)
-
-    async def _forward(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """pipe bytes both ways until either side closes."""
-        up_reader, up_writer = await asyncio.open_connection(self.upstream_host, self.upstream_port)
-        try:
-            await asyncio.wait(
-                [asyncio.create_task(_pipe(reader, up_writer)), asyncio.create_task(_pipe(up_reader, writer))],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        finally:
-            up_writer.close()
-
-    def dsn_through(self, dsn: str) -> str:
-        """``dsn`` with its host and port replaced by this proxy's."""
-        parts = urlsplit(dsn)
-        userinfo = parts.netloc.rsplit("@", 1)[0]
-        return urlunsplit(parts._replace(netloc=f"{userinfo}@127.0.0.1:{self.port}"))
-
-    async def all_client_sockets_closed(self, *, within: float) -> bool:
-        """whether the client has closed every connection it opened, waiting up to ``within`` seconds."""
-        deadline = time.monotonic() + within
-        while self.open_client_sockets > 0 and time.monotonic() < deadline:
-            await asyncio.sleep(0.02)
-        return self.open_client_sockets == 0
-
-
-async def _drain_until_eof(reader: asyncio.StreamReader) -> None:
-    """read and discard until the peer closes."""
-    try:
-        while await reader.read(4096):
-            pass
-    except ConnectionError:
-        pass
-
-
-async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-    """copy ``reader`` to ``writer`` until EOF or a reset."""
-    try:
-        while chunk := await reader.read(65536):
-            writer.write(chunk)
-            await writer.drain()
-    except ConnectionError:
-        pass
-    finally:
-        writer.close()
-
 
 @pytest.fixture
-async def proxy(db_container: str) -> AsyncIterator[_StallingProxy]:
+async def proxy(db_container: str) -> AsyncIterator[StallingTcpProxy]:
     """a stalling proxy in front of the session Postgres; each test sets its plan before connecting."""
     upstream = urlsplit(db_container)
     assert upstream.hostname is not None and upstream.port is not None
-    running = _StallingProxy(upstream_host=upstream.hostname, upstream_port=upstream.port)
+    running = StallingTcpProxy(upstream_host=upstream.hostname, upstream_port=upstream.port)
     await running.start()
     try:
         yield running
@@ -184,7 +78,7 @@ async def _backends_settle_at(db_container: str, application_name: str, expected
 
 
 async def _start(
-    proxy: _StallingProxy,
+    proxy: StallingTcpProxy,
     dsn: str,
     application_name: str,
     *,
@@ -212,9 +106,9 @@ class TestThePoolStartsDespiteStalledConnects:
     """one wedged connect costs one per-connect timeout, then the pool starts with exactly its own backends."""
 
     async def test_a_stalled_first_connect_is_retried(
-        self, proxy: _StallingProxy, db_container: str, application_name: str
+        self, proxy: StallingTcpProxy, db_container: str, application_name: str
     ) -> None:
-        proxy.plan = {1: _STALL}
+        proxy.plan = {1: PROXY_STALL}
         started = time.monotonic()
         pool = await _start(proxy, db_container, application_name)
         try:
@@ -227,10 +121,10 @@ class TestThePoolStartsDespiteStalledConnects:
         assert await proxy.all_client_sockets_closed(within=5.0)
 
     async def test_a_stall_among_the_parallel_connects_closes_the_half_built_pool(
-        self, proxy: _StallingProxy, db_container: str, application_name: str, caplog: pytest.LogCaptureFixture
+        self, proxy: StallingTcpProxy, db_container: str, application_name: str, caplog: pytest.LogCaptureFixture
     ) -> None:
         """attempt 1 opens three connections before its third connect stalls; none of them survive it."""
-        proxy.plan = {3: _STALL}
+        proxy.plan = {3: PROXY_STALL}
         with caplog.at_level(logging.WARNING, logger=_LOGGER):
             pool = await _start(proxy, db_container, application_name)
         try:
@@ -283,7 +177,7 @@ class TestThePoolStartsDespiteStalledConnects:
             await pool.close()
 
     async def test_a_connect_finishing_after_its_attempt_failed_is_closed(
-        self, proxy: _StallingProxy, db_container: str, application_name: str
+        self, proxy: StallingTcpProxy, db_container: str, application_name: str
     ) -> None:
         """connection 2 is slow and connection 3 is dropped: the attempt fails while 2 is still in flight.
 
@@ -291,7 +185,7 @@ class TestThePoolStartsDespiteStalledConnects:
         so the attempt is abandoned before 2 arrives and 2 lands during the pause before the next
         attempt. it must be closed, not left in a pool nobody holds.
         """
-        proxy.plan = {2: 0.3, 3: _DROP}
+        proxy.plan = {2: 0.3, 3: PROXY_DROP}
         pool = await _start(proxy, db_container, application_name)
         try:
             assert pool.get_size() == 4
@@ -305,9 +199,9 @@ class TestAPoolThatCannotStartLeaksNothing:
     """every connect stalled: the failure arrives inside the budget, names its attempts, and holds no socket."""
 
     async def test_an_all_stalled_server_fails_within_the_budget(
-        self, proxy: _StallingProxy, db_container: str, application_name: str
+        self, proxy: StallingTcpProxy, db_container: str, application_name: str
     ) -> None:
-        proxy.plan = dict.fromkeys(range(1, 100), _STALL)
+        proxy.plan = dict.fromkeys(range(1, 100), PROXY_STALL)
         budget = 2.0
         started = time.monotonic()
         with pytest.raises(PoolStartupTimeoutError) as exc_info:
@@ -321,17 +215,17 @@ class TestAPoolThatCannotStartLeaksNothing:
         assert await _backends_settle_at(db_container, application_name, 0, within=2.0) == 0
 
     async def test_a_server_that_stops_answering_mid_attempt_leaks_no_backend(
-        self, proxy: _StallingProxy, db_container: str, application_name: str
+        self, proxy: StallingTcpProxy, db_container: str, application_name: str
     ) -> None:
         """the first connection of every attempt reaches the server; a later one always stalls."""
-        proxy.plan = {n: _STALL for n in range(1, 100) if n % 2 == 0}
+        proxy.plan = {n: PROXY_STALL for n in range(1, 100) if n % 2 == 0}
         with pytest.raises(PoolStartupTimeoutError):
             await _start(proxy, db_container, application_name, startup_timeout=2.5, size=2)
         assert await proxy.all_client_sockets_closed(within=2.0)
         assert await _backends_settle_at(db_container, application_name, 0, within=5.0) == 0
 
     async def test_a_wrong_password_is_not_retried(
-        self, proxy: _StallingProxy, db_container: str, application_name: str
+        self, proxy: StallingTcpProxy, db_container: str, application_name: str
     ) -> None:
         """a refusal no retry can clear fails on the first attempt, with the server's error as its cause."""
         parts = urlsplit(db_container)

@@ -19,9 +19,10 @@ import socket
 import ssl
 import tempfile
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
+import asyncpg
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -374,18 +375,164 @@ class TestCreatePoolWithStartupTimeout:
             )
         assert silent_server.accepted == 0
 
-    @pytest.mark.parametrize("owned", ["timeout", "connect"])
-    async def test_kwargs_the_wrapper_owns_are_refused(self, owned: str, silent_server: _SilentServer) -> None:
-        """``timeout`` is ``connect_timeout``'s, and ``connect`` is how the wrapper closes what a failed attempt opened."""
+    async def test_timeout_is_refused_naming_it_and_its_replacement(self, silent_server: _SilentServer) -> None:
+        """``timeout`` is the wrapper's: the refusal names the argument passed and ``connect_timeout=``."""
         # matched on the wrapper's own guidance: python's duplicate-keyword TypeError names the
         # argument too, and would pass a match on the name alone with the wrapper's check gone.
-        with pytest.raises(TypeError, match=rf"sets \[.*'{owned}'.*\] itself.*connect_timeout="):
+        with pytest.raises(TypeError, match=r"sets timeout= itself; pass the per-connect bound as connect_timeout="):
             await create_pool_with_startup_timeout(
                 f"postgresql://u:p@127.0.0.1:{silent_server.port}/d",
                 startup_timeout=1.0,
-                **{owned: 5},
+                timeout=5,
             )
         assert silent_server.accepted == 0
+
+    async def test_a_callers_connect_hook_runs_inside_the_wrappers(self, silent_server: _SilentServer) -> None:
+        """a pool start with its own connect hook keeps it, bounded and cleaned up like any other."""
+        calls: list[dict[str, object]] = []
+
+        async def own_hook(*args: object, **kwargs: object) -> asyncpg.Connection:
+            calls.append(dict(kwargs))
+            return await asyncpg.connect(*args, **kwargs)
+
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                f"postgresql://u:p@127.0.0.1:{silent_server.port}/d",
+                pool_name="own_hook",
+                startup_timeout=1.5,
+                connect_timeout=0.3,
+                min_size=1,
+                max_size=1,
+                ssl=False,
+                connect=own_hook,
+            )
+        attempts = exc_info.value.attempts
+        assert attempts >= 2
+        # the hook made every connect, each under the wrapper's per-connect bound.
+        assert attempts - 1 <= len(calls) <= attempts
+        assert [call["timeout"] for call in calls] == [0.3] * len(calls)
+        assert await silent_server.all_closed(within=2.0)
+
+    async def test_host_keywords_without_a_dsn_name_the_database_without_the_password(
+        self, silent_server: _SilentServer
+    ) -> None:
+        """a caller that passes ``host=``/``port=``/... instead of a DSN still gets a named, credential-free error."""
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                pool_name="keywords",
+                startup_timeout=0.9,
+                min_size=1,
+                max_size=1,
+                ssl=False,
+                host="127.0.0.1",
+                port=silent_server.port,
+                user="u",
+                database="d",
+                password="keyword-secret",
+            )
+        err = exc_info.value
+        assert err.db_identity == f"u@127.0.0.1:{silent_server.port}/d"
+        assert err.db_identity in str(err)
+        assert "keyword-secret" not in str(err)
+
+    async def test_a_budget_that_runs_out_mid_connect_says_during_which_attempt(
+        self, silent_server: _SilentServer
+    ) -> None:
+        """attempt 1 times out at 0.6s, the pause runs to 1.1s, and the budget lapses inside attempt 2."""
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                f"postgresql://u:p@127.0.0.1:{silent_server.port}/d",
+                pool_name="mid_connect",
+                startup_timeout=1.5,
+                connect_timeout=0.6,
+                min_size=1,
+                max_size=1,
+                ssl=False,
+            )
+        assert exc_info.value.attempts == 2
+        assert "the budget ran out during attempt 2" in str(exc_info.value)
+
+    async def test_a_budget_that_runs_out_in_a_pause_says_before_which_attempt(self) -> None:
+        """a refused connect fails at once, so the budget lapses in the pause after the last one."""
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                f"postgresql://u:p@127.0.0.1:{_unused_port()}/d",
+                pool_name="in_pause",
+                startup_timeout=1.0,
+                connect_timeout=0.3,
+                min_size=1,
+                max_size=1,
+                ssl=False,
+            )
+        attempts = exc_info.value.attempts
+        assert f"the budget ran out before attempt {attempts + 1} could start" in str(exc_info.value)
+
+    async def test_a_client_configuration_error_raises_as_itself(self, silent_server: _SilentServer) -> None:
+        """an invalid ``sslmode`` is the caller's mistake, not an unreachable database."""
+        started = time.monotonic()
+        with pytest.raises(asyncpg.exceptions.ClientConfigurationError, match="sslmode"):
+            await create_pool_with_startup_timeout(
+                f"postgresql://u:p@127.0.0.1:{silent_server.port}/d?sslmode=bogus",
+                startup_timeout=5.0,
+                min_size=1,
+                max_size=1,
+            )
+        assert time.monotonic() - started < 1.0
+        assert silent_server.accepted == 0
+
+    async def test_a_dsn_whose_password_breaks_the_url_logs_no_part_of_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """an unescaped ``@[`` in a password splits the URL inside the password; nothing logged quotes it."""
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER), pytest.raises(ValueError) as exc_info:
+            await create_pool_with_startup_timeout(
+                "postgresql://u:se@[cretTAIL@127.0.0.1:1/d",
+                startup_timeout=1.0,
+                min_size=1,
+                max_size=1,
+            )
+        assert "cretTAIL" not in str(exc_info.value)
+        assert not [r.getMessage() for r in caplog.records if "cretTAIL" in r.getMessage()]
+
+    @pytest.mark.parametrize(
+        "raised",
+        [
+            pytest.param(lambda secret: asyncpg.exceptions.InterfaceError(f"client says {secret}"), id="not-retried"),
+            pytest.param(lambda secret: ConnectionResetError(f"socket says {secret}"), id="retried"),
+        ],
+    )
+    async def test_an_error_quoting_the_password_is_logged_without_it(
+        self,
+        raised: Callable[[str], Exception],
+        silent_server: _SilentServer,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """whatever asyncpg's own text quotes, the wrapper's log lines and error do not carry the password."""
+        secret = "se@[cretTAIL"
+
+        async def leaking_hook(*args: object, **kwargs: object) -> asyncpg.Connection:
+            raise raised(secret)
+
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER), pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                pool_name="leaky",
+                startup_timeout=1.0,
+                connect_timeout=0.3,
+                min_size=1,
+                max_size=1,
+                host="127.0.0.1",
+                port=silent_server.port,
+                user="u",
+                database="d",
+                password=secret,
+                connect=leaking_hook,
+            )
+        logged = [r.getMessage() for r in caplog.records]
+        assert logged, "the wrapper logged nothing"
+        for fragment in (secret, "cretTAIL"):
+            assert not [m for m in logged if fragment in m], logged
+            assert fragment not in str(exc_info.value)
+        assert type(raised(secret)).__name__ in str(exc_info.value)
 
     async def test_a_unix_socket_that_does_not_exist_yet_is_retried_until_it_appears(self) -> None:
         """a Postgres still starting has not created its socket; the connect is retried until it has.
