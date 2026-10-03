@@ -103,6 +103,7 @@ from nats.errors import (
 from nats.js.errors import NotFoundError as _NatsJsNotFoundError
 from pydantic import BaseModel, ValidationError
 from threetears.observe import get_logger, representative_exception
+from threetears.observe.resilience import retry_until_done
 
 from threetears.nats.diagnostics import permissions_violation_remedy
 from threetears.nats._nats_py_internals import (
@@ -1801,26 +1802,6 @@ def _storage_name(config: _NatsStreamConfig) -> str:
     return "file" if storage == "file" else "memory"
 
 
-async def _retry_until_restored(restore_once: Callable[[], Awaitable[list[str]]]) -> int:
-    """run restoration rounds, with capped exponential backoff, until one reports nothing left.
-
-    a module-level function rather than a loop on the client because it holds no state of its own:
-    each round re-reads what the client still has to restore.
-
-    :param restore_once: one round; returns what could not be restored, empty when done
-    :ptype restore_once: Callable[[], Awaitable[list[str]]]
-    :return: how many rounds it took
-    :rtype: int
-    """
-    delay = _RESTORE_RETRY_FIRST_DELAY_SECONDS
-    rounds = 1
-    while await restore_once():
-        await asyncio.sleep(delay)
-        delay = min(delay * 2, _RESTORE_RETRY_MAX_DELAY_SECONDS)
-        rounds += 1
-    return rounds
-
-
 async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SECONDS) -> None:
     """prove the server has processed everything this connection sent before now, within ``timeout``.
 
@@ -2742,7 +2723,7 @@ class NatsClient:
         "_client_name",
         "_subscriptions",
         "_buckets",
-        "_kv_lock",
+        "_kv_locks",
         "_reconnect_callbacks",
         "_health_state",
         "_renewal_task",
@@ -2815,7 +2796,11 @@ class NatsClient:
         self._longest_request_seconds: float = SYNC_REPLY_BUDGET_SECONDS
         self._subscriptions: list[Subscription] = []
         self._buckets: dict[str, NatsKvBucket] = {}
-        self._kv_lock = asyncio.Lock()
+        # one lock PER BUCKET NAME, serializing the opens of that bucket only: a bind-only open of an
+        # absent bucket waits for its declarer (up to KvTimings.bind_wait_for_declarer_seconds), and a
+        # single client-wide lock held across that wait stalled every other bucket open in the
+        # process behind it, cache hits included.
+        self._kv_locks: dict[str, asyncio.Lock] = {}
         # consumer-registered post-reconnect hooks. nats-py exposes a SINGLE reconnect callback slot
         # (wired in :meth:`connect` to a dispatcher that fans out to this list), so the wrapper owns
         # the fan-out here. :meth:`connect` rebinds this to the same list the dispatcher closes over.
@@ -3113,7 +3098,11 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        rounds = await _retry_until_restored(self._restore_once)
+        rounds = await retry_until_done(
+            self._restore_round,
+            first_delay=_RESTORE_RETRY_FIRST_DELAY_SECONDS,
+            max_delay=_RESTORE_RETRY_MAX_DELAY_SECONDS,
+        )
         log.info(
             "NATS JetStream state this client declared is in place after the reconnect",
             extra={
@@ -3124,6 +3113,14 @@ class NatsClient:
                 }
             },
         )
+
+    async def _restore_round(self) -> bool:
+        """one restoration round, as :func:`~threetears.observe.resilience.retry_until_done` runs it.
+
+        :return: ``True`` when nothing was left to restore
+        :rtype: bool
+        """
+        return not await self._restore_once()
 
     async def _restore_once(self) -> list[str]:
         """one restoration round: every declared stream, then every durable consumer.
@@ -5063,7 +5060,10 @@ class NatsClient:
         from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket
 
         full_name = f"{self._namespace}-{name}"
-        async with self._kv_lock:
+        cached = self._buckets.get(full_name)
+        if cached is not None:
+            return cached
+        async with self._kv_locks.setdefault(full_name, asyncio.Lock()):
             cached = self._buckets.get(full_name)
             if cached is not None:
                 return cached
@@ -5159,7 +5159,7 @@ class NatsClient:
         from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket, build_kv_stream_config
 
         full_name = f"{self._namespace}-{name}"
-        async with self._kv_lock:
+        async with self._kv_locks.setdefault(full_name, asyncio.Lock()):
             bucket = await NatsKvBucket.open(
                 client=self,
                 full_name=full_name,

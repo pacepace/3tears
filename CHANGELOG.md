@@ -94,8 +94,9 @@ tools.
   with a config (`allow_direct` unset) the declarer's create-only restoration then leaves in place.
   Its own self-heal recreates it on first use, as before.
 - Registry: the catalog bucket (`tool_catalog`) has an owner, `CatalogPersistence`, which
-  `RegistryServer.serve` starts. It declares the bucket and warm-loads the catalog at start, and
-  after every reconnect declares it again and writes the in-memory catalog back into it
+  `RegistryServer.serve` starts. It declares the bucket and warm-loads the catalog at start (in the
+  background when the bucket is unreachable then -- see the review fixes below), and after every
+  reconnect declares it again and writes the in-memory catalog back into it
   (`ToolCatalog.restore_to_kv`), in the background, retried with capped backoff and logged at ERROR
   until it lands. It does not go through `ensure_kv_bucket` because that path names the bucket
   `{namespace}-tool_catalog`, which would orphan the persisted catalog and break every
@@ -131,11 +132,43 @@ was INCOMPLETE, and the cluster waited a whole interval for its next backup.
   `dump_concurrent_ddl_retry_delay_seconds` (default 5.0, doubled before each later retry;
   `THREETEARS_BACKUP_DUMP_CONCURRENT_DDL_RETRY_DELAY_SECONDS`). A database still failing after
   them is recorded as failed, as before.
-- **Why the backup does not take the database's DDL lock instead.** It could: the lock is in
-  `threetears.core`. But the lock is exclusive, a dump would hold it for its whole run (13m34s
-  measured on one live set), and the hub's DDL callers wait 30 s for it, so every agent created
-  or tool-pod table declared during a backup would be refused with `DDL_LOCK_BUSY`. That moves the
-  failure from a backup retried seconds later to user-facing provisioning.
+- **Why the backup does not take the database's DDL lock instead:** the lock is exclusive and a
+  dump would hold it for its whole run, so every DDL job in the database -- an agent's schema, a
+  pod's tables -- would wait out a backup, and a caller that bounds that wait would be refused.
+  The decision is recorded once, in the `threetears.backup.cluster` module docstring.
+
+### NATS, registry, core: what the review of this release found, fixed
+
+- **One slow bucket open no longer stalls every other.** `NatsClient.kv_bucket` and
+  `ensure_kv_bucket` serialized every open in the process on one lock, held across a bind-only
+  open's wait for its declarer (up to `KvTimings.bind_wait_for_declarer_seconds`), so one absent
+  pod bucket stalled every other open, cache hits included. Opens now serialize per bucket name,
+  and a cached handle is answered without taking a lock.
+- **`list_keys` self-heals like every other operation.** A listing whose stream vanished now
+  re-opens the bucket once -- a declaring handle recreates it, a bind-only one waits for its
+  declarer -- and lists again, where it used to raise `KvBucketNotFoundError` at once.
+- **One owner translates a `NatsKvBucket` operation's failure.** The "refusals raise as
+  themselves, everything else becomes the typed `KvError`" rule lived in each of ten operations'
+  own `except` chain; it now lives in one place, so the next rule is applied once. The bind wait
+  for a declarer classifies an absence with `is_bucket_not_found` like every other path.
+- **New: `threetears.observe.retry_until_done`**, the "run until done, capped doubling backoff"
+  engine. The NATS client's restore after a reconnect and the registry's catalog restore both run
+  on it, with the same schedule, instead of two copies of the loop.
+- **Waiting for an absent collections bucket has one owner.** `bind_collections_bucket` retried
+  an absence with its own backoff on top of the client's bind wait, multiplying what a missing
+  bucket costs. An absence is now retried at once (the bind paced it); other failures still back
+  off. The attempt budget's sizing note is stated relationally.
+- **A registry whose catalog bucket is unreachable at start no longer runs with persistence off.**
+  `CatalogPersistence.start` makes one attempt; on failure it logs at ERROR and hands over to the
+  same background restore a reconnect starts, which declares the bucket, loads it, and writes the
+  catalog back -- no reconnect needed. `ToolCatalog.load_from_kv` never replaces an entry the
+  catalog already holds, so a late load cannot overwrite a live registration.
+- **`ToolCatalog.restore_to_kv` writes what the catalog holds when it writes.** It used to work
+  from a snapshot, so a tool deregistered while the restore awaited an earlier write was written
+  back into the bucket.
+- A backup unit test compared a freshly minted `uuid7` against the wall clock, and failed whenever
+  a test that froze time ahead ran first in the process (CPython's `uuid7` is monotonic per
+  process). It now reads the moment off the id.
 
 ### Enforcement: `threetears.nats.raw_errors` is part of the wrapper
 

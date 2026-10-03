@@ -415,10 +415,13 @@ class FakeKvBucket:
         """lose the bucket the way a broker restart does, leaving it absent until next used.
 
         Where :meth:`wipe` models a bucket some other caller already recreated, this models the
-        moment in between: the entries are gone, and the next operation through any handle
-        recreates the bucket, taking that operation's moment as its creation time. That is what
-        the real wrapper's self-heal does, and it is the difference between recreating a bucket
-        when the broker comes back and recreating it whenever someone next happens to use it.
+        moment in between: the entries are gone, and the next operation through a handle that
+        may create (:attr:`may_create`) recreates the bucket, taking that operation's moment as its
+        creation time. That is what the real wrapper's self-heal does, and it is the difference
+        between recreating a bucket when the broker comes back and recreating it whenever someone
+        next happens to use it. Through a bind-only handle the operation raises
+        :class:`threetears.nats.KvBucketNotFoundError` instead, until a declaration puts the bucket
+        back, as the real bind-only handle does once its wait for the declarer is spent.
 
         :return: None
         :rtype: None

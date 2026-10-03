@@ -139,6 +139,23 @@ class TestADumpThatLostARaceWithDdlIsRetried:
         assert scripted.database_dumps == 3, "one attempt and two retries, then the database is recorded failed"
 
 
+class TestTheBackoffDoubles:
+    async def test_each_later_retry_waits_twice_as_long(
+        self, tmp_path: Any, scripted: _ScriptedDumps, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        scripted.failures.extend(BackupToolError("ysql_dump", 1, _RACE) for _ in range(3))
+        slept: list[float] = []
+
+        async def _sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        monkeypatch.setattr(cluster_module.asyncio, "sleep", _sleep)
+
+        await _run(tmp_path, _Connection(), retries=3)
+
+        assert slept == [0.01, 0.02, 0.04]
+
+
 class TestNothingElseIsRetried:
     @pytest.mark.parametrize(
         "failure",

@@ -45,8 +45,8 @@ anything run inside ``DataStore.ddl_session``, and
 elsewhere is outside this database by construction: L1 SQLite / DuckDB caches
 and ``threetears.geo``'s R-Tree are process-local; ``threetears.backup``'s
 restore check creates and drops a scratch DATABASE of its own, and its dumps
-issue no DDL and do not take this lock -- a dump would hold it for minutes --
-retrying instead a dump that DDL raced (``threetears.backup.cluster``); the
+issue no DDL and do not take this lock, retrying instead a dump that DDL
+raced (why: the ``threetears.backup.cluster`` module docstring); the
 ``datasources`` drivers issue no DDL themselves, and their callers' ``CREATE
 TABLE AS`` targets the customer warehouse a datasource names; and
 ``threetears.iam`` only publishes DDL text for a consumer's own migration.

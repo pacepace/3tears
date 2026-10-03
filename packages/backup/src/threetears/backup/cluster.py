@@ -20,11 +20,17 @@ objects and then asks the server about each one, so DDL landing between the two 
 dumped ``aibots`` while an agent schema was being created. That one database is dumped again, with
 a fresh inventory and snapshot, when the failure is exactly that race
 (:func:`is_concurrent_ddl_failure`): bounded by ``BackupConfig.dump_concurrent_ddl_retries``, with
-doubling backoff, each retry logged. Nothing else is retried. The backup deliberately does NOT take
-the database's DDL lock (:func:`threetears.core.data.migrations.database_ddl_lock`) around a dump,
-though it could: that lock is exclusive, a dump would hold it for its whole run (13m34s measured on
-one live set), and the hub's DDL callers wait 30s for it -- so every agent created during a backup
-would be refused. A backup retried a few seconds later costs nothing anyone waits on.
+doubling backoff, each retry logged. Nothing else is retried.
+
+WHY THE BACKUP DOES NOT TAKE THE DDL LOCK INSTEAD -- the one home of this decision; the config and
+the lock's own docstring point here. It could: the lock
+(:func:`threetears.core.data.migrations.database_ddl_lock`) is in ``threetears.core``, a dependency.
+But the lock is exclusive, and a dump would have to hold it for the dump's whole run, which grows
+with the database. Every other DDL job in that database -- the schema a newly created agent needs,
+the tables a pod declares -- then waits for the length of a backup, and a caller that bounds its
+wait for the lock (as a request path must) is refused for the whole of it. That moves the failure
+from a backup retried seconds later, which nobody waits on, to the provisioning a person is waiting
+for.
 
 Like the verifier, the database connection is injected (an ``asyncpg.connect``-shaped callable), so
 the orchestration stays unit-testable with fakes and the package keeps asyncpg out of its hard
@@ -328,8 +334,8 @@ class ClusterBackup:
                     if attempt <= self._config.dump_concurrent_ddl_retries and is_concurrent_ddl_failure(exc):
                         # DDL in this database changed the catalog under the dump. Only this
                         # database is taken again -- inventory, snapshot and dump -- and only
-                        # for this failure; see BackupConfig.dump_concurrent_ddl_retries for
-                        # why the backup does not hold the DDL lock instead.
+                        # for this failure; the module docstring says why the backup does not
+                        # hold the DDL lock instead.
                         delay = self._config.dump_concurrent_ddl_retry_delay_seconds * 2 ** (attempt - 1)
                         log.warning(
                             "cluster backup: database dump lost a race with concurrent DDL; dumping it again "

@@ -386,6 +386,46 @@ async def test_a_kv_bucket_only_bound_is_not_declared_by_the_binder() -> None:
     await binder.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_a_kv_bucket_open_that_may_create_is_not_declared_again() -> None:
+    """only a declaration is put back. a kv_bucket() open declares nothing, even one that may create.
+
+    remembering it would let a process that is not the bucket's declarer create it after a restart
+    with the config it happened to open with -- ``allow_direct`` unset -- and the declarer's
+    create-only restoration would then leave that bucket in place.
+    """
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    await client.kv_bucket(name="opened", create_if_missing=True)
+
+    server.restart()
+    server.added.clear()
+    await reconnected()
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert [config.name for config in server.added] == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_bind_only_declaration_is_not_declared_again() -> None:
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    server.streams[f"KV_{_NS}-shared"] = build_kv_stream_config(
+        bucket=f"{_NS}-shared", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+    )
+    await client.ensure_kv_bucket(name="shared", create_if_missing=False)
+
+    server.restart()
+    await reconnected()
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert server.added == []
+    await client.shutdown()
+
+
 async def _ack(msg: Any) -> None:
     await msg.ack()
 

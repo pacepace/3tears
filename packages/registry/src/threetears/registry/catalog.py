@@ -827,7 +827,10 @@ class ToolCatalog:
 
         loads all entries and marks all endpoints as unavailable
         until heartbeats confirm liveness. stores KV reference for
-        subsequent write operations.
+        subsequent write operations. an entry this catalog already holds
+        is kept, never replaced: a load that lands after the registry began
+        serving -- its bucket was unreachable at start -- must not overwrite
+        a live registration with a persisted copy marked unavailable.
 
         **the one place an older persisted shape is read.** every value passes through
         :func:`_translate_persisted_entry` before it becomes a :class:`CatalogEntry`; an entry
@@ -852,7 +855,7 @@ class ToolCatalog:
             entry = CatalogEntry.from_dict(_translate_persisted_entry(data))
             for endpoint in entry.endpoints:
                 endpoint.status = "unavailable"
-            self._entries[entry.full_name] = entry
+            self._entries.setdefault(entry.full_name, entry)
         _logger.info(
             "loaded catalog from KV",
             extra={"extra_data": {"entry_count": len(self._entries)}},
@@ -873,7 +876,13 @@ class ToolCatalog:
         """
         self._kv = kv
         failed: list[str] = []
-        for full_name, entry in list(self._entries.items()):
+        for full_name in list(self._entries):
+            # read at the moment of writing, not from a snapshot: a tool deregistered while an earlier
+            # write was awaited has had its key deleted, and writing it back would advertise a tool
+            # no replica holds to every registry that warm-loads the bucket.
+            entry = self._entries.get(full_name)
+            if entry is None:
+                continue
             try:
                 await self._persist(entry)
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one entry's write must not strand the rest; each failure is logged and returned, and the caller retries

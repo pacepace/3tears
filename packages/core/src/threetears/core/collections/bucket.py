@@ -31,8 +31,16 @@ silently-broken state the raise exists to prevent.
 - ``KvError`` -- the bind itself failed, and the dominant cause on a cold cluster is that the
   declaring identity has not run yet: the hub declares this bucket in its own lifespan and nothing
   sequences any other process behind it. That IS transient, and supervisors run these services on
-  bounded restart budgets a fast crash-loop burns through in seconds. So it is retried with bounded
-  exponential backoff, and raised once the budget is spent.
+  bounded restart budgets a fast crash-loop burns through in seconds. So it is retried, and raised
+  once the attempt budget is spent.
+
+**Waiting for the declarer has one owner: the client's bind.** A bind-only open of an ABSENT
+bucket already waits for its declarer, with its own backoff, for
+:attr:`~threetears.nats.kv.KvTimings.bind_wait_for_declarer_seconds` before it raises
+:class:`~threetears.nats.errors.KvBucketNotFoundError`. So an absence is retried here at once,
+with no pause of its own -- a second backoff on top of that wait only multiplied the time a missing
+bucket costs. Every other ``KvError`` (a refused or unanswered bind, which no inner wait paces) is
+retried after a doubling pause.
 
 The client parameter is typed :class:`~threetears.nats.kv.KvDeclaring`, the narrow "can declare
 or bind a bucket" slice, rather than the whole ``NatsClient``. That is what lets an in-memory
@@ -71,10 +79,13 @@ log = get_logger(__name__)
 #: base rather than spelled again here.
 COLLECTIONS_BUCKET_SUFFIX: Final[str] = BaseCollection.L2_BUCKET_SUFFIX
 
-#: how many times the eager BIND is retried before the process gives up. sized against the
+#: how many times the eager BIND is attempted before the process gives up. sized against the
 #: cold-cluster race it exists for: the hub declares the bucket in its own lifespan and nothing
 #: sequences a consumer behind it, so the first bind can precede the declaration by however long hub
-#: startup takes. the schedule below tops out at 30s, so 20 attempts span several minutes -- long
+#: startup takes. what the budget buys depends on the failure, and is stated relationally so it
+#: cannot go stale: an ABSENT bucket is waited for ``attempts x KvTimings.bind_wait_for_declarer_seconds``
+#: (the client's bind owns that wait); any other failure for the doubling schedule below, from
+#: ``COLLECTIONS_BIND_BACKOFF_SECONDS`` capped at ``COLLECTIONS_BIND_MAX_BACKOFF_SECONDS`` -- long
 #: enough for a hub doing migrations, short enough that a genuinely missing grant is reported rather
 #: than hung on forever.
 COLLECTIONS_BIND_ATTEMPTS: Final[int] = 20
@@ -105,7 +116,7 @@ async def bind_collections_bucket(
     :ptype component: str | None
     :param attempts: how many bind attempts the process spends before giving up
     :ptype attempts: int
-    :param backoff_seconds: delay before the second attempt; doubles thereafter
+    :param backoff_seconds: delay after the first failure that is not an absence; doubles thereafter
     :ptype backoff_seconds: float
     :param max_backoff_seconds: ceiling the doubling delay is clamped to
     :ptype max_backoff_seconds: float
@@ -129,6 +140,8 @@ async def bind_collections_bucket(
             failure = exc
             if attempt == attempts:
                 break
+            # an absence was already waited for by the bind itself (see the module docstring)
+            pause = 0.0 if isinstance(exc, KvBucketNotFoundError) else backoff
             log.warning(
                 "collections KV bucket not bindable yet, retrying: component=%s bucket=%s "
                 "attempt=%d/%d retry_in=%.1fs: %s",
@@ -136,11 +149,12 @@ async def bind_collections_bucket(
                 COLLECTIONS_BUCKET_SUFFIX,
                 attempt,
                 attempts,
-                backoff,
+                pause,
                 exc,
             )
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, max_backoff_seconds)
+            if pause > 0:
+                await asyncio.sleep(pause)
+                backoff = min(backoff * 2, max_backoff_seconds)
     if isinstance(failure, KvBucketNotFoundError):
         # the server answered every last bind with "absent": no grant would fix that, so the
         # message names only the declarer, and the type says it to a caller that branches on it.

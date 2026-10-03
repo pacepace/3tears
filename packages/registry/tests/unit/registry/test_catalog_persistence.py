@@ -229,3 +229,55 @@ async def test_stop_ends_a_restore_still_retrying() -> None:
     await asyncio.sleep(1.0)
 
     assert len(js.bind_failures) == remaining, "the restore kept running after stop"
+
+
+@pytest.mark.asyncio
+async def test_a_start_whose_catalog_bucket_is_unreachable_recovers_persistence_without_a_reconnect(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a registry must not serve with persistence silently off until a reconnect that may never come.
+
+    the start returns at once -- the registry serves from an in-memory catalog its pods fill -- and
+    says so at ERROR; the same background restore the reconnect path runs then declares the bucket,
+    loads what an earlier registry persisted, and writes what was registered meanwhile.
+    """
+    js = _FakeJetStream()
+    earlier, _, first = await _started(js)
+    await earlier.register(_entry("threetears.calculator"))
+    await first.stop()
+    js.bind_failures.extend(RuntimeError("nats: timeout") for _ in range(2))
+
+    catalog = ToolCatalog()
+    persistence = CatalogPersistence(catalog=catalog, nc=_FakeClient(js), bucket=_BUCKET)
+    with caplog.at_level(logging.ERROR, logger="threetears.registry.catalog_persistence"):
+        await asyncio.wait_for(persistence.start(), timeout=0.5)
+    assert any(r.levelno == logging.ERROR for r in caplog.records), "a start without persistence is loud"
+
+    await catalog.register(_entry("threetears.clock"))
+    await _until(lambda: len(js.buckets[_BUCKET].entries) == 2)
+
+    assert catalog.get("threetears.calculator@1.0.0") is not None, "what an earlier registry persisted is loaded"
+    assert _stored_names(js.buckets[_BUCKET]) == {"threetears.calculator@1.0.0", "threetears.clock@1.0.0"}
+    await persistence.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_late_load_never_replaces_an_entry_registered_meanwhile() -> None:
+    js = _FakeJetStream()
+    earlier, _, first = await _started(js)
+    await earlier.register(_entry("threetears.calculator"))
+    await first.stop()
+    js.bind_failures.append(RuntimeError("nats: timeout"))
+
+    catalog = ToolCatalog()
+    persistence = CatalogPersistence(catalog=catalog, nc=_FakeClient(js), bucket=_BUCKET)
+    await persistence.start()
+    live = _entry("threetears.calculator")
+    await catalog.register(live)
+    await _until(lambda: js.bind_failures == [] and len(js.buckets[_BUCKET].entries) == 1)
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+
+    held = catalog.get("threetears.calculator@1.0.0")
+    assert held is not None and held.endpoints[0].status == "available", "the live registration was kept"
+    await persistence.stop()

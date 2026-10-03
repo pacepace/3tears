@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable
 
 from threetears.observe import get_logger
 
-__all__ = ["retry_with_backoff"]
+__all__ = ["retry_until_done", "retry_with_backoff"]
 
 _logger = get_logger(__name__)
 
@@ -117,3 +117,45 @@ async def retry_with_backoff(
             await asyncio.sleep(sleep_for)
             backoff = min(backoff * 2, max_backoff)
     return result
+
+
+async def retry_until_done(
+    attempt: Callable[[], Awaitable[bool]],
+    *,
+    first_delay: float,
+    max_delay: float,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> int:
+    """run ``attempt`` until it reports done, pausing with capped doubling backoff between attempts.
+
+    the engine for work that must never be abandoned while its owner runs -- putting back what a
+    NATS restart took, writing a catalog back into its bucket. it never gives up and never logs:
+    ``attempt`` returns ``True`` when there is nothing left to do and ``False`` when it should run
+    again, and it logs its own failures, because only the caller can name what is still missing.
+    an exception ``attempt`` lets out propagates; a caller that must retry through one catches it
+    inside ``attempt``. only cancellation of the caller's task ends it early.
+
+    unlike :func:`retry_with_backoff`, which serves BOUNDED startup steps and returns ``False`` on
+    exhaustion, this has no ceiling: its callers have nothing to fall back to.
+
+    :param attempt: one attempt; ``True`` when done
+    :ptype attempt: Callable[[], Awaitable[bool]]
+    :param first_delay: pause after the first attempt that was not done, in seconds (> 0)
+    :ptype first_delay: float
+    :param max_delay: ceiling the doubling pause is clamped to, in seconds (>= ``first_delay``)
+    :ptype max_delay: float
+    :param sleep: how a pause is taken; the event loop's ``asyncio.sleep`` in production
+    :ptype sleep: Callable[[float], Awaitable[None]]
+    :return: how many attempts ran, the last of them the one that was done
+    :rtype: int
+    :raises ValueError: when ``first_delay`` is not positive or ``max_delay`` is below it
+    """
+    if first_delay <= 0 or max_delay < first_delay:
+        raise ValueError(f"retry_until_done needs 0 < first_delay <= max_delay, got {first_delay!r} and {max_delay!r}")
+    delay = first_delay
+    attempts = 1
+    while not await attempt():
+        await sleep(delay)
+        delay = min(delay * 2, max_delay)
+        attempts += 1
+    return attempts

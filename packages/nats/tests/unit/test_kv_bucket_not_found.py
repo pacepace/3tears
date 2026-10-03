@@ -14,6 +14,7 @@ wrapper sees is the one nats-py itself raises from that answer.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 from typing import Any
@@ -98,6 +99,17 @@ class _FakeWire:
         self.connected_server_version = ServerVersion("2.11.0")
         self.create_reply: _WireMsg | None = None
         self.unacknowledged_publishes = 0
+        # when set, a STREAM.CREATE creates the stream it names, as a granted create does
+        self.creates_streams = False
+        # when set, the declarer puts a lost stream back as soon as anyone looks for it
+        self.declarer_returns = False
+
+    def new_inbox(self) -> str:
+        return "_INBOX.listing"
+
+    async def subscribe(self, subject: str) -> Any:
+        del subject
+        return MagicMock(unsubscribe=AsyncMock())
 
     def jetstream(self, **_kwargs: Any) -> JetStreamContext:
         return JetStreamContext(self)  # type: ignore[arg-type]
@@ -115,18 +127,26 @@ class _FakeWire:
             reply = self._direct_get(subject.removeprefix("$JS.API.DIRECT.GET.").split(".", 1)[0])
         elif subject.startswith("$JS.API.STREAM.CREATE."):
             reply = self.create_reply
+            if self.creates_streams:
+                stream = subject.removeprefix("$JS.API.STREAM.CREATE.")
+                self.streams[stream] = _kv_stream_config(stream)
+                reply = self._stream_info(stream)
         elif subject.startswith("$KV."):
             reply = self._publish(subject.split(".")[1])
         elif subject.startswith("$JS.API.CONSUMER.CREATE."):
             stream = subject.removeprefix("$JS.API.CONSUMER.CREATE.").split(".", 1)[0]
             if stream not in self.streams:
                 reply = _api_error(404, 10059, "stream not found")
+            else:
+                reply = _consumer_created(stream)
         if reply is None:
             raise nats.errors.TimeoutError
         return reply
 
     def _stream_info(self, stream: str) -> _WireMsg:
         self.infos += 1
+        if self.declarer_returns:
+            self.streams.setdefault(stream, _kv_stream_config(stream))
         if stream not in self.streams:
             return _api_error(404, 10059, "stream not found")
         reply = _WireMsg(
@@ -167,6 +187,25 @@ class _WireMsg:
         self.data = data
         self.headers = headers
         self.header = headers
+
+
+def _consumer_created(stream: str) -> _WireMsg:
+    """the server's answer to a consumer create on a stream holding no messages.
+
+    :param stream: the stream the consumer was created on
+    :ptype stream: str
+    :return: the reply
+    :rtype: _WireMsg
+    """
+    body = {
+        "type": "io.nats.jetstream.api.v1.consumer_create_response",
+        "name": "listing",
+        "stream_name": stream,
+        "config": {"ack_policy": "none", "deliver_policy": "last_per_subject"},
+        "created": "2026-10-02T00:00:00Z",
+        "num_pending": 0,
+    }
+    return _WireMsg(json.dumps(body).encode())
 
 
 def _api_error(code: int, err_code: int, description: str) -> _WireMsg:
@@ -366,6 +405,62 @@ class TestAnOperationOnAVanishedBucket:
         raised = await _raised_by(bucket.list_keys())
 
         assert isinstance(raised, KvBucketNotFoundError), repr(raised)
+
+
+class TestAKeyListingSelfHealsLikeEveryOtherOperation:
+    """a listing whose stream vanished re-binds once, as get and put do, before it reports an absence."""
+
+    @pytest.mark.asyncio
+    async def test_a_declaring_handle_recreates_its_bucket_and_lists(self) -> None:
+        wire = _FakeWire()
+        wire.streams[_STREAM] = _kv_stream_config(_STREAM)
+        bucket = NatsKvBucket(
+            client=_client(wire),
+            full_name=_BUCKET,
+            kv=await wire.jetstream().key_value(_BUCKET),
+            ttl=None,
+            timings=_FAST,
+        )
+        wire.streams.clear()  # a NATS restart took the stream
+        wire.creates_streams = True
+
+        assert await bucket.list_keys() == []
+        assert _STREAM in wire.streams, "the declaring handle put its bucket back"
+
+    @pytest.mark.asyncio
+    async def test_a_bind_only_handle_lists_once_its_declarer_is_back(self) -> None:
+        wire = _FakeWire()
+        bucket = await _bound_handle(wire)
+        wire.streams.clear()
+        wire.declarer_returns = True
+
+        assert await bucket.list_keys() == []
+
+
+class TestOneSlowOpenDoesNotStallTheOthers:
+    """a bind-only open waiting for its declarer holds up callers of THAT bucket only."""
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_open_completes_while_an_absent_bucket_is_waited_for(self) -> None:
+        wire = _FakeWire()
+        wire.streams["KV_3tears-present"] = _kv_stream_config("KV_3tears-present")
+        patient = KvTimings(
+            op_timeout_seconds=2.0,
+            bind_wait_for_declarer_seconds=3.0,
+            bind_retry_first_delay_seconds=0.01,
+            bind_retry_max_delay_seconds=0.05,
+        )
+        client = NatsClient(raw=wire, namespace=_NS, client_name="lock", kv_timings=patient)  # type: ignore[arg-type]
+        waiting = asyncio.create_task(client.kv_bucket(name="absent", create_if_missing=False))
+        await asyncio.sleep(0.1)
+        try:
+            bound = await asyncio.wait_for(client.kv_bucket(name="present", create_if_missing=False), timeout=1.0)
+            again = await asyncio.wait_for(client.kv_bucket(name="present", create_if_missing=False), timeout=1.0)
+            assert again is bound, "a cached handle is answered without waiting either"
+            assert not waiting.done(), "the absent bucket is still being waited for"
+        finally:
+            waiting.cancel()
+            await asyncio.gather(waiting, return_exceptions=True)
 
 
 async def _nats_py_raises(coro: Any) -> BaseException:

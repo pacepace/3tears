@@ -82,11 +82,9 @@ class BackupConfig:
     #: start, found live -- fails it with "schema with OID N does not exist". Only that database's
     #: dump is taken again, and only on that failure (``cluster.is_concurrent_ddl_failure``).
     #: Three retries over 5 + 10 + 20 seconds outlasts the DDL a cold start runs; a database still
-    #: failing after them is recorded as failed, as every other dump failure is.
-    #:
-    #: The backup does not take the database's DDL lock instead: that lock is exclusive, a dump
-    #: holds what it guards for its whole run (13m34s measured on one live set), and the hub's DDL
-    #: callers wait 30s for it -- so agent provisioning would fail for the length of every backup.
+    #: failing after them is recorded as failed, as every other dump failure is. Why the backup
+    #: retries rather than taking the database's DDL lock: the ``threetears.backup.cluster``
+    #: module docstring.
     dump_concurrent_ddl_retries: int = 3
     dump_concurrent_ddl_retry_delay_seconds: float = 5.0
 

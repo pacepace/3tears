@@ -171,3 +171,35 @@ class TestAnAbsentBucketIsReportedAsOne:
             await bind_collections_bucket(nc, attempts=2)
 
         assert not isinstance(excinfo.value, KvBucketNotFoundError)
+
+
+class TestWaitingForTheDeclarerHasOneOwner:
+    """the client's bind already waits, with its own backoff, for an absent bucket's declarer.
+
+    an outer backoff on top of that wait doubled the time a missing bucket costs and left the
+    sizing note describing neither. an absence is retried at once -- the inner wait paced it -- and
+    only a failure that is not an absence sleeps between attempts.
+    """
+
+    async def test_an_absence_is_retried_without_a_second_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sleep = AsyncMock()
+        monkeypatch.setattr(bucket_module.asyncio, "sleep", sleep)
+        nc = MagicMock()
+        nc.ensure_kv_bucket = AsyncMock(
+            side_effect=[KvBucketNotFoundError("absent", bucket="3tears-collections"), MagicMock()]
+        )
+
+        await bind_collections_bucket(nc)
+
+        assert nc.ensure_kv_bucket.await_count == 2
+        sleep.assert_not_awaited()
+
+    async def test_another_failure_still_backs_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sleep = AsyncMock()
+        monkeypatch.setattr(bucket_module.asyncio, "sleep", sleep)
+        nc = MagicMock()
+        nc.ensure_kv_bucket = AsyncMock(side_effect=[KvError("nats: timeout"), MagicMock()])
+
+        await bind_collections_bucket(nc)
+
+        sleep.assert_awaited_once()
