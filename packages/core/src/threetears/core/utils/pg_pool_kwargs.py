@@ -617,8 +617,19 @@ def _pool_identity(dsn: str | None, create_pool_kwargs: dict[str, Any]) -> str:
     return result
 
 
+#: the shortest piece of a password scrubbed from an error's text. asyncpg quotes pieces of a DSN it
+#: could not parse -- for ``user:se@cret:TAIL@host`` the port it reports is ``TAIL@host`` -- so every
+#: piece of a password this long is replaced, not only the whole of it. shorter pieces are too
+#: likely to be ordinary words in the message to tell apart.
+_SHORTEST_SCRUBBED_PIECE = 4
+
+
 def _secrets_in(dsn: str | None, create_pool_kwargs: dict[str, Any]) -> list[str]:
     """the passwords a pool start was given, so an error quoting one can be scrubbed of it.
+
+    a DSN's password is read off its raw userinfo -- everything between ``://`` and the netloc's
+    LAST ``@`` -- rather than through :func:`urllib.parse.urlsplit`, which refuses the very DSNs
+    (an unescaped ``@`` or ``[`` in the password) whose errors quote a piece of it.
 
     :param dsn: the DSN, or ``None``
     :ptype dsn: str | None
@@ -631,23 +642,44 @@ def _secrets_in(dsn: str | None, create_pool_kwargs: dict[str, Any]) -> list[str
     keyword_password = create_pool_kwargs.get("password")
     if isinstance(keyword_password, str) and keyword_password:
         found.append(keyword_password)
-    if dsn is not None:
-        dsn_password: str | None = None
-        try:
-            dsn_password = urlsplit(dsn).password
-        except ValueError:
-            dsn_password = None
-        if dsn_password:
-            found.append(dsn_password)
+    if dsn is not None and "://" in dsn:
+        authority = dsn.split("://", 1)[1].split("?", 1)[0]
+        if "@" in authority:
+            userinfo = authority.rsplit("@", 1)[0]
+            if ":" in userinfo:
+                dsn_password = userinfo.split(":", 1)[1]
+                if dsn_password:
+                    found.append(dsn_password)
     return found
+
+
+def _scrub(text: str, secrets: list[str]) -> str:
+    """``text`` with each password, and every piece of one at least :data:`_SHORTEST_SCRUBBED_PIECE` long, as ``***``.
+
+    :param text: an error's text
+    :ptype text: str
+    :param secrets: the passwords the pool start was given
+    :ptype secrets: list[str]
+    :return: the text with nothing of a password left in it
+    :rtype: str
+    """
+    pieces: set[str] = set()
+    for secret in secrets:
+        pieces.add(secret)
+        for start in range(len(secret)):
+            for end in range(start + _SHORTEST_SCRUBBED_PIECE, len(secret) + 1):
+                pieces.add(secret[start:end])
+    for piece in sorted(pieces, key=len, reverse=True):
+        text = text.replace(piece, "***")
+    return text
 
 
 def _describe_error(error: BaseException, secrets: list[str]) -> str:
     """an error as the wrapper reports it: its class, and its text only when that text is safe.
 
-    the text of a server answer or a socket error is kept, with any password it quotes replaced;
-    the text of anything else (asyncpg's client-side errors can quote the DSN they failed to parse)
-    is dropped, leaving the class.
+    the text of a server answer or a socket error is kept, with anything of a password it quotes
+    replaced (:func:`_scrub`); the text of anything else (asyncpg's client-side errors can quote
+    the DSN they failed to parse) is dropped, leaving the class.
 
     :param error: the failure
     :ptype error: BaseException
@@ -659,9 +691,34 @@ def _describe_error(error: BaseException, secrets: list[str]) -> str:
     result = type(error).__name__
     text = str(error)
     if isinstance(error, _ERRORS_WITH_SAFE_TEXT) and text:
-        for secret in secrets:
-            text = text.replace(secret, "***")
-        result = f"{result}: {text}"
+        result = f"{result}: {_scrub(text, secrets)}"
+    return result
+
+
+def _without_secrets(error: ValueError, secrets: list[str]) -> ValueError | None:
+    """the client-side error the caller gets, of the same type, when its text quoted a password.
+
+    a DSN asyncpg cannot parse, or a connect option it refuses, raises as itself -- the caller's
+    mistake, not an unreachable database -- but its text can quote a piece of the password. this
+    returns the same error type carrying the scrubbed text, or ``None`` when there was nothing to
+    scrub and the original can be raised as it is. a ``ValueError`` subclass whose constructor is
+    not known is rebuilt as a plain ``ValueError`` naming the subclass.
+
+    :param error: the error an attempt raised
+    :ptype error: ValueError
+    :param secrets: the passwords the pool start was given
+    :ptype secrets: list[str]
+    :return: the scrubbed error, or ``None`` when nothing was scrubbed
+    :rtype: ValueError | None
+    """
+    text = str(error)
+    scrubbed = _scrub(text, secrets)
+    result: ValueError | None = None
+    if scrubbed != text:
+        if type(error) is ValueError or isinstance(error, asyncpg.exceptions.InterfaceError):
+            result = type(error)(scrubbed)
+        else:
+            result = ValueError(f"{type(error).__name__}: {scrubbed}")
     return result
 
 
@@ -776,39 +833,35 @@ async def create_pool_with_startup_timeout(
             },
         )
 
-    budget = asyncio.timeout(startup_timeout)
-    try:
-        async with budget:
-            pool = await retry_bounded(
-                attempt,
-                retry_on=_is_retryable,
-                first_delay=POOL_START_RETRY_FIRST_DELAY_SECONDS,
-                max_delay=POOL_START_RETRY_MAX_DELAY_SECONDS,
-                deadline_seconds=startup_timeout,
-                on_retry=on_retry,
-            )
-    except _DATABASE_FAILURES as exc:
-        if isinstance(exc, asyncpg.exceptions.ClientConfigurationError):
-            raise
+    def give_up(error: Exception, budget_expired: bool) -> tuple[PoolStartupTimeoutError, Exception]:
+        """the error a start that met a database or network failure ends with, and its cause; logged at ERROR.
+
+        :param error: what ended the start
+        :ptype error: Exception
+        :param budget_expired: whether the startup budget ran out
+        :ptype budget_expired: bool
+        :return: the error to raise, and the failure to raise it from
+        :rtype: tuple[PoolStartupTimeoutError, Exception]
+        """
         elapsed = time.monotonic() - started_at
-        cause: BaseException = exc
-        if budget.expired():
-            cause = progress.last_failure if progress.last_failure is not None else exc
+        cause: Exception = error
+        if budget_expired:
+            cause = progress.last_failure if progress.last_failure is not None else error
             message = (
                 f"failed to connect to database {identity} within {startup_timeout}s: "
                 f"{_attempts_phrase(progress.attempts)}, each connect bounded at {per_connect}s; "
                 f"the budget ran out {progress.where_the_budget_ran_out()}, last failure: {type(cause).__name__}"
             )
-        elif _is_retryable(exc):
+        elif _is_retryable(error):
             message = (
                 f"failed to connect to database {identity} within {startup_timeout}s: "
                 f"{_attempts_phrase(progress.attempts)}, each connect bounded at {per_connect}s; "
-                f"last failure: {_describe_error(exc, secrets)}"
+                f"last failure: {_describe_error(error, secrets)}"
             )
         else:
             message = (
                 f"failed to create database pool {identity} on attempt {progress.attempts} "
-                f"(not retried): {_describe_error(exc, secrets)}"
+                f"(not retried): {_describe_error(error, secrets)}"
             )
         log.error(
             f"pg pool start failed: name={pool_name} {message}",
@@ -824,7 +877,7 @@ async def create_pool_with_startup_timeout(
                 }
             },
         )
-        raise PoolStartupTimeoutError(
+        failure = PoolStartupTimeoutError(
             message,
             pool_name=pool_name,
             db_identity=identity,
@@ -832,7 +885,37 @@ async def create_pool_with_startup_timeout(
             elapsed_seconds=elapsed,
             attempts=progress.attempts,
             connect_timeout_seconds=per_connect,
-        ) from cause
+        )
+        return failure, cause
+
+    budget = asyncio.timeout(startup_timeout)
+    # a client-side error (a DSN asyncpg cannot parse, a connect option it refuses) raises as
+    # itself -- the caller's mistake, not an unreachable database -- but scrubbed of any password
+    # it quotes, and raised outside the handlers so the original is neither its cause nor its context.
+    redacted_client_error: ValueError | None = None
+    try:
+        async with budget:
+            pool = await retry_bounded(
+                attempt,
+                retry_on=_is_retryable,
+                first_delay=POOL_START_RETRY_FIRST_DELAY_SECONDS,
+                max_delay=POOL_START_RETRY_MAX_DELAY_SECONDS,
+                deadline_seconds=startup_timeout,
+                on_retry=on_retry,
+            )
+    except _DATABASE_FAILURES as exc:
+        if not isinstance(exc, asyncpg.exceptions.ClientConfigurationError):
+            failure, cause = give_up(exc, budget.expired())
+            raise failure from cause
+        redacted_client_error = _without_secrets(exc, secrets)
+        if redacted_client_error is None:
+            raise
+    except ValueError as exc:
+        redacted_client_error = _without_secrets(exc, secrets)
+        if redacted_client_error is None:
+            raise
+    if redacted_client_error is not None:
+        raise redacted_client_error
     if progress.attempts > 1:
         log.info(
             f"pg pool started on attempt {progress.attempts}: name={pool_name} identity={identity}",

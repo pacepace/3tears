@@ -573,6 +573,57 @@ class TestCreatePoolWithStartupTimeout:
             await server.stop()
             shutil.rmtree(socket_dir, ignore_errors=True)
 
+    async def test_a_dsn_parse_error_that_quotes_the_password_is_reraised_without_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """asyncpg splits the netloc at the password's first ``@`` and quotes the port it cannot parse.
+
+        for ``u:se@cret:TAIL@host`` the port is ``TAIL@127.0.0.1`` -- the tail of the password. the
+        caller still gets a ``ValueError``, the type it would have got, but not that text.
+        """
+        with caplog.at_level(logging.DEBUG, logger=_LOGGER), pytest.raises(ValueError) as exc_info:
+            await create_pool_with_startup_timeout(
+                "postgresql://u:se@cret:TAIL@127.0.0.1/d",
+                startup_timeout=1.0,
+                min_size=1,
+                max_size=1,
+            )
+        assert type(exc_info.value) is ValueError
+        message = str(exc_info.value)
+        assert message, "the redacted error says nothing"
+        for fragment in ("se@cret:TAIL", "cret:TAIL", "TAIL"):
+            assert fragment not in message, message
+            assert not [r.getMessage() for r in caplog.records if fragment in r.getMessage()]
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None or "TAIL" not in str(exc_info.value.__context__)
+
+    async def test_a_client_configuration_error_keeps_its_type_and_loses_the_password(
+        self, silent_server: _SilentServer
+    ) -> None:
+        """a ``ClientConfigurationError`` whose text quotes the password reaches the caller as one, without it."""
+        secret = "pa:ss@word-TAIL"
+
+        async def quoting_hook(*args: object, **kwargs: object) -> asyncpg.Connection:
+            raise asyncpg.exceptions.ClientConfigurationError(f"cannot use option near {secret!r}")
+
+        with pytest.raises(asyncpg.exceptions.ClientConfigurationError) as exc_info:
+            await create_pool_with_startup_timeout(
+                startup_timeout=1.0,
+                min_size=1,
+                max_size=1,
+                host="127.0.0.1",
+                port=silent_server.port,
+                user="u",
+                database="d",
+                password=secret,
+                connect=quoting_hook,
+            )
+        message = str(exc_info.value)
+        assert "cannot use option near" in message
+        for fragment in (secret, "word-TAIL", "TAIL"):
+            assert fragment not in message, message
+        assert exc_info.value.__cause__ is None
+
     async def test_a_missing_certificate_file_is_retried_and_named(self) -> None:
         """a missing root certificate cannot be told from a missing socket; the error names its class."""
         port = _unused_port()

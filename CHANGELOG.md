@@ -76,13 +76,19 @@ package's test fixture `make_pool` among them) are unchanged by this release.
   its connect guard (`_connect_one`) running inside the wrapper's hook. A start that fails on one
   of `pool_min_size` connects now closes the connections the others opened; before, a failed
   sibling left them open on a pool object nobody held. Each login is bounded at the platform's
-  per-connect timeout (10s; asyncpg's own default was 60s) and the start at the platform's
-  startup budget (30s). A refused login still raises `DriverAuthError` with the server's reason.
+  per-connect timeout (10s; asyncpg's own default was 60s). The start's budget scales with the
+  work: 10s for each of `pool_min_size` logins plus one, and never less than the platform's 30s,
+  because logins under a connect guard run one at a time -- four nine-second warehouse logins
+  need 36s. The driver has no setting for either; its connection configs carry no connect or
+  startup timeout. A refused login still raises `DriverAuthError` with the server's reason.
 - **Changed: `3tears` declares `asyncpg>=0.30`**, the release `create_pool(connect=...)` arrived in.
 - **Changed: a programming error is no longer wrapped.** A bad pool shape (`min_size > max_size`),
   a wrong argument, or a client configuration error (`asyncpg.exceptions.ClientConfigurationError`:
   a malformed DSN, an invalid `sslmode`) raises as itself. Only a database or network failure
-  becomes a `PoolStartupTimeoutError`.
+  becomes a `PoolStartupTimeoutError`. A client-side error whose text quotes the password -- or a
+  piece of it of four characters or more, as asyncpg does for a DSN like `user:se@cret:TAIL@host`,
+  whose port it reports as `TAIL@host` -- is raised as the same type with those replaced by
+  `***`, and without the original as its cause or context.
 - **Added: `PoolStartupTimeoutError.attempts` and `.connect_timeout_seconds`.** The message names
   the budget, the attempts and the last failure's class.
 - **Added: `resolve_pool_connect_timeout(startup_timeout, connect_timeout=None)`**, in
@@ -95,7 +101,7 @@ package's test fixture `make_pool` among them) are unchanged by this release.
 - **Added, in `threetears.core.testing`: `StallingTcpProxy`** (with `PROXY_FORWARD`,
   `PROXY_STALL`, `PROXY_DROP`), a TCP proxy that stalls, drops or delays chosen connections and
   counts the client sockets still open, for testing what a client does about a backend that
-  never answers.
+  never answers. Its own behaviour is pinned by loopback unit tests that CI runs.
 - **Tests:** `packages/core/tests/integration/test_pool_startup_survives_stalled_connects.py`
   and `packages/datasources/tests/integration/test_asyncpg_driver_pool_start_live.py` put
   `StallingTcpProxy` in front of a real Postgres that stalls, drops or delays chosen connections,

@@ -154,6 +154,7 @@ from typing import Any
 
 import asyncpg
 
+from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.core.utils.pg_pool_kwargs import (
     PoolStartupTimeoutError,
     create_pool_with_startup_timeout,
@@ -199,6 +200,26 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+
+def _pool_start_budget_seconds(pool_min_size: int) -> float:
+    """the startup budget for an owned pool of ``pool_min_size`` connections.
+
+    under a connect guard the pool's logins run one at a time, so a fixed budget fails a pool of
+    slow logins that each fit their own bound: four warehouse logins of nine seconds need 36s, more
+    than the platform's 30s. the budget is one per-login bound
+    (:data:`DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS`) for each of ``pool_min_size`` logins plus one
+    more -- the headroom the start needs above its last login, and what keeps the budget longer
+    than a single login's bound -- and never less than the platform's
+    :data:`DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS`. the driver's logins are not retried (its
+    connect guard turns every failure into a ``DriverConnectError``), so no retry headroom is needed.
+
+    :param pool_min_size: connections the pool opens when it starts
+    :ptype pool_min_size: int
+    :return: the budget in seconds
+    :rtype: float
+    """
+    return max(DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS, DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS * (pool_min_size + 1))
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +592,8 @@ class AsyncpgDriver(Driver):
             # ``DriverConnectError`` from ``_connect_one`` is neither retried nor wrapped.
             pool = await create_pool_with_startup_timeout(
                 pool_name=f"datasource_{self._datasource_name}",
+                startup_timeout=_pool_start_budget_seconds(cfg.pool_min_size),
+                connect_timeout=DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS,
                 host=cfg.host,
                 port=cfg.port,
                 database=cfg.database,

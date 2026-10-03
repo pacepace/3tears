@@ -13,17 +13,20 @@ stalls one chosen connect; the proxy's count of client sockets still open is the
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
 from urllib.parse import urlsplit
 
 import pytest
 
-from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS
+from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.core.testing.tcp_proxy import PROXY_STALL, StallingTcpProxy
 from threetears.datasources.config import PostgresConnectionConfig
 from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
-from threetears.datasources.drivers.errors import DriverConnectError
+from threetears.datasources.drivers.connect_guard import ConnectGuard
+from threetears.datasources.drivers.errors import DriverAuthError, DriverConnectError
 from threetears.datasources.entities import DataSourceType
 
 pytestmark = pytest.mark.integration
@@ -74,6 +77,59 @@ def _config_through(
         command_timeout_seconds=10,
         allowed_schemas=[],
     )
+
+
+class _OneLoginAtATime(ConnectGuard):
+    """a connect guard that only serializes logins, as every guard does; it never pauses one."""
+
+    def __init__(self) -> None:
+        """one slot."""
+        self._slot = asyncio.Lock()
+
+    def serialized(self) -> AbstractAsyncContextManager[None]:
+        """hold the one login slot.
+
+        :return: the slot's lock, held for the whole login
+        :rtype: AbstractAsyncContextManager[None]
+        """
+        return self._slot
+
+    async def admit(self) -> None:
+        """admit every login."""
+
+    async def record_refusal(self, error: DriverAuthError) -> None:
+        """nothing is refused in these tests.
+
+        :param error: the refusal
+        :ptype error: DriverAuthError
+        """
+        del error
+
+
+class TestADriverPoolStartsInABudgetSizedToItsLogins:
+    """logins under a connect guard run one at a time, so the start's budget scales with ``pool_min_size``."""
+
+    async def test_four_slow_serialized_logins_start_the_pool(
+        self, proxy: StallingTcpProxy, db_container: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """each login is held just under the per-login bound; four in turn need more than the platform's 30s.
+
+        a fixed budget of :data:`DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS` failed this start; each login
+        alone always fit its own bound.
+        """
+        delay = DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS - 1.0
+        size = 4
+        assert delay * size > DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
+        proxy.plan = dict.fromkeys(range(1, size + 1), delay)
+        driver = AsyncpgDriver(
+            _config_through(proxy, db_container, monkeypatch, pool_min_size=size),
+            connect_guard=_OneLoginAtATime(),
+        )
+        try:
+            await driver.test_connection()
+            assert proxy.accepted == size
+        finally:
+            await driver.close()
 
 
 class TestADriverPoolThatCannotStartLeaksNothing:
