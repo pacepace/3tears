@@ -19,6 +19,7 @@ import pytest
 
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.iam.stores import SingleUseTicketStore, StateStore, hash_ticket
+from threetears.nats.errors import KvBucketNotFoundError
 from threetears.iam.stores.nats_kv import (
     NatsKvStateStore,
     NatsKvTicketStore,
@@ -359,13 +360,13 @@ async def test_a_bind_only_factory_binds_a_bucket_somebody_else_declared() -> No
 
 
 async def test_a_bind_only_factory_never_creates_an_absent_bucket(nats: FakeNatsClient) -> None:
-    with pytest.raises(KeyError):
+    with pytest.raises(KvBucketNotFoundError):
         await ticket_store(nats, name="tickets", ttl=timedelta(hours=1), create_if_missing=False)
-    with pytest.raises(KeyError):
+    with pytest.raises(KvBucketNotFoundError):
         await state_store(nats, name="state", ttl=timedelta(hours=1), create_if_missing=False)
     # neither refused open left a bucket behind: binding either one is still refused
     for name in ("tickets", "state"):
-        with pytest.raises(KeyError):
+        with pytest.raises(KvBucketNotFoundError):
             await nats.kv_bucket(name=name, create_if_missing=False)
 
 

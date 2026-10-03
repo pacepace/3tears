@@ -38,7 +38,7 @@ from threetears.observe.logging import (
     set_context,
 )
 from threetears.observe.metrics import counter, gauge, histogram, metered
-from threetears.observe.resilience import retry_with_backoff
+from threetears.observe.resilience import retry_bounded, retry_until_done, retry_with_backoff
 from threetears.observe.tracing import set_span_attribute, traced
 
 __all__ = [
@@ -65,6 +65,8 @@ __all__ = [
     "representative_exception",
     "set_context",
     "set_span_attribute",
+    "retry_bounded",
+    "retry_until_done",
     "retry_with_backoff",
     "spawn_background",
     "traced",

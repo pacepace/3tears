@@ -14,7 +14,9 @@ design notes
   suffix; the wrapper produces the full bucket name.
 - CAS semantics: :meth:`update` returns the new revision on success,
   ``None`` on revision mismatch. transport / bucket-existence
-  failures raise :class:`KvError` (distinct from CAS-conflict).
+  failures raise :class:`KvError` (distinct from CAS-conflict); a bucket
+  the server answered is absent raises the narrower
+  :class:`~threetears.nats.errors.KvBucketNotFoundError`, still a ``KvError``.
 - :meth:`get_entry` returns ``(value, revision)`` for read-modify-write
   patterns; :meth:`get` returns just the value for read-only sites.
 - ``ttl=None`` means entries never expire. :class:`timedelta` (not
@@ -53,18 +55,22 @@ from nats.js.api import (
     StreamConfig,
     StreamInfo,
 )
-from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
+from nats.js.errors import APIError, KeyNotFoundError, KeyWrongLastSequenceError
 from threetears.observe import get_logger
+from threetears.observe.resilience import retry_bounded
 
 from threetears.nats.diagnostics import kv_grant_remedy, kv_timeout_remedy
 from threetears.nats._publish import run_bounded
 from threetears.nats.errors import (
+    KvBucketNotFoundError,
     KvConfigMismatch,
     KvError,
+    NatsClientError,
     PublishTimeoutError,
     StreamSubjectsOverlapError,
 )
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
+from threetears.nats.raw_errors import is_bucket_not_found
 
 if TYPE_CHECKING:
     from nats.aio.msg import Msg
@@ -199,6 +205,10 @@ class KvTimings:
     :ivar bind_retry_first_delay_seconds: the first pause between two binds of an absent bucket; it
         doubles up to ``bind_retry_max_delay_seconds``
     :ivar bind_retry_max_delay_seconds: the longest pause between two binds of an absent bucket
+    :ivar key_listing_timeout_seconds: how long ONE key listing attempt may take, end to end, before
+        it raises rather than hangs. A listing whose consumer create is ungranted is never answered,
+        so without a bound it would block forever. A re-open between two attempts runs outside it,
+        on ``bind_wait_for_declarer_seconds`` of its own
     """
 
     op_timeout_seconds: float = 10.0
@@ -206,6 +216,38 @@ class KvTimings:
     bind_wait_for_declarer_seconds: float = 30.0
     bind_retry_first_delay_seconds: float = 0.1
     bind_retry_max_delay_seconds: float = 2.0
+    key_listing_timeout_seconds: float = 30.0
+
+    def __post_init__(self) -> None:
+        """refuse timings the KV paths cannot run on, naming the field, where the host builds them.
+
+        the bind's wait for its declarer runs on
+        :func:`threetears.observe.resilience.retry_bounded`, which refuses a schedule it cannot back
+        off on before its first attempt -- so a bad pause carried to a bind would refuse every bind,
+        of a bucket that is right there. a zero bind wait is allowed: it binds once.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when a deadline or pause is not positive, the bind wait is negative, or
+            the longest pause is shorter than the first
+        """
+        for name in (
+            "op_timeout_seconds",
+            "timeout_remedy_log_interval_seconds",
+            "bind_retry_first_delay_seconds",
+            "key_listing_timeout_seconds",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"KvTimings.{name} must be positive, got {getattr(self, name)!r}")
+        if self.bind_wait_for_declarer_seconds < 0:
+            raise ValueError(
+                f"KvTimings.bind_wait_for_declarer_seconds must not be negative, got {self.bind_wait_for_declarer_seconds!r}"
+            )
+        if self.bind_retry_max_delay_seconds < self.bind_retry_first_delay_seconds:
+            raise ValueError(
+                f"KvTimings.bind_retry_max_delay_seconds ({self.bind_retry_max_delay_seconds!r}) must not be shorter "
+                f"than bind_retry_first_delay_seconds ({self.bind_retry_first_delay_seconds!r})"
+            )
 
 
 #: the production timings every client and bucket uses unless its host passes others.
@@ -239,10 +281,6 @@ _KEY_WATCH_CONSUMER_PREFIX: Final[str] = "kw_"
 #: Consumer names a key listing mints carry this prefix, beside the key watch's ``kw_``.
 _KEY_LISTING_CONSUMER_PREFIX: Final[str] = "kl_"
 
-#: How long one key listing may take, end to end, before it raises rather than hangs. A listing
-#: whose consumer create is ungranted is never answered, so without a bound it would block forever.
-_KEY_LISTING_TIMEOUT_SECONDS: Final[float] = 30.0
-
 #: Characters that make a subject token a wildcard or split it. A watched key must be literal: the
 #: grant names it literally, and a wildcard filter would be a different consumer from the one granted.
 _KEY_WATCH_FORBIDDEN: Final[frozenset[str]] = frozenset({"*", ">", " ", "\t", "\r", "\n"})
@@ -270,6 +308,42 @@ def _msg_ttl_seconds(ttl: timedelta | None) -> float | None:
     if seconds < 1:
         raise ValueError(f"a per-entry KV TTL must be at least one second, got {ttl}")
     return float(seconds)
+
+
+#: Refusals an open raises that are deliberately NOT :class:`KvError`s, because the L2 accessors catch
+#: ``KvError`` and degrade: a bind-only open finding config it refuses, and a create whose subjects
+#: another stream owns. An operation whose self-heal re-binds or recreates its bucket can meet either,
+#: and must raise it as itself rather than through :func:`_kv_error` -- wrapped, it would be caught
+#: and downgraded to a per-operation warning, and the process would run on against the bucket.
+_OPEN_REFUSALS: Final[tuple[type[NatsClientError], ...]] = (KvConfigMismatch, StreamSubjectsOverlapError)
+
+
+def _kv_error(message: str, *, bucket: str, cause: BaseException) -> KvError:
+    """the typed error a failed KV call surfaces as: an absent bucket gets its own type.
+
+    Built here for every operation that runs through :meth:`NatsKvBucket._run_op` -- the reads, the
+    writes and ``date_created`` -- and for a key listing's consumer create. Other paths build their
+    own error, each naming a remedy only it knows: the opens (:func:`open_kv_stream`,
+    :func:`_bind_when_declared`, :func:`_live_stream_config`) name the declarer or the grant, a key
+    listing that ran out its bound names the consumer grant, and a key watch never raises a create
+    failure at all. Those that classify an absence use the same predicate. ``cause`` is classified
+    by type
+    (:func:`~threetears.nats.raw_errors.is_bucket_not_found`), never by its message, and a
+    ``KvBucketNotFoundError`` already raised further down -- a re-bind that found nothing -- keeps
+    its type on the way out.
+
+    :param message: the error's message, naming the bucket and the operation
+    :ptype message: str
+    :param bucket: fully-qualified bucket name
+    :ptype bucket: str
+    :param cause: the exception the KV call raised; the caller chains it with ``from``
+    :ptype cause: BaseException
+    :return: the error to raise
+    :rtype: KvError
+    """
+    if is_bucket_not_found(cause):
+        return KvBucketNotFoundError(message, bucket=bucket)
+    return KvError(message)
 
 
 def build_kv_stream_config(
@@ -460,6 +534,14 @@ async def open_kv_stream(
     try:
         kv = await js.key_value(full_name)
     except Exception as bind_exc:
+        if is_bucket_not_found(bind_exc):
+            # the server ANSWERED the bind: the bucket is absent, and the create before it was never
+            # answered -- the shape a principal refused STREAM.CREATE produces.
+            raise KvBucketNotFoundError(
+                f"open KV bucket failed: bucket={full_name} does not exist and this principal could not "
+                f"create it: create={add_exc!r} bind={bind_exc!r}. {kv_grant_remedy(full_name)}",
+                bucket=full_name,
+            ) from bind_exc
         raise KvError(
             f"open KV bucket failed: bucket={full_name}: create={add_exc!r} bind={bind_exc!r}. "
             f"{kv_grant_remedy(full_name)}"
@@ -485,47 +567,52 @@ async def _bind_when_declared(*, js: Any, full_name: str, timings: KvTimings) ->
     :ptype timings: KvTimings
     :return: bound nats-py KeyValue handle
     :rtype: KeyValue
-    :raises KvError: the bucket stayed absent for :attr:`KvTimings.bind_wait_for_declarer_seconds`,
-        or the bind failed for any other reason
+    :raises KvBucketNotFoundError: the bucket stayed absent for
+        :attr:`KvTimings.bind_wait_for_declarer_seconds`
+    :raises KvError: the bind failed for any other reason
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timings.bind_wait_for_declarer_seconds
-    delay = timings.bind_retry_first_delay_seconds
-    attempts = 0
-    kv: KeyValue | None = None
-    while kv is None:
-        attempts += 1
-        try:
-            kv = await js.key_value(full_name)
-        except NotFoundError as exc:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise KvError(
-                    f"bind KV bucket failed: bucket={full_name} does not exist, and its declarer did not "
-                    f"declare it within {timings.bind_wait_for_declarer_seconds:g}s ({attempts} binds). this process "
-                    f"only binds it; the declaring identity (the hub, for every pod bucket) creates it at "
-                    f"startup and after every NATS reconnect -- check that it is running and connected."
-                ) from exc
-            if attempts == 1:
-                log.warning(
-                    "KV bucket %s does not exist yet; waiting up to %gs for its declarer to declare it",
-                    full_name,
-                    timings.bind_wait_for_declarer_seconds,
-                    extra={"extra_data": {"bucket": full_name}},
-                )
-            await asyncio.sleep(min(delay, remaining))
-            delay = min(delay * 2, timings.bind_retry_max_delay_seconds)
-        except Exception as exc:
-            # Hedged: an unanswered bind is what a refused one looks like, and what an unreachable
-            # broker looks like too.
-            raise KvError(
-                f"bind KV bucket failed: bucket={full_name}: {exc}. {kv_grant_remedy(full_name, certain=False)}"
+    binds = 1
+
+    def _absent_again(exc: Exception, attempt: int, pause: float) -> None:
+        nonlocal binds
+        del exc, pause
+        binds = attempt + 1
+        if attempt == 1:
+            log.warning(
+                "KV bucket %s does not exist yet; waiting up to %gs for its declarer to declare it",
+                full_name,
+                timings.bind_wait_for_declarer_seconds,
+                extra={"extra_data": {"bucket": full_name}},
+            )
+
+    try:
+        kv: KeyValue = await retry_bounded(
+            lambda: js.key_value(full_name),
+            retry_on=is_bucket_not_found,
+            first_delay=timings.bind_retry_first_delay_seconds,
+            max_delay=timings.bind_retry_max_delay_seconds,
+            deadline_seconds=timings.bind_wait_for_declarer_seconds,
+            on_retry=_absent_again,
+        )
+    except Exception as exc:
+        if is_bucket_not_found(exc):
+            raise KvBucketNotFoundError(
+                f"bind KV bucket failed: bucket={full_name} does not exist, and its declarer did not "
+                f"declare it within {timings.bind_wait_for_declarer_seconds:g}s ({binds} binds). this process "
+                f"only binds it; the declaring identity (the hub, for every pod bucket) creates it at "
+                f"startup and after every NATS reconnect -- check that it is running and connected.",
+                bucket=full_name,
             ) from exc
-    if attempts > 1:
+        # Hedged: an unanswered bind is what a refused one looks like, and what an unreachable
+        # broker looks like too.
+        raise KvError(
+            f"bind KV bucket failed: bucket={full_name}: {exc}. {kv_grant_remedy(full_name, certain=False)}"
+        ) from exc
+    if binds > 1:
         log.info(
             "KV bucket %s bound once its declarer declared it",
             full_name,
-            extra={"extra_data": {"bucket": full_name, "binds": attempts}},
+            extra={"extra_data": {"bucket": full_name, "binds": binds}},
         )
     return kv
 
@@ -671,10 +758,12 @@ async def _reconcile_existing_kv_stream(*, js: Any, full_name: str, config: Stre
             # A principal may be granted STREAM.CREATE and refused STREAM.UPDATE --
             # that is exactly the shape coll-task-05a gives pods. Say which grant is
             # missing rather than letting a raw nats-py error out of the opener.
-            raise KvError(
+            raise _kv_error(
                 f"reconciling KV bucket {full_name!r} failed: {exc}. it is live with "
                 f"{_render_differences(reconcilable)} and this principal could not update it. "
-                f"{kv_grant_remedy(full_name)}"
+                f"{kv_grant_remedy(full_name)}",
+                bucket=full_name,
+                cause=exc,
             ) from exc
         log.info(
             "JetStream KV bucket reconciled in place",
@@ -702,11 +791,18 @@ async def _live_stream_config(*, js: Any, full_name: str, stream: str | None) ->
     :ptype stream: str | None
     :return: the live stream config
     :rtype: StreamConfig
-    :raises KvError: the lookup failed
+    :raises KvBucketNotFoundError: the server answered that the stream does not exist
+    :raises KvError: the lookup failed for any other reason
     """
     try:
         info = await js.stream_info(stream)
     except Exception as exc:
+        if is_bucket_not_found(exc):
+            # answered: the stream is gone, which no grant would fix.
+            raise KvBucketNotFoundError(
+                f"reading the live configuration of KV bucket {full_name!r} failed: it does not exist ({exc})",
+                bucket=full_name,
+            ) from exc
         raise KvError(
             f"reading the live configuration of KV bucket {full_name!r} failed: {exc}. {kv_grant_remedy(full_name)}"
         ) from exc
@@ -976,7 +1072,9 @@ class NatsKvBucket:
         :ptype timings: KvTimings
         :return: ready bucket
         :rtype: NatsKvBucket
-        :raises KvError: if bucket creation or binding fails
+        :raises KvBucketNotFoundError: if the bucket does not exist -- a bind-only open once its wait for
+            the declarer is spent, or a declaring open whose create was not answered
+        :raises KvError: if bucket creation or binding fails for any other reason
         :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing, or a
             bucket-wide expiry that would expire its entries at the wrong age
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
@@ -1094,6 +1192,39 @@ class NatsKvBucket:
             await self._reopen()
             return await self._bounded(op)
 
+    async def _run_op(self, op: Any, *, passthrough: tuple[type[BaseException], ...], failure: str) -> Any:
+        """Run a KV op through :meth:`_run_with_reopen` and translate what it raises: the ONE owner.
+
+        Every operation's failure leaves through here, so a rule about what a caller sees is applied
+        once rather than in each operation's own ``except`` chain -- the refusal arm this module once
+        had to add to nine methods, one at a time, is that rule:
+
+        - ``passthrough`` exceptions are the operation's own documented outcomes (a missing key, a
+          lost compare-and-swap), raised unchanged for the operation to turn into its result;
+        - an open's refusals (:data:`_OPEN_REFUSALS`) are raised as themselves, never as a
+          ``KvError`` the L2 accessors would catch and degrade;
+        - anything else becomes the typed error :func:`_kv_error` builds, chained to its cause.
+
+        :param op: builds the KV coroutine to run
+        :ptype op: Any
+        :param passthrough: exceptions the operation handles itself
+        :ptype passthrough: tuple[type[BaseException], ...]
+        :param failure: what failed, naming the operation and the bucket; the cause is appended
+        :ptype failure: str
+        :return: whatever the operation returned
+        :rtype: Any
+        :raises KvError: on any failure that is neither passed through nor an open's refusal
+        """
+        try:
+            return await self._run_with_reopen(op, passthrough=passthrough)
+        except passthrough:
+            raise
+        except _OPEN_REFUSALS:
+            # NOSILENT: re-raised as itself -- a refusal the re-bind found is not a KvError
+            raise
+        except Exception as exc:
+            raise _kv_error(f"{failure}: {exc}", bucket=self._full_name, cause=exc) from exc
+
     def _log_timeout_remedy(self) -> None:
         """Emit the ungranted-bucket-or-dead-broker remedy, at most once per window per bucket.
 
@@ -1155,12 +1286,14 @@ class NatsKvBucket:
         :raises KvError: on transport failure
         """
         try:
-            entry = await self._run_with_reopen(lambda: self._kv.get(key), passthrough=(KeyNotFoundError,))
+            entry = await self._run_op(
+                lambda: self._kv.get(key),
+                passthrough=(KeyNotFoundError,),
+                failure=f"KV get failed: bucket={self._full_name} key={key}",
+            )
         except KeyNotFoundError:
             # NOSILENT: a miss is this method's documented result, reported to the caller as None
             return None
-        except Exception as exc:
-            raise KvError(f"KV get failed: bucket={self._full_name} key={key}: {exc}") from exc
         return bytes(entry.value) if entry.value is not None else None
 
     async def get_entry(self, *, key: str) -> tuple[bytes, int] | None:
@@ -1173,12 +1306,14 @@ class NatsKvBucket:
         :raises KvError: on transport failure
         """
         try:
-            entry = await self._run_with_reopen(lambda: self._kv.get(key), passthrough=(KeyNotFoundError,))
+            entry = await self._run_op(
+                lambda: self._kv.get(key),
+                passthrough=(KeyNotFoundError,),
+                failure=f"KV get_entry failed: bucket={self._full_name} key={key}",
+            )
         except KeyNotFoundError:
             # NOSILENT: a miss is this method's documented result, reported to the caller as None
             return None
-        except Exception as exc:
-            raise KvError(f"KV get_entry failed: bucket={self._full_name} key={key}: {exc}") from exc
         if entry.value is None or entry.revision is None:
             return None
         return (bytes(entry.value), int(entry.revision))
@@ -1203,15 +1338,17 @@ class NatsKvBucket:
         :raises KvError: on transport failure
         """
         try:
-            entry = await self._run_with_reopen(lambda: self._kv.get(key), passthrough=(KeyNotFoundError,))
+            entry = await self._run_op(
+                lambda: self._kv.get(key),
+                passthrough=(KeyNotFoundError,),
+                failure=f"KV get_latest failed: bucket={self._full_name} key={key}",
+            )
         except KeyNotFoundError as exc:
             # nats-py raises this for a missing key AND for a deleted one; only the second carries
             # the marker entry, whose revision is the key's latest.
             marker = getattr(exc, "entry", None)
             marker_revision = getattr(marker, "revision", None)
             return (None, int(marker_revision) if marker_revision else 0)
-        except Exception as exc:
-            raise KvError(f"KV get_latest failed: bucket={self._full_name} key={key}: {exc}") from exc
         revision = int(entry.revision) if entry.revision is not None else 0
         return (bytes(entry.value) if entry.value is not None else None, revision)
 
@@ -1235,10 +1372,11 @@ class NatsKvBucket:
         msg_ttl = _msg_ttl_seconds(ttl if ttl is not None else self._entry_ttl)
         if msg_ttl is not None:
             return await self._put_with_ttl(key=key, value=value, msg_ttl=msg_ttl)
-        try:
-            revision = await self._run_with_reopen(lambda: self._kv.put(key, value), passthrough=())
-        except Exception as exc:
-            raise KvError(f"KV put failed: bucket={self._full_name} key={key}: {exc}") from exc
+        revision = await self._run_op(
+            lambda: self._kv.put(key, value),
+            passthrough=(),
+            failure=f"KV put failed: bucket={self._full_name} key={key}",
+        )
         return int(revision)
 
     async def _put_with_ttl(self, *, key: str, value: bytes, msg_ttl: float) -> int:
@@ -1261,10 +1399,11 @@ class NatsKvBucket:
         """
         js = self._client.jetstream_context()
         subject = f"$KV.{self._full_name}.{key}"
-        try:
-            ack = await self._run_with_reopen(lambda: js.publish(subject, value, msg_ttl=msg_ttl), passthrough=())
-        except Exception as exc:
-            raise KvError(f"KV put failed: bucket={self._full_name} key={key}: {exc}") from exc
+        ack = await self._run_op(
+            lambda: js.publish(subject, value, msg_ttl=msg_ttl),
+            passthrough=(),
+            failure=f"KV put failed: bucket={self._full_name} key={key}",
+        )
         return int(ack.seq)
 
     async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
@@ -1293,7 +1432,11 @@ class NatsKvBucket:
             return self._kv.create(key, value, msg_ttl=msg_ttl)
 
         try:
-            revision = await self._run_with_reopen(_do_create, passthrough=(KeyWrongLastSequenceError,))
+            revision = await self._run_op(
+                _do_create,
+                passthrough=(KeyWrongLastSequenceError,),
+                failure=f"KV create failed: bucket={self._full_name} key={key}",
+            )
         except KeyWrongLastSequenceError:
             # A lost create is a documented result (None), but a burst of them is contention on
             # one key -- two writers racing a lock or a leader election -- which only shows up
@@ -1304,8 +1447,6 @@ class NatsKvBucket:
                 extra={"extra_data": {"bucket": self._full_name, "key": key}},
             )
             return None
-        except Exception as exc:
-            raise KvError(f"KV create failed: bucket={self._full_name} key={key}: {exc}") from exc
         return int(revision)
 
     async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
@@ -1330,8 +1471,10 @@ class NatsKvBucket:
         if msg_ttl is not None:
             return await self._update_with_ttl(key=key, value=value, revision=revision, msg_ttl=msg_ttl)
         try:
-            new_revision = await self._run_with_reopen(
-                lambda: self._kv.update(key, value, revision), passthrough=(KeyWrongLastSequenceError,)
+            new_revision = await self._run_op(
+                lambda: self._kv.update(key, value, revision),
+                passthrough=(KeyWrongLastSequenceError,),
+                failure=f"KV update failed: bucket={self._full_name} key={key} rev={revision}",
             )
         except KeyWrongLastSequenceError:
             # A lost CAS is a documented result (None), but a burst of them is contention on one
@@ -1341,8 +1484,6 @@ class NatsKvBucket:
                 extra={"extra_data": {"bucket": self._full_name, "key": key, "expected_revision": revision}},
             )
             return None
-        except Exception as exc:
-            raise KvError(f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}") from exc
         return int(new_revision)
 
     async def _update_with_ttl(self, *, key: str, value: bytes, revision: int, msg_ttl: float) -> int | None:
@@ -1382,9 +1523,12 @@ class NatsKvBucket:
         js = self._client.jetstream_context()
         subject = f"$KV.{self._full_name}.{key}"
         headers = {Header.EXPECTED_LAST_SUBJECT_SEQUENCE: str(revision)}
+        failure = f"KV update failed: bucket={self._full_name} key={key} rev={revision}"
         try:
-            ack = await self._run_with_reopen(
-                lambda: js.publish(subject, value, headers=headers, msg_ttl=msg_ttl), passthrough=(APIError,)
+            ack = await self._run_op(
+                lambda: js.publish(subject, value, headers=headers, msg_ttl=msg_ttl),
+                passthrough=(APIError,),
+                failure=failure,
             )
         except APIError as exc:
             if exc.err_code in _JS_ERR_WRONG_LAST_SEQUENCE:
@@ -1393,9 +1537,7 @@ class NatsKvBucket:
                     extra={"extra_data": {"bucket": self._full_name, "key": key, "expected_revision": revision}},
                 )
                 return None
-            raise KvError(f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}") from exc
-        except Exception as exc:
-            raise KvError(f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}") from exc
+            raise _kv_error(f"{failure}: {exc}", bucket=self._full_name, cause=exc) from exc
         return int(ack.seq)
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool:
@@ -1424,13 +1566,15 @@ class NatsKvBucket:
                 await self._kv.delete(key, last=revision)
 
         try:
-            await self._run_with_reopen(_do_delete, passthrough=(KeyNotFoundError, KeyWrongLastSequenceError))
+            await self._run_op(
+                _do_delete,
+                passthrough=(KeyNotFoundError, KeyWrongLastSequenceError),
+                failure=f"KV delete failed: bucket={self._full_name} key={key} revision={revision}",
+            )
         except KeyNotFoundError:
             return True
         except KeyWrongLastSequenceError:
             return False
-        except Exception as exc:
-            raise KvError(f"KV delete failed: bucket={self._full_name} key={key} revision={revision}: {exc}") from exc
         return True
 
     async def date_created(self) -> datetime:
@@ -1451,10 +1595,9 @@ class NatsKvBucket:
         """
         js = self._client.jetstream_context()
         stream = f"KV_{self._full_name}"
-        try:
-            info: StreamInfo = await self._run_with_reopen(lambda: js.stream_info(stream), passthrough=())
-        except Exception as exc:
-            raise KvError(f"KV stream info failed: bucket={self._full_name}: {exc}") from exc
+        info: StreamInfo = await self._run_op(
+            lambda: js.stream_info(stream), passthrough=(), failure=f"KV stream info failed: bucket={self._full_name}"
+        )
         if info.created is None:
             raise KvError(f"KV stream info carries no creation time: bucket={self._full_name}")
         return info.created
@@ -1548,6 +1691,9 @@ class NatsKvBucket:
         :return: the live keys, in stream order
         :rtype: list[str]
         :raises ValueError: when ``prefix`` carries a wildcard or whitespace
+        :raises KvBucketNotFoundError: when the bucket's stream is gone and could not be bound again --
+            a declaring handle could not recreate it, or a bind-only handle's declarer did not return
+            within ``KvTimings.bind_wait_for_declarer_seconds``
         :raises KvError: when the consumer cannot be created or the listing does not finish within
             its bound -- an ungranted create is never answered, so it arrives here as a timeout
         """
@@ -1558,15 +1704,40 @@ class NatsKvBucket:
         filter_subject = f"{subject_prefix}{prefix}>" if narrowed else f"{subject_prefix}>"
         stream = f"{_KV_STREAM_PREFIX}{self._full_name}"
         try:
-            async with asyncio.timeout(_KEY_LISTING_TIMEOUT_SECONDS):
+            found = await self._list_keys_within_bound(stream=stream, filter_subject=filter_subject)
+        except KvBucketNotFoundError:
+            # the stream is gone: re-open once, as every other operation does -- a declaring handle
+            # recreates its bucket, a bind-only one waits for its declarer -- then list again. the
+            # re-open runs OUTSIDE the listing's bound, on its own wait for the declarer. a second
+            # absence is raised.
+            await self._reopen()
+            found = await self._list_keys_within_bound(stream=stream, filter_subject=filter_subject)
+        return [key[len(subject_prefix) :] for key in found if key[len(subject_prefix) :].startswith(prefix)]
+
+    async def _list_keys_within_bound(self, *, stream: str, filter_subject: str) -> list[str]:
+        """one listing attempt, bounded by :attr:`KvTimings.key_listing_timeout_seconds`.
+
+        :param stream: the bucket's backing stream
+        :ptype stream: str
+        :param filter_subject: the subject filter, inside this bucket
+        :ptype filter_subject: str
+        :return: the subjects of the live keys, in stream order
+        :rtype: list[str]
+        :raises KvBucketNotFoundError: the server answered that the stream does not exist
+        :raises KvError: the attempt did not finish within its bound -- an ungranted consumer create
+            is never answered -- or the consumer create failed for another reason
+        """
+        bound = self._timings.key_listing_timeout_seconds
+        try:
+            async with asyncio.timeout(bound):
                 found = await self._list_keys_through(stream=stream, filter_subject=filter_subject)
         except TimeoutError as exc:
             raise KvError(
-                f"listing keys of {self._full_name} did not finish within {_KEY_LISTING_TIMEOUT_SECONDS:g}s. "
+                f"listing keys of {self._full_name} did not finish within {bound:g}s. "
                 f"an ungranted consumer create blocks to its deadline -- check this principal's grant on "
                 f"$JS.API.CONSUMER.CREATE.{stream}.*.{filter_subject}"
             ) from exc
-        return [key[len(subject_prefix) :] for key in found if key[len(subject_prefix) :].startswith(prefix)]
+        return found
 
     async def _list_keys_through(self, *, stream: str, filter_subject: str) -> list[str]:
         """create one named, headers-only consumer and read each key's latest message through it.
@@ -1599,10 +1770,12 @@ class NatsKvBucket:
             try:
                 info = await self._client.jetstream_context().add_consumer(stream, config=config)
             except Exception as exc:
-                raise KvError(f"key listing consumer on {stream} could not be created: {exc}") from exc
+                raise _kv_error(
+                    f"key listing consumer on {stream} could not be created: {exc}", bucket=self._full_name, cause=exc
+                ) from exc
             pending = int(info.num_pending or 0)
             while pending > 0:
-                msg = await subscription.next_msg(timeout=_KEY_LISTING_TIMEOUT_SECONDS)
+                msg = await subscription.next_msg(timeout=self._timings.key_listing_timeout_seconds)
                 pending = int(msg.metadata.num_pending)
                 if (msg.headers or {}).get(_KV_OPERATION_HEADER) not in _KV_REMOVAL_OPERATIONS:
                     subjects.append(msg.subject)
@@ -1933,7 +2106,8 @@ class KvDeclaring(Protocol):
         :ptype create_if_missing: bool
         :return: ready bucket handle
         :rtype: KvBucketLike
-        :raises KvError: if bucket creation or binding fails
+        :raises KvBucketNotFoundError: if the bucket does not exist and this call could not create it
+        :raises KvError: if bucket creation or binding fails for any other reason
         :raises KvConfigMismatch: if ``create_if_missing`` is ``False`` and the live bucket differs
         """
         ...

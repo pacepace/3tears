@@ -10,6 +10,7 @@ possible to rev ``nats-py`` without breaking every catch site.
 from __future__ import annotations
 
 __all__ = [
+    "KvBucketNotFoundError",
     "KvConfigMismatch",
     "KvError",
     "NamespaceNotConfiguredError",
@@ -202,8 +203,50 @@ class KvError(NatsClientError):
     conflicts. CAS-specific outcomes (revision-mismatch on update)
     surface as a return-value of ``None`` from
     :meth:`threetears.nats.NatsKvBucket.update`; this exception is
-    reserved for transport / bucket-existence failures.
+    reserved for transport / bucket-existence failures. a bucket that does not exist
+    raises the narrower :class:`KvBucketNotFoundError`, which is still a ``KvError``.
     """
+
+
+class KvBucketNotFoundError(KvError):
+    """raised when a KV bucket does not exist: the server ANSWERED that its stream is absent.
+
+    distinct from every other :class:`KvError`, and the distinction is operationally
+    load-bearing. an absent bucket is ANSWERED -- JetStream replies not-found -- and for a
+    process that only binds a bucket it means the declaring identity has not declared it yet
+    (first boot before the hub ran, or a NATS restart that wiped memory storage), which is an
+    ordinary startup race worth waiting out. a bucket this principal may not read is never
+    answered at all: the request dies on its deadline, and that arrives as a plain
+    ``KvError`` naming the grant. collapsing the two left consumers matching nats-py's
+    exception class NAMES on ``__cause__`` to tell "wait for the declarer" from "fix the
+    grant".
+
+    raised by every 3tears KV path that finds the bucket absent: a bind-only open
+    (:meth:`threetears.nats.NatsClient.kv_bucket` / ``ensure_kv_bucket`` with
+    ``create_if_missing=False``) once its wait for the declarer is spent, a declaring open
+    whose create was not answered and whose bind found nothing, and an operation on a bound
+    handle whose stream vanished and could not be bound again. still a ``KvError``, so every
+    existing ``except KvError`` keeps catching it unchanged. ``__cause__`` carries the
+    nats-py exception the server's answer arrived as, when there was one.
+
+    a consumer holding a RAW nats-py KV handle classifies that handle's failures with
+    :func:`threetears.nats.is_bucket_not_found` instead, without importing nats-py itself.
+
+    :ivar bucket: the fully-qualified name of the bucket that does not exist
+    """
+
+    def __init__(self, message: str, *, bucket: str) -> None:
+        """build the error, carrying the absent bucket's name on the instance.
+
+        :param message: human-readable explanation, naming the bucket and what to check
+        :ptype message: str
+        :param bucket: fully-qualified name of the absent bucket
+        :ptype bucket: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.bucket = bucket
 
 
 class KvConfigMismatch(NatsClientError):

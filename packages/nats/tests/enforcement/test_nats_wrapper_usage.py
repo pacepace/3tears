@@ -77,6 +77,10 @@ _WRAPPER_MODULES: set[str] = {
     # depends on (the ordered round trip, server-side UNSUB, a pull inbox's queue, a forced
     # reconnect). It imports nats-py's classes to construct them and check that surface.
     "threetears.nats._nats_py_internals",
+    # raw_errors.py classifies the exceptions a RAW nats-py handle raises (a KeyValue reached
+    # through jetstream_context, the wrapper's escape hatch) by their nats-py TYPE, so the consumer
+    # holding that handle never imports nats-py itself. Naming those classes is its whole job.
+    "threetears.nats.raw_errors",
 }
 
 
