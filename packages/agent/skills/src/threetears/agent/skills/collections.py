@@ -54,6 +54,7 @@ __all__ = [
     "AgentSkillCollection",
     "AgentSkillInvocationCollection",
     "SkillShapeError",
+    "merged_skill_shape",
     "skill_shape_error",
 ]
 
@@ -186,6 +187,38 @@ class SkillShapeError(ValueError):
     the database, whose CHECK constraints refuse the same rows. The message is
     :func:`skill_shape_error`'s.
     """
+
+
+def merged_skill_shape(
+    entity: Any, *, body: str | None, tool: str | None, arguments: dict[str, Any] | None
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """A skill's body, tool and arguments after an update: what is given replaces, what is not stays.
+
+    An empty string removes a body or a tool, and removing the tool removes its
+    arguments too. The one rule for every surface that updates a skill -- the
+    agent's ``skill_update`` and a consumer's REST route -- so the two cannot drift.
+
+    :param entity: the skill as stored, with ``body``, ``tool`` and ``arguments``
+    :ptype entity: Any
+    :param body: the new body, ``""`` to remove it, or ``None`` to keep it
+    :ptype body: str | None
+    :param tool: the new tool, ``""`` to remove it, or ``None`` to keep it
+    :ptype tool: str | None
+    :param arguments: the new arguments, or ``None`` to keep them
+    :ptype arguments: dict[str, Any] | None
+    :return: the merged body, tool and arguments
+    :rtype: tuple[str | None, str | None, dict[str, Any] | None]
+    """
+    merged_body = (body or None) if body is not None else entity.body
+    merged_tool = (tool or None) if tool is not None else entity.tool
+    merged_arguments: dict[str, Any] | None
+    if arguments is not None:
+        merged_arguments = dict(arguments)
+    elif tool == "":
+        merged_arguments = None
+    else:
+        merged_arguments = entity.arguments
+    return merged_body, merged_tool, merged_arguments
 
 
 def skill_shape_error(
