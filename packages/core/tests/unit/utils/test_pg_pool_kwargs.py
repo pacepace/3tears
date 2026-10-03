@@ -3,7 +3,8 @@
 covers default kwargs, env-var override (valid + invalid + zero +
 negative), DSN redaction, the per-connect timeout arithmetic, and the
 startup-timeout wrapper against local sockets (no database: a server
-that accepts and never answers, and a port nothing listens on). the
+that accepts and never answers, a port nothing listens on, and a TLS
+server whose certificate the client does not trust). the
 same wrapper against a real Postgres behind a stalling proxy is
 ``tests/integration/test_pool_startup_survives_stalled_connects.py``.
 """
@@ -11,12 +12,21 @@ same wrapper against a real Postgres behind a stalling proxy is
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
+import shutil
 import socket
+import ssl
+import tempfile
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.core.utils.pg_pool_kwargs import (
@@ -89,7 +99,7 @@ class TestResolvePoolConnectTimeout:
     """one wedged connect must cost a fraction of the startup budget, never all of it."""
 
     def test_the_platform_default_budget_takes_the_platform_default_connect_timeout(self) -> None:
-        # 30s budget / 3 = 10s, equal to the platform default: three attempts fit.
+        # 30s budget / 3 = 10s, equal to the platform default.
         assert (
             resolve_pool_connect_timeout(DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS) == DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS
         )
@@ -98,8 +108,8 @@ class TestResolvePoolConnectTimeout:
         assert resolve_pool_connect_timeout(120.0) == DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS
 
     def test_a_small_budget_takes_a_third_of_it(self) -> None:
-        # a budget below three platform-default connects shrinks the connect bound so at least
-        # three attempts still fit inside it.
+        # a budget below three platform-default connects shrinks the connect bound, so one stalled
+        # connect still costs no more than a third of it.
         assert resolve_pool_connect_timeout(6.0) == pytest.approx(2.0)
         assert resolve_pool_connect_timeout(0.9) == pytest.approx(0.3)
 
@@ -139,6 +149,14 @@ class _SilentServer:
         """listen on an ephemeral loopback port."""
         self._server = await asyncio.start_server(self._handle, host="127.0.0.1", port=0)
         self.port = self._server.sockets[0].getsockname()[1]
+
+    async def start_unix(self, path: str) -> None:
+        """listen on a unix socket at ``path``, as a local Postgres does.
+
+        :param path: socket path
+        :ptype path: str
+        """
+        self._server = await asyncio.start_unix_server(self._handle, path=path)
 
     async def stop(self) -> None:
         """stop listening and wait for every handler to finish."""
@@ -182,6 +200,79 @@ def _unused_port() -> int:
         sock.bind(("127.0.0.1", 0))
         port: int = sock.getsockname()[1]
     return port
+
+
+def _self_signed_certificate() -> tuple[bytes, bytes]:
+    """a fresh self-signed certificate and its private key, both PEM."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.datetime.now(datetime.UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=1))
+        .not_valid_after(now + datetime.timedelta(hours=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return (
+        certificate.public_bytes(serialization.Encoding.PEM),
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()),
+    )
+
+
+class _UntrustedTlsServer:
+    """a server that answers the Postgres TLS request and presents a certificate of its own making."""
+
+    def __init__(self, certfile: Path, keyfile: Path) -> None:
+        self.accepted = 0
+        self.port = 0
+        self._context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self._context.load_cert_chain(certfile, keyfile)
+        self._server: asyncio.Server | None = None
+
+    async def start(self) -> None:
+        """listen on an ephemeral loopback port."""
+        self._server = await asyncio.start_server(self._handle, host="127.0.0.1", port=0)
+        self.port = self._server.sockets[0].getsockname()[1]
+
+    async def stop(self) -> None:
+        """stop listening and wait for every handler to finish."""
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """accept the client's SSLRequest, then offer the handshake it will refuse."""
+        self.accepted += 1
+        try:
+            await reader.readexactly(8)
+            writer.write(b"S")
+            await writer.drain()
+            await writer.start_tls(self._context)
+        except OSError, asyncio.IncompleteReadError:
+            pass
+        finally:
+            writer.close()
+
+
+@pytest.fixture
+async def tls_server(tmp_path: Path) -> AsyncIterator[_UntrustedTlsServer]:
+    """a running :class:`_UntrustedTlsServer` with a certificate no client root signs."""
+    certificate, key = _self_signed_certificate()
+    certfile = tmp_path / "server.crt"
+    keyfile = tmp_path / "server.key"
+    certfile.write_bytes(certificate)
+    keyfile.write_bytes(key)
+    server = _UntrustedTlsServer(certfile, keyfile)
+    await server.start()
+    try:
+        yield server
+    finally:
+        await server.stop()
 
 
 class TestCreatePoolWithStartupTimeout:
@@ -286,13 +377,141 @@ class TestCreatePoolWithStartupTimeout:
     @pytest.mark.parametrize("owned", ["timeout", "connect"])
     async def test_kwargs_the_wrapper_owns_are_refused(self, owned: str, silent_server: _SilentServer) -> None:
         """``timeout`` is ``connect_timeout``'s, and ``connect`` is how the wrapper closes what a failed attempt opened."""
-        with pytest.raises(TypeError, match=owned):
+        # matched on the wrapper's own guidance: python's duplicate-keyword TypeError names the
+        # argument too, and would pass a match on the name alone with the wrapper's check gone.
+        with pytest.raises(TypeError, match=rf"sets \[.*'{owned}'.*\] itself.*connect_timeout="):
             await create_pool_with_startup_timeout(
                 f"postgresql://u:p@127.0.0.1:{silent_server.port}/d",
                 startup_timeout=1.0,
                 **{owned: 5},
             )
         assert silent_server.accepted == 0
+
+    async def test_a_unix_socket_that_does_not_exist_yet_is_retried_until_it_appears(self) -> None:
+        """a Postgres still starting has not created its socket; the connect is retried until it has.
+
+        the missing socket raises ``FileNotFoundError`` with no filename -- exactly what a missing
+        ``sslrootcert`` raises -- so both are retried, and the final error names the class.
+        """
+        # a short directory: a unix socket path is limited to ~104 bytes, and pytest's tmp_path
+        # on macOS is already close to that.
+        socket_dir = Path(tempfile.mkdtemp(prefix="pg", dir="/tmp"))
+        port = 5432
+        server = _SilentServer()
+
+        async def appear_later() -> None:
+            await asyncio.sleep(0.4)
+            await server.start_unix(str(socket_dir / f".s.PGSQL.{port}"))
+
+        appearing = asyncio.create_task(appear_later())
+        try:
+            with pytest.raises(PoolStartupTimeoutError) as exc_info:
+                await create_pool_with_startup_timeout(
+                    f"postgresql://u:p@/d?host={socket_dir}&port={port}",
+                    pool_name="unix_socket",
+                    startup_timeout=2.0,
+                    connect_timeout=0.3,
+                    min_size=1,
+                    max_size=1,
+                    ssl=False,
+                )
+            await appearing
+            # the socket appeared and a retry reached it; that server never answers, so the
+            # start still fails, on a timeout rather than on the missing socket.
+            assert server.accepted >= 1
+            assert exc_info.value.attempts >= 2
+            assert "TimeoutError" in str(exc_info.value)
+        finally:
+            appearing.cancel()
+            await server.stop()
+            shutil.rmtree(socket_dir, ignore_errors=True)
+
+    async def test_a_missing_certificate_file_is_retried_and_named(self) -> None:
+        """a missing root certificate cannot be told from a missing socket; the error names its class."""
+        port = _unused_port()
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                f"postgresql://u:hidden@127.0.0.1:{port}/d?sslmode=verify-full&sslrootcert=/nonexistent/root.crt",
+                pool_name="no_cert_file",
+                startup_timeout=1.0,
+                connect_timeout=0.3,
+                min_size=1,
+                max_size=1,
+            )
+        err = exc_info.value
+        assert err.attempts >= 2
+        assert isinstance(err.__cause__, FileNotFoundError)
+        assert "FileNotFoundError" in str(err)
+        assert "hidden" not in str(err)
+
+    async def test_a_host_name_that_does_not_resolve_is_not_retried(self) -> None:
+        """a name the resolver says does not exist will not exist on the next attempt either."""
+        started = time.monotonic()
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                "postgresql://u:p@no-such-host.invalid:5432/d",
+                pool_name="no_such_host",
+                startup_timeout=5.0,
+                connect_timeout=1.0,
+                min_size=1,
+                max_size=1,
+                ssl=False,
+            )
+        err = exc_info.value
+        assert time.monotonic() - started < 2.0
+        assert err.attempts == 1
+        assert isinstance(err.__cause__, socket.gaierror)
+        assert "not retried" in str(err)
+
+    async def test_a_temporary_resolver_failure_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``EAI_AGAIN`` is the resolver saying try again: a cluster DNS that is not ready yet."""
+        lookups = 0
+
+        async def resolver_not_ready(*args: object, **kwargs: object) -> list[object]:
+            nonlocal lookups
+            lookups += 1
+            raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", resolver_not_ready)
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                "postgresql://u:p@db.not-ready.example:5432/d",
+                pool_name="dns_not_ready",
+                startup_timeout=1.0,
+                connect_timeout=0.3,
+                min_size=1,
+                max_size=1,
+                ssl=False,
+            )
+        err = exc_info.value
+        assert err.attempts >= 2
+        assert lookups >= 2
+        cause = err.__cause__
+        assert isinstance(cause, socket.gaierror)
+        assert cause.errno == socket.EAI_AGAIN
+
+    async def test_a_server_certificate_that_does_not_verify_is_not_retried(
+        self, tls_server: _UntrustedTlsServer, tmp_path: Path
+    ) -> None:
+        """a certificate the client's root does not sign fails the same way on every attempt."""
+        other_root = tmp_path / "other-root.crt"
+        other_root.write_bytes(_self_signed_certificate()[0])
+        started = time.monotonic()
+        with pytest.raises(PoolStartupTimeoutError) as exc_info:
+            await create_pool_with_startup_timeout(
+                f"postgresql://u:p@127.0.0.1:{tls_server.port}/d?sslmode=verify-ca&sslrootcert={other_root}",
+                pool_name="untrusted_cert",
+                startup_timeout=5.0,
+                connect_timeout=1.0,
+                min_size=1,
+                max_size=1,
+            )
+        err = exc_info.value
+        assert time.monotonic() - started < 2.0
+        assert err.attempts == 1
+        assert isinstance(err.__cause__, ssl.SSLCertVerificationError)
+        assert "not retried" in str(err)
+        assert tls_server.accepted == 1
 
     async def test_a_configuration_error_is_raised_at_once_and_unwrapped(self, silent_server: _SilentServer) -> None:
         """a bad pool shape is a programming error no retry can clear, and not a database being unreachable."""

@@ -3,9 +3,8 @@
 the defect: :func:`create_pool_with_startup_timeout` bounded the whole of ``asyncpg.create_pool`` --
 ``min_size`` connects -- by one startup budget, and asyncpg's own per-connect timeout (60s) was longer
 than that budget. one connect whose backend never answered (a backend stalled under host memory
-pressure) consumed the entire budget, nothing retried, and the pool failed to start. it failed an
-identity integration test twice in one day, seconds after a plain ``asyncpg.connect`` had run
-migrations against the same database; at pod startup in production the same stall crash-loops a pod.
+pressure) consumed the entire budget, nothing retried, and the pool failed to start, although a plain
+``asyncpg.connect`` to the same database answered; at pod startup the same stall crash-loops a pod.
 
 Postgres cannot be made to stall one chosen connect, so these tests put a TCP proxy in front of the
 session's Postgres container. the proxy numbers the connections it accepts and, per number, either
@@ -18,10 +17,14 @@ the server, not from the client's bookkeeping.
 from __future__ import annotations
 
 import asyncio
+import gc
+import logging
 import time
 import uuid
+import weakref
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
@@ -30,6 +33,8 @@ import pytest
 from threetears.core.utils.pg_pool_kwargs import PoolStartupTimeoutError, create_pool_with_startup_timeout
 
 pytestmark = pytest.mark.integration
+
+_LOGGER = "threetears.core.utils.pg_pool_kwargs"
 
 _FORWARD = "forward"
 _STALL = "stall"
@@ -222,11 +227,12 @@ class TestThePoolStartsDespiteStalledConnects:
         assert await proxy.all_client_sockets_closed(within=5.0)
 
     async def test_a_stall_among_the_parallel_connects_closes_the_half_built_pool(
-        self, proxy: _StallingProxy, db_container: str, application_name: str
+        self, proxy: _StallingProxy, db_container: str, application_name: str, caplog: pytest.LogCaptureFixture
     ) -> None:
         """attempt 1 opens three connections before its third connect stalls; none of them survive it."""
         proxy.plan = {3: _STALL}
-        pool = await _start(proxy, db_container, application_name)
+        with caplog.at_level(logging.WARNING, logger=_LOGGER):
+            pool = await _start(proxy, db_container, application_name)
         try:
             assert proxy.accepted >= 5, "the first attempt never reached its parallel connects"
             assert pool.get_size() == 4
@@ -234,6 +240,47 @@ class TestThePoolStartsDespiteStalledConnects:
         finally:
             await pool.close()
         assert await _backends_settle_at(db_container, application_name, 0, within=5.0) == 0
+        # the retry WARNING counts the connections the failed attempt had open, the ones the
+        # half-built pool already held among them.
+        closed = [r.extra_data["connections_closed"] for r in caplog.records if "attempt 1 failed" in r.getMessage()]
+        assert closed == [3]
+
+    async def test_a_started_pool_keeps_no_connection_it_has_since_closed(
+        self, db_container: str, application_name: str
+    ) -> None:
+        """the pool grows past ``min_size`` and then replaces every connection; the closed ones are released.
+
+        asyncpg calls the wrapper's connect hook for each of those connections. a hook still
+        recording after the pool started would hold every one of them for the life of the process.
+        """
+        opened: weakref.WeakSet[asyncpg.Connection] = weakref.WeakSet()
+
+        class _Tracked(asyncpg.Connection):  # type: ignore[misc]
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                opened.add(self)
+
+        pool = await create_pool_with_startup_timeout(
+            db_container,
+            pool_name="started",
+            startup_timeout=6.0,
+            min_size=1,
+            max_size=3,
+            connection_class=_Tracked,
+            server_settings={"application_name": application_name},
+        )
+        try:
+            for _ in range(2):
+                async with pool.acquire() as first, pool.acquire() as second, pool.acquire() as third:
+                    assert await third.fetchval("SELECT 1") == 1
+                del first, second, third
+                await pool.expire_connections()
+            await asyncio.sleep(0.1)
+            gc.collect()
+            still_held = [connection for connection in opened if connection.is_closed()]
+            assert still_held == [], f"{len(still_held)} closed connections are still referenced"
+        finally:
+            await pool.close()
 
     async def test_a_connect_finishing_after_its_attempt_failed_is_closed(
         self, proxy: _StallingProxy, db_container: str, application_name: str

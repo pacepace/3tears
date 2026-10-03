@@ -90,6 +90,11 @@ third of a smaller budget), and an attempt that fails on a stalled, refused or
 dropped connect is retried until the budget is spent. ``timeout=`` is not
 passed; ``connect_timeout=`` is.
 
+``connect=`` is not passed either: the wrapper's own connect hook is how a
+failed attempt finds what it opened. a pool start that needs its own connect
+hook (``AsyncpgDriver``) therefore does not go through this wrapper, and
+calls ``asyncpg.create_pool`` itself.
+
 Anti-patterns
 -------------
 
@@ -106,6 +111,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
+import ssl
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -338,7 +345,7 @@ class PoolStartupTimeoutError(Exception):
 
 
 #: the share of the startup budget one connect may take when the caller names no connect bound: a
-#: third, so a connect whose backend never answers still leaves room for two more attempts.
+#: third, so a connect whose backend never answers costs at most a third of the budget.
 _DEFAULT_CONNECT_SHARE_OF_BUDGET = 3.0
 
 #: what a later attempt may not meet. the connect timed out (a backend that never answered), the
@@ -352,6 +359,33 @@ _RETRYABLE: tuple[type[Exception], ...] = (
     asyncpg.exceptions.OperatorInterventionError,
     asyncpg.exceptions.InsufficientResourcesError,
 )
+
+#: a server certificate that does not verify: the caller's trust configuration, not the network. a
+#: later attempt meets the same certificate, so it fails on the attempt that met it.
+#:
+#: ``FileNotFoundError`` is deliberately NOT here. asyncpg raises it, with no filename, both for a
+#: ``sslrootcert`` that is not on disk and for a unix socket a still-starting Postgres has not
+#: created yet; the two cannot be told apart, the second is exactly what a retry is for, and the
+#: startup budget bounds the cost of the first. the final error names ``FileNotFoundError``.
+_NEVER_RETRYABLE: tuple[type[Exception], ...] = (ssl.SSLCertVerificationError,)
+
+
+def _is_retryable(error: Exception) -> bool:
+    """whether a later pool-start attempt may not meet ``error``.
+
+    a resolver failure is retried only when the resolver says so (``EAI_AGAIN``: a cluster DNS that
+    is not ready yet); a name it says does not exist will not exist on the next attempt.
+
+    :param error: what an attempt failed with
+    :ptype error: Exception
+    :return: ``True`` when the failure is worth another attempt
+    :rtype: bool
+    """
+    result = isinstance(error, _RETRYABLE) and not isinstance(error, _NEVER_RETRYABLE)
+    if isinstance(error, socket.gaierror):
+        result = error.errno == socket.EAI_AGAIN
+    return result
+
 
 #: what the database or the network can answer a pool start with; each is reported as a
 #: :class:`PoolStartupTimeoutError`. anything else (a bad pool shape, a wrong argument) is a
@@ -372,9 +406,10 @@ def resolve_pool_connect_timeout(startup_timeout: float, connect_timeout: float 
     """the bound one connect runs under while a pool starts inside ``startup_timeout``.
 
     with no ``connect_timeout``: the smaller of :data:`DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS` and a
-    third of the budget, so at least three attempts fit. an explicit ``connect_timeout`` is used as
-    given, but must be shorter than the budget: one equal to it lets a single wedged connect spend
-    the whole budget with nothing retried, which is the defect this bound exists to remove.
+    third of the budget, so one stalled connect costs at most a third of it. an explicit
+    ``connect_timeout`` is used as given, but must be shorter than the budget: one equal to it lets
+    a single wedged connect spend the whole budget with nothing retried, which is the defect this
+    bound exists to remove.
 
     :func:`create_pool_with_startup_timeout` resolves its bound here; a caller logging the pool's
     configuration (:func:`log_pool_created`) resolves it the same way.
@@ -408,6 +443,14 @@ class _AttemptAbandonedError(Exception):
     """a connect that completed after its pool attempt had already failed; its connection is closed."""
 
 
+#: the attempt is still opening its pool: every connect is recorded.
+_ATTEMPT_RECORDING = "recording"
+#: the attempt failed: what it opened is closed, and a connect completing late is closed too.
+_ATTEMPT_ABANDONED = "abandoned"
+#: the attempt's pool started: the pool owns its connections and nothing more is recorded.
+_ATTEMPT_STARTED = "started"
+
+
 class _AttemptConnections:
     """every connection one pool-creation attempt opens, so a failed attempt closes all of them.
 
@@ -416,16 +459,21 @@ class _AttemptConnections:
     connect fails the gather WITHOUT cancelling its siblings. the pool object that failed is then
     dropped, so without this record a sibling already connected -- or one still connecting that
     completes later -- holds a server backend nothing will ever close.
+
+    asyncpg keeps the hook for the life of the pool and calls it for every connection the pool
+    later opens (growth toward ``max_size``, each replacement of a recycled one). the record is the
+    attempt's, not the pool's: once the pool has started (:meth:`pool_started`) the hook opens
+    connections and records nothing.
     """
 
     def __init__(self) -> None:
         """start with nothing opened."""
         self.opened: list[asyncpg.Connection] = []
         self.connecting: set[asyncio.Task[Any]] = set()
-        self.abandoned = False
+        self.state = _ATTEMPT_RECORDING
 
     async def connect(self, *args: Any, **kwargs: Any) -> asyncpg.Connection:
-        """open one connection exactly as asyncpg would, recording it.
+        """open one connection exactly as asyncpg would, recording it while the attempt is in progress.
 
         :param args: positional connect arguments asyncpg passes through (the dsn)
         :ptype args: Any
@@ -435,6 +483,9 @@ class _AttemptConnections:
         :rtype: asyncpg.Connection
         :raises _AttemptAbandonedError: when the attempt failed while this connect was in flight
         """
+        if self.state == _ATTEMPT_STARTED:
+            started_pool_connection: asyncpg.Connection = await asyncpg.connect(*args, **kwargs)
+            return started_pool_connection
         task = asyncio.current_task()
         if task is not None:
             self.connecting.add(task)
@@ -443,11 +494,17 @@ class _AttemptConnections:
         finally:
             if task is not None:
                 self.connecting.discard(task)
-        if self.abandoned:
+        if self.state == _ATTEMPT_ABANDONED:
             connection.terminate()
             raise _AttemptAbandonedError("pool attempt already failed; its late connection was closed")
-        self.opened.append(connection)
+        if self.state == _ATTEMPT_RECORDING:
+            self.opened.append(connection)
         return connection
+
+    def pool_started(self) -> None:
+        """the attempt's pool started: hand its connections to the pool and stop recording."""
+        self.state = _ATTEMPT_STARTED
+        self.opened.clear()
 
     def abandon(self, pool: asyncpg.Pool) -> int:
         """close everything the failed attempt opened and stop what it is still opening.
@@ -459,18 +516,19 @@ class _AttemptConnections:
         :return: how many connections were closed or stopped mid-connect
         :rtype: int
         """
-        self.abandoned = True
+        self.state = _ATTEMPT_ABANDONED
         current = asyncio.current_task()
         stopped = 0
         for task in list(self.connecting):
             if task is not current and not task.done():
                 task.cancel()
                 stopped += 1
+        # counted before ``pool.terminate()``, which closes the ones the pool already holds.
+        still_open = [connection for connection in self.opened if not connection.is_closed()]
+        stopped += len(still_open)
         pool.terminate()
-        for connection in self.opened:
-            if not connection.is_closed():
-                connection.terminate()
-                stopped += 1
+        for connection in still_open:
+            connection.terminate()
         self.opened.clear()
         return stopped
 
@@ -544,7 +602,8 @@ async def create_pool_with_startup_timeout(
     :return: the started pool
     :rtype: asyncpg.Pool
     :raises PoolStartupTimeoutError: when the budget is spent without a started pool, or the
-        database refuses in a way no retry can clear; it names the attempts made
+        attempt fails in a way no retry can clear (a refusal from the database, a certificate
+        that does not verify, a host name that does not exist); it names the attempts made
     :raises ValueError: when the bounds are inconsistent (see :func:`resolve_pool_connect_timeout`)
     :raises TypeError: when ``create_pool_kwargs`` carries ``timeout`` or ``connect``
     """
@@ -567,6 +626,7 @@ async def create_pool_with_startup_timeout(
         progress.attempt_in_flight = True
         try:
             await pool
+            connections.pool_started()
             started = True
         finally:
             progress.attempt_in_flight = False
@@ -601,7 +661,7 @@ async def create_pool_with_startup_timeout(
         async with budget:
             pool = await retry_bounded(
                 attempt,
-                retry_on=lambda error: isinstance(error, _RETRYABLE),
+                retry_on=_is_retryable,
                 first_delay=POOL_START_RETRY_FIRST_DELAY_SECONDS,
                 max_delay=POOL_START_RETRY_MAX_DELAY_SECONDS,
                 deadline_seconds=startup_timeout,
@@ -617,7 +677,7 @@ async def create_pool_with_startup_timeout(
                 f"{_attempts_phrase(progress.attempts)}, each connect bounded at {per_connect}s; "
                 f"the budget ran out {progress.where_the_budget_ran_out()}, last failure: {type(cause).__name__}"
             )
-        elif isinstance(exc, _RETRYABLE):
+        elif _is_retryable(exc):
             message = (
                 f"failed to connect to database {identity} within {startup_timeout}s: "
                 f"{_attempts_phrase(progress.attempts)}, each connect bounded at {per_connect}s; "

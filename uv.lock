@@ -165,7 +165,7 @@ requires-dist = [
     { name = "3tears-nats", extras = ["client"], marker = "extra == 'nats'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "aiosqlite" },
-    { name = "asyncpg" },
+    { name = "asyncpg", specifier = ">=0.30" },
     { name = "cryptography", specifier = ">=42" },
     { name = "docker", marker = "extra == 'testing'", specifier = ">=7.0" },
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0" },

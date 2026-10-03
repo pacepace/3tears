@@ -25,7 +25,7 @@ dependencies = [
     "3tears-observe>=0.61.0,<0.62.0",
     "3tears-nats>=0.61.0,<0.62.0",
     "sqlalchemy",
-    "asyncpg",
+    "asyncpg>=0.30",  # create_pool(connect=...), the hook a failed pool start closes its connections through
     "aiosqlite",
     "pydantic",
     "uuid-utils",  # uuid7 ids (core.collections.registry, core.cache.sqlite/duckdb)
