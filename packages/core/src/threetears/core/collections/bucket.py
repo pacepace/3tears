@@ -24,7 +24,9 @@ only on err_code 10058 and otherwise falls through with no comparison at all.
 **Two failures, told apart, and neither is handled the way a generic retry helper would.**
 :func:`threetears.observe.resilience.retry_with_backoff` never raises, so wrapping this in it would
 downgrade a ``KvConfigMismatch`` to one log line and carry the process on into exactly the
-silently-broken state the raise exists to prevent.
+silently-broken state the raise exists to prevent. It runs on
+:func:`threetears.observe.resilience.retry_bounded` instead, which raises what it does not retry
+and, once the budget is spent, the last failure.
 
 - ``KvConfigMismatch`` -- the live bucket carries a configuration this process refuses. Retrying
   cannot clear it, so it propagates on the FIRST attempt and the process dies.
@@ -55,12 +57,12 @@ minted grant. A second literal for it would be a second source of truth.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Final
 
 from threetears.core.collections.base import BaseCollection
 from threetears.nats.errors import KvBucketNotFoundError, KvError
 from threetears.observe import get_logger
+from threetears.observe.resilience import retry_bounded
 
 if TYPE_CHECKING:
     from threetears.nats.kv import KvBucketLike, KvDeclaring
@@ -128,34 +130,30 @@ async def bind_collections_bucket(
     :raises KvConfigMismatch: the live bucket carries a configuration this process refuses; raised
         on the first attempt, because config drift does not heal
     """
-    backoff = backoff_seconds
-    failure: KvError | None = None
-    bucket: KvBucketLike | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            bucket = await nats_client.ensure_kv_bucket(name=COLLECTIONS_BUCKET_SUFFIX, create_if_missing=False)
-            failure = None
-            break
-        except KvError as exc:
-            failure = exc
-            if attempt == attempts:
-                break
+
+    def _not_bindable_yet(exc: Exception, attempt: int, pause: float) -> None:
+        log.warning(
+            "collections KV bucket not bindable yet, retrying: component=%s bucket=%s attempt=%d/%d retry_in=%.1fs: %s",
+            component or "unnamed",
+            COLLECTIONS_BUCKET_SUFFIX,
+            attempt,
+            attempts,
+            pause,
+            exc,
+        )
+
+    try:
+        bucket = await retry_bounded(
+            lambda: nats_client.ensure_kv_bucket(name=COLLECTIONS_BUCKET_SUFFIX, create_if_missing=False),
+            retry_on=lambda exc: isinstance(exc, KvError),
             # an absence was already waited for by the bind itself (see the module docstring)
-            pause = 0.0 if isinstance(exc, KvBucketNotFoundError) else backoff
-            log.warning(
-                "collections KV bucket not bindable yet, retrying: component=%s bucket=%s "
-                "attempt=%d/%d retry_in=%.1fs: %s",
-                component or "unnamed",
-                COLLECTIONS_BUCKET_SUFFIX,
-                attempt,
-                attempts,
-                pause,
-                exc,
-            )
-            if pause > 0:
-                await asyncio.sleep(pause)
-                backoff = min(backoff * 2, max_backoff_seconds)
-    if isinstance(failure, KvBucketNotFoundError):
+            backs_off=lambda exc: not isinstance(exc, KvBucketNotFoundError),
+            first_delay=backoff_seconds,
+            max_delay=max_backoff_seconds,
+            max_attempts=attempts,
+            on_retry=_not_bindable_yet,
+        )
+    except KvBucketNotFoundError as failure:
         # the server answered every last bind with "absent": no grant would fix that, so the
         # message names only the declarer, and the type says it to a caller that branches on it.
         raise KvBucketNotFoundError(
@@ -165,7 +163,7 @@ async def bind_collections_bucket(
             f"has not run, or has not run since NATS lost the bucket. last error: {failure}",
             bucket=failure.bucket,
         ) from failure
-    if failure is not None or bucket is None:
+    except KvError as failure:
         raise KvError(
             f"collections KV bucket {COLLECTIONS_BUCKET_SUFFIX!r} could not be bound by "
             f"{component or 'unnamed'} after "

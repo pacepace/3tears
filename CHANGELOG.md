@@ -146,14 +146,23 @@ was INCOMPLETE, and the cluster waited a whole interval for its next backup.
   and a cached handle is answered without taking a lock.
 - **`list_keys` self-heals like every other operation.** A listing whose stream vanished now
   re-opens the bucket once -- a declaring handle recreates it, a bind-only one waits for its
-  declarer -- and lists again, where it used to raise `KvBucketNotFoundError` at once.
+  declarer -- and lists again, where it used to raise `KvBucketNotFoundError` at once. The re-open
+  runs outside the listing's own bound, on its own wait for the declarer, so a declarer that
+  stays away is reported as `KvBucketNotFoundError`, never as a listing timeout blaming the
+  consumer grant. That bound is now `KvTimings.key_listing_timeout_seconds` (default 30), one
+  per listing attempt.
 - **One owner translates a `NatsKvBucket` operation's failure.** The "refusals raise as
   themselves, everything else becomes the typed `KvError`" rule lived in each of ten operations'
   own `except` chain; it now lives in one place, so the next rule is applied once. The bind wait
   for a declarer classifies an absence with `is_bucket_not_found` like every other path.
 - **New: `threetears.observe.retry_until_done`**, the "run until done, capped doubling backoff"
   engine. The NATS client's restore after a reconnect and the registry's catalog restore both run
-  on it, with the same schedule, instead of two copies of the loop.
+  on it, with the same schedule, instead of two copies of the loop. Its bounded sibling, **new:
+  `threetears.observe.retry_bounded`**, retries the failures a caller classifies as retryable
+  within an attempt and/or deadline bound, lets a failure that paced itself retry at once, and
+  raises the last failure unchanged once the bound is spent. The KV bind's wait for a declarer,
+  `bind_collections_bucket` and a tool pod's first NATS connect run on it; no hand-rolled
+  doubling loop is left outside `threetears.observe.resilience`.
 - **Waiting for an absent collections bucket has one owner.** `bind_collections_bucket` retried
   an absence with its own backoff on top of the client's bind wait, multiplying what a missing
   bucket costs. An absence is now retried at once (the bind paced it); other failures still back

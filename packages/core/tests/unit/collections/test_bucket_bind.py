@@ -15,11 +15,11 @@ policy has.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.core.collections import bucket as bucket_module
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.bucket import COLLECTIONS_BIND_ATTEMPTS, bind_collections_bucket
 from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError
@@ -74,7 +74,7 @@ class TestTheTwoFailuresAreToldApart:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """a cold cluster races the declaring identity; that IS transient."""
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(
             side_effect=[KvError("bucket not found"), KvError("bucket not found"), MagicMock()],
@@ -89,7 +89,7 @@ class TestTheTwoFailuresAreToldApart:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """a bind that never succeeds must fail loud, not run on with L2 quietly off."""
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(side_effect=KvError("bucket not found"))
 
@@ -107,7 +107,7 @@ class TestTheTwoFailuresAreToldApart:
         the two causes need different fixes -- start the hub, or grant the principal --
         and the bind cannot tell them apart, so it names both.
         """
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(side_effect=KvError("bucket not found"))
 
@@ -125,7 +125,7 @@ class TestAttemptBudgetIsCallerOverridable:
 
     async def test_attempts_override_is_honoured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """without this, every failure test pays twenty real backoff steps."""
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(side_effect=KvError("bucket not found"))
 
@@ -142,7 +142,7 @@ class TestAnAbsentBucketIsReportedAsOne:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(
             side_effect=KvBucketNotFoundError("bucket does not exist", bucket="3tears-collections")
@@ -161,7 +161,7 @@ class TestAnAbsentBucketIsReportedAsOne:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", AsyncMock())
+        monkeypatch.setattr(asyncio, "sleep", AsyncMock())
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(
             side_effect=[KvBucketNotFoundError("absent", bucket="3tears-collections"), KvError("nats: timeout")]
@@ -183,7 +183,7 @@ class TestWaitingForTheDeclarerHasOneOwner:
 
     async def test_an_absence_is_retried_without_a_second_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
         sleep = AsyncMock()
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", sleep)
+        monkeypatch.setattr(asyncio, "sleep", sleep)
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(
             side_effect=[KvBucketNotFoundError("absent", bucket="3tears-collections"), MagicMock()]
@@ -196,7 +196,7 @@ class TestWaitingForTheDeclarerHasOneOwner:
 
     async def test_another_failure_still_backs_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
         sleep = AsyncMock()
-        monkeypatch.setattr(bucket_module.asyncio, "sleep", sleep)
+        monkeypatch.setattr(asyncio, "sleep", sleep)
         nc = MagicMock()
         nc.ensure_kv_bucket = AsyncMock(side_effect=[KvError("nats: timeout"), MagicMock()])
 

@@ -437,6 +437,40 @@ class TestAKeyListingSelfHealsLikeEveryOtherOperation:
         assert await bucket.list_keys() == []
 
 
+class TestAListingsReopenRunsOnItsOwnDeadline:
+    """the re-open between two listing attempts waits for the declarer on its own clock.
+
+    It used to run inside the listing's own deadline, and both default to 30s, so the listing's
+    deadline always fired first: a bind-only handle whose declarer stayed away raised a plain
+    ``KvError`` blaming the consumer-create grant -- a grant that was fine -- instead of saying the
+    bucket is absent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_declarer_that_stays_away_is_reported_as_an_absence(self) -> None:
+        listing_shorter_than_the_bind_wait = KvTimings(
+            op_timeout_seconds=2.0,
+            bind_wait_for_declarer_seconds=0.6,
+            bind_retry_first_delay_seconds=0.01,
+            bind_retry_max_delay_seconds=0.05,
+            key_listing_timeout_seconds=0.2,
+        )
+        wire = _FakeWire()
+        wire.streams[_STREAM] = _kv_stream_config(_STREAM)
+        client = NatsClient(
+            raw=wire,  # type: ignore[arg-type]
+            namespace=_NS,
+            client_name="listing",
+            kv_timings=listing_shorter_than_the_bind_wait,
+        )
+        bucket = await client.kv_bucket(name="nonces", create_if_missing=False)
+        wire.streams.clear()  # the restart took it, and the declarer is not coming back
+
+        raised = await _raised_by(bucket.list_keys())
+
+        assert isinstance(raised, KvBucketNotFoundError), repr(raised)
+
+
 class TestOneSlowOpenDoesNotStallTheOthers:
     """a bind-only open waiting for its declarer holds up callers of THAT bucket only."""
 
