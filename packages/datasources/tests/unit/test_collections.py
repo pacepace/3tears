@@ -104,6 +104,42 @@ class TestCapabilitySourceCollection:
         mutable_names = {c.name for c in CapabilitySourceCollection.schema.mutable_columns()}
         assert "knowledge_required" in mutable_names
 
+    def test_schema_declares_require_documented_tables_as_hub_v076_does(self) -> None:
+        """the schema carries ``require_documented_tables`` exactly as hub v076 adds it.
+
+        v076 is ``ADD COLUMN IF NOT EXISTS require_documented_tables boolean
+        DEFAULT FALSE NOT NULL``. the hub's ``PATCH /admin/v1/datasources/{id}``
+        sets the field and saves through this Collection, so an undeclared
+        column is dropped by the schema-driven upsert while the response
+        echoes the value sent -- the flag never persisted.
+        """
+        col = CapabilitySourceCollection.schema.column("require_documented_tables")
+        assert col.column_type == BOOL_TYPE
+        assert col.nullable is False
+        assert col.server_default == "false"
+
+    def test_require_documented_tables_is_mutable(self) -> None:
+        """``require_documented_tables`` is updatable on an existing row.
+
+        the PATCH is an UPDATE of an existing datasource, so the column must be
+        in :meth:`TableSchema.mutable_columns` or neither the fenced UPDATE nor
+        the upsert's ``DO UPDATE SET`` would carry the new value.
+        """
+        mutable_names = {c.name for c in CapabilitySourceCollection.schema.mutable_columns()}
+        assert "require_documented_tables" in mutable_names
+
+    def test_l1_table_carries_require_documented_tables(self) -> None:
+        """the L1 table derived from the schema holds the flag, so a cached row keeps it.
+
+        the L1 SQLite backend filters every write to the columns its table was
+        created with; a column missing from the schema is silently dropped from
+        L1 as well as from L3.
+        """
+        from sqlalchemy import MetaData
+
+        table = CapabilitySourceCollection.schema.to_sqlalchemy_table(MetaData())
+        assert "require_documented_tables" in table.columns
+
     @pytest.mark.asyncio
     async def test_iter_active_ids_filters_status_active(self) -> None:
         """audit-pass-3 CRITICAL-1: iter_active_ids must filter by

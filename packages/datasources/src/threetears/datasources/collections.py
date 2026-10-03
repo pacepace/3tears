@@ -282,6 +282,20 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
                 nullable=False,
                 server_default="false",
             ),
+            # maturity flag (hub migration v076): when true the hub read path
+            # refuses a query that references a table with no description in
+            # ``datasource_tables``. set by ``PATCH /admin/v1/datasources/{id}``
+            # through this Collection's write path, so it MUST be declared here
+            # or the schema-driven upsert drops it and the flag never persists.
+            # declared as v076 adds it: boolean, NOT NULL, FALSE server-default
+            # (an omitted value keeps the stored one). mutable: flipping it is an
+            # UPDATE of an existing row.
+            Column(
+                "require_documented_tables",
+                BOOL_TYPE,
+                nullable=False,
+                server_default="false",
+            ),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
