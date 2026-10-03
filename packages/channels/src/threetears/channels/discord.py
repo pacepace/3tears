@@ -167,6 +167,21 @@ class DiscordAdapter:
         for chunk in _split_message(content):
             await target.send(content=chunk)
 
+    async def identify(self) -> str:
+        """authenticate the token over REST and say which bot it is, without opening the gateway.
+
+        what a caller asks before it keeps a token: a token discord refuses
+        raises :class:`discord.LoginFailure` here rather than when the gateway
+        first connects, where nobody is waiting to hear it.
+
+        :return: the bot's own user name
+        :rtype: str
+        :raises discord.LoginFailure: when discord refuses the token
+        """
+        await self._ensure_logged_in()
+        result = str(self._client.user)
+        return result
+
     async def send_direct(self, *, user_id: str, content: str) -> DirectMessageSent:
         """send a direct message to a user out-of-band, and say what it left behind.
 

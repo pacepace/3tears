@@ -468,6 +468,42 @@ class TestDiscordAdapterPostMessage:
         mock_client.login.assert_awaited_once()
 
 
+class TestDiscordAdapterIdentify:
+    """tests for identify: the token checked over REST, and the bot named."""
+
+    @patch("threetears.channels.discord.discord")
+    async def test_identify_logs_in_over_rest_and_names_the_bot(self, mock_discord: MagicMock) -> None:
+        """the bot's name comes back from a REST login; no gateway is opened."""
+        from threetears.channels.discord import DiscordAdapter
+
+        mock_client = MagicMock()
+        mock_client.login = AsyncMock()
+        mock_client.start = AsyncMock()
+        mock_client.user = "tidebot#0001"
+        mock_discord.Client.return_value = mock_client
+        adapter = DiscordAdapter(bot_token="bot-tok", router=_MockRouter())
+
+        assert await adapter.identify() == "tidebot#0001"
+        mock_client.login.assert_awaited_once_with("bot-tok")
+        mock_client.start.assert_not_awaited()
+
+    @patch("threetears.channels.discord.discord")
+    async def test_identify_raises_when_the_token_is_refused(self, mock_discord: MagicMock) -> None:
+        """a refused token raises at identify, where a caller is waiting to hear it."""
+        from threetears.channels.discord import DiscordAdapter
+
+        class _Refused(Exception):
+            pass
+
+        mock_client = MagicMock()
+        mock_client.login = AsyncMock(side_effect=_Refused("401"))
+        mock_discord.Client.return_value = mock_client
+        adapter = DiscordAdapter(bot_token="bad", router=_MockRouter())
+
+        with pytest.raises(_Refused):
+            await adapter.identify()
+
+
 class TestDiscordAdapterSendDirect:
     """tests for send_direct: a DM to a user id over REST, handing back what a reply will carry."""
 

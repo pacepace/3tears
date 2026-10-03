@@ -16,6 +16,8 @@ packages (bumped in lock-step).
   reply in that DM carries the channel id; a reply to a sent message carries its id as
   `reply_to_id`, so a caller that files both finds the conversation that reached out.
 - **Added, `threetears.channels.discord.DirectMessageSent`.**
+- **Added, `DiscordAdapter.identify() -> str`:** checks the token over REST, without the gateway, and
+  returns the bot's user name; a refused token raises `discord.LoginFailure` there.
 
 ### Memory: nothing an agent remembers is destroyed, and a permanent memory is never touched
 
