@@ -269,7 +269,9 @@ the package split follows seams that already exist:
 
 - **`3tears-eval-contracts`** -- document models (runs, results, test cases,
   campaigns, analyses), the measure registry, identity/fingerprinting, the
-  tolerant-read schema discipline, and the storage Protocol. Pydantic-only. This
+  strict-read schema discipline (one schema version, refused on read under any
+  other; stored documents are dropped across a change, never migrated), and the
+  storage Protocol. Pydantic-only. This
   is the family-wide lingua franca for LLM quality data and the non-negotiable
   split: it's what UIs, CI tooling, and exporters bind to.
 - **`3tears-eval-run`** -- runner, simulator, judge, cassettes, jobs, budget. LLM

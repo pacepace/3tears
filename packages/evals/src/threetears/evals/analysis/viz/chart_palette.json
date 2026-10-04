@@ -1,0 +1,103 @@
+{
+  "$comment": "Packaged data: the chart palette as resolved sRGB hex, converted from the OKLCH design tokens it was drawn from — do not hand-edit single values. Hex, because the server-side chart renderer rasterises through resvg and cannot parse oklch(). To restyle charts, convert the whole palette from its token source and replace this file.",
+  "font": "Bricolage Grotesque",
+  "font_size": {
+    "title": 18,
+    "label": 14,
+    "tick": 14,
+    "value": 15,
+    "annotation": 14,
+    "facet-label": 14,
+    "footnote": 14
+  },
+  "font_weight": {
+    "title": 600,
+    "label": 500,
+    "tick": 500,
+    "value": 500,
+    "annotation": 500,
+    "facet-label": 600,
+    "footnote": 400
+  },
+  "geometry": {
+    "figure_width": 1040,
+    "plot_width": 832,
+    "gutter_left": 176,
+    "gutter_right": 32,
+    "bar_height": 28,
+    "bar_gap": 20,
+    "row_step": 48,
+    "row_step_marginal": 64,
+    "row_step_label_above": 66,
+    "plot_min_height": 168,
+    "aspect_max": 6,
+    "panel_gap": 32,
+    "rug_max_per_series": 40,
+    "value_label_clearance": 56,
+    "value_label_max_marks": 12,
+    "point_width": 400,
+    "point_height": 280,
+    "domain_pad": 0.08,
+    "series_plot_width": 704,
+    "series_plot_height": 240,
+    "series_label_gutter": 160
+  },
+  "series_slots": 8,
+  "series_slots$comment": "How wide the categorical palette IS, counted off the token tree rather than authored. Everything that needs the width reads this one key: adding a ninth `chart.N` token widens the artifact, and the consumers follow, instead of the artifact being quietly truncated to a literal written somewhere else. Contrast `validated_slots`, which is authored because it records where a MEASUREMENT stopped rather than a fact about the tree.",
+  "validated_slots": 4,
+  "validated_slots$comment": "Where validated separation ENDS, not where the palette does. Slots 1-4 pass the colourblind and contrast checks; 5-8 are a derived second tier that does not, and past 8 the renderers recycle from slot 1. None of those is a refusal to draw — the number of series is a property of the data. What makes the weaker tiers honest is that a direct label on every mark becomes mandatory at five series, one slot before this boundary.",
+  "light": {
+    "chart": [
+      "#8625fe",
+      "#00a2c4",
+      "#c79100",
+      "#00ad8a",
+      "#451686",
+      "#005d6f",
+      "#785b20",
+      "#006652"
+    ],
+    "highlight": "#de0068",
+    "context": "#878491",
+    "seq": [
+      "#d4c9fb",
+      "#ad8dfd",
+      "#8625fe",
+      "#6403c4",
+      "#45008c"
+    ],
+    "surface": "#ffffff",
+    "ink": "#140a29",
+    "muted": "#504d5c",
+    "on_fill": "#ffffff",
+    "grid": "#d4d3da",
+    "rule": "#b1afba"
+  },
+  "dark": {
+    "chart": [
+      "#ac79ff",
+      "#00c1df",
+      "#eaab05",
+      "#00c7a6",
+      "#6a50a5",
+      "#007989",
+      "#977430",
+      "#2d7f6c"
+    ],
+    "highlight": "#ff508c",
+    "context": "#5e5c68",
+    "seq": [
+      "#dacfff",
+      "#c4abff",
+      "#ac79ff",
+      "#8755e6",
+      "#613ea6"
+    ],
+    "surface": "#140a29",
+    "ink": "#ebeaee",
+    "muted": "#b1afba",
+    "on_fill": "#140a29",
+    "grid": "#2d2642",
+    "rule": "#3f3852"
+  }
+}

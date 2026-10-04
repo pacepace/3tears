@@ -1,0 +1,358 @@
+"""The engine's analysis package: campaigns, context bundles, generated analyses and the read lenses.
+
+It turns a campaign's runs into a generated, stored analysis. Of the engine it imports only itself
+and :mod:`threetears.evals.contracts`; ``viz.render`` alone reaches the optional rasteriser. The
+stored shapes it writes into — the
+:class:`~threetears.evals.contracts.campaign.EvalCampaign` hub and the
+:class:`~threetears.evals.contracts.campaign.EvalAnalysis` /
+:class:`~threetears.evals.contracts.campaign.EvalInsight` documents — live in the contracts package,
+not here. The pipeline:
+
+- ``reporting``, ``stats`` and ``numbers`` — the query-time projection of runs + results into
+  comparable rows, the statistics over them, and how a number is spelled for a reader.
+- ``bundle`` — :func:`~threetears.evals.analysis.bundle.assemble_context_bundle`
+  composes the reporting lenses into a deterministic, fingerprintable context bundle.
+- ``gen_prompt`` + ``generator`` — the hot-reloadable ``eval_analysis_gen``
+  prompt and the closed, one-shot
+  :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into
+  a schema-valid ``EvalAnalysis`` + extracted insights.
+- ``viz`` — the typed chart payloads the generator's authored charts compile to, and their
+  Vega-Lite specs.
+- ``errors`` — ``GenerationError`` / ``SoundnessRefusal``, raised by ``generator`` and
+  caught by ``service`` and ``reporter_kind``.
+- ``service`` — the operations a client drives the lens with: generating and reading analyses,
+  inspecting bundles, compiling charts and tables, the insight ledger, and the reporter cases.
+- ``reads`` — the read lenses over runs that already exist: comparison sets, pivot, frontier,
+  history, the program budget, orphaned runs, export, the cost estimate, the run summary and the
+  run comparisons.
+
+**This module is the package's public root.** A host imports from here and from no module below
+it, and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds that, and
+``tests/test_public_surface_is_closed.py`` holds every engine type a public signature hands a host to
+being exported from a public root. A ``# debt:`` comment on an export names what retires it. Code
+inside the package imports its own modules directly.
+"""
+
+from __future__ import annotations
+
+from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
+from threetears.evals.analysis.bundle import (
+    AnalysisContextBundle,
+    BundleInspection,
+    InsightStanding,
+    assemble_context_bundle,
+    insight_standing,
+    variant_key_of_run,
+)
+from threetears.evals.analysis.campaigns import (
+    DeclarableAxes,
+    add_runs_to_campaign,
+    create_campaign,
+    declarable_axes,
+    get_campaign,
+    get_campaign_view,
+    list_campaigns,
+    remove_runs_from_campaign,
+    set_campaign_control,
+    update_campaign,
+)
+from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.analysis.generator import (
+    analysis_gen_request_settings_for,
+    first_request,
+    generate_analysis,
+    generation_ceiling_s,
+    prompt_content_version,
+)
+from threetears.evals.analysis.numbers import ABSENT, format_number, format_signed
+from threetears.evals.analysis.reads import (
+    bisect_runs,
+    compare_runs,
+    compare_two_runs,
+    comparison_sets,
+    estimate_cost,
+    estimate_launch_cost,
+    export_results,
+    frontier,
+    history,
+    orphaned_runs,
+    pivot,
+    program_budget,
+    run_summary,
+)
+from threetears.evals.analysis.reporter_bank import (
+    AmbiguousPair,
+    FrozenReporterCase,
+    ReporterCalibration,
+    ReporterCaseBank,
+    frozen_case_receipt,
+)
+from threetears.evals.analysis.reporter_curation import set_reporter_case_archived
+from threetears.evals.analysis.reporter_kind import (
+    AS_RECORDED_MODEL,
+    LABEL_BANDS,
+    REPORTER_KIND,
+    AsRecordedReporterKind,
+    ReporterKind,
+    ReporterLabel,
+    judge_phase_ceiling_s,
+    render_memo_as_written,
+    reporter_cell_timeout_s,
+)
+from threetears.evals.analysis.reporting import (
+    CELL_MEASURED,
+    CELL_NOT_RUN,
+    DECLARED_INPUT_ORIGIN,
+    DEFAULT_WEIGHTING,
+    HISTORY_METRICS,
+    METRIC_COMPOSITE,
+    METRIC_OUTCOME,
+    METRIC_SCORE,
+    METRIC_TRANSCRIPT,
+    PROJECTED_METRICS,
+    SCOPED_METRICS_HELP,
+    WEIGHTING_EQUAL_PER_SCENARIO,
+    completeness_disclosure,
+    difference_was_declared_at_launch,
+    format_significance,
+    metric_help,
+    significance_disclosure,
+)
+from threetears.evals.analysis.service import (
+    PreparedGeneration,
+    analysis_arm_table,
+    analysis_surface_table,
+    compile_analysis_charts,
+    compile_finding_chart,
+    describe_insight_id_filters,
+    freeze_reporter_case,
+    get_analysis,
+    inspect_analysis_bundle,
+    inspect_campaign_bundle,
+    list_analyses,
+    list_analysis_attempts,
+    list_insights,
+    prepare_analysis_generation,
+    reporter_calibration,
+    reporter_case_bank,
+    run_analysis_generation,
+)
+from threetears.evals.analysis.stats import PAIRED_TEST_NAME
+from threetears.evals.analysis.surface_table import SurfaceTable
+from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, ArmStatus
+from threetears.evals.analysis.bundle import (
+    CampaignReadStore,
+    Confound,
+    DesignArm,
+    JudgedArm,
+    JudgedMeasure,
+    LeverCoverageInput,
+    MeasureMovement,
+    RealizedDesign,
+    RunSummary,
+    ScopeDivergence,
+    TelemetryRollup,
+    TokenRollup,
+)
+from threetears.evals.analysis.campaigns import CampaignStore, OpenAxisFamily
+from threetears.evals.analysis.cells import Cell, NextExperiment, Provenance, RefusedMerge, SubjectKeyInstability
+from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
+from threetears.evals.analysis.generator import GenerationTally
+from threetears.evals.analysis.reads import ComparisonColumns, LensStore, RowColumns, RunLister
+from threetears.evals.analysis.reporter_bank import (
+    CalibrationCase,
+    CalibrationCell,
+    CriterionDrift,
+    DimensionReading,
+    LabelReading,
+)
+from threetears.evals.analysis.reporter_curation import ReporterCaseStore
+from threetears.evals.analysis.reporter_kind import (
+    LabelCriterion,
+    LabelDirection,
+    PreparedReporter,
+    ReporterCase,
+    WriterMessageCheck,
+)
+from threetears.evals.analysis.reporting import (
+    CaseSetIdentity,
+    ComparisonSet,
+    ComparisonSetsResult,
+    FrontierDominator,
+    FrontierPoint,
+    FrontierResult,
+    FrontierVerdict,
+    MeasurementWindow,
+    ProjectionExclusions,
+    SubjectFrontier,
+    TwoPillarDisclosure,
+)
+from threetears.evals.analysis.service import AnalysisStore
+from threetears.evals.analysis.surface_table import (
+    SurfaceColumn,
+    SurfaceRow,
+    SurfaceRunNote,
+    SurfaceState,
+    SurfaceUnadjudicatedBar,
+    SurfaceValue,
+    SurfaceVerdict,
+)
+from threetears.evals.analysis.viz.models import FindingChart
+
+
+__all__ = [
+    "ABSENT",
+    "AS_RECORDED_MODEL",
+    "CELL_MEASURED",
+    "CELL_NOT_RUN",
+    "DECLARED_INPUT_ORIGIN",
+    "DEFAULT_WEIGHTING",
+    "EVAL_ANALYSIS_GEN_DEFAULT",
+    "HISTORY_METRICS",
+    "LABEL_BANDS",
+    "METRIC_COMPOSITE",
+    "METRIC_OUTCOME",
+    "METRIC_SCORE",
+    "METRIC_TRANSCRIPT",
+    "PAIRED_TEST_NAME",
+    "PROJECTED_METRICS",
+    "REPORTER_KIND",
+    "SCOPED_METRICS_HELP",  # debt: retires when the English moves to one renderer
+    "WEIGHTING_EQUAL_PER_SCENARIO",
+    "AmbiguousPair",
+    "AnalysisContextBundle",
+    "AnalysisStore",
+    "ArmLevel",
+    "ArmMeasurement",
+    "ArmRow",
+    "ArmStatus",
+    "ArmTable",
+    "AsRecordedReporterKind",
+    "BundleInspection",
+    "CalibrationCase",
+    "CalibrationCell",
+    "CampaignReadStore",
+    "CampaignStore",
+    "CaseSetIdentity",
+    "Cell",
+    "ComparisonColumns",
+    "ComparisonSet",
+    "ComparisonSetsResult",
+    "Confound",
+    "CriterionDrift",
+    "DeclarableAxes",
+    "DesignArm",
+    "DimensionReading",
+    "FindingChart",
+    "FrontierDominator",
+    "FrontierPoint",
+    "FrontierResult",
+    "FrontierVerdict",
+    "FrozenReporterCase",
+    "GenerationError",
+    "GenerationTally",
+    "InsightStanding",
+    "JudgedArm",
+    "JudgedMeasure",
+    "LabelCriterion",
+    "LabelDirection",
+    "LabelReading",
+    "LensStore",
+    "LeverCoverageInput",
+    "MeasureMovement",
+    "MeasurementWindow",
+    "NextExperiment",
+    "OpenAxisFamily",
+    "PreparedGeneration",
+    "PreparedReporter",
+    "ProjectionExclusions",
+    "Provenance",
+    "RealizedDesign",
+    "RefusedMerge",
+    "ReporterCalibration",
+    "ReporterCase",
+    "ReporterCaseBank",
+    "ReporterCaseStore",
+    "ReporterKind",
+    "ReporterLabel",
+    "RowColumns",
+    "RunLister",
+    "RunSummary",
+    "ScopeDivergence",
+    "SoundnessRefusal",
+    "SubjectFrontier",
+    "SubjectKeyInstability",
+    "SurfaceColumn",
+    "SurfaceRow",
+    "SurfaceRunNote",
+    "SurfaceState",
+    "SurfaceTable",
+    "SurfaceUnadjudicatedBar",
+    "SurfaceValue",
+    "SurfaceVerdict",
+    "TelemetryRollup",
+    "TokenRollup",
+    "TwoPillarDisclosure",
+    "WriterMessageCheck",
+    "add_runs_to_campaign",
+    "analysis_arm_table",
+    "analysis_gen_request_settings_for",
+    "analysis_surface_table",
+    "assemble_context_bundle",
+    "bisect_runs",
+    "cell_label",
+    "compare_runs",
+    "compare_two_runs",
+    "comparison_sets",
+    "compile_analysis_charts",
+    "compile_finding_chart",
+    "completeness_disclosure",  # debt: retires when the English moves to one renderer
+    "create_campaign",
+    "declarable_axes",
+    "describe_insight_id_filters",
+    "difference_was_declared_at_launch",
+    "estimate_cost",
+    "estimate_launch_cost",
+    "export_results",
+    "first_request",
+    "format_number",
+    "format_signed",
+    "format_significance",
+    "freeze_reporter_case",
+    "frontier",
+    "frozen_case_receipt",
+    "generate_analysis",
+    "generation_ceiling_s",
+    "get_analysis",
+    "get_campaign",
+    "get_campaign_view",
+    "history",
+    "insight_standing",
+    "inspect_analysis_bundle",
+    "inspect_campaign_bundle",
+    "judge_phase_ceiling_s",
+    "list_analyses",
+    "list_analysis_attempts",
+    "list_campaigns",
+    "list_insights",
+    "metric_help",  # debt: retires when the English moves to one renderer
+    "multi_rig_variants",
+    "orphaned_runs",
+    "pivot",
+    "prepare_analysis_generation",
+    "program_budget",
+    "prompt_content_version",
+    "remove_runs_from_campaign",
+    "render_memo_as_written",
+    "reporter_calibration",
+    "reporter_case_bank",
+    "reporter_cell_timeout_s",
+    "run_analysis_generation",
+    "run_summary",
+    "set_campaign_control",
+    "set_reporter_case_archived",
+    "short_digest",
+    "significance_disclosure",  # debt: retires when the English moves to one renderer
+    "update_campaign",
+    "variant_key_of_run",
+]

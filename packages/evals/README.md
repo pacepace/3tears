@@ -1,0 +1,131 @@
+# 3tears-evals
+
+Evaluate an LLM-backed product the way you would run an experiment: declare the levers you can
+change, run trials of each variant against a corpus of cases, grade each trial with code checks and
+model judges, and read an analysis report that says which variant is better, by how much, at what
+cost — and when the evidence cannot tell.
+
+**Status: being extracted.** This package was cut from a production app's in-tree eval engine and is
+being reshaped into a library any app can adopt. Its public API will change without notice until the
+first release that says otherwise.
+
+| Subpackage | What it holds |
+|---|---|
+| `threetears.evals.contracts` | the data models, the host contract an app implements, identity and scoring rules |
+| `threetears.evals.run` | the trial loop, judges, simulated users, budgets and metering |
+| `threetears.evals.gen` | case and rubric generation |
+| `threetears.evals.analysis` | the analysis bundle, report generation and charts |
+
+Import from those four roots and from `threetears.evals.contracts.host`, never from a module below
+them. Every engine type a public signature hands you — a protocol you implement, a value you
+receive, an exception you catch, a literal you annotate with — is exported from one of those roots.
+
+Two example hosts live in this repository (not in the wheel), written as reference code that
+imports nothing but the public roots and itself. `tests/fixtures/courierhost/` is the least a
+product writes, in one module; `tests/fixtures/toyhost/` exercises every shape of the host contract,
+with a map of which file holds which step. Both run on `InMemoryDocumentStore`
+(`threetears.evals.contracts`), the engine's in-memory reference `DocumentStore`: scoped, with
+conditional writes, and the shape to compare your own adapter against.
+
+## Adopting it: the host, the scope and the kind
+
+**Your app is one value, the host.** Build an `EvalHost` (in `threetears.evals.contracts.host`) and
+pass it to every entrypoint. It holds your `HostProfile` — the levers you sweep, the measures you
+record, your bars and your world — the `EvalStorage` you read and write through, a factory for the
+completion clients the engine's own judge, simulator and analysis roles call, your
+`failure_describer` (how a raised provider call reads: the only thing that can say a call was refused
+for the calling account, which stops a run rather than excluding its cells; `withhold_failure_detail`
+is the honest one for an app with no error types of its own), and your tracing, executor and
+cell-timeout choices. None of the last four has a default: each is named where the host is built. Nothing is ambient: there is no installed or default host, so two
+hosts in one process never meet. An app that starts runs builds a `LaunchHost` (in
+`threetears.evals.run`) around its `EvalHost`: the launch settings, a registry of the kinds it can
+launch, and a job timeout; it builds its job manager over the host's own storage. Hand its
+`eval_host` to the analysis side.
+
+**A kind's launcher resolves only what is the kind's.** `start_run` refuses a launch argument the
+kind declares it cannot honour before the launcher runs, then hands the launcher a `LaunchRequest`.
+The launcher captures the subject the request names, freezes the cases, builds its judge
+(`build_judge_service`) if it has one, and returns `launch_run(host, request, KindWiring(...))`. The
+engine stamps everything the request and the template already say — scope, model, repeats, cassette
+mode, overlays, spec, world seed, tool bound, ceilings — and refuses a wiring that contradicts them.
+
+**Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the
+engine never interprets it, defaults it or branches on it: it is your tenant, project or
+environment, whatever you partition by. All of it goes through one `DocumentStore` you implement,
+keyed by `(scope_id, doc_type, id)`. Every port call names its scope, and there is no scope-free
+read: a caller that needs several scopes is told which by you and asks each. A campaign and the runs
+it compares live in one scope. Your adapter strips whatever it injects (an etag, a timestamp) before
+handing a document back, because every stored model reads strictly.
+
+**A kind is what you are evaluating.** You implement the candidate-kind seam: `prepare` builds a
+candidate for one cell from the run's subject, its variant configuration and the seeded world, and
+`invoke` runs it on a test case and returns a `CandidateOutput`. What a kind adds to the engine's
+own fields is two Pydantic models you name once, on the profile's `kinds`, in a `KindContract`. Its
+**overlays** are the knobs a launch may turn: validated by field before any run exists, frozen onto
+the run, and read back as levers whose levels enter the variant key. Its **spec** is what a template
+of that kind declares (`kind_spec`), such as a label set or a table setup: refused by field at
+authoring, then validated again and frozen onto each run. You register neither anywhere else: the
+profile adds the contract's levers to its `sweepables`, and the engine resolves every run's level of
+them — with its `candidate_model` and its `candidate_kind` — into the variant key. Your profile's
+`host_sweepables` (the shared core extended with your own levers) and its `variant_levers` reader
+cover only the levers you declare beyond those; a host with none wires no reader. A run is one arm
+with one `candidate_model`; a launch naming several models starts one run per model, and runs of
+different kinds are always different variants.
+
+**What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
+non-empty output: the subject as the judge should see it, the case material, and the artifact (for a
+conversation, the transcript as your kind writes it). The engine places those strings and reads none
+of them, so hidden information and per-player visibility are your kind's rules. The evidence is
+stored on the cell's `EvalTrace`, and a re-judge sends exactly what the first judge read. A
+conversing kind's template carries a `ConversationSpec`: its simulated actors, who speaks next, and
+the turn limit. A document or classifier template carries none.
+
+**Background work, payloads and spend.** Work a candidate hands off and gets back turns later is
+recorded as `async_deliveries`, one `AsyncDelivery` each: who asked, when it was acknowledged and
+delivered, on what model, whether a harness supplied it, and what it spent — its tokens, model calls,
+`cost_usd` with its own `price_source`, and any paid non-LLM calls (`external_spend`). The engine folds
+that spend into the result's `inner_agent` and `external` usage, for work still in flight when the
+cell ended as well as work that delivered; a substituted entry reports no spend. Anything else your
+kind wants kept with a result goes in `kind_payload`, which the engine stores and never reads;
+register a measure for whatever should be compared. Each completion your client returns names its
+own `price_source`; the engine stores what it is told and never assumes a provider. Your kind reports
+its own calls' spend only as usage rows (`CandidateTelemetry.usage`), each call's dollars as your
+client priced them; the engine derives a result's `cost_usd` from those rows and its background work's.
+**Unpriced is a state, never zero**: a call your client could not price (a local model, say), or
+background work's paid calls a run with declared rates has no rate for, leaves the result's `cost_usd`
+as `None`. Every cost aggregate leaves such a result out of its dollars and counts it beside them
+(`n_cost_usd`, `n_unpriced`), and a capped run stops on its first unpriced result, because a cap cannot
+enforce a ceiling on spend it cannot count. An uncapped run carries on and counts them.
+
+**Cassettes record and replay through seams the kind supplies.** Launch a run with
+`cassette_mode="capture"` to run its tools live and record what they answered into that run's own
+corpus, or `"replay"` with `cassette_corpus_id` naming a capture run to be served that corpus instead.
+The engine builds the run's lane and hands each cell's `prepare` a `cassettes` handle (`None` with
+cassettes off) already bound to the corpus, template and case, so one kind instance serves every
+cell. Your kind calls `cassettes.wire(seams)` once with its candidate's `CassetteSeams`: an
+`ActionSeam` for the synchronous tools to wrap, and a `DeliverySeam` for each asynchronous tool, keyed
+by that tool's name. A wrapped tool is a `ToolLike`: a `name`, `can_dispatch(action)` and an async
+`act(action, parameters)`; a tool that is a plain function is adapted to that shape. A delivery seam reports each piece of background work where it starts
+(`recorder.started(request)`) and settles the ticket where it ends; under replay it takes
+`replay.next(request)` instead of starting live work, and reports what it was served with
+`substituted=True`. Every recording is keyed by what was asked and by which time it was asked, so a
+repeated dice roll replays both rolls in order and two scouts are each paired with their own report;
+an ask the capture never made, or made fewer times, stops the cell as the rig's failure rather than
+running live. A kind that does not wire the handle it was given, or a candidate with no seams, is
+refused rather than run live under a replay.
+
+**A broken rig costs one cell, never the run.** A replay miss, a corrupt recording or any other
+fault of the measuring rig rather than of the world under test is an `ApparatusError`; your kind's
+tool boundary re-raises it instead of turning it into an ordinary tool failure. Out of `prepare` or
+`invoke`, the engine records that cell excluded (termination `apparatus_failed`) with whatever spend
+the kind had reported through its sink, and goes on. A run whose every cell the rig excluded measured
+nothing, and ends `failed`. A cell cut off by its deadline or by its run's cancel is recorded the
+same way, from its sink; when the cut lands while the cell is being judged, the evidence and the
+scores that came back are kept and the unfinished dims are the cell's judge errors, which a re-judge
+can repair. A re-judge re-asks only dims that errored: a judge's "can't tell" is an answer.
+
+**Stored data is disposable, and reads are strict.** Every stored model refuses an unknown field, a
+missing required one, and a document written under any schema version other than this build's
+`EVAL_SCHEMA_VERSION`. There is no migration and no tolerant reader: across a schema change, drop
+the eval documents and regenerate them. Identity keys carry their own `IDENTITY_VERSION`, so keys
+from different predicates never silently pool.

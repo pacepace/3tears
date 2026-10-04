@@ -164,6 +164,7 @@ dev-dependencies = [
 "3tears-datasources" = "PT0S"
 "3tears-enforcement" = "PT0S"
 "3tears-epoch" = "PT0S"
+"3tears-evals" = "PT0S"
 "3tears-geo" = "PT0S"
 "3tears-iam" = "PT0S"
 "3tears-langgraph" = "PT0S"
@@ -392,6 +393,7 @@ mypy_path = [
     "packages/datasources/src",
     "packages/enforcement/src",
     "packages/epoch/src",
+    "packages/evals/src",
     "packages/langgraph/src",
     "packages/mcp/src",
     "packages/media-contracts/src",
@@ -427,6 +429,7 @@ files = [
     "packages/datasources/src",
     "packages/enforcement/src",
     "packages/epoch/src",
+    "packages/evals/src",
     "packages/geo/src",
     "packages/iam/src",
     "packages/langgraph/src",

@@ -1,0 +1,120 @@
+"""How the judge and the simulated user were asked, read through the engine's own core registry.
+
+``judge_request_settings`` and ``simulator_request_settings`` belong to the shared core: each role's output cap and reasoning budget is an apparatus input, pinned into its role, and
+a run that never recorded one cannot be compared on it. This file reads them through
+:data:`~threetears.evals.contracts.host.sweepables.SHARED_CORE` — the registry every host extends — over run
+documents with no host vocabulary. No host profile is read, and nothing is imported from a
+host adapter.
+
+The last class pins the version pair those two moved. It uses the core's own
+apparatus declarations, the set every host starts from, so no host's registrations are read.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from threetears.evals.analysis.bundle import AnalysisContextBundle
+from threetears.evals.analysis.cells import CELL_MODEL_VERSION
+from threetears.evals.contracts.host.subject import SubjectSnapshot
+from threetears.evals.contracts.host.sweepables import CORE_SWEEPABLES, JUDGE_INPUTS, SHARED_CORE, SIMULATOR_INPUTS
+from threetears.evals.contracts.models import ClientRequestSettings, EvalRun
+
+
+_SUBJECT = SubjectSnapshot(subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None)
+
+ROLES = [("judge_request_settings", JUDGE_INPUTS), ("simulator_request_settings", SIMULATOR_INPUTS)]
+
+
+def _run(**fields: Any) -> EvalRun:
+    return EvalRun(
+        id="run-1",
+        scope_id="scope-a",
+        subject_snapshot=_SUBJECT,
+        candidate_model="writer-a",
+        test_case_ids=["c-1"],
+        **{"candidate_kind": "test-kind", "k_runs": 1, "rubric_scales": {}, **fields},
+    )
+
+
+def _read(name: str, run: EvalRun) -> Any:
+    return SHARED_CORE.read_role_pins(run)[name]
+
+
+@pytest.mark.parametrize(("name", "pins"), ROLES)
+class TestHowARoleWasAskedIsAnApparatusInput:
+    def test_it_is_a_core_apparatus_declaration_that_means_unrecorded_when_blank(
+        self, name: str, pins: tuple[str, ...]
+    ) -> None:
+        (declared,) = [d for d in CORE_SWEEPABLES if d.name == name]
+        assert declared.role == "apparatus"
+        assert declared.indeterminate_when_blank is True
+
+    def test_it_is_pinned_into_its_role(self, name: str, pins: tuple[str, ...]) -> None:
+        assert name in pins
+
+    def test_a_recorded_setting_is_read_as_a_json_level(self, name: str, pins: tuple[str, ...]) -> None:
+        run = _run(**{name: ClientRequestSettings(max_tokens=4096, reasoning_max_tokens=1024)})
+        assert _read(name, run) == {"max_tokens": 4096, "reasoning_max_tokens": 1024}
+
+    def test_no_reasoning_parameter_is_a_recorded_level_not_a_blank(self, name: str, pins: tuple[str, ...]) -> None:
+        run = _run(**{name: ClientRequestSettings(max_tokens=4096)})
+        assert _read(name, run) == {"max_tokens": 4096, "reasoning_max_tokens": None}
+
+    def test_an_unstamped_run_reads_as_unrecorded(self, name: str, pins: tuple[str, ...]) -> None:
+        assert _read(name, _run()) is None
+
+    def test_two_runs_asked_differently_differ_and_alike_agree(self, name: str, pins: tuple[str, ...]) -> None:
+        wide = _read(name, _run(**{name: ClientRequestSettings(max_tokens=8192, reasoning_max_tokens=4096)}))
+        narrow = _read(name, _run(**{name: ClientRequestSettings(max_tokens=2048)}))
+
+        assert SHARED_CORE.comparability(name, [wide, narrow]) == "differs"
+        assert SHARED_CORE.comparability(name, [wide, dict(wide)]) == "same"
+
+    def test_a_run_that_never_recorded_it_cannot_be_compared_on_it(self, name: str, pins: tuple[str, ...]) -> None:
+        stamped = _read(name, _run(**{name: ClientRequestSettings(max_tokens=2048)}))
+
+        assert SHARED_CORE.comparability(name, [stamped, None]) == "unknown"
+        assert SHARED_CORE.comparability(name, [None, None]) == "unknown"
+
+
+#: The core's apparatus declarations at each ``(schema_version, CELL_MODEL_VERSION)`` pair, oldest
+#: first. Append a row for every bump; never edit one.
+_CORE_V24 = frozenset({"judge_config_ids", "judge_dim_divergence", "judge_model", "max_cost_usd", "simulator_model"})
+CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
+    ((24, 5), _CORE_V24),
+    ((25, 6), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 26 moved the writer's view of the bundle, not the apparatus partition.
+    ((26, 6), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 27 keyed the design on arms, not the apparatus partition.
+    ((27, 6), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 28/7 added a HOST state level; the core's apparatus set is unchanged.
+    ((28, 7), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 29 typed an unresolved case set in the comparison lens, not the apparatus partition.
+    ((29, 7), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 30/8 added two HOST world dimensions; the core's apparatus set is unchanged.
+    ((30, 8), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 31/9: the three session world dimensions are a host's, so the core's apparatus set is unchanged.
+    ((31, 9), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+)
+
+
+class TestTheCoresApparatusSetIsPinnedToTheVersionsThatNameIt:
+    """A core apparatus declaration joining moves every bundle and cell that applies it, so both versions move."""
+
+    def test_the_current_versions_are_the_last_pinned_row(self) -> None:
+        current = (AnalysisContextBundle.model_fields["schema_version"].default, CELL_MODEL_VERSION)
+        assert CORE_PINNED[-1][0] == current
+
+    def test_the_cores_apparatus_declarations_are_the_pinned_set(self) -> None:
+        assert frozenset(d.name for d in CORE_SWEEPABLES if d.role == "apparatus") == CORE_PINNED[-1][1]
+
+    @pytest.mark.parametrize("index", range(1, len(CORE_PINNED)))
+    def test_a_set_change_moves_both_versions(self, index: int) -> None:
+        (schema_before, cell_before), set_before = CORE_PINNED[index - 1]
+        (schema_after, cell_after), set_after = CORE_PINNED[index]
+        assert schema_after > schema_before
+        if set_after != set_before:
+            assert cell_after > cell_before

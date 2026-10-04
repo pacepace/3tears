@@ -1,0 +1,150 @@
+{
+  "$comment": "The values-as-drawn number rule, as cases, read by every renderer's tests. One table with two readers, because the defect it exists for was two implementations of one rule: the compiler's `format_number` printed 1.65 while a browser renderer printed 1.6500000000000001 for the same compiled cell, and the accessible table \u2014 the copy a reader who cannot see the picture gets \u2014 was the worse of the two. Two tables here would be the same defect one level up. Readers here: tests/test_viz_compiler.py; a browser renderer that restates the rule pins this same table where it ships.",
+  "rule": "The NUMERIC rule, and only that. An em dash for a non-finite value; integer form for any integral value, at any magnitude; at or above 1000 the value rounded to the nearest integer and written in full, never with an exponent; four significant figures below that, written the way %g writes them \u2014 which turns to an exponent below 1e-4, so a small non-zero value is never rounded to a zero \u2014 and no thousands separators, because these numbers sit inside intervals and lists where a comma reads as one more item. Rounding is half-to-EVEN at every step, as Python's float formatting does it. JavaScript's own toFixed/toExponential round half up, so the browser implements half-even explicitly; the tie cases below are what hold the two languages together. An ABSENT value is deliberately NOT shared: the server writes an em dash and the browser writes 'not recorded', because a cell that looks blank in a screen-reader table is indistinguishable from a value of nothing. Booleans differ the same way (yes/no vs true/false). Both differences are deliberate and recorded here rather than quietly tolerated \u2014 do not 'fix' either surface to match the other without changing this record first.",
+  "cases": [
+    {
+      "value": 1.65,
+      "expected": "1.65",
+      "why": "an ordinary two-decimal value"
+    },
+    {
+      "value": 1.6500000000000001,
+      "expected": "1.65",
+      "why": "float noise: the case that motivated this table"
+    },
+    {
+      "value": 0,
+      "expected": "0",
+      "why": "integral, so integer form and no decimal point"
+    },
+    {
+      "value": 42,
+      "expected": "42",
+      "why": "integral"
+    },
+    {
+      "value": -42,
+      "expected": "-42",
+      "why": "integral and negative"
+    },
+    {
+      "value": 41000,
+      "expected": "41000",
+      "why": "integral and large, still under 1e15"
+    },
+    {
+      "value": 1000000000000000.0,
+      "expected": "1000000000000000",
+      "why": "integral and large: written whole, never as 1e+15"
+    },
+    {
+      "value": 1234567.89,
+      "expected": "1234568",
+      "why": "large and not integral: rounded to the integer and written in full, never as 1.235e+06"
+    },
+    {
+      "value": 1.2345e-05,
+      "expected": "1.234e-05",
+      "why": "below 1e-4, so exponential \u2014 and a TWO-digit exponent"
+    },
+    {
+      "value": 0.00012345,
+      "expected": "0.0001234",
+      "why": "at 1e-4 it stays in fixed form, which is where toPrecision would disagree"
+    },
+    {
+      "value": 1.5,
+      "expected": "1.5",
+      "why": "trailing zeros dropped, not 1.500"
+    },
+    {
+      "value": 9.9999,
+      "expected": "10",
+      "why": "rounds up across a power of ten and is placed by what it became"
+    },
+    {
+      "value": -0.5,
+      "expected": "-0.5",
+      "why": "sign survives the trim"
+    },
+    {
+      "value": 0.1,
+      "expected": "0.1",
+      "why": "a value with no exact binary form still writes short"
+    },
+    {
+      "value": 100.25,
+      "expected": "100.2",
+      "why": "EXACT BINARY TIE: half-to-even keeps the even digit, where JS's toFixed would round up to 100.3"
+    },
+    {
+      "value": 1234.5,
+      "expected": "1234",
+      "why": "tie at the integer boundary \u2014 even, so it stays"
+    },
+    {
+      "value": 1.1875,
+      "expected": "1.188",
+      "why": "tie whose kept digit is ODD, so half-to-even rounds UP; the direction that proves it is not just truncation"
+    },
+    {
+      "value": 1.0625,
+      "expected": "1.062",
+      "why": "the same magnitude with an even kept digit, which must NOT round up"
+    },
+    {
+      "value": 10.125,
+      "expected": "10.12",
+      "why": "tie, even"
+    },
+    {
+      "value": 0.15625,
+      "expected": "0.1562",
+      "why": "tie, even, below 1"
+    },
+    {
+      "value": 0.1,
+      "expected": "0.1",
+      "why": "LOOKS like it could tie and does not \u2014 its true expansion runs past the kept digits"
+    },
+    {
+      "value": 12345.6,
+      "expected": "12346",
+      "why": "a latency in ms: the value that read 1.235e+04 beside an interval spelled 12,346"
+    },
+    {
+      "value": 1e+21,
+      "expected": "1000000000000000000000",
+      "why": "integral past 1e21, where JavaScript's String() turns to an exponent"
+    },
+    {
+      "value": 10000.5,
+      "expected": "10000",
+      "why": "EXACT BINARY TIE at the integer, even kept digit: stays"
+    },
+    {
+      "value": 10001.5,
+      "expected": "10002",
+      "why": "EXACT BINARY TIE at the integer, odd kept digit: rounds up"
+    },
+    {
+      "value": -1234.5,
+      "expected": "-1234",
+      "why": "a negative tie rounds its magnitude half-to-even and keeps its sign"
+    },
+    {
+      "value": 999.96,
+      "expected": "1000",
+      "why": "below the whole-number line, rounds up onto it and is written as what it became"
+    },
+    {
+      "value": 4.2e-05,
+      "expected": "4.2e-05",
+      "why": "small and non-zero: an exponent rather than a zero that reads as nothing happened"
+    }
+  ],
+  "unrepresentable_in_json": {
+    "$comment": "NaN and +/-Infinity render as an em dash on BOTH surfaces. JSON cannot carry them, so they are named here and asserted directly in each reader rather than being silently untested. `null` is NOT in this set \u2014 it is the absent case, which the two surfaces word differently on purpose; see `rule`.",
+    "expected": "\u2014"
+  }
+}

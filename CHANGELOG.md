@@ -6,6 +6,196 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals joins the family, with a host contract any app can implement
+
+`3tears-evals` (new package; imports under `threetears.evals`) evaluates an LLM-backed product as
+an experiment: levers swept across variants, trials graded by code checks and model judges, and an
+analysis report that says which variant is better, by how much and at what cost. It was cut from
+one app's in-tree eval engine, and this release is the contract that cut produced. It is alpha:
+its public API may still change between minor versions. The package `README.md` is the adoption
+guide.
+
+- **The host is one explicit value.** `EvalHost` (`threetears.evals.contracts.host`) carries an
+  app's `HostProfile` (levers, measures, bars, world), its `EvalStorage`, its completion-client
+  factory, its `failure_describer` (how a raised provider call reads; `withhold_failure_detail`
+  for an app with no error types of its own) and its tracing, executor and cell-timeout choices,
+  and is passed to every entrypoint.
+  There is no process-global or ambient host, so two hosts share a process without meeting.
+  `LaunchHost` (`threetears.evals.run`) adds the job manager, launch settings and the registry of
+  kinds the app launches.
+- **Tenancy is one opaque `scope_id`**, required and non-empty on every stored document and named
+  by every call on the one `DocumentStore` an app implements, keyed by `(scope_id, doc_type, id)`.
+  There is no scope-free read; a caller needing several scopes asks each. A campaign lives in the
+  same scope as its runs.
+- **The subject is the app's, through a candidate kind.** A kind implements `prepare` and
+  `invoke`, returning a `CandidateOutput`, and declares two Pydantic models in a `KindContract`:
+  its launch overlays (validated by field, frozen on the run, read as levers in the variant key)
+  and its template `kind_spec` (validated at authoring and frozen on the run).
+- **A judged kind renders what its judge reads**: `JudgeEvidence` (subject, case material,
+  artifact), stored on the cell's `EvalTrace` so a re-judge re-sends exactly what was first read.
+  A conversing template carries one `ConversationSpec` (actors, turn order, turn limit).
+- **Results carry the kind's own record.** Background work is `async_deliveries`
+  (`AsyncDelivery`: requester, model, acknowledged and delivered turns, whether substituted, and
+  what the work spent — tokens, calls, `cost_usd` with its own `price_source`, paid external calls);
+  the runner folds that spend into the result's usage and cost, for undelivered work too, and a
+  substituted entry can report none. The rest is an opaque `kind_payload` the engine stores and
+  never reads. A completion client names its own `price_source`; the engine stores what it is told
+  and names no provider.
+- **Cassettes wire through the kind's seams**: each cell's `prepare` is handed `cassettes` (a
+  `CellCassettes`, or `None`), and the kind wires its candidate's `CassetteSeams` — an `ActionSeam`
+  and one `DeliverySeam` per asynchronous tool — through it; a kind that does not, or a candidate
+  with no seams, is refused. A capture run records into its own corpus and a replay names the one it
+  serves (`EvalRun.cassette_corpus_id`); every recording is keyed by what was asked and which time it
+  was asked, and background work by the request that started it.
+- **A run is one arm**: `EvalRun.candidate_model` is one model, and a launch naming several
+  models starts one run per model.
+- **Stored data is read strictly.** An unknown field, a missing required one, or a document
+  written under a schema version other than `EVAL_SCHEMA_VERSION` (6) is refused on read. There
+  is no migration: across a schema change the eval documents are dropped and regenerated.
+- **Rubrics state their names and scales.** A rubric dimension is named `<context>.<dim>`
+  (`DimName`), so a bare name in a seed is refused; every criterion states its `scale` and every
+  score the scale it was judged on.
+- **Coming from the in-tree engine it was cut from**: `DocumentStore`, `EvalStorage` and
+  `StoreConflict` live in `threetears.evals.contracts`, not `run`; `variant_keys_of_run` is
+  `variant_key_of_run`. Its product-specific names did not come across: the classifier pair,
+  `CONVERSATIONAL_TURN_KIND`, `PersonaSnapshot`, `ResearchLifecycle`, `ResearchModelOrigin`,
+  `research_comparability`, `render_persona`, `active_profile` / `set_profile` / `using_profile`,
+  `LaunchContext` and `RunCeilings`.
+
+### 3tears-evals: the public surface is closed, one word for the world, and reference code that copies out
+
+The package is alpha; these change its public API.
+
+- **Every engine type a public name hands a host is exported from a public root**: the protocols a
+  host implements, the values it receives, the exceptions it catches and the literals it annotates
+  with. Among them: `CandidateKind`, `CompletionResult`, `CompletionGenerator`, `StopReason`,
+  `INCOMPLETE_STOP_REASONS`, `JSON_OBJECT_RESPONSE_FORMAT`, `EVAL_SCHEMA_VERSION`, the cassette seam
+  types and errors (`DeliveryRecorder`, `DeliveryReplay`, `ToolWrap`, `ToolLike`, `Recordable`,
+  `CassetteMiss`, `CassetteExhausted`, `CassetteCorrupt`, `CassetteMode`, `EvalCassette`),
+  `CellTermination`, `PreconditionOutcome`, `CellPending`, `UsageRole`, `omit_paths` and
+  `keep_fields` (`threetears.evals.contracts`); `OrdinalScale`, `VariantLeverReader`,
+  `ActionParameterReader`, `ToolActionReader`, `ResolvedLevers`, `BarProposal` and
+  `WorldPlacement` (`threetears.evals.contracts.host`); `EveryCellApparatusFailedError`,
+  `BudgetStoppedError`, `AccountExhaustedError`, `CapBreach`, `RunCallbacks`, `JudgeClientFactory`,
+  `JudgeContext`, `JudgeOutcome` and `EvalRunDocumentStore` (`threetears.evals.run`); and the read
+  lenses' store protocols and result models (`threetears.evals.analysis`). A gate walks every
+  root's signatures, fields, protocol members and documented raises and fails on an engine type no
+  root exports.
+- **`CompletionResult`'s members are read-only properties**, so a frozen result satisfies it, and
+  `stop_reason` is a `StopReason` literal. `CompletionClient.generate` and
+  `CompletionGenerator.generate` are declared `generate(self, *, system, user,
+  response_format=None)`, keyword-only, as the engine calls them.
+- **`InMemoryDocumentStore`** (new, `threetears.evals.contracts`): the in-memory reference
+  `DocumentStore`, with scopes, projections and conditional writes (etags and `StoreConflict`).
+- **"Toolworld" is "world".** `ToolworldSeed` is `WorldSeed`, `ToolWorldState` is `WorldState`,
+  `init_toolworld` is `init_world`; `EvalTemplate.toolworld_seed` is `world_seed`,
+  `EvalRun.resolved_toolworld_seed` is `resolved_world_seed`, `CandidateKind.prepare(toolworld_seed=)`
+  is `prepare(world_seed=)`, and `refuse_undeclared_toolworld=` is `refuse_undeclared_world_seed=`.
+  The context key's seeded-world component is renamed with them, so context keys re-derive under
+  `IDENTITY_VERSION` 21.
+- **`compare_two_runs` reports `subject_detail_a` / `subject_detail_b`**, not
+  `persona_snapshots_a` / `_b`.
+- **Every result is keyed.** `EvalResult.variant_key` is required and non-empty, on write and on
+  read. `AnalysisContextBundle.unkeyed_results` is gone, as are the frontier's model-fallback
+  contestant and the `variant_unknown` flag on `FrontierPoint`, `FrontierDominator` and
+  `MeasureSeries`, whose `variant_key` and `variant_identity_version` are now required.
+  `variant_key_of_run(results)` takes the run's results alone.
+- **Private state left the constructors**: `RoleUsageLedger`'s totals and `TurnDriver`'s counters
+  are not constructor parameters. The reporter kind's prepared instance is the public
+  `PreparedReporter`; the analysis's lever-coverage lens is `CoverageLens`. `EvalRun.world_placements`
+  and `LaunchHost`'s are typed by `WorldPlacement`.
+- **The example hosts are reference code**: they import the public roots and themselves only, and
+  the README points at the courier host for the minimal shape and the toy host for every element.
+
+### 3tears-evals: a broken rig, a deadline or a cancel costs one cell, and keeps what it paid for
+
+- **An `ApparatusError` out of a kind's `prepare` or `invoke` excludes that cell** under the new
+  `apparatus_failed` termination, with the spend the kind had reported through its sink, and the
+  run goes on. It used to fail the whole run and abandon every remaining cell. A run whose every
+  cell the rig excluded raises `EveryCellApparatusFailedError` (`threetears.evals.run`)
+  after recording them, and ends `failed`.
+- **A cancel that lands mid-cell records that cell** under the new `cancelled` termination,
+  excluded and with its spend, before the cancel ends the run.
+- **A deadline (or cancel) during the judge phase keeps the cell's judge evidence and every score
+  that came back**, and charges each dim that did not finish on `judge_error` instead of
+  `infra_error`, so a re-judge can recover the paid-for cell.
+- **A re-judge re-asks only dims that errored.** A recorded "can't tell" is the judge's answer and
+  is never re-asked or overwritten.
+- **A judge reply whose `reasoning` is missing or not a string is a parse failure** for that dim,
+  retried once, with every attempt's usage kept. It used to drop the dim's spend, or fail the run.
+
+### 3tears-evals: unpriced spend is unknown, never $0
+
+A client may report `cost_usd=None` (a local model, say). That spend used to become $0.00, so the
+cost cap never tripped on an unpriced model and cost means averaged in zeros without saying so.
+
+- **`EvalResult.cost_usd` is `float | None`, required, and derived from the result's usage rows**
+  over its `cost_roles`,
+  background work's folded `AsyncDelivery` spend included. It is `None` when any model call in those
+  roles went unpriced, a background delivery's own, and when a run that declared external rates —
+  so whose cost claims external dollars — meets background work's paid calls (`AsyncExternalSpend`)
+  at a provider or unit it holds no rate for. A run that declared no rates claims none, so its
+  external calls stay counted volume; action-seam metered calls stay outside the dollar total as
+  before. A substituted delivery reports no spend, so it changes nothing. `CandidateTelemetry.cost_usd` is removed: a kind
+  reports its spend only as usage rows. A usage row holding any unpriced call carries no dollars,
+  and neither does a judge dim, a judge fold or a `JudgeRescore` (`cost_usd: float | None`, required).
+  `run_judge_llm` no longer returns `judge_cost_usd`; its `judge_usage` carries the cost.
+- **A capped run stops on its first unpriced result** (`budget_stopped`, with the reason saying so).
+  `CapBreach` gains a required `unpriced_results`, `EvalRunCostCap` an `unpriced_results` count, and
+  `AccountExhaustedError` a required `unpriced_results`. An uncapped run carries on and counts them.
+- **Aggregates leave unpriced results out of their dollars and count them.** `compute_cost_summary`
+  adds `n_cost_usd` (the program mean's denominator) and omits the program pair when nothing in a
+  group was priced. `RunSummary` gains a required `n_cost_unpriced`, `BudgetRun` and `OrphanedRun` a
+  required `n_unpriced`, `ProgramBudget` and `OrphanedRunsResult` an `n_unpriced`, and
+  `CostEstimateCell` an `n_unpriced_historical`. `CellSummary.cost_usd` is `float | None`.
+
+### 3tears-evals: identity, kinds and launch
+
+The package is alpha; these change its public API.
+
+- **A run's kind is part of its variant.** `candidate_kind` is a core lever (`CANDIDATE_KIND_LEVER`,
+  new in `threetears.evals.contracts.host`) the engine resolves for every run, so runs of two kinds
+  are never pooled into one arm. `IDENTITY_VERSION` is 21; stored variant keys re-derive.
+- **A kind contract is named once, on `HostProfile.kinds`.** `HostProfile(sweepables=...)` is now
+  `HostProfile(host_sweepables=...)` (the host's own registry); `profile.sweepables` is derived and
+  adds every contract's levers. The engine resolves the candidate model, the kind and every
+  contract's levels itself (`HostProfile.engine_levels`, new); a host's `variant_levers` reader
+  returns only its own levers, may be `None` when it has none, and is refused if it returns an
+  engine-resolved lever. A profile refuses a contract lever registered by hand, two contracts whose
+  lever prefixes overlap, and a registry without the engine's levers. `DerivedVariantIdentity` loses
+  `partial` and `missing_components`; `variant_levers_of_run` never returns `None`.
+- **What a kind contract records is the configuration that ran.** A set field is recorded sorted; an
+  overlay or spec field excluded from serialization (`exclude`, `exclude_if`), at any depth, is
+  refused at declaration.
+- **Opaque payloads are stored verbatim.** `kind_payload` (`VerbatimJsonObject`) and `host_payload`
+  (`VerbatimObject`) keep their keys' and strings' whitespace; a lone surrogate in a `kind_payload`
+  is refused at construction.
+- **`LaunchHost` composes an `EvalHost`** (`LaunchHost(eval_host=..., kinds=..., settings=...,
+  job_timeout_factory=...)`) and builds its `job_manager` over that host's storage; it no longer
+  takes a job manager or restates the host's fields.
+- **`launch_run(host, request, wiring)` takes a typed `KindWiring`** (the kind factory, the captured
+  subject, the cases, an optional `RunJudge`, simulator model, default candidate model, payload,
+  generation counts, turn budget, cell timeout, rates and teardown). The engine stamps scope,
+  template, kind, candidate model, repeats, cassette mode, overlays, spec, world seed, tool bound,
+  role provenance and request settings itself, and refuses a wiring that contradicts the request
+  (another subject, a case outside the run's scope or template, a model other than the one pinned).
+  The `run_fields`, `wire` and `teardown` arguments and `KindWiring.runner_options` are gone.
+- **A replay names its corpus at the launch.** `start_run(..., cassette_corpus_id=...)` (new) names
+  the capture run a `"replay"` serves, and the launch stamps it on the run. A replay with no corpus,
+  a corpus with any other mode, and a corpus that is not a capture of the same template in the same
+  scope are refused before admission or before the kind's launcher runs. A battery refuses
+  `"replay"`, since one capture's corpus covers one template.
+- **`build_judge_service` returns a `RunJudge`** (new) rather than a tuple, and takes a resolved
+  judge model.
+- **A launch argument a kind cannot honour is refused at the dispatch**, before its launcher runs,
+  and by the battery's pre-flight; `LaunchableKind` is a frozen dataclass whose
+  `unhonoured_launch_arguments` is a set of `LaunchArgument` (new literal) and defaults to empty.
+  `LaunchRequest.unusable` is gone.
+- **Removed:** `LaunchArm`, `arm_settings`, and `LaunchGroup`'s `arms`, `arm()` and `claim_arm()`,
+  which nothing called; `LaunchGroup(candidate_models)` takes the models alone.
+- **Exported from `threetears.evals.run`:** `RunJudge`, `LaunchArgument`, `JobTimeoutFactory`,
+  `default_job_timeout`.
+
 ## v0.63.0 -- 2026-10-04
 
 ### A bucket's one declarer can own its whole shape

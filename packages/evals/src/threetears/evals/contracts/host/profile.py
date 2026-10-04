@@ -1,0 +1,865 @@
+"""One named surface a consuming product presents to the eval engine.
+
+A :class:`HostProfile` is everything the engine needs from a host and the only thing it is
+allowed to know about one. Two profiles registered in one process must be indistinguishable to
+the engine except by their contents — that is the property the whole extraction rests on, and it
+is what the toy-host fixture exists to prove on every run.
+
+**Nothing here switches on host identity.** ``host_id`` is opaque and is never branched on; a
+surface that would need to know *which* host it is holding is a surface that has host coupling it
+has not admitted to. Anything that distinguishes one profile from another is self-describing
+metadata on the registries, consumed generically.
+
+**Evaluability is derived from the profile, not declared beside it** (R10). The sweepables
+registry *is* the controllability map, the measures registry *is* the observability map, and the
+world registry *is* the representability map — so none of the three can drift from the thing it
+describes. **One declared exception, and it is the case derivation cannot reach:**
+:attr:`HostProfile.apparatus_applicability` names the shared-core apparatus dimensions a host does
+not HAVE, which no registry can express — the declaration it would have to be derived from belongs to
+the core, and ``SweepableRegistry.extend`` only appends. Drift is prevented by
+:meth:`HostProfile.omits_apparatus` reading the runs' own values instead, so the claim is checked
+against what happened rather than trusted. Recorded at ``boundary-patterns.md`` § Eval host-profile
+registry seam. **They are reached to different depths, and which is which is recorded here** because a
+reader of this paragraph would otherwise supply all three and have no way to tell what each one
+does. Sweepables are read by the variant key and the coverage lens on every generation. The world
+registry is reached end to end: it seeds every run, its run-time algebra is derived onto the run
+record and hashed into the measurement context, this class refuses a knob registered in it and in
+the sweepables registry without a declaration, and a TEMPLATE presuming a dimension no
+registration supplies is refused where it is written — the authoring gate, which asks this class
+:meth:`presumable` for a precondition and :meth:`addressable` for a goal check. The measures
+registry has two reaches that ASK it a question. The first is the campaign declaration, which reads
+a measure's descriptor before letting a campaign bar restate the better-direction the host already
+declared for it. The second, and much the wider, is
+:func:`~threetears.evals.contracts.metrics.describe_measure`: the engine's closed core is consulted first and
+this registry second, so a measure whose vocabulary is a host's tool's — the outcome buckets of an
+async delivery — is described by the host that has it and reads as unclassified to a host that does
+not. That is what lets the core stop enumerating one product's tool measures without every read
+surface silently losing them. (The registry is also read at every construction of this class, by
+``bars.validate_against(self.measures)`` in ``__post_init__``; that is the registry checking itself,
+not a caller consulting it.) Both callers read the
+registry directly, through :meth:`~threetears.evals.contracts.host.measures.MeasureRegistry.get`, and this
+class deliberately offers **no observability predicate** to ask before that lookup.
+
+**Why observability is derived and unpredicated where controllability and representability have
+methods**. Three facts, any one of which would be enough on its own:
+
+* **A gate cannot use one.** Every gate that wants to know whether a measure is declared also
+  wants its descriptor, and ``get`` returns both in one lookup. A membership predicate asked first
+  cannot change a verdict, and no test can catch its removal.
+* **A gate over the REGISTRY alone could not be right.** A measure name space is half closed and
+  half open: the host declares a catalogue, and a template MINTS a measure every time it names a
+  rubric dimension or writes a goal-state check — names ``threetears.evals.contracts.metrics`` deliberately does
+  not enumerate and resolves by construction instead. A gate refusing every name the registry does
+  not hold would refuse the open half wholesale. The campaign declaration gate
+  (``refuse_an_undeclarable_design``) is right where such a gate would not be because it reads the
+  TEMPLATE that mints the open half alongside the registry — and it adds no predicate here: it
+  reads descriptors, which is the rule this list defends.
+* **The reporting surface such a predicate would serve cannot say anything.** Returning a
+  :class:`Coverage` — a state plus a REASON — suits a surface that RENDERS coverage rather than
+  gating on it. Over a half-open name space that surface answers ``covered`` for every input it
+  can name and ``uncovered`` for every input it cannot classify: it can never be wrong and never
+  be informative. R10 asks for a gate rather than a page, and this is what a page here would be.
+
+So the registry *is* the observability map, which is the property R10 asks for, and membership is
+read where a caller needs the record. **Do not add a predicate ahead of the gate that would call
+it** — that ordering is what produced one with no caller.
+
+Fidelity is deliberately absent: whether the eval path constructs what production
+constructs cannot be inferred from structure, and a map entry asserting it is exactly the claim
+that was false in the incident that produced this rule. It is proven by a shared construction
+path with a test that both callers reach it, and it gains no entry here.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
+
+from threetears.evals.contracts.host.bars import BarRegistry
+from threetears.evals.contracts.host.kinds import KindContract
+from threetears.evals.contracts.host.measures import MeasureRegistry
+from threetears.evals.contracts.host.style import StyleProfile
+from threetears.evals.contracts.host.sweepables import (
+    CANDIDATE_KIND_LEVER,
+    CANDIDATE_MODEL_LEVER,
+    SweepableRegistry,
+    SweepableValue,
+)
+from threetears.evals.contracts.host.world import WorldRegistry
+from threetears.observe import get_logger
+
+log = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from threetears.evals.contracts.models import EvalRun
+
+#: Produce a run's level of each of the HOST'S OWN levers — its share of the variant key's pre-image.
+#: A run is one arm, so every observation in it shares this map. Host code the engine calls and never
+#: inspects.
+#:
+#: **What it does not return is the engine's.** The candidate model (:data:`CANDIDATE_MODEL_LEVER`),
+#: the candidate kind (:data:`CANDIDATE_KIND_LEVER`) and every lever a kind contract on
+#: :attr:`HostProfile.kinds` derives are resolved by the engine for every run, and a reader that
+#: returns one of them is refused — two writers of one coordinate are two places to disagree.
+#:
+#: **Why this is not the sweepables registry's readers.** A registered reader projects one input
+#: into whatever JSON-safe shape the bisection compares; this returns the typed levels a key is
+#: digested from, in one map the host resolves as a whole. What keeps the two from drifting is not a
+#: second list but a check: every key the composed map holds must name a ``lever`` in the same host's
+#: registry, every fixed lever must be resolved, and
+#: :func:`~threetears.evals.contracts.identity.derive_variant_identity` refuses a map that does not.
+VariantLeverReader = Callable[["EvalRun"], "dict[str, SweepableValue]"]
+
+#: ``(tool, action) -> that action's parameter JSON Schema``, or None for an action the host does not
+#: describe. The schema is the one the subject is shown, so the host restates nothing: the goal-check
+#: gate reads which parameters are closed values (``enum``/``const``/``pattern``) and treats every
+#: other string as text the model wrote.
+ActionParameterReader = Callable[[str, str], "Mapping[str, Any] | None"]
+
+#: ``tool -> the names of its actions``, or None for a tool whose actions the host cannot list. The
+#: goal-check gate reads it to refuse a check naming an action that does not exist; None is "cannot
+#: say", never "has none", so a tool the host cannot describe is left unchecked rather than refused.
+#: A tool the host does not have at all is answered with an EMPTY set, not None — the host can say
+#: for certain that it offers no action — so a misspelled tool is refused by every gate reading this.
+ToolActionReader = Callable[[str], "frozenset[str] | None"]
+
+
+#: The answer to "does eval reach this precondition", per axis. Three states, not two: a
+#: consumer with no simulated world has representability **inapplicable**, and rendering that as
+#: "unsupported" would be the very error the coverage model warns against — *"this area is
+#: unevaluable" is a conclusion the map is not entitled to draw*.
+CoverageState = Literal["covered", "uncovered", "inapplicable"]
+
+
+#: One segment of a dotted payload path: what a storage projection will interpolate.
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+class ProfileRegistrationError(ValueError):
+    """Two of a host's registries contradict each other, raised where both are in hand.
+
+    Distinct from each registry's own error type because the defect belongs to neither
+    registry alone: a name is sound in the sweepables registry, sound in the world registry,
+    and unsound only in a profile that holds both.
+    """
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """Whether eval reaches one precondition on one axis, and why when it does not."""
+
+    state: CoverageState
+    """``covered`` | ``uncovered`` | ``inapplicable``."""
+
+    reason: str = ""
+    """Required for anything but ``covered`` — the dimension that is missing, never the area."""
+
+
+@dataclass(frozen=True)
+class HostProfile:
+    """Everything the engine knows about one consuming product.
+
+    A frozen dataclass rather than a Pydantic model: this holds live reader callables and is a
+    runtime registration, never a stored or wire type.
+    """
+
+    host_id: str
+    """Opaque. The engine never interprets or branches on it — it is for logs and error text."""
+
+    host_sweepables: SweepableRegistry
+    """What this host itself declares it sweeps and what holds its measurements: the shared core
+    (:data:`~threetears.evals.contracts.host.sweepables.SHARED_CORE`) extended with the host's own
+    levers, apparatus and labels.
+
+    Not what the engine reads: :attr:`sweepables` is this plus every kind contract's levers, which
+    the profile derives from :attr:`kinds` so a kind is named once. A kind's lever registered here
+    as well is refused.
+    """
+
+    measures: MeasureRegistry
+    """What this host can see. The observability map."""
+
+    bars: BarRegistry = field(default_factory=BarRegistry)
+    """The incumbent standards per behavior. A host with none registers an empty registry."""
+
+    style: StyleProfile = field(default_factory=StyleProfile)
+    """The bounded presentation contract. No field of it is free text."""
+
+    world: WorldRegistry | None = None
+    """What a run may set before the subject starts, and what it may only witness.
+
+    **Optional on purpose, and ``None`` is not an empty registry.** ``None`` says this host
+    instantiates no world at all — the shape a consumer evaluating production traffic has, whose
+    representability is ``inapplicable`` rather than ``uncovered``. An empty *registry* says this
+    host has a world and seeds nothing in it, which is a claim a run record can expose. Collapsing
+    the two would lose the only distinction that tells an unevaluable area from an unbuilt one.
+    """
+
+    caveat_kinds: frozenset[str] = frozenset()
+    """Caveat kinds this host declares, BEYOND the four the engine owns.
+
+    The engine's four (``apparatus``/``sampling``/``instrument``/``scope``) are always available;
+    this is the host's extension of them, for the same reason R8 gives the lever vocabulary to the
+    host. A closed engine-owned set on a host-facing field forces a domain with a legitimate fifth
+    kind to jam it into ``scope``, and the field then stops meaning anything — which is the one
+    thing a required classification exists to prevent. Empty is the normal case: the four cover
+    what has been seen, and they were derived from one host's caveats, so they are offered rather
+    than asserted to be complete.
+    """
+
+    apparatus_applicability: Mapping[str, Coverage] = field(default_factory=dict)
+    """Apparatus dimensions this host does not have, and why — the one state the engine cannot derive.
+
+    ``{dimension name: Coverage("inapplicable", reason)}``. The other two states are NOT declarable
+    here and are refused, because the engine already derives them from the reader: a dimension that
+    read a value is covered, and one that read a blank is uncovered. Only *inapplicable* is a fact
+    about the host rather than about a run, which is why it is the only one a host can say.
+
+    **Why this exists.** The shared core declares seven apparatus dimensions on the terms every LLM
+    product has them — a judge model and how it was asked, a per-dim divergence from its pin, a
+    judge configuration set, a simulated user and how it was asked, a spend ceiling — and six of
+    those read core ``EvalRun`` fields that are ``indeterminate_when_blank``.
+    For a host that has them, a blank there means the judge or simulator is *unrecoverable*, which is exactly
+    what should block a comparison. For a host that grades with code and simulates nobody, the same
+    blank is not an absence at all: there is no such thing to record. Without this map every such
+    host got four ``undecided`` apparatus confounds in every bundle, a real model read them and
+    declined to answer the campaign's declared question, and the fabricated unknowns also partitioned
+    the cell space through ``apparatus_class_id`` — so poolings the host had declared were refused.
+
+    **Same three-state vocabulary as :meth:`controllable` and :meth:`representability`, on purpose.**
+    ``world=None`` already makes representability ``inapplicable`` rather than ``uncovered``, on the
+    reasoning that *"this area is unevaluable" is a conclusion the map is not entitled to draw*. A
+    host with no simulated user is the same shape one axis over, so it gets the same answer in the
+    same type rather than a sentinel of its own — a sentinel would have to be chosen by the core,
+    which cannot tell an inapplicable dimension from a code-graded one from an unrecoverable one.
+
+    The ``reason`` is read in two places: at registration, where a blank one is refused, and by
+    :meth:`omits_apparatus`, which logs it when a run records a level for a dimension this map says
+    the host does not have — a claim its own data refutes, printed with the reason it was made on.
+
+    Empty is the normal case: a host that has every dimension the core
+    declares says nothing here.
+    """
+
+    variant_levers: VariantLeverReader | None = None
+    """How this host resolves a run's level of each of its OWN fixed levers. See :data:`VariantLeverReader`.
+
+    ``None`` for a host that declares no fixed lever of its own: the engine resolves the candidate
+    model, the candidate kind and every kind contract's levers itself, so such a host's variant key
+    needs nothing from it. A host that declares a lever of its own and wires no reader is refused at
+    the first identity derived — a lever nobody resolves would drop out of the key and merge two
+    variants.
+    """
+
+    observed_model_levers: Mapping[str, str] = field(default_factory=dict)
+    """Levers whose INHERITED value is recoverable from what a run observably did.
+
+    ``{lever name in the REGISTRY's vocabulary: the usage role whose ``model`` records its value}``.
+    A key that is not a registered lever name resolves against nothing; the registry does not
+    validate that today.
+    A launch that did not name the lever as an overlay still ran at *some* value, and for a
+    model-valued lever the role that spent the tokens is the record of which. The analysis
+    bundle's effective-configuration lens reads this to distinguish ``inherited`` from
+    ``unknown``; a lever absent from it, and from the run's overlays, simply does not apply to
+    that run.
+
+    Empty is the normal case. It has to be host-declared because the lever names are the host's
+    tool vocabulary: the engine hardcoding one would attribute a second consumer's inner agent to
+    the first consumer's tool, silently, in the module a paid generator reads. The engine's own
+    entry — the candidate model, a declared coordinate of every observation — is not here and is
+    not the host's to move; a declaration colliding with it is refused.
+    """
+
+    action_parameters: ActionParameterReader | None = None
+    """How a goal check learns which of a call's recorded parameters are closed values.
+
+    ``None`` for a host that describes no action parameters, and then every text comparison over a
+    ``calls()`` parameter is refused at authoring: a call parameter is text the model wrote until its
+    schema says otherwise (:func:`~threetears.evals.contracts.dsl.call_parameter_matches`). Presence and length
+    tests need no schema and are always accepted.
+    """
+
+    tool_actions: ToolActionReader | None = None
+    """How a goal check learns which actions a tool has, so a misspelled one is refused at authoring.
+
+    ``None`` for a host that lists no tool's actions, and then no action name is checked: a check
+    naming one that does not exist evaluates False on every trial
+    (:func:`~threetears.evals.contracts.dsl.undefined_call_references`). A wired reader answers a tool
+    the host does not have with an empty set, never None, so a misspelled TOOL is refused too.
+    """
+
+    kinds: tuple[KindContract, ...] = ()
+    """What each candidate kind's runs carry beyond the engine's own fields: its overlays and its spec.
+
+    One :class:`~threetears.evals.contracts.host.kinds.KindContract` per kind that declares any, keyed by
+    its ``kind``. A kind with none is one a launch may turn nothing on. **Named here and nowhere else**:
+    the profile adds every lever a contract derives to :attr:`sweepables`, and the engine resolves
+    each run's level of them into its variant key, so a knob a launch can turn is one every analysis
+    sees without the host registering it a second time. Two contracts whose lever prefixes overlap
+    are refused — one would overwrite the other's levels.
+    """
+
+    listing_elisions: frozenset[str] = frozenset()
+    """Paths inside ``EvalRun.host_payload`` that a read LISTING many runs leaves out.
+
+    Dotted, relative to the payload (``"subject.history"``). A bulk read hydrates
+    every run in a scope, so a heavy value the host freezes into each run's payload is paid
+    once per run per listing; a host names here what no listing consumer of ITS payload reads,
+    and the storage read drops it before it crosses the wire. Host-declared because the payload
+    is the host's: the engine never names a key inside it.
+
+    Every run a listing returns carries what was left out
+    (:attr:`~threetears.evals.contracts.models.EvalRun.elided_payload_paths`), so the host's own payload
+    readers can refuse to rebuild from an incomplete payload rather than rebuild a wrong one. A
+    read of ONE run (``get_run``, execution, comparison, rejudge) never elides anything.
+
+    Empty is the normal case: a host with a small payload lists it whole.
+    """
+
+    sweepables: SweepableRegistry = field(init=False, repr=False, compare=False)
+    """Every input this host's runs carry: :attr:`host_sweepables` plus each kind contract's levers.
+
+    The controllability map, and what every identity, gate and lens reads. Derived at construction
+    from the two fields that name its parts, so it cannot disagree with either.
+    """
+
+    def __post_init__(self) -> None:
+        """Name this host to its registries, then cross-check them against each other.
+
+        Every registry here validates itself at construction. What none of them can see is a
+        claim one makes *about another* — a bar naming a measure the host never declared, or
+        restating that measure's better-direction as the opposite. This is the only place both
+        are in hand.
+
+        **It is also the only place a registry can learn whose it is.** A registry is built before
+        any profile exists, so its own refusals — a bar looser than its incumbent, a measure this
+        host does not declare, a handle no binding resolves — name the offending item and not the
+        host that offered it. That costs nothing while one process serves one product and becomes
+        unactionable the moment a second host runs, which is what the extraction is for. Binding
+        happens first so the cross-checks below are named too.
+
+        Raises:
+            BarRegistrationError: A bar contradicts the measure registry.
+            ProfileRegistrationError: A name is registered as both a sweepable and a world
+                dimension, an ``observed_model_levers`` entry claims a lever name the engine
+                reserves, an ``apparatus_applicability`` entry names something this host's
+                registry does not declare as apparatus, a kind is contracted twice or two
+                contracts' lever prefixes overlap, a kind contract's lever is registered in
+                :attr:`host_sweepables` as well, or the registry lacks a lever the engine resolves
+                for every run.
+        """
+        self._refuse_overlapping_kind_contracts()
+        self._refuse_a_kind_lever_registered_by_hand()
+        object.__setattr__(
+            self,
+            "sweepables",
+            self.host_sweepables.extend(declared for contract in self.kinds for declared in contract.sweepables),
+        )
+        self._refuse_a_registry_without_the_engines_levers()
+        for registry in (self.sweepables, self.measures, self.bars, self.world):
+            if registry is not None:
+                registry.bind_host(self.host_id)
+        self.bars.validate_against(self.measures)
+        self._refuse_a_name_in_both_registries()
+        self._refuse_an_engine_reserved_lever()
+        self._refuse_an_unsound_inapplicability()
+        self._refuse_a_malformed_listing_elision()
+
+    def kind_contract(self, kind: str) -> KindContract:
+        """The contract this host declares for ``kind`` — a contract declaring nothing when it declares none.
+
+        A kind with no contract is one a launch may turn nothing on and a template may state nothing
+        for, which is exactly what an empty contract refuses; so every caller asks one contract, and
+        a refusal reads the same whether the host declared the kind's models or not.
+
+        Args:
+            kind: A kind's name, as a template's ``candidate_kind`` spells it.
+
+        Returns:
+            The declared contract, or an empty one.
+        """
+        return next((contract for contract in self.kinds if contract.kind == kind), None) or KindContract(kind)
+
+    def engine_levels(self, run: EvalRun) -> dict[str, SweepableValue]:
+        """The levels the engine resolves for ``run`` itself: its model, its kind and every kind contract's levers.
+
+        The part of the variant key's pre-image no host writes. A host's own levers come from
+        :attr:`variant_levers` and are composed beside these by
+        :func:`~threetears.evals.contracts.identity.derive_variant_identity`.
+
+        Args:
+            run: The run, of any kind.
+
+        Returns:
+            Lever name -> level. A run of a kind other than a contract's sits at that contract's
+            "not a run of this kind" level on each of its levers.
+        """
+        levels = {
+            CANDIDATE_MODEL_LEVER: SweepableValue.of(run.candidate_model, display=run.candidate_model),
+            CANDIDATE_KIND_LEVER: SweepableValue.of(run.candidate_kind, display=run.candidate_kind),
+        }
+        for contract in self.kinds:
+            levels.update(contract.levels(run))
+        return levels
+
+    def _refuse_overlapping_kind_contracts(self) -> None:
+        """Refuse two contracts for one kind, and two contracts whose levers could share a name.
+
+        Lever names are ``<prefix>.<field>`` (and ``<prefix>.<field>.<key>`` for an open family's
+        entries), so two prefixes that are equal, or one of which is a dotted prefix of the other,
+        can name one lever twice — and the later contract's level, or its "not a run of this kind"
+        level, would overwrite the earlier's in the variant map, collapsing arms that differ on it.
+
+        Raises:
+            ProfileRegistrationError: A kind is contracted twice, or two contracts' prefixes overlap.
+        """
+        names = [contract.kind for contract in self.kinds]
+        if repeated := sorted({name for name in names if names.count(name) > 1}):
+            raise ProfileRegistrationError(
+                f"host {self.host_id!r} declares more than one contract for kind(s) {', '.join(repeated)}"
+            )
+        overlapping = sorted(
+            f"{first.kind!r} ({first.lever_prefix}) and {second.kind!r} ({second.lever_prefix})"
+            for index, first in enumerate(self.kinds)
+            for second in self.kinds[index + 1 :]
+            if _prefixes_overlap(first.lever_prefix, second.lever_prefix)
+        )
+        if overlapping:
+            raise ProfileRegistrationError(
+                f"host {self.host_id!r} declares kind contracts whose lever prefixes overlap: {'; '.join(overlapping)} "
+                "— their levers could share a name, and one kind's levels would overwrite the other's; give each "
+                "kind a prefix of its own"
+            )
+
+    def _refuse_a_kind_lever_registered_by_hand(self) -> None:
+        """Refuse a kind contract's lever that :attr:`host_sweepables` declares as well.
+
+        The profile registers a contract's levers itself, so a second declaration of one is either
+        the same lever named twice or a different input that happens to share its name; neither is
+        expressible.
+
+        Raises:
+            ProfileRegistrationError: A contract's lever name is already declared by the host.
+        """
+        if twice := sorted(
+            name for contract in self.kinds for name in contract.lever_names if self.host_sweepables.get(name)
+        ):
+            raise ProfileRegistrationError(
+                f"host {self.host_id!r} registers {', '.join(twice)} in its own sweepables, but a kind contract on "
+                "the profile derives them — name the kind once, on kinds, and drop its levers from the registry"
+            )
+
+    def _refuse_a_registry_without_the_engines_levers(self) -> None:
+        """Refuse a registry that does not declare the levers the engine resolves for every run.
+
+        The engine places the candidate model and the candidate kind in every run's variant key, so
+        a registry that does not declare them as levers would refuse every key at the first run.
+        Both come with :data:`~threetears.evals.contracts.host.sweepables.SHARED_CORE`.
+
+        Raises:
+            ProfileRegistrationError: Either lever is missing, or declared under another role.
+        """
+        missing = [
+            name
+            for name in (CANDIDATE_MODEL_LEVER, CANDIDATE_KIND_LEVER)
+            if (declared := self.sweepables.get(name)) is None or declared.role != "lever"
+        ]
+        if missing:
+            raise ProfileRegistrationError(
+                f"host {self.host_id!r}'s sweepables do not declare {', '.join(missing)} as levers, which the engine "
+                "resolves for every run — extend SHARED_CORE rather than building a registry without it"
+            )
+
+    def _refuse_a_malformed_listing_elision(self) -> None:
+        """Refuse a listing elision that is not a dotted path of plain identifiers.
+
+        The path reaches a storage projection, which refuses anything else at query time; refused
+        here instead, so a host with a typo fails at startup rather than on its first listing.
+
+        Raises:
+            ProfileRegistrationError: A path with an empty or non-identifier segment.
+        """
+        if bad := sorted(
+            p for p in self.listing_elisions if not all(_IDENTIFIER.fullmatch(seg) for seg in p.split("."))
+        ):
+            raise ProfileRegistrationError(
+                f"host {self.host_id!r} declares listing_elisions that are not dotted identifier paths: "
+                f"{', '.join(repr(p) for p in bad)}"
+            )
+
+    def _refuse_an_engine_reserved_lever(self) -> None:
+        """Refuse a host recovery rule for a lever name the engine already owns.
+
+        :data:`CANDIDATE_MODEL_LEVER` is a declared coordinate of every observation and the
+        engine resolves it from the record itself. A host entry for the same name would not
+        override that — the engine's own rule is applied alongside — so the two would silently
+        disagree about which usage role establishes it, on the surface that reports a run's
+        effective configuration. Refused where both name spaces are in hand.
+
+        Raises:
+            ProfileRegistrationError: The host declared a recovery rule for a reserved name.
+        """
+        if reserved := sorted(set(self.observed_model_levers) & {CANDIDATE_MODEL_LEVER}):
+            raise ProfileRegistrationError(
+                f"host {self.host_id!r} declares observed_model_levers for {', '.join(reserved)}, which the "
+                "engine reserves and resolves from the observation itself — the two rules would disagree "
+                "about one lever with nothing reporting it"
+            )
+
+    def _refuse_a_name_in_both_registries(self) -> None:
+        """Refuse a knob registered as both a sweepable and a world dimension.
+
+        A campaign that varies the world is running a different experiment from one that varies a
+        lever, and two registries describing one knob are how the two answers come to disagree
+        invisibly. There is no declaration that admits the overlap: no surface would record that a
+        campaign swept stimulus, so a switch admitting it would only silence the refusal. A host
+        whose knob is honestly both renames one of the two registrations.
+
+        **Name-keyed, and it has to be.** The obvious-looking mechanism — resolve both registries
+        through one binding table and watch for a collision — cannot work: a sweepable's reader
+        answers a post-hoc question from the run record ("what did this run sweep") and a world
+        handle answers a live one ("what is this dimension's value now"), so one knob registered
+        in both places has two genuinely different callables and no resolution table could ever
+        see them meet. It would report clean over the exact case it exists to catch, which is the
+        worse of the two failures a detector can have.
+
+        Names are the right key rather than a spelling-agreement trap, because both sides here are
+        one host's own code over a name set that is already the compatibility surface — the same
+        reason ``derive_variant_identity`` already refuses a variant map naming an unregistered
+        lever.
+
+        Raises:
+            ProfileRegistrationError: A name appears in both registries.
+        """
+        if self.world is None:
+            return
+        if overlap := sorted(set(self.sweepables.names) & set(self.world.names)):
+            raise ProfileRegistrationError(
+                f"host profile {self.host_id!r} is unsound: registered as both a sweepable and a world "
+                f"dimension: {', '.join(overlap)} — a campaign that varies the world is running a different "
+                "experiment from one that varies a lever, and one knob in both registries reports an "
+                "experimental k over evidence that varied the stimulus. Rename one of the two registrations"
+            )
+
+    def _refuse_an_unsound_inapplicability(self) -> None:
+        """Refuse an ``apparatus_applicability`` entry that cannot mean what it says.
+
+        Checked here because this is the only place the map and the sweepables registry are both in
+        hand — the registry cannot see a claim made *about* it, which is the same reason the overlap
+        and reserved-lever refusals live here.
+
+        **Any declared apparatus dimension is accepted, not only a shared-core one, and that is
+        wider than the recorded exception's ground.** The exception to ``boundary-patterns.md``
+        § Eval host-profile registry seam is argued from shared-core dimensions, where conforming
+        is not available at all: a host has no slot on a core declaration to derive from. For a
+        host's OWN dimension the entry is redundant — it could simply not declare it — and it is
+        deliberately not refused, for two reasons. It is governed identically (``omits_apparatus``
+        takes the runs' values either way, so a host's own dimension its data records is reported
+        exactly as a core one would be), and it is the only way to STAGE the
+        declaration-versus-data contradiction in a test, since the corpus that records a dimension
+        is by construction one the host declared. Narrowing it was tried and reverted: it refused
+        the three tests that hold this mechanism to its promise.
+
+        Every defect is reported at once so a host fixing one sees the rest:
+
+        * **A name this host never declared.** Nothing would read the entry, so it would sit there
+          asserting an exemption for a dimension that does not exist — and it would survive a rename
+          of the dimension it was written for, still looking like a live declaration.
+        * **A name declared with a role other than apparatus.** Only apparatus is scanned for
+          confounds, so exempting a lever or a label suppresses nothing and misdescribes the host.
+        * **A state other than ``inapplicable``.** The engine derives the other two from the reader
+          — a value read is covered, a blank is uncovered — so ``covered`` here is a no-op and
+          ``uncovered`` restates what the blank already says. Accepting either would let a host
+          believe it had declared something.
+        * **An empty reason.** A dimension dropped from every confound scan with no stated why is the
+          unexplained silence :class:`Coverage` requires a reason to prevent, and the reason is what
+          :meth:`omits_apparatus` prints when the runs refute the claim.
+        * **A declaration that does not carry ``indeterminate_when_blank``.** :meth:`omits_apparatus`
+          decides "did a run record this" through
+          :meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.is_indeterminate`, which answers
+          False for every value when the flag is off — a blank there is a real level. So such an
+          entry would never omit anything AND would log a contradiction on every call about a value
+          nobody set: a silent no-op wearing a warning. Unreachable through the seven core apparatus
+          dimensions, all of which carry the flag; reachable by any host's own extension, which is
+          why it is refused here rather than left to be discovered.
+
+        Raises:
+            ProfileRegistrationError: Any defect above, with every instance named.
+        """
+        defects: list[str] = []
+        for name, coverage in sorted(self.apparatus_applicability.items()):
+            declared = self.sweepables.get(name)
+            if declared is None:
+                defects.append(
+                    f"declares {name!r} inapplicable but never declares it as a sweepable at all — nothing "
+                    "would read the entry, and it would outlive a rename of whatever it was written for"
+                )
+                continue
+            if declared.role != "apparatus":
+                defects.append(
+                    f"declares {name!r} inapplicable but declares it as a {declared.role} — only apparatus is "
+                    "scanned for confounds, so the entry suppresses nothing"
+                )
+            if coverage.state != "inapplicable":
+                defects.append(
+                    f"declares {name!r} as {coverage.state!r} — the engine derives that from the reader (a value "
+                    "read is covered, a blank is uncovered); inapplicable is the only state a host can add"
+                )
+            if not coverage.reason.strip():
+                defects.append(
+                    f"declares {name!r} inapplicable with no reason — the dimension then drops out of every "
+                    "confound scan with nothing saying why"
+                )
+            if not declared.indeterminate_when_blank:
+                defects.append(
+                    f"declares {name!r} inapplicable but the declaration does not carry "
+                    "indeterminate_when_blank — a blank there is a real recorded level, so "
+                    "`omits_apparatus` would read every blank as RECORDED, never omit the dimension, and "
+                    "log a contradiction on every call about a value nobody set. The entry would be a "
+                    "silent no-op wearing a warning"
+                )
+        if defects:
+            raise ProfileRegistrationError(f"host profile {self.host_id!r} is unsound: " + "; ".join(defects))
+
+    def omission_reason(self, dimension: str) -> str:
+        """Why this host says it does not have ``dimension``.
+
+        The companion to :meth:`omits_apparatus`, and the reason a reporting surface never needs to
+        subscript :attr:`apparatus_applicability` itself: the invariant "the key exists exactly when
+        the method returned True" then spans one type rather than a method, a caller and a raw
+        mapping a second host's reporting would copy.
+
+        Args:
+            dimension: The declared apparatus input name.
+
+        Returns:
+            The declared reason, or ``""`` when this host declared nothing about it — which a
+            caller reaches only by asking before :meth:`omits_apparatus` said yes.
+        """
+        declared = self.apparatus_applicability.get(dimension)
+        return declared.reason if declared is not None else ""
+
+    def omits_apparatus(self, dimension: str, *values: Any) -> bool:
+        """Whether a reporting surface should leave ``dimension`` out entirely, given what ran.
+
+        The single authority for the omission, and it takes the VALUES because a declaration alone
+        cannot be trusted with the decision. ``apparatus_applicability`` says "this host does not
+        have this dimension"; the runs are what say whether that is true. Registration can only
+        check the static shape of the claim — that the name is a declared apparatus input with a
+        reason — and cannot see a single run, so a host that declares ``judge_model`` inapplicable
+        and then records one would otherwise have a real apparatus DIFFERENCE silently dropped from
+        every surface. That is the failure mode ``world_conformance`` already has a rule against:
+        an unproved declaration must never render identically to a proved one.
+
+        So a non-blank value wins over the declaration: the dimension is reported, and the
+        contradiction is logged with the reason the host gave for a claim its own data refutes.
+        Reported rather than raised because this runs inside assembly of an analysis an operator
+        asked for, and a rig disagreement is exactly the thing they need to SEE — refusing the
+        bundle would withhold the evidence of the defect along with the defect.
+
+        Args:
+            dimension: The declared apparatus input name.
+            *values: Every value observed for it across the runs under consideration. Pass them
+                all: one arm recording a level is enough to refute the claim, and a caller that
+                passes only the first would omit on the strength of the arm that agreed.
+
+        Returns:
+            True when the dimension is declared inapplicable and nothing contradicts it, which is
+            when a surface should behave as though the host never had it. False when it was never
+            declared, or when it was and a run recorded a level anyway.
+
+        Raises:
+            ValueError: No values were passed. Answering without them is the unvalidated omission
+                this method replaces, and it is available to a caller that simply forgets the
+                argument — so it is refused rather than defaulted.
+        """
+        if not values:
+            raise ValueError(
+                f"omits_apparatus({dimension!r}) was called with no values — the check IS the values, and "
+                "answering without them is the unvalidated omission this method exists to replace. A caller "
+                "that genuinely has none reads `apparatus_applicability`, and owes its own reason for trusting "
+                "a declaration nothing has tested."
+            )
+        declared = self.apparatus_applicability.get(dimension)
+        if declared is None:
+            return False
+        if recorded := [value for value in values if not self.sweepables.is_indeterminate(dimension, value)]:
+            log.warning(
+                "host %r declares apparatus dimension %r inapplicable (%s) but a run recorded %r — "
+                "reporting it rather than omitting it, because a recorded level is evidence the "
+                "declaration is wrong and dropping it would hide a real apparatus difference",
+                self.host_id,
+                dimension,
+                declared.reason,
+                recorded[0],
+            )
+            return False
+        return True
+
+    def controllable(self, dimension: str) -> Coverage:
+        """Whether a run can DELIBERATELY vary ``dimension``, derived from the sweepables registry.
+
+        **Registration is not enough, and the role is what settles it.** A ``lever`` is a knob a
+        campaign sweeps; an ``apparatus`` input is the measuring rig, which is not supposed to
+        move and is a confound when it does; a ``label`` identifies rather than determines. Only a
+        lever is something an experiment varies on purpose, and the engine already reads it that
+        way — ``derive_variant_identity`` builds the variant key from levers alone. So an axis
+        declared on a non-lever can never become an arm: every run carrying it resolves to the
+        same variant, and the analysis can only ever report a design gap no amount of data closes.
+
+        **Lever is necessary, not sufficient, and the gap is deliberate.** A lever carrying
+        :attr:`~threetears.evals.contracts.host.sweepables.Sweepable.no_own_coordinate` contributes no
+        coordinate of its OWN — its identity flows through whatever it resolves to. Sweeping it
+        does separate arms, just under the coordinate of that resolution, which is why this gate
+        accepts it. The role check is the whole of what is enforced here; a finding about such an
+        axis still has no coordinate of its own to cite.
+
+        **An open family is decided the other way round, and the two are easily confused.** A
+        family's own name is refused — the container identifies no knob, and the rule spells
+        sweeping a family as sweeping its MEMBERS — while a member the family's own
+        :attr:`~threetears.evals.contracts.host.sweepables.Sweepable.owns_member` recognises is admitted even
+        though it carries no declaration. So the earlier argument for accepting a container,
+        *"refusing it would refuse the sanctioned way to bake off tool parameters"*, no longer
+        holds: that way is spelled as the members now, and they are what this admits.
+
+        Reporting an unsweepable axis ``covered`` is :meth:`representable`'s founding incident in
+        the other registry — a declaration accepted for state no run controls — and the remedies
+        differ per refusal, which is why the ``uncovered`` reasons do: an unregistered dimension
+        needs somebody to declare it, a non-lever one needs the campaign redesigned to hold it
+        fixed instead of sweeping it, and a container needs the member named.
+
+        **Caught here because here is where it is still free.** This gate runs at campaign
+        authoring, before any run is launched; downstream every consumer filters by role correctly,
+        so an accepted-but-unsweepable axis surfaces only after the runs are bought.
+
+        **Decided by the registry, not here.** The verdict and its reason both come from
+        :meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.refuse_as_axis`, so this method
+        cannot come to a different answer from the message its caller prints. Resolving through
+        ``sweepables.get`` here instead is what let the gate accept a container and refuse a
+        member while advertising a list that held neither.
+
+        Args:
+            dimension: The input a campaign wants to sweep.
+
+        Returns:
+            ``covered`` when the host's registry admits the name as an axis; ``uncovered``
+            carrying the registry's reason otherwise. The registry cannot drift from itself
+            because it is the same set of declarations the engine reads to bisect and to build
+            variant keys.
+        """
+        refusal = self.sweepables.refuse_as_axis(dimension)
+        return Coverage("covered") if refusal is None else Coverage("uncovered", refusal)
+
+    def representable(self, dimension: str) -> Coverage:
+        """Whether a run can instantiate the precondition ``dimension``, derived from the registry.
+
+        **Seedability is the question, not registration.** A dimension the host registered as
+        ``witnessed`` — perceived by the subject, controlled by no run — is real, disclosed, and
+        still not something a scenario may presume it has *set*. Reporting it ``covered`` would
+        be the founding incident's own mistake with a declaration wrapped around it. The two
+        ``uncovered`` reasons therefore differ, because the remedies differ: an unregistered
+        dimension needs somebody to declare it, a witnessed one needs the scenario rewritten.
+
+        Args:
+            dimension: The state dimension a scenario presumes.
+
+        Returns:
+            ``inapplicable`` when this host instantiates no world at all — a different answer
+            from ``uncovered``, and the one a consumer evaluating production traffic deserves;
+            ``covered`` when a run can seed the dimension; ``uncovered`` naming the dimension
+            otherwise. The reason names the **dimension**, never the area: "this area is
+            unevaluable" is a conclusion this map is not entitled to draw, and an author told so
+            would abandon a probe that another mechanism could have answered.
+        """
+        if self.world is None:
+            return Coverage("inapplicable", "this host instantiates no simulated world")
+        declared = self.world.get(dimension)
+        if declared is None:
+            return Coverage("uncovered", f"{dimension} is not a dimension this host's world declares")
+        if not declared.seedable:
+            return Coverage(
+                "uncovered",
+                f"{dimension} is declared but no run can seed it — the subject perceives it and the "
+                "experiment does not control it, so a scenario cannot presume it was set",
+            )
+        return Coverage("covered")
+
+    def addressable(self, path: str) -> Coverage:
+        """Whether ``path`` names world state this host declares at all.
+
+        The vocabulary question, and the weaker of the two an authored expression can be asked:
+        it says a declared dimension covers the path, and says nothing about whether a run could
+        set it. That is the whole question for a *postcondition* — a goal check reads whatever the
+        world ended up holding, and reading back a dimension no run controls is an ordinary and
+        correct thing for one to do.
+
+        Asked at authoring because nothing else asks it. A goal check reading a path nothing
+        declares resolves to ``Missing`` at evaluation, comparisons against ``Missing`` are
+        ``False``, and the subject is scored down for a typo that reports as a failed check.
+
+        Args:
+            path: A dotted path into the world, with the language's own root already stripped.
+
+        Returns:
+            ``inapplicable`` when this host instantiates no world at all; ``covered`` when a
+            declared dimension covers the path; ``uncovered`` naming the path otherwise.
+        """
+        if self.world is None:
+            return Coverage("inapplicable", "this host instantiates no simulated world")
+        if self.world.resolve_path(path) is None:
+            return Coverage("uncovered", f"{path} addresses no dimension this host's world declares")
+        return Coverage("covered")
+
+    def presumable(self, path: str) -> Coverage:
+        """Whether a scenario may presume the world state at ``path`` was SET before it started.
+
+        The strong form of :meth:`addressable`, and the one a *precondition* is asked. Declared is
+        not enough: a dimension the host registered as ``witnessed`` is real, disclosed, and still
+        not something a scenario may presume it put in place. Presuming one is the founding
+        incident itself — a probe written for a state nobody could seed, running against whatever
+        the world happened to hold, and scoring the subject on a situation it was never placed in.
+
+        Resolves the path to its dimension first, so ``jobs.queue.length`` is asked about
+        ``jobs.queue``: a path addresses INSIDE a dimension's value, and only the dimension is
+        registered.
+
+        Args:
+            path: A dotted path into the world, with the language's own root already stripped.
+
+        Returns:
+            ``inapplicable`` when this host instantiates no world at all — a scenario on such a
+            host presumes nothing this map can speak for; ``covered`` when a run can seed the
+            dimension the path addresses; ``uncovered`` naming the path and the remedy otherwise.
+            The two ``uncovered`` reasons differ because the remedies do, exactly as
+            :meth:`representable`'s do: an unknown path needs the dimension declared or the
+            expression corrected, a witnessed one needs the scenario rewritten.
+        """
+        if self.world is None:
+            return Coverage("inapplicable", "this host instantiates no simulated world")
+        dimension = self.world.resolve_path(path)
+        if dimension is None:
+            return Coverage("uncovered", f"{path} addresses no dimension this host's world declares")
+        supplied = self.representable(dimension)
+        if supplied.state == "covered" or dimension == path:
+            return supplied
+        # The path addresses INSIDE the dimension's value, so the reason — written about the
+        # dimension — has to say which dimension the path landed on, or an author reading it
+        # goes looking for a registration under the name they wrote.
+        return Coverage(supplied.state, f"{path} addresses a dimension that cannot be presumed: {supplied.reason}")
+
+
+def _prefixes_overlap(first: str, second: str) -> bool:
+    """Whether two lever prefixes could name one lever: equal, or one a dotted prefix of the other."""
+    return first == second or first.startswith(f"{second}.") or second.startswith(f"{first}.")
+
+
+__all__ = [
+    "CANDIDATE_KIND_LEVER",
+    "CANDIDATE_MODEL_LEVER",
+    "Coverage",
+    "CoverageState",
+    "HostProfile",
+    "ProfileRegistrationError",
+]

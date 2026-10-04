@@ -24,7 +24,7 @@ cd "$REPO_ROOT"
 # skipped six packages this script checks. Keep both in step. A package added to the
 # workspace without a line in each is a package nobody is checking, and the gap is
 # invisible because the gate still passes.
-MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/langgraph/src:packages/media-contracts/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/search/src:packages/tool-schema/src:packages/backup/src:packages/geo/src:packages/iam/src \
+MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/evals/src:packages/langgraph/src:packages/media-contracts/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/search/src:packages/tool-schema/src:packages/backup/src:packages/geo/src:packages/iam/src \
     uv run mypy \
         --explicit-package-bases \
         -p threetears.core \
@@ -46,6 +46,7 @@ MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent
         -p threetears.tool_schema \
         -p threetears.registry \
         -p threetears.epoch \
+        -p threetears.evals \
         -p threetears.scheduled_jobs \
         -p threetears.enforcement \
         -p threetears.agent.acl \
@@ -60,3 +61,16 @@ MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent
         -p threetears.geo \
         -p threetears.iam \
         "$@"
+
+# The eval package's two example hosts are reference code an adopter copies, so they are held to
+# what an adopter's own code meets: strict mypy, importing the engine's public roots. That is what
+# proves a host can implement the engine's protocols (a completion client, a candidate kind, a
+# document store) from the exported names alone. A separate run, because no ``tests/`` tree is a
+# package target above; the two directories are named by file, and the repository root is on the
+# path because the hosts import their own fixture package by its repository path.
+MYPYPATH=.:packages/evals/src:packages/observe/src \
+    uv run mypy \
+        --explicit-package-bases \
+        --namespace-packages \
+        packages/evals/tests/fixtures/toyhost/*.py \
+        packages/evals/tests/fixtures/courierhost/*.py

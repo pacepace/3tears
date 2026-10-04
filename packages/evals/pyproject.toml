@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-evals"
+version = "0.63.0"
+description = "Evaluate LLM-backed products: campaigns over levers, judged and code-graded trials, cost and latency accounting, and analysis reports"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+dependencies = [
+    "3tears-observe>=0.63.0,<0.64.0",
+    "pydantic>=2.0",
+    # Renders a report's charts to PNG. Pinned exactly: the analysis tests compare rendered
+    # output, and a vl-convert release bundles a different Vega-Lite.
+    "vl-convert-python==1.9.0.post1",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.uv.sources]
+3tears-observe = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]

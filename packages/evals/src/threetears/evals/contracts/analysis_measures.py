@@ -1,0 +1,262 @@
+"""Per-cell measurement facts — the shapes a bundle computes and an analysis freezes.
+
+These live in a leaf module rather than in :mod:`threetears.evals.analysis.bundle` because a stored
+:class:`~threetears.evals.contracts.campaign.EvalAnalysis` carries them (its decision surface), and the
+analysis models must not import the bundle: the bundle imports them. The bundle re-exports every
+name here, so a caller that reads them off the bundle keeps working.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import Field, model_validator
+
+from threetears.evals.contracts.metrics import AttributionScope
+from threetears.evals.contracts.base import EvalDocumentModel
+
+
+class MeasureSummary(EvalDocumentModel):
+    """One measure's distribution across a set of results.
+
+    **Metadata lives once, in the bundle's ``measure_catalog``, keyed by ``name``** — not
+    on every summary. A collection is built for each run *and* for the campaign rollup, so
+    inlining the descriptor meant repeating multi-sentence prose hundreds of times inside a
+    bundle that IS the paid one-shot prompt. Two fields stay inline anyway because the
+    ranking rule reads them on every measure and a join to check them would be friction
+    exactly where the reasoning happens: ``attribution_scope`` (whether this measure can
+    attribute a change to the subject under test at all) and ``higher_is_better`` (which
+    end is the bad one).
+
+    A measure is either numeric (the distribution fields populated, ``categories`` empty)
+    or categorical (``categories`` populated with counts, the distribution ``None``).
+    ``sem`` is the standard error of the mean — the dispersion requirement, so no point
+    estimate arrives without its spread. It is ``None`` rather than 0.0 below two
+    observations, where the spread is unestimable rather than zero.
+    """
+
+    name: str = Field(
+        min_length=1, description="The measure's registry name — its key into the bundle's measure_catalog."
+    )
+    attribution_scope: AttributionScope = Field(
+        description="Whether the measure isolates one subsystem or reflects the whole end-to-end run."
+    )
+    higher_is_better: bool | None = Field(
+        default=None, description="Direction, or None for a categorical measure (which has no direction)."
+    )
+    n: int = Field(ge=0, description="Observations contributing to this measure.")
+    n_independent: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Distinct TEST CASES behind those observations. When it is below `n`, the "
+            "observations are CLUSTERED (k repeats of the same case) and are NOT independent "
+            "draws: `sem`, `ci_low` and `ci_high` here are computed over `n` and are therefore "
+            "NARROWER than the clustering supports. Treat `n_independent` as the sample size "
+            "any claim of separation rests on."
+        ),
+    )
+    n_zero: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Observations that were exactly zero. On a higher-is-better measure it is the best available "
+            "PROXY for declines — the deliveries that produced nothing — and a latency claim must be paired "
+            "against it, because 'fast' can be bought by giving up. It is not the decline count itself: an "
+            "arm that declined without recording an observation never enters it. A raw count, not a rate. None on a categorical "
+            "measure, where the question does not apply — which is not the same fact as a count of zero."
+        ),
+    )
+    mean: float | None = Field(default=None, description="Arithmetic mean (numeric only).")
+    p05: float | None = Field(
+        default=None, description="5th percentile — the bad tail when higher is better (numeric only)."
+    )
+    p50: float | None = Field(default=None, description="Median, linear-interpolation percentile (numeric only).")
+    p95: float | None = Field(
+        default=None, description="95th percentile — the bad tail when lower is better (numeric only)."
+    )
+    max: float | None = Field(default=None, description="Largest observed value (numeric only).")
+    sem: float | None = Field(
+        default=None,
+        description="Standard error of the mean (the dispersion requirement). None below n=2, where it is unestimable.",
+    )
+    ci_low: float | None = Field(
+        default=None,
+        description="Low bound of the 95% interval on the MEAN (t-based, so honest at small n). None below n=2.",
+    )
+    ci_high: float | None = Field(
+        default=None,
+        description="High bound of the 95% interval on the MEAN (t-based, so honest at small n). None below n=2.",
+    )
+    categories: dict[str, int] = Field(
+        default_factory=dict, description="Value counts for a categorical measure; empty for a numeric one."
+    )
+
+    def bad_tail(self) -> float | None:
+        """The percentile at this measure's *worse* end, whichever end that is.
+
+        A tail is only meaningful once you know which direction is bad. Reporting p95 for
+        every measure invites a reader to compare ``delivered_items``' p95 — its BEST
+        outcome — against a latency p95, its worst, as though both moved the same way.
+
+        Returns:
+            p05 when higher is better, p95 when lower is better, None for a categorical
+            measure or one with no declared direction.
+        """
+        if self.higher_is_better is None:
+            return None
+        return self.p05 if self.higher_is_better else self.p95
+
+    @model_validator(mode="after")
+    def _exactly_one_shape(self) -> MeasureSummary:
+        """Reject a summary that is neither a distribution nor a set of counts, or both.
+
+        The numeric/categorical split is a real either-or, and leaving it to convention
+        means every consumer re-derives the discriminant its own way — one checks
+        ``categories``, another ``p95 is not None``, a third the catalog's ``data_type`` — and they
+        disagree the first time a half-populated summary appears. Enforcing it here makes
+        the shape unrepresentable rather than merely undocumented.
+
+        Raises:
+            ValueError: If both arms are populated, or neither is.
+        """
+        numeric = any(value is not None for value in (self.mean, self.p05, self.p50, self.p95, self.max))
+        if numeric == bool(self.categories):
+            raise ValueError(
+                f"measure {self.name!r} must be either numeric (distribution set, categories empty) "
+                f"or categorical (categories set, distribution empty); got numeric={numeric}, "
+                f"categories={bool(self.categories)}"
+            )
+        return self
+
+
+class MeasureCollection(EvalDocumentModel):
+    """Every measure a set of results carries, with the scopes that carry none named.
+
+    ``absent_scopes`` is the reason this is a model rather than a bare list. A section
+    that simply vanishes when empty gives the generator no signal about the gap — it
+    reads an absence as "nothing to say here" and ranks on whatever remains, which is
+    the exact failure this surface exists to prevent. Naming the empty scope lets the
+    generator state the limit instead. This deliberately departs from the general
+    conditional-serialization preference: here the absence is the message.
+    """
+
+    measures: list[MeasureSummary] = Field(default_factory=list, description="Measures observed, sorted by name.")
+    absent_scopes: list[AttributionScope] = Field(
+        default_factory=list,
+        description="Attribution scopes with no measure at all — an explicit gap, never an omitted section.",
+    )
+    unreported_observations: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Observations the walk reached but could not summarise — an undescribed numeric name, "
+            "a value of any type whose Python type contradicts its descriptor, or a DERIVED measure "
+            "every result withheld because an input it is computed from was unmeasured. Names a gap "
+            "that absent_scopes cannot: a subsystem with undescribed telemetry still measures "
+            "nothing, while one described phase timing keeps its scope off the absent list. An "
+            "entry is a measure name, optionally followed by a parenthesised reason where one "
+            "applies to every withholding result — read for a human, not parsed."
+        ),
+    )
+
+
+class BarVerdict(EvalDocumentModel):
+    """Whether one cell cleared one bar — computed here, never by the reader.
+
+    **One population for every bar, whatever it names**: the cell's observations the harness did not
+    fault. A faulted observation measured the rig breaking rather than the candidate — a judge
+    reading a broken transcript, a check evaluated over a world the harness never seeded, a spend or
+    a wall-clock the fault itself produced — so a bar is never cleared or failed on one, and how many
+    were left out is stated beside the value rather than folded into it.
+    """
+
+    variant_key: str = Field(
+        min_length=1, description="The arm's variant — its key into variant_index, and half of its cell."
+    )
+    apparatus_class_id: str = Field(
+        min_length=1, description="The rig it was measured under — the other half of its cell."
+    )
+    run_ids: list[str] = Field(
+        min_length=1,
+        description=(
+            "The member runs whose observations this cell pooled, sorted — what a finding citing this "
+            "verdict puts in `observation_refs`. The variant key is a cell coordinate, never a run id, and "
+            "a citation of one is refused."
+        ),
+    )
+    value: float | None = Field(
+        default=None,
+        description=(
+            "The cell's mean of the bar's measure — for a goal-state check, the share of its observations "
+            "that passed. None when the cell carries no observation of it."
+        ),
+    )
+    sem: float | None = Field(
+        default=None, description="Standard error of that mean, so a margin inside the noise can be said to be one."
+    )
+    n: int = Field(ge=0, description="Observations behind the value — the cell's non-faulted results only.")
+    n_independent: int = Field(ge=0, description="Distinct test cases behind them.")
+    n_infra_excluded: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "The cell's results left out because the harness faulted them — excluded from the value whatever "
+            "the bar names, since a faulted observation measured the rig and not the candidate."
+        ),
+    )
+    n_cannot_tell: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "For a bar on a judged dimension, the cell's non-faulted results the judge could not score on "
+            "it — left out of the value, and not a fault. Zero for every other bar."
+        ),
+    )
+    cleared: bool | None = Field(
+        default=None,
+        description="Whether the value reaches the threshold in the bar's direction. None when the cell carries no observation — unknown, never failed.",
+    )
+
+
+class BarAdjudication(EvalDocumentModel):
+    """One bar the campaign is held to, adjudicated against every cell.
+
+    **The verdict is arithmetic and it is done here**, because a bar read by the generator was a bar
+    nobody read: the declared thresholds reached the bundle raw, nothing compared them with anything,
+    and the frontier's own clearing count kept its default of zero because no bar was ever passed to
+    it — which a memo then quoted as "no arm cleared the bar". A reader now finds the comparison made,
+    per cell, or the reason it could not be.
+    """
+
+    measure_id: str = Field(min_length=1, description="What the bar is read on, as the bar names it.")
+    threshold: float = Field(description="The value the measure must reach.")
+    direction: Literal["higher_is_better", "lower_is_better"] = Field(description="Which way clearing runs.")
+    source: Literal["declared", "registered"] = Field(
+        description=(
+            "`declared` — the campaign's own bar. `registered` — the host's incumbent for this behavior, which "
+            "applies because the campaign declared no bar on the same measure."
+        )
+    )
+    state: Literal["adjudicated", "names_no_stored_measure", "not_numeric"] = Field(
+        description=(
+            "`adjudicated` — at least one cell carries the measure and every cell has a verdict. "
+            "`names_no_stored_measure` — no non-faulted member result carries a readable value under this "
+            "name, so the bar was never read and no verdict exists; a bar nobody could clear or fail, never "
+            "one every arm failed. `reason` says why: nothing carried it, or the name is one no result can "
+            "carry with a direction. `not_numeric` — the measure is categorical or boolean, so a threshold "
+            "has nothing to compare."
+        )
+    )
+    reason: str | None = Field(default=None, description="Why no verdict exists, for the two non-adjudicated states.")
+    verdicts: list[BarVerdict] = Field(
+        default_factory=list,
+        description="One per cell, ordered by (variant_key, apparatus_class_id). Empty unless the state is adjudicated.",
+    )
+
+
+__all__ = [
+    "BarAdjudication",
+    "BarVerdict",
+    "MeasureCollection",
+    "MeasureSummary",
+]
