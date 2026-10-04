@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.64.0 -- 2026-10-04
+
 ### 3tears-evals joins the family, with a host contract any app can implement
 
 `3tears-evals` (new package; imports under `threetears.evals`) evaluates an LLM-backed product as

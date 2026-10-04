@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-evals"
-version = "0.63.0"
+version = "0.64.0"
 description = "Evaluate LLM-backed products: campaigns over levers, judged and code-graded trials, cost and latency accounting, and analysis reports"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,7 +22,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.63.0,<0.64.0",
+    "3tears-observe>=0.64.0,<0.65.0",
     "pydantic>=2.0",
     # Renders a report's charts to PNG. Pinned exactly: the analysis tests compare rendered
     # output, and a vl-convert release bundles a different Vega-Lite.
