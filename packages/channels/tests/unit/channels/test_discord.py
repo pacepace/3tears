@@ -1416,10 +1416,7 @@ class TestDiscordDispatch:
         with patch("threetears.channels.discord.discord.Client", _Recording):
             DiscordAdapter(bot_token="t", router=router)
         [client] = made
-        message = MagicMock()
-        message.author.bot = False
-        message.content = "hello"
-        with patch("threetears.channels.discord._build_channel_message", return_value="normalised"):
-            # What Client.dispatch looks up for the "message" event: getattr(client, "on_" + event).
-            await getattr(client, "on_message")(message)
-        assert router.last_message == "normalised"
+        message = _make_mock_message(content="hello")
+        # What Client.dispatch looks up for the "message" event: getattr(client, "on_" + event).
+        await getattr(client, "on_message")(message)
+        assert router.last_message is not None and router.last_message.content == "hello"
