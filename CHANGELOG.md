@@ -8,6 +8,28 @@ packages (bumped in lock-step).
 
 ## v0.62.0 -- 2026-10-04
 
+### Security: `ScrapeTool`'s SSRF guard checks every request, not only the target URL
+
+`ScrapeTool` refused a target whose host resolves to a private, loopback, link-local or reserved
+address, but checked only the URL it was given. The HTTP clients behind it follow redirects, so a
+public URL answering `302 Location: http://169.254.169.254/...` or `http://127.0.0.1/...` passed
+the check and the fetch went there.
+
+- **Fixed, in `threetears.scrape`:** while a tool's guard is on, every request its fetch sends is
+  checked the same way: each redirect hop, each detail link `ListingDetailDriver` follows, each
+  document `MultiDocumentDriver` fetches, and the default `RobotsGate`'s `robots.txt` read. It covers
+  the clients `ApiDriver`, `DocumentDriver`, `ListingDetailDriver`, `MultiDocumentDriver` and the
+  default robots fetcher build. A refused hop answers `refused: <reason>`, the same as a refused
+  target, logs a WARNING naming the URL, and counts against the target's fetch circuit as a fetch
+  that produced no page. A refused detail link costs only that row's detail fields, and a refused
+  `robots.txt` redirect reads as no file.
+- **Unchanged:** a tool built with `block_private_hosts=False`, and a driver rendered outside a tool,
+  follow redirects exactly as before.
+- **Not covered, and now documented as not covered:** the browser backends (`camoufox`, and
+  `nodriver` and `nodriver_download` through the sidecar) follow redirects inside the browser, so
+  only their target URL is checked. A client or fetcher the caller injects is used as given. DNS
+  rebinding is not caught; the guard's docstring had said it was.
+
 ### Channels: a Discord bot can reach a user directly, and say how a reply will find it
 
 - **Added, `DiscordAdapter.send_direct(*, user_id, content) -> DirectMessageSent`:** opens (or
