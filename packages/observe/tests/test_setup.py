@@ -380,17 +380,23 @@ class TestOpenTelemetrysOwnRecordsAreNeverExported:
 
 @pytest.fixture
 def root_at_debug() -> Iterator[None]:
-    """the root logger at DEBUG, restored afterwards: every library's request logging is emitted.
+    """the root logger and the HTTP client's logger at DEBUG, restored afterwards.
+
+    the HTTP client's logger is set too: ``configure_logging`` quiets it to WARNING, and an earlier
+    test in the same process may have called it.
 
     :return: nothing
     :rtype: Iterator[None]
     """
-    level = logging.root.level
+    http_client = logging.getLogger("urllib3")
+    levels = (logging.root.level, http_client.level)
     logging.root.setLevel(logging.DEBUG)
+    http_client.setLevel(logging.DEBUG)
     try:
         yield
     finally:
-        logging.root.setLevel(level)
+        logging.root.setLevel(levels[0])
+        http_client.setLevel(levels[1])
 
 
 class _BlockingSpanProcessor(SpanProcessor):
