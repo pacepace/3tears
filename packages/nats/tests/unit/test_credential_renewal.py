@@ -19,6 +19,7 @@ kept open for the longest request it may be carrying. Pinned here:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import timedelta
@@ -38,6 +39,8 @@ from threetears.nats import (
     REAUTH_UNKNOWN_TTL_RECHECK_SECONDS,
     SYNC_REPLY_BUDGET_SECONDS,
     NatsClient,
+    RequestTimeoutError,
+    credential_lifetime_from_user_info,
     has_schedulable_ttl,
     nats_user_jwt_ttl_seconds,
     seconds_until_reauth,
@@ -187,6 +190,52 @@ def fast(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("threetears.nats.client.REAUTH_RETRY_SECONDS", 0.01)
 
 
+def _user_info(expires_ns: object) -> bytes:
+    """a ``$SYS.REQ.USER.INFO`` answer in the server's shape, carrying ``expires_ns``."""
+    data: dict[str, object] = {"user": "u", "account": "$G"}
+    if expires_ns is not _ABSENT:
+        data["expires"] = expires_ns
+    return json.dumps({"server": {"name": "nats-0"}, "data": data}).encode()
+
+
+_ABSENT = object()
+
+
+class TestTheServersAnswerIsRead:
+    """``credential_lifetime_from_user_info``: the server's remaining time, made a whole lifetime."""
+
+    def test_the_remaining_nanoseconds_plus_the_age_at_the_request_is_the_lifetime(self) -> None:
+        reply = _user_info(240_500_000_000)  # 240.5 s remain
+        assert credential_lifetime_from_user_info(reply, age_at_request=59.9, age_at_reply=60.1) == 300
+
+    def test_it_rounds_down_so_any_error_renews_early(self) -> None:
+        reply = _user_info(299_999_999_999)
+        assert credential_lifetime_from_user_info(reply, age_at_request=0.0, age_at_reply=0.1) == 299
+
+    @pytest.mark.parametrize("expires", [_ABSENT, 0])
+    def test_a_credential_that_never_expires_is_none(self, expires: object) -> None:
+        assert credential_lifetime_from_user_info(_user_info(expires), age_at_request=1.0, age_at_reply=1.0) is None
+
+    def test_an_answer_that_spans_a_connection_swap_is_refused(self) -> None:
+        """the new credential's remaining time plus the old connection's age overstates the lifetime."""
+        reply = _user_info(300_000_000_000)
+        with pytest.raises(ValueError, match="replaced while its credential lifetime was asked"):
+            credential_lifetime_from_user_info(reply, age_at_request=250.0, age_at_reply=0.4)
+
+    def test_a_server_error_is_refused(self) -> None:
+        reply = json.dumps({"error": {"code": 503, "description": "events disabled"}}).encode()
+        with pytest.raises(ValueError, match="refused the user-info request"):
+            credential_lifetime_from_user_info(reply, age_at_request=1.0, age_at_reply=1.0)
+
+    @pytest.mark.parametrize(
+        "reply",
+        [b"not json", b"[1, 2]", json.dumps({"server": {}}).encode(), _user_info("300s"), _user_info(True)],
+    )
+    def test_an_answer_not_in_the_user_info_shape_is_refused(self, reply: bytes) -> None:
+        with pytest.raises(ValueError):
+            credential_lifetime_from_user_info(reply, age_at_request=1.0, age_at_reply=1.0)
+
+
 class TestTheClientRenewsItsOwnCredential:
     """the loop the three callers each carried, owned once by the client."""
 
@@ -256,6 +305,208 @@ class TestTheClientRenewsItsOwnCredential:
             await client.shutdown()
 
         assert len(calls) >= 2
+
+    async def test_a_server_that_does_not_answer_falls_back_to_the_configured_ttl(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """an older grant without the user-info subject must not stop the renewal."""
+        del fast
+        renewed = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            renewed.set()
+
+        async def _no_answer(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            raise RequestTimeoutError("request timed out: subject=$SYS.REQ.USER.INFO")
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _no_answer)
+        client = _client()
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 300, ask_server=True)
+            try:
+                async with asyncio.timeout(2.0):
+                    await renewed.wait()
+            finally:
+                await client.shutdown()
+
+        assert any("did not report this connection's credential lifetime" in r.getMessage() for r in caplog.records)
+
+    async def test_a_server_that_names_no_expiry_falls_back_and_says_so(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """an answer with no lifetime must not change the schedule silently."""
+        del fast
+        renewed = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            renewed.set()
+
+        async def _no_expiry(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            return None
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _no_expiry)
+        client = _client()
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 300, ask_server=True)
+            try:
+                async with asyncio.timeout(2.0):
+                    await renewed.wait()
+            finally:
+                await client.shutdown()
+
+        assert any("reported no expiry" in r.getMessage() for r in caplog.records)
+
+    async def test_the_servers_ttl_outranks_a_longer_configured_one(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a pod configured for a day renews on the 300 s the server reports it was minted."""
+        del fast
+        renewed = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            renewed.set()
+
+        async def _server_says(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            return 300
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _server_says)
+        client = _client()
+        with caplog.at_level(logging.INFO, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 86_400, ask_server=True)
+            try:
+                async with asyncio.timeout(2.0):
+                    await renewed.wait()
+            finally:
+                await client.shutdown()
+
+        switched = [r for r in caplog.records if "shorter credential lifetime than configured" in r.getMessage()]
+        assert switched, "the loop did not take the server's lifetime over the configured one"
+        assert switched[0].extra_data == {  # type: ignore[attr-defined]
+            "client_name": "renewal-test",
+            "server_ttl_seconds": 300,
+            "configured_ttl_seconds": 86_400,
+        }
+
+    async def test_a_shortfall_within_the_servers_rounding_is_not_reported_at_info(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the server's answer is rounded down by design, so a day reads back as 86399 s.
+
+        Found on cobalt-dev: the INFO line fired on every renewal cycle for a lifetime that was
+        exactly the configured one.
+        """
+        del fast
+        renewed = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            renewed.set()
+
+        async def _server_says(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            return 86_399
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _server_says)
+        client = _client()
+        with caplog.at_level(logging.DEBUG, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 86_400, ask_server=True)
+            try:
+                async with asyncio.timeout(2.0):
+                    await renewed.wait()
+            finally:
+                await client.shutdown()
+
+        switched = [r for r in caplog.records if "shorter credential lifetime than configured" in r.getMessage()]
+        assert switched, "the shortfall within the rounding was not logged at all"
+        assert all(r.levelno == logging.DEBUG for r in switched), [r.levelname for r in switched]
+
+    async def test_a_steady_shortfall_is_reported_at_info_once(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the same server lifetime, cycle after cycle, is one fact, not one line per renewal."""
+        del fast
+        renewals = 0
+        enough = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            nonlocal renewals
+            renewals += 1
+            if renewals >= 3:
+                enough.set()
+
+        async def _server_says(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            return 300
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _server_says)
+        client = _client()
+        with caplog.at_level(logging.DEBUG, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 86_400, ask_server=True)
+            try:
+                async with asyncio.timeout(5.0):
+                    await enough.wait()
+            finally:
+                await client.shutdown()
+
+        switched = [r for r in caplog.records if "shorter credential lifetime than configured" in r.getMessage()]
+        assert len(switched) >= 3, "the loop did not measure the lifetime on every cycle"
+        assert [r.levelno for r in switched].count(logging.INFO) == 1, [r.levelname for r in switched]
+
+    async def _info_shortfalls_for(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, readings: list[int]
+    ) -> int:
+        """run the loop over one server reading per cycle and count the shortfall lines at INFO.
+
+        :param monkeypatch: pytest's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :param caplog: pytest's log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :param readings: the lifetime the server reports on each cycle, in order
+        :ptype readings: list[int]
+        :return: how many shortfall lines were logged at INFO
+        :rtype: int
+        """
+        remaining = list(readings)
+        done = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            if not remaining:
+                done.set()
+
+        async def _server_says(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            return remaining.pop(0) if remaining else readings[-1]
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _server_says)
+        client = _client()
+        with caplog.at_level(logging.DEBUG, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 86_400, ask_server=True)
+            try:
+                async with asyncio.timeout(5.0):
+                    await done.wait()
+            finally:
+                await client.shutdown()
+        return sum(
+            1
+            for r in caplog.records
+            if "shorter credential lifetime than configured" in r.getMessage() and r.levelno == logging.INFO
+        )
+
+    async def test_a_shortfall_returning_after_a_rounding_only_reading_is_reported_again(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a reading within the rounding means the shortfall went away, so its return is news."""
+        del fast
+        assert await self._info_shortfalls_for(monkeypatch, caplog, [300, 86_399, 300]) == 2
+
+    async def test_a_lifetime_jittering_within_the_rounding_is_reported_once(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the server's answer is rounded down, so the same lifetime reads 299 one cycle and 300 the next."""
+        del fast
+        assert await self._info_shortfalls_for(monkeypatch, caplog, [299, 300, 299, 300]) == 1
 
     async def test_a_failure_after_the_scheduled_sleep_retries_without_a_second_cycle(
         self, monkeypatch: pytest.MonkeyPatch

@@ -24,6 +24,7 @@ import pytest
 from threetears.nats.subject_permissions import (
     AGENT_POD_PLATFORM_BUCKET_SUFFIXES,
     CROSS_PLATFORM_CACHE_INVALIDATE,
+    SERVER_USER_INFO_SUBJECT,
     DATA_VERSIONS_BUCKET_SUFFIX,
     MAX_COORDINATION_BUCKETS,
     WORKSPACE_LOCKS_BUCKET_SUFFIX,
@@ -125,9 +126,14 @@ class TestLeastPrivilege:
             scoped = (
                 subj.startswith(f"{_NS}.")
                 or subj == CROSS_PLATFORM_CACHE_INVALIDATE
+                or subj == SERVER_USER_INFO_SUBJECT
                 or subj.startswith(f"{perm.inbox_prefix}.")
             )
             assert scoped, f"{principal}: unscoped subject {subj!r}"
+        # the server's user-info subject is safe only as a REQUEST: its answer arrives on the
+        # principal's own inbox and describes only the asking connection. Subscribing to it would
+        # read every other connection's request.
+        assert SERVER_USER_INFO_SUBJECT not in perm.subscribe, f"{principal}: subscribes to {SERVER_USER_INFO_SUBJECT}"
 
     @pytest.mark.parametrize("principal", list(Principal))
     def test_scoped_inbox_present_and_not_global(self, principal: Principal) -> None:
@@ -607,7 +613,10 @@ class TestNamespaceBinding:
         perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_1)
         assert f"{'prod7'}.tools.internal.{_POD_1}" in perm.subscribe
         assert all(
-            s.startswith("prod7.") or s == CROSS_PLATFORM_CACHE_INVALIDATE or s.startswith("_INBOX_")
+            s.startswith("prod7.")
+            or s == CROSS_PLATFORM_CACHE_INVALIDATE
+            or s == SERVER_USER_INFO_SUBJECT
+            or s.startswith("_INBOX_")
             for s in _all_subjects(perm)
         )
 

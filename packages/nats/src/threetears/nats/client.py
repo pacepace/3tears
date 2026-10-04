@@ -122,6 +122,7 @@ from threetears.nats.credential_renewal import (
     REAUTH_MIN_SLEEP_SECONDS,
     REAUTH_RETIRE_DRAIN_SECONDS,
     REAUTH_RETRY_SECONDS,
+    credential_lifetime_from_user_info,
     has_schedulable_ttl,
     nats_user_jwt_ttl_seconds,
     seconds_until_reauth,
@@ -129,6 +130,7 @@ from threetears.nats.credential_renewal import (
     unsafe_renewal_reason,
 )
 from threetears.nats.errors import (
+    KvConfigMismatch,
     NamespaceNotConfiguredError,
     NatsClientError,
     NoRespondersError,
@@ -139,6 +141,7 @@ from threetears.nats.errors import (
     SubscribeError,
 )
 from threetears.nats.result_delivery import SYNC_REPLY_BUDGET_SECONDS
+from threetears.nats.subject_permissions import SERVER_USER_INFO_SUBJECT
 from threetears.nats.subjects import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER, Subject, Subjects, set_default_namespace
 
 # JetStream API error code for "subjects overlap with an existing stream": a
@@ -147,11 +150,29 @@ from threetears.nats.subjects import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER, Subjec
 # ensure_jetstream_stream.
 _JS_ERR_SUBJECTS_OVERLAP = 10065
 
+
+class _OwnedBucket(NamedTuple):
+    """a remembered KV declaration's ownership of its bucket, which a restoration declares again.
+
+    :ivar full_name: the fully-qualified bucket name
+    :ivar drop_file_storage: whether the declaration may drop the bucket when it is live on file storage
+    """
+
+    full_name: str
+    drop_file_storage: bool
+
+
 # JetStream API error code for "stream name already in use with a different configuration". The
 # server answers it only when it looked at the create and found a live stream of that name carrying
 # something else: on a re-declaration after a reconnect that is a stream that SURVIVED (or that
-# another declarer already brought back and has since changed), so it is left exactly as it is.
+# another declarer already brought back and has since changed), so it is left exactly as it is --
+# unless it backs a KV bucket whose declarer owns it (``ensure_kv_bucket(owns_bucket=True)``).
 _JS_ERR_STREAM_NAME_IN_USE = 10058
+
+#: how far the server's reported credential lifetime may fall short of the configured one and still
+#: be the configured one. the server's answer is rounded down to whole seconds, by design, so that
+#: any error renews early (:func:`~threetears.nats.credential_renewal.credential_lifetime_from_user_info`).
+_SERVER_TTL_ROUNDING_SECONDS: Final[int] = 1
 
 #: first pause before a restoration after a reconnect tries again, when something it had to put back
 #: (a stream or KV bucket this client declared, a durable consumer it bound) could not
@@ -2528,6 +2549,7 @@ class _CredentialRenewal:
         ttl_seconds: Callable[[], int | None],
         connection_age_seconds: Callable[[], float],
         longest_request_seconds: float,
+        measure_ttl: Callable[[], Awaitable[int | None]] | None = None,
     ) -> None:
         """bind the loop to the client it renews.
 
@@ -2542,6 +2564,9 @@ class _CredentialRenewal:
         :ptype connection_age_seconds: Callable[[], float]
         :param longest_request_seconds: the longest request the connection makes
         :ptype longest_request_seconds: float
+        :param measure_ttl: asks the server for the current credential's lifetime; when given,
+            its answer outranks ``ttl_seconds``, which is used only when it reports none
+        :ptype measure_ttl: Callable[[], Awaitable[int | None]] | None
         :return: None
         :rtype: None
         """
@@ -2550,6 +2575,92 @@ class _CredentialRenewal:
         self._ttl_seconds = ttl_seconds
         self._connection_age_seconds = connection_age_seconds
         self._longest_request_seconds = longest_request_seconds
+        self._measure_ttl = measure_ttl
+        # the (server, configured) lifetimes the shortfall was last reported at INFO for, so a steady
+        # one is reported once rather than every cycle; ``None`` while there is no real shortfall.
+        self._reported_shortfall: tuple[int, int] | None = None
+
+    async def _current_ttl(self) -> int | None:
+        """the lifetime to schedule this cycle on: the server's answer when asked for, else the configured one.
+
+        A server that does not answer -- an older grant without the user-info subject, a
+        momentary stall -- falls back to the configured lifetime with a warning naming why, so
+        the loop never stops renewing for want of a measurement.
+
+        :return: the credential's lifetime in seconds, or ``None`` when unknown
+        :rtype: int | None
+        """
+        configured = self._ttl_seconds()
+        result = configured
+        if self._measure_ttl is not None:
+            try:
+                measured = await self._measure_ttl()
+            except (NatsClientError, ValueError) as exc:
+                measured = None
+                log.warning(
+                    "the server did not report this connection's credential lifetime; scheduling the "
+                    "renewal on the configured %s s instead: %s",
+                    configured,
+                    exc,
+                    extra={"extra_data": {"client_name": self._client_name}},
+                )
+            else:
+                if measured is None:
+                    # the server answered and named no expiry. Every credential this loop renews
+                    # expires, so that is unexpected; renewing on the configured lifetime keeps the
+                    # connection alive, and the warning says why it was not the server's.
+                    log.warning(
+                        "the server reported no expiry for this connection's credential; scheduling the "
+                        "renewal on the configured %s s instead",
+                        configured,
+                        extra={"extra_data": {"client_name": self._client_name}},
+                    )
+            if measured is not None:
+                if configured is not None and measured < configured:
+                    self._log_shortfall(measured=measured, configured=configured)
+                else:
+                    self._reported_shortfall = None
+                result = measured
+        return result
+
+    def _log_shortfall(self, *, measured: int, configured: int) -> None:
+        """say the server's lifetime is shorter than the configured one, at INFO only when it is news.
+
+        The server's answer is rounded down by design
+        (:func:`~threetears.nats.credential_renewal.credential_lifetime_from_user_info`),
+        so a credential minted for exactly the configured lifetime reads back up to a second short:
+        that is not a shorter lifetime: it is logged at DEBUG and clears what was last reported, so
+        a real shortfall that comes back is news again. A real shortfall is logged at INFO when it
+        first appears and again only when its value moves by more than that same rounding -- the
+        same lifetime reads 299 one cycle and 300 the next, and a steady one repeated every cycle at
+        INFO buries the one cycle where it changed.
+
+        :param measured: the lifetime the server reports, in seconds
+        :ptype measured: int
+        :param configured: the configured lifetime, in seconds
+        :ptype configured: int
+        :return: nothing
+        :rtype: None
+        """
+        extra = {
+            "extra_data": {
+                "client_name": self._client_name,
+                "server_ttl_seconds": measured,
+                "configured_ttl_seconds": configured,
+            }
+        }
+        message = "the server reports a shorter credential lifetime than configured; renewing on the server's"
+        reported = self._reported_shortfall
+        if configured - measured <= _SERVER_TTL_ROUNDING_SECONDS:
+            self._reported_shortfall = None
+            log.debug(message, extra=extra)
+        elif (
+            reported is None or reported[1] != configured or abs(measured - reported[0]) > _SERVER_TTL_ROUNDING_SECONDS
+        ):
+            self._reported_shortfall = (measured, configured)
+            log.info(message, extra=extra)
+        else:
+            log.debug(message, extra=extra)
 
     async def run(self) -> None:
         """renew before every expiry until cancelled; a failed renewal retries fast.
@@ -2570,7 +2681,7 @@ class _CredentialRenewal:
         try:
             while True:
                 try:
-                    ttl = self._ttl_seconds()
+                    ttl = await self._current_ttl()
                     if retry_in is None:
                         delay = seconds_until_reauth(ttl, longest_request_seconds=self._longest_request_seconds)
                         if has_schedulable_ttl(ttl):
@@ -2735,6 +2846,7 @@ class NatsClient:
         "_longest_request_seconds",
         "_kv_timings",
         "_declarations",
+        "_owned_buckets",
         "_pull_consumers",
         "_restoration",
     )
@@ -2780,6 +2892,12 @@ class NatsClient:
         # the pod); nothing but the declarer can put either back. :meth:`_restore_once` re-creates each
         # after every reconnect, and a create of a stream that survived is a no-op.
         self._declarations: dict[str, _NatsStreamConfig] = {}
+        # the backing stream name -> the ownership of every remembered KV declaration whose declarer
+        # owns the bucket's whole shape (``ensure_kv_bucket(owns_bucket=True)``), with the permission
+        # to drop a live file bucket it was given. a restoration finding one of these live with another
+        # configuration reconciles it, as the declaration did, rather than leaving it as it is
+        # (:meth:`_redeclare_stream`).
+        self._owned_buckets: dict[str, _OwnedBucket] = {}
         # the restoration a reconnect started (:meth:`_restore_after_reconnect`), held so it is not
         # collected mid-flight and so a later reconnect, :meth:`shutdown` and :meth:`abandon` stop it.
         self._restoration: asyncio.Task[None] | None = None
@@ -3177,14 +3295,24 @@ class NatsClient:
         return failures
 
     async def _redeclare_stream(self, js: Any, config: _NatsStreamConfig) -> None:
-        """create one declared stream again, exactly as declared, and never change a live one.
+        """create one declared stream again, exactly as declared; reconcile a live one only when its declarer owns it.
 
-        A create, never an update: JetStream's create is idempotent for an identical config, so a
-        stream that survived (the reconnect was a network blip, or another replica already put it
-        back) is untouched. One that is live with a DIFFERENT config is refused by the server with
-        "stream name already in use"; that is a stream another declarer changed, and it is left as
-        it is rather than reconciled back -- this restores what a restart took, it does not fight
+        A create first: JetStream's create is idempotent for an identical config, so a stream that
+        survived (the reconnect was a network blip, or another replica already put it back) is
+        untouched. One that is live with a DIFFERENT config is refused by the server with "stream
+        name already in use"; that is a stream another declarer changed, and by default it is left
+        as it is rather than reconciled back -- this restores what a restart took, it does not fight
         over a stream that is still there.
+
+        The exception is a KV bucket whose declarer owns it (``ensure_kv_bucket(owns_bucket=True)``):
+        it has nobody to fight over it, so a live one IS changed, exactly as that declaration
+        reconciled it (:func:`threetears.nats.kv.reconcile_kv_stream`) -- updated in place, or deleted
+        and recreated empty where its storage differs and the declaration was given
+        ``drop_file_storage``. Otherwise a process that put the wiped bucket back first, with an
+        expiry or storage of its own, would leave every bind-only opener asking for a per-entry
+        lifetime refused until this one restarted. An owned bucket found on file storage WITHOUT
+        that permission is refused by the reconcile and left untouched: that refusal is final, so it
+        is logged at ERROR naming the fix and not retried, as no later round would answer differently.
 
         :param js: a JetStream context on the current connection
         :ptype js: Any
@@ -3194,13 +3322,41 @@ class NatsClient:
         :rtype: None
         :raises Exception: any other refusal or failure; the round logs it and retries
         """
+        # local import avoids circular dependency between client.py and kv.py
+        from threetears.nats.kv import reconcile_kv_stream
+
         outcome = "re-declared after a NATS reconnect (created if a restart had wiped it)"
         try:
             await js.add_stream(dataclasses.replace(config))
         except Exception as exc:
             if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
                 raise
-            outcome = "live with a configuration other than the one declared here after a NATS reconnect; left as it is"
+            owned = self._owned_buckets.get(config.name or "")
+            if owned is None:
+                outcome = (
+                    "live with a configuration other than the one declared here after a NATS reconnect; left as it is"
+                )
+            else:
+                try:
+                    await reconcile_kv_stream(
+                        js=js,
+                        full_name=owned.full_name,
+                        config=config,
+                        owns_bucket=True,
+                        drop_file_storage=owned.drop_file_storage,
+                    )
+                except KvConfigMismatch as refused:
+                    log.error(
+                        "re-declaring KV bucket %s after a NATS reconnect was refused, and it is left as it is: %s",
+                        owned.full_name,
+                        refused,
+                        extra={"extra_data": {"stream": config.name, "client_name": self._client_name}},
+                    )
+                    return
+                outcome = (
+                    "live with a configuration other than the one declared here after a NATS reconnect; its "
+                    "declarer owns it, so it was reconciled to the declaration"
+                )
         log.info(
             "%s-storage stream %s %s",
             _storage_name(config),
@@ -3788,11 +3944,39 @@ class NatsClient:
         state = self._lifecycle.state_of(self._raw)
         return time.monotonic() - state.connected_at if state is not None else 0.0
 
+    async def credential_ttl_from_server(self, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+        """the lifetime of this connection's credential, as the server that will end it reports it.
+
+        The server answers ``$SYS.REQ.USER.INFO`` with the requesting connection's own remaining
+        credential lifetime, and it is the one party that cannot be wrong about it: it closes the
+        connection when that lifetime runs out. Reported as the WHOLE lifetime -- what remains plus
+        how long the connection has held it -- because that is the unit the renewal schedule takes.
+        Rounded down, so any error schedules the renewal early rather than after the expiry.
+
+        The principal needs :data:`~threetears.nats.subject_permissions.SERVER_USER_INFO_SUBJECT`
+        in its publish grant. Without it the request is dropped and this times out, which the
+        caller treats as "not reported".
+
+        :param timeout: how long to wait for the server's answer
+        :ptype timeout: timedelta
+        :return: the credential's lifetime in seconds; ``None`` when it never expires
+        :rtype: int | None
+        :raises RequestError: when the server does not answer in time
+        :raises ValueError: when the connection was replaced while asking, or the answer is not
+            the server's user-info shape (:func:`credential_lifetime_from_user_info`)
+        """
+        age_at_request = self._connection_age_seconds()
+        reply = await self.request_raw(subject=Subject.raw(SERVER_USER_INFO_SUBJECT), payload=b"", timeout=timeout)
+        return credential_lifetime_from_user_info(
+            reply, age_at_request=age_at_request, age_at_reply=self._connection_age_seconds()
+        )
+
     def renew_credential(
         self,
         *,
         ttl_seconds: Callable[[], int | None] = nats_user_jwt_ttl_seconds,
         longest_request_seconds: float = SYNC_REPLY_BUDGET_SECONDS,
+        ask_server: bool = False,
     ) -> None:
         """keep this client connected past its credential's expiry by renewing the credential first.
 
@@ -3815,6 +3999,12 @@ class NatsClient:
             reply it owes may take: the replaced connection is kept open this long after each
             renewal. a TTL too short to allow that is logged as an error every cycle, naming it
         :ptype longest_request_seconds: float
+        :param ask_server: ask the server for the credential's lifetime every cycle
+            (:meth:`credential_ttl_from_server`) and schedule on its answer, falling back to
+            ``ttl_seconds`` only when it gives none. For an owner that is never told the lifetime
+            it was minted -- a tool pod, which has no handshake -- since a guess longer than the
+            minted lifetime renews after the server has already ended the connection
+        :ptype ask_server: bool
         :return: nothing
         :rtype: None
         :raises NatsClientError: when the client is abandoned or closed
@@ -3832,6 +4022,7 @@ class NatsClient:
             ttl_seconds=ttl_seconds,
             connection_age_seconds=self._connection_age_seconds,
             longest_request_seconds=longest_request_seconds,
+            measure_ttl=self.credential_ttl_from_server if ask_server else None,
         )
         self._renewal_task = asyncio.create_task(renewal.run(), name=f"nats-credential-renewal:{self._client_name}")
 
@@ -5089,8 +5280,10 @@ class NatsClient:
         history: int = 1,
         direct: bool = True,
         create_if_missing: bool = True,
+        owns_bucket: bool = False,
+        drop_file_storage: bool = False,
     ) -> NatsKvBucket:
-        """DECLARE a KV bucket's configuration, reconciling a live one in place.
+        """DECLARE a KV bucket's configuration, reconciling a live one.
 
         the KV counterpart of :meth:`ensure_jetstream_stream`, and the answer to
         the create-or-BIND defect: opening a bucket that already existed used to
@@ -5098,7 +5291,8 @@ class NatsClient:
         ``log.debug`` to say so. this declares instead -- it creates the bucket
         when absent and updates the live stream in place when it carries a
         different value for one of
-        :data:`threetears.nats.kv.RECONCILED_KV_STREAM_FIELDS`.
+        :data:`threetears.nats.kv.RECONCILED_KV_STREAM_FIELDS` -- and, for a
+        declarer that owns the bucket, reconciles its whole shape (below).
 
         **call this at startup, from the identity that owns the bucket**, before
         anything else in the process opens it. it writes through the SAME cache
@@ -5120,7 +5314,8 @@ class NatsClient:
         create the bucket. neither is a :meth:`kv_bucket` open, which declares
         nothing -- remembering one would let a process that is not the bucket's
         declarer create it after a restart with a config (``allow_direct`` unset,
-        say) the declarer's create-only restoration then leaves in place.
+        say) the declarer's restoration then leaves in place -- a restoration
+        only creates, unless the declaration owns the bucket (below).
 
         ``direct`` defaults to ``True`` here and to ``None`` on
         :meth:`kv_bucket`, and the asymmetry is the point: a declaration states
@@ -5129,6 +5324,43 @@ class NatsClient:
         reads a key by putting the key in the REQUEST BODY of
         ``$JS.API.STREAM.MSG.GET.KV_{bucket}``, and NATS authorises on subjects,
         so no key-scoped ``$KV.`` grant can constrain a read.
+
+        **the bucket's expiry, history and storage are reconciled only by a
+        declarer that owns the bucket.** they sit outside the reconciled set,
+        because a bucket with several declarers asking for different shapes would
+        have them fight over it. a bucket with exactly one owner has nobody to
+        fight: that owner passes ``owns_bucket=True``, and the whole requested
+        shape is reconciled (:func:`threetears.nats.kv.reconcile_kv_stream`) --
+        a live ``max_age`` (``ttl``, ``None`` meaning none) or history in place,
+        logged at INFO naming the old and new values. it applies on this
+        declaration, on every self-heal re-open of the handle, and on every
+        restoration after a reconnect, and is safe against two owners declaring
+        at once.
+
+        **only for an L2 bucket whose contents are ephemeral by design**, which is
+        why an owner must declare ``storage="memory"``; a file bucket was
+        declared durable on purpose and cannot be owned.
+
+        **a live storage change is the one reconcile that loses data, so it needs
+        a second, explicit opt-in.** JetStream cannot change a live stream's
+        storage, so the owner would delete the bucket's stream and create it
+        again, dropping every entry. an owner declares memory, so the bucket it
+        finds is live on FILE -- and a NATS restart does not wipe a file bucket,
+        so those entries are ones nothing else would have lost. by default the
+        declaration refuses such a bucket with
+        :class:`~threetears.nats.errors.KvConfigMismatch` and leaves it untouched.
+        ``drop_file_storage=True`` is the caller stating the bucket's contents are
+        disposable: the stream is then recreated on memory, logged at WARNING
+        naming the bucket, the old and new storage, and that every entry was
+        dropped. it is remembered with the declaration like ``owns_bucket``.
+
+        the default ``False`` reports a differing expiry, history or storage at
+        WARNING and leaves it. a platform declaring every pod bucket with no
+        bucket-wide expiry, so each bind-only opener carries its own per-entry
+        lifetime, must pass it: a stale bucket-wide expiry otherwise refuses every
+        such opener with :class:`~threetears.nats.errors.KvConfigMismatch` for as
+        long as it lives. :meth:`kv_bucket` never owns a bucket; it declares
+        nothing.
 
         :param name: bucket name suffix (will be prefixed by namespace)
         :ptype name: str
@@ -5145,13 +5377,27 @@ class NatsClient:
             config differs, which is what a process that is not the bucket's
             owner should do
         :ptype create_if_missing: bool
+        :param owns_bucket: this declarer is the bucket's one owner of its
+            whole shape, so every requested field is reconciled -- in place, or
+            by recreating the bucket empty where JetStream cannot; remembered with
+            the declaration, so a restoration after a reconnect does the same.
+            only with ``create_if_missing=True`` and ``storage="memory"``
+        :ptype owns_bucket: bool
+        :param drop_file_storage: the owner may recreate a bucket it finds live
+            on file storage, dropping entries a NATS restart would have kept;
+            without it such a bucket is refused and left untouched. only with
+            ``owns_bucket=True``
+        :ptype drop_file_storage: bool
         :return: ready KV bucket handle, also installed in the client's cache
         :rtype: NatsKvBucket
+        :raises ValueError: if ``owns_bucket=True`` with ``create_if_missing=False``
+            or ``storage="file"``, or ``drop_file_storage=True`` without ``owns_bucket``
         :raises KvBucketNotFoundError: if the bucket does not exist and this call could not create it --
             a bind (``create_if_missing=False``) once the wait for its declarer is spent, or a
             declaration whose create was not answered (a ``KvError``)
         :raises KvError: if bucket creation or binding fails for any other reason
-        :raises KvConfigMismatch: if ``create_if_missing=False`` and the live bucket differs
+        :raises KvConfigMismatch: if ``create_if_missing=False`` and the live bucket differs, or
+            an owner finds the bucket live on file storage without ``drop_file_storage``
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
         """
         # local import avoids circular dependency between client.py and kv.py
@@ -5169,6 +5415,8 @@ class NatsClient:
                 history=history,
                 direct=direct,
                 timings=self._kv_timings if self._kv_timings is not None else DEFAULT_KV_TIMINGS,
+                owns_bucket=owns_bucket,
+                drop_file_storage=drop_file_storage,
             )
             self._buckets[full_name] = bucket
         if create_if_missing:
@@ -5183,7 +5431,14 @@ class NatsClient:
                 storage_type=StorageType.FILE if storage == "file" else StorageType.MEMORY,
                 direct=direct,
             )
-            self._declarations[declared.name or full_name] = declared
+            stream = declared.name or full_name
+            self._declarations[stream] = declared
+            # the LATEST declaration is the one remembered, its ownership of the bucket included:
+            # a re-declaration without it gives the ownership up.
+            if owns_bucket:
+                self._owned_buckets[stream] = _OwnedBucket(full_name=full_name, drop_file_storage=drop_file_storage)
+            else:
+                self._owned_buckets.pop(stream, None)
         return bucket
 
     async def ensure_jetstream_stream(

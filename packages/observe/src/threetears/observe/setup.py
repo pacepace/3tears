@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from threetears.observe.logging import get_logger
@@ -26,6 +29,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "TelemetryConfig",
+    "force_flush_telemetry",
     "init_telemetry",
     "reset_telemetry",
     "shutdown_telemetry",
@@ -222,6 +226,56 @@ def _init_log_export(config: TelemetryConfig, resource: Resource) -> None:
         "OTel log export initialized",
         extra={"extra_data": {"endpoint": config.loki_endpoint}},
     )
+
+
+def force_flush_telemetry(timeout: timedelta = timedelta(seconds=2)) -> bool:
+    """export every buffered span, metric and log record now, without shutting anything down.
+
+    the public way to make telemetry observable at a known moment -- a test asserting on what its
+    collector received, a job about to exit through a path that skips :func:`shutdown_telemetry`.
+    flushes, in order, the tracer provider :func:`init_telemetry` installed, the global meter
+    provider when it is an SDK one that can flush (3tears installs none itself, so this covers
+    whatever the host configured), and the log export :func:`init_telemetry` started. traces go
+    first because flushing them can emit log records the log flush then carries.
+
+    ``timeout`` bounds the whole call, not each provider: each flush gets what is left of it. a
+    provider that is not configured is skipped and counts as flushed, so with nothing configured
+    this returns ``True`` at once. a flush that raises is logged at WARNING and counts as not
+    flushed; it never stops the flushes after it.
+
+    :param timeout: the longest the whole flush may take
+    :ptype timeout: timedelta
+    :return: whether every configured provider exported everything it held within ``timeout``
+    :rtype: bool
+    """
+    from opentelemetry import metrics
+
+    deadline = time.monotonic() + timeout.total_seconds()
+    flushes: list[tuple[str, Callable[[int], bool | None]]] = []
+    if _tracer_provider is not None:
+        tracer_provider = _tracer_provider
+        flushes.append(("traces", lambda millis: tracer_provider.force_flush(timeout_millis=millis)))
+    meter_flush = getattr(metrics.get_meter_provider(), "force_flush", None)
+    if callable(meter_flush):
+        flushes.append(("metrics", lambda millis: meter_flush(timeout_millis=millis)))
+    if _log_export is not None:
+        log_export = _log_export
+        flushes.append(("logs", lambda millis: log_export.force_flush(timeout_millis=millis)))
+    flushed = True
+    for signal, flush in flushes:
+        remaining_millis = max(0, int((deadline - time.monotonic()) * 1000))
+        try:
+            completed = bool(flush(remaining_millis))
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything, and one signal's failure must not stop the others flushing; logged, and reported as not flushed
+            logger.warning("telemetry flush failed", exc_info=True, extra={"extra_data": {"signal": signal}})
+            completed = False
+        if not completed:
+            logger.warning(
+                "telemetry flush did not complete in time",
+                extra={"extra_data": {"signal": signal, "timeout_seconds": timeout.total_seconds()}},
+            )
+        flushed = flushed and completed
+    return flushed
 
 
 def shutdown_telemetry() -> None:

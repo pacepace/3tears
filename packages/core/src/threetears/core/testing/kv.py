@@ -70,7 +70,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iter
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.nats.errors import KvBucketNotFoundError
+from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.observe import get_logger
 
@@ -462,18 +462,26 @@ class FakeKvBucket:
         """
         return self._vanished
 
-    def reconcile(self, *, ttl: timedelta | None, direct: bool) -> None:
-        """take a declaration's reconciled fields in place, entries kept, as a real declaration does.
+    def reconcile(self, *, ttl: timedelta | None, direct: bool, storage: str | None = None) -> None:
+        """take a declaration's reconciled fields, as a real declaration does.
+
+        Entries are kept, except across a change of storage: JetStream cannot change a live stream's
+        storage, so a declaration that owns its bucket deletes the stream and creates it again, empty.
 
         :param ttl: the declared bucket TTL; ``None`` means no expiry
         :ptype ttl: timedelta | None
         :param direct: the declared ``allow_direct`` value
         :ptype direct: bool
+        :param storage: the declared storage, ``"memory"`` or ``"file"``; ``None`` keeps the live one
+        :ptype storage: str | None
         :return: None
         :rtype: None
         """
         self._ttl = ttl
         self._direct = direct
+        if storage is not None and storage != self._storage:
+            self.wipe()
+            self._storage = storage
 
     def become_unreachable(self, error: Exception) -> None:
         """make every operation raise ``error`` until :meth:`become_reachable`, as a lost broker does.
@@ -919,13 +927,19 @@ class FakeNatsClient:
         history: int = 1,
         direct: bool = True,
         create_if_missing: bool = True,
+        owns_bucket: bool = False,
+        drop_file_storage: bool = False,
     ) -> FakeKvBucket:
         """declare a bucket -- create it, or reconcile a live one in place -- or bind one somebody declared.
 
         Mirrors :meth:`threetears.nats.NatsClient.ensure_kv_bucket`: a declaration shares the one
-        handle :meth:`kv_bucket` hands out, a declaration of a live bucket takes the declared TTL
-        and ``direct`` with its entries kept, and a declaration that may create, whatever its
-        storage, is remembered (:attr:`remembered_declarations`) and put back by :meth:`restart_broker`.
+        handle :meth:`kv_bucket` hands out, a declaration of a live bucket takes the declared
+        ``direct`` with its entries kept -- and the declared TTL and storage only when its declarer
+        owns the bucket (``owns_bucket``), as only then does the real one reconcile them, a changed
+        storage emptying the bucket as the real recreate does, and a live FILE bucket refused unless
+        ``drop_file_storage`` -- and a declaration that may create,
+        whatever its storage, is remembered (:attr:`remembered_declarations`) and put back by
+        :meth:`restart_broker`.
 
         :param name: bucket suffix; the fake skips the namespace prefix
         :ptype name: str
@@ -939,13 +953,39 @@ class FakeNatsClient:
         :ptype direct: bool
         :param create_if_missing: ``True`` declares; ``False`` binds and raises when the bucket is absent
         :ptype create_if_missing: bool
+        :param owns_bucket: the declarer owns the bucket's whole shape, so a live bucket takes the
+            declared TTL and storage; only with ``create_if_missing`` on memory storage
+        :ptype owns_bucket: bool
+        :param drop_file_storage: the owner may recreate a bucket live on file storage, emptying it;
+            without it such a bucket is refused and left untouched. only with ``owns_bucket``
+        :ptype drop_file_storage: bool
         :return: the bucket, the same instance every later open receives
         :rtype: FakeKvBucket
+        :raises ValueError: when ``owns_bucket=True`` with ``create_if_missing=False`` or file storage,
+            or ``drop_file_storage=True`` without ``owns_bucket``, as the real one
+        :raises KvConfigMismatch: when an owner finds the bucket live on file storage without
+            ``drop_file_storage``, as the real one; the bucket is left as it is
         :raises KvBucketNotFoundError: when ``create_if_missing=False`` and the bucket is absent --
             never created, or lost to :meth:`FakeKvBucket.vanish` -- since a declaration asks the
             broker rather than the client's cache
         """
         del history
+        if drop_file_storage and not owns_bucket:
+            raise ValueError(
+                f"KV bucket {name!r}: drop_file_storage=True needs owns_bucket=True -- only the bucket's "
+                f"owner may recreate it"
+            )
+        if owns_bucket and not create_if_missing:
+            raise ValueError(
+                f"KV bucket {name!r}: owns_bucket=True needs create_if_missing=True -- only the bucket's "
+                f"declarer may own it, and a bind-only open declares nothing"
+            )
+        if owns_bucket and storage != "memory":
+            raise ValueError(
+                f"KV bucket {name!r}: owns_bucket=True needs storage='memory' -- an owner reconciles "
+                f"storage drift by deleting the stream and its entries, which is safe only for a bucket whose "
+                f"contents are ephemeral by design"
+            )
         bucket = self._buckets.get(name)
         absent = bucket is None or bucket.is_vanished
         if absent and not create_if_missing:
@@ -956,10 +996,27 @@ class FakeNatsClient:
             bucket = self._new_bucket(name=name, ttl=ttl, storage=storage, direct=direct)
             self._buckets[name] = bucket
         elif create_if_missing:
+            # a declaration CREATES a lost bucket with its own shape; a live one keeps its TTL and
+            # storage unless the declarer owns the bucket, as the real declaration reconciles them only then
+            takes_shape = owns_bucket or bucket.is_vanished
+            if (
+                owns_bucket
+                and not bucket.is_vanished
+                and bucket.storage == "file"
+                and storage != "file"
+                and not drop_file_storage
+            ):
+                raise KvConfigMismatch(
+                    f"KV bucket {name!r} is live on file storage and its owner declares it on {storage}; "
+                    f"recreating it would drop entries a NATS restart would have kept, and this "
+                    f"declaration was not given drop_file_storage=True. it is left as it is."
+                )
             if bucket.is_vanished:
                 # the declaration creates the lost bucket now, empty, as the real one creates its stream
                 bucket.wipe()
-            bucket.reconcile(ttl=ttl, direct=direct)
+            bucket.reconcile(
+                ttl=ttl if takes_shape else bucket.ttl, direct=direct, storage=storage if takes_shape else None
+            )
         # the real declaration replaces the client's one cached handle with one opened as it asked
         bucket.set_may_create(create_if_missing)
         if create_if_missing:

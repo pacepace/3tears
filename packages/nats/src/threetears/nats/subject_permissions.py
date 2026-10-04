@@ -68,6 +68,7 @@ __all__ = [
     "KV_KEY_SCOPE_GRAMMAR",
     "MAX_COORDINATION_BUCKETS",
     "MAX_COORDINATION_BUCKET_SUFFIX_CHARS",
+    "SERVER_USER_INFO_SUBJECT",
     "WORKSPACE_LOCKS_BUCKET_SUFFIX",
     "AgentBucketGrant",
     "AgentTableGrant",
@@ -148,6 +149,12 @@ WORKSPACE_LOCKS_BUCKET_SUFFIX: Final[str] = "workspace-locks"
 #: composed under the agent's scope like a declared coordination bucket, granted by
 #: :func:`build_permissions` and declared by the hub; the pod binds it and never creates it.
 AGENT_POD_PLATFORM_BUCKET_SUFFIXES: Final[tuple[str, ...]] = (WORKSPACE_LOCKS_BUCKET_SUFFIX,)
+
+#: the server's own answer to "what is my credential": a connection that publishes here gets its
+#: OWN user, account, permissions and remaining credential lifetime back on its inbox, and nothing
+#: about any other connection. Granted to the principals that renew a credential without being
+#: told its lifetime (``NatsClient.credential_ttl_from_server``).
+SERVER_USER_INFO_SUBJECT: Final[str] = "$SYS.REQ.USER.INFO"
 
 #: the suffix of the agent-config hot cache. platform-historical: underscore-joined to the
 #: namespace (``{ns}_agent_config``) rather than layered as ``{ns}-``, so it is opened by its FULL
@@ -1749,6 +1756,10 @@ def _tool_pod(
         # tree (``_INBOX_registry_*.>``) was not: that one would have let any tool pod forge a reply
         # into any other pod's in-flight call.
         str(Subjects.tools_result_pod_wildcard(p)),
+        # a tool pod gets no hub handshake, so it learns its credential's lifetime from the server
+        # that will end the connection at expiry. A pod that guessed longer than the hub minted
+        # renewed after the server had already closed it, and crash-looped.
+        SERVER_USER_INFO_SUBJECT,
         _deadletter(ns),
         # THE GLOBAL, DELIBERATELY UN-NAMESPACED INVALIDATION SUBJECT, and granting it is a
         # DECISION rather than a detail -- ``coll-task-07c`` TP-02. A tool pod that holds an L2

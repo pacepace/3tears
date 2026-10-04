@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Iterator
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from threetears.observe.setup import TelemetryConfig, init_telemetry, reset_telemetry
+from threetears.observe.setup import TelemetryConfig, force_flush_telemetry, init_telemetry, reset_telemetry
 
 
 class TestTelemetryConfig:
@@ -66,6 +67,10 @@ class TestResetTelemetry:
         reset_telemetry()
 
 
+#: the paths of every export the accepting collector received, in order
+_RECEIVED_EXPORTS: list[str] = []
+
+
 class _AcceptingCollector(BaseHTTPRequestHandler):
     """an OTLP/HTTP log collector that accepts every export, so shutdown's flush returns at once."""
 
@@ -75,6 +80,7 @@ class _AcceptingCollector(BaseHTTPRequestHandler):
         :return: nothing
         :rtype: None
         """
+        _RECEIVED_EXPORTS.append(self.path)
         self.rfile.read(int(self.headers.get("Content-Length", "0")))
         self.send_response(200)
         self.send_header("Content-Length", "0")
@@ -167,3 +173,20 @@ class TestCallSiteEnrichingHandler:
         assert record.funcName == "my_function"
         assert record.pathname == "/full/path/module.py"
         assert record.lineno == 10
+
+
+class TestForceFlushTelemetry:
+    """the public flush: what a test or a short-lived job calls to see its telemetry exported now."""
+
+    def test_with_nothing_configured_it_flushes_nothing_and_succeeds(self) -> None:
+        reset_telemetry()
+        assert force_flush_telemetry(timeout=timedelta(seconds=1)) is True
+
+    def test_a_buffered_log_record_reaches_the_collector_on_flush(self, log_export_handler: logging.Handler) -> None:
+        """the log export batches; without a flush a record emitted now is exported seconds later."""
+        _RECEIVED_EXPORTS.clear()
+        log_export_handler.emit(_record())
+
+        assert force_flush_telemetry(timeout=timedelta(seconds=5)) is True
+
+        assert any(path.endswith("/otlp/v1/logs") for path in _RECEIVED_EXPORTS), _RECEIVED_EXPORTS
