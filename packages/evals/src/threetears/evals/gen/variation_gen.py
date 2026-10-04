@@ -38,6 +38,7 @@ from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT, ext
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from threetears.evals.contracts.storage import EvalStorage
     from threetears.evals.contracts.provider import SimulatorLLM
 
 log = get_logger(__name__)
@@ -290,6 +291,14 @@ async def _llm_axis_values(
         if len(out) >= n_variations:
             break
     return out
+
+
+if TYPE_CHECKING:
+
+    def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
+        """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
+        store: EvalTestCaseStore = storage
+        del store
 
 
 __all__ = [

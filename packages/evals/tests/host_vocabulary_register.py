@@ -95,7 +95,6 @@ CEILINGS: dict[str, dict[str, int]] = {
     "contracts/host/world_seed.py": {"presence": 1},
     "contracts/identity.py": {},
     "contracts/judge_attribution.py": {},
-    "contracts/memory_store.py": {},
     "contracts/metrics.py": {},
     "contracts/models.py": {},
     "contracts/prompts/__init__.py": {},
@@ -139,4 +138,8 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/run_document.py": {},
     "run/runner.py": {},
     "run/simulator.py": {},
+    "storage/__init__.py": {},
+    "storage/memory.py": {},
+    "testing/__init__.py": {},
+    "testing/store_conformance.py": {},
 }

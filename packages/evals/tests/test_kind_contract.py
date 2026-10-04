@@ -60,7 +60,7 @@ from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRAC
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
-from packages.evals.tests.memory_store import InMemoryDocumentStore
+from threetears.evals.storage import InMemoryDocumentStore
 
 
 def _run_of_the_kind(**overlays: Any):

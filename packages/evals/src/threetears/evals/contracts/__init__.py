@@ -131,8 +131,17 @@ from threetears.evals.contracts.scoring import (
     percentile,
 )
 from threetears.evals.contracts.spend import ExternalRateTable
-from threetears.evals.contracts.storage import EVAL_DOC_TYPES, EvalStorage, save_document
-from threetears.evals.contracts.memory_store import InMemoryDocumentStore
+from threetears.evals.contracts.storage import (
+    EVAL_DOC_TYPES,
+    CassetteStore,
+    DefinitionStore,
+    EvalStorage,
+    JobStore,
+    ResultStore,
+    RunRecordStore,
+    RunStore,
+    save_document,
+)
 from threetears.evals.contracts.store_port import DocumentStore, StoreConflict
 from threetears.evals.contracts.world_state import WorldState, init_world
 from threetears.evals.contracts.usage_capture import (
@@ -289,6 +298,7 @@ __all__ = [
     "CassetteMode",
     "CassetteSeam",
     "CassetteSeams",
+    "CassetteStore",
     "CatalogRubricDim",
     "Caveat",
     "CellCassettes",
@@ -318,6 +328,7 @@ __all__ = [
     "DSLError",
     "Decision",
     "DecisionSurface",
+    "DefinitionStore",
     "DeliveryOutcome",
     "DeliveryRecorder",
     "DeliveryReplay",
@@ -355,7 +366,7 @@ __all__ = [
     "GoalCheckControls",
     "GoalCheckIntent",
     "GoalStateOutcome",
-    "InMemoryDocumentStore",
+    "JobStore",
     "JudgeAttributionSource",
     "JudgeAttributionState",
     "JudgeConfig",
@@ -394,6 +405,7 @@ __all__ = [
     "Recordable",
     "ReplayedDelivery",
     "ResolvedUsage",
+    "ResultStore",
     "ResultCondition",
     "ResultOutcome",
     "RoleUsage",
@@ -405,6 +417,8 @@ __all__ = [
     "RubricScore",
     "RunCompleteness",
     "RunIndexEntry",
+    "RunRecordStore",
+    "RunStore",
     "SeedPrompt",
     "SeedSection",
     "SeedTemplate",

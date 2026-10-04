@@ -53,7 +53,6 @@ from threetears.evals.contracts import (
     EvalStorage,
     EvalTemplate,
     EvalTestCase,
-    InMemoryDocumentStore,
     JudgedArtifact,
     MetricDescriptor,
     RoleUsage,
@@ -78,6 +77,7 @@ from threetears.evals.contracts.host import (
     default_cell_timeout,
 )
 from threetears.evals.run import RunnerOptions, execute_run
+from threetears.evals.storage import InMemoryDocumentStore
 
 COURIER_ID = "courier"
 COURIER_SCOPE = "courier-depot-north"

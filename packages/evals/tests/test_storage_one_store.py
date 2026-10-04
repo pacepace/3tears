@@ -30,7 +30,8 @@ from packages.evals.tests.factories import (
     make_rubric_dim,
     make_template,
 )
-from packages.evals.tests.memory_store import InMemoryDocumentStore, memory_storage
+from packages.evals.tests.factories import memory_storage
+from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.stored_models import doc_type_of, stored_models
 
 _HOME = "scope-a"

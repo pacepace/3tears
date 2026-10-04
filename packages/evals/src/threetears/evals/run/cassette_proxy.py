@@ -62,7 +62,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.contracts.cassettes import (
     ActionSeam,
@@ -78,6 +78,7 @@ from threetears.evals.contracts.cassettes import (
 )
 from threetears.evals.contracts.errors import StorageError
 from threetears.evals.contracts.models import AsyncDelivery, CassetteKey, CassetteSeam, EvalCassette
+from threetears.evals.contracts.storage import CassetteStore
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -125,30 +126,6 @@ def _rebuild[R: Recordable](payload_type: type[R], recorded: dict[str, Any], *, 
             f"Cassette recording {key.doc_id!r} does not rebuild as {payload_type.__name__}: {exc}. "
             "The corpus predates a change to that type; re-capture the template."
         ) from exc
-
-
-# =============================================================================
-# The store this layer reads and writes
-# =============================================================================
-
-
-class CassetteStore(Protocol):
-    """The storage the cassette layer reads and writes.
-
-    :class:`~threetears.evals.contracts.storage.EvalStorage` satisfies it in production.
-    """
-
-    def get_cassette(self, key: CassetteKey, scope_id: str) -> EvalCassette | None:
-        """The recording of one key, or ``None``; ``StorageError`` or ``ValueError`` when it cannot be read."""
-        ...  # pragma: no cover — protocol
-
-    def save_cassette(self, cassette: EvalCassette) -> None:
-        """Persist a recording; ``StorageError`` on failure."""
-        ...  # pragma: no cover — protocol
-
-    def delete_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> int:
-        """Delete everything a corpus recorded for one case; ``StorageError`` on failure."""
-        ...  # pragma: no cover — protocol
 
 
 class ReplayReportDefect(ValueError):
@@ -687,7 +664,6 @@ __all__ = [
     "CassetteCell",
     "CassetteLane",
     "CassetteProxy",
-    "CassetteStore",
     "ReplayReportDefect",
     "params_hash",
 ]

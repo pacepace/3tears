@@ -63,6 +63,7 @@ from threetears.evals.contracts.provider import (
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from threetears.evals.contracts.storage import EvalStorage
     from threetears.evals.analysis.arms import ArmTable
     from threetears.evals.analysis.bundle import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
@@ -1380,6 +1381,14 @@ def reporter_calibration(
         judge_model=run.judge_model,
         effective_judges=run.effective_judges,
     )
+
+
+if TYPE_CHECKING:
+
+    def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
+        """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
+        stores: tuple[AnalysisStore, CampaignReadStore] = (storage, storage)
+        del stores
 
 
 __all__ = [

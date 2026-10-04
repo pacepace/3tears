@@ -16,7 +16,7 @@ from threetears.evals.contracts.errors import ValidationFailedError
 
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.memory_store import memory_storage
+from packages.evals.tests.factories import memory_storage
 
 #: The host the campaigns here are declared against; their designs name nothing of its vocabulary.
 _HOST = toyhost_profile()

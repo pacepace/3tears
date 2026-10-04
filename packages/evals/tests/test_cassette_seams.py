@@ -21,7 +21,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from packages.evals.tests.factories import make_eval_run
-from packages.evals.tests.memory_store import InMemoryDocumentStore, memory_storage
+from packages.evals.tests.factories import memory_storage
+from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.contracts.cassettes import (
     ActionSeam,
     CassetteCorrupt,
@@ -718,8 +719,26 @@ async def test_a_recording_asked_for_at_the_other_seam_is_corrupt() -> None:
 # =============================================================================
 
 
+class _FailingWritesStore(InMemoryDocumentStore):
+    """The reference store; while ``fail_writes`` is set, every ``upsert`` raises."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_writes = False
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+        if self.fail_writes:
+            raise RuntimeError("simulated write failure")
+        super().upsert(document, if_match=if_match)
+
+
+def _failing_storage() -> tuple[EvalStorage, _FailingWritesStore]:
+    store = _FailingWritesStore()
+    return EvalStorage(store), store
+
+
 async def test_a_failed_action_write_still_answers_the_session() -> None:
-    storage, store = memory_storage()
+    storage, store = _failing_storage()
     session = _capture_session()
     _wire(_lane(storage, "capture"), session)
     store.fail_writes = True
@@ -729,7 +748,7 @@ async def test_a_failed_action_write_still_answers_the_session() -> None:
 
 async def test_a_failed_write_leaves_a_hole_a_replay_reports_rather_than_a_neighbour_in_its_place() -> None:
     """The first roll's recording is lost and the second's lands: the first ask must not get the second roll."""
-    storage, store = memory_storage()
+    storage, store = _failing_storage()
     session = _capture_session()
     cell = _wire(_lane(storage, "capture"), session)
 

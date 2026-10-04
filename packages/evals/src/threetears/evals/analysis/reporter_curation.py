@@ -22,6 +22,7 @@ from threetears.evals.contracts.errors import NotFoundError, ValidationFailedErr
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from threetears.evals.contracts.storage import EvalStorage
     from threetears.evals.contracts.models import EvalTestCase
 
 log = get_logger(__name__)
@@ -153,6 +154,14 @@ def set_reporter_case_archived(
     if persisted is None:
         raise NotFoundError("test case", test_case_id)
     return persisted
+
+
+if TYPE_CHECKING:
+
+    def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
+        """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
+        store: ReporterCaseStore = storage
+        del store
 
 
 __all__ = ["ReporterCaseStore", "set_reporter_case_archived"]

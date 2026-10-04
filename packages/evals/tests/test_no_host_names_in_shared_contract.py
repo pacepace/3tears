@@ -233,8 +233,6 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # Which model scored each dim, and what a run may claim about it: a rule over two fields the
     # stored run carries, read by the context key, the comparison badge and every renderer.
     "contracts/judge_attribution.py",
-    # The in-memory reference store: a DocumentStore any host may run on, so it names none.
-    "contracts/memory_store.py",
     "contracts/metrics.py",
     "contracts/identity.py",
     # The shared pre-image of every eval key. Nothing in it is host-shaped and nothing in it may
@@ -425,10 +423,21 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: ``contracts/host`` and ``contracts/prompts`` are nested for the same reason: ``contracts`` still
 #: holds modules on :data:`_HOST_COUPLED_MODULES` (every ``contracts/`` entry there).
 #:
+#: ``storage`` and ``testing`` are whole trees from birth: the adapters the engine ships behind the
+#: store port (the in-memory reference store) and the conformance kits any host runs against its own
+#: adapter. Each exists to serve every host, so a host noun in either would be a leak.
+#:
 #: A host's adapter tree never belongs here. Its whole purpose is host coupling — it names its
 #: host's concepts on purpose, and an extraction deletes it rather than porting it. Scanning it
 #: would report the design as a violation.
-_SHARED_CONTRACT_TREES: tuple[str, ...] = ("contracts/host", "analysis", "contracts/prompts", "gen/prompts")
+_SHARED_CONTRACT_TREES: tuple[str, ...] = (
+    "contracts/host",
+    "analysis",
+    "contracts/prompts",
+    "gen/prompts",
+    "storage",
+    "testing",
+)
 
 _HOST_NOUN_RE = re.compile(rf"^(?:{'|'.join(HOST_NOUNS)})s?$", re.IGNORECASE)
 

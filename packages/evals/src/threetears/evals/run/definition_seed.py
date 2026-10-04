@@ -60,57 +60,12 @@ import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
 
 from pydantic import BaseModel
 
 from threetears.evals.contracts.errors import StorageError
 from threetears.evals.contracts.models import CatalogRubricDim, EvalTemplate, JudgeConfig
-
-
-class DefinitionSeedStore(Protocol):
-    """The three archived-inclusive reads and three creates the seeder needs.
-
-    Cut to what :func:`seed_eval_definitions` calls. The reads are the
-    archived-inclusive ``query_*`` family rather than the runtime's
-    ``load_active_*`` lookups, and that is the port's whole subject: seeding
-    through a filter that hides archived definitions would resurrect every one an
-    operator retired, so a host implementing this must answer with archived
-    records included.
-
-    Structural, so a host's own storage satisfies it by having the methods —
-    :class:`~threetears.evals.contracts.storage.EvalStorage` does, with no
-    inheritance and no registration. Its ``query_*`` methods carry optional
-    keyword filters this port does not name, which is the direction that is safe:
-    an implementation may accept more than the port promises to pass.
-
-    Each write takes its document positional-only, so an implementation is free
-    to name the parameter after its own model.
-    """
-
-    def query_templates(self, scope_id: str, /) -> list[EvalTemplate]:
-        """Every template in a scope, archived ones included."""
-        ...
-
-    def query_rubric_dims(self, scope_id: str, /) -> list[CatalogRubricDim]:
-        """Every rubric dim in a scope, archived ones included."""
-        ...
-
-    def query_judge_configs(self, scope_id: str, /) -> list[JudgeConfig]:
-        """Every judge config in a scope, archived ones included."""
-        ...
-
-    def save_template(self, template: EvalTemplate, /) -> None:
-        """Write a template; raises ``StorageError`` (``ConflictError`` on a lost ``if_match``) rather than returning a flag."""
-        ...
-
-    def save_rubric_dim(self, dim: CatalogRubricDim, /) -> None:
-        """Write a rubric dim; raises ``StorageError`` (``ConflictError`` on a lost ``if_match``) rather than returning a flag."""
-        ...
-
-    def save_judge_config(self, config: JudgeConfig, /) -> None:
-        """Write a judge config; raises ``StorageError`` (``ConflictError`` on a lost ``if_match``) rather than returning a flag."""
-        ...
+from threetears.evals.contracts.storage import DefinitionStore
 
 
 @dataclass(frozen=True)
@@ -267,7 +222,7 @@ def load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus:
     )
 
 
-def seed_eval_definitions(storage: DefinitionSeedStore, corpus: SeedCorpus) -> SeedOutcome:
+def seed_eval_definitions(storage: DefinitionStore, corpus: SeedCorpus) -> SeedOutcome:
     """Create any corpus definition whose natural key is absent from the corpus's scope.
 
     Seeding semantics: empty slots only, the store is master once seeded. Occupancy is decided
@@ -361,7 +316,6 @@ def _seed_doc_type[D](
 
 
 __all__ = [
-    "DefinitionSeedStore",
     "SeedCorpus",
     "SeedOutcome",
     "load_seed_corpus",

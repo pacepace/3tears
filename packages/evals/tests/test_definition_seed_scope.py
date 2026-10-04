@@ -16,7 +16,7 @@ import pytest
 from threetears.evals.run.definition_seed import SeedCorpus, load_seed_corpus, seed_eval_definitions
 
 from packages.evals.tests.factories import make_template
-from packages.evals.tests.memory_store import memory_storage
+from packages.evals.tests.factories import memory_storage
 
 
 def _corpus_dir(tmp_path: Path, template: dict[str, object]) -> Path:

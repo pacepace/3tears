@@ -1,17 +1,15 @@
 """The safe-edit protocol for an eval run document.
 
 A run document is written by more than one writer as a run finishes — its
-completeness record, its terminal status, and the no-live-job repair path — and
-the store reports every write failure the same way, by returning ``False``. A
-caller that reads that value once and gives up loses the edit silently. This
-module holds the read-modify-write policy that answer needs, plus the two-method
-port it composes: :func:`update_eval_run` over
-:class:`EvalRunDocumentStore`.
+completeness record, its terminal status, and the no-live-job repair path — so a
+conditional write losing its race is the ordinary case, not an incident. This
+module holds the read-modify-write policy that answer needs: :func:`update_eval_run`
+over the two-method :class:`~threetears.evals.contracts.storage.JobStore`.
 
 **Why it is not in** :mod:`threetears.evals.contracts.storage`. The policy is about the
 conditional-write protocol, and it names no backend, no tier and no host —
-:class:`~threetears.evals.contracts.storage.EvalStorage` is one implementation of the two
-methods it drives, and a test double is another; the policy depends on neither.
+:class:`~threetears.evals.contracts.storage.EvalStorage` is one implementation of the port it
+drives, and a test double is another; the policy depends on neither.
 
 The scope argument is named ``scope_id`` here, as it is everywhere in the
 engine's own vocabulary: what partitions a run document is the host's business
@@ -21,10 +19,11 @@ and the engine passes it back untouched.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from threetears.evals.contracts.errors import ConflictError
 from threetears.evals.contracts.models import EvalRun
+from threetears.evals.contracts.storage import JobStore
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -47,35 +46,8 @@ RunUpdateOutcome = Literal["saved", "missing", "refused", "declined"]
 RUN_DOCUMENT_WRITE_ATTEMPTS = 3
 
 
-class EvalRunDocumentStore(Protocol):
-    """The two primitives :func:`update_eval_run` composes into a safe edit.
-
-    Narrower than :class:`~threetears.evals.contracts.storage.EvalStorage` on purpose: the
-    retry policy is about the conditional-write protocol, not about any one database, so
-    it is stated over the protocol and every caller — production or test — drives
-    the same policy through whatever implements these two.
-
-    It is also the whole of what :class:`~threetears.evals.run.jobs.EvalJobManager`
-    asks of storage, so the manager takes this rather than declaring a second
-    port with the same two members.
-
-    The positional parameters are positional-only, so an implementation is free
-    to name the scope after whatever it partitions by. Every caller here passes
-    them positionally, and a port that pinned the names would make the engine's
-    vocabulary a constraint on the host's.
-    """
-
-    def load_eval_run_with_etag(self, run_id: str, scope_id: str, /) -> tuple[EvalRun | None, str | None]:
-        """Load a run plus the ETag a conditional write must present."""
-        ...
-
-    def save_eval_run(self, run: EvalRun, /, *, if_match: str | None = None) -> None:
-        """Write a run; raises ``StorageError`` (``ConflictError`` on a lost ``if_match``) rather than returning a flag."""
-        ...
-
-
 def update_eval_run(
-    store: EvalRunDocumentStore,
+    store: JobStore,
     run_id: str,
     scope_id: str,
     mutate: Callable[[EvalRun], dict[str, Any] | None],
@@ -84,12 +56,10 @@ def update_eval_run(
 ) -> RunUpdateOutcome:
     """Read a run, apply ``mutate`` to it, and write it back under its own ETag.
 
-    The write is conditional, so a concurrent writer refuses it — and
-    :meth:`~threetears.evals.contracts.storage.EvalStorage.save_eval_run` reports *every*
-    failure the same way, an ETag conflict and a dropped connection alike, by
-    returning ``False``. A caller that read that value once and gave up lost the
-    edit silently, which is how a finished run came to carry no completeness
-    record at all.
+    The write is conditional, so a concurrent writer refuses it, as a
+    :class:`~threetears.evals.contracts.errors.ConflictError`. A caller that tried
+    once and gave up lost the edit silently, which is how a finished run came to
+    carry no completeness record at all.
 
     So a refusal re-reads and re-applies. Re-sending the document from the first
     read cannot be right in either direction: with the stale ETag the write is
@@ -174,7 +144,6 @@ def update_eval_run(
 
 __all__ = [
     "RUN_DOCUMENT_WRITE_ATTEMPTS",
-    "EvalRunDocumentStore",
     "RunUpdateOutcome",
     "update_eval_run",
 ]

@@ -67,7 +67,7 @@ if TYPE_CHECKING:
     from threetears.evals.contracts.host.subject import SubjectSnapshot
     from threetears.evals.contracts.models import EvalTemplate, EvalTestCase, JudgeConfig, VariationCounts
     from threetears.evals.contracts.scoring import CellSummary
-    from threetears.evals.contracts.storage import EvalStorage
+    from threetears.evals.contracts.storage import DefinitionStore
     from threetears.evals.contracts.usage_capture import ExternalRateTable
     from threetears.evals.run.jobs import AdmissionTicket, WorkFn
 
@@ -1810,7 +1810,7 @@ def build_judge_service(
 
 
 def _resolve_selected_judge_configs(
-    storage: EvalStorage, selection: dict[str, str] | None, dim_ids: list[str], scope_id: str
+    storage: DefinitionStore, selection: dict[str, str] | None, dim_ids: list[str], scope_id: str
 ) -> dict[str, JudgeConfig]:
     """Load the judge configs a launch named, refusing every way the naming can be wrong.
 
