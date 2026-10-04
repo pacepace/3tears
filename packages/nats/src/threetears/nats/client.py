@@ -122,6 +122,7 @@ from threetears.nats.credential_renewal import (
     REAUTH_MIN_SLEEP_SECONDS,
     REAUTH_RETIRE_DRAIN_SECONDS,
     REAUTH_RETRY_SECONDS,
+    credential_lifetime_from_user_info,
     has_schedulable_ttl,
     nats_user_jwt_ttl_seconds,
     seconds_until_reauth,
@@ -2581,6 +2582,17 @@ class _CredentialRenewal:
                     exc,
                     extra={"extra_data": {"client_name": self._client_name}},
                 )
+            else:
+                if measured is None:
+                    # the server answered and named no expiry. Every credential this loop renews
+                    # expires, so that is unexpected; renewing on the configured lifetime keeps the
+                    # connection alive, and the warning says why it was not the server's.
+                    log.warning(
+                        "the server reported no expiry for this connection's credential; scheduling the "
+                        "renewal on the configured %s s instead",
+                        configured,
+                        extra={"extra_data": {"client_name": self._client_name}},
+                    )
             if measured is not None:
                 if configured is not None and measured < configured:
                     log.info(
@@ -3848,23 +3860,17 @@ class NatsClient:
 
         :param timeout: how long to wait for the server's answer
         :ptype timeout: timedelta
-        :return: the credential's lifetime in seconds; ``None`` when it never expires or the
-            server did not report one
+        :return: the credential's lifetime in seconds; ``None`` when it never expires
         :rtype: int | None
         :raises RequestError: when the server does not answer in time
-        :raises ValueError: when the answer is not the server's user-info shape
+        :raises ValueError: when the connection was replaced while asking, or the answer is not
+            the server's user-info shape (:func:`credential_lifetime_from_user_info`)
         """
-        age = self._connection_age_seconds()
-        raw = await self.request_raw(subject=Subject.raw(SERVER_USER_INFO_SUBJECT), payload=b"", timeout=timeout)
-        body = json.loads(raw)
-        if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
-            raise ValueError(f"the server's user-info answer has no data object: {raw[:200]!r}")
-        # a Go time.Duration, so nanoseconds; absent or zero for a credential that never expires.
-        remaining_ns = body["data"].get("expires")
-        result: int | None = None
-        if isinstance(remaining_ns, int) and remaining_ns > 0:
-            result = math.floor(remaining_ns / 1_000_000_000 + age)
-        return result
+        age_at_request = self._connection_age_seconds()
+        reply = await self.request_raw(subject=Subject.raw(SERVER_USER_INFO_SUBJECT), payload=b"", timeout=timeout)
+        return credential_lifetime_from_user_info(
+            reply, age_at_request=age_at_request, age_at_reply=self._connection_age_seconds()
+        )
 
     def renew_credential(
         self,

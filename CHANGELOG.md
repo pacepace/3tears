@@ -18,11 +18,14 @@ happened on cobalt-dev when a pod on 0.61.0 met a hub on 0.56, which minted 300 
 
 - **`NatsClient.credential_ttl_from_server()`** (new): asks the server (`$SYS.REQ.USER.INFO`) for
   this connection's own credential lifetime -- what remains plus how long the connection has held
-  it -- rounded down, so any error renews early.
+  it -- rounded down, so any error renews early. The reading is
+  **`credential_lifetime_from_user_info()`** (new), which refuses an answer that spans a
+  connection swap: a renewal or reconnect mid-request would pair the new credential's remaining
+  time with the old connection's age, overstate the lifetime, and renew after the expiry.
 - **`NatsClient.renew_credential(..., ask_server=True)`** (new keyword, default `False`): the loop
   asks the server every cycle and schedules on its answer; `ttl_seconds` is used only when the
-  server reports none. A server that does not answer is logged once per cycle and the configured
-  lifetime used.
+  server reports none. A server that does not answer, or answers with no expiry, is logged once
+  per cycle and the configured lifetime used.
 - **`ToolServer.serve`** renews with `ask_server=True` on a connection it opened.
 - **`subject_permissions.SERVER_USER_INFO_SUBJECT`** (new) is in the tool pod's publish grant. The
   answer arrives on the pod's own inbox and describes only the asking connection; the grant is
