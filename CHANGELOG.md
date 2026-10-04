@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### A tool pod renews its NATS credential on the lifetime the server reports
+
+A tool pod gets no hub handshake, so it took its credential's lifetime from its own environment
+(`nats_user_jwt_ttl_seconds`, a day by default). When the hub minted a shorter one, the renewal was
+scheduled after the expiry: the server ended the connection with an authorization error, nats-py
+closes for good on that rather than reconnecting, and the pod crash-looped every few minutes. This
+happened on cobalt-dev when a pod on 0.61.0 met a hub on 0.56, which minted 300 s.
+
+- **`NatsClient.credential_ttl_from_server()`** (new): asks the server (`$SYS.REQ.USER.INFO`) for
+  this connection's own credential lifetime -- what remains plus how long the connection has held
+  it -- rounded down, so any error renews early.
+- **`NatsClient.renew_credential(..., ask_server=True)`** (new keyword, default `False`): the loop
+  asks the server every cycle and schedules on its answer; `ttl_seconds` is used only when the
+  server reports none. A server that does not answer is logged once per cycle and the configured
+  lifetime used.
+- **`ToolServer.serve`** renews with `ask_server=True` on a connection it opened.
+- **`subject_permissions.SERVER_USER_INFO_SUBJECT`** (new) is in the tool pod's publish grant. The
+  answer arrives on the pod's own inbox and describes only the asking connection; the grant is
+  publish-only, and a test refuses it on any subscribe list.
+
+**Rollout order: the hub first.** The grant is minted by the hub, so a tool pod on this release
+against a hub that predates it asks without permission, logs a permissions violation, and falls back
+to its configured lifetime -- no worse than before.
+
 ## v0.61.0 -- 2026-10-03
 
 ### A pool start survives a connect that never answers

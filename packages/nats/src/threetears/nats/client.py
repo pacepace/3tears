@@ -139,6 +139,7 @@ from threetears.nats.errors import (
     SubscribeError,
 )
 from threetears.nats.result_delivery import SYNC_REPLY_BUDGET_SECONDS
+from threetears.nats.subject_permissions import SERVER_USER_INFO_SUBJECT
 from threetears.nats.subjects import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER, Subject, Subjects, set_default_namespace
 
 # JetStream API error code for "subjects overlap with an existing stream": a
@@ -2528,6 +2529,7 @@ class _CredentialRenewal:
         ttl_seconds: Callable[[], int | None],
         connection_age_seconds: Callable[[], float],
         longest_request_seconds: float,
+        measure_ttl: Callable[[], Awaitable[int | None]] | None = None,
     ) -> None:
         """bind the loop to the client it renews.
 
@@ -2542,6 +2544,9 @@ class _CredentialRenewal:
         :ptype connection_age_seconds: Callable[[], float]
         :param longest_request_seconds: the longest request the connection makes
         :ptype longest_request_seconds: float
+        :param measure_ttl: asks the server for the current credential's lifetime; when given,
+            its answer outranks ``ttl_seconds``, which is used only when it reports none
+        :ptype measure_ttl: Callable[[], Awaitable[int | None]] | None
         :return: None
         :rtype: None
         """
@@ -2550,6 +2555,46 @@ class _CredentialRenewal:
         self._ttl_seconds = ttl_seconds
         self._connection_age_seconds = connection_age_seconds
         self._longest_request_seconds = longest_request_seconds
+        self._measure_ttl = measure_ttl
+
+    async def _current_ttl(self) -> int | None:
+        """the lifetime to schedule this cycle on: the server's answer when asked for, else the configured one.
+
+        A server that does not answer -- an older grant without the user-info subject, a
+        momentary stall -- falls back to the configured lifetime with a warning naming why, so
+        the loop never stops renewing for want of a measurement.
+
+        :return: the credential's lifetime in seconds, or ``None`` when unknown
+        :rtype: int | None
+        """
+        configured = self._ttl_seconds()
+        result = configured
+        if self._measure_ttl is not None:
+            try:
+                measured = await self._measure_ttl()
+            except (NatsClientError, ValueError) as exc:
+                measured = None
+                log.warning(
+                    "the server did not report this connection's credential lifetime; scheduling the "
+                    "renewal on the configured %s s instead: %s",
+                    configured,
+                    exc,
+                    extra={"extra_data": {"client_name": self._client_name}},
+                )
+            if measured is not None:
+                if configured is not None and measured < configured:
+                    log.info(
+                        "the server reports a shorter credential lifetime than configured; renewing on the server's",
+                        extra={
+                            "extra_data": {
+                                "client_name": self._client_name,
+                                "server_ttl_seconds": measured,
+                                "configured_ttl_seconds": configured,
+                            }
+                        },
+                    )
+                result = measured
+        return result
 
     async def run(self) -> None:
         """renew before every expiry until cancelled; a failed renewal retries fast.
@@ -2570,7 +2615,7 @@ class _CredentialRenewal:
         try:
             while True:
                 try:
-                    ttl = self._ttl_seconds()
+                    ttl = await self._current_ttl()
                     if retry_in is None:
                         delay = seconds_until_reauth(ttl, longest_request_seconds=self._longest_request_seconds)
                         if has_schedulable_ttl(ttl):
@@ -3788,11 +3833,45 @@ class NatsClient:
         state = self._lifecycle.state_of(self._raw)
         return time.monotonic() - state.connected_at if state is not None else 0.0
 
+    async def credential_ttl_from_server(self, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+        """the lifetime of this connection's credential, as the server that will end it reports it.
+
+        The server answers ``$SYS.REQ.USER.INFO`` with the requesting connection's own remaining
+        credential lifetime, and it is the one party that cannot be wrong about it: it closes the
+        connection when that lifetime runs out. Reported as the WHOLE lifetime -- what remains plus
+        how long the connection has held it -- because that is the unit the renewal schedule takes.
+        Rounded down, so any error schedules the renewal early rather than after the expiry.
+
+        The principal needs :data:`~threetears.nats.subject_permissions.SERVER_USER_INFO_SUBJECT`
+        in its publish grant. Without it the request is dropped and this times out, which the
+        caller treats as "not reported".
+
+        :param timeout: how long to wait for the server's answer
+        :ptype timeout: timedelta
+        :return: the credential's lifetime in seconds; ``None`` when it never expires or the
+            server did not report one
+        :rtype: int | None
+        :raises RequestError: when the server does not answer in time
+        :raises ValueError: when the answer is not the server's user-info shape
+        """
+        age = self._connection_age_seconds()
+        raw = await self.request_raw(subject=Subject.raw(SERVER_USER_INFO_SUBJECT), payload=b"", timeout=timeout)
+        body = json.loads(raw)
+        if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+            raise ValueError(f"the server's user-info answer has no data object: {raw[:200]!r}")
+        # a Go time.Duration, so nanoseconds; absent or zero for a credential that never expires.
+        remaining_ns = body["data"].get("expires")
+        result: int | None = None
+        if isinstance(remaining_ns, int) and remaining_ns > 0:
+            result = math.floor(remaining_ns / 1_000_000_000 + age)
+        return result
+
     def renew_credential(
         self,
         *,
         ttl_seconds: Callable[[], int | None] = nats_user_jwt_ttl_seconds,
         longest_request_seconds: float = SYNC_REPLY_BUDGET_SECONDS,
+        ask_server: bool = False,
     ) -> None:
         """keep this client connected past its credential's expiry by renewing the credential first.
 
@@ -3815,6 +3894,12 @@ class NatsClient:
             reply it owes may take: the replaced connection is kept open this long after each
             renewal. a TTL too short to allow that is logged as an error every cycle, naming it
         :ptype longest_request_seconds: float
+        :param ask_server: ask the server for the credential's lifetime every cycle
+            (:meth:`credential_ttl_from_server`) and schedule on its answer, falling back to
+            ``ttl_seconds`` only when it gives none. For an owner that is never told the lifetime
+            it was minted -- a tool pod, which has no handshake -- since a guess longer than the
+            minted lifetime renews after the server has already ended the connection
+        :ptype ask_server: bool
         :return: nothing
         :rtype: None
         :raises NatsClientError: when the client is abandoned or closed
@@ -3832,6 +3917,7 @@ class NatsClient:
             ttl_seconds=ttl_seconds,
             connection_age_seconds=self._connection_age_seconds,
             longest_request_seconds=longest_request_seconds,
+            measure_ttl=self.credential_ttl_from_server if ask_server else None,
         )
         self._renewal_task = asyncio.create_task(renewal.run(), name=f"nats-credential-renewal:{self._client_name}")
 

@@ -38,6 +38,7 @@ from threetears.nats import (
     REAUTH_UNKNOWN_TTL_RECHECK_SECONDS,
     SYNC_REPLY_BUDGET_SECONDS,
     NatsClient,
+    RequestTimeoutError,
     has_schedulable_ttl,
     nats_user_jwt_ttl_seconds,
     seconds_until_reauth,
@@ -256,6 +257,64 @@ class TestTheClientRenewsItsOwnCredential:
             await client.shutdown()
 
         assert len(calls) >= 2
+
+    async def test_a_server_that_does_not_answer_falls_back_to_the_configured_ttl(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """an older grant without the user-info subject must not stop the renewal."""
+        del fast
+        renewed = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            renewed.set()
+
+        async def _no_answer(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            raise RequestTimeoutError("request timed out: subject=$SYS.REQ.USER.INFO")
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _no_answer)
+        client = _client()
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 300, ask_server=True)
+            try:
+                async with asyncio.timeout(2.0):
+                    await renewed.wait()
+            finally:
+                await client.shutdown()
+
+        assert any("did not report this connection's credential lifetime" in r.getMessage() for r in caplog.records)
+
+    async def test_the_servers_ttl_outranks_a_longer_configured_one(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a pod configured for a day renews on the 300 s the server reports it was minted."""
+        del fast
+        renewed = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            renewed.set()
+
+        async def _server_says(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            return 300
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _server_says)
+        client = _client()
+        with caplog.at_level(logging.INFO, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 86_400, ask_server=True)
+            try:
+                async with asyncio.timeout(2.0):
+                    await renewed.wait()
+            finally:
+                await client.shutdown()
+
+        switched = [r for r in caplog.records if "shorter credential lifetime than configured" in r.getMessage()]
+        assert switched, "the loop did not take the server's lifetime over the configured one"
+        assert switched[0].extra_data == {  # type: ignore[attr-defined]
+            "client_name": "renewal-test",
+            "server_ttl_seconds": 300,
+            "configured_ttl_seconds": 86_400,
+        }
 
     async def test_a_failure_after_the_scheduled_sleep_retries_without_a_second_cycle(
         self, monkeypatch: pytest.MonkeyPatch

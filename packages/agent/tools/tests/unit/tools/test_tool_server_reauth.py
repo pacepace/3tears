@@ -99,7 +99,10 @@ class TestServeWiring:
         kwargs = mock_nc.renew_credential.call_args.kwargs
         # the replaced connection is held for every reply the synchronous budget admits.
         assert kwargs["longest_request_seconds"] == SYNC_REPLY_BUDGET_SECONDS
-        assert set(kwargs) == {"ttl_seconds", "longest_request_seconds"}
+        # no handshake tells a tool pod its credential's lifetime, so it must ask the server: a
+        # configured guess longer than the minted lifetime renews after the server has closed it.
+        assert kwargs["ask_server"] is True
+        assert set(kwargs) == {"ttl_seconds", "longest_request_seconds", "ask_server"}
 
     @pytest.mark.asyncio
     async def test_a_static_credential_is_never_renewed(self) -> None:

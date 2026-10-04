@@ -2027,9 +2027,13 @@ class ToolServer:
         # keeps the replaced connection open that long, so a reply owed for a call that arrived
         # on it still leaves on it -- NATS lets only the receiving connection answer.
         if self._owns_nats_connection and self._auth_token is not None and self._nc is not None:
+            # the server's word on the lifetime outranks the configured one: no handshake tells a
+            # tool pod what the hub minted, and a configured guess longer than that renews after
+            # the server has already ended the connection -- the pod then crash-loops.
             self._nc.renew_credential(
                 ttl_seconds=self._current_nats_jwt_ttl_seconds,
                 longest_request_seconds=SYNC_REPLY_BUDGET_SECONDS,
+                ask_server=True,
             )
 
         await self._shutdown_event.wait()
@@ -3840,14 +3844,14 @@ class ToolServer:
             await asyncio.sleep(self._heartbeat_interval)
 
     def _current_nats_jwt_ttl_seconds(self) -> int | None:
-        """the assumed TTL (seconds) of the pod's current NATS user JWT, from config.
+        """the FALLBACK TTL (seconds) of the pod's current NATS user JWT, from config.
 
         unlike the agent runtime -- which learns its NATS-JWT TTL from the Hub handshake -- a
-        standalone tool pod receives no handshake reporting the minted TTL, so the value is sourced
-        from :func:`threetears.nats.nats_user_jwt_ttl_seconds` (env-overridable, with a platform
-        default). read every renewal cycle so an operator env change reschedules correctly; ``None``
-        when the config value is non-positive / malformed (unknown -> the loop re-checks rather than
-        churning).
+        standalone tool pod receives no handshake reporting the minted TTL, so the renewal asks the
+        server for it (``NatsClient.credential_ttl_from_server``) and uses this value only when the
+        server reports none. sourced from :func:`threetears.nats.nats_user_jwt_ttl_seconds`
+        (env-overridable, with a platform default) and read every renewal cycle; ``None`` when the
+        config value is non-positive / malformed (unknown -> the loop re-checks rather than churning).
 
         :return: the connection JWT TTL in seconds, or ``None`` when unknown
         :rtype: int | None
