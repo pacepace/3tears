@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.62.0 -- 2026-10-04
+
 ### A tool pod renews its NATS credential on the lifetime the server reports
 
 A tool pod gets no hub handshake, so it took its credential's lifetime from its own environment
