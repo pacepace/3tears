@@ -1389,3 +1389,37 @@ class TestDiscordProxy:
         assert (
             self._proxy_given(monkeypatch, env, {"proxy": "http://other.example:8080"}) == "http://other.example:8080"
         )
+
+
+class TestDiscordDispatch:
+    """A message discord.py dispatches reaches the router (metallm dev, 2026-10-04).
+
+    ``Client.event`` registered the adapter's handlers under their own names, ``_on_message``
+    and ``_on_ready``, which discord.py never dispatches to: no inbound message reached anyone.
+    Driven through a real ``discord.Client``, because a mocked one accepts any registration.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_dispatched_message_is_routed(self) -> None:
+        import discord
+
+        from threetears.channels.discord import DiscordAdapter
+
+        made: list[discord.Client] = []
+
+        class _Recording(discord.Client):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                made.append(self)
+
+        router = _MockRouter()
+        with patch("threetears.channels.discord.discord.Client", _Recording):
+            DiscordAdapter(bot_token="t", router=router)
+        [client] = made
+        message = MagicMock()
+        message.author.bot = False
+        message.content = "hello"
+        with patch("threetears.channels.discord._build_channel_message", return_value="normalised"):
+            # What Client.dispatch looks up for the "message" event: getattr(client, "on_" + event).
+            await getattr(client, "on_message")(message)
+        assert router.last_message == "normalised"
