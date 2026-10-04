@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.64.0 -- 2026-10-04
+
 ### Models: the Claude CLI pool on claude-agent-sdk 0.2.163
 
 - **Changed:** `packages/models` requires `claude-agent-sdk>=0.2.163,<0.3`. 0.2.118's bundled CLI did
