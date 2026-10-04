@@ -390,6 +390,124 @@ class TestTheClientRenewsItsOwnCredential:
             "configured_ttl_seconds": 86_400,
         }
 
+    async def test_a_shortfall_within_the_servers_rounding_is_not_reported_at_info(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the server's answer is rounded down by design, so a day reads back as 86399 s.
+
+        Found on cobalt-dev: the INFO line fired on every renewal cycle for a lifetime that was
+        exactly the configured one.
+        """
+        del fast
+        renewed = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            renewed.set()
+
+        async def _server_says(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            return 86_399
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _server_says)
+        client = _client()
+        with caplog.at_level(logging.DEBUG, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 86_400, ask_server=True)
+            try:
+                async with asyncio.timeout(2.0):
+                    await renewed.wait()
+            finally:
+                await client.shutdown()
+
+        switched = [r for r in caplog.records if "shorter credential lifetime than configured" in r.getMessage()]
+        assert switched, "the shortfall within the rounding was not logged at all"
+        assert all(r.levelno == logging.DEBUG for r in switched), [r.levelname for r in switched]
+
+    async def test_a_steady_shortfall_is_reported_at_info_once(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the same server lifetime, cycle after cycle, is one fact, not one line per renewal."""
+        del fast
+        renewals = 0
+        enough = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            nonlocal renewals
+            renewals += 1
+            if renewals >= 3:
+                enough.set()
+
+        async def _server_says(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            return 300
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _server_says)
+        client = _client()
+        with caplog.at_level(logging.DEBUG, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 86_400, ask_server=True)
+            try:
+                async with asyncio.timeout(5.0):
+                    await enough.wait()
+            finally:
+                await client.shutdown()
+
+        switched = [r for r in caplog.records if "shorter credential lifetime than configured" in r.getMessage()]
+        assert len(switched) >= 3, "the loop did not measure the lifetime on every cycle"
+        assert [r.levelno for r in switched].count(logging.INFO) == 1, [r.levelname for r in switched]
+
+    async def _info_shortfalls_for(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, readings: list[int]
+    ) -> int:
+        """run the loop over one server reading per cycle and count the shortfall lines at INFO.
+
+        :param monkeypatch: pytest's patcher
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :param caplog: pytest's log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :param readings: the lifetime the server reports on each cycle, in order
+        :ptype readings: list[int]
+        :return: how many shortfall lines were logged at INFO
+        :rtype: int
+        """
+        remaining = list(readings)
+        done = asyncio.Event()
+
+        async def _renew(self: NatsClient, *, retire_after: timedelta) -> None:
+            if not remaining:
+                done.set()
+
+        async def _server_says(self: NatsClient, *, timeout: timedelta = timedelta(seconds=2)) -> int | None:
+            return remaining.pop(0) if remaining else readings[-1]
+
+        monkeypatch.setattr(NatsClient, "renew_connection", _renew)
+        monkeypatch.setattr(NatsClient, "credential_ttl_from_server", _server_says)
+        client = _client()
+        with caplog.at_level(logging.DEBUG, logger="threetears.nats.client"):
+            client.renew_credential(ttl_seconds=lambda: 86_400, ask_server=True)
+            try:
+                async with asyncio.timeout(5.0):
+                    await done.wait()
+            finally:
+                await client.shutdown()
+        return sum(
+            1
+            for r in caplog.records
+            if "shorter credential lifetime than configured" in r.getMessage() and r.levelno == logging.INFO
+        )
+
+    async def test_a_shortfall_returning_after_a_rounding_only_reading_is_reported_again(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a reading within the rounding means the shortfall went away, so its return is news."""
+        del fast
+        assert await self._info_shortfalls_for(monkeypatch, caplog, [300, 86_399, 300]) == 2
+
+    async def test_a_lifetime_jittering_within_the_rounding_is_reported_once(
+        self, monkeypatch: pytest.MonkeyPatch, fast: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the server's answer is rounded down, so the same lifetime reads 299 one cycle and 300 the next."""
+        del fast
+        assert await self._info_shortfalls_for(monkeypatch, caplog, [299, 300, 299, 300]) == 1
+
     async def test_a_failure_after_the_scheduled_sleep_retries_without_a_second_cycle(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
