@@ -50,12 +50,13 @@ dependencies = [
 # awareness and shouldn't gain one just for this.
 # claude-agent-sdk is bounded directly, not left to langchain-claude-code's open range: the session
 # pool drives private SDK internals (the query's control requests and in-process server table),
-# verified against 0.2.116-0.2.118. The agent switch (apply_flag_settings) and the rewind reset
+# verified against 0.2.116-0.2.118, and live on 0.2.163 (2026-10-04: pooled CLIs started, none turned
+# off, a claude-sonnet-5-5 call answered). The agent switch (apply_flag_settings) and the rewind reset
 # (rewind_conversation) are proven on SDK 0.2.116 with its bundled CLI 2.1.207, and the switch also
 # on SDK 0.2.118 / CLI 2.1.209; the rewind to a first message further needs the CLI's server-side
 # flag tengu_rewind_first_message. A CLI that refuses either, or a surface that moved, turns the
 # pool off after three calls in a row and every call runs on a CLI of its own.
-claude-cli = ["langchain-claude-code>=0.1.0", "claude-agent-sdk>=0.2.116,<0.3", "3tears-langgraph>=0.62.0,<0.63.0"]
+claude-cli = ["langchain-claude-code>=0.1.0", "claude-agent-sdk>=0.2.163,<0.3", "3tears-langgraph>=0.62.0,<0.63.0"]
 voyageai = ["langchain-voyageai>=0.3"]
 whisper = ["httpx>=0.27"]
 image = ["httpx>=0.27"]

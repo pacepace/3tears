@@ -182,6 +182,11 @@ dev-dependencies = [
 # the first release that surfaces OpenRouter's served `provider` in response_metadata, and admits
 # nothing newer. It stops mattering on its own once the 14-day window passes that date.
 "langchain-openrouter" = "2026-09-22T05:00:00Z"
+# claude-agent-sdk (owner, 2026-10-04): admits 0.2.163 (published 2026-09-30T19:46Z), the first
+# release whose bundled CLI knows claude-sonnet-5-5; 0.2.118's sends thinking "disabled", which that
+# model refuses, so every structured call on it failed. Admits nothing newer, and stops mattering on its
+# own once the 14-day window passes that date.
+"claude-agent-sdk" = "2026-09-30T20:00:00Z"
 
 [tool.ruff]
 line-length = 120
