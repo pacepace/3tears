@@ -111,12 +111,19 @@ class DiscordAdapter:
         # failed and the token check was a 500 (metallm dev, 2026-10-04).
         self._client = discord.Client(intents=intents, proxy=self.config.get("proxy") or proxy_from_env())
 
-        # Under the names discord.py dispatches to. ``Client.event`` registers a
-        # handler under its own ``__name__``, and these are ``_on_message`` and
-        # ``_on_ready``: no inbound message ever reached the router (metallm dev,
-        # 2026-10-04: the owner's Discord reply never arrived).
-        self._client.on_message = self._on_message
-        self._client.on_ready = self._on_ready
+        # ``Client.event`` registers a handler under its own ``__name__``, and
+        # discord.py dispatches the message event to ``on_message``. Registered
+        # directly, the adapter's ``_on_message`` and ``_on_ready`` were never called:
+        # no inbound message reached the router (metallm dev, 2026-10-04: the owner's
+        # Discord reply never arrived). These carry the names it dispatches to.
+        async def on_message(message: Any) -> None:
+            await self._on_message(message)
+
+        async def on_ready() -> None:
+            await self._on_ready()
+
+        self._client.event(on_message)
+        self._client.event(on_ready)
         # whether the REST-only http session has been authenticated (via
         # :meth:`_ensure_logged_in`). the out-of-band :meth:`post_message` path
         # logs in ONCE and reuses the session; it never opens the gateway
@@ -249,7 +256,7 @@ class DiscordAdapter:
         """handle discord on_message event.
 
         delegates to :meth:`handle_message` for processing.
-        registered on the client as ``on_message``, the name discord.py dispatches to.
+        reached through a handler registered on the client as ``on_message``, the name discord.py dispatches to.
 
         :param message: discord message object
         :ptype message: Any
