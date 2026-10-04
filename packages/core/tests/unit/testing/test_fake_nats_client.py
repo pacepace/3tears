@@ -253,7 +253,7 @@ async def test_a_declaration_reconciles_a_bucket_somebody_opened_first() -> None
 
 
 @pytest.mark.asyncio
-async def test_a_declaration_keeps_a_live_buckets_expiry_unless_it_owns_it() -> None:
+async def test_a_declaration_keeps_a_live_buckets_expiry_unless_it_owns_the_bucket() -> None:
     # the real declaration reconciles max_age only for a declarer that owns the bucket's expiry.
     client = FakeNatsClient()
     await client.kv_bucket(name="ratelimits", ttl=timedelta(seconds=300))
@@ -261,16 +261,40 @@ async def test_a_declaration_keeps_a_live_buckets_expiry_unless_it_owns_it() -> 
     kept = await client.ensure_kv_bucket(name="ratelimits", ttl=None)
     assert kept.ttl == timedelta(seconds=300)
 
-    owned = await client.ensure_kv_bucket(name="ratelimits", ttl=None, owns_expiry=True)
+    owned = await client.ensure_kv_bucket(name="ratelimits", ttl=None, owns_bucket=True)
     assert owned is kept
     assert owned.ttl is None
 
 
 @pytest.mark.asyncio
-async def test_a_bind_only_declaration_cannot_own_expiry() -> None:
+async def test_a_bind_only_declaration_cannot_own_the_bucket() -> None:
     client = FakeNatsClient(declared_buckets=["ratelimits"])
-    with pytest.raises(ValueError, match="owns_expiry"):
-        await client.ensure_kv_bucket(name="ratelimits", create_if_missing=False, owns_expiry=True)
+    with pytest.raises(ValueError, match="owns_bucket"):
+        await client.ensure_kv_bucket(name="ratelimits", create_if_missing=False, owns_bucket=True)
+
+
+@pytest.mark.asyncio
+async def test_a_file_bucket_cannot_be_owned() -> None:
+    client = FakeNatsClient()
+    with pytest.raises(ValueError, match="storage='memory'"):
+        await client.ensure_kv_bucket(name="durable", storage="file", owns_bucket=True)
+
+
+@pytest.mark.asyncio
+async def test_an_owner_recreates_a_bucket_on_another_storage_empty() -> None:
+    # the real owner deletes and recreates a stream whose storage differs; a non-owner leaves it.
+    client = FakeNatsClient()
+    opened = await client.kv_bucket(name="nonces", storage="file", ttl=timedelta(seconds=60))
+    await opened.put(key="k", value=b"v")
+
+    kept = await client.ensure_kv_bucket(name="nonces", ttl=None)
+    assert (kept.storage, kept.ttl) == ("file", timedelta(seconds=60))
+    assert await kept.get(key="k") == b"v"
+
+    owned = await client.ensure_kv_bucket(name="nonces", ttl=None, owns_bucket=True)
+    assert owned is opened
+    assert (owned.storage, owned.ttl) == ("memory", None)
+    assert await owned.get(key="k") is None, "a recreate drops the entries"
 
 
 @pytest.mark.asyncio

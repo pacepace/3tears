@@ -163,24 +163,37 @@ REQUESTABLE_KV_STREAM_FIELDS: tuple[str, ...] = (
 #: this module set it carry it off. Enabling it is safe on a live stream and cannot be undone,
 #: which is fine: it only permits a header, it changes no existing entry.
 #:
-#: ``max_age`` is NOT here, and stays out for every declarer that does not claim it: a bucket with
-#: several declarers asking for different expiries would have them fight over it, each open
-#: rewriting the other's. A bucket whose expiry has exactly ONE owner has no such fight, so that
-#: owner may opt in (``owns_expiry=True`` on :meth:`threetears.nats.NatsClient.ensure_kv_bucket`)
-#: and its declaration then reconciles ``max_age`` as well -- see :data:`_OWNED_EXPIRY_KV_STREAM_FIELDS`.
+#: ``max_age``, ``max_msgs_per_subject`` and ``storage`` are NOT here, and stay out for every
+#: declarer that does not claim the bucket: a bucket with several declarers asking for different
+#: shapes would have them fight over it, each open rewriting the other's. A bucket whose shape has
+#: exactly ONE owner has no such fight, so that owner may opt in (``owns_bucket=True`` on
+#: :meth:`threetears.nats.NatsClient.ensure_kv_bucket`) and its declaration then reconciles the
+#: whole requested shape -- see :data:`_OWNED_IN_PLACE_KV_STREAM_FIELDS` and
+#: :data:`_OWNED_RECREATE_KV_STREAM_FIELDS`.
 #:
-#: Consequence worth stating: anything outside this tuple, and outside the owned expiry for a
-#: declarer that owns it, is set at CREATE and never reconciled afterwards.
+#: Consequence worth stating: anything outside this tuple, for a declarer that does not own the
+#: bucket, is set at CREATE and never reconciled afterwards.
 RECONCILED_KV_STREAM_FIELDS: tuple[str, ...] = ("allow_direct", "allow_msg_ttl")
 
-#: The fields a declaration reconciles IN ADDITION to :data:`RECONCILED_KV_STREAM_FIELDS` when its
-#: declarer owns the bucket's expiry (``owns_expiry=True``).
+#: The fields a declaration that owns its bucket (``owns_bucket=True``) reconciles IN PLACE, in
+#: addition to :data:`RECONCILED_KV_STREAM_FIELDS`: the ones JetStream accepts an update of on a
+#: live stream.
 #:
-#: Exists because a bind-only opener refuses a bucket whose bucket-wide expiry differs from the
-#: lifetime it asks for (:func:`_entry_ttl_for_bound_bucket`): a bucket created long ago with a
-#: bucket-wide ``max_age`` keeps refusing every such opener for as long as nothing removes it, and
-#: only the bucket's one declarer may remove it.
-_OWNED_EXPIRY_KV_STREAM_FIELDS: tuple[str, ...] = ("max_age",)
+#: ``max_age`` because a bind-only opener refuses a bucket whose bucket-wide expiry differs from the
+#: lifetime it asks for (:func:`_entry_ttl_for_bound_bucket`): a bucket created long ago with one
+#: keeps refusing every such opener for as long as nothing removes it, and only the bucket's one
+#: declarer may remove it. ``max_msgs_per_subject`` (the declared history) because the owner of the
+#: whole shape owns that too.
+_OWNED_IN_PLACE_KV_STREAM_FIELDS: tuple[str, ...] = ("max_age", "max_msgs_per_subject")
+
+#: The fields a declaration that owns its bucket reconciles by DELETING the backing stream and
+#: creating it again with the declared config: the ones JetStream refuses to change on a live stream.
+#:
+#: Every entry the bucket held is dropped. That is acceptable only because an owner must declare
+#: the bucket on memory storage: its contents are ephemeral by design, a NATS restart already wipes
+#: them, and every binder already survives finding the bucket emptied -- so a recreate is the
+#: restart the platform already survives, applied to one bucket.
+_OWNED_RECREATE_KV_STREAM_FIELDS: tuple[str, ...] = ("storage",)
 
 #: The subset of :data:`RECONCILED_KV_STREAM_FIELDS` a BIND-only open refuses to run against.
 #:
@@ -486,7 +499,7 @@ async def open_kv_stream(
     config: StreamConfig,
     create_if_missing: bool,
     timings: KvTimings = DEFAULT_KV_TIMINGS,
-    owns_expiry: bool = False,
+    owns_bucket: bool = False,
 ) -> KeyValue:
     """create, reconcile or bind the JetStream stream behind a KV bucket.
 
@@ -495,10 +508,11 @@ async def open_kv_stream(
 
     - ``create_if_missing=True`` DECLARES. the stream is created when absent;
       when it exists carrying a different value for one of
-      :data:`RECONCILED_KV_STREAM_FIELDS` -- or for ``max_age`` too, when
-      ``owns_expiry`` -- it is updated in place. drift on any other requested
-      field is bound to as-is and logged at WARNING -- the previous behaviour
-      dropped it with nothing above DEBUG.
+      :data:`RECONCILED_KV_STREAM_FIELDS`, it is updated in place. drift on any
+      other requested field is bound to as-is and logged at WARNING -- the
+      previous behaviour dropped it with nothing above DEBUG -- unless the
+      declarer ``owns_bucket``, when the whole requested shape is reconciled
+      (:func:`reconcile_kv_stream`).
     - ``create_if_missing=False`` BINDS. a reader has no authority to change a
       shared bucket, so drift on the reconciled set raises
       :class:`~threetears.nats.errors.KvConfigMismatch`, which the L2 accessors
@@ -520,22 +534,25 @@ async def open_kv_stream(
     :ptype create_if_missing: bool
     :param timings: how long a bind waits for an absent bucket's declarer, and how it paces itself
     :ptype timings: KvTimings
-    :param owns_expiry: this declarer is the ONE owner of the bucket's expiry, so a live
-        ``max_age`` other than ``config.max_age`` is reconciled in place rather than reported
-        and left. only a declaration may own it
-    :ptype owns_expiry: bool
+    :param owns_bucket: this declarer is the ONE owner of the bucket's whole shape, so drift on
+        any requested field is reconciled -- in place where JetStream allows it, by deleting and
+        recreating the stream where it does not -- rather than reported and left. only a
+        declaration of a memory-storage bucket may own it
+    :ptype owns_bucket: bool
     :return: bound nats-py KeyValue handle
     :rtype: KeyValue
-    :raises ValueError: ``owns_expiry`` on a bind-only open, which has no authority over the bucket
+    :raises ValueError: ``owns_bucket`` on a bind-only open, which has no authority over the bucket,
+        or on a bucket declared on file storage, whose contents are not ephemeral
     :raises StreamSubjectsOverlapError: a different stream already owns ``$KV.{bucket}.>``
     :raises KvConfigMismatch: bind-only open found drift on the reconciled set
     :raises KvError: creation or binding failed
     """
-    if owns_expiry and not create_if_missing:
-        raise ValueError(
-            f"KV bucket {full_name!r}: owns_expiry=True needs create_if_missing=True -- only the bucket's "
-            f"declarer may own its expiry, and a bind-only open declares nothing"
-        )
+    _refuse_unownable_kv_bucket(
+        full_name=full_name,
+        owns_bucket=owns_bucket,
+        create_if_missing=create_if_missing,
+        storage="file" if config.storage == StorageType.FILE else "memory",
+    )
     if not create_if_missing:
         return await _bind_kv_stream(js=js, full_name=full_name, config=config, timings=timings)
 
@@ -551,7 +568,7 @@ async def open_kv_stream(
             extra={"extra_data": {"bucket": full_name, "allow_direct": config.allow_direct}},
         )
     elif getattr(add_exc, "err_code", None) == _JS_ERR_STREAM_NAME_IN_USE:
-        await reconcile_kv_stream(js=js, full_name=full_name, config=config, owns_expiry=owns_expiry)
+        await reconcile_kv_stream(js=js, full_name=full_name, config=config, owns_bucket=owns_bucket)
     # else: the server never answered the create. That is what a permissions
     # refusal looks like -- and what an unreachable broker looks like -- so it is
     # NOT reconcilable and must not fall through to update_stream, which would be
@@ -725,7 +742,7 @@ async def _entry_ttl_for_bound_bucket(*, js: Any, full_name: str, ttl: timedelta
             f"read-only (create_if_missing=False) expecting {requested:g}s; its entries would expire at "
             f"the wrong age. the bucket's declarer (the hub) must create it with no bucket-wide expiry, "
             f"so each opener's entries carry their own lifetime; a bucket created earlier with one keeps "
-            f"it until that declarer declares it with ensure_kv_bucket(ttl=None, owns_expiry=True), "
+            f"it until that declarer declares it with ensure_kv_bucket(ttl=None, owns_bucket=True), "
             f"which removes it in place."
         )
     elif not live.allow_msg_ttl:
@@ -743,13 +760,13 @@ async def _entry_ttl_for_bound_bucket(*, js: Any, full_name: str, ttl: timedelta
     return entry_ttl
 
 
-async def reconcile_kv_stream(*, js: Any, full_name: str, config: StreamConfig, owns_expiry: bool = False) -> None:
-    """update a live KV stream in place to its declaration, or say loudly which request was dropped.
+async def reconcile_kv_stream(*, js: Any, full_name: str, config: StreamConfig, owns_bucket: bool = False) -> None:
+    """bring a live KV stream to its declaration, or say loudly which request was dropped.
 
     the declaring half of :func:`open_kv_stream`, run when the create found the stream live with
     another configuration; also run by :class:`~threetears.nats.NatsClient`'s restoration after a
-    reconnect for a bucket whose declarer owns its expiry, so the restoration declares the same
-    shape the declaration did.
+    reconnect for a bucket whose declarer owns it, so the restoration declares the same shape the
+    declaration did.
 
     the previous opener bound to whatever existed and logged the fact at DEBUG,
     so a bucket carrying somebody else's config was indistinguishable from one
@@ -758,10 +775,25 @@ async def reconcile_kv_stream(*, js: Any, full_name: str, config: StreamConfig, 
     different requests fight over one bucket -- but it is now reported at
     WARNING rather than dropped in silence.
 
-    ``max_age`` is the one exception, and only on request: a declarer that is the bucket's one
-    owner of its expiry passes ``owns_expiry=True`` and a differing live ``max_age`` is reconciled
-    in place with the rest (:data:`_OWNED_EXPIRY_KV_STREAM_FIELDS`), with nobody to fight. the
-    duplicate window comes with it, because JetStream refuses a window longer than ``max_age``.
+    **a declarer that owns the bucket** (``owns_bucket=True``) has nobody to fight, so the whole
+    requested shape is reconciled:
+
+    - drift JetStream can update on a live stream (:data:`_OWNED_IN_PLACE_KV_STREAM_FIELDS`:
+      ``max_age``, the history) is updated in place with the rest, logged at INFO naming the old and
+      new values. the duplicate window comes with ``max_age``, because JetStream refuses a window
+      longer than it.
+    - drift JetStream refuses to update (:data:`_OWNED_RECREATE_KV_STREAM_FIELDS`: the storage) is
+      reconciled by deleting the backing stream and creating it again with the declared config,
+      logged at WARNING naming the bucket, the old and new values, and that its entries were
+      dropped. that is safe only because an owner declares a MEMORY bucket, whose contents are
+      ephemeral by design: a NATS restart already wipes them and every binder already survives an
+      emptied bucket, so a recreate is that restart, for one bucket.
+
+    **two owners may declare at once** (two replicas of the declaring service). a delete of a stream
+    a concurrent owner already deleted is not an error; a create that finds the name taken re-reads
+    the live config, and a bucket that now carries the declared storage is a concurrent owner's
+    finished recreate -- it is never deleted a second time, and anything else it differs on is
+    reconciled in place.
 
     :param js: connected JetStream context
     :ptype js: Any
@@ -769,24 +801,155 @@ async def reconcile_kv_stream(*, js: Any, full_name: str, config: StreamConfig, 
     :ptype full_name: str
     :param config: the config this process asked for
     :ptype config: StreamConfig
-    :param owns_expiry: this declarer is the one owner of the bucket's expiry, so ``max_age`` is
-        reconciled too rather than reported and left
-    :ptype owns_expiry: bool
+    :param owns_bucket: this declarer is the one owner of the bucket's whole shape, so drift on
+        every requested field is reconciled rather than reported and left
+    :ptype owns_bucket: bool
     :return: nothing
     :rtype: None
-    :raises KvError: the live config could not be read, or the update was refused
+    :raises KvError: the live config could not be read, or the update, delete or create was refused,
+        or a concurrent process recreated the bucket with a storage other than the declared one
+    :raises StreamSubjectsOverlapError: a recreate found the bucket's subjects owned by another stream
     """
-    reconciled_fields = RECONCILED_KV_STREAM_FIELDS + (_OWNED_EXPIRY_KV_STREAM_FIELDS if owns_expiry else ())
     live = await _live_stream_config(js=js, full_name=full_name, stream=config.name)
     differences = kv_stream_differences(requested=config, actual=live)
+    if owns_bucket and any(field in differences for field in _OWNED_RECREATE_KV_STREAM_FIELDS):
+        live = await _recreate_owned_kv_stream(js=js, full_name=full_name, config=config, differences=differences)
+        differences = kv_stream_differences(requested=config, actual=live)
+    reconciled_fields = RECONCILED_KV_STREAM_FIELDS + (_OWNED_IN_PLACE_KV_STREAM_FIELDS if owns_bucket else ())
+    await _reconcile_in_place(
+        js=js,
+        full_name=full_name,
+        config=config,
+        live=live,
+        differences=differences,
+        reconciled_fields=reconciled_fields,
+    )
+
+
+async def _recreate_owned_kv_stream(
+    *, js: Any, full_name: str, config: StreamConfig, differences: dict[str, tuple[Any, Any]]
+) -> StreamConfig:
+    """delete an owned bucket's backing stream and create it again with the declared config.
+
+    Only for drift JetStream will not update on a live stream (:data:`_OWNED_RECREATE_KV_STREAM_FIELDS`),
+    and only for an owner, whose memory bucket's entries are ephemeral by design -- see
+    :func:`reconcile_kv_stream`. Safe against a concurrent owner doing the same: a stream it already
+    deleted is not an error, and a name it already took again is re-read rather than deleted again.
+
+    :param js: connected JetStream context
+    :ptype js: Any
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :param config: the declared config
+    :ptype config: StreamConfig
+    :param differences: the live drift that called for the recreate, for the log
+    :ptype differences: dict[str, tuple[Any, Any]]
+    :return: the stream's config once it carries the declared storage: the declared one when this
+        call created it, the live one when a concurrent owner did
+    :rtype: StreamConfig
+    :raises KvError: the delete or create was refused, or a concurrent process recreated the bucket
+        with a storage other than the declared one
+    :raises StreamSubjectsOverlapError: another stream owns the bucket's subjects
+    """
+    recreated = {field: value for field, value in differences.items() if field in _OWNED_RECREATE_KV_STREAM_FIELDS}
+    try:
+        await js.delete_stream(config.name)
+    except Exception as exc:
+        if not is_bucket_not_found(exc):
+            raise _kv_error(
+                f"recreating KV bucket {full_name!r} failed: deleting its stream was refused: {exc}. it is "
+                f"live with {_render_differences(recreated)}, which JetStream cannot change in place. "
+                f"{_refusal_remedy(exc, full_name=full_name)}",
+                bucket=full_name,
+                cause=exc,
+            ) from exc
+        # answered "not found": a concurrent owner deleted it first, and is recreating it.
+        log.debug(
+            "JetStream KV bucket's stream was already deleted by a concurrent declarer",
+            extra={"extra_data": {"bucket": full_name}},
+        )
+    result = config
+    try:
+        await js.add_stream(config)
+    except Exception as exc:
+        _raise_if_subjects_overlap(exc, full_name=full_name, config=config)
+        if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
+            raise _kv_error(
+                f"recreating KV bucket {full_name!r} failed: its stream was deleted and creating it again "
+                f"was refused: {exc}. {_refusal_remedy(exc, full_name=full_name)}",
+                bucket=full_name,
+                cause=exc,
+            ) from exc
+        # a concurrent owner created it between this delete and this create. its recreate is the
+        # one that stands: re-read it, and never delete a freshly correct bucket a second time.
+        result = await _live_stream_config(js=js, full_name=full_name, stream=config.name)
+        still = {
+            field: value
+            for field, value in kv_stream_differences(requested=config, actual=result).items()
+            if field in _OWNED_RECREATE_KV_STREAM_FIELDS
+        }
+        if still:
+            raise KvError(
+                f"recreating KV bucket {full_name!r} failed: between this declarer's delete and its create, "
+                f"another process created the bucket again with {_render_differences(still)}. this "
+                f"declaration does not delete it again, which two disagreeing declarers would do forever; "
+                f"find the process that declares {full_name!r} with another shape -- this bucket should "
+                f"have one declarer -- and the next declaration will reconcile it."
+            )
+        log.info(
+            "JetStream KV bucket was recreated with its declared configuration by a concurrent declarer",
+            extra={"extra_data": {"bucket": full_name, "recreated": _render_differences(recreated)}},
+        )
+        return result
+    log.warning(
+        "JetStream KV bucket %s recreated with its declared configuration (%s); JetStream cannot change "
+        "that on a live stream, so its stream was deleted and created again and every entry it held was "
+        "dropped",
+        full_name,
+        _render_differences(recreated),
+        extra={
+            "extra_data": {"bucket": full_name, "recreated": _render_differences(recreated), "entries_dropped": True}
+        },
+    )
+    return result
+
+
+async def _reconcile_in_place(
+    *,
+    js: Any,
+    full_name: str,
+    config: StreamConfig,
+    live: StreamConfig,
+    differences: dict[str, tuple[Any, Any]],
+    reconciled_fields: tuple[str, ...],
+) -> None:
+    """update the reconciled fields of a live KV stream in place, reporting every other difference.
+
+    :param js: connected JetStream context
+    :ptype js: Any
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :param config: the declared config
+    :ptype config: StreamConfig
+    :param live: the stream's live config
+    :ptype live: StreamConfig
+    :param differences: requested-versus-live drift, from :func:`kv_stream_differences`
+    :ptype differences: dict[str, tuple[Any, Any]]
+    :param reconciled_fields: the fields this declaration updates in place
+    :ptype reconciled_fields: tuple[str, ...]
+    :return: nothing
+    :rtype: None
+    :raises KvError: the update was refused
+    """
     reconcilable = {field: value for field, value in differences.items() if field in reconciled_fields}
     dropped = {field: value for field, value in differences.items() if field not in reconciled_fields}
     if dropped:
         remedy = ""
-        if any(field in dropped for field in _OWNED_EXPIRY_KV_STREAM_FIELDS):
+        if any(field in dropped for field in _OWNED_IN_PLACE_KV_STREAM_FIELDS + _OWNED_RECREATE_KV_STREAM_FIELDS):
             remedy = (
-                " -- max_age is reconciled only by a declarer that owns the bucket's expiry; when this "
-                "declarer is the bucket's only one, declare it with ensure_kv_bucket(owns_expiry=True)"
+                " -- the bucket's expiry, history and storage are reconciled only by a declarer that owns "
+                "the bucket; when this declarer is its only one, declare it with "
+                "ensure_kv_bucket(owns_bucket=True)"
             )
         log.warning(
             "JetStream KV bucket bound to an existing stream whose configuration differs from the "
@@ -811,19 +974,10 @@ async def reconcile_kv_stream(*, js: Any, full_name: str, config: StreamConfig, 
         try:
             await js.update_stream(update)
         except Exception as exc:
-            # A principal may be granted STREAM.CREATE and refused STREAM.UPDATE --
-            # that is exactly the shape coll-task-05a gives pods. Say which grant is
-            # missing rather than letting a raw nats-py error out of the opener.
-            # A refusal the server ANSWERED, with its own error code, is never that: an
-            # ungranted request is not answered at all. It names a configuration the server
-            # will not accept, so the grant remedy would send an operator the wrong way.
-            if getattr(exc, "err_code", None) is not None:
-                remedy = "the server refused the update itself, so the declared configuration is one it will not apply"
-            else:
-                remedy = kv_grant_remedy(full_name)
             raise _kv_error(
                 f"reconciling KV bucket {full_name!r} failed: {exc}. it is live with "
-                f"{_render_differences(reconcilable)} and this principal could not update it. {remedy}",
+                f"{_render_differences(reconcilable)} and this principal could not update it. "
+                f"{_refusal_remedy(exc, full_name=full_name)}",
                 bucket=full_name,
                 cause=exc,
             ) from exc
@@ -835,6 +989,62 @@ async def reconcile_kv_stream(*, js: Any, full_name: str, config: StreamConfig, 
         log.debug(
             "JetStream KV bucket bound (already existed)",
             extra={"extra_data": {"bucket": full_name}},
+        )
+
+
+def _refusal_remedy(exc: BaseException, *, full_name: str) -> str:
+    """what to do about a stream-management call that failed, read from whether the server answered.
+
+    A principal may be granted ``STREAM.CREATE`` and refused ``STREAM.UPDATE`` or ``STREAM.DELETE``
+    -- exactly the shape a pod's grant has -- and an ungranted request is never answered: it arrives
+    as a deadline, so the remedy is the grant. A refusal the server ANSWERED, with its own error
+    code, is never that: it names a configuration the server will not accept, and the grant remedy
+    would send an operator the wrong way.
+
+    :param exc: what the call raised
+    :ptype exc: BaseException
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :return: the remedy sentence for the error message
+    :rtype: str
+    """
+    if getattr(exc, "err_code", None) is not None:
+        return "the server refused it itself, so the declared configuration is one it will not apply"
+    return kv_grant_remedy(full_name)
+
+
+def _refuse_unownable_kv_bucket(*, full_name: str, owns_bucket: bool, create_if_missing: bool, storage: str) -> None:
+    """refuse an ownership of a bucket that no open may claim.
+
+    Only a declaration may own a bucket: a bind-only open has no authority over it. And only a
+    MEMORY bucket may be owned, because an owner reconciles storage drift by deleting the stream and
+    dropping every entry -- which is the restart a memory bucket already survives, and data loss for
+    a file bucket that was declared durable on purpose.
+
+    :param full_name: fully-qualified bucket name
+    :ptype full_name: str
+    :param owns_bucket: whether the open claims ownership
+    :ptype owns_bucket: bool
+    :param create_if_missing: whether the open declares
+    :ptype create_if_missing: bool
+    :param storage: the declared storage, ``"memory"`` or ``"file"``
+    :ptype storage: str
+    :return: nothing
+    :rtype: None
+    :raises ValueError: when the open claims an ownership it may not have
+    """
+    if not owns_bucket:
+        return
+    if not create_if_missing:
+        raise ValueError(
+            f"KV bucket {full_name!r}: owns_bucket=True needs create_if_missing=True -- only the bucket's "
+            f"declarer may own it, and a bind-only open declares nothing"
+        )
+    if storage != "memory":
+        raise ValueError(
+            f"KV bucket {full_name!r}: owns_bucket=True needs storage='memory' -- an owner reconciles "
+            f"storage drift by deleting the stream and its entries, which is safe only for a bucket whose "
+            f"contents are ephemeral by design"
         )
 
 
@@ -935,7 +1145,7 @@ async def _bind_kv_handle(
     history: int,
     direct: bool | None,
     timings: KvTimings,
-    owns_expiry: bool = False,
+    owns_bucket: bool = False,
 ) -> _KvHandleBinding:
     """open, create or reconcile a bucket and return the handle it yields.
 
@@ -958,12 +1168,12 @@ async def _bind_kv_handle(
     :ptype direct: bool | None
     :param timings: the bucket's deadlines, of which a bind uses the wait for its declarer
     :ptype timings: KvTimings
-    :param owns_expiry: the declarer owns the bucket's expiry and reconciles a live ``max_age``
-        (:func:`reconcile_kv_stream`); only with ``create_if_missing``
-    :ptype owns_expiry: bool
+    :param owns_bucket: the declarer owns the bucket's whole shape and reconciles every requested
+        field (:func:`reconcile_kv_stream`); only with ``create_if_missing`` on memory storage
+    :ptype owns_bucket: bool
     :return: the handle, its per-entry TTL, and the connection it was bound through
     :rtype: _KvHandleBinding
-    :raises ValueError: if ``owns_expiry`` is asked of a bind-only open
+    :raises ValueError: if ``owns_bucket`` is asked of a bind-only open or a file bucket
     :raises KvError: if bucket creation or binding fails
     :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
     :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
@@ -987,7 +1197,7 @@ async def _bind_kv_handle(
         ),
         create_if_missing=create_if_missing,
         timings=timings,
-        owns_expiry=owns_expiry,
+        owns_bucket=owns_bucket,
     )
     entry_ttl: timedelta | None = None
     if not create_if_missing and ttl is not None and ttl_seconds > 0:
@@ -1015,9 +1225,9 @@ class NatsKvBucket:
     :ptype bound_to: Any
     :param timings: the deadlines its operations and re-binds run under
     :ptype timings: KvTimings
-    :param owns_expiry: the declaration this handle was opened by owns the bucket's expiry, which a
-        self-heal re-open declares again
-    :ptype owns_expiry: bool
+    :param owns_bucket: the declaration this handle was opened by owns the bucket's whole shape,
+        which a self-heal re-open declares again
+    :ptype owns_bucket: bool
     """
 
     __slots__ = (
@@ -1029,7 +1239,7 @@ class NatsKvBucket:
         "_full_name",
         "_history",
         "_kv",
-        "_owns_expiry",
+        "_owns_bucket",
         "_storage",
         "_timings",
         "_ttl",
@@ -1049,7 +1259,7 @@ class NatsKvBucket:
         entry_ttl: timedelta | None = None,
         bound_to: Any = None,
         timings: KvTimings = DEFAULT_KV_TIMINGS,
-        owns_expiry: bool = False,
+        owns_bucket: bool = False,
     ) -> None:
         self._client = client
         self._timings = timings
@@ -1074,9 +1284,9 @@ class NatsKvBucket:
         # body-carried form no key-scoped grant can constrain.
         self._direct = direct
         # Retained for the same self-heal: a re-open that forgot it would bind a bucket another
-        # process put back first with its own expiry, and every bind-only opener asking for a
-        # per-entry lifetime would be refused until this process restarted.
-        self._owns_expiry = owns_expiry
+        # process put back first with its own shape -- an expiry, a storage -- and every bind-only
+        # opener asking for a per-entry lifetime would be refused until this process restarted.
+        self._owns_bucket = owns_bucket
         # the lifetime every write carries when its caller names none: a bind-only open's stand-in
         # for a bucket-wide TTL the declarer did not set (``_entry_ttl_for_bound_bucket``).
         self._entry_ttl = entry_ttl
@@ -1115,7 +1325,7 @@ class NatsKvBucket:
         history: int,
         direct: bool | None = None,
         timings: KvTimings = DEFAULT_KV_TIMINGS,
-        owns_expiry: bool = False,
+        owns_bucket: bool = False,
     ) -> NatsKvBucket:
         """open, create or reconcile a JetStream KV bucket.
 
@@ -1148,13 +1358,13 @@ class NatsKvBucket:
         :ptype direct: bool | None
         :param timings: the deadlines the bucket's operations and binds run under
         :ptype timings: KvTimings
-        :param owns_expiry: the declarer owns the bucket's expiry and reconciles a live ``max_age``
-            in place (:func:`reconcile_kv_stream`), here and on every self-heal re-open. only
+        :param owns_bucket: the declarer owns the bucket's whole shape and reconciles every
+            requested field (:func:`reconcile_kv_stream`), here and on every self-heal re-open. only
             :meth:`NatsClient.ensure_kv_bucket` passes it
-        :ptype owns_expiry: bool
+        :ptype owns_bucket: bool
         :return: ready bucket
         :rtype: NatsKvBucket
-        :raises ValueError: if ``owns_expiry`` is asked of a bind-only open
+        :raises ValueError: if ``owns_bucket`` is asked of a bind-only open or a file bucket
         :raises KvBucketNotFoundError: if the bucket does not exist -- a bind-only open once its wait for
             the declarer is spent, or a declaring open whose create was not answered
         :raises KvError: if bucket creation or binding fails for any other reason
@@ -1171,7 +1381,7 @@ class NatsKvBucket:
             history=history,
             direct=direct,
             timings=timings,
-            owns_expiry=owns_expiry,
+            owns_bucket=owns_bucket,
         )
         return cls(
             client=client,
@@ -1185,7 +1395,7 @@ class NatsKvBucket:
             entry_ttl=binding.entry_ttl,
             bound_to=binding.bound_to,
             timings=timings,
-            owns_expiry=owns_expiry,
+            owns_bucket=owns_bucket,
         )
 
     # ------------------------------------------------------------------
@@ -1205,9 +1415,9 @@ class NatsKvBucket:
 
         ``direct`` rides along with the rest of the stored config, so a self-heal
         recreates the bucket with the same ``allow_direct`` it was declared with
-        rather than with the field unset. so does ``owns_expiry``: a bucket another
-        process put back first, with an expiry of its own, is reconciled to the
-        declared one rather than bound as-is.
+        rather than with the field unset. so does ``owns_bucket``: a bucket another
+        process put back first, with an expiry or storage of its own, is reconciled
+        to the declared shape rather than bound as-is.
         """
         binding = await _bind_kv_handle(
             client=self._client,
@@ -1218,7 +1428,7 @@ class NatsKvBucket:
             history=self._history,
             direct=self._direct,
             timings=self._timings,
-            owns_expiry=self._owns_expiry,
+            owns_bucket=self._owns_bucket,
         )
         self._kv = binding.kv
         self._entry_ttl = binding.entry_ttl
@@ -2176,7 +2386,7 @@ class KvDeclaring(Protocol):
         history: int = 1,
         direct: bool = True,
         create_if_missing: bool = True,
-        owns_expiry: bool = False,
+        owns_bucket: bool = False,
     ) -> KvBucketLike:
         """declare a KV bucket's configuration, or bind to one somebody else declared.
 
@@ -2193,13 +2403,15 @@ class KvDeclaring(Protocol):
         :param create_if_missing: ``True`` declares (create + reconcile); ``False`` binds and
             REFUSES a bucket whose reconciled config differs
         :ptype create_if_missing: bool
-        :param owns_expiry: this declarer is the bucket's one owner of its expiry, so a live
-            bucket-wide expiry other than ``ttl`` (``None`` meaning none) is reconciled in place;
-            only with ``create_if_missing``
-        :ptype owns_expiry: bool
+        :param owns_bucket: this declarer is the bucket's one owner of its whole shape, so a live
+            bucket-wide expiry or history other than the declared one is reconciled in place, and a
+            live storage other than the declared one by recreating the bucket empty; only with
+            ``create_if_missing`` on memory storage
+        :ptype owns_bucket: bool
         :return: ready bucket handle
         :rtype: KvBucketLike
-        :raises ValueError: if ``owns_expiry`` is asked of a bind (``create_if_missing=False``)
+        :raises ValueError: if ``owns_bucket`` is asked of a bind (``create_if_missing=False``) or of a
+            bucket on file storage
         :raises KvBucketNotFoundError: if the bucket does not exist and this call could not create it
         :raises KvError: if bucket creation or binding fails for any other reason
         :raises KvConfigMismatch: if ``create_if_missing`` is ``False`` and the live bucket differs

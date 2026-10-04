@@ -8,40 +8,77 @@ packages (bumped in lock-step).
 
 ## v0.63.0 -- 2026-10-04
 
-### A bucket's one declarer can remove a stale bucket-wide expiry
+### A bucket's one declarer can own its whole shape
 
-The shared KV bucket `aibots-ratelimits` on cobalt-dev was created long ago with a bucket-wide
-`max_age` of 300 s. The hub now declares every pod bucket with no bucket-wide expiry, so each
-bind-only opener carries its own per-entry lifetime. But a declaration reconciles only
-`allow_direct` and `allow_msg_ttl`, so the stale 300 s was logged as dropped and never removed, and
-every bind-only opener asking for a 60 s per-entry TTL was refused with `KvConfigMismatch`. The
-survey service's rate limiting failed on every request. Production will hit the same thing.
+On cobalt-dev the hub's boot log showed two shared pod buckets that do not match what the hub
+declares:
 
-- **`NatsClient.ensure_kv_bucket(..., owns_expiry=True)`** (new keyword, default `False`): this
-  declarer is the bucket's one owner of its expiry. A live `max_age` other than `ttl` (`None` means
-  no expiry) is reconciled in place, together with `allow_direct` and `allow_msg_ttl`, from the
-  live config with only those fields changed, and logged at INFO naming the old and new values.
-  The duplicate window comes with it, because JetStream refuses a window longer than `max_age`.
-  It holds for the declaration, for every self-heal re-open of the handle, and for the restoration
-  after a reconnect: the remembered declaration keeps `owns_expiry`, and a restoration that finds
-  such a bucket live with another configuration reconciles it, where it otherwise leaves a live
-  stream as it is.
-- **The rule.** `max_age` stays out of `RECONCILED_KV_STREAM_FIELDS`, because a bucket with several
-  declarers asking for different expiries would have them fight over it. Only a declarer that is
-  the bucket's single owner opts in. `owns_expiry=True` with `create_if_missing=False` raises
-  `ValueError`, since a bind declares nothing. `kv_bucket()` does not take it. Binders are
-  unchanged: they still refuse a bucket-wide expiry that differs from the lifetime they ask for.
-- **`threetears.nats.kv.reconcile_kv_stream()`** (new, formerly private): the declaring reconcile,
-  public so the client's restoration runs the same one.
-- `KvDeclaring.ensure_kv_bucket` and `FakeNatsClient.ensure_kv_bucket` take `owns_expiry`. The fake
-  now keeps a live bucket's TTL on a re-declaration unless the declarer owns the expiry, as the
-  real client does.
-- A reconcile update the server refuses with its own error code no longer tells the operator to
-  grant the principal. A missing grant is never answered, so the answered refusal names the
-  configuration instead.
+- `aibots-ratelimits` has a bucket-wide `max_age` of 300 s.
+- `aibots-proxy_assertion_nonces` is on file storage with a `max_age` of 60 s.
 
-**The hub must pass it.** `PodBucketDeclarer` should declare with `owns_expiry=True`. Until it does,
-a stale bucket-wide expiry stays and binders keep being refused. Nothing else needs to change.
+The hub declares every pod bucket on memory with no bucket-wide expiry, so each bind-only opener
+can give its entries their own lifetime. But a declaration only reconciles `allow_direct` and
+`allow_msg_ttl`. Both stale shapes were logged as dropped and left in place. Every opener asking for
+a 60 s per-entry TTL on the rate-limit bucket was then refused with `KvConfigMismatch`, so the
+survey service's rate limiting failed on every request. Production has the same buckets.
+
+**`NatsClient.ensure_kv_bucket(..., owns_bucket=True)`** is a new keyword, default `False`. It says
+this declarer is the bucket's only owner, so the declaration reconciles the whole requested shape:
+
+- **In place, logged at INFO with the old and new values:** `max_age` (`ttl=None` means no
+  expiry) and the history, together with `allow_direct` and `allow_msg_ttl`. The update is built
+  from the live config with only those fields changed. The duplicate window changes with
+  `max_age`, because JetStream refuses a window longer than `max_age`.
+- **By delete and recreate, logged at WARNING:** a storage change, which JetStream cannot make on a
+  live stream. The declarer deletes the backing stream and creates it again with the declared
+  config. The log names the bucket, the old and new storage, and says every entry was dropped.
+- **Two owners at once:** two hub replicas can declare at the same moment, and both succeed. A
+  delete of a stream the other owner already deleted is not an error. If the create finds the name
+  taken, the declarer re-reads the bucket. A bucket that now has the declared storage is the other
+  owner's finished recreate, so it is not deleted again. Any remaining in-place drift on it is
+  reconciled. A bucket that came back on another storage raises `KvError`, because that means a
+  second declarer with a different shape.
+- **It persists:** the self-heal re-open of the handle keeps the flag. So does the declaration
+  remembered for restoration, so a reconnect that finds such a bucket live with another config
+  reconciles it. Otherwise a restoration leaves a live stream as it is.
+
+The rules:
+
+- Only a declaration of a **memory** bucket can be owned. A recreate drops every entry, which is
+  safe only because these buckets are ephemeral by design: a NATS restart already wipes them, and
+  every binder already copes with an empty bucket. A file bucket was declared durable on purpose.
+  `owns_bucket=True` with `storage="file"` raises `ValueError`.
+- `owns_bucket=True` with `create_if_missing=False` also raises `ValueError`, because a bind
+  declares nothing.
+- `kv_bucket()` does not take the keyword.
+- `RECONCILED_KV_STREAM_FIELDS` is unchanged, because a bucket with several declarers asking for
+  different shapes would have them fight over it.
+- Binders are unchanged: they still refuse a bucket-wide expiry that differs from the lifetime
+  they ask for. The refusal message now names the fix.
+
+Other changes:
+
+- **`threetears.nats.kv.reconcile_kv_stream()`** (new, formerly private) is the declaring
+  reconcile. It is public so the client's restoration runs the same code.
+- `KvDeclaring.ensure_kv_bucket` and `FakeNatsClient.ensure_kv_bucket` take `owns_bucket`. On a
+  re-declaration, the fake now keeps a live bucket's TTL and storage unless the declarer owns the
+  bucket, as the real client does. An owned storage change empties the fake bucket.
+- When the server answers a reconcile update, delete or create with its own error code, the
+  message no longer tells the operator to grant the principal. A missing grant is never answered,
+  so an answered refusal names the configuration instead.
+
+**The hub must pass it.** `PodBucketDeclarer` should declare with `owns_bucket=True`. Until it does,
+the stale shapes stay and binders keep being refused. Recreating a bucket needs `STREAM.DELETE` on
+its stream. The hub's static NATS user holds `>` today.
+
+### A steady credential-lifetime shortfall is logged once
+
+`renew_credential(ask_server=True)` logged "the server reports a shorter credential lifetime than
+configured" at INFO on every renewal cycle. On cobalt-dev that included a server answer of 86399 s
+against a configured 86400 s. The server's answer is rounded down by design, so that is the
+configured lifetime. The line is now logged at INFO only when the server's lifetime is more than
+1 s short, and only when that differs from what the loop last reported. Otherwise it is logged at
+DEBUG.
 
 ## v0.62.0 -- 2026-10-04
 
