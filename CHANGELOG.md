@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.63.1 -- 2026-10-04
+
 ### Telemetry flushes return within their timeout, and a failing export no longer feeds itself
 
 **The hang.** `force_flush_telemetry(timeout=...)`, added in 0.63.0, could block forever. With
