@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.63.0 -- 2026-10-04
+
 ### A bucket's one declarer can remove a stale bucket-wide expiry
 
 The shared KV bucket `aibots-ratelimits` on cobalt-dev was created long ago with a bucket-wide
