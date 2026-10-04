@@ -35,6 +35,8 @@ standalone pod from its environment (:func:`nats_user_jwt_ttl_seconds`).
 
 from __future__ import annotations
 
+import json
+import math
 import os
 from typing import Final, TypeIs
 
@@ -51,6 +53,7 @@ __all__ = [
     "REAUTH_RETIRE_DRAIN_SECONDS",
     "REAUTH_RETRY_SECONDS",
     "REAUTH_UNKNOWN_TTL_RECHECK_SECONDS",
+    "credential_lifetime_from_user_info",
     "has_schedulable_ttl",
     "nats_user_jwt_ttl_seconds",
     "seconds_until_reauth",
@@ -231,4 +234,54 @@ def nats_user_jwt_ttl_seconds() -> int | None:
             result = None
         else:
             result = parsed if parsed > 0 else None
+    return result
+
+
+def credential_lifetime_from_user_info(reply: bytes, *, age_at_request: float, age_at_reply: float) -> int | None:
+    """the whole lifetime of a connection's credential, from the server's ``$SYS.REQ.USER.INFO`` answer.
+
+    The server reports what REMAINS of the asking connection's credential (``data.expires``, a Go
+    ``time.Duration``, so nanoseconds). The renewal schedule takes the whole lifetime, so the age
+    the connection had when it asked is added back. Using the age at the REQUEST rather than the
+    reply makes any error a shorter lifetime, and rounding down does the same: both renew early,
+    never after the expiry.
+
+    **An answer that spans a connection swap is refused.** A renewal, a lame-duck move or a
+    reconnect replaces the connection while the request is in flight, and the answer then
+    describes the NEW credential while the age belongs to the old one. Their sum overstates the
+    lifetime and schedules the renewal after the new credential has expired -- the crash-loop this
+    exists to prevent. A replaced connection is younger than the one that asked, so an age that
+    went DOWN across the request is the swap.
+
+    :param reply: the server's answer, raw
+    :ptype reply: bytes
+    :param age_at_request: the connection's age, in seconds, when the request was sent
+    :ptype age_at_request: float
+    :param age_at_reply: the current connection's age, in seconds, when the answer arrived
+    :ptype age_at_reply: float
+    :return: the credential's whole lifetime in seconds; ``None`` when it never expires
+    :rtype: int | None
+    :raises ValueError: when the connection was replaced while asking, when the server answered
+        with an error, or when the answer is not the user-info shape
+    """
+    if age_at_reply < age_at_request:
+        raise ValueError(
+            "the connection was replaced while its credential lifetime was asked "
+            f"(age {age_at_request:.3f}s at the request, {age_at_reply:.3f}s at the answer); "
+            "the answer describes a different credential"
+        )
+    body = json.loads(reply)
+    if not isinstance(body, dict):
+        raise ValueError(f"the server's user-info answer is not an object: {reply[:200]!r}")
+    if body.get("error"):
+        raise ValueError(f"the server refused the user-info request: {body['error']!r}")
+    data = body.get("data")
+    if not isinstance(data, dict):
+        raise ValueError(f"the server's user-info answer has no data object: {reply[:200]!r}")
+    remaining_ns = data.get("expires")
+    if remaining_ns is not None and (not isinstance(remaining_ns, int) or isinstance(remaining_ns, bool)):
+        raise ValueError(f"the server's user-info expiry is not a duration: {remaining_ns!r}")
+    result: int | None = None
+    if remaining_ns is not None and remaining_ns > 0:
+        result = math.floor(remaining_ns / 1_000_000_000 + age_at_request)
     return result
