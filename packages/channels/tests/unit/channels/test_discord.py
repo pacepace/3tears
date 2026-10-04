@@ -300,7 +300,9 @@ class TestDiscordAdapterConstructor:
         mock_discord.Intents.default.assert_called_once()
         assert mock_intents.messages is True
         assert mock_intents.message_content is True
-        mock_discord.Client.assert_called_once_with(intents=mock_intents)
+        from threetears.channels.discord import proxy_from_env
+
+        mock_discord.Client.assert_called_once_with(intents=mock_intents, proxy=proxy_from_env())
 
     @patch("threetears.channels.discord.discord")
     def test_stores_router(self, mock_discord: MagicMock) -> None:
@@ -1337,3 +1339,53 @@ class TestDiscordAdapterRichFormatting:
         assert "content" in send_kwargs
         assert send_kwargs["content"] == "plain text reply"
         assert "embed" not in send_kwargs
+
+
+_PROXY_VARS = (
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+)
+
+
+class TestDiscordProxy:
+    """The client takes the environment's proxy, as httpx does (metallm dev, 2026-10-04).
+
+    discord.py's aiohttp session ignores HTTPS_PROXY, so on a host that reaches out only
+    through a proxy every token check failed on name resolution.
+    """
+
+    @staticmethod
+    def _proxy_given(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], config: dict | None = None) -> object:
+        from threetears.channels.discord import DiscordAdapter
+
+        for name in _PROXY_VARS:
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        with patch("threetears.channels.discord.discord") as mock_discord:
+            DiscordAdapter(bot_token="t", router=_MockRouter(), config=config)
+            return mock_discord.Client.call_args.kwargs["proxy"]
+
+    def test_the_environments_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert (
+            self._proxy_given(monkeypatch, {"HTTPS_PROXY": "http://proxy.example:3128"}) == "http://proxy.example:3128"
+        )
+
+    def test_none_set_connects_directly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._proxy_given(monkeypatch, {}) is None
+
+    def test_no_proxy_covering_discord_connects_directly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        env = {"HTTPS_PROXY": "http://proxy.example:3128", "NO_PROXY": "localhost,discord.com"}
+        assert self._proxy_given(monkeypatch, env) is None
+
+    def test_a_configured_proxy_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        env = {"HTTPS_PROXY": "http://proxy.example:3128"}
+        assert (
+            self._proxy_given(monkeypatch, env, {"proxy": "http://other.example:8080"}) == "http://other.example:8080"
+        )

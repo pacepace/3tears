@@ -7,6 +7,8 @@ uses discord.Client with gateway intents for real-time message handling.
 from __future__ import annotations
 
 import io
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -47,6 +49,25 @@ class DirectMessageSent:
     message_ids: tuple[str, ...]
 
 
+#: The host every REST call and the gateway go through, for the proxy lookup.
+_DISCORD_URL = "https://discord.com"
+
+
+def proxy_from_env() -> str | None:
+    """The proxy the environment names for Discord, as httpx would choose it.
+
+    ``HTTPS_PROXY`` (or ``ALL_PROXY``), unless ``NO_PROXY`` covers discord.com.
+
+    :return: the proxy URL, or None to connect directly
+    :rtype: str | None
+    """
+    host = urllib.parse.urlsplit(_DISCORD_URL).hostname or ""
+    if urllib.request.proxy_bypass(host):
+        return None
+    proxies = urllib.request.getproxies()
+    return proxies.get("https") or proxies.get("all") or None
+
+
 class DiscordAdapter:
     """channel adapter bridging discord to platform via discord.py gateway.
 
@@ -85,7 +106,10 @@ class DiscordAdapter:
         intents = discord.Intents.default()
         intents.messages = True
         intents.message_content = True
-        self._client = discord.Client(intents=intents)
+        # discord.py's aiohttp session ignores HTTPS_PROXY, so a host that reaches the
+        # internet only through a proxy could not reach Discord at all: name resolution
+        # failed and the token check was a 500 (metallm dev, 2026-10-04).
+        self._client = discord.Client(intents=intents, proxy=self.config.get("proxy") or proxy_from_env())
 
         self._client.event(self._on_message)
         self._client.event(self._on_ready)
