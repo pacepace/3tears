@@ -134,7 +134,8 @@ async def test_without_ownership_the_stale_expiry_stays_and_openers_are_refused(
 
 
 async def test_an_owner_recreates_a_file_bucket_on_memory_and_openers_bind(nats_container: str) -> None:
-    """the nonce bucket: file storage cannot change in place, so the owner recreates it empty.
+    """the nonce bucket: file storage cannot change in place, so the owner -- told it may drop the
+    file bucket's entries -- recreates it empty.
 
     It comes back on memory, with no bucket-wide expiry and per-entry TTLs allowed; a bind-only
     opener asking for 60s binds, its entries carry that lifetime, and an entry given a short one
@@ -155,7 +156,12 @@ async def test_an_owner_recreates_a_file_bucket_on_memory_and_openers_bind(nats_
         await stale.put("before", b"1")
 
         await declarer.ensure_kv_bucket(
-            name="proxy_assertion_nonces", ttl=None, storage="memory", history=1, owns_bucket=True
+            name="proxy_assertion_nonces",
+            ttl=None,
+            storage="memory",
+            history=1,
+            owns_bucket=True,
+            drop_file_storage=True,
         )
 
         live = (await js.stream_info(f"KV_{full_name}")).config
@@ -177,6 +183,34 @@ async def test_an_owner_recreates_a_file_bucket_on_memory_and_openers_bind(nats_
             assert asyncio.get_running_loop().time() < deadline, "the per-entry lifetime was not honoured"
             await asyncio.sleep(0.25)
         assert await opened.get(key="nonce.a") == b"1"
+
+
+async def test_an_owner_without_drop_file_storage_refuses_a_file_bucket_and_leaves_it(nats_container: str) -> None:
+    """a NATS restart keeps a file bucket's entries, so dropping them needs a second, explicit opt-in.
+
+    Without ``drop_file_storage`` the owner refuses the bucket and touches nothing: it stays on
+    file, keeps its expiry, and keeps the entry written before the declaration.
+    """
+    namespace = "refusesfile"
+    full_name = f"{namespace}-proxy_assertion_nonces"
+    set_default_namespace(namespace)
+    async with await NatsClient.connect(
+        nats_url=nats_container, nats_subject_namespace=namespace, client_name="declarer"
+    ) as declarer:
+        js = declarer.jetstream_context()
+        await _create_stale(declarer, full_name=full_name, max_age_seconds=60, storage=StorageType.FILE)
+        stale = await js.key_value(full_name)
+        await stale.put("before", b"1")
+
+        with pytest.raises(KvConfigMismatch, match="drop_file_storage=True"):
+            await declarer.ensure_kv_bucket(
+                name="proxy_assertion_nonces", ttl=None, storage="memory", history=1, owns_bucket=True
+            )
+
+        live = (await js.stream_info(f"KV_{full_name}")).config
+        assert live.storage == StorageType.FILE
+        assert live.max_age == 60
+        assert (await stale.get("before")).value == b"1", "a refused owner dropped the entries"
 
 
 async def test_without_ownership_a_file_bucket_stays_on_file(nats_container: str) -> None:
@@ -209,8 +243,12 @@ async def test_two_owners_recreating_at_once_both_succeed(nats_container: str) -
         await _create_stale(a, full_name=full_name, max_age_seconds=60, storage=StorageType.FILE)
 
         await asyncio.gather(
-            a.ensure_kv_bucket(name="proxy_assertion_nonces", ttl=None, storage="memory", owns_bucket=True),
-            b.ensure_kv_bucket(name="proxy_assertion_nonces", ttl=None, storage="memory", owns_bucket=True),
+            a.ensure_kv_bucket(
+                name="proxy_assertion_nonces", ttl=None, storage="memory", owns_bucket=True, drop_file_storage=True
+            ),
+            b.ensure_kv_bucket(
+                name="proxy_assertion_nonces", ttl=None, storage="memory", owns_bucket=True, drop_file_storage=True
+            ),
         )
 
         live = (await a.jetstream_context().stream_info(f"KV_{full_name}")).config

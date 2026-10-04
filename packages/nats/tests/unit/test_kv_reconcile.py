@@ -19,11 +19,12 @@ from typing import Any
 
 import pytest
 from nats.js.api import DiscardPolicy, StorageType, StreamConfig
-from nats.js.errors import NotFoundError
+from nats.js.errors import BucketNotFoundError, NotFoundError
 
 from threetears.nats.errors import KvConfigMismatch, KvError, NatsClientError, StreamSubjectsOverlapError
 from threetears.nats.kv import (
     RECONCILED_KV_STREAM_FIELDS,
+    KvTimings,
     NatsKvBucket,
     build_kv_stream_config,
     kv_stream_differences,
@@ -558,6 +559,16 @@ class _OwnedRecreateJetStream(_ScriptedJetStream):
         self.peer_live = peer_live
         self.recreate_raises = recreate_raises
         self.creates = 0
+        # binds answered "bucket not found" before one succeeds: a concurrent owner's delete landing
+        # between this owner's create and its bind, and its create a moment later
+        self.absent_binds = 0
+        self.binds = 0
+
+    async def key_value(self, _name: str) -> Any:
+        self.binds += 1
+        if self.binds <= self.absent_binds:
+            raise BucketNotFoundError()
+        return object()
 
     async def delete_stream(self, name: str) -> bool:
         self.deleted.append(name)
@@ -588,13 +599,61 @@ class TestAnOwnerRecreatesWhatJetStreamCannotChangeInPlace:
     """storage cannot be updated on a live stream; the owner deletes the stream and creates it again."""
 
     @pytest.mark.asyncio
+    async def test_an_owner_without_drop_file_storage_refuses_a_file_bucket_and_leaves_it(self) -> None:
+        """a restart keeps a file bucket's entries, so dropping them needs the caller to say so."""
+        js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file())
+        with pytest.raises(KvConfigMismatch) as caught:
+            await open_kv_stream(
+                js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, owns_bucket=True
+            )
+        message = str(caught.value)
+        assert "probe" in message and "file storage" in message and "drop_file_storage=True" in message, message
+        assert js.deleted == [] and js.added == [] and js.updated == [], "a refused owner touched the bucket"
+
+    @pytest.mark.asyncio
+    async def test_dropping_file_storage_needs_ownership(self) -> None:
+        js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file())
+        with pytest.raises(ValueError, match="drop_file_storage=True needs owns_bucket=True"):
+            await open_kv_stream(
+                js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, drop_file_storage=True
+            )
+        assert js.deleted == []
+
+    @pytest.mark.asyncio
+    async def test_the_bind_after_a_recreate_waits_out_a_concurrent_owners_delete(self) -> None:
+        """race three: this owner recreated the bucket, and the other owner deleted it before this bind.
+
+        The other owner read the bucket on file before this create, so its delete takes this fresh
+        bucket and its create puts it back a moment later. A single bind in that window answered
+        not-found and was reported as a bucket this principal could not create; the bind waits for
+        the declarer instead, as every binder does.
+        """
+        js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file())
+        js.absent_binds = 2
+        await open_kv_stream(
+            js=js,
+            full_name="probe",
+            config=_memory_declaration(),
+            create_if_missing=True,
+            owns_bucket=True,
+            drop_file_storage=True,
+            timings=KvTimings(bind_retry_first_delay_seconds=0.01, bind_retry_max_delay_seconds=0.01),
+        )
+        assert js.binds == 3, "the bind did not wait for the bucket to come back"
+
+    @pytest.mark.asyncio
     async def test_a_file_bucket_is_recreated_on_memory_with_the_declared_shape(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file())
         with caplog.at_level("WARNING", logger="threetears.nats.kv"):
             await open_kv_stream(
-                js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, owns_bucket=True
+                js=js,
+                full_name="probe",
+                config=_memory_declaration(),
+                create_if_missing=True,
+                owns_bucket=True,
+                drop_file_storage=True,
             )
         assert js.deleted == ["KV_probe"]
         assert len(js.added) == 1
@@ -621,7 +680,12 @@ class TestAnOwnerRecreatesWhatJetStreamCannotChangeInPlace:
         """race one: the other owner's delete landed first, so this delete is answered not-found."""
         js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file(), delete_raises=_stream_not_found())
         await open_kv_stream(
-            js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, owns_bucket=True
+            js=js,
+            full_name="probe",
+            config=_memory_declaration(),
+            create_if_missing=True,
+            owns_bucket=True,
+            drop_file_storage=True,
         )
         assert js.deleted == ["KV_probe"]
         assert js.added[0].storage == StorageType.MEMORY
@@ -635,7 +699,12 @@ class TestAnOwnerRecreatesWhatJetStreamCannotChangeInPlace:
         """
         js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file(), peer_live=_live(allow_direct=True))
         await open_kv_stream(
-            js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, owns_bucket=True
+            js=js,
+            full_name="probe",
+            config=_memory_declaration(),
+            create_if_missing=True,
+            owns_bucket=True,
+            drop_file_storage=True,
         )
         assert js.deleted == ["KV_probe"], "the concurrent owner's fresh bucket was deleted a second time"
         assert js.added == [] and js.updated == []
@@ -644,7 +713,12 @@ class TestAnOwnerRecreatesWhatJetStreamCannotChangeInPlace:
     async def test_a_concurrent_recreate_differing_only_in_place_is_reconciled_in_place(self) -> None:
         js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file(), peer_live=_live(allow_direct=True, max_age=300.0))
         await open_kv_stream(
-            js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, owns_bucket=True
+            js=js,
+            full_name="probe",
+            config=_memory_declaration(),
+            create_if_missing=True,
+            owns_bucket=True,
+            drop_file_storage=True,
         )
         assert js.deleted == ["KV_probe"]
         assert len(js.updated) == 1 and js.updated[0].max_age == 0
@@ -655,7 +729,12 @@ class TestAnOwnerRecreatesWhatJetStreamCannotChangeInPlace:
         js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file(), peer_live=_nonce_bucket_on_file())
         with pytest.raises(KvError, match="another process created the bucket again"):
             await open_kv_stream(
-                js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, owns_bucket=True
+                js=js,
+                full_name="probe",
+                config=_memory_declaration(),
+                create_if_missing=True,
+                owns_bucket=True,
+                drop_file_storage=True,
             )
         assert js.deleted == ["KV_probe"]
 
@@ -664,7 +743,12 @@ class TestAnOwnerRecreatesWhatJetStreamCannotChangeInPlace:
         js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file(), delete_raises=TimeoutError("nats: timeout"))
         with pytest.raises(KvError, match="grant this principal"):
             await open_kv_stream(
-                js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, owns_bucket=True
+                js=js,
+                full_name="probe",
+                config=_memory_declaration(),
+                create_if_missing=True,
+                owns_bucket=True,
+                drop_file_storage=True,
             )
         assert js.added == []
 
@@ -675,7 +759,12 @@ class TestAnOwnerRecreatesWhatJetStreamCannotChangeInPlace:
         )
         with pytest.raises(KvError, match="its stream was deleted and creating it again was refused"):
             await open_kv_stream(
-                js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, owns_bucket=True
+                js=js,
+                full_name="probe",
+                config=_memory_declaration(),
+                create_if_missing=True,
+                owns_bucket=True,
+                drop_file_storage=True,
             )
 
 

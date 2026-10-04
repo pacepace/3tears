@@ -130,6 +130,7 @@ from threetears.nats.credential_renewal import (
     unsafe_renewal_reason,
 )
 from threetears.nats.errors import (
+    KvConfigMismatch,
     NamespaceNotConfiguredError,
     NatsClientError,
     NoRespondersError,
@@ -148,6 +149,18 @@ from threetears.nats.subjects import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER, Subjec
 # use" -- the two are conflated by a naive create-or-update. see
 # ensure_jetstream_stream.
 _JS_ERR_SUBJECTS_OVERLAP = 10065
+
+
+class _OwnedBucket(NamedTuple):
+    """a remembered KV declaration's ownership of its bucket, which a restoration declares again.
+
+    :ivar full_name: the fully-qualified bucket name
+    :ivar drop_file_storage: whether the declaration may drop the bucket when it is live on file storage
+    """
+
+    full_name: str
+    drop_file_storage: bool
+
 
 # JetStream API error code for "stream name already in use with a different configuration". The
 # server answers it only when it looked at the create and found a live stream of that name carrying
@@ -2564,7 +2577,7 @@ class _CredentialRenewal:
         self._longest_request_seconds = longest_request_seconds
         self._measure_ttl = measure_ttl
         # the (server, configured) lifetimes the shortfall was last reported at INFO for, so a steady
-        # one is reported once rather than every cycle; ``None`` while there is none to report.
+        # one is reported once rather than every cycle; ``None`` while there is no real shortfall.
         self._reported_shortfall: tuple[int, int] | None = None
 
     async def _current_ttl(self) -> int | None:
@@ -2616,9 +2629,11 @@ class _CredentialRenewal:
         The server's answer is rounded down by design
         (:func:`~threetears.nats.credential_renewal.credential_lifetime_from_user_info`),
         so a credential minted for exactly the configured lifetime reads back up to a second short:
-        that is not a shorter lifetime and is logged at DEBUG. A real shortfall is logged at INFO
-        once, and again only when it changes; a steady one repeated every cycle at INFO buries the
-        one cycle where it changed.
+        that is not a shorter lifetime: it is logged at DEBUG and clears what was last reported, so
+        a real shortfall that comes back is news again. A real shortfall is logged at INFO when it
+        first appears and again only when its value moves by more than that same rounding -- the
+        same lifetime reads 299 one cycle and 300 the next, and a steady one repeated every cycle at
+        INFO buries the one cycle where it changed.
 
         :param measured: the lifetime the server reports, in seconds
         :ptype measured: int
@@ -2635,9 +2650,14 @@ class _CredentialRenewal:
             }
         }
         message = "the server reports a shorter credential lifetime than configured; renewing on the server's"
-        shortfall = (measured, configured)
-        if configured - measured > _SERVER_TTL_ROUNDING_SECONDS and shortfall != self._reported_shortfall:
-            self._reported_shortfall = shortfall
+        reported = self._reported_shortfall
+        if configured - measured <= _SERVER_TTL_ROUNDING_SECONDS:
+            self._reported_shortfall = None
+            log.debug(message, extra=extra)
+        elif (
+            reported is None or reported[1] != configured or abs(measured - reported[0]) > _SERVER_TTL_ROUNDING_SECONDS
+        ):
+            self._reported_shortfall = (measured, configured)
             log.info(message, extra=extra)
         else:
             log.debug(message, extra=extra)
@@ -2872,11 +2892,12 @@ class NatsClient:
         # the pod); nothing but the declarer can put either back. :meth:`_restore_once` re-creates each
         # after every reconnect, and a create of a stream that survived is a no-op.
         self._declarations: dict[str, _NatsStreamConfig] = {}
-        # the backing stream name -> fully-qualified bucket name of every remembered KV declaration
-        # whose declarer owns the bucket's whole shape (``ensure_kv_bucket(owns_bucket=True)``). a
-        # restoration finding one of these live with another configuration reconciles it, as the
-        # declaration did, rather than leaving it as it is (:meth:`_redeclare_stream`).
-        self._owned_buckets: dict[str, str] = {}
+        # the backing stream name -> the ownership of every remembered KV declaration whose declarer
+        # owns the bucket's whole shape (``ensure_kv_bucket(owns_bucket=True)``), with the permission
+        # to drop a live file bucket it was given. a restoration finding one of these live with another
+        # configuration reconciles it, as the declaration did, rather than leaving it as it is
+        # (:meth:`_redeclare_stream`).
+        self._owned_buckets: dict[str, _OwnedBucket] = {}
         # the restoration a reconnect started (:meth:`_restore_after_reconnect`), held so it is not
         # collected mid-flight and so a later reconnect, :meth:`shutdown` and :meth:`abandon` stop it.
         self._restoration: asyncio.Task[None] | None = None
@@ -3274,21 +3295,24 @@ class NatsClient:
         return failures
 
     async def _redeclare_stream(self, js: Any, config: _NatsStreamConfig) -> None:
-        """create one declared stream again, exactly as declared, and never change a live one.
+        """create one declared stream again, exactly as declared; reconcile a live one only when its declarer owns it.
 
-        A create, never an update: JetStream's create is idempotent for an identical config, so a
-        stream that survived (the reconnect was a network blip, or another replica already put it
-        back) is untouched. One that is live with a DIFFERENT config is refused by the server with
-        "stream name already in use"; that is a stream another declarer changed, and it is left as
-        it is rather than reconciled back -- this restores what a restart took, it does not fight
+        A create first: JetStream's create is idempotent for an identical config, so a stream that
+        survived (the reconnect was a network blip, or another replica already put it back) is
+        untouched. One that is live with a DIFFERENT config is refused by the server with "stream
+        name already in use"; that is a stream another declarer changed, and by default it is left
+        as it is rather than reconciled back -- this restores what a restart took, it does not fight
         over a stream that is still there.
 
-        One exception: a KV bucket whose declarer owns it (``ensure_kv_bucket(owns_bucket=True)``)
-        has nobody to fight over it, so it is reconciled exactly as that declaration reconciled it
-        (:func:`threetears.nats.kv.reconcile_kv_stream`) -- in place, or by recreating it empty
-        where its storage differs. Otherwise a process that put the wiped bucket back first, with an
+        The exception is a KV bucket whose declarer owns it (``ensure_kv_bucket(owns_bucket=True)``):
+        it has nobody to fight over it, so a live one IS changed, exactly as that declaration
+        reconciled it (:func:`threetears.nats.kv.reconcile_kv_stream`) -- updated in place, or deleted
+        and recreated empty where its storage differs and the declaration was given
+        ``drop_file_storage``. Otherwise a process that put the wiped bucket back first, with an
         expiry or storage of its own, would leave every bind-only opener asking for a per-entry
-        lifetime refused until this one restarted.
+        lifetime refused until this one restarted. An owned bucket found on file storage WITHOUT
+        that permission is refused by the reconcile and left untouched: that refusal is final, so it
+        is logged at ERROR naming the fix and not retried, as no later round would answer differently.
 
         :param js: a JetStream context on the current connection
         :ptype js: Any
@@ -3307,13 +3331,28 @@ class NatsClient:
         except Exception as exc:
             if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
                 raise
-            owned_bucket = self._owned_buckets.get(config.name or "")
-            if owned_bucket is None:
+            owned = self._owned_buckets.get(config.name or "")
+            if owned is None:
                 outcome = (
                     "live with a configuration other than the one declared here after a NATS reconnect; left as it is"
                 )
             else:
-                await reconcile_kv_stream(js=js, full_name=owned_bucket, config=config, owns_bucket=True)
+                try:
+                    await reconcile_kv_stream(
+                        js=js,
+                        full_name=owned.full_name,
+                        config=config,
+                        owns_bucket=True,
+                        drop_file_storage=owned.drop_file_storage,
+                    )
+                except KvConfigMismatch as refused:
+                    log.error(
+                        "re-declaring KV bucket %s after a NATS reconnect was refused, and it is left as it is: %s",
+                        owned.full_name,
+                        refused,
+                        extra={"extra_data": {"stream": config.name, "client_name": self._client_name}},
+                    )
+                    return
                 outcome = (
                     "live with a configuration other than the one declared here after a NATS reconnect; its "
                     "declarer owns it, so it was reconciled to the declaration"
@@ -5242,8 +5281,9 @@ class NatsClient:
         direct: bool = True,
         create_if_missing: bool = True,
         owns_bucket: bool = False,
+        drop_file_storage: bool = False,
     ) -> NatsKvBucket:
-        """DECLARE a KV bucket's configuration, reconciling a live one in place.
+        """DECLARE a KV bucket's configuration, reconciling a live one.
 
         the KV counterpart of :meth:`ensure_jetstream_stream`, and the answer to
         the create-or-BIND defect: opening a bucket that already existed used to
@@ -5251,7 +5291,8 @@ class NatsClient:
         ``log.debug`` to say so. this declares instead -- it creates the bucket
         when absent and updates the live stream in place when it carries a
         different value for one of
-        :data:`threetears.nats.kv.RECONCILED_KV_STREAM_FIELDS`.
+        :data:`threetears.nats.kv.RECONCILED_KV_STREAM_FIELDS` -- and, for a
+        declarer that owns the bucket, reconciles its whole shape (below).
 
         **call this at startup, from the identity that owns the bucket**, before
         anything else in the process opens it. it writes through the SAME cache
@@ -5273,7 +5314,8 @@ class NatsClient:
         create the bucket. neither is a :meth:`kv_bucket` open, which declares
         nothing -- remembering one would let a process that is not the bucket's
         declarer create it after a restart with a config (``allow_direct`` unset,
-        say) the declarer's create-only restoration then leaves in place.
+        say) the declarer's restoration then leaves in place -- a restoration
+        only creates, unless the declaration owns the bucket (below).
 
         ``direct`` defaults to ``True`` here and to ``None`` on
         :meth:`kv_bucket`, and the asymmetry is the point: a declaration states
@@ -5290,18 +5332,27 @@ class NatsClient:
         fight: that owner passes ``owns_bucket=True``, and the whole requested
         shape is reconciled (:func:`threetears.nats.kv.reconcile_kv_stream`) --
         a live ``max_age`` (``ttl``, ``None`` meaning none) or history in place,
-        logged at INFO naming the old and new values; a live storage, which
-        JetStream cannot change in place, by deleting the bucket's stream and
-        creating it again, logged at WARNING naming the old and new values and
-        that every entry was dropped. it applies on this declaration, on every
-        self-heal re-open of the handle, and on every restoration after a
-        reconnect, and is safe against two owners declaring at once.
+        logged at INFO naming the old and new values. it applies on this
+        declaration, on every self-heal re-open of the handle, and on every
+        restoration after a reconnect, and is safe against two owners declaring
+        at once.
 
         **only for an L2 bucket whose contents are ephemeral by design**, which is
-        why an owner must declare ``storage="memory"``: a NATS restart already
-        wipes such a bucket and every binder already survives finding it empty, so
-        a recreate is that restart, for one bucket. a file bucket was declared
-        durable on purpose and cannot be owned.
+        why an owner must declare ``storage="memory"``; a file bucket was
+        declared durable on purpose and cannot be owned.
+
+        **a live storage change is the one reconcile that loses data, so it needs
+        a second, explicit opt-in.** JetStream cannot change a live stream's
+        storage, so the owner would delete the bucket's stream and create it
+        again, dropping every entry. an owner declares memory, so the bucket it
+        finds is live on FILE -- and a NATS restart does not wipe a file bucket,
+        so those entries are ones nothing else would have lost. by default the
+        declaration refuses such a bucket with
+        :class:`~threetears.nats.errors.KvConfigMismatch` and leaves it untouched.
+        ``drop_file_storage=True`` is the caller stating the bucket's contents are
+        disposable: the stream is then recreated on memory, logged at WARNING
+        naming the bucket, the old and new storage, and that every entry was
+        dropped. it is remembered with the declaration like ``owns_bucket``.
 
         the default ``False`` reports a differing expiry, history or storage at
         WARNING and leaves it. a platform declaring every pod bucket with no
@@ -5332,15 +5383,21 @@ class NatsClient:
             the declaration, so a restoration after a reconnect does the same.
             only with ``create_if_missing=True`` and ``storage="memory"``
         :ptype owns_bucket: bool
+        :param drop_file_storage: the owner may recreate a bucket it finds live
+            on file storage, dropping entries a NATS restart would have kept;
+            without it such a bucket is refused and left untouched. only with
+            ``owns_bucket=True``
+        :ptype drop_file_storage: bool
         :return: ready KV bucket handle, also installed in the client's cache
         :rtype: NatsKvBucket
         :raises ValueError: if ``owns_bucket=True`` with ``create_if_missing=False``
-            or ``storage="file"``
+            or ``storage="file"``, or ``drop_file_storage=True`` without ``owns_bucket``
         :raises KvBucketNotFoundError: if the bucket does not exist and this call could not create it --
             a bind (``create_if_missing=False``) once the wait for its declarer is spent, or a
             declaration whose create was not answered (a ``KvError``)
         :raises KvError: if bucket creation or binding fails for any other reason
-        :raises KvConfigMismatch: if ``create_if_missing=False`` and the live bucket differs
+        :raises KvConfigMismatch: if ``create_if_missing=False`` and the live bucket differs, or
+            an owner finds the bucket live on file storage without ``drop_file_storage``
         :raises StreamSubjectsOverlapError: if a different stream owns the bucket's subjects
         """
         # local import avoids circular dependency between client.py and kv.py
@@ -5359,6 +5416,7 @@ class NatsClient:
                 direct=direct,
                 timings=self._kv_timings if self._kv_timings is not None else DEFAULT_KV_TIMINGS,
                 owns_bucket=owns_bucket,
+                drop_file_storage=drop_file_storage,
             )
             self._buckets[full_name] = bucket
         if create_if_missing:
@@ -5378,7 +5436,7 @@ class NatsClient:
             # the LATEST declaration is the one remembered, its ownership of the bucket included:
             # a re-declaration without it gives the ownership up.
             if owns_bucket:
-                self._owned_buckets[stream] = full_name
+                self._owned_buckets[stream] = _OwnedBucket(full_name=full_name, drop_file_storage=drop_file_storage)
             else:
                 self._owned_buckets.pop(stream, None)
         return bucket

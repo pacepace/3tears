@@ -496,10 +496,15 @@ async def test_a_remembered_declaration_keeps_owning_the_bucket_across_a_reconne
 
 @pytest.mark.asyncio
 async def test_a_remembered_owned_declaration_recreates_a_bucket_put_back_on_file() -> None:
-    """storage cannot be changed in place, so the restoring owner recreates it on the declared memory."""
+    """storage cannot be changed in place, so the restoring owner recreates it on the declared memory.
+
+    Only because the declaration was given ``drop_file_storage``, and the restoration remembers it.
+    """
     server = _ScriptedServer()
     client, reconnected = await _connected(server)
-    await client.ensure_kv_bucket(name="ratelimits", ttl=None, history=1, direct=True, owns_bucket=True)
+    await client.ensure_kv_bucket(
+        name="ratelimits", ttl=None, history=1, direct=True, owns_bucket=True, drop_file_storage=True
+    )
     declared = server.streams[_RATELIMITS]
     server.restart()
     server.streams[_RATELIMITS] = build_kv_stream_config(
@@ -511,6 +516,34 @@ async def test_a_remembered_owned_declaration_recreates_a_bucket_put_back_on_fil
 
     assert server.deleted == [_RATELIMITS]
     assert server.streams[_RATELIMITS].storage == StorageType.MEMORY
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_remembered_owned_declaration_without_drop_leaves_a_file_bucket_and_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """without the second opt-in the restoring owner refuses the file bucket: once, at ERROR, untouched."""
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    await client.ensure_kv_bucket(name="ratelimits", ttl=None, history=1, direct=True, owns_bucket=True)
+    server.restart()
+    on_file = build_kv_stream_config(
+        bucket=f"{_NS}-ratelimits", ttl_seconds=60, history=1, storage_type=StorageType.FILE, direct=True
+    )
+    server.streams[_RATELIMITS] = on_file
+    adds_before = len(server.added)
+
+    with caplog.at_level(logging.INFO, logger="threetears.nats.client"):
+        await reconnected()
+        # the restoration finishes rather than retrying: a refusal is its final answer for this round
+        await _until(lambda: any("is in place after the reconnect" in r.getMessage() for r in caplog.records))
+
+    assert server.streams[_RATELIMITS] == on_file
+    assert server.deleted == [] and server.updated == []
+    assert len(server.added) == adds_before + 1, "a refusal no later round answers differently was retried"
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("drop_file_storage=True" in message for message in errors), errors
     await client.shutdown()
 
 

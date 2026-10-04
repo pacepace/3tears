@@ -29,25 +29,34 @@ this declarer is the bucket's only owner, so the declaration reconciles the whol
   expiry) and the history, together with `allow_direct` and `allow_msg_ttl`. The update is built
   from the live config with only those fields changed. The duplicate window changes with
   `max_age`, because JetStream refuses a window longer than `max_age`.
-- **By delete and recreate, logged at WARNING:** a storage change, which JetStream cannot make on a
-  live stream. The declarer deletes the backing stream and creates it again with the declared
-  config. The log names the bucket, the old and new storage, and says every entry was dropped.
+- **By delete and recreate, only with a second opt-in, logged at WARNING:** a storage change,
+  which JetStream cannot make on a live stream. An owner declares memory, so the bucket it would
+  recreate is live on **file** storage, and a NATS restart does not wipe a file bucket. Dropping
+  its entries is a loss nothing else would cause, so it needs
+  **`ensure_kv_bucket(..., owns_bucket=True, drop_file_storage=True)`** (new keyword, default
+  `False`). With it, the declarer deletes the backing stream and creates it again with the
+  declared config. The log names the bucket, the old and new storage, and says every entry was
+  dropped. Without it, the declaration raises `KvConfigMismatch` naming the bucket, its live
+  storage and the fix, and leaves the bucket untouched, entries and all. `drop_file_storage=True`
+  without `owns_bucket=True` raises `ValueError`.
 - **Two owners at once:** two hub replicas can declare at the same moment, and both succeed. A
   delete of a stream the other owner already deleted is not an error. If the create finds the name
   taken, the declarer re-reads the bucket. A bucket that now has the declared storage is the other
   owner's finished recreate, so it is not deleted again. Any remaining in-place drift on it is
   reconciled. A bucket that came back on another storage raises `KvError`, because that means a
-  second declarer with a different shape.
-- **It persists:** the self-heal re-open of the handle keeps the flag. So does the declaration
+  second declarer with a different shape. After a reconcile, an owner binds by waiting for the
+  bucket, like any binder. Without that, a bind landing between the other owner's delete and its
+  create was reported as a bucket this principal could not create.
+- **It persists:** the self-heal re-open of the handle keeps both flags. So does the declaration
   remembered for restoration, so a reconnect that finds such a bucket live with another config
-  reconciles it. Otherwise a restoration leaves a live stream as it is.
+  reconciles it. Otherwise a restoration leaves a live stream as it is. A restoring owner that
+  finds the bucket on file storage without `drop_file_storage` logs the refusal at ERROR once and
+  leaves the bucket alone. It does not retry, because no later round would answer differently.
 
 The rules:
 
-- Only a declaration of a **memory** bucket can be owned. A recreate drops every entry, which is
-  safe only because these buckets are ephemeral by design: a NATS restart already wipes them, and
-  every binder already copes with an empty bucket. A file bucket was declared durable on purpose.
-  `owns_bucket=True` with `storage="file"` raises `ValueError`.
+- Only a declaration of a **memory** bucket can be owned, because a bucket declared on file was
+  declared durable on purpose. `owns_bucket=True` with `storage="file"` raises `ValueError`.
 - `owns_bucket=True` with `create_if_missing=False` also raises `ValueError`, because a bind
   declares nothing.
 - `kv_bucket()` does not take the keyword.
@@ -60,25 +69,45 @@ Other changes:
 
 - **`threetears.nats.kv.reconcile_kv_stream()`** (new, formerly private) is the declaring
   reconcile. It is public so the client's restoration runs the same code.
-- `KvDeclaring.ensure_kv_bucket` and `FakeNatsClient.ensure_kv_bucket` take `owns_bucket`. On a
-  re-declaration, the fake now keeps a live bucket's TTL and storage unless the declarer owns the
-  bucket, as the real client does. An owned storage change empties the fake bucket.
+- `KvDeclaring.ensure_kv_bucket` and `FakeNatsClient.ensure_kv_bucket` take `owns_bucket` and
+  `drop_file_storage`. On a re-declaration, the fake now keeps a live bucket's TTL and storage
+  unless the declarer owns the bucket, as the real client does. An owned storage change empties
+  the fake bucket, and an owned file bucket without `drop_file_storage` is refused.
+- **Consumers with their own `KvDeclaring` test doubles must add both keywords** (`owns_bucket:
+  bool = False, drop_file_storage: bool = False`) to `ensure_kv_bucket`. The fake-protocol parity
+  gate does not catch this, because it checks only required parameters and both keywords have
+  defaults. A double without them still passes the gate, then fails with a `TypeError` as soon as
+  the code under test passes either keyword, as the hub's declarer will.
 - When the server answers a reconcile update, delete or create with its own error code, the
   message no longer tells the operator to grant the principal. A missing grant is never answered,
   so an answered refusal names the configuration instead.
 
 **The hub must pass it.** `PodBucketDeclarer` should declare with `owns_bucket=True`. Until it does,
-the stale shapes stay and binders keep being refused. Recreating a bucket needs `STREAM.DELETE` on
-its stream. The hub's static NATS user holds `>` today.
+the stale shapes stay and binders keep being refused. The nonce bucket's move off file storage
+also needs `drop_file_storage=True`. Pass it only for buckets whose entries may be dropped (the
+nonces are a replay window, so dropping them reopens it once). Recreating a bucket needs
+`STREAM.DELETE` on its stream. The hub's static NATS user holds `>` in the committed dev config.
 
 ### A steady credential-lifetime shortfall is logged once
 
 `renew_credential(ask_server=True)` logged "the server reports a shorter credential lifetime than
 configured" at INFO on every renewal cycle. On cobalt-dev that included a server answer of 86399 s
 against a configured 86400 s. The server's answer is rounded down by design, so that is the
-configured lifetime. The line is now logged at INFO only when the server's lifetime is more than
-1 s short, and only when that differs from what the loop last reported. Otherwise it is logged at
-DEBUG.
+configured lifetime. The line is now logged at INFO only when a real shortfall first appears
+(more than 1 s), or when its value moves by more than 1 s from the one last reported. That way a
+lifetime that reads 299 s one cycle and 300 s the next is reported once. A reading within the
+rounding is logged at DEBUG and clears what was last reported, so a shortfall that comes back is
+reported again.
+
+### `force_flush_telemetry()` exports buffered telemetry on demand
+
+**`threetears.observe.setup.force_flush_telemetry(timeout=timedelta(seconds=2)) -> bool`** (new)
+exports every buffered span, metric and log record now, without shutting anything down. It flushes
+the tracer provider and log export that `init_telemetry` set up, and the global meter provider when
+it is an SDK provider (3tears installs none itself). `timeout` bounds the whole call, and the
+function returns whether every configured provider finished within it. Before this, the only way
+to flush the log export, for example in a test asserting on what its collector received, went
+through private OpenTelemetry modules or a private 3tears handler.
 
 ## v0.62.0 -- 2026-10-04
 

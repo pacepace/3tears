@@ -14,7 +14,7 @@ import pytest
 from pydantic import BaseModel
 
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.nats.errors import KvBucketNotFoundError, KvError
+from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError
 from threetears.nats.kv import KvDeclaring
 
 
@@ -274,6 +274,13 @@ async def test_a_bind_only_declaration_cannot_own_the_bucket() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dropping_file_storage_needs_ownership() -> None:
+    client = FakeNatsClient()
+    with pytest.raises(ValueError, match="drop_file_storage=True needs owns_bucket=True"):
+        await client.ensure_kv_bucket(name="nonces", drop_file_storage=True)
+
+
+@pytest.mark.asyncio
 async def test_a_file_bucket_cannot_be_owned() -> None:
     client = FakeNatsClient()
     with pytest.raises(ValueError, match="storage='memory'"):
@@ -291,7 +298,12 @@ async def test_an_owner_recreates_a_bucket_on_another_storage_empty() -> None:
     assert (kept.storage, kept.ttl) == ("file", timedelta(seconds=60))
     assert await kept.get(key="k") == b"v"
 
-    owned = await client.ensure_kv_bucket(name="nonces", ttl=None, owns_bucket=True)
+    with pytest.raises(KvConfigMismatch, match="drop_file_storage"):
+        await client.ensure_kv_bucket(name="nonces", ttl=None, owns_bucket=True)
+    assert (opened.storage, opened.ttl) == ("file", timedelta(seconds=60)), "a refused owner changed the bucket"
+    assert await opened.get(key="k") == b"v", "a refused owner dropped the entries"
+
+    owned = await client.ensure_kv_bucket(name="nonces", ttl=None, owns_bucket=True, drop_file_storage=True)
     assert owned is opened
     assert (owned.storage, owned.ttl) == ("memory", None)
     assert await owned.get(key="k") is None, "a recreate drops the entries"
