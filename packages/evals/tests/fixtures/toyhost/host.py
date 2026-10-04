@@ -12,7 +12,8 @@ the engine's bare cell timeout. A caller that wants spans passes its own sink.
 
 from __future__ import annotations
 
-from threetears.evals.contracts import EvalStorage, InMemoryDocumentStore, withhold_failure_detail
+from threetears.evals.contracts import EvalStorage, withhold_failure_detail
+from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.contracts.host import (
     CompletionClients,
     EvalHost,

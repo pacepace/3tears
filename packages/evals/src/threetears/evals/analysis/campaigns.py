@@ -38,6 +38,7 @@ from threetears.evals.contracts.errors import NotFoundError, ValidationFailedErr
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from threetears.evals.contracts.storage import EvalStorage
     from threetears.evals.contracts.campaign import CampaignView, EvalCampaign
     from threetears.evals.contracts.declaration import CampaignDesign
     from threetears.evals.contracts.models import EvalResult, EvalRun, EvalRunStamp, EvalTemplate
@@ -805,6 +806,14 @@ def _resolve_control_variant(
         # WILL carry is known now, from the same read, not a second derivation.
         key = resolve_variant_identity(run=run, profile=profile).variant_key
     return key
+
+
+if TYPE_CHECKING:
+
+    def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
+        """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
+        store: CampaignStore = storage
+        del store
 
 
 __all__ = [

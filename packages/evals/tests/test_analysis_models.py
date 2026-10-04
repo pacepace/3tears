@@ -44,7 +44,7 @@ from threetears.evals.contracts.campaign import (
 from threetears.evals.contracts.surface import DecisionSurface
 
 # Reuse the campaign tests' in-memory evals-repo stand-in + storage wiring.
-from packages.evals.tests.memory_store import memory_storage
+from packages.evals.tests.factories import memory_storage
 
 _NO_CHART = Chart(type="none", cells=[], measures=[], axis="", note="", caption="")
 

@@ -1,24 +1,30 @@
 """Structural gate: the engine's packages import only what the allowed-dependency matrix permits.
 
-``threetears.evals`` is four physical subpackages, and one allowed-dependency matrix says which may
+``threetears.evals`` is six physical subpackages, and one allowed-dependency matrix says which may
 import which:
 
-============  =========  =====  ========  ===  ===================================================
-from          contracts  run    analysis  gen  third-party
-============  =========  =====  ========  ===  ===================================================
-contracts     yes        --     --        --   pydantic, threetears.observe
-run           yes        yes    --        --   pydantic, threetears.observe
-analysis      yes        --     yes       --   pydantic, threetears.observe; ``vl_convert`` only in viz.render
-gen           yes        --     --        yes  pydantic, threetears.observe
-============  =========  =====  ========  ===  ===================================================
+============  =========  =====  ========  ===  =======  =======  ==================================================
+from          contracts  run    analysis  gen  storage  testing  third-party
+============  =========  =====  ========  ===  =======  =======  ==================================================
+contracts     yes        --     --        --   --       --       pydantic, threetears.observe
+run           yes        yes    --        --   --       --       pydantic, threetears.observe
+analysis      yes        --     yes       --   --       --       pydantic, threetears.observe; ``vl_convert`` only in viz.render
+gen           yes        --     --        yes  --       --       pydantic, threetears.observe
+storage       yes        --     --        --   yes      --       (none)
+testing       yes        --     --        --   --       yes      (none)
+============  =========  =====  ========  ===  =======  =======  ==================================================
+
+``storage`` holds adapters behind the one port and ``testing`` the conformance kits an adopter runs
+against its own adapter; each needs nothing but the port it implements or checks, so neither may
+reach the engine's machinery, and nothing in the engine may reach either.
 
 ``threetears.observe`` is in every row because the repository's logging convention routes every
 module's logger through it (``get_logger``); it is a declared dependency of the package and itself
 has none.
 
 **Placement is the path, not a list.** A module is in a package because it lives in that package's
-directory: ``threetears/evals/contracts/``, ``run/``, ``analysis/`` or ``gen/``. The one marker the
-path cannot place -- the ``threetears.evals`` root -- is placed by name in
+directory: ``threetears/evals/contracts/``, ``run/``, ``analysis/``, ``gen/``, ``storage/`` or
+``testing/``. The one marker the path cannot place -- the ``threetears.evals`` root -- is placed by name in
 :data:`~packages.evals.tests.package_placement.TREE_MARKERS` and held to contracts' row. The rule
 itself lives in :mod:`packages.evals.tests.package_placement`.
 
@@ -65,12 +71,14 @@ TESTS_ROOT = Path(__file__).resolve().parent
 #: The repository root, which the probes run from.
 REPO_ROOT = TESTS_ROOT.parents[2]
 
-#: The matrix, for the four packages.
+#: The matrix, for the six packages.
 ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "contracts": frozenset({"contracts"}),
     "run": frozenset({"contracts", "run"}),
     "analysis": frozenset({"contracts", "analysis"}),
     "gen": frozenset({"contracts", "gen"}),
+    "storage": frozenset({"contracts", "storage"}),
+    "testing": frozenset({"contracts", "testing"}),
 }
 
 #: The matrix's third-party column, by import root (a ``threetears`` namespace package by its two
@@ -80,6 +88,8 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "run": frozenset({"pydantic", "threetears.observe"}),
     "analysis": frozenset({"pydantic", "threetears.observe"}),
     "gen": frozenset({"pydantic", "threetears.observe"}),
+    "storage": frozenset(),
+    "testing": frozenset(),
 }
 
 #: The one module-level third-party exception: the chart renderer and nothing else in analysis may
@@ -91,7 +101,16 @@ THIRD_PARTY_EXCEPTIONS: dict[str, frozenset[str]] = {
 #: The public roots, relative to ``threetears.evals``. A consumer reaches a package only through one
 #: of these. ``contracts.host`` and ``analysis.viz`` are roots of their own inside a package: the first
 #: is the contract a host implements, the second the one root whose render needs ``vl_convert``.
-PUBLIC_ROOTS: tuple[str, ...] = ("contracts", "contracts.host", "run", "analysis", "analysis.viz", "gen")
+PUBLIC_ROOTS: tuple[str, ...] = (
+    "contracts",
+    "contracts.host",
+    "run",
+    "analysis",
+    "analysis.viz",
+    "gen",
+    "storage",
+    "testing",
+)
 
 #: The consumers walked, as globs under the tests directory.
 SECOND_CONSUMERS: tuple[str, ...] = ("fixtures/toyhost/**/*.py", "fixtures/courierhost/**/*.py")
@@ -325,11 +344,11 @@ def consumer_files(tests_root: Path) -> list[tuple[str, Path]]:
 
 
 def _in_a_package(module: str) -> bool:
-    """Whether ``module`` is one of the four packages or below one."""
+    """Whether ``module`` is one of the six packages or below one."""
     return placement(module) in ALLOWED_PACKAGES
 
 
-#: A string literal that IS a dotted path into one of the four packages, below the package name.
+#: A string literal that IS a dotted path into one of the six packages, below the package name.
 #: Whole-string and dotted only: a docstring or a sentence naming a module never matches, and a
 #: file path in slash form is a file to edit rather than a module to import, so it is left alone.
 _DOTTED_PACKAGE_PATH = re.compile(r"threetears\.evals\.(?:contracts|run|analysis|gen)(?:\.\w+)+")
@@ -412,7 +431,7 @@ def public_root_violations(
 
 
 def test_the_toy_host_imports_only_public_names() -> None:
-    """The second consumer reaches the four packages the way any client will: through the roots' ``__all__``."""
+    """The second consumer reaches the six packages the way any client will: through the roots' ``__all__``."""
     violations = public_root_violations(SOURCE_ROOT, consumer_files(TESTS_ROOT), consumer_root=REPO_ROOT)
     assert not violations, (
         "These imports reach an engine package other than through a public root's __all__. Import the "

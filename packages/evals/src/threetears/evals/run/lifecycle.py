@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from threetears.evals.contracts.scoring import CellSummary
     from threetears.evals.run.jobs import EvalJobManager
     from threetears.evals.run.metering import MeteredCallTally
-    from threetears.evals.contracts.storage import EvalStorage
+    from threetears.evals.contracts.storage import JobStore, RunRecordStore, RunStore
 
 log = get_logger(__name__)
 
@@ -98,7 +98,7 @@ class AbandonedRunSweepReport(EvalBaseModel):
     still sum to it."""
 
 
-def get_run(storage: EvalStorage, run_id: str, scope_id: str) -> EvalRun:
+def get_run(storage: RunStore, run_id: str, scope_id: str) -> EvalRun:
     """Load an eval run by id within its scope, whole.
 
     Args:
@@ -119,7 +119,7 @@ def get_run(storage: EvalStorage, run_id: str, scope_id: str) -> EvalRun:
 
 
 def cancel_run(
-    storage: EvalStorage,
+    storage: RunRecordStore,
     run_id: str,
     scope_id: str,
     *,
@@ -231,7 +231,7 @@ def cancel_run(
 
 
 def sweep_abandoned_runs(
-    storage: EvalStorage, scopes: Iterable[str], *, job_manager: EvalJobManager | None
+    storage: RunRecordStore, scopes: Iterable[str], *, job_manager: EvalJobManager | None
 ) -> AbandonedRunSweepReport:
     """Cancel runs this process cannot own, left non-terminal by a previous one.
 
@@ -421,8 +421,8 @@ async def rejudge_result(
     """
     storage = host.storage
     clients = host.completion_clients("a re-judge")
-    # ``etag`` is None from a store that does not implement conditional writes, whose rewrite is then
-    # unconditional (the port's contract) — never a sign the result is missing.
+    # Every store hands a found document's etag back (the port's contract), so the rewrite below is
+    # conditional: a re-judge racing another writer of this result is refused rather than clobbering it.
     result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
     if result is None:
         raise NotFoundError("result", result_id)
@@ -494,7 +494,7 @@ def _dollars(cost_usd: float | None) -> str:
 
 
 def _recount_rejudged_exclusion(
-    storage: EvalStorage, run_id: str, scope_id: str, *, before: EvalResult, after: EvalResult
+    storage: JobStore, run_id: str, scope_id: str, *, before: EvalResult, after: EvalResult
 ) -> None:
     """Keep the run's completeness true when a re-judge moves a result out of exclusion.
 
@@ -541,7 +541,7 @@ def _recount_rejudged_exclusion(
 
 
 def record_completeness(
-    storage: EvalStorage,
+    storage: JobStore,
     run_id: str,
     scope_id: str,
     cells: Sequence[CellSummary],

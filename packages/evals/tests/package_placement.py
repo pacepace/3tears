@@ -1,8 +1,8 @@
 """Which engine package a module belongs to: its path, and nothing else.
 
-``threetears.evals`` is four subpackages -- ``contracts``, ``run``, ``analysis`` and ``gen`` -- and the
-gates over it agree on one rule: **a module is in a package because it lives in that package's
-directory.** ``test_package_matrix.py`` holds each package to its row of the allowed-dependency
+``threetears.evals`` is six subpackages -- ``contracts``, ``run``, ``analysis``, ``gen``, ``storage``
+and ``testing`` -- and the gates over it agree on one rule: **a module is in a package because it
+lives in that package's directory.** ``test_package_matrix.py`` holds each package to its row of the allowed-dependency
 matrix and ``test_contracts_installable.py`` probes the contracts package standalone. Both need the
 same answer to "where does this module live", so the answer lives here once rather than in one of
 those files for the other to import.
@@ -39,9 +39,11 @@ PACKAGE_DIRS: dict[str, str] = {
     "run": "run",
     "analysis": "analysis",
     "gen": "gen",
+    "storage": "storage",
+    "testing": "testing",
 }
 
-#: The tree marker a path cannot place: the root is the namespace over the four packages and is held
+#: The tree marker a path cannot place: the root is the namespace over the six packages and is held
 #: to contracts' row, so it may import nothing but contracts.
 TREE_MARKERS: dict[str, str] = {
     "": "contracts",

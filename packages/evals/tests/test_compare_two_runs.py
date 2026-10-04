@@ -12,7 +12,7 @@ from typing import Any
 from threetears.evals.analysis import compare_two_runs
 from threetears.evals.contracts import EvalRun, EvalStorage, EvalTemplate
 from packages.evals.tests.factories import make_eval_run, make_template
-from packages.evals.tests.memory_store import InMemoryDocumentStore
+from threetears.evals.storage import InMemoryDocumentStore
 
 
 def _detail(run: EvalRun) -> dict[str, dict[str, Any]]:

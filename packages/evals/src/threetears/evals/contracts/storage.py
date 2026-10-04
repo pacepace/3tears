@@ -32,7 +32,7 @@ failing the list.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from pydantic import ValidationError
 
@@ -149,6 +149,268 @@ def save_document(repo: DocumentStore, document: dict[str, Any], *, if_match: st
             e,
         )
         raise StorageError(f"failed to write {document.get('doc_type')} '{document.get('id')}': {e}") from e
+
+
+# --- the run side's named ports ---------------------------------------------------------------------
+#
+# Each is one area of :class:`EvalStorage`, stated as a protocol so a consumer names the area it
+# reads rather than the whole store: a function typed ``DefinitionStore`` cannot reach a run. The
+# engine satisfies every one with :class:`EvalStorage` over the one :class:`DocumentStore` an app
+# implements; the methods carry EvalStorage's own semantics, documented there. A consumer whose reads
+# are a small set across areas keeps a protocol of its own beside it (the analysis lenses, the
+# judge's inputs, curation), on the same terms.
+
+
+class JobStore(Protocol):
+    """The run document's read-modify-write: what the job manager persists a run's status through.
+
+    The smallest run-side port, and a part of :class:`RunStore`. See
+    :func:`threetears.evals.run.run_document.update_eval_run` for the retry it supports, which is
+    stated over these two methods so a test double drives the same policy production does.
+
+    Positional parameters here and on every port below are positional-only, so an implementation
+    is free to name them after whatever it partitions by; the engine passes them positionally.
+    """
+
+    def load_eval_run_with_etag(self, run_id: str, scope_id: str, /) -> tuple[EvalRun | None, str | None]:
+        """See :meth:`EvalStorage.load_eval_run_with_etag`."""
+        ...
+
+    def save_eval_run(self, run: EvalRun, /, *, if_match: str | None = None) -> None:
+        """See :meth:`EvalStorage.save_eval_run`."""
+        ...
+
+
+class RunStore(JobStore, Protocol):
+    """The eval runs of a scope: their documents, listings, stamps, archive flag and boot scan."""
+
+    def load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None:
+        """See :meth:`EvalStorage.load_eval_run`."""
+        ...
+
+    def query_eval_runs(
+        self,
+        scope_id: str,
+        status: EvalRunStatus | None = None,
+        *,
+        elide_payload: frozenset[str] = frozenset(),
+    ) -> list[EvalRun]:
+        """See :meth:`EvalStorage.query_eval_runs`."""
+        ...
+
+    def load_eval_runs(
+        self,
+        run_ids: Sequence[str],
+        scope_id: str,
+        /,
+        *,
+        elide_payload: frozenset[str] = frozenset(),
+    ) -> list[EvalRun]:
+        """See :meth:`EvalStorage.load_eval_runs`."""
+        ...
+
+    def load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]:
+        """See :meth:`EvalStorage.load_eval_run_stamps`."""
+        ...
+
+    def set_eval_run_archived(self, run_id: str, scope_id: str, /, *, archived: bool) -> bool:
+        """See :meth:`EvalStorage.set_eval_run_archived`."""
+        ...
+
+    def query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan:
+        """See :meth:`EvalStorage.query_non_terminal_eval_runs`."""
+        ...
+
+    def delete_eval_run(self, run_id: str, scope_id: str, /) -> bool:
+        """See :meth:`EvalStorage.delete_eval_run`."""
+        ...
+
+
+class ResultStore(Protocol):
+    """The cells a run recorded: each :class:`EvalResult` and the :class:`EvalTrace` beside it."""
+
+    def save_eval_result(self, result: EvalResult, trace: EvalTrace | None = None, /) -> None:
+        """See :meth:`EvalStorage.save_eval_result`."""
+        ...
+
+    def load_eval_result(self, result_id: str, scope_id: str, /) -> EvalResult | None:
+        """See :meth:`EvalStorage.load_eval_result`."""
+        ...
+
+    def load_eval_result_with_etag(self, result_id: str, scope_id: str, /) -> tuple[EvalResult | None, str | None]:
+        """See :meth:`EvalStorage.load_eval_result_with_etag`."""
+        ...
+
+    def replace_eval_result(self, result: EvalResult, /, *, if_match: str | None) -> None:
+        """See :meth:`EvalStorage.replace_eval_result`."""
+        ...
+
+    def load_eval_trace(self, result_id: str, scope_id: str, /) -> EvalTrace | None:
+        """See :meth:`EvalStorage.load_eval_trace`."""
+        ...
+
+    def query_eval_results(
+        self,
+        scope_id: str,
+        /,
+        *,
+        run_id: str | None = None,
+        test_case_id: str | None = None,
+        model: str | None = None,
+    ) -> list[EvalResult]:
+        """See :meth:`EvalStorage.query_eval_results`."""
+        ...
+
+    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
+        """See :meth:`EvalStorage.query_eval_results_by_run`."""
+        ...
+
+    def delete_eval_result(self, result_id: str, scope_id: str, /) -> bool:
+        """See :meth:`EvalStorage.delete_eval_result`."""
+        ...
+
+
+class RunRecordStore(RunStore, ResultStore, Protocol):
+    """A run together with its cells: for an operation that reads one and rewrites the other.
+
+    Cancelling a run counts the cells it recorded before stamping it, and the boot-time sweep of
+    abandoned runs cancels each one it finds, so both need the two areas at once.
+    """
+
+
+class DefinitionStore(Protocol):
+    """What runs are launched FROM: templates, their test cases, rubric dimensions and judge configs."""
+
+    def save_template(self, template: EvalTemplate, /) -> None:
+        """See :meth:`EvalStorage.save_template`."""
+        ...
+
+    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
+        """See :meth:`EvalStorage.load_template`."""
+        ...
+
+    def load_template_by_name(self, name: str, scope_id: str, /) -> EvalTemplate | None:
+        """See :meth:`EvalStorage.load_template_by_name`."""
+        ...
+
+    def query_templates(
+        self,
+        scope_id: str,
+        /,
+        *,
+        archived: bool | None = None,
+        required_tool: str | None = None,
+        universal: bool | None = None,
+    ) -> list[EvalTemplate]:
+        """See :meth:`EvalStorage.query_templates`."""
+        ...
+
+    def delete_template(self, template_id: str, scope_id: str, /) -> bool:
+        """See :meth:`EvalStorage.delete_template`."""
+        ...
+
+    def save_test_case(self, test_case: EvalTestCase, /) -> None:
+        """See :meth:`EvalStorage.save_test_case`."""
+        ...
+
+    def load_test_case(self, test_case_id: str, scope_id: str, /) -> EvalTestCase | None:
+        """See :meth:`EvalStorage.load_test_case`."""
+        ...
+
+    def query_test_cases(self, scope_id: str, /, *, template_id: str | None = None) -> list[EvalTestCase]:
+        """See :meth:`EvalStorage.query_test_cases`."""
+        ...
+
+    def load_test_cases_by_ids(self, test_case_ids: list[str], scope_id: str, /) -> list[EvalTestCase]:
+        """See :meth:`EvalStorage.load_test_cases_by_ids`."""
+        ...
+
+    def delete_test_case(self, test_case_id: str, scope_id: str, /) -> bool:
+        """See :meth:`EvalStorage.delete_test_case`."""
+        ...
+
+    def save_rubric_dim(self, dim: CatalogRubricDim, /) -> None:
+        """See :meth:`EvalStorage.save_rubric_dim`."""
+        ...
+
+    def load_rubric_dim(self, dim_id: str, scope_id: str, /) -> CatalogRubricDim | None:
+        """See :meth:`EvalStorage.load_rubric_dim`."""
+        ...
+
+    def load_active_rubric_dim(self, key: str, scope_id: str, /) -> CatalogRubricDim | None:
+        """See :meth:`EvalStorage.load_active_rubric_dim`."""
+        ...
+
+    def query_rubric_dims(
+        self,
+        scope_id: str,
+        /,
+        *,
+        axis: str | None = None,
+        universal: bool | None = None,
+        archived: bool | None = None,
+    ) -> list[CatalogRubricDim]:
+        """See :meth:`EvalStorage.query_rubric_dims`."""
+        ...
+
+    def delete_rubric_dim(self, dim_id: str, scope_id: str, /) -> bool:
+        """See :meth:`EvalStorage.delete_rubric_dim`."""
+        ...
+
+    def save_judge_config(self, config: JudgeConfig, /) -> None:
+        """See :meth:`EvalStorage.save_judge_config`."""
+        ...
+
+    def load_judge_config(self, config_id: str, scope_id: str, /) -> JudgeConfig | None:
+        """See :meth:`EvalStorage.load_judge_config`."""
+        ...
+
+    def load_active_judge_config(self, rubric_dim_id: str, scope_id: str, /) -> JudgeConfig | None:
+        """See :meth:`EvalStorage.load_active_judge_config`."""
+        ...
+
+    def query_judge_configs(
+        self,
+        scope_id: str,
+        /,
+        *,
+        rubric_dim_id: str | None = None,
+        archived: bool | None = None,
+    ) -> list[JudgeConfig]:
+        """See :meth:`EvalStorage.query_judge_configs`."""
+        ...
+
+    def delete_judge_config(self, config_id: str, scope_id: str, /) -> bool:
+        """See :meth:`EvalStorage.delete_judge_config`."""
+        ...
+
+
+class CassetteStore(Protocol):
+    """The recordings a capture run made and a replay run is served."""
+
+    def save_cassette(self, cassette: EvalCassette, /) -> None:
+        """See :meth:`EvalStorage.save_cassette`."""
+        ...
+
+    def get_cassette(self, key: CassetteKey, scope_id: str, /) -> EvalCassette | None:
+        """See :meth:`EvalStorage.get_cassette`."""
+        ...
+
+    def list_cassettes_for_template(
+        self, template_id: str, scope_id: str, /, *, limit: int | None = None
+    ) -> list[EvalCassette]:
+        """See :meth:`EvalStorage.list_cassettes_for_template`."""
+        ...
+
+    def list_case_cassettes(
+        self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str
+    ) -> list[EvalCassette]:
+        """See :meth:`EvalStorage.list_case_cassettes`."""
+        ...
+
+    def delete_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> int:
+        """See :meth:`EvalStorage.delete_case_cassettes`."""
+        ...
 
 
 class EvalStorage:
@@ -854,9 +1116,10 @@ class EvalStorage:
 
         Args:
             result: The result as it should now stand.
-            if_match: The token :meth:`load_eval_result_with_etag` returned with it — ``None`` from a
-                store that does not implement conditional writes, whose write is then unconditional
-                (the port's own contract, :meth:`~threetears.evals.contracts.store_port.DocumentStore.get_with_etag`).
+            if_match: The token :meth:`load_eval_result_with_etag` returned with it. ``None`` writes
+                unconditionally; every store hands a found document's token back
+                (:meth:`~threetears.evals.contracts.store_port.DocumentStore.get_with_etag`), so a
+                rewrite of a result just read is always conditional.
 
         Raises:
             ConflictError: Something else wrote the result since it was read.
@@ -1118,9 +1381,30 @@ class EvalStorage:
         )
 
 
+if TYPE_CHECKING:
+
+    def _eval_storage_satisfies_every_port(storage: EvalStorage) -> None:
+        """Hold :class:`EvalStorage` to each run-side port, so a drifted signature fails typecheck."""
+        ports: tuple[JobStore, RunStore, ResultStore, RunRecordStore, DefinitionStore, CassetteStore] = (
+            storage,
+            storage,
+            storage,
+            storage,
+            storage,
+            storage,
+        )
+        del ports
+
+
 __all__ = [
     "EVAL_DOC_TYPES",
+    "CassetteStore",
+    "DefinitionStore",
     "EvalStorage",
+    "JobStore",
     "NonTerminalRunScan",
+    "ResultStore",
+    "RunRecordStore",
+    "RunStore",
     "save_document",
 ]

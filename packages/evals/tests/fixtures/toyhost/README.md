@@ -81,9 +81,10 @@ commissioned one.
 
 ## The store
 
-`host.py` builds its `EvalStorage` over `InMemoryDocumentStore` (`threetears.evals.contracts`),
+`host.py` builds its `EvalStorage` over `InMemoryDocumentStore` (`threetears.evals.storage`),
 the engine's in-memory reference `DocumentStore`: scoped, with conditional writes, and nothing
-persisted past the process. A product passes its own `DocumentStore` there.
+persisted past the process. A product passes its own `DocumentStore` there, and proves it with the
+store conformance kit (`threetears.evals.testing`).
 
 ## The smallest host
 

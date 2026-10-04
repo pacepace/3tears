@@ -33,6 +33,7 @@ from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import fold_judge_outcomes
 
 if TYPE_CHECKING:
+    from threetears.evals.contracts.storage import EvalStorage
     from threetears.evals.contracts.models import (
         EvalResult,
         EvalRun,
@@ -327,6 +328,14 @@ def apply_rejudge(
             "judge_rescores": [*result.judge_rescores, rescore],
         }
     )
+
+
+if TYPE_CHECKING:
+
+    def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
+        """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
+        store: JudgeInputStore = storage
+        del store
 
 
 __all__ = [

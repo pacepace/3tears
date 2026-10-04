@@ -15,8 +15,10 @@ first release that says otherwise.
 | `threetears.evals.run` | the trial loop, judges, simulated users, budgets and metering |
 | `threetears.evals.gen` | case and rubric generation |
 | `threetears.evals.analysis` | the analysis bundle, report generation and charts |
+| `threetears.evals.storage` | the storage adapters the engine ships: the in-memory reference store |
+| `threetears.evals.testing` | conformance kits an app runs in its own test suite: the store kit |
 
-Import from those four roots and from `threetears.evals.contracts.host`, never from a module below
+Import from those roots and from `threetears.evals.contracts.host`, never from a module below
 them. Every engine type a public signature hands you — a protocol you implement, a value you
 receive, an exception you catch, a literal you annotate with — is exported from one of those roots.
 
@@ -24,7 +26,7 @@ Two example hosts live in this repository (not in the wheel), written as referen
 imports nothing but the public roots and itself. `tests/fixtures/courierhost/` is the least a
 product writes, in one module; `tests/fixtures/toyhost/` exercises every shape of the host contract,
 with a map of which file holds which step. Both run on `InMemoryDocumentStore`
-(`threetears.evals.contracts`), the engine's in-memory reference `DocumentStore`: scoped, with
+(`threetears.evals.storage`), the engine's in-memory reference `DocumentStore`: scoped, with
 conditional writes, and the shape to compare your own adapter against.
 
 ## Adopting it: the host, the scope and the kind
@@ -56,6 +58,23 @@ keyed by `(scope_id, doc_type, id)`. Every port call names its scope, and there 
 read: a caller that needs several scopes is told which by you and asks each. A campaign and the runs
 it compares live in one scope. Your adapter strips whatever it injects (an etag, a timestamp) before
 handing a document back, because every stored model reads strictly.
+
+**Prove your store with the conformance kit.** `threetears.evals.testing.STORE_CONFORMANCE_CASES`
+states every rule of the port — scoping, the strip on read, `exclude`/`keep` projection, ordering,
+etag conflicts and the re-read that recovers one, merge and delete — as a case you hand a fresh,
+empty store. Every case is mandatory: in particular a store must implement conditional writes,
+because several writers share a run document as it finishes. Parametrise your test runner over it:
+
+```python
+@pytest.mark.parametrize("case", STORE_CONFORMANCE_CASES, ids=lambda case: case.name)
+def test_my_store_conforms(case: StoreConformanceCase, tmp_path: Path) -> None:
+    case.run(MyDocumentStore(tmp_path / "evals.sqlite"))
+```
+
+The engine reads and writes through `EvalStorage`, built over that one store. Its consumers name the
+area they touch rather than the whole of it — `RunStore`, `ResultStore`, `RunRecordStore`,
+`DefinitionStore`, `CassetteStore` and `JobStore` (in `threetears.evals.contracts`) — so a function
+typed `DefinitionStore` cannot reach a run, and a test of one hands it only that area.
 
 **A kind is what you are evaluating.** You implement the candidate-kind seam: `prepare` builds a
 candidate for one cell from the run's subject, its variant configuration and the seeded world, and

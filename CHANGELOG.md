@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: storage ports by area, the in-memory adapter's own root, and a store conformance kit
+
+- **`threetears.evals.testing`** (new public root): the store conformance kit.
+  `STORE_CONFORMANCE_CASES` is every rule of the `DocumentStore` port as a `StoreConformanceCase`
+  (`name`, `rule`, `check`; `case.run(store)` takes a fresh, empty store) — scoping, the strip on
+  read, `exclude`/`keep` projection, predicates and ordering, etag conflicts and the re-read that
+  recovers a lost race, `merge_fields`, delete and the sweep. A broken rule raises
+  `StoreConformanceFailure` (an `AssertionError`) naming the case and the rule. Plain Python, no
+  test-runner dependency: an adapter's suite parametrises over the tuple.
+- **`threetears.evals.storage`** (new public root) holds the adapters the engine ships behind the
+  port. **Breaking:** `InMemoryDocumentStore` moves there from `threetears.evals.contracts`. It now
+  takes one lock over every method, so a conditional write's compare and write cannot interleave
+  with another thread's.
+- **The port is stated whole** (no behaviour change for a conforming store): every found document
+  comes back from `get_with_etag` with a token — conditional writes are mandatory, and a store
+  without them does not conform; `get_many` returns an id named twice once and refuses `exclude`
+  with `keep` (`ValueError`); under `order_by` a document without the field sorts below every one
+  that has it; `merge_fields` refuses `doc_type` beside `id` and `scope_id`.
+- **Named run-side ports** (new, `threetears.evals.contracts`): `JobStore`, `RunStore`,
+  `ResultStore`, `RunRecordStore`, `DefinitionStore` and `CassetteStore` — each one area of
+  `EvalStorage`, which satisfies all six (held by typecheck). The authoring operations take a
+  `DefinitionStore`, `list_results`/`get_result`/`get_result_trace` a `ResultStore`, `get_run` a
+  `RunStore`, `cancel_run` and `sweep_abandoned_runs` a `RunRecordStore`, `record_completeness`,
+  `update_eval_run` and `EvalJobManager` a `JobStore`, and `seed_eval_definitions` a
+  `DefinitionStore`. **Breaking:** `EvalRunDocumentStore` is `JobStore` and `DefinitionSeedStore`
+  is `DefinitionStore` (both were `threetears.evals.run`); `CassetteStore` moves to
+  `threetears.evals.contracts` and gains the two listing methods.
+
 ## v0.64.0 -- 2026-10-04
 
 ### 3tears-evals joins the family, with a host contract any app can implement

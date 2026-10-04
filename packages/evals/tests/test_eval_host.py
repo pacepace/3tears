@@ -37,7 +37,7 @@ from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, Scrip
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
-from packages.evals.tests.memory_store import InMemoryDocumentStore
+from threetears.evals.storage import InMemoryDocumentStore
 
 
 def _launching(**settings: object) -> tuple[LaunchHost, EvalStorage]:

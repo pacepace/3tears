@@ -35,6 +35,7 @@ from threetears.evals.contracts.errors import NotFoundError, StorageError, Valid
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from threetears.evals.contracts.storage import EvalStorage
     from threetears.evals.contracts.host.profile import HostProfile
     from threetears.evals.contracts.campaign import EvalAnalysis, EvalCampaign, EvalInsight
     from threetears.evals.contracts.models import EvalResult, EvalRun
@@ -678,6 +679,14 @@ def _detach_run_from_all_campaigns(
             ) from e
         touched.append(campaign.id)
     return touched
+
+
+if TYPE_CHECKING:
+
+    def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
+        """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
+        store: CurationStore = storage
+        del store
 
 
 __all__ = [

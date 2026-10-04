@@ -1,6 +1,6 @@
 """Authoring the definitions a run is built from: templates, catalog rubric dims and judge configs.
 
-Each operation is a function over :class:`~threetears.evals.contracts.storage.EvalStorage` and typed
+Each operation is a function over :class:`~threetears.evals.contracts.storage.DefinitionStore` and typed
 parameters, the shape the curation family set (:mod:`threetears.evals.run.curation`), so a client of
 the package can author definitions without a host's service layer, and every surface that reaches
 these translates failures the same way (NotFound → 404, Conflict → 409, Validation → 422).
@@ -62,7 +62,7 @@ from threetears.evals.run.curation import require_delete_confirmation
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.storage import EvalStorage
+    from threetears.evals.contracts.storage import DefinitionStore
 
 log = get_logger(__name__)
 
@@ -351,7 +351,7 @@ def get_template(host: EvalHost, template_id: str, scope_id: str) -> EvalTemplat
 
 
 def list_templates(
-    storage: EvalStorage,
+    storage: DefinitionStore,
     scope_id: str,
     *,
     archived: bool = False,
@@ -493,7 +493,7 @@ RUBRIC_DIM_SERVER_FIELDS: tuple[str, ...] = (
 )
 
 
-def create_rubric_dim(storage: EvalStorage, definition: dict[str, Any], *, scope_id: str) -> CatalogRubricDim:
+def create_rubric_dim(storage: DefinitionStore, definition: dict[str, Any], *, scope_id: str) -> CatalogRubricDim:
     """Create and persist a catalog rubric dim from an authoring definition.
 
     A name the model does not declare is refused; server-owned identity/lifecycle fields in ``definition`` are ignored —
@@ -530,7 +530,7 @@ def create_rubric_dim(storage: EvalStorage, definition: dict[str, Any], *, scope
     return dim
 
 
-def get_rubric_dim(storage: EvalStorage, dim_id: str, scope_id: str) -> CatalogRubricDim:
+def get_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str) -> CatalogRubricDim:
     """Load a catalog rubric dim by id within a scope.
 
     Raises:
@@ -543,7 +543,7 @@ def get_rubric_dim(storage: EvalStorage, dim_id: str, scope_id: str) -> CatalogR
 
 
 def list_rubric_dims(
-    storage: EvalStorage,
+    storage: DefinitionStore,
     scope_id: str,
     *,
     axis: str | None = None,
@@ -558,7 +558,7 @@ def list_rubric_dims(
     return storage.query_rubric_dims(scope_id, axis=axis, universal=universal, archived=archived)
 
 
-def update_rubric_dim(storage: EvalStorage, dim_id: str, scope_id: str, fields: dict[str, Any]) -> CatalogRubricDim:
+def update_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, fields: dict[str, Any]) -> CatalogRubricDim:
     """Apply a partial update to a catalog rubric dim and persist it.
 
     Merges ``fields`` over the existing dim, re-validates the merged shape,
@@ -600,7 +600,7 @@ def update_rubric_dim(storage: EvalStorage, dim_id: str, scope_id: str, fields: 
     return dim
 
 
-def delete_rubric_dim(storage: EvalStorage, dim_id: str, scope_id: str, *, confirm: str | None = None) -> None:
+def delete_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, *, confirm: str | None = None) -> None:
     """Delete a catalog rubric dim by id, after an id-echo confirmation.
 
     **Gated on an id echo, like every other destructive eval delete** — see
@@ -665,7 +665,7 @@ JUDGE_CONFIG_SERVER_FIELDS: tuple[str, ...] = (
 )
 
 
-def create_judge_config(storage: EvalStorage, definition: dict[str, Any], *, scope_id: str) -> JudgeConfig:
+def create_judge_config(storage: DefinitionStore, definition: dict[str, Any], *, scope_id: str) -> JudgeConfig:
     """Create and persist a judge config from an authoring definition.
 
     A name the model does not declare is refused; server-owned identity/lifecycle fields in ``definition`` are ignored —
@@ -704,7 +704,7 @@ def create_judge_config(storage: EvalStorage, definition: dict[str, Any], *, sco
     return config
 
 
-def get_judge_config(storage: EvalStorage, config_id: str, scope_id: str) -> JudgeConfig:
+def get_judge_config(storage: DefinitionStore, config_id: str, scope_id: str) -> JudgeConfig:
     """Load a judge config by id within a scope.
 
     Raises:
@@ -717,7 +717,7 @@ def get_judge_config(storage: EvalStorage, config_id: str, scope_id: str) -> Jud
 
 
 def list_judge_configs(
-    storage: EvalStorage,
+    storage: DefinitionStore,
     scope_id: str,
     *,
     rubric_dim_id: str | None = None,
@@ -735,7 +735,7 @@ def list_judge_configs(
     )
 
 
-def update_judge_config(storage: EvalStorage, config_id: str, scope_id: str, fields: dict[str, Any]) -> JudgeConfig:
+def update_judge_config(storage: DefinitionStore, config_id: str, scope_id: str, fields: dict[str, Any]) -> JudgeConfig:
     """Re-author a judge config via archive-and-recreate (immutable versioning).
 
     :class:`~threetears.evals.contracts.models.JudgeConfig` has no ``updated_at`` and is
@@ -800,7 +800,7 @@ def update_judge_config(storage: EvalStorage, config_id: str, scope_id: str, fie
     return new_config
 
 
-def delete_judge_config(storage: EvalStorage, config_id: str, scope_id: str, *, confirm: str | None = None) -> None:
+def delete_judge_config(storage: DefinitionStore, config_id: str, scope_id: str, *, confirm: str | None = None) -> None:
     """Delete a judge config by id, after an id-echo confirmation.
 
     **Gated on an id echo, like every other destructive eval delete** — see

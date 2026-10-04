@@ -2,8 +2,8 @@
 
 These are the reads every read surface stands on — the run listing the comparison lenses narrow,
 the results a run produced, and the trace a drill-down opens — written as functions over
-:class:`~threetears.evals.contracts.storage.EvalStorage` and typed parameters, so a client of the package
-reads its runs without a host's service. A host's service may keep its own method names and
+:class:`~threetears.evals.contracts.storage.ResultStore` (the listing, over the host) and typed
+parameters, so a client of the package reads its runs without a host's service. A host's service may keep its own method names and
 delegate here, so every surface it serves reaches these through it.
 
 The scope a run lives in is ``scope_id`` here — the engine's word for a partition it never
@@ -21,7 +21,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.evals.contracts.host.eval_host import EvalHost
     from threetears.evals.contracts.models import EvalResult, EvalRun, EvalRunStatus, EvalTrace
-    from threetears.evals.contracts.storage import EvalStorage
+    from threetears.evals.contracts.storage import ResultStore
 
 log = get_logger(__name__)
 
@@ -124,7 +124,7 @@ def list_runs(
     return [run for run in runs if not run.archived]
 
 
-def list_results(storage: EvalStorage, run_id: str, scope_id: str) -> list[EvalResult]:
+def list_results(storage: ResultStore, run_id: str, scope_id: str) -> list[EvalResult]:
     """List every result for one eval run within its scope.
 
     Args:
@@ -138,7 +138,7 @@ def list_results(storage: EvalStorage, run_id: str, scope_id: str) -> list[EvalR
     return storage.query_eval_results_by_run(run_id, scope_id)
 
 
-def get_result(storage: EvalStorage, result_id: str, scope_id: str) -> EvalResult:
+def get_result(storage: ResultStore, result_id: str, scope_id: str) -> EvalResult:
     """Load one eval result by id within its scope.
 
     Args:
@@ -158,7 +158,7 @@ def get_result(storage: EvalStorage, result_id: str, scope_id: str) -> EvalResul
     return result
 
 
-def get_result_trace(storage: EvalStorage, result: EvalResult) -> EvalTrace | None:
+def get_result_trace(storage: ResultStore, result: EvalResult) -> EvalTrace | None:
     """Load one result's trace payload, or ``None`` when it stored none.
 
     Separate from :func:`get_result` because it is a second point read, and only the

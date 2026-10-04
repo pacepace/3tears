@@ -56,7 +56,7 @@ from threetears.evals.contracts.identity import IDENTITY_VERSION, DerivedVariant
 from threetears.evals.contracts.host.values import SweepableValue
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.memory_store import memory_storage
+from packages.evals.tests.factories import memory_storage
 
 #: The level map a cell stamped without a run in hand is keyed by: its model, and nothing else.
 _MODEL_ONLY = {"model": SweepableValue.of("test/model", display="test/model")}

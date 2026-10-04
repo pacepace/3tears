@@ -107,12 +107,11 @@ from threetears.evals.run.simulator import (
 )
 from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, CapBreach
 from threetears.evals.run.curation import CurationStore
-from threetears.evals.run.definition_seed import DefinitionSeedStore, SeedCorpus, SeedOutcome
+from threetears.evals.run.definition_seed import SeedCorpus, SeedOutcome
 from threetears.evals.run.jobs import WorkFn
 from threetears.evals.run.judge_service import JudgeClientFactory, JudgeContext, JudgeOutcome
 from threetears.evals.run.launch import BatteryPreflight
 from threetears.evals.run.rejudge import JudgeInputStore, ReproducibleJudgeInputs, RequestSettingsPolicy
-from threetears.evals.run.run_document import EvalRunDocumentStore
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunCallbacks
 
 
@@ -132,11 +131,9 @@ __all__ = [
     "CapBreach",
     "CellContext",
     "CurationStore",
-    "DefinitionSeedStore",
     "ErrorLedger",
     "EvalJobManager",
     "EvalJobTimeout",
-    "EvalRunDocumentStore",
     "EveryCellApparatusFailedError",
     "FidelityContract",
     "GoalCheckUnevaluable",

@@ -55,9 +55,11 @@ from threetears.evals.contracts.models import (
     VariationAxis,
     eval_trace_doc_id,
 )
+from threetears.evals.contracts.storage import EvalStorage
 from threetears.evals.contracts.store_port import omit_paths
 from threetears.evals.contracts.surface import DecisionSurface
 from threetears.evals.contracts.usage_capture import blended_cost_roles
+from threetears.evals.storage import InMemoryDocumentStore
 
 __all__ = [
     "DEFAULT_KIND",
@@ -79,6 +81,7 @@ __all__ = [
     "make_subject",
     "make_template",
     "make_test_case",
+    "memory_storage",
     "minimal_declaration",
     "result_capture_defaults",
 ]
@@ -469,3 +472,9 @@ def make_insight(**overrides: Any) -> EvalInsight:
     )
     fields.update(overrides)
     return EvalInsight(**fields)
+
+
+def memory_storage() -> tuple[EvalStorage, InMemoryDocumentStore]:
+    """An ``EvalStorage`` over a fresh in-memory reference store, and the store itself."""
+    store = InMemoryDocumentStore()
+    return EvalStorage(store), store

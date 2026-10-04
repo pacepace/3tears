@@ -31,8 +31,9 @@ from typing import Any, Literal, Protocol, TypeVar
 from threetears.evals.contracts.errors import AdmissionRefusedError, ConflictError, StorageError
 from threetears.evals.contracts.models import TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.contracts.scoring import summarize_completeness
+from threetears.evals.contracts.storage import JobStore
 from threetears.evals.run.offload import run_blocking, wait_through_cancellation
-from threetears.evals.run.run_document import EvalRunDocumentStore, update_eval_run
+from threetears.evals.run.run_document import update_eval_run
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -392,7 +393,7 @@ class EvalJobManager:
 
     def __init__(
         self,
-        storage: EvalRunDocumentStore,
+        storage: JobStore,
         max_concurrent: int = MAX_CONCURRENT_JOBS,
         on_progress: Callable[[str, dict[str, Any]], None] | None = None,
         job_timeout_s: float = DEFAULT_JOB_TIMEOUT_S,

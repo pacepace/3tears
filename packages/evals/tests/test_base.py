@@ -32,7 +32,8 @@ from packages.evals.tests.factories import (
     make_template,
     make_test_case,
 )
-from packages.evals.tests.memory_store import InMemoryDocumentStore, memory_storage
+from packages.evals.tests.factories import memory_storage
+from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.stored_models import stored_models
 
 

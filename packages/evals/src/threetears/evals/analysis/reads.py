@@ -74,6 +74,7 @@ from threetears.evals.contracts.status_filter import StatusFilterError, normaliz
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from threetears.evals.contracts.storage import EvalStorage
     from threetears.evals.contracts.campaign import EvalCampaign
     from threetears.evals.contracts.models import EvalResult, EvalRun, EvalTemplate
 
@@ -1657,6 +1658,14 @@ def _template_name(load_template: Callable[[str], EvalTemplate], template_id: st
         # trace so a persistently-missing template is diagnosable.
         log.info("compare_two_runs: template %s not found; using id as display name", template_id)
         return template_id
+
+
+if TYPE_CHECKING:
+
+    def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
+        """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
+        store: LensStore = storage
+        del store
 
 
 __all__ = [

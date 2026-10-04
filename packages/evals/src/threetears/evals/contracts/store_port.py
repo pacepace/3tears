@@ -43,6 +43,12 @@ that collapses a failure into a miss would let an outage read as "nothing stored
 A lost conditional write is the one failure the port names: an implementation raises
 :class:`StoreConflict` for it, because a lost race has a remedy the core owns (re-read
 and re-apply) and every other failure does not.
+
+**Proving an adapter.** Every rule above is a case in the store conformance kit,
+``threetears.evals.testing.STORE_CONFORMANCE_CASES``: an adapter's own test suite hands each case
+a fresh, empty store, and a case that fails names the rule it broke. The engine's in-memory
+adapter, ``threetears.evals.storage.InMemoryDocumentStore``, passes every case and is the shape to
+compare a real adapter against.
 """
 
 from __future__ import annotations
@@ -141,11 +147,16 @@ class DocumentStore(Protocol):
             doc_id: The document's own id.
             scope_id: The scope it lives in.
 
+        Every store implements conditional writes: a found document always comes
+        back with a token, and every write of it — whole or merged — mints a new
+        one. A store that could not would turn the engine's read-modify-writes into
+        blind overwrites, which lose the other writer's change without a trace;
+        several writers share a run document as it finishes, so that is the
+        ordinary case rather than an edge.
+
         Returns:
             ``(document, etag)``, or ``(None, None)`` when there is no such
-            document. ``etag`` may be ``None`` for a store that does not
-            implement conditional writes — an ``if_match=None`` write is then
-            unconditional, which is the same contract as never having read one.
+            document.
         """
         ...
 
@@ -162,7 +173,8 @@ class DocumentStore(Protocol):
 
         Silently skips ids that are absent — the batch form of a miss being a
         normal outcome. ``doc_type`` is part of the key, so an id that exists in
-        the scope under a different type is not returned.
+        the scope under a different type is not returned. An id named twice is
+        returned once.
 
         A projected document carries no record of the projection: one with a path
         left out is indistinguishable from one stored without it. So the caller that
@@ -186,6 +198,9 @@ class DocumentStore(Protocol):
 
         Returns:
             The matching documents, in no guaranteed order.
+
+        Raises:
+            ValueError: Both ``exclude`` and ``keep`` were given.
         """
         ...
 
@@ -206,8 +221,10 @@ class DocumentStore(Protocol):
             doc_type: The discriminator to select on.
             scope_id: The scope to read.
             order_by: Document field to sort by; ``None`` leaves the order to the
-                store. Sorting is by the field's stored type, so an ISO-8601
-                timestamp orders lexicographically.
+                store. Sorting is by the field's stored type, so a number orders
+                numerically and an ISO-8601 timestamp lexicographically. A document
+                without the field, or with it null, sorts below every document that
+                has it — first ascending, last descending.
             descending: Sort direction when ``order_by`` is given.
             limit: Maximum documents to return; ``None`` is unbounded.
             exclude: Dotted paths the store leaves out of every returned document, with the
@@ -271,8 +288,9 @@ class DocumentStore(Protocol):
         Args:
             doc_id: The document's own id.
             scope_id: The scope it lives in.
-            fields: Top-level fields and their new values. Never the document's id,
-                ``scope_id`` or any storage-injected field — a store refuses those.
+            fields: Top-level fields and their new values. Never the fields that
+                locate the document — ``id``, ``scope_id`` and ``doc_type`` — nor any
+                storage-injected field: a store refuses those.
 
         Returns:
             ``True`` when the document was written; ``False`` when there is no such

@@ -14,13 +14,13 @@ from typing import Any
 import pytest
 
 from threetears.evals.contracts.models import EvalRun
+from threetears.evals.contracts.storage import JobStore
 from threetears.evals.run.jobs import EvalJobManager, WorkFn
-from threetears.evals.run.run_document import EvalRunDocumentStore
 
 __all__ = ["InMemoryRunStore", "blocked_work", "cancelled", "settled", "start_tracked"]
 
 
-class InMemoryRunStore(EvalRunDocumentStore):
+class InMemoryRunStore(JobStore):
     """In-memory storage covering the EvalRun surface the job manager touches."""
 
     def __init__(self) -> None:
