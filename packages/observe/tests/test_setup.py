@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+import socket
 import threading
+import time
 from collections.abc import Iterator
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from opentelemetry.instrumentation.utils import suppress_instrumentation
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
 
 from threetears.observe.setup import TelemetryConfig, force_flush_telemetry, init_telemetry, reset_telemetry
 
@@ -70,6 +74,9 @@ class TestResetTelemetry:
 #: the paths of every export the accepting collector received, in order
 _RECEIVED_EXPORTS: list[str] = []
 
+#: the decoded OTLP request body of every export the accepting collector received, in order
+_RECEIVED_REQUESTS: list[ExportLogsServiceRequest] = []
+
 
 class _AcceptingCollector(BaseHTTPRequestHandler):
     """an OTLP/HTTP log collector that accepts every export, so shutdown's flush returns at once."""
@@ -81,7 +88,9 @@ class _AcceptingCollector(BaseHTTPRequestHandler):
         :rtype: None
         """
         _RECEIVED_EXPORTS.append(self.path)
-        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        _RECEIVED_REQUESTS.append(
+            ExportLogsServiceRequest.FromString(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        )
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -190,3 +199,144 @@ class TestForceFlushTelemetry:
         assert force_flush_telemetry(timeout=timedelta(seconds=5)) is True
 
         assert any(path.endswith("/otlp/v1/logs") for path in _RECEIVED_EXPORTS), _RECEIVED_EXPORTS
+
+    @pytest.mark.timeout(60)
+    def test_an_unreachable_collector_cannot_hold_the_flush_past_its_timeout(
+        self, unreachable_log_export: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the exporter retries an unreachable collector for longer than the caller allowed.
+
+        with the root logger at INFO the exporter's own retry warnings are records too; the flush
+        must still come back within its timeout, report that it did not finish, and say which
+        signal held it.
+        """
+        logging.getLogger("threetears.observe.tests.app").warning("a record the collector will never take")
+
+        started = time.monotonic()
+        flushed = force_flush_telemetry(timeout=timedelta(seconds=1))
+        elapsed = time.monotonic() - started
+
+        assert flushed is False
+        assert elapsed < 1.0 + _FLUSH_GRACE_SECONDS, f"the flush took {elapsed:.2f}s against a 1s timeout"
+        unfinished = [
+            getattr(record, "extra_data", {}).get("signal")
+            for record in caplog.records
+            if record.getMessage() == "telemetry flush did not finish within its timeout"
+        ]
+        assert unfinished == ["logs"], [record.getMessage() for record in caplog.records]
+
+
+#: how far past its timeout the flush may return: starting a thread and writing one warning
+_FLUSH_GRACE_SECONDS = 0.5
+
+
+@pytest.fixture
+def root_at_info() -> Iterator[None]:
+    """the root logger at INFO, as a host application typically runs it, restored afterwards.
+
+    at that level OpenTelemetry's own exporter and SDK warnings are emitted rather than dropped.
+
+    :return: nothing
+    :rtype: Iterator[None]
+    """
+    level = logging.root.level
+    logging.root.setLevel(logging.INFO)
+    try:
+        yield
+    finally:
+        logging.root.setLevel(level)
+
+
+def _unbound_local_port() -> int:
+    """a local TCP port nothing listens on, so every connection to it is refused.
+
+    :return: the port
+    :rtype: int
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port: int = probe.getsockname()[1]
+    return port
+
+
+@pytest.fixture
+def unreachable_log_export(root_at_info: None) -> Iterator[None]:
+    """log export configured against a collector that refuses every connection.
+
+    :param root_at_info: the root logger at INFO for the test's duration
+    :ptype root_at_info: None
+    :return: nothing
+    :rtype: Iterator[None]
+    """
+    config = TelemetryConfig(
+        enabled=True,
+        endpoint="http://127.0.0.1:9",
+        loki_endpoint=f"127.0.0.1:{_unbound_local_port()}",
+    )
+    try:
+        assert init_telemetry(config) is True
+        yield
+    finally:
+        reset_telemetry()
+
+
+def _exported_records() -> list[tuple[str, str]]:
+    """every log record the accepting collector received, as (instrumentation scope, body).
+
+    the log handler names each record's instrumentation scope after the python logger that
+    emitted it.
+
+    :return: the records, in the order received
+    :rtype: list[tuple[str, str]]
+    """
+    return [
+        (scope_logs.scope.name, log_record.body.string_value)
+        for request in _RECEIVED_REQUESTS
+        for resource_logs in request.resource_logs
+        for scope_logs in resource_logs.scope_logs
+        for log_record in scope_logs.log_records
+    ]
+
+
+class TestOpenTelemetrysOwnRecordsAreNeverExported:
+    """an export failure must never produce exports: the records exporting produces stay local."""
+
+    _OPENTELEMETRY_LOGGERS = (
+        "opentelemetry",
+        "opentelemetry.exporter.otlp.proto.http._log_exporter",
+        "opentelemetry.exporter.otlp.proto.grpc.exporter",
+        "opentelemetry.sdk._shared_internal",
+        "opentelemetry.sdk._logs._internal",
+    )
+
+    def test_only_the_application_records_reach_the_collector(
+        self, log_export_handler: logging.Handler, root_at_info: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _RECEIVED_REQUESTS.clear()
+        for name in self._OPENTELEMETRY_LOGGERS:
+            logging.getLogger(name).warning("opentelemetry's own record from %s", name)
+        # how the SDK's batch processor wraps every call into its exporter: the HTTP client logs
+        # each connection attempt from inside it
+        with suppress_instrumentation():
+            logging.getLogger("urllib3.connectionpool").warning("a record logged on the export's behalf")
+        logging.getLogger("threetears.observe.tests.app").warning("an application record")
+        logging.getLogger("opentelemetry_lookalike").warning("a record from a logger that only shares the prefix")
+
+        assert force_flush_telemetry(timeout=timedelta(seconds=5)) is True
+
+        exported = _exported_records()
+        assert ("threetears.observe.tests.app", "an application record") in exported, exported
+        assert ("opentelemetry_lookalike", "a record from a logger that only shares the prefix") in exported, exported
+        leaked = [
+            (scope, body)
+            for scope, body in exported
+            if scope == "opentelemetry" or scope.startswith("opentelemetry.") or scope == "urllib3.connectionpool"
+        ]
+        assert not leaked, leaked
+        # still reported locally: every other handler on the root logger receives them
+        local = {
+            record.name
+            for record in caplog.records
+            if record.getMessage().startswith(("opentelemetry's own", "a record logged on the export's behalf"))
+        }
+        assert local == {*self._OPENTELEMETRY_LOGGERS, "urllib3.connectionpool"}

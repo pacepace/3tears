@@ -6,6 +6,39 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Telemetry flushes return within their timeout, and a failing export no longer feeds itself
+
+**The hang.** `force_flush_telemetry(timeout=...)`, added in 0.63.0, could block forever. With
+log export configured, an unreachable collector, and the root logger at WARNING or lower, it
+never returned; its docstring promised the timeout bounded the whole call.
+
+**The feedback loop behind it, which also hit production.** The OTLP log exporter reports each
+failed retry as a WARNING and each abandoned batch as an ERROR, and at DEBUG the HTTP client logs
+every connection attempt. All of those reached the root logger, where 3tears' OTLP log handler is
+attached, so they were queued for export too. Against an unreachable collector every failed export
+produced more records to export: a self-sustaining stream of export-failure logs in any running
+service, not only in tests. OpenTelemetry's batch processor flushes until its queue is empty and
+ignores the timeout it is given (open-telemetry/opentelemetry-python#4568), so a flush during that
+loop never finished.
+
+**The fix, in two parts.**
+
+- The OTLP log handler drops every record that exporting produces: one from OpenTelemetry's own
+  loggers (`opentelemetry` and every logger under it), or one emitted while the SDK has
+  instrumentation suppressed, which it does around every exporter call. An export failure can no
+  longer produce an export. Every other handler on the root logger still receives those records,
+  so the warnings still reach stderr and any other local sink.
+- `force_flush_telemetry` runs the provider flushes on a daemon worker thread and waits for it no
+  longer than `timeout`. It now returns within `timeout`, plus the cost of starting one thread and
+  writing one log line, whatever the providers do. When the wait runs out it returns `False` and
+  logs a WARNING naming the signal still flushing and those not started. `shutdown_telemetry` had
+  the same unbounded flushes (its 2-second `timeout_millis` was ignored the same way) and now
+  bounds each flush the same way before shutting the provider down.
+
+`3tears-observe`'s `otel` extra now also declares `opentelemetry-instrumentation>=0.61b0,<1`, whose
+suppression check the filter reads. `opentelemetry-instrumentation-logging` already required that
+exact release, so no resolution changes.
+
 ## v0.63.0 -- 2026-10-04
 
 ### A bucket's one declarer can own its whole shape

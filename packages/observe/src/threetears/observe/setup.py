@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -111,7 +112,9 @@ class _CallSiteEnrichingHandler(logging.Handler):
         call_site_line = getattr(record, "call_site_line", None)
         if call_site_line:
             record.lineno = call_site_line
-        self._otel_handler.emit(record)
+        # handle, not emit: the OTel handler's own filters must apply, and the one that keeps
+        # OpenTelemetry's own records out of the export is what stops a failing export feeding itself
+        self._otel_handler.handle(record)
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +231,91 @@ def _init_log_export(config: TelemetryConfig, resource: Resource) -> None:
     )
 
 
+class _BoundedFlush:
+    """a sequence of provider flushes run on a daemon worker thread, which the caller waits on for a bounded time.
+
+    OpenTelemetry's batch processors ignore the timeout handed to ``force_flush``: they export
+    until their queue is empty, however long the exporter's retries take (the SDK's own TODO cites
+    open-telemetry/opentelemetry-python#4568). The only way to bound the call is not to make it on
+    the caller's thread. The worker is a daemon, so one still inside an exporter when the caller
+    gives up never holds the interpreter open at exit; it finishes, or dies with the process.
+    """
+
+    def __init__(self, flushes: list[tuple[str, Callable[[int], bool | None]]], timeout: timedelta) -> None:
+        """
+        holds the flushes to run and the budget they share.
+
+        :param flushes: each signal's name and the flush that takes the milliseconds left to it
+        :ptype flushes: list[tuple[str, Callable[[int], bool | None]]]
+        :param timeout: the longest the caller waits for all of them together
+        :ptype timeout: timedelta
+        """
+        self._flushes = flushes
+        self._timeout = timeout
+        self._deadline = 0.0
+        self._lock = threading.Lock()
+        self._running: str | None = None
+        self._abandoned = False
+        self._flushed = True
+
+    def run(self) -> bool:
+        """run every flush on a daemon worker and wait for it at most the timeout.
+
+        :return: whether every flush finished within the timeout and reported success
+        :rtype: bool
+        """
+        if not self._flushes:
+            return True
+        self._deadline = time.monotonic() + self._timeout.total_seconds()
+        worker = threading.Thread(target=self._work, name="threetears-telemetry-flush", daemon=True)
+        worker.start()
+        worker.join(self._timeout.total_seconds())
+        with self._lock:
+            finished = not worker.is_alive()
+            self._abandoned = not finished
+            running = self._running
+            flushed = finished and self._flushed
+        if not finished:
+            names = [signal for signal, _ in self._flushes]
+            not_started = names[names.index(running) + 1 :] if running is not None else names
+            logger.warning(
+                "telemetry flush did not finish within its timeout",
+                extra={
+                    "extra_data": {
+                        "signal": running,
+                        "not_started": not_started,
+                        "timeout_seconds": self._timeout.total_seconds(),
+                    }
+                },
+            )
+        return flushed
+
+    def _work(self) -> None:
+        """the worker: each flush in order, each handed what is left of the shared deadline.
+
+        :return: nothing
+        :rtype: None
+        """
+        for signal, flush in self._flushes:
+            with self._lock:
+                self._running = signal
+            remaining_millis = max(0, int((self._deadline - time.monotonic()) * 1000))
+            try:
+                completed = bool(flush(remaining_millis))
+            except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything, and one signal's failure must not stop the others flushing; logged, and reported as not flushed
+                logger.warning("telemetry flush failed", exc_info=True, extra={"extra_data": {"signal": signal}})
+                completed = False
+            with self._lock:
+                self._flushed = self._flushed and completed
+                # once the caller has given up it has already said which flush held it
+                report = not completed and not self._abandoned
+            if report:
+                logger.warning(
+                    "telemetry flush did not finish within its timeout",
+                    extra={"extra_data": {"signal": signal, "timeout_seconds": self._timeout.total_seconds()}},
+                )
+
+
 def force_flush_telemetry(timeout: timedelta = timedelta(seconds=2)) -> bool:
     """export every buffered span, metric and log record now, without shutting anything down.
 
@@ -238,19 +326,27 @@ def force_flush_telemetry(timeout: timedelta = timedelta(seconds=2)) -> bool:
     whatever the host configured), and the log export :func:`init_telemetry` started. traces go
     first because flushing them can emit log records the log flush then carries.
 
-    ``timeout`` bounds the whole call, not each provider: each flush gets what is left of it. a
-    provider that is not configured is skipped and counts as flushed, so with nothing configured
-    this returns ``True`` at once. a flush that raises is logged at WARNING and counts as not
-    flushed; it never stops the flushes after it.
+    the guarantee: this returns within ``timeout``, plus the cost of starting one thread and
+    writing one log line, whatever the providers do. OpenTelemetry's batch processors ignore the
+    timeout they are given and export until their queue is empty, so the flushes run on a daemon
+    worker thread and this waits for it no longer than ``timeout``; each flush is handed what is
+    left of it. when the wait runs out this returns ``False`` and logs a WARNING naming the signal
+    still flushing and those not yet started; the worker carries on in the background and, being a
+    daemon, never holds the process open at exit.
 
-    :param timeout: the longest the whole flush may take
+    a provider that is not configured is skipped and counts as flushed, so with nothing configured
+    this returns ``True`` at once, without a thread. a flush that raises is logged at WARNING and
+    counts as not flushed; it never stops the flushes after it. success is each provider's own
+    report: OpenTelemetry's batch processors report a drained queue as flushed even when the
+    exporter failed to deliver it, and the exporter logs that failure itself.
+
+    :param timeout: the longest this call waits for every flush together
     :ptype timeout: timedelta
-    :return: whether every configured provider exported everything it held within ``timeout``
+    :return: whether every configured provider finished its flush, and reported success, within ``timeout``
     :rtype: bool
     """
     from opentelemetry import metrics
 
-    deadline = time.monotonic() + timeout.total_seconds()
     flushes: list[tuple[str, Callable[[int], bool | None]]] = []
     if _tracer_provider is not None:
         tracer_provider = _tracer_provider
@@ -261,21 +357,11 @@ def force_flush_telemetry(timeout: timedelta = timedelta(seconds=2)) -> bool:
     if _log_export is not None:
         log_export = _log_export
         flushes.append(("logs", lambda millis: log_export.force_flush(timeout_millis=millis)))
-    flushed = True
-    for signal, flush in flushes:
-        remaining_millis = max(0, int((deadline - time.monotonic()) * 1000))
-        try:
-            completed = bool(flush(remaining_millis))
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything, and one signal's failure must not stop the others flushing; logged, and reported as not flushed
-            logger.warning("telemetry flush failed", exc_info=True, extra={"extra_data": {"signal": signal}})
-            completed = False
-        if not completed:
-            logger.warning(
-                "telemetry flush did not complete in time",
-                extra={"extra_data": {"signal": signal, "timeout_seconds": timeout.total_seconds()}},
-            )
-        flushed = flushed and completed
-    return flushed
+    return _BoundedFlush(flushes, timeout).run()
+
+
+#: how long shutdown waits for each provider's flush before shutting it down regardless
+_SHUTDOWN_FLUSH_TIMEOUT = timedelta(seconds=2)
 
 
 def shutdown_telemetry() -> None:
@@ -286,6 +372,13 @@ def shutdown_telemetry() -> None:
     ``TracerProvider``.  After shutdown, resets the global tracer provider to
     ``NoOpTracerProvider`` and clears the SDK's once-guard so that
     ``init_telemetry()`` can be called again.
+
+    Each flush is bounded the way :func:`force_flush_telemetry` bounds it: run on
+    a daemon worker and waited for at most two seconds, with a WARNING naming the
+    signal when it does not finish. Each provider's own ``shutdown`` is then the
+    SDK's, which bounds itself: its batch processor stops accepting records, waits
+    at most thirty seconds for its export worker, and then shuts the exporter down,
+    which ends any retry backoff still in progress.
 
     Safe to call multiple times -- second and subsequent calls are no-ops.
     """
@@ -302,18 +395,17 @@ def shutdown_telemetry() -> None:
         _log_handler = None
 
     if _log_export is not None:
-        # Broad on purpose -- a vendor exporter can raise anything on teardown, and neither
-        # failure may stop the shutdown that follows it or prevent ``init_telemetry()``
-        # being called again. NOT silent, though: an earlier version swallowed both with
-        # `pass`, reasoning that the OTel handler had just been detached from the root
-        # logger so there was nowhere left to report. That reasoning was wrong. Detaching
-        # one handler does not disable the root logger; every other handler a host app
-        # installed (console, file) is still attached and still receiving. All the silence
-        # bought was an unexportable telemetry backend failing invisibly at every shutdown.
-        try:
-            _log_export.force_flush(timeout_millis=2000)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not stop the shutdown that follows; logged, not silenced
-            logger.warning("telemetry shutdown: log provider flush failed", exc_info=True)
+        # Bounded like force_flush_telemetry, and for the same reason: the SDK's flush ignores
+        # its timeout, and an unreachable collector would otherwise hold shutdown in the
+        # exporter's retries. A flush that raises or runs out of time is logged, never silent:
+        # detaching the OTel handler above does not disable the root logger, and every other
+        # handler a host app installed (console, file) still receives the warning.
+        log_export = _log_export
+        _BoundedFlush(
+            [("logs", lambda millis: log_export.force_flush(timeout_millis=millis))], _SHUTDOWN_FLUSH_TIMEOUT
+        ).run()
+        # Broad on purpose -- a vendor exporter can raise anything on teardown, and the failure
+        # may not prevent ``init_telemetry()`` being called again; logged, for the reason above.
         try:
             _log_export.shutdown()
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not prevent init_telemetry() being callable again; logged, not silenced
@@ -328,15 +420,13 @@ def shutdown_telemetry() -> None:
 
     from threetears.observe._otel_internals import allow_tracer_provider_reset
 
-    try:
-        _tracer_provider.force_flush(timeout_millis=2000)
-    except Exception as exc:  # noqa: BLE001 -- shutdown continues regardless
-        # The buffered spans did not make it to the exporter, so this process's last traces are
-        # gone. Shutdown still proceeds; the operator just needs to know the tail is missing.
-        logger.warning(
-            "OTel force_flush failed; buffered spans were dropped",
-            extra={"extra_data": {"error": str(exc)}},
-        )
+    # bounded for the same reason as the log flush above. a flush that raises or runs out of time
+    # is logged by _BoundedFlush, naming the signal: this process's last spans may be lost, and
+    # shutdown proceeds regardless
+    tracer_provider = _tracer_provider
+    _BoundedFlush(
+        [("traces", lambda millis: tracer_provider.force_flush(timeout_millis=millis))], _SHUTDOWN_FLUSH_TIMEOUT
+    ).run()
 
     try:
         _tracer_provider.shutdown()

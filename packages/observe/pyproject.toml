@@ -42,6 +42,9 @@ otel = [
     "opentelemetry-sdk>=1.40,<2",
     "opentelemetry-exporter-otlp>=1.40,<2",
     "opentelemetry-instrumentation-logging>=0.61b0,<1",
+    # `is_instrumentation_enabled`, which the export filter reads; instrumentation-logging pins this
+    # same release, so it moves with it
+    "opentelemetry-instrumentation>=0.61b0,<1",
 ]
 asgi = [
     "uuid-utils",
