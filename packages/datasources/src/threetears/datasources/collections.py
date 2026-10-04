@@ -20,7 +20,11 @@ collections in this module:
 - :class:`DataSourceRelationCollection` -- ``BaseCollection`` for
   ``datasource_relations``.
 - :class:`TableTemplateCollection` -- ``BaseCollection`` for
-  ``table_templates``. composite PK ``(customer_id, id)``.
+  ``table_templates``. PK ``id`` (hub v007).
+
+the hand-written upserts (tables, relations, templates) are built from one
+:class:`_UpsertShape` each, and write only the columns a row carries: a column
+the row does not name is never reset to NULL or a default.
 
 per-table column variants (``TableTemplateColumnCollection``) stay in
 Hub for now because they have no cross-consumer demand yet; lift later
@@ -29,11 +33,12 @@ if a second 3tears consumer needs them.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from threetears.core.backends import parse_rowcount
+from threetears.core.backends import L3Backend, parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
@@ -108,6 +113,9 @@ _TABLE_FIELD_TYPES: dict[str, Any] = {
     # ``table_hashes`` byte-equal to ``compute_column_hash`` over
     # the same column set.
     "column_hash": str,
+    # hub v033: the column per-region value coverage is broken down by;
+    # NULL = whole-table coverage only.
+    "coverage_dimension": str,
     "date_introspected": datetime,
     "date_described": datetime,
     "date_created": datetime,
@@ -151,10 +159,14 @@ _COLUMN_FIELD_TYPES: dict[str, Any] = {
 
 _RELATION_FIELD_TYPES: dict[str, Any] = {
     "id": UUID,
+    # hub v056: NULL = platform-shared, set = owned by that customer.
+    "customer_id": UUID,
     "name": str,
     "description": str,
     "datasource_ids": list,
     "join_paths": list,
+    # hub v056: named traversal graphs for a non-chain relation.
+    "edges": list,
     "aggregation_notes": str,
     "caveats": str,
     "date_created": datetime,
@@ -163,13 +175,255 @@ _RELATION_FIELD_TYPES: dict[str, Any] = {
 
 _TEMPLATE_FIELD_TYPES: dict[str, Any] = {
     "id": UUID,
+    # hub v007: NULL on a platform-owned (public / restricted) template.
     "customer_id": UUID,
     "name": str,
     "description": str,
     "caveats": str,
+    # hub v007: 'private' | 'public' | 'restricted'.
+    "visibility": str,
+    # hub v007: the customer template a platform copy was promoted from.
+    "origin_template_id": UUID,
     "date_created": datetime,
     "date_updated": datetime,
 }
+
+
+@dataclass(frozen=True)
+class _UpsertShape:
+    """the columns a hand-written upsert may name, and how it treats each.
+
+    one rule governs every statement built from a shape: **a column the row does
+    not carry is never written.** an INSERT leaves it to the column's default
+    (``NULL``, or the table's server default); an update of an existing row keeps
+    the stored value. a row carries a column when it names it, except that
+    ``None`` for a ``NOT NULL`` column with a server default is not a value the
+    column can hold, so it counts as not carried too.
+
+    a row carrying every ``NOT NULL`` column without a default is written as
+    an upsert. a row that does not is only an update of an existing row --
+    Postgres checks ``NOT NULL`` on the row an INSERT proposes before any
+    conflict is resolved, so it could not be inserted -- and is written as a
+    plain ``UPDATE``. on a key no row holds that update affects 0 rows, and
+    :meth:`write` raises naming the columns an insert would have needed.
+
+    :cvar table: the table written
+    :cvar columns: every column of the table this collection owns, in the
+        order a statement names them
+    :cvar conflict: the upsert's conflict target
+    :cvar required: the ``NOT NULL`` columns with no default, which an
+        insert must carry
+    :cvar jsonb: columns bound through :func:`encode_jsonb`
+    :cvar defaulted: ``NOT NULL`` columns with a server default
+    :cvar insert_only: columns an INSERT writes and an update never does,
+        besides the conflict target and ``date_created``
+    """
+
+    table: str
+    columns: tuple[str, ...]
+    conflict: tuple[str, ...]
+    required: frozenset[str]
+    jsonb: frozenset[str] = frozenset()
+    defaulted: frozenset[str] = frozenset()
+    insert_only: frozenset[str] = frozenset()
+
+    def carried(self, data: dict[str, Any]) -> tuple[str, ...]:
+        """the columns ``data`` carries, in declared order.
+
+        :param data: the row as the write sends it
+        :ptype data: dict[str, Any]
+        :return: the carried column names
+        :rtype: tuple[str, ...]
+        """
+        return tuple(
+            column
+            for column in self.columns
+            if column in data and not (column in self.defaulted and data[column] is None)
+        )
+
+    def decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
+        """the columns whose stored value a write of ``data`` does not determine.
+
+        a column ``data`` does not carry is filled by the table's default on an
+        insert and kept on an update; an insert-only column ``data`` does carry
+        is kept on an update. either way the row sent is not known to be the row
+        stored, and :meth:`BaseCollection.save_entity` reads it back.
+
+        :param data: the row as the write sends it
+        :ptype data: dict[str, Any]
+        :return: the column names, in declared order
+        :rtype: tuple[str, ...]
+        """
+        carried = set(self.carried(data))
+        return tuple(column for column in self.columns if column not in carried or column in self.insert_only)
+
+    def missing_required(self, data: dict[str, Any]) -> list[str]:
+        """the :attr:`required` columns ``data`` does not carry, in declared order.
+
+        empty when ``data`` can be inserted; otherwise the reason it is written
+        as an update of an existing row.
+
+        :param data: the row as the write sends it
+        :ptype data: dict[str, Any]
+        :return: the missing column names
+        :rtype: list[str]
+        """
+        carried = set(self.carried(data))
+        return [column for column in self.columns if column in self.required and column not in carried]
+
+    def statement(self, data: dict[str, Any]) -> tuple[str, list[Any]]:
+        """the statement writing exactly the columns ``data`` carries, with its parameters.
+
+        an upsert when ``data`` carries every :attr:`required` column, a plain
+        ``UPDATE`` of the existing row otherwise.
+
+        :param data: the row as the write sends it
+        :ptype data: dict[str, Any]
+        :return: the SQL and its positional parameters
+        :rtype: tuple[str, list[Any]]
+        :raises KeyError: when ``data`` does not carry every conflict column,
+            or carries no column an update of the existing row would write
+        """
+        carried = self.carried(data)
+        missing = [column for column in self.conflict if column not in carried]
+        if missing:
+            raise KeyError(
+                f"{self.table}: a write must carry its conflict key {list(self.conflict)!r}, missing {missing!r}"
+            )
+        kept = {*self.conflict, *self.insert_only, "date_created"}
+        updated = [column for column in carried if column not in kept]
+        if not updated:
+            # an upsert always carries ``date_updated`` (every shape requires it), so
+            # only a partial row reaches this; checked before either branch so a future
+            # shape cannot build an upsert with an empty SET list.
+            raise KeyError(f"{self.table}: a write of an existing row must carry a column to update")
+        if not self.missing_required(data):
+            placeholders = ", ".join(f"${index}" for index in range(1, len(carried) + 1))
+            assignments = ", ".join(f"{column} = EXCLUDED.{column}" for column in updated)
+            sql = (
+                f"INSERT INTO {self.table} ({', '.join(carried)}) VALUES ({placeholders}) "  # noqa: S608
+                f"ON CONFLICT ({', '.join(self.conflict)}) DO UPDATE SET {assignments}"
+            )
+            bound = list(carried)
+        else:
+            assignments = ", ".join(f"{column} = ${index}" for index, column in enumerate(updated, start=1))
+            keys = " AND ".join(
+                f"{column} = ${index}" for index, column in enumerate(self.conflict, start=len(updated) + 1)
+            )
+            sql = f"UPDATE {self.table} SET {assignments} WHERE {keys}"  # noqa: S608
+            bound = [*updated, *self.conflict]
+        params = [encode_jsonb(data[column]) if column in self.jsonb else data[column] for column in bound]
+        return sql, params
+
+    async def write(self, pool: L3Backend, data: dict[str, Any]) -> int:
+        """write ``data`` with :meth:`statement` and return the rows affected.
+
+        a row short of a :attr:`required` column is written as a plain
+        ``UPDATE``. when that affects no row, no row holds the key and the row
+        could not have been inserted: this raises naming the columns an insert
+        needed, rather than leaving the caller a bare "0 rows affected".
+
+        :param pool: the L3 backend to execute on
+        :ptype pool: L3Backend
+        :param data: the row as the write sends it
+        :ptype data: dict[str, Any]
+        :return: number of rows affected
+        :rtype: int
+        :raises KeyError: as :meth:`statement` does
+        :raises RuntimeError: when an update of a row short of a required
+            column finds no row holding its key
+        """
+        sql, params = self.statement(data)
+        rows = parse_rowcount(await pool.execute(sql, *params))
+        missing = self.missing_required(data)
+        if rows == 0 and missing:
+            key = {column: f"{data[column]}" for column in self.conflict}
+            log.error(
+                "upsert shape: an update found no row, and the row lacks columns an insert needs",
+                extra={"extra_data": {"table": self.table, "key": key, "missing_columns": missing}},
+            )
+            raise RuntimeError(
+                f"{self.table}: no row holds {key!r}, and the row cannot be inserted: it lacks the NOT NULL "
+                f"columns {missing!r}"
+            )
+        return rows
+
+
+#: ``datasource_tables`` as hub v001, v006, v010 and v033 leave it.
+#:
+#: ``coverage_dimension`` (v033) is insert-only. the per-region coverage
+#: designation of an existing table is set by the hub's admin table PATCH and
+#: moved by the data-upgrade rename carry, both direct writes. the one writer
+#: that saves an existing row through this collection is the schema
+#: introspector, which saves back the row it prefetched at the start of a pass;
+#: writing its copy of the designation would undo a PATCH that landed during the
+#: pass.
+_TABLE_SHAPE = _UpsertShape(
+    table="datasource_tables",
+    columns=(
+        "id",
+        "datasource_id",
+        "schema_name",
+        "table_name",
+        "description",
+        "row_count_approx",
+        "caveats",
+        "template_id",
+        "caveats_replaces_definition",
+        "column_hash",
+        "coverage_dimension",
+        "date_introspected",
+        "date_described",
+        "date_created",
+        "date_updated",
+    ),
+    conflict=("id",),
+    required=frozenset({"id", "datasource_id", "schema_name", "table_name", "date_created", "date_updated"}),
+    defaulted=frozenset({"caveats_replaces_definition"}),
+    insert_only=frozenset({"coverage_dimension"}),
+)
+
+#: ``datasource_relations`` as hub v001 and v056 leave it.
+_RELATION_SHAPE = _UpsertShape(
+    table="datasource_relations",
+    columns=(
+        "id",
+        "customer_id",
+        "name",
+        "description",
+        "datasource_ids",
+        "join_paths",
+        "edges",
+        "aggregation_notes",
+        "caveats",
+        "date_created",
+        "date_updated",
+    ),
+    conflict=("id",),
+    required=frozenset({"id", "name", "date_created", "date_updated"}),
+    jsonb=frozenset({"datasource_ids", "join_paths", "edges"}),
+    defaulted=frozenset({"datasource_ids", "join_paths", "edges"}),
+)
+
+#: ``table_templates`` as hub v001, v006 and v007 leave it: the primary key is
+#: ``id`` alone (v007 dropped the ``(customer_id, id)`` composite key so a
+#: platform-owned template can carry ``customer_id`` NULL).
+_TEMPLATE_SHAPE = _UpsertShape(
+    table="table_templates",
+    columns=(
+        "id",
+        "customer_id",
+        "name",
+        "description",
+        "caveats",
+        "visibility",
+        "origin_template_id",
+        "date_created",
+        "date_updated",
+    ),
+    conflict=("id",),
+    required=frozenset({"id", "name", "visibility", "date_created", "date_updated"}),
+)
 
 
 class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity]):
@@ -278,6 +532,20 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             # existing row, so the column stays out of the immutable set.
             Column(
                 "knowledge_required",
+                BOOL_TYPE,
+                nullable=False,
+                server_default="false",
+            ),
+            # maturity flag (hub migration v076): when true the hub read path
+            # refuses a query that references a table with no description in
+            # ``datasource_tables``. set by ``PATCH /admin/v1/datasources/{id}``
+            # through this Collection's write path, so it MUST be declared here
+            # or the schema-driven upsert drops it and the flag never persists.
+            # declared as v076 adds it: boolean, NOT NULL, FALSE server-default
+            # (an omitted value keeps the stored one). mutable: flipping it is an
+            # UPDATE of an existing row.
+            Column(
+                "require_documented_tables",
                 BOOL_TYPE,
                 nullable=False,
                 server_default="false",
@@ -546,66 +814,44 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
         *,
         conn: Any = None,
     ) -> int:
-        """upsert data source table record to L3 with optimistic concurrency.
+        """upsert data source table record to L3, writing only the columns ``data`` carries.
+
+        a column ``data`` does not carry is left to the table: its default on
+        an insert, its stored value on an update. ``caveats_replaces_definition``
+        given as ``None`` counts as not carried, so the ``NOT NULL DEFAULT
+        FALSE`` column keeps its additive-concat default. ``column_hash`` given
+        as ``None`` IS carried: it is the "force re-introspect" sentinel.
+        ``coverage_dimension`` is written on insert and never on update (see
+        :data:`_TABLE_SHAPE`).
 
         :param data: entity field data to persist
         :ptype data: dict[str, Any]
-        :param original_timestamp: original date_updated for concurrency check
+        :param original_timestamp: unused; this table has no CAS fence
         :ptype original_timestamp: datetime | None
+        :param conn: unused; accepted for the extension-point signature
+        :ptype conn: Any
         :return: number of rows affected
         :rtype: int
+        :raises RuntimeError: when a row short of a ``NOT NULL`` column finds no
+            row to update (see :meth:`_UpsertShape.write`)
         """
         if self.l3_pool is None:
             return 0
+        return await _TABLE_SHAPE.write(self.l3_pool, data)
 
-        result = await self.l3_pool.execute(
-            """
-            INSERT INTO datasource_tables (
-                id, datasource_id, schema_name, table_name, description,
-                row_count_approx, caveats, template_id,
-                caveats_replaces_definition, column_hash,
-                date_introspected, date_described,
-                date_created, date_updated
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
-            )
-            ON CONFLICT (id) DO UPDATE SET
-                datasource_id = EXCLUDED.datasource_id,
-                schema_name = EXCLUDED.schema_name,
-                table_name = EXCLUDED.table_name,
-                description = EXCLUDED.description,
-                row_count_approx = EXCLUDED.row_count_approx,
-                caveats = EXCLUDED.caveats,
-                template_id = EXCLUDED.template_id,
-                caveats_replaces_definition = EXCLUDED.caveats_replaces_definition,
-                column_hash = EXCLUDED.column_hash,
-                date_introspected = EXCLUDED.date_introspected,
-                date_described = EXCLUDED.date_described,
-                date_updated = EXCLUDED.date_updated
-            """,
-            data.get("id"),
-            data.get("datasource_id"),
-            data.get("schema_name"),
-            data.get("table_name"),
-            data.get("description"),
-            data.get("row_count_approx"),
-            data.get("caveats"),
-            data.get("template_id"),
-            # template-task-01: explicit FALSE default at the write
-            # boundary so legacy callers that don't set the flag get
-            # the additive-concat semantics rather than NULL (which
-            # the column rejects via NOT NULL).
-            data.get("caveats_replaces_definition") or False,
-            # datasource-task-02: column_hash is nullable. None is
-            # the "force re-introspect" sentinel; the introspector
-            # writes the digest after computing it over the column set.
-            data.get("column_hash"),
-            data.get("date_introspected"),
-            data.get("date_described"),
-            data.get("date_created"),
-            data.get("date_updated"),
-        )
-        return parse_rowcount(result)
+    def columns_decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
+        """the columns whose stored value writing ``data`` leaves to the database.
+
+        see :meth:`BaseCollection.columns_decided_by_store`. every column
+        ``data`` does not carry, and ``coverage_dimension`` when it does, since
+        an update keeps the stored designation.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: the column names, in declared order
+        :rtype: tuple[str, ...]
+        """
+        return _TABLE_SHAPE.decided_by_store(data)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """hard-delete data source table from L3.
@@ -1099,48 +1345,44 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
         *,
         conn: Any = None,
     ) -> int:
-        """upsert data source relation record to L3 with optimistic concurrency.
+        """upsert data source relation record to L3, writing only the columns ``data`` carries.
+
+        ``customer_id`` (hub v056) is the relation's scope: NULL is
+        platform-shared, a value is that customer's. it is written when
+        ``data`` carries it, so a row read and saved back keeps its scope,
+        and a row that does not carry it never resets a stored scope to
+        platform-shared. ``datasource_ids``, ``join_paths`` and ``edges`` are
+        JSONB bound natively (the jsonb codec applies the single encode,
+        collections-task-04); ``None`` for any of them counts as not carried,
+        since each is ``NOT NULL DEFAULT '[]'``.
 
         :param data: entity field data to persist
         :ptype data: dict[str, Any]
-        :param original_timestamp: original date_updated for concurrency check
+        :param original_timestamp: unused; this table has no CAS fence
         :ptype original_timestamp: datetime | None
+        :param conn: unused; accepted for the extension-point signature
+        :ptype conn: Any
         :return: number of rows affected
         :rtype: int
+        :raises RuntimeError: when a row short of a ``NOT NULL`` column finds no
+            row to update (see :meth:`_UpsertShape.write`)
         """
         if self.l3_pool is None:
             return 0
+        return await _RELATION_SHAPE.write(self.l3_pool, data)
 
-        result = await self.l3_pool.execute(
-            """
-            INSERT INTO datasource_relations (
-                id, name, description, datasource_ids, join_paths,
-                aggregation_notes, caveats, date_created, date_updated
-            ) VALUES (
-                -- $4 / $5 are bound NATIVELY (python lists via encode_jsonb); the
-                -- jsonb codec applies the single json.dumps (collections-task-04).
-                $1, $2, $3, $4, $5, $6, $7, $8, $9
-            )
-            ON CONFLICT (id) DO UPDATE SET
-                name = EXCLUDED.name,
-                description = EXCLUDED.description,
-                datasource_ids = EXCLUDED.datasource_ids,
-                join_paths = EXCLUDED.join_paths,
-                aggregation_notes = EXCLUDED.aggregation_notes,
-                caveats = EXCLUDED.caveats,
-                date_updated = EXCLUDED.date_updated
-            """,
-            data.get("id"),
-            data.get("name"),
-            data.get("description"),
-            encode_jsonb(data.get("datasource_ids")),
-            encode_jsonb(data.get("join_paths")),
-            data.get("aggregation_notes"),
-            data.get("caveats"),
-            data.get("date_created"),
-            data.get("date_updated"),
-        )
-        return parse_rowcount(result)
+    def columns_decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
+        """the columns whose stored value writing ``data`` leaves to the database.
+
+        see :meth:`BaseCollection.columns_decided_by_store`: every column
+        ``data`` does not carry.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: the column names, in declared order
+        :rtype: tuple[str, ...]
+        """
+        return _RELATION_SHAPE.decided_by_store(data)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """hard-delete data source relation from L3.
@@ -1161,12 +1403,18 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
 class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
     """three-tier collection for table-template entities.
 
-    provides CRUD with L1 -> L2 -> L3 caching for the customer-scoped
-    template definition rows. composite PK ``(customer_id, id)`` is
-    enforced via the framework's normalize_pk lookup, so callers
-    address rows by the full tuple. natural-key conflict resolution
-    on ``(customer_id, name)`` keeps slug collisions inside a
-    customer's namespace.
+    provides CRUD with L1 -> L2 -> L3 caching for template definition
+    rows, addressed by ``id`` alone: hub v007 rebuilt the primary key on
+    ``id`` so a platform-owned template (``visibility`` ``public`` or
+    ``restricted``) can carry ``customer_id`` NULL. the unique index on
+    ``(customer_id, name)`` keeps slug collisions inside a customer's
+    namespace.
+
+    ``visibility`` is required on every write and never defaulted: the
+    column's ``'private'`` default is only valid with a customer, and a
+    save that silently wrote it over a public template would hide that
+    template from every other customer. ``origin_template_id`` points a
+    promoted platform copy back at the customer template it came from.
 
     templates are hard-deleted; the FK from
     ``datasource_tables.template_id`` is ``ON DELETE SET NULL`` so
@@ -1174,8 +1422,6 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
     from ``table_template_columns.template_id`` is ``ON DELETE
     CASCADE`` so the per-template column list goes with it.
     """
-
-    primary_key_column: str | tuple[str, ...] = ("customer_id", "id")
 
     @property
     def table_name(self) -> str:
@@ -1216,20 +1462,18 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
         return deserialize_from_json(data, _TEMPLATE_FIELD_TYPES)
 
     async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch table-template row from L3 by composite primary key.
+        """fetch table-template row from L3 by primary key.
 
-        :param entity_id: ``(customer_id, id)`` tuple
+        :param entity_id: template UUID
         :ptype entity_id: Any
         :return: template data dictionary or None if not found
         :rtype: dict[str, Any] | None
         """
         if self.l3_pool is None:
             return None
-        customer_id, template_id = entity_id
         row = await self.l3_pool.fetchrow(
-            "SELECT * FROM table_templates WHERE customer_id = $1 AND id = $2",
-            customer_id,
-            template_id,
+            "SELECT * FROM table_templates WHERE id = $1",
+            entity_id,
         )
         result: dict[str, Any] | None = None
         if row is not None:
@@ -1243,62 +1487,59 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
         *,
         conn: Any = None,
     ) -> int:
-        """upsert table-template row to L3.
+        """upsert table-template row to L3 on its primary key, writing only the columns ``data`` carries.
 
-        natural-key conflict on ``(customer_id, name)`` is enforced by
-        the unique index added in v006; the upsert routes on the
-        primary-key conflict so a re-save with the same id keeps the
-        row's identity stable.
+        the conflict target is ``id``, the primary key since hub v007. a
+        re-save with the same id keeps the row's identity; the unique index
+        on ``(customer_id, name)`` still refuses a slug collision inside a
+        customer's namespace.
 
         :param data: entity field data to persist
         :ptype data: dict[str, Any]
-        :param original_timestamp: original date_updated for
-            optimistic concurrency check (unused today; pattern
-            mirror of DataSourceTableCollection)
+        :param original_timestamp: unused; this table has no CAS fence
         :ptype original_timestamp: datetime | None
+        :param conn: unused; accepted for the extension-point signature
+        :ptype conn: Any
         :return: number of rows affected
         :rtype: int
+        :raises ValueError: when ``data`` carries no ``visibility``
+        :raises RuntimeError: when a row short of a ``NOT NULL`` column finds no
+            row to update (see :meth:`_UpsertShape.write`)
         """
+        if data.get("visibility") is None:
+            raise ValueError(
+                f"table_templates: template {data.get('id')} carries no visibility. every write names it "
+                f"('private' with a customer_id, 'public' or 'restricted' without one); the column default "
+                f"is never assumed, since writing 'private' over a platform template hides it"
+            )
         if self.l3_pool is None:
             return 0
+        return await _TEMPLATE_SHAPE.write(self.l3_pool, data)
 
-        result = await self.l3_pool.execute(
-            """
-            INSERT INTO table_templates (
-                id, customer_id, name, description, caveats,
-                date_created, date_updated
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7
-            )
-            ON CONFLICT (customer_id, id) DO UPDATE SET
-                name = EXCLUDED.name,
-                description = EXCLUDED.description,
-                caveats = EXCLUDED.caveats,
-                date_updated = EXCLUDED.date_updated
-            """,
-            data.get("id"),
-            data.get("customer_id"),
-            data.get("name"),
-            data.get("description"),
-            data.get("caveats"),
-            data.get("date_created"),
-            data.get("date_updated"),
-        )
-        return parse_rowcount(result)
+    def columns_decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
+        """the columns whose stored value writing ``data`` leaves to the database.
+
+        see :meth:`BaseCollection.columns_decided_by_store`: every column
+        ``data`` does not carry.
+
+        :param data: the row as the write sends it, stamped
+        :ptype data: dict[str, Any]
+        :return: the column names, in declared order
+        :rtype: tuple[str, ...]
+        """
+        return _TEMPLATE_SHAPE.decided_by_store(data)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """hard-delete template row from L3.
 
-        :param entity_id: ``(customer_id, id)`` tuple
+        :param entity_id: template UUID
         :ptype entity_id: Any
         :return: nothing
         :rtype: None
         """
         if self.l3_pool is None:
             return
-        customer_id, template_id = entity_id
         await self.l3_pool.execute(
-            "DELETE FROM table_templates WHERE customer_id = $1 AND id = $2",
-            customer_id,
-            template_id,
+            "DELETE FROM table_templates WHERE id = $1",
+            entity_id,
         )

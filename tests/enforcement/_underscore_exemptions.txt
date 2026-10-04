@@ -66,55 +66,63 @@
 # the one direction a consistency check cannot cover, since a blinded access is
 # never flagged in the first place.
 
+# rationale: asyncpg (verified 0.31.0; present in 0.30.0, the declared floor asyncpg>=0.30) parses a DSN and its connect options in connect_utils._parse_connect_dsn_and_args and exposes no public boundary between that parsing and the rest of a connect -- both raise plain ValueError. create_pool_with_startup_timeout must withhold the text of errors raised there (it describes what was sent and can quote the password) and keep every other error's, so it compares traceback frames against this function's code object. this module is the one owner of the name; a rename fails its import, and packages/core/tests/unit/utils/test_asyncpg_internals.py plus the exact-message unparseable-DSN tests pin the boundary against the installed asyncpg.
+packages/core/src/threetears/core/utils/_asyncpg_internals.py:<module>#0:_parse_connect_dsn_and_args
+
 # rationale: redshift_connector (verified 2.1.7) keeps a connection's socket on Connection._usock and has no public accessor for it; the Redshift driver must set the TCP keepalive idle/interval/count knobs connect() does not accept, and lift the login timeout connect(timeout=) leaves on the socket, which would otherwise fail every statement longer than the login bound. this module is the one owner of the access; packages/datasources/tests/unit/test_redshift_connector_internals.py pins that Connection.__init__ still assigns it.
 packages/datasources/src/threetears/datasources/drivers/_redshift_connector_internals.py:connection_socket#0:_usock
-# rationale: the confinement module's OWN test (owner ruling 1, 2026-10-01). it imports _redshift_connector_internals to pin the one redshift_connector private it owns: test_the_installed_redshift_connector_still_keeps_its_socket_where_the_driver_reads_it walks redshift_connector.Connection.__init__ (verified 2.1.7) for the Connection._usock assignment, and test_a_connection_without_a_socket_answers_none checks connection_socket degrades to None. this test exists to fail when a library upgrade moves _usock, and connection_socket has no other public route: the drivers call it from inside the package.
-packages/datasources/tests/unit/test_redshift_connector_internals.py:<module>#0:_redshift_connector_internals
 
-# rationale: Claude Agent SDK exposes the CLI subprocess nowhere; ClaudeSDKClient._transport._process.pid is the only way to get the pid the CLI pool kills on dispose (it falls back to a /proc marker scan when this answers None), and test_claude_sdk_internals checks both members against the installed SDK
-packages/models/src/threetears/models/_claude_sdk_internals.py:cli_process_pid#0:_process
-# rationale: Claude Agent SDK exposes the CLI subprocess nowhere; ClaudeSDKClient._transport._process.pid is the only way to get the pid the CLI pool kills on dispose (it falls back to a /proc marker scan when this answers None), and test_claude_sdk_internals checks both members against the installed SDK
-packages/models/src/threetears/models/_claude_sdk_internals.py:cli_process_pid#0:_transport
-# rationale: Claude Agent SDK routes a CLI's tools/call through Query.sdk_mcp_servers, and Query is reachable only via ClaudeSDKClient._query; swapping the per-checkout tool server has no public API (reconnect_mcp_server refuses SDK servers), and test_claude_sdk_internals checks the member against the installed SDK
-packages/models/src/threetears/models/_claude_sdk_internals.py:install_tool_server#0:_query
-# rationale: Claude Agent SDK routes a CLI's tools/call through Query.sdk_mcp_servers, and Query is reachable only via ClaudeSDKClient._query; swapping the per-checkout tool server has no public API (reconnect_mcp_server refuses SDK servers), and test_claude_sdk_internals checks the member against the installed SDK
-packages/models/src/threetears/models/_claude_sdk_internals.py:remove_tool_server#0:_query
 # rationale: Claude Agent SDK (claude-agent-sdk <0.3) has no public way to send the apply_flag_settings, mcp_set_servers or rewind_conversation control requests the CLI pool needs; ClaudeSDKClient._query and Query._send_control_request are reached only here, and test_claude_sdk_internals checks both against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:send_control_request#0:_query
 # rationale: Claude Agent SDK (claude-agent-sdk <0.3) has no public way to send the apply_flag_settings, mcp_set_servers or rewind_conversation control requests the CLI pool needs; ClaudeSDKClient._query and Query._send_control_request are reached only here, and test_claude_sdk_internals checks both against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:send_control_request#0:_send_control_request
-# rationale: the confinement module's OWN test (owner ruling 1, 2026-10-01). it imports _claude_sdk_internals to check PRIVATE_SURFACE -- ClaudeSDKClient._query and ._transport, Query._send_control_request and .sdk_mcp_servers, SubprocessCLITransport._process -- against the installed claude-agent-sdk (verified 0.2.116, capped <0.3) via missing_private_attributes, and to prove that check can fail. it exists to fail when an SDK release moves one of them; nothing outside threetears.models reaches these functions, so there is no public caller to test through.
-packages/models/tests/unit/models/test_claude_sdk_internals.py:<module>#0:_claude_sdk_internals
+# rationale: Claude Agent SDK routes a CLI's tools/call through Query.sdk_mcp_servers, and Query is reachable only via ClaudeSDKClient._query; swapping the per-checkout tool server has no public API (reconnect_mcp_server refuses SDK servers), and test_claude_sdk_internals checks the member against the installed SDK
+packages/models/src/threetears/models/_claude_sdk_internals.py:install_tool_server#0:_query
+# rationale: Claude Agent SDK routes a CLI's tools/call through Query.sdk_mcp_servers, and Query is reachable only via ClaudeSDKClient._query; swapping the per-checkout tool server has no public API (reconnect_mcp_server refuses SDK servers), and test_claude_sdk_internals checks the member against the installed SDK
+packages/models/src/threetears/models/_claude_sdk_internals.py:remove_tool_server#0:_query
+# rationale: Claude Agent SDK exposes the CLI subprocess nowhere; ClaudeSDKClient._transport._process.pid is the only way to get the pid the CLI pool kills on dispose (it falls back to a /proc marker scan when this answers None), and test_claude_sdk_internals checks both members against the installed SDK
+packages/models/src/threetears/models/_claude_sdk_internals.py:cli_process_pid#0:_process
+# rationale: Claude Agent SDK exposes the CLI subprocess nowhere; ClaudeSDKClient._transport._process.pid is the only way to get the pid the CLI pool kills on dispose (it falls back to a /proc marker scan when this answers None), and test_claude_sdk_internals checks both members against the installed SDK
+packages/models/src/threetears/models/_claude_sdk_internals.py:cli_process_pid#0:_transport
 
-# rationale: nats-py Client._process_op_err: nats-py has no public force-reconnect; this is the entry its own read loop uses when a connection goes stale
-packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_process_op_err
-# rationale: nats-py PullSubscription._sub: the plain subscription a pull subscription's fetches arrive on; nats-py exposes no public handle to it, and a stopping pull consumer must take what is queued there
-packages/nats/src/threetears/nats/_nats_py_internals.py:pull_subscription_inbox#0:_sub
-# rationale: nats-py Subscription._id: the sid the UNSUB names; nats-py exposes no public sid
-packages/nats/src/threetears/nats/_nats_py_internals.py:send_unsubscribe#0:_id
-# rationale: nats-py Client._send_unsubscribe: drops a subscription's interest at the server while it stays registered here, so messages routed before the UNSUB are still delivered; public unsubscribe forgets the subscription first and drain races its PING ahead of the UNSUB
-packages/nats/src/threetears/nats/_nats_py_internals.py:send_unsubscribe#0:_send_unsubscribe
-# rationale: nats-py Subscription._pending_queue: a pull inbox has no callback and no public queue accessor; a stopping consumer takes the messages the server delivered to a fetch still live there instead of stranding them
-packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_queue
-# rationale: nats-py Subscription._pending_size: decremented per taken message, as nats-py's own readers do, so its slow-consumer byte accounting stays right; public pending_bytes is read-only
-packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_size
+# rationale: nats-py Client._transport: the round trip writes the pending buffer and its PING to the socket in one synchronous step; nats-py's public flush writes the PING ahead of the buffer, so its PONG proves nothing about a SUB/UNSUB sent just before
+packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_transport
 # rationale: nats-py Client._flush_queue: wakes nats-py's own flusher after the synchronous write, for a transport that sends only when drained (websocket); there is no public wake
 packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_flush_queue
 # rationale: nats-py Client._pending: read to write the commands nats-py has buffered but not yet flushed, ahead of the PING, exactly as its own _flusher does; no public accessor
 packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_pending
+# rationale: nats-py Client._pending: cleared once written, as nats-py's _flusher clears it, so the flusher does not write the same commands twice; no public reset
+packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#1:_pending
 # rationale: nats-py Client._pending_data_size: zeroed with the buffer it counts, keeping nats-py's own pending-bytes accounting right; no public setter
 packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_pending_data_size
 # rationale: nats-py Client._pongs: the PONG future is queued in the same step as its PING so every PONG resolves its own PING; a timed-out public flush instead leaves a cancelled future that ends the read loop
 packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_pongs
-# rationale: nats-py Client._transport: the round trip writes the pending buffer and its PING to the socket in one synchronous step; nats-py's public flush writes the PING ahead of the buffer, so its PONG proves nothing about a SUB/UNSUB sent just before
-packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#0:_transport
-# rationale: nats-py Client._pending: cleared once written, as nats-py's _flusher clears it, so the flusher does not write the same commands twice; no public reset
-packages/nats/src/threetears/nats/_nats_py_internals.py:write_pending_then_ping#1:_pending
+# rationale: nats-py Subscription._id: the sid the UNSUB names; nats-py exposes no public sid
+packages/nats/src/threetears/nats/_nats_py_internals.py:send_unsubscribe#0:_id
+# rationale: nats-py Client._send_unsubscribe: drops a subscription's interest at the server while it stays registered here, so messages routed before the UNSUB are still delivered; public unsubscribe forgets the subscription first and drain races its PING ahead of the UNSUB
+packages/nats/src/threetears/nats/_nats_py_internals.py:send_unsubscribe#0:_send_unsubscribe
+# rationale: nats-py PullSubscription._sub: the plain subscription a pull subscription's fetches arrive on; nats-py exposes no public handle to it, and a stopping pull consumer must take what is queued there
+packages/nats/src/threetears/nats/_nats_py_internals.py:pull_subscription_inbox#0:_sub
+# rationale: nats-py Subscription._pending_queue: a pull inbox has no callback and no public queue accessor; a stopping consumer takes the messages the server delivered to a fetch still live there instead of stranding them
+packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_queue
+# rationale: nats-py Subscription._pending_size: decremented per taken message, as nats-py's own readers do, so its slow-consumer byte accounting stays right; public pending_bytes is read-only
+packages/nats/src/threetears/nats/_nats_py_internals.py:take_queued_messages#0:_pending_size
+# rationale: nats-py Client._process_op_err: nats-py has no public force-reconnect; this is the entry its own read loop uses when a connection goes stale
+packages/nats/src/threetears/nats/_nats_py_internals.py:force_reconnect#0:_process_op_err
 
 # rationale: opentelemetry-api trace._TRACER_PROVIDER_SET_ONCE: the set-once guard on set_tracer_provider (>= 1.39) has no public reset, and init_telemetry must install a provider again after shutdown_telemetry
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_TRACER_PROVIDER_SET_ONCE
 # rationale: opentelemetry Once._done: the flag that guard reads; clearing it is the only way to let the next set_tracer_provider take effect
 packages/observe/src/threetears/observe/_otel_internals.py:allow_tracer_provider_reset#0:_done
+
+# rationale: the confinement module's OWN test (owner ruling 1, 2026-10-01). it imports _asyncpg_internals to pin the one asyncpg private it owns, connect_utils._parse_connect_dsn_and_args (verified 0.31.0, present in the floor 0.30.0), against the installed asyncpg: a DSN whose port or query does not parse and an invalid sslmode are raised inside the parser, and a bad command_timeout is not. this test exists to fail when an asyncpg release moves that boundary; raised_while_parsing_connect_parameters has no public route, since create_pool_with_startup_timeout calls it from inside the package.
+packages/core/tests/unit/utils/test_asyncpg_internals.py:<module>#0:_asyncpg_internals
+
+# rationale: the confinement module's OWN test (owner ruling 1, 2026-10-01). it imports _redshift_connector_internals to pin the one redshift_connector private it owns: test_the_installed_redshift_connector_still_keeps_its_socket_where_the_driver_reads_it walks redshift_connector.Connection.__init__ (verified 2.1.7) for the Connection._usock assignment, and test_a_connection_without_a_socket_answers_none checks connection_socket degrades to None. this test exists to fail when a library upgrade moves _usock, and connection_socket has no other public route: the drivers call it from inside the package.
+packages/datasources/tests/unit/test_redshift_connector_internals.py:<module>#0:_redshift_connector_internals
+
+# rationale: the confinement module's OWN test (owner ruling 1, 2026-10-01). it imports _claude_sdk_internals to check PRIVATE_SURFACE -- ClaudeSDKClient._query and ._transport, Query._send_control_request and .sdk_mcp_servers, SubprocessCLITransport._process -- against the installed claude-agent-sdk (verified 0.2.116, capped <0.3) via missing_private_attributes, and to prove that check can fail. it exists to fail when an SDK release moves one of them; nothing outside threetears.models reaches these functions, so there is no public caller to test through.
+packages/models/tests/unit/models/test_claude_sdk_internals.py:<module>#0:_claude_sdk_internals
 
 # rationale: owner ruling 1: test_nats_py_internals is the guard that fails, by name, when a nats-py release renames or retypes an attribute in PRIVATE_SURFACE; it must import the confinement module to read that declaration and to drive take_queued_messages against a real nats-py subscription
 packages/nats/tests/unit/test_nats_py_internals.py:<module>#0:_nats_py_internals
