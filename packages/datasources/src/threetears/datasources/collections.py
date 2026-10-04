@@ -38,7 +38,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from threetears.core.backends import parse_rowcount
+from threetears.core.backends import L3Backend, parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
@@ -200,16 +200,12 @@ class _UpsertShape:
     ``None`` for a ``NOT NULL`` column with a server default is not a value the
     column can hold, so it counts as not carried too.
 
-    :cvar table: the table written
-    :cvar columns: every column of the table this collection owns, in the
-        order a statement names them
-    :cvar conflict: the upsert's conflict target
     a row carrying every ``NOT NULL`` column without a default is written as
     an upsert. a row that does not is only an update of an existing row --
     Postgres checks ``NOT NULL`` on the row an INSERT proposes before any
     conflict is resolved, so it could not be inserted -- and is written as a
-    plain ``UPDATE``; on a key no row holds it affects 0 rows, which
-    :meth:`BaseCollection.save_entity` reports.
+    plain ``UPDATE``. on a key no row holds that update affects 0 rows, and
+    :meth:`write` raises naming the columns an insert would have needed.
 
     :cvar table: the table written
     :cvar columns: every column of the table this collection owns, in the
@@ -261,6 +257,20 @@ class _UpsertShape:
         carried = set(self.carried(data))
         return tuple(column for column in self.columns if column not in carried or column in self.insert_only)
 
+    def missing_required(self, data: dict[str, Any]) -> list[str]:
+        """the :attr:`required` columns ``data`` does not carry, in declared order.
+
+        empty when ``data`` can be inserted; otherwise the reason it is written
+        as an update of an existing row.
+
+        :param data: the row as the write sends it
+        :ptype data: dict[str, Any]
+        :return: the missing column names
+        :rtype: list[str]
+        """
+        carried = set(self.carried(data))
+        return [column for column in self.columns if column in self.required and column not in carried]
+
     def statement(self, data: dict[str, Any]) -> tuple[str, list[Any]]:
         """the statement writing exactly the columns ``data`` carries, with its parameters.
 
@@ -272,7 +282,7 @@ class _UpsertShape:
         :return: the SQL and its positional parameters
         :rtype: tuple[str, list[Any]]
         :raises KeyError: when ``data`` does not carry every conflict column,
-            or is an update that carries no column to update
+            or carries no column an update of the existing row would write
         """
         carried = self.carried(data)
         missing = [column for column in self.conflict if column not in carried]
@@ -282,21 +292,20 @@ class _UpsertShape:
             )
         kept = {*self.conflict, *self.insert_only, "date_created"}
         updated = [column for column in carried if column not in kept]
-        if self.required <= set(carried):
+        if not updated:
+            # an upsert always carries ``date_updated`` (every shape requires it), so
+            # only a partial row reaches this; checked before either branch so a future
+            # shape cannot build an upsert with an empty SET list.
+            raise KeyError(f"{self.table}: a write of an existing row must carry a column to update")
+        if not self.missing_required(data):
             placeholders = ", ".join(f"${index}" for index in range(1, len(carried) + 1))
-            on_conflict = (
-                "DO UPDATE SET " + ", ".join(f"{column} = EXCLUDED.{column}" for column in updated)
-                if updated
-                else "DO NOTHING"
-            )
+            assignments = ", ".join(f"{column} = EXCLUDED.{column}" for column in updated)
             sql = (
                 f"INSERT INTO {self.table} ({', '.join(carried)}) VALUES ({placeholders}) "  # noqa: S608
-                f"ON CONFLICT ({', '.join(self.conflict)}) {on_conflict}"
+                f"ON CONFLICT ({', '.join(self.conflict)}) DO UPDATE SET {assignments}"
             )
             bound = list(carried)
         else:
-            if not updated:
-                raise KeyError(f"{self.table}: a write of an existing row must carry a column to update")
             assignments = ", ".join(f"{column} = ${index}" for index, column in enumerate(updated, start=1))
             keys = " AND ".join(
                 f"{column} = ${index}" for index, column in enumerate(self.conflict, start=len(updated) + 1)
@@ -305,6 +314,39 @@ class _UpsertShape:
             bound = [*updated, *self.conflict]
         params = [encode_jsonb(data[column]) if column in self.jsonb else data[column] for column in bound]
         return sql, params
+
+    async def write(self, pool: L3Backend, data: dict[str, Any]) -> int:
+        """write ``data`` with :meth:`statement` and return the rows affected.
+
+        a row short of a :attr:`required` column is written as a plain
+        ``UPDATE``. when that affects no row, no row holds the key and the row
+        could not have been inserted: this raises naming the columns an insert
+        needed, rather than leaving the caller a bare "0 rows affected".
+
+        :param pool: the L3 backend to execute on
+        :ptype pool: L3Backend
+        :param data: the row as the write sends it
+        :ptype data: dict[str, Any]
+        :return: number of rows affected
+        :rtype: int
+        :raises KeyError: as :meth:`statement` does
+        :raises RuntimeError: when an update of a row short of a required
+            column finds no row holding its key
+        """
+        sql, params = self.statement(data)
+        rows = parse_rowcount(await pool.execute(sql, *params))
+        missing = self.missing_required(data)
+        if rows == 0 and missing:
+            key = {column: f"{data[column]}" for column in self.conflict}
+            log.error(
+                "upsert shape: an update found no row, and the row lacks columns an insert needs",
+                extra={"extra_data": {"table": self.table, "key": key, "missing_columns": missing}},
+            )
+            raise RuntimeError(
+                f"{self.table}: no row holds {key!r}, and the row cannot be inserted: it lacks the NOT NULL "
+                f"columns {missing!r}"
+            )
+        return rows
 
 
 #: ``datasource_tables`` as hub v001, v006, v010 and v033 leave it.
@@ -790,12 +832,12 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
         :ptype conn: Any
         :return: number of rows affected
         :rtype: int
+        :raises RuntimeError: when a row short of a ``NOT NULL`` column finds no
+            row to update (see :meth:`_UpsertShape.write`)
         """
         if self.l3_pool is None:
             return 0
-        sql, params = _TABLE_SHAPE.statement(data)
-        result = await self.l3_pool.execute(sql, *params)
-        return parse_rowcount(result)
+        return await _TABLE_SHAPE.write(self.l3_pool, data)
 
     def columns_decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
         """the columns whose stored value writing ``data`` leaves to the database.
@@ -1322,12 +1364,12 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
         :ptype conn: Any
         :return: number of rows affected
         :rtype: int
+        :raises RuntimeError: when a row short of a ``NOT NULL`` column finds no
+            row to update (see :meth:`_UpsertShape.write`)
         """
         if self.l3_pool is None:
             return 0
-        sql, params = _RELATION_SHAPE.statement(data)
-        result = await self.l3_pool.execute(sql, *params)
-        return parse_rowcount(result)
+        return await _RELATION_SHAPE.write(self.l3_pool, data)
 
     def columns_decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
         """the columns whose stored value writing ``data`` leaves to the database.
@@ -1461,6 +1503,8 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
         :return: number of rows affected
         :rtype: int
         :raises ValueError: when ``data`` carries no ``visibility``
+        :raises RuntimeError: when a row short of a ``NOT NULL`` column finds no
+            row to update (see :meth:`_UpsertShape.write`)
         """
         if data.get("visibility") is None:
             raise ValueError(
@@ -1470,9 +1514,7 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
             )
         if self.l3_pool is None:
             return 0
-        sql, params = _TEMPLATE_SHAPE.statement(data)
-        result = await self.l3_pool.execute(sql, *params)
-        return parse_rowcount(result)
+        return await _TEMPLATE_SHAPE.write(self.l3_pool, data)
 
     def columns_decided_by_store(self, data: dict[str, Any]) -> tuple[str, ...]:
         """the columns whose stored value writing ``data`` leaves to the database.

@@ -15,9 +15,16 @@ built the way the hub's migrations leave it. ``information_schema`` names its
 columns, and each case must account for every one of them: a column the
 Collection owns is written with a known value and must read back as that value.
 A column the hub owns and writes directly must come through a Collection save
-untouched. When the hub adds a column, add it to the DDL here. The case's
-column-accounting test then fails until the Collection owns the column or the
-column is listed as hub-owned, with a reason.
+untouched.
+
+The DDL below is transcribed from the hub's migrations; it is a copy, not the
+hub's schema. A hub migration that adds a column to one of these tables changes
+nothing here and fails nothing here, so the DDL must be updated with every hub
+migration that touches them. Once it is, the case's column-accounting test fails
+until the Collection owns the column or the column is listed as hub-owned, with
+a reason. The authoritative check is the hub-side test that runs the same
+accounting against the schema the hub's real migrations build; it lands with the
+hub's 0.61.0 re-pin.
 
 The DDL carries the hub's primary keys, unique indexes, defaults and CHECK
 constraints. Foreign keys to tables outside this module (``customers``) are left
@@ -747,6 +754,43 @@ async def test_a_save_of_a_partial_row_writes_only_the_columns_it_carries(
     assert {name: after[name] for name in untouched} == {name: before[name] for name in untouched}
     # the handle holds the row as L3 holds it, not the partial row it sent.
     assert {name: entity.to_dict()[name] for name in after} == after
+
+
+#: what each partial row of ``_PARTIAL_UPDATES`` lacks for an insert, in declared column order
+_PARTIAL_ROW_MISSING: dict[str, list[str]] = {
+    "datasource_tables": ["datasource_id", "schema_name", "table_name", "date_created"],
+    "datasource_relations": ["name", "date_created"],
+    "table_templates": ["name", "date_created"],
+}
+
+
+@pytest.mark.parametrize(
+    ("case", "column", "value"), _PARTIAL_UPDATES, ids=[case.table for case, _, _ in _PARTIAL_UPDATES]
+)
+async def test_a_partial_row_on_a_key_no_row_holds_raises_and_writes_nothing(
+    store: _Store, case: _Case, column: str, value: Any
+) -> None:
+    """a row short of a NOT NULL column can only update; on an unknown key it names what an insert needed."""
+    writer = store.replica(case.collection)
+    partial = {case.pk: uuid.uuid4(), column: value, "date_updated": datetime.now(UTC)}
+    if case.collection is TableTemplateCollection:
+        partial["visibility"] = "public"
+    entity = writer.entity_class(partial, is_new=False, collection=writer)
+
+    with pytest.raises(RuntimeError, match="no row holds") as raised:
+        await writer.save_entity(entity)
+    assert f"{_PARTIAL_ROW_MISSING[case.table]!r}" in f"{raised.value}"
+    assert await store.pool.fetchval(f"SELECT count(*) FROM {case.table}") == 0  # noqa: S608
+
+
+async def test_a_new_table_row_missing_a_not_null_column_names_it_and_writes_nothing(store: _Store) -> None:
+    case = _CASES[1]
+    row = {key: value for key, value in case.row().items() if key != "datasource_id"}
+    writer = store.replica(DataSourceTableCollection)
+
+    with pytest.raises(RuntimeError, match=r"\['datasource_id'\]"):
+        await writer.save_entity(writer.create(_stamped(row)))
+    assert await store.pool.fetchval("SELECT count(*) FROM datasource_tables") == 0
 
 
 # --- datasource_tables.coverage_dimension: insert-only ------------------------------------

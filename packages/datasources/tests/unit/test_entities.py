@@ -1,9 +1,9 @@
 """tests for threetears.datasources.entities.
 
 covers enum membership + value stability, flat-PK shape on
-CapabilitySourceEntity, composite-PK shape on TableTemplateEntity, flat-PK
-shape on DataSourceTableEntity / DataSourceColumnEntity /
-DataSourceRelationEntity, and BaseEntity subclass invariants.
+CapabilitySourceEntity / TableTemplateEntity / DataSourceTableEntity /
+DataSourceColumnEntity / DataSourceRelationEntity, and BaseEntity subclass
+invariants.
 
 access-mode coverage reaches past entities on purpose. the value set's
 authority is :class:`DataSourceAccessMode` here, and

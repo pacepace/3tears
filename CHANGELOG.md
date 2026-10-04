@@ -201,14 +201,19 @@ tables carry, and nothing compared a Collection with its table.
   reset to NULL or `'[]'`, which the old statements did to every column a row left out. A row
   missing a `NOT NULL` column is written as a plain `UPDATE`, because Postgres checks `NOT NULL` on
   an INSERT's proposed row before resolving the conflict. On a key no row holds, that update affects
-  0 rows and the save raises as before. Each of the three now answers `columns_decided_by_store`,
-  so a save reads back the columns the database decided rather than caching the row as sent.
+  0 rows, and the save raises `RuntimeError` naming the `NOT NULL` columns the row lacked, with an
+  ERROR log line carrying the table, the key and those columns. Each of the three now answers
+  `columns_decided_by_store`, so a save reads back the columns the database decided rather than
+  caching the row as sent.
 - **Added: an integration test of every Collection in the package against its hub table**
-  (`packages/datasources/tests/integration/test_collection_schema_parity_live.py`). The tables are
-  built the way the hub's migrations leave them, and every column in `information_schema` must be
-  written and read back by the Collection, or listed as hub-owned with a reason. The only hub-owned
-  columns are `datasources.spec`, `face_api`, `face_mcp`, `face_platform_tool` and `geo`, which a
-  Collection save must leave as it found them.
+  (`packages/datasources/tests/integration/test_collection_schema_parity_live.py`). Every column in
+  `information_schema` must be written and read back by the Collection, or listed as hub-owned with
+  a reason. The only hub-owned columns are `datasources.spec`, `face_api`, `face_mcp`,
+  `face_platform_tool` and `geo`, which a Collection save must leave as it found them. **The test
+  checks against DDL transcribed from the hub's migrations, not the hub's real schema.** A new hub
+  migration on one of these tables does not fail it; the DDL must be updated with each such
+  migration. The authoritative check is a hub-side test that runs the same accounting against the
+  schema the hub's real migrations build, landing with the hub's 0.61.0 re-pin.
 
 ## v0.60.0 -- 2026-10-03
 

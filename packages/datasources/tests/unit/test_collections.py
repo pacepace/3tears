@@ -16,6 +16,7 @@ mirrors the Hub-side coverage that existed pre-relocation:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -697,6 +698,62 @@ class TestHubTableParity:
         sql, *params = pool.execute.call_args.args
         assert sql == "UPDATE datasource_tables SET column_hash = $1 WHERE id = $2"
         assert params == ["abc", row_id]
+
+    async def test_a_write_without_its_conflict_key_is_refused_before_any_write(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceRelationCollection(registry=registry, config=config)
+        pool = AsyncMock()
+        coll.l3_pool = pool
+        row = _full_relation_row()
+        del row["id"]
+        with pytest.raises(KeyError, match=r"conflict key \['id'\], missing \['id'\]"):
+            await coll.save_to_store(row)
+        pool.execute.assert_not_awaited()
+
+    async def test_an_update_carrying_no_column_to_update_is_refused_before_any_write(self) -> None:
+        """``coverage_dimension`` is insert-only, so a row of the key and it alone updates nothing."""
+        registry, config = _make_registry_and_config()
+        coll = DataSourceTableCollection(registry=registry, config=config)
+        pool = AsyncMock()
+        coll.l3_pool = pool
+        with pytest.raises(KeyError, match="must carry a column to update"):
+            await coll.save_to_store({"id": uuid4(), "coverage_dimension": "state_code"})
+        pool.execute.assert_not_awaited()
+
+    async def test_an_update_that_finds_no_row_names_the_columns_an_insert_needed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a new row missing a NOT NULL column is written as an UPDATE, which matches nothing."""
+        registry, config = _make_registry_and_config()
+        coll = DataSourceTableCollection(registry=registry, config=config)
+        pool = AsyncMock()
+        pool.execute = AsyncMock(return_value="UPDATE 0")
+        coll.l3_pool = pool
+        row = _full_table_row()
+        del row["datasource_id"]
+        with (
+            caplog.at_level(logging.ERROR, logger="threetears.datasources.collections"),
+            pytest.raises(RuntimeError, match=r"\['datasource_id'\]"),
+        ):
+            await coll.save_to_store(row)
+        errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert len(errors) == 1
+        extra = getattr(errors[0], "extra_data", {})
+        assert extra["table"] == "datasource_tables"
+        assert extra["missing_columns"] == ["datasource_id"]
+        assert extra["key"] == {"id": f"{row['id']}"}
+
+    async def test_an_update_that_finds_its_row_raises_nothing_and_logs_nothing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceTableCollection(registry=registry, config=config)
+        pool = AsyncMock()
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        coll.l3_pool = pool
+        with caplog.at_level(logging.ERROR, logger="threetears.datasources.collections"):
+            assert await coll.save_to_store({"id": uuid4(), "column_hash": "abc"}) == 1
+        assert not caplog.records
 
     @pytest.mark.parametrize(
         ("cls", "row_factory"),
