@@ -110,13 +110,15 @@ class OtelLogExport:
         self.provider = provider
         self.handler = handler
 
-    def force_flush(self, timeout_millis: int) -> None:
+    def force_flush(self, timeout_millis: int) -> bool:
         """export every buffered record now.
 
         :param timeout_millis: how long to wait for the exporter
         :ptype timeout_millis: int
+        :return: whether every buffered record was exported within ``timeout_millis``
+        :rtype: bool
         """
-        self.provider.force_flush(timeout_millis=timeout_millis)
+        return bool(self.provider.force_flush(timeout_millis=timeout_millis))
 
     def shutdown(self) -> None:
         """stop the processor and the exporter; records emitted after this are dropped."""
