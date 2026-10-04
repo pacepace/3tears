@@ -1,9 +1,9 @@
 """tests for threetears.datasources.entities.
 
 covers enum membership + value stability, flat-PK shape on
-CapabilitySourceEntity, composite-PK shape on TableTemplateEntity, flat-PK
-shape on DataSourceTableEntity / DataSourceColumnEntity /
-DataSourceRelationEntity, and BaseEntity subclass invariants.
+CapabilitySourceEntity / TableTemplateEntity / DataSourceTableEntity /
+DataSourceColumnEntity / DataSourceRelationEntity, and BaseEntity subclass
+invariants.
 
 access-mode coverage reaches past entities on purpose. the value set's
 authority is :class:`DataSourceAccessMode` here, and
@@ -244,34 +244,32 @@ class TestDataSourceRelationEntity:
 
 
 class TestTableTemplateEntity:
-    """template entities carry the composite-PK ``(customer_id, id)`` shape."""
+    """template entities are addressed by ``id`` alone (hub v007)."""
 
-    def test_id_and_partition(self) -> None:
+    def test_a_platform_template_is_addressed_by_its_id(self) -> None:
+        """a platform template carries ``customer_id`` NULL; the key cannot include it."""
         template_id = uuid4()
-        customer_id = uuid4()
-        coll, _cache = entity_collection_stub(("customer_id", "id"))
+        coll, _cache = entity_collection_stub(("id",))
         entity = TableTemplateEntity(
-            data={"customer_id": customer_id, "id": template_id, "name": "tpl"},
+            data={"customer_id": None, "id": template_id, "name": "tpl", "visibility": "public"},
             is_new=True,
             collection=coll,
         )
         assert entity.id == template_id
         assert isinstance(entity.id, UUID)
-        # primary_key_field names the column ``id`` surfaces, which is the
-        # bare row id; the partition column reaches the addressing key
-        # through the collection's declared primary_key_columns.
         assert entity.primary_key_field == "id"
-        assert entity.addressing_id == (customer_id, template_id)
+        assert entity.addressing_id == template_id
 
-    def test_collection_declares_the_composite_key(self) -> None:
-        """the REAL collection declares ``(customer_id, id)``, not a stub.
+    def test_collection_declares_the_v007_key(self) -> None:
+        """the REAL collection is keyed on ``id``, as hub v007 rebuilt the table's primary key.
 
         the assertion above uses a stub told the key shape, so on its own
         it proves nothing about the collection entities are actually
-        built by -- and the collection previously declared no
-        ``primary_key_column`` at all while its SQL unpacked a 2-tuple.
-        this pins the declaration itself.
+        built by. this pins the declaration itself: the former
+        ``(customer_id, id)`` declaration addressed a key the table no
+        longer has, so every upsert was refused and no platform template
+        could be read.
         """
         from threetears.datasources.collections import TableTemplateCollection
 
-        assert TableTemplateCollection.primary_key_column == ("customer_id", "id")
+        assert TableTemplateCollection.primary_key_column == "id"
