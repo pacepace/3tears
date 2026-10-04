@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.62.0 -- 2026-10-04
+
 ### Channels: a Discord bot can reach a user directly, and say how a reply will find it
 
 - **Added, `DiscordAdapter.send_direct(*, user_id, content) -> DirectMessageSent`:** opens (or
@@ -73,6 +75,7 @@ its own DDL, and the shapes drifted (a missing grant index left the hub's grants
 ### Intentions
 
 - **Added, `intention_log(..., on_logged=...)`:** a consumer hears of each new want it stores.
+
 ## v0.61.0 -- 2026-10-03
 
 ### A pool start survives a connect that never answers
