@@ -26,10 +26,12 @@ The surface, and why each is used:
     holds a call's system prompt), ``mcp_set_servers`` (swap the in-process tool server per
     checkout; ``reconnect_mcp_server`` refuses SDK servers) and ``rewind_conversation`` (empty the
     conversation between callers). The SDK exposes none of the three.
-``Query.sdk_mcp_servers``
-    :func:`install_tool_server` and :func:`remove_tool_server`. Public on ``Query``, but ``Query``
-    is reached only through ``_query``, and it is the table the SDK routes a CLI's ``tools/call``
-    to: replacing the entry is what makes the next ``mcp_set_servers`` serve the borrower's tools.
+``Query.sdk_mcp_servers``, ``Query._sdk_mcp_bridges``
+    :func:`install_tool_server` and :func:`remove_tool_server`. ``sdk_mcp_servers`` is the table of
+    in-process servers; from SDK 0.2.163 a CLI's ``tools/call`` is routed through
+    ``_sdk_mcp_bridges``, one ``SdkMcpBridge`` per server, built when the client connects. A server
+    installed after that needs its own bridge, or its calls answer "server not found": replacing
+    both entries is what makes the next ``mcp_set_servers`` serve the borrower's tools.
 ``ClaudeSDKClient._transport``, ``SubprocessCLITransport._process``
     :func:`cli_process_pid`. The CLI subprocess's pid, so the pool can kill the process and its
     descendants. The SDK exposes its process nowhere; the pool falls back to scanning ``/proc``
@@ -76,6 +78,7 @@ PRIVATE_SURFACE: Final[tuple[PrivateAttribute, ...]] = (
     PrivateAttribute("ClaudeSDKClient", "_transport", "declared"),
     PrivateAttribute("Query", "_send_control_request", "method"),
     PrivateAttribute("Query", "sdk_mcp_servers", dict),
+    PrivateAttribute("Query", "_sdk_mcp_bridges", dict),
     PrivateAttribute("SubprocessCLITransport", "_process", "declared"),
 )
 
@@ -98,8 +101,11 @@ async def send_control_request(client: Any, request: dict[str, Any], *, timeout:
     return await client._query._send_control_request(request, timeout=timeout)
 
 
-def install_tool_server(client: Any, name: str, server: Any) -> None:
+async def install_tool_server(client: Any, name: str, server: Any) -> None:
     """make ``server`` the in-process MCP server the SDK routes ``name`` 's tool calls to.
+
+    The server goes in the SDK's table and gets a bridge of its own, the one the SDK routes a
+    ``tools/call`` through; a bridge already under ``name`` is closed first.
 
     :param client: a connected ``ClaudeSDKClient``
     :ptype client: Any
@@ -111,10 +117,30 @@ def install_tool_server(client: Any, name: str, server: Any) -> None:
     :rtype: None
     :raises AttributeError: when the SDK no longer carries the members this function reads
     """
-    client._query.sdk_mcp_servers[name] = server
+    from claude_agent_sdk._internal.sdk_mcp_bridge import SdkMcpBridge  # noqa: PLC0415
+
+    query = client._query
+    await _close_bridge(query, name)
+    query.sdk_mcp_servers[name] = server
+    query._sdk_mcp_bridges[name] = SdkMcpBridge(name, server)
 
 
-def remove_tool_server(client: Any, name: str) -> None:
+async def _close_bridge(query: Any, name: str) -> None:
+    """close and drop the bridge under ``name``, if there is one.
+
+    :param query: the client's ``Query``
+    :ptype query: Any
+    :param name: the server name
+    :ptype name: str
+    :return: nothing
+    :rtype: None
+    """
+    bridge = query._sdk_mcp_bridges.pop(name, None)
+    if bridge is not None:
+        await bridge.aclose()
+
+
+async def remove_tool_server(client: Any, name: str) -> None:
     """stop the SDK routing tool calls for ``name``; a no-op when nothing is installed under it.
 
     :param client: a connected ``ClaudeSDKClient``
@@ -125,6 +151,7 @@ def remove_tool_server(client: Any, name: str) -> None:
     :rtype: None
     :raises AttributeError: when the SDK no longer carries the members this function reads
     """
+    await _close_bridge(client._query, name)
     client._query.sdk_mcp_servers.pop(name, None)
 
 
