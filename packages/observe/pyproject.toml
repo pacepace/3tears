@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-observe"
-version = "0.63.0"
+version = "0.63.1"
 description = "Structured logging, tracing, and OpenTelemetry setup for 3tears applications"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -42,6 +42,9 @@ otel = [
     "opentelemetry-sdk>=1.40,<2",
     "opentelemetry-exporter-otlp>=1.40,<2",
     "opentelemetry-instrumentation-logging>=0.61b0,<1",
+    # `is_instrumentation_enabled`, which the export filter reads; instrumentation-logging pins this
+    # same release, so it moves with it
+    "opentelemetry-instrumentation>=0.61b0,<1",
 ]
 asgi = [
     "uuid-utils",

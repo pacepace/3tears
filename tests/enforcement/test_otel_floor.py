@@ -20,7 +20,8 @@ floors. What this module guards is everything around that run that can rot silen
   pins its api exactly, each exporter its sdk minor), so a split floor is either unresolvable or
   a stale line that looks deliberate;
 - a contrib package (``opentelemetry-instrumentation-logging``, whose handler replaced the SDK's
-  deprecated one) is declared at the contrib release paired with the core floor: contrib
+  deprecated one, and ``opentelemetry-instrumentation``, whose suppression check the handler's
+  filter reads) is declared at the contrib release paired with the core floor: contrib
   ``0.(N+21)b0`` ships with core ``1.N`` and pins its api to it, so any other pairing is
   unresolvable at the floor;
 - the repo's dev install never declares a lower floor than 3tears-observe itself;
@@ -45,7 +46,7 @@ _FLOOR_SCRIPT = "scripts/test-otel-floor.sh"
 _LOCKSTEP = ("opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp")
 
 #: the contrib-train members 3tears declares; versioned ``0.Mb0``, released alongside core ``1.(M-21)``.
-_CONTRIB = ("opentelemetry-instrumentation-logging",)
+_CONTRIB = ("opentelemetry-instrumentation-logging", "opentelemetry-instrumentation")
 
 #: contrib minor minus core minor on one OpenTelemetry release: contrib 0.61b0 ships with core 1.40.0.
 _CONTRIB_MINOR_OFFSET = 21
