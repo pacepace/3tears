@@ -16,13 +16,16 @@ set exactly those, so the round trip below also pins that they still arrive.
 from __future__ import annotations
 
 import logging
+import threading
 import warnings
 from collections.abc import Sequence
 
 from opentelemetry.instrumentation.logging.handler import LoggingHandler
 from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from threetears.observe._otel_internals import OtelLogExport, start_log_export
+from threetears.observe._otel_internals import EXPORT_THREAD_NAMES, FLUSH_THREAD_NAME, OtelLogExport, start_log_export
 
 
 # parity-exempt: duck-typed stand-in for the OpenTelemetry SDK's LogRecordExporter, whose module (opentelemetry.sdk._logs.export) is private and may not be bound from a test; it implements export, force_flush and shutdown, the whole surface BatchLogRecordProcessor drives
@@ -127,3 +130,23 @@ class TestTheLogsApiStillCarriesARecordToTheExporter:
         """production passes no exporter: the OTLP HTTP one is built from the endpoint, offline."""
         export = start_log_export(Resource.create({"service.name": "guard"}), "http://127.0.0.1:9/otlp/v1/logs")
         export.shutdown()
+
+
+class TestTheSdkStillNamesItsExportWorkersAsTheFilterExpects:
+    def test_the_batch_workers_run_on_the_threads_the_filter_names(self) -> None:
+        """the handler's filter tells an export's own records by the thread they are emitted on.
+
+        the SDK's worker-thread names are not an API; a release that renames them would let the HTTP
+        client's records, logged on an export's behalf, be exported again -- the feedback loop.
+        """
+        export = _export_through(FakeLogRecordExporter())
+        span_processor = BatchSpanProcessor(InMemorySpanExporter())
+        try:
+            running = {thread.name for thread in threading.enumerate()}
+        finally:
+            span_processor.shutdown()
+            export.shutdown()
+
+        sdk_workers = EXPORT_THREAD_NAMES - {FLUSH_THREAD_NAME}
+        assert sdk_workers, "the filter names no SDK worker threads"
+        assert sdk_workers <= running, f"the SDK started {sorted(running)}; the filter expects {sorted(sdk_workers)}"
