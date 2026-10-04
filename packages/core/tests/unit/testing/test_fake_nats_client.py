@@ -253,6 +253,27 @@ async def test_a_declaration_reconciles_a_bucket_somebody_opened_first() -> None
 
 
 @pytest.mark.asyncio
+async def test_a_declaration_keeps_a_live_buckets_expiry_unless_it_owns_it() -> None:
+    # the real declaration reconciles max_age only for a declarer that owns the bucket's expiry.
+    client = FakeNatsClient()
+    await client.kv_bucket(name="ratelimits", ttl=timedelta(seconds=300))
+
+    kept = await client.ensure_kv_bucket(name="ratelimits", ttl=None)
+    assert kept.ttl == timedelta(seconds=300)
+
+    owned = await client.ensure_kv_bucket(name="ratelimits", ttl=None, owns_expiry=True)
+    assert owned is kept
+    assert owned.ttl is None
+
+
+@pytest.mark.asyncio
+async def test_a_bind_only_declaration_cannot_own_expiry() -> None:
+    client = FakeNatsClient(declared_buckets=["ratelimits"])
+    with pytest.raises(ValueError, match="owns_expiry"):
+        await client.ensure_kv_bucket(name="ratelimits", create_if_missing=False, owns_expiry=True)
+
+
+@pytest.mark.asyncio
 async def test_a_bind_only_declaration_of_an_absent_bucket_raises() -> None:
     client = FakeNatsClient()
     with pytest.raises(KvBucketNotFoundError, match="versions") as caught:

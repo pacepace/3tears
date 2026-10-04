@@ -2792,6 +2792,7 @@ class NatsClient:
         "_longest_request_seconds",
         "_kv_timings",
         "_declarations",
+        "_expiry_owned_buckets",
         "_pull_consumers",
         "_restoration",
     )
@@ -2837,6 +2838,11 @@ class NatsClient:
         # the pod); nothing but the declarer can put either back. :meth:`_restore_once` re-creates each
         # after every reconnect, and a create of a stream that survived is a no-op.
         self._declarations: dict[str, _NatsStreamConfig] = {}
+        # the backing stream name -> fully-qualified bucket name of every remembered KV declaration
+        # whose declarer owns the bucket's expiry (``ensure_kv_bucket(owns_expiry=True)``). a
+        # restoration finding one of these live with another configuration reconciles it, as the
+        # declaration did, rather than leaving it as it is (:meth:`_redeclare_stream`).
+        self._expiry_owned_buckets: dict[str, str] = {}
         # the restoration a reconnect started (:meth:`_restore_after_reconnect`), held so it is not
         # collected mid-flight and so a later reconnect, :meth:`shutdown` and :meth:`abandon` stop it.
         self._restoration: asyncio.Task[None] | None = None
@@ -3243,6 +3249,12 @@ class NatsClient:
         it is rather than reconciled back -- this restores what a restart took, it does not fight
         over a stream that is still there.
 
+        One exception: a KV bucket whose declarer owns its expiry
+        (``ensure_kv_bucket(owns_expiry=True)``) has nobody to fight over it, so it is reconciled
+        exactly as that declaration reconciled it (:func:`threetears.nats.kv.reconcile_kv_stream`).
+        Otherwise a process that put the wiped bucket back first, with an expiry of its own, would
+        leave every bind-only opener asking for a per-entry lifetime refused until this one restarted.
+
         :param js: a JetStream context on the current connection
         :ptype js: Any
         :param config: the config the stream was declared with
@@ -3251,13 +3263,26 @@ class NatsClient:
         :rtype: None
         :raises Exception: any other refusal or failure; the round logs it and retries
         """
+        # local import avoids circular dependency between client.py and kv.py
+        from threetears.nats.kv import reconcile_kv_stream
+
         outcome = "re-declared after a NATS reconnect (created if a restart had wiped it)"
         try:
             await js.add_stream(dataclasses.replace(config))
         except Exception as exc:
             if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
                 raise
-            outcome = "live with a configuration other than the one declared here after a NATS reconnect; left as it is"
+            owned_bucket = self._expiry_owned_buckets.get(config.name or "")
+            if owned_bucket is None:
+                outcome = (
+                    "live with a configuration other than the one declared here after a NATS reconnect; left as it is"
+                )
+            else:
+                await reconcile_kv_stream(js=js, full_name=owned_bucket, config=config, owns_expiry=True)
+                outcome = (
+                    "live with a configuration other than the one declared here after a NATS reconnect; its "
+                    "declarer owns its expiry, so it was reconciled to the declaration"
+                )
         log.info(
             "%s-storage stream %s %s",
             _storage_name(config),
@@ -5181,6 +5206,7 @@ class NatsClient:
         history: int = 1,
         direct: bool = True,
         create_if_missing: bool = True,
+        owns_expiry: bool = False,
     ) -> NatsKvBucket:
         """DECLARE a KV bucket's configuration, reconciling a live one in place.
 
@@ -5222,6 +5248,21 @@ class NatsClient:
         ``$JS.API.STREAM.MSG.GET.KV_{bucket}``, and NATS authorises on subjects,
         so no key-scoped ``$KV.`` grant can constrain a read.
 
+        **the bucket's expiry is reconciled only by a declarer that owns it.**
+        ``max_age`` sits outside the reconciled set, because a bucket with several
+        declarers asking for different expiries would have them fight over it. a
+        bucket whose expiry has exactly one owner has nobody to fight: that owner
+        passes ``owns_expiry=True``, and a live bucket-wide expiry other than
+        ``ttl`` (``None`` meaning none) is reconciled in place and logged at INFO
+        naming the old and new values -- on this declaration, on every self-heal
+        re-open of the handle, and on every restoration after a reconnect. the
+        default ``False`` reports a differing ``max_age`` at WARNING and leaves it.
+        a platform declaring every pod bucket with no bucket-wide expiry, so each
+        bind-only opener carries its own per-entry lifetime, must pass it: a stale
+        bucket-wide expiry otherwise refuses every such opener with
+        :class:`~threetears.nats.errors.KvConfigMismatch` for as long as it lives.
+        :meth:`kv_bucket` never owns an expiry; it declares nothing.
+
         :param name: bucket name suffix (will be prefixed by namespace)
         :ptype name: str
         :param ttl: optional time-to-live for entries; ``None`` for no expiry
@@ -5237,8 +5278,14 @@ class NatsClient:
             config differs, which is what a process that is not the bucket's
             owner should do
         :ptype create_if_missing: bool
+        :param owns_expiry: this declarer is the bucket's one owner of its
+            expiry, so a live ``max_age`` other than ``ttl`` is reconciled in
+            place; remembered with the declaration, so a restoration after a
+            reconnect does the same. only with ``create_if_missing=True``
+        :ptype owns_expiry: bool
         :return: ready KV bucket handle, also installed in the client's cache
         :rtype: NatsKvBucket
+        :raises ValueError: if ``owns_expiry=True`` with ``create_if_missing=False``
         :raises KvBucketNotFoundError: if the bucket does not exist and this call could not create it --
             a bind (``create_if_missing=False``) once the wait for its declarer is spent, or a
             declaration whose create was not answered (a ``KvError``)
@@ -5261,6 +5308,7 @@ class NatsClient:
                 history=history,
                 direct=direct,
                 timings=self._kv_timings if self._kv_timings is not None else DEFAULT_KV_TIMINGS,
+                owns_expiry=owns_expiry,
             )
             self._buckets[full_name] = bucket
         if create_if_missing:
@@ -5275,7 +5323,14 @@ class NatsClient:
                 storage_type=StorageType.FILE if storage == "file" else StorageType.MEMORY,
                 direct=direct,
             )
-            self._declarations[declared.name or full_name] = declared
+            stream = declared.name or full_name
+            self._declarations[stream] = declared
+            # the LATEST declaration is the one remembered, its ownership of the expiry included:
+            # a re-declaration without it gives the expiry up.
+            if owns_expiry:
+                self._expiry_owned_buckets[stream] = full_name
+            else:
+                self._expiry_owned_buckets.pop(stream, None)
         return bucket
 
     async def ensure_jetstream_stream(

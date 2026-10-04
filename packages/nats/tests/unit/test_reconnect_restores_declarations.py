@@ -426,6 +426,119 @@ async def test_a_bind_only_declaration_is_not_declared_again() -> None:
     await client.shutdown()
 
 
+_RATELIMITS = f"KV_{_NS}-ratelimits"
+
+
+def _recreated_elsewhere_with_an_expiry(server: _ScriptedServer) -> StreamConfig:
+    """another process creates the declared bucket again first, with a bucket-wide expiry of its own.
+
+    The shape of the cobalt-dev defect: an older opener that still declared the bucket with
+    ``max_age`` 300s, getting there before the declarer that owns the bucket's expiry.
+
+    :param server: the scripted JetStream server
+    :ptype server: _ScriptedServer
+    :return: the config the other process left live
+    :rtype: StreamConfig
+    """
+    server.restart()
+    elsewhere = build_kv_stream_config(
+        bucket=f"{_NS}-ratelimits", ttl_seconds=300, history=1, storage_type=StorageType.MEMORY, direct=True
+    )
+    server.streams[_RATELIMITS] = elsewhere
+    return elsewhere
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_owning_expiry_removes_a_stale_bucket_wide_expiry() -> None:
+    """the declaration itself: a live bucket's 300s ``max_age`` is reconciled away in place."""
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    server.streams[_RATELIMITS] = build_kv_stream_config(
+        bucket=f"{_NS}-ratelimits", ttl_seconds=300, history=1, storage_type=StorageType.MEMORY, direct=True
+    )
+
+    await client.ensure_kv_bucket(name="ratelimits", ttl=None, history=1, direct=True, owns_expiry=True)
+
+    assert server.streams[_RATELIMITS].max_age == 0
+    assert len(server.updated) == 1
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_remembered_declaration_keeps_owning_expiry_across_a_reconnect() -> None:
+    """a restoration declares the same shape the declaration did, ownership of the expiry included.
+
+    Restoration creates and never updates -- except for a bucket whose declarer owns its expiry,
+    which it reconciles exactly as that declaration would have: otherwise a process that put the
+    wiped bucket back first, with its own expiry, would leave every bind-only opener refused until
+    the declarer restarted.
+    """
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    await client.ensure_kv_bucket(name="ratelimits", ttl=None, history=1, direct=True, owns_expiry=True)
+    _recreated_elsewhere_with_an_expiry(server)
+
+    await reconnected()
+    await _until(lambda: server.streams[_RATELIMITS].max_age == 0)
+
+    assert len(server.updated) == 1
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_remembered_declaration_not_owning_expiry_leaves_another_expiry_as_it_is() -> None:
+    """the default: restoration restores what a restart took and never fights over a live bucket."""
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    await client.ensure_kv_bucket(name="ratelimits", ttl=None, history=1, direct=True)
+    elsewhere = _recreated_elsewhere_with_an_expiry(server)
+    adds_before = len(server.added)
+
+    await reconnected()
+    await _until(lambda: len(server.added) > adds_before)
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert server.streams[_RATELIMITS] == elsewhere
+    assert server.updated == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_later_declaration_without_ownership_gives_the_expiry_up() -> None:
+    """the remembered declaration is the LATEST one: re-declaring without ownership withdraws it."""
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    await client.ensure_kv_bucket(name="ratelimits", ttl=None, history=1, direct=True, owns_expiry=True)
+    await client.ensure_kv_bucket(name="ratelimits", ttl=None, history=1, direct=True)
+    elsewhere = _recreated_elsewhere_with_an_expiry(server)
+    adds_before = len(server.added)
+
+    await reconnected()
+    await _until(lambda: len(server.added) > adds_before)
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert server.streams[_RATELIMITS] == elsewhere
+    assert server.updated == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_bind_only_declaration_cannot_own_expiry() -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    server.streams[_RATELIMITS] = build_kv_stream_config(
+        bucket=f"{_NS}-ratelimits", ttl_seconds=300, history=1, storage_type=StorageType.MEMORY, direct=True
+    )
+
+    with pytest.raises(ValueError, match="owns_expiry"):
+        await client.ensure_kv_bucket(name="ratelimits", create_if_missing=False, owns_expiry=True)
+
+    assert server.updated == []
+    await client.shutdown()
+
+
 async def _ack(msg: Any) -> None:
     await msg.ack()
 

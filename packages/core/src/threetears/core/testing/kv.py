@@ -919,13 +919,16 @@ class FakeNatsClient:
         history: int = 1,
         direct: bool = True,
         create_if_missing: bool = True,
+        owns_expiry: bool = False,
     ) -> FakeKvBucket:
         """declare a bucket -- create it, or reconcile a live one in place -- or bind one somebody declared.
 
         Mirrors :meth:`threetears.nats.NatsClient.ensure_kv_bucket`: a declaration shares the one
-        handle :meth:`kv_bucket` hands out, a declaration of a live bucket takes the declared TTL
-        and ``direct`` with its entries kept, and a declaration that may create, whatever its
-        storage, is remembered (:attr:`remembered_declarations`) and put back by :meth:`restart_broker`.
+        handle :meth:`kv_bucket` hands out, a declaration of a live bucket takes the declared
+        ``direct`` with its entries kept -- and the declared TTL only when its declarer owns the
+        bucket's expiry (``owns_expiry``), as only then does the real one reconcile ``max_age`` --
+        and a declaration that may create, whatever its storage, is remembered
+        (:attr:`remembered_declarations`) and put back by :meth:`restart_broker`.
 
         :param name: bucket suffix; the fake skips the namespace prefix
         :ptype name: str
@@ -939,13 +942,22 @@ class FakeNatsClient:
         :ptype direct: bool
         :param create_if_missing: ``True`` declares; ``False`` binds and raises when the bucket is absent
         :ptype create_if_missing: bool
+        :param owns_expiry: the declarer owns the bucket's expiry, so a live bucket takes the
+            declared TTL; only with ``create_if_missing``
+        :ptype owns_expiry: bool
         :return: the bucket, the same instance every later open receives
         :rtype: FakeKvBucket
+        :raises ValueError: when ``owns_expiry=True`` with ``create_if_missing=False``, as the real one
         :raises KvBucketNotFoundError: when ``create_if_missing=False`` and the bucket is absent --
             never created, or lost to :meth:`FakeKvBucket.vanish` -- since a declaration asks the
             broker rather than the client's cache
         """
         del history
+        if owns_expiry and not create_if_missing:
+            raise ValueError(
+                f"KV bucket {name!r}: owns_expiry=True needs create_if_missing=True -- only the bucket's "
+                f"declarer may own its expiry, and a bind-only open declares nothing"
+            )
         bucket = self._buckets.get(name)
         absent = bucket is None or bucket.is_vanished
         if absent and not create_if_missing:
@@ -956,10 +968,13 @@ class FakeNatsClient:
             bucket = self._new_bucket(name=name, ttl=ttl, storage=storage, direct=direct)
             self._buckets[name] = bucket
         elif create_if_missing:
+            # a declaration CREATES a lost bucket with its own TTL; a live one keeps its TTL unless the
+            # declarer owns the expiry, as the real declaration reconciles max_age only then
+            takes_ttl = owns_expiry or bucket.is_vanished
             if bucket.is_vanished:
                 # the declaration creates the lost bucket now, empty, as the real one creates its stream
                 bucket.wipe()
-            bucket.reconcile(ttl=ttl, direct=direct)
+            bucket.reconcile(ttl=ttl if takes_ttl else bucket.ttl, direct=direct)
         # the real declaration replaces the client's one cached handle with one opened as it asked
         bucket.set_may_create(create_if_missing)
         if create_if_missing:

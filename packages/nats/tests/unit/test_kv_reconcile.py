@@ -26,6 +26,7 @@ from threetears.nats.kv import (
     NatsKvBucket,
     build_kv_stream_config,
     kv_stream_differences,
+    open_kv_stream,
 )
 
 
@@ -59,6 +60,7 @@ class _ScriptedJetStream:
         self.added: list[StreamConfig] = []
         self.updated: list[StreamConfig] = []
         self.info_calls: list[str] = []
+        self.update_raises: Exception | None = None
 
     async def add_stream(self, config: StreamConfig) -> Any:
         if self.add_raises is not None:
@@ -67,6 +69,8 @@ class _ScriptedJetStream:
         return object()
 
     async def update_stream(self, config: StreamConfig) -> Any:
+        if self.update_raises is not None:
+            raise self.update_raises
         self.updated.append(config)
         return object()
 
@@ -339,6 +343,211 @@ class TestTheDeclarerReconciles:
         assert js.updated == [], "an undeclared field must not be reconciled"
 
 
+def _name_in_use() -> _ApiError:
+    """the server's answer to a create of a bucket that is live with another configuration."""
+    return _ApiError(10058, "stream name already in use with a different configuration")
+
+
+class TestADeclarerThatOwnsExpiry:
+    """`owns_expiry=True` lets the bucket's ONE declarer reconcile ``max_age`` in place.
+
+    Found live on cobalt-dev: the shared rate-limit bucket was created long ago with a bucket-wide
+    ``max_age`` of 300s. Its declarer now asks for no bucket-wide expiry, so every bind-only opener
+    can give its own entries their own lifetime -- but ``max_age`` sat outside the reconciled set,
+    so the stale 300s was logged as dropped and never removed, and every opener asking for a 60s
+    per-entry TTL was refused with ``KvConfigMismatch``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_stale_bucket_wide_expiry_is_removed_in_place(self, caplog: pytest.LogCaptureFixture) -> None:
+        js = _ScriptedJetStream(add_raises=_name_in_use(), live=_live(allow_direct=True, max_age=300.0))
+        with caplog.at_level("INFO", logger="threetears.nats.kv"):
+            await open_kv_stream(
+                js=js,
+                full_name="probe",
+                config=build_kv_stream_config(
+                    bucket="probe", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+                ),
+                create_if_missing=True,
+                owns_expiry=True,
+            )
+        assert len(js.updated) == 1, "a declarer that owns expiry must reconcile max_age in place"
+        assert js.updated[0].max_age == 0
+        assert js.updated[0].allow_msg_ttl is True
+        reconciled = [r for r in caplog.records if r.getMessage() == "JetStream KV bucket reconciled in place"]
+        assert reconciled, "the in-place reconcile went unlogged"
+        applied = reconciled[0].extra_data["applied"]  # type: ignore[attr-defined]
+        assert "max_age" in applied and "300" in applied, applied
+        assert not [r for r in caplog.records if r.levelname == "WARNING"], "nothing was dropped"
+
+    @pytest.mark.asyncio
+    async def test_without_ownership_the_stale_expiry_is_reported_and_left(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """the default is today's behaviour exactly, with the warning now naming the way out."""
+        js = _ScriptedJetStream(add_raises=_name_in_use(), live=_live(allow_direct=True, max_age=300.0))
+        with caplog.at_level("WARNING"):
+            await open_kv_stream(
+                js=js,
+                full_name="probe",
+                config=build_kv_stream_config(
+                    bucket="probe", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+                ),
+                create_if_missing=True,
+            )
+        assert js.updated == [], "max_age is reconciled only by a declarer that owns it"
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("max_age" in w and "owns_expiry" in w for w in warnings), warnings
+
+    @pytest.mark.asyncio
+    async def test_an_expiry_that_already_matches_is_not_updated(self) -> None:
+        """idempotence: ``update_stream`` is a write, and an owner re-declares on every start."""
+        js = _ScriptedJetStream(add_raises=_name_in_use(), live=_live(allow_direct=True, max_age=None))
+        await open_kv_stream(
+            js=js,
+            full_name="probe",
+            config=build_kv_stream_config(
+                bucket="probe", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+            ),
+            create_if_missing=True,
+            owns_expiry=True,
+        )
+        assert js.updated == []
+
+    @pytest.mark.asyncio
+    async def test_a_requested_expiry_matching_the_live_one_is_not_updated(self) -> None:
+        js = _ScriptedJetStream(add_raises=_name_in_use(), live=_live(allow_direct=True, max_age=60.0))
+        await open_kv_stream(
+            js=js,
+            full_name="probe",
+            config=build_kv_stream_config(
+                bucket="probe", ttl_seconds=60, history=1, storage_type=StorageType.MEMORY, direct=True
+            ),
+            create_if_missing=True,
+            owns_expiry=True,
+        )
+        assert js.updated == []
+
+    @pytest.mark.asyncio
+    async def test_a_requested_expiry_shorter_than_the_duplicate_window_brings_the_window_with_it(self) -> None:
+        """JetStream refuses a duplicate window longer than ``max_age``.
+
+        A bucket with no expiry carries the two-minute window; reconciling it to 60s alone would be
+        refused, so the update carries the window the requested shape carries.
+        """
+        js = _ScriptedJetStream(
+            add_raises=_name_in_use(), live=_live(allow_direct=True, max_age=0.0, duplicate_window=120.0)
+        )
+        await open_kv_stream(
+            js=js,
+            full_name="probe",
+            config=build_kv_stream_config(
+                bucket="probe", ttl_seconds=60, history=1, storage_type=StorageType.MEMORY, direct=True
+            ),
+            create_if_missing=True,
+            owns_expiry=True,
+        )
+        assert len(js.updated) == 1
+        assert js.updated[0].max_age == 60
+        assert js.updated[0].duplicate_window == 60
+
+    @pytest.mark.asyncio
+    async def test_the_update_changes_only_the_reconciled_fields_of_the_live_config(self) -> None:
+        """built from the LIVE config: storage the server will not change is not asked for."""
+        js = _ScriptedJetStream(
+            add_raises=_name_in_use(),
+            live=_live(storage=StorageType.FILE, allow_direct=True, max_age=300.0, max_msgs_per_subject=5),
+        )
+        await open_kv_stream(
+            js=js,
+            full_name="probe",
+            config=build_kv_stream_config(
+                bucket="probe", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+            ),
+            create_if_missing=True,
+            owns_expiry=True,
+        )
+        assert len(js.updated) == 1
+        assert js.updated[0].max_age == 0
+        assert js.updated[0].storage == StorageType.FILE
+        assert js.updated[0].max_msgs_per_subject == 5
+
+    @pytest.mark.asyncio
+    async def test_an_update_the_server_answers_with_a_refusal_does_not_blame_a_grant(self) -> None:
+        """an answered refusal names a configuration the server will not take; a missing grant is never answered."""
+        js = _ScriptedJetStream(add_raises=_name_in_use(), live=_live(allow_direct=True, max_age=300.0))
+        js.update_raises = _ApiError(10052, "duplicates window can not be larger then max age")
+        with pytest.raises(KvError) as caught:
+            await open_kv_stream(
+                js=js,
+                full_name="probe",
+                config=build_kv_stream_config(
+                    bucket="probe", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+                ),
+                create_if_missing=True,
+                owns_expiry=True,
+            )
+        assert "duplicates window" in str(caught.value)
+        assert "the server refused the update itself" in str(caught.value)
+        assert "grant this principal" not in str(caught.value)
+
+    @pytest.mark.asyncio
+    async def test_an_unanswered_update_still_names_the_grant(self) -> None:
+        js = _ScriptedJetStream(add_raises=_name_in_use(), live=_live(allow_direct=False))
+        js.update_raises = TimeoutError("nats: timeout")
+        with pytest.raises(KvError, match="grant this principal"):
+            await open_kv_stream(
+                js=js,
+                full_name="probe",
+                config=build_kv_stream_config(
+                    bucket="probe", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+                ),
+                create_if_missing=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_binder_cannot_own_expiry(self) -> None:
+        """a process that only binds has no authority over the bucket, its expiry included."""
+        js = _ScriptedJetStream(live=_live(allow_direct=True, max_age=300.0))
+        with pytest.raises(ValueError, match="owns_expiry"):
+            await NatsKvBucket.open(
+                client=_ScriptedClient(js),  # type: ignore[arg-type]
+                full_name="probe",
+                ttl=None,
+                storage="memory",
+                create_if_missing=False,
+                history=1,
+                direct=True,
+                owns_expiry=True,
+            )
+        assert js.updated == []
+
+    @pytest.mark.asyncio
+    async def test_a_self_heal_reopen_keeps_owning_expiry(self) -> None:
+        """the re-open after a vanished stream declares again, ownership of the expiry included.
+
+        Without it a bucket another process recreated with its own expiry in the meantime would be
+        bound as-is by the owner's own self-heal.
+        """
+        js = _RecreatedElsewhereJetStream()
+        bucket = await NatsKvBucket.open(
+            client=_ScriptedClient(js),  # type: ignore[arg-type]
+            full_name="probe",
+            ttl=None,
+            storage="memory",
+            create_if_missing=True,
+            history=1,
+            direct=True,
+            owns_expiry=True,
+        )
+        js.recreate_elsewhere(_live(allow_direct=True, max_age=300.0))
+
+        assert await bucket.get(key="k") == b"healed"
+
+        assert len(js.updated) == 1, "the self-heal did not reconcile the expiry it owns"
+        assert js.updated[0].max_age == 0
+
+
 class TestTheReaderRefuses:
     """`create_if_missing=False` is a reader: it has no authority to change a shared bucket."""
 
@@ -527,3 +736,15 @@ class _VanishingStreamJetStream(_ScriptedJetStream):
     async def key_value(self, _name: str) -> Any:
         self.binds += 1
         return _VanishedKv() if self.binds == 1 else _HealedKv()
+
+
+class _RecreatedElsewhereJetStream(_VanishingStreamJetStream):
+    """a vanishing stream that, once :meth:`recreate_elsewhere` runs, another process has created again.
+
+    Every create after that is refused as a name already in use, and the live config is the other
+    process's, as the server answers when a stream a restart wiped was put back by someone else first.
+    """
+
+    def recreate_elsewhere(self, live: StreamConfig) -> None:
+        self.live = live
+        self.add_raises = _name_in_use()
