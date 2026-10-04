@@ -15,10 +15,9 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from threetears.observe.logging import get_logger
 
@@ -231,8 +230,34 @@ def _init_log_export(config: TelemetryConfig, resource: Resource) -> None:
     )
 
 
+class _ProviderFlush(Protocol):
+    """a provider's ``force_flush``: every OpenTelemetry provider takes its budget as ``timeout_millis``."""
+
+    def __call__(self, *, timeout_millis: int) -> object:
+        """flush, using at most *timeout_millis* (which OpenTelemetry's batch processors ignore).
+
+        :param timeout_millis: the milliseconds the flush may use
+        :ptype timeout_millis: int
+        :return: whether the provider reports everything flushed; read as a bool
+        :rtype: object
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class _SignalFlush:
+    """one provider's flush, named by the signal it carries.
+
+    :ivar signal: ``traces``, ``metrics`` or ``logs``
+    :ivar flush: the provider's flush
+    """
+
+    signal: str
+    flush: _ProviderFlush
+
+
 class _BoundedFlush:
-    """a sequence of provider flushes run on a daemon worker thread, which the caller waits on for a bounded time.
+    """a sequence of provider flushes run on one daemon worker thread, which callers wait on for a bounded time.
 
     OpenTelemetry's batch processors ignore the timeout handed to ``force_flush``: they export
     until their queue is empty, however long the exporter's retries take (the SDK's own TODO cites
@@ -241,50 +266,83 @@ class _BoundedFlush:
     gives up never holds the interpreter open at exit; it finishes, or dies with the process.
     """
 
-    def __init__(self, flushes: list[tuple[str, Callable[[int], bool | None]]], timeout: timedelta) -> None:
+    def __init__(self, flushes: tuple[_SignalFlush, ...], deadline: float) -> None:
         """
-        holds the flushes to run and the budget they share.
+        builds the worker, not yet started.
 
-        :param flushes: each signal's name and the flush that takes the milliseconds left to it
-        :ptype flushes: list[tuple[str, Callable[[int], bool | None]]]
-        :param timeout: the longest the caller waits for all of them together
-        :ptype timeout: timedelta
+        :param flushes: the flushes to run, in order
+        :ptype flushes: tuple[_SignalFlush, ...]
+        :param deadline: the ``time.monotonic()`` instant the flushes share as their budget
+        :ptype deadline: float
         """
+        from threetears.observe._otel_internals import FLUSH_THREAD_NAME
+
+        self.signals = tuple(flush.signal for flush in flushes)
         self._flushes = flushes
-        self._timeout = timeout
-        self._deadline = 0.0
+        self._deadline = deadline
         self._lock = threading.Lock()
         self._running: str | None = None
         self._abandoned = False
         self._flushed = True
+        self._worker = threading.Thread(target=self._work, name=FLUSH_THREAD_NAME, daemon=True)
 
-    def run(self) -> bool:
-        """run every flush on a daemon worker and wait for it at most the timeout.
+    def start(self) -> None:
+        """start the worker.
 
-        :return: whether every flush finished within the timeout and reported success
+        :return: nothing
+        :rtype: None
+        """
+        self._worker.start()
+
+    def is_alive(self) -> bool:
+        """whether the worker is still flushing.
+
+        :return: ``True`` while a flush is still running
         :rtype: bool
         """
-        if not self._flushes:
-            return True
-        self._deadline = time.monotonic() + self._timeout.total_seconds()
-        worker = threading.Thread(target=self._work, name="threetears-telemetry-flush", daemon=True)
-        worker.start()
-        worker.join(self._timeout.total_seconds())
+        return self._worker.is_alive()
+
+    def join(self, seconds: float) -> None:
+        """wait for the worker to finish, at most *seconds*.
+
+        :param seconds: the longest to wait
+        :ptype seconds: float
+        :return: nothing
+        :rtype: None
+        """
+        self._worker.join(seconds)
+
+    def running_signal(self) -> str | None:
+        """the signal the worker is flushing now, or flushed last.
+
+        :return: the signal, or ``None`` before the first flush starts
+        :rtype: str | None
+        """
         with self._lock:
-            finished = not worker.is_alive()
+            return self._running
+
+    def settle(self, timeout: timedelta) -> bool:
+        """the caller's verdict once it has waited: whether everything flushed, reporting it if not finished.
+
+        :param timeout: the timeout the caller waited under, for the report
+        :ptype timeout: timedelta
+        :return: whether the worker finished and every flush reported success
+        :rtype: bool
+        """
+        with self._lock:
+            finished = not self._worker.is_alive()
             self._abandoned = not finished
             running = self._running
             flushed = finished and self._flushed
         if not finished:
-            names = [signal for signal, _ in self._flushes]
-            not_started = names[names.index(running) + 1 :] if running is not None else names
+            not_started = self.signals[self.signals.index(running) + 1 :] if running is not None else self.signals
             logger.warning(
                 "telemetry flush did not finish within its timeout",
                 extra={
                     "extra_data": {
                         "signal": running,
-                        "not_started": not_started,
-                        "timeout_seconds": self._timeout.total_seconds(),
+                        "not_started": list(not_started),
+                        "timeout_seconds": timeout.total_seconds(),
                     }
                 },
             )
@@ -296,24 +354,106 @@ class _BoundedFlush:
         :return: nothing
         :rtype: None
         """
-        for signal, flush in self._flushes:
+        for signal_flush in self._flushes:
+            signal = signal_flush.signal
             with self._lock:
                 self._running = signal
             remaining_millis = max(0, int((self._deadline - time.monotonic()) * 1000))
+            raised = False
             try:
-                completed = bool(flush(remaining_millis))
-            except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything, and one signal's failure must not stop the others flushing; logged, and reported as not flushed
-                logger.warning("telemetry flush failed", exc_info=True, extra={"extra_data": {"signal": signal}})
+                completed = bool(signal_flush.flush(timeout_millis=remaining_millis))
+            except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything, and one signal's failure must not stop the others flushing; logged, and reported as not flushed
+                logger.warning(
+                    "telemetry flush failed",
+                    exc_info=True,
+                    extra={"extra_data": {"signal": signal, "error_type": type(exc).__name__}},
+                )
                 completed = False
+                raised = True
             with self._lock:
                 self._flushed = self._flushed and completed
-                # once the caller has given up it has already said which flush held it
-                report = not completed and not self._abandoned
+                # a raise was reported above as what it was; once the caller has given up it has
+                # already said which flush held it
+                report = not completed and not raised and not self._abandoned
             if report:
+                # the provider itself returned False: its own flush ran out of the time it was handed
                 logger.warning(
                     "telemetry flush did not finish within its timeout",
-                    extra={"extra_data": {"signal": signal, "timeout_seconds": self._timeout.total_seconds()}},
+                    extra={"extra_data": {"signal": signal, "remaining_millis": remaining_millis}},
                 )
+
+
+def _seconds_until(deadline: float) -> float:
+    """the seconds left before a ``time.monotonic()`` deadline, never negative.
+
+    :param deadline: the deadline
+    :ptype deadline: float
+    :return: the seconds left
+    :rtype: float
+    """
+    return max(0.0, deadline - time.monotonic())
+
+
+class _SingleFlight:
+    """the one slot a flush worker runs in: at most one flushes at a time, process-wide.
+
+    a caller arriving while an earlier flush is still running waits for that one first, inside its
+    own timeout, and only then starts its own. the earlier worker holds the SDK's export locks, so
+    a second one beside it could only queue behind it, and stacking workers against a stuck
+    exporter would grow a thread per call. this is a slot that each flush replaces, not a value
+    built once.
+    """
+
+    def __init__(self) -> None:
+        """
+        an empty slot.
+        """
+        self._lock = threading.Lock()
+        self._current: _BoundedFlush | None = None
+
+    def flush(self, flushes: tuple[_SignalFlush, ...], timeout: timedelta) -> bool:
+        """run *flushes* on one daemon worker once no earlier one is running; wait at most *timeout* in all.
+
+        :param flushes: the flushes to run, in order
+        :ptype flushes: tuple[_SignalFlush, ...]
+        :param timeout: the longest this call waits, for an earlier flush and its own together
+        :ptype timeout: timedelta
+        :return: whether every flush finished within *timeout* and reported success
+        :rtype: bool
+        """
+        if not flushes:
+            return True
+        deadline = time.monotonic() + timeout.total_seconds()
+        while True:
+            with self._lock:
+                current = self._current
+                earlier = current if current is not None and current.is_alive() else None
+                if earlier is None:
+                    own = _BoundedFlush(flushes, deadline)
+                    own.start()
+                    self._current = own
+            if earlier is None:
+                break
+            earlier.join(_seconds_until(deadline))
+            if earlier.is_alive():
+                logger.warning(
+                    "telemetry flush did not finish within its timeout",
+                    extra={
+                        "extra_data": {
+                            "signal": earlier.running_signal(),
+                            "held_by_an_earlier_flush": True,
+                            "not_started": [flush.signal for flush in flushes],
+                            "timeout_seconds": timeout.total_seconds(),
+                        }
+                    },
+                )
+                return False
+        own.join(_seconds_until(deadline))
+        return own.settle(timeout)
+
+
+#: every flush this module runs, from :func:`force_flush_telemetry` and :func:`shutdown_telemetry` alike
+_single_flight = _SingleFlight()
 
 
 def force_flush_telemetry(timeout: timedelta = timedelta(seconds=2)) -> bool:
@@ -323,8 +463,9 @@ def force_flush_telemetry(timeout: timedelta = timedelta(seconds=2)) -> bool:
     collector received, a job about to exit through a path that skips :func:`shutdown_telemetry`.
     flushes, in order, the tracer provider :func:`init_telemetry` installed, the global meter
     provider when it is an SDK one that can flush (3tears installs none itself, so this covers
-    whatever the host configured), and the log export :func:`init_telemetry` started. traces go
-    first because flushing them can emit log records the log flush then carries.
+    whatever the host configured), and the log export :func:`init_telemetry` started. logs go
+    last so that a record logged while the others flush -- this function's own warning that a
+    trace or metric flush failed, say -- is carried by the log flush.
 
     the guarantee: this returns within ``timeout``, plus the cost of starting one thread and
     writing one log line, whatever the providers do. OpenTelemetry's batch processors ignore the
@@ -334,11 +475,17 @@ def force_flush_telemetry(timeout: timedelta = timedelta(seconds=2)) -> bool:
     still flushing and those not yet started; the worker carries on in the background and, being a
     daemon, never holds the process open at exit.
 
+    one flush runs at a time: a call made while an earlier call's flush is still running waits for
+    that one first, inside its own ``timeout``, then flushes; it never starts a second worker
+    beside a running one. if the earlier flush outlasts ``timeout``, this returns ``False`` with a
+    WARNING naming the signal that flush is held on.
+
     a provider that is not configured is skipped and counts as flushed, so with nothing configured
-    this returns ``True`` at once, without a thread. a flush that raises is logged at WARNING and
-    counts as not flushed; it never stops the flushes after it. success is each provider's own
-    report: OpenTelemetry's batch processors report a drained queue as flushed even when the
-    exporter failed to deliver it, and the exporter logs that failure itself.
+    this returns ``True`` at once, without a thread. a flush that raises is logged at WARNING as a
+    failure, naming the signal and the exception type, and counts as not flushed; it never stops
+    the flushes after it. success is each provider's own report: OpenTelemetry's batch processors
+    report a drained queue as flushed even when the exporter failed to deliver it, and the
+    exporter logs that failure itself.
 
     :param timeout: the longest this call waits for every flush together
     :ptype timeout: timedelta
@@ -347,17 +494,16 @@ def force_flush_telemetry(timeout: timedelta = timedelta(seconds=2)) -> bool:
     """
     from opentelemetry import metrics
 
-    flushes: list[tuple[str, Callable[[int], bool | None]]] = []
-    if _tracer_provider is not None:
-        tracer_provider = _tracer_provider
-        flushes.append(("traces", lambda millis: tracer_provider.force_flush(timeout_millis=millis)))
+    tracer_provider = _tracer_provider
     meter_flush = getattr(metrics.get_meter_provider(), "force_flush", None)
-    if callable(meter_flush):
-        flushes.append(("metrics", lambda millis: meter_flush(timeout_millis=millis)))
-    if _log_export is not None:
-        log_export = _log_export
-        flushes.append(("logs", lambda millis: log_export.force_flush(timeout_millis=millis)))
-    return _BoundedFlush(flushes, timeout).run()
+    log_export = _log_export
+    candidates: tuple[tuple[str, _ProviderFlush | None], ...] = (
+        ("traces", tracer_provider.force_flush if tracer_provider is not None else None),
+        ("metrics", meter_flush if callable(meter_flush) else None),
+        ("logs", log_export.force_flush if log_export is not None else None),
+    )
+    flushes = tuple(_SignalFlush(signal, flush) for signal, flush in candidates if flush is not None)
+    return _single_flight.flush(flushes, timeout)
 
 
 #: how long shutdown waits for each provider's flush before shutting it down regardless
@@ -374,8 +520,8 @@ def shutdown_telemetry() -> None:
     ``init_telemetry()`` can be called again.
 
     Each flush is bounded the way :func:`force_flush_telemetry` bounds it: run on
-    a daemon worker and waited for at most two seconds, with a WARNING naming the
-    signal when it does not finish. Each provider's own ``shutdown`` is then the
+    the single flush worker and waited for at most two seconds, with a WARNING naming
+    the signal when it does not finish. Each provider's own ``shutdown`` is then the
     SDK's, which bounds itself: its batch processor stops accepting records, waits
     at most thirty seconds for its export worker, and then shuts the exporter down,
     which ends any retry backoff still in progress.
@@ -401,9 +547,7 @@ def shutdown_telemetry() -> None:
         # detaching the OTel handler above does not disable the root logger, and every other
         # handler a host app installed (console, file) still receives the warning.
         log_export = _log_export
-        _BoundedFlush(
-            [("logs", lambda millis: log_export.force_flush(timeout_millis=millis))], _SHUTDOWN_FLUSH_TIMEOUT
-        ).run()
+        _single_flight.flush((_SignalFlush("logs", log_export.force_flush),), _SHUTDOWN_FLUSH_TIMEOUT)
         # Broad on purpose -- a vendor exporter can raise anything on teardown, and the failure
         # may not prevent ``init_telemetry()`` being called again; logged, for the reason above.
         try:
@@ -421,12 +565,10 @@ def shutdown_telemetry() -> None:
     from threetears.observe._otel_internals import allow_tracer_provider_reset
 
     # bounded for the same reason as the log flush above. a flush that raises or runs out of time
-    # is logged by _BoundedFlush, naming the signal: this process's last spans may be lost, and
-    # shutdown proceeds regardless
+    # is logged, naming the signal: this process's last spans may be lost, and shutdown proceeds
+    # regardless
     tracer_provider = _tracer_provider
-    _BoundedFlush(
-        [("traces", lambda millis: tracer_provider.force_flush(timeout_millis=millis))], _SHUTDOWN_FLUSH_TIMEOUT
-    ).run()
+    _single_flight.flush((_SignalFlush("traces", tracer_provider.force_flush),), _SHUTDOWN_FLUSH_TIMEOUT)
 
     try:
         _tracer_provider.shutdown()

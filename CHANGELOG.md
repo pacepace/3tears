@@ -26,16 +26,22 @@ loop never finished.
 **The fix, in two parts.**
 
 - The OTLP log handler drops every record that exporting produces: one from OpenTelemetry's own
-  loggers (`opentelemetry` and every logger under it), or one emitted while the SDK has
-  instrumentation suppressed, which it does around every exporter call. An export failure can no
-  longer produce an export. Every other handler on the root logger still receives those records,
-  so the warnings still reach stderr and any other local sink.
+  loggers (`opentelemetry` and every logger under it), or one emitted on a thread that calls
+  exporters (the SDK's `OtelBatchLogRecordProcessor` and `OtelBatchSpanRecordProcessor` workers,
+  and 3tears' own flush thread) while the SDK has instrumentation suppressed, which it does around
+  every exporter call. An export failure can no longer produce an export. A host's own records
+  logged inside its own `suppress_instrumentation()` block, on any other thread, are still
+  exported. Every other handler on the root logger still receives the dropped records, so the
+  warnings still reach stderr and any other local sink.
 - `force_flush_telemetry` runs the provider flushes on a daemon worker thread and waits for it no
   longer than `timeout`. It now returns within `timeout`, plus the cost of starting one thread and
   writing one log line, whatever the providers do. When the wait runs out it returns `False` and
-  logs a WARNING naming the signal still flushing and those not started. `shutdown_telemetry` had
-  the same unbounded flushes (its 2-second `timeout_millis` was ignored the same way) and now
-  bounds each flush the same way before shutting the provider down.
+  logs a WARNING naming the signal still flushing and those not started. One flush runs at a time:
+  a call made while an earlier flush is still running waits for it inside its own timeout instead
+  of starting a second worker. A provider flush that raises is logged as a failure naming the
+  signal and the exception type, not as a timeout, and the flushes after it still run.
+  `shutdown_telemetry` had the same unbounded flushes (its 2-second `timeout_millis` was ignored
+  the same way) and now bounds each flush the same way before shutting the provider down.
 
 `3tears-observe`'s `otel` extra now also declares `opentelemetry-instrumentation>=0.61b0,<1`, whose
 suppression check the filter reads. `opentelemetry-instrumentation-logging` already required that

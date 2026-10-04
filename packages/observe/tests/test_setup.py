@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import socket
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -11,10 +14,18 @@ from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from opentelemetry import trace
 from opentelemetry.instrumentation.utils import suppress_instrumentation
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
+from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
 
-from threetears.observe.setup import TelemetryConfig, force_flush_telemetry, init_telemetry, reset_telemetry
+from threetears.observe.setup import (
+    TelemetryConfig,
+    force_flush_telemetry,
+    init_telemetry,
+    reset_telemetry,
+    shutdown_telemetry,
+)
 
 
 class TestTelemetryConfig:
@@ -315,10 +326,6 @@ class TestOpenTelemetrysOwnRecordsAreNeverExported:
         _RECEIVED_REQUESTS.clear()
         for name in self._OPENTELEMETRY_LOGGERS:
             logging.getLogger(name).warning("opentelemetry's own record from %s", name)
-        # how the SDK's batch processor wraps every call into its exporter: the HTTP client logs
-        # each connection attempt from inside it
-        with suppress_instrumentation():
-            logging.getLogger("urllib3.connectionpool").warning("a record logged on the export's behalf")
         logging.getLogger("threetears.observe.tests.app").warning("an application record")
         logging.getLogger("opentelemetry_lookalike").warning("a record from a logger that only shares the prefix")
 
@@ -328,15 +335,319 @@ class TestOpenTelemetrysOwnRecordsAreNeverExported:
         assert ("threetears.observe.tests.app", "an application record") in exported, exported
         assert ("opentelemetry_lookalike", "a record from a logger that only shares the prefix") in exported, exported
         leaked = [
-            (scope, body)
-            for scope, body in exported
-            if scope == "opentelemetry" or scope.startswith("opentelemetry.") or scope == "urllib3.connectionpool"
+            (scope, body) for scope, body in exported if scope == "opentelemetry" or scope.startswith("opentelemetry.")
         ]
         assert not leaked, leaked
         # still reported locally: every other handler on the root logger receives them
-        local = {
-            record.name
+        local = {record.name for record in caplog.records if record.getMessage().startswith("opentelemetry's own")}
+        assert local == set(self._OPENTELEMETRY_LOGGERS)
+
+    def test_a_hosts_own_records_under_suppressed_instrumentation_are_still_exported(
+        self, log_export_handler: logging.Handler, root_at_info: None
+    ) -> None:
+        """suppression marks an export only on the threads that export; a host's own block is its own business."""
+        _RECEIVED_REQUESTS.clear()
+        with suppress_instrumentation():
+            logging.getLogger("threetears.observe.tests.app").warning("logged inside the host's suppressed block")
+
+        assert force_flush_telemetry(timeout=timedelta(seconds=5)) is True
+
+        exported = _exported_records()
+        assert ("threetears.observe.tests.app", "logged inside the host's suppressed block") in exported, exported
+
+    @pytest.mark.timeout(60)
+    def test_what_the_http_client_logs_while_exporting_is_never_exported(
+        self, log_export_handler: logging.Handler, root_at_debug: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """at DEBUG the HTTP client logs every request the exporter makes, on the exporting thread.
+
+        exported, each export would queue the records of the next; two flushes in a row show it: the
+        second exports whatever the first one's requests queued.
+        """
+        _RECEIVED_REQUESTS.clear()
+        logging.getLogger("threetears.observe.tests.app").warning("an application record")
+
+        assert force_flush_telemetry(timeout=timedelta(seconds=5)) is True
+        assert force_flush_telemetry(timeout=timedelta(seconds=5)) is True
+
+        on_the_exports_behalf = [record for record in caplog.records if record.name.startswith("urllib3.")]
+        assert on_the_exports_behalf, "the HTTP client logged nothing while exporting; the test proves nothing"
+        exported = _exported_records()
+        assert ("threetears.observe.tests.app", "an application record") in exported, exported
+        leaked = [(scope, body) for scope, body in exported if scope.startswith("urllib3.")]
+        assert not leaked, leaked
+
+
+@pytest.fixture
+def root_at_debug() -> Iterator[None]:
+    """the root logger at DEBUG, restored afterwards: every library's request logging is emitted.
+
+    :return: nothing
+    :rtype: Iterator[None]
+    """
+    level = logging.root.level
+    logging.root.setLevel(logging.DEBUG)
+    try:
+        yield
+    finally:
+        logging.root.setLevel(level)
+
+
+class _BlockingSpanProcessor(SpanProcessor):
+    """a span processor whose flush blocks until released: a provider stuck inside its exporter."""
+
+    def __init__(self) -> None:
+        """
+        not yet entered, not yet released.
+        """
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        """block until released, ignoring the timeout as OpenTelemetry's batch processors do.
+
+        :param timeout_millis: ignored
+        :ptype timeout_millis: int
+        :return: ``True`` once released
+        :rtype: bool
+        """
+        self.entered.set()
+        self.release.wait(30)
+        return True
+
+
+class _RaisingSpanProcessor(SpanProcessor):
+    """a span processor whose flush raises, as a vendor exporter may."""
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        """raise.
+
+        :param timeout_millis: ignored
+        :ptype timeout_millis: int
+        :return: never
+        :rtype: bool
+        :raises RuntimeError: always
+        """
+        raise RuntimeError("the flush exploded")
+
+
+@pytest.fixture
+def tracer_provider() -> Iterator[TracerProvider]:
+    """tracing initialized with no log export; the SDK tracer provider ``init_telemetry`` installed.
+
+    :return: the installed provider
+    :rtype: Iterator[TracerProvider]
+    """
+    try:
+        assert init_telemetry(TelemetryConfig(enabled=True, endpoint="http://127.0.0.1:9")) is True
+        provider = trace.get_tracer_provider()
+        assert isinstance(provider, TracerProvider)
+        yield provider
+    finally:
+        reset_telemetry()
+
+
+def _reports(caplog: pytest.LogCaptureFixture, message: str) -> list[dict[str, object]]:
+    """the ``extra_data`` of every captured record with *message*.
+
+    :param caplog: the captured records
+    :ptype caplog: pytest.LogCaptureFixture
+    :param message: the message to match exactly
+    :ptype message: str
+    :return: each matching record's extra data
+    :rtype: list[dict[str, object]]
+    """
+    return [getattr(record, "extra_data", {}) for record in caplog.records if record.getMessage() == message]
+
+
+class TestFlushFailuresAndConcurrency:
+    """a flush that raises, a flush still running when another call arrives, and what each reports."""
+
+    def test_a_flush_that_raises_is_reported_as_a_failure_and_the_later_ones_still_flush(
+        self, log_export_handler: logging.Handler, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        provider = trace.get_tracer_provider()
+        assert isinstance(provider, TracerProvider)
+        provider.add_span_processor(_RaisingSpanProcessor())
+        _RECEIVED_REQUESTS.clear()
+        logging.getLogger("threetears.observe.tests.app").warning("flushed after the traces failed")
+
+        assert force_flush_telemetry(timeout=timedelta(seconds=5)) is False
+
+        assert _reports(caplog, "telemetry flush failed") == [{"signal": "traces", "error_type": "RuntimeError"}]
+        assert _reports(caplog, "telemetry flush did not finish within its timeout") == []
+        exported = _exported_records()
+        assert ("threetears.observe.tests.app", "flushed after the traces failed") in exported, exported
+
+    @pytest.mark.timeout(60)
+    def test_a_second_caller_waits_on_the_running_flush_instead_of_starting_another(
+        self, tracer_provider: TracerProvider, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        blocking = _BlockingSpanProcessor()
+        tracer_provider.add_span_processor(blocking)
+        first_result: list[bool] = []
+        first = threading.Thread(
+            target=lambda: first_result.append(force_flush_telemetry(timeout=timedelta(seconds=20))), daemon=True
+        )
+        first.start()
+        try:
+            assert blocking.entered.wait(5), "the first flush never reached the blocking provider"
+            threads_before = set(threading.enumerate())
+            started = time.monotonic()
+            second = force_flush_telemetry(timeout=timedelta(seconds=0.5))
+            elapsed = time.monotonic() - started
+            started_threads = set(threading.enumerate()) - threads_before
+        finally:
+            blocking.release.set()
+            first.join(10)
+
+        assert second is False
+        assert elapsed < 0.5 + _FLUSH_GRACE_SECONDS, f"the second flush took {elapsed:.2f}s against a 0.5s timeout"
+        assert not started_threads, f"the second flush started {started_threads} beside the running one"
+        held = _reports(caplog, "telemetry flush did not finish within its timeout")
+        assert [report.get("signal") for report in held] == ["traces"], held
+        assert held[0].get("held_by_an_earlier_flush") is True, held
+        assert first_result == [True]
+
+    @pytest.mark.timeout(120)
+    def test_the_report_names_every_signal_not_started_when_the_first_one_holds_the_deadline(self) -> None:
+        """traces, metrics and logs all configured; traces never finish, so neither of the others starts.
+
+        a global meter provider can be installed only once per process, so this runs in its own.
+        """
+        completed = subprocess.run(
+            [sys.executable, "-c", _NOT_STARTED_SCRIPT % _unbound_local_port()],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        outcome = json.loads(completed.stdout.strip().splitlines()[-1])
+        assert outcome["flushed"] is False
+        assert [(report["signal"], report["not_started"]) for report in outcome["reports"]] == [
+            ("traces", ["metrics", "logs"])
+        ], outcome
+
+
+#: run in a fresh interpreter: block the traces flush with metrics and logs configured behind it
+_NOT_STARTED_SCRIPT = """
+import json
+import logging
+import os
+import threading
+from datetime import timedelta
+
+from opentelemetry import metrics, trace
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.trace import SpanProcessor
+
+from threetears.observe.setup import TelemetryConfig, force_flush_telemetry, init_telemetry
+
+release = threading.Event()
+
+
+class Blocking(SpanProcessor):
+    def force_flush(self, timeout_millis=30000):
+        release.wait(30)
+        return True
+
+
+reports = []
+
+
+class Capture(logging.Handler):
+    def emit(self, record):
+        if record.getMessage() == "telemetry flush did not finish within its timeout":
+            reports.append(record.extra_data)
+
+
+metrics.set_meter_provider(MeterProvider())
+logging.root.addHandler(Capture())
+init_telemetry(TelemetryConfig(enabled=True, endpoint="http://127.0.0.1:9", loki_endpoint="127.0.0.1:%d"))
+trace.get_tracer_provider().add_span_processor(Blocking())
+flushed = force_flush_telemetry(timeout=timedelta(seconds=0.5))
+outcome = {"flushed": flushed, "reports": [{"signal": r["signal"], "not_started": r["not_started"]} for r in reports]}
+print(json.dumps(outcome), flush=True)
+# the abandoned flush is still exporting to a port nothing listens on; the process is done with it
+os._exit(0)
+"""
+
+
+#: how long the slow collector holds each export before accepting it: longer than shutdown's flush bound
+_SLOW_COLLECTOR_SECONDS = 4.0
+
+
+class _SlowCollector(BaseHTTPRequestHandler):
+    """an OTLP/HTTP log collector that accepts every export, but only after holding it a while."""
+
+    def do_POST(self) -> None:  # noqa: N802 -- the stdlib's handler naming
+        """accept one export, late.
+
+        :return: nothing
+        :rtype: None
+        """
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        time.sleep(_SLOW_COLLECTOR_SECONDS)
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002 -- the stdlib's signature
+        """keep the collector's access log out of the test output.
+
+        :param format: the stdlib's format string
+        :ptype format: str
+        :param args: its arguments
+        :ptype args: object
+        :return: nothing
+        :rtype: None
+        """
+
+
+@pytest.fixture
+def slow_log_export() -> Iterator[None]:
+    """log export configured against a collector that takes longer to accept than shutdown waits.
+
+    :return: nothing
+    :rtype: Iterator[None]
+    """
+    collector = ThreadingHTTPServer(("127.0.0.1", 0), _SlowCollector)
+    collector.daemon_threads = True
+    thread = threading.Thread(target=collector.serve_forever, daemon=True)
+    thread.start()
+    config = TelemetryConfig(
+        enabled=True,
+        endpoint="http://127.0.0.1:9",
+        loki_endpoint=f"127.0.0.1:{collector.server_address[1]}",
+    )
+    try:
+        assert init_telemetry(config) is True
+        yield
+    finally:
+        reset_telemetry()
+        collector.shutdown()
+        collector.server_close()
+
+
+class TestShutdownFlushIsBounded:
+    """shutdown flushes each provider before shutting it down, and waits on that flush a bounded time."""
+
+    @pytest.mark.timeout(60)
+    def test_shutdown_stops_waiting_on_a_log_flush_after_its_bound(
+        self, slow_log_export: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        logging.getLogger("threetears.observe.tests.app").warning("a record the collector is slow to take")
+
+        started = time.time()
+        shutdown_telemetry()
+
+        gave_up = [
+            (record.created - started, getattr(record, "extra_data", {}).get("signal"))
             for record in caplog.records
-            if record.getMessage().startswith(("opentelemetry's own", "a record logged on the export's behalf"))
-        }
-        assert local == {*self._OPENTELEMETRY_LOGGERS, "urllib3.connectionpool"}
+            if record.getMessage() == "telemetry flush did not finish within its timeout"
+        ]
+        assert len(gave_up) == 1, gave_up
+        waited, signal = gave_up[0]
+        assert signal == "logs"
+        assert waited < 2.0 + _FLUSH_GRACE_SECONDS, f"shutdown waited {waited:.2f}s on a flush bounded at 2s"
