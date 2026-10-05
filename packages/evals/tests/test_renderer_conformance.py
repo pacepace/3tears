@@ -34,10 +34,12 @@ from threetears.evals.analysis.viz import (
     renderer_disagreements,
 )
 from threetears.evals.contracts.campaign import VizType
-from threetears.evals.vega import CompiledChart, VegaRenderer, vega_config
+from threetears.evals.contracts.host import StyleProfile
+from threetears.evals.vega import CompiledChart, VegaRenderer, packaged_palette, vega_config
 from threetears.evals.vega.arms import ARMS
 from threetears.evals.vega.palette import series_slots, validated_slots
 from packages.evals.tests.chart_examples import EVERY_TYPE
+from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_PALETTE, toyhost_profile
 from packages.evals.tests.test_vega_compiler import ATTRIBUTION_EARNED, ATTRIBUTION_WITHHELD, BINNED
 
 #: Every intent the renderer is held to: one per type, plus the shapes a type draws by another path.
@@ -119,17 +121,17 @@ def _shifted(values: list[Any]) -> list[Any]:
 
 
 def test_the_vega_renderer_is_a_chart_renderer() -> None:
-    renderer: ChartRenderer[CompiledChart] = VegaRenderer()
+    renderer: ChartRenderer[CompiledChart] = VegaRenderer.packaged()
     assert renderer.drawn_data(renderer.draw(_intent("breakdown")))
 
 
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_the_vega_renderer_draws_what_the_intent_holds(case: str) -> None:
-    assert renderer_disagreements(VegaRenderer(), _intent(case)) == []
+    assert renderer_disagreements(VegaRenderer.packaged(), _intent(case)) == []
 
 
 def test_the_vega_renderer_passes_the_conformance_run() -> None:
-    assert_renderer_conforms(VegaRenderer(theme="light"), [_intent(case) for case in sorted(CASES)])
+    assert_renderer_conforms(VegaRenderer.packaged("light"), [_intent(case) for case in sorted(CASES)])
 
 
 def test_the_cases_cover_every_type() -> None:
@@ -137,7 +139,7 @@ def test_the_cases_cover_every_type() -> None:
 
 
 def test_a_stripped_name_is_read_back_as_the_identity_it_stands_for() -> None:
-    renderer = VegaRenderer()
+    renderer = VegaRenderer.packaged()
     drawn = renderer.drawn_data(renderer.draw(_intent("breakdown-stripped")))
     by_name = {datum["display"]: datum["label"] for datum in drawn if "display" in datum}
     assert by_name == {"p/c": "p/p/c", "c": "p/c"}
@@ -151,8 +153,8 @@ def test_a_stripped_name_is_read_back_as_the_identity_it_stands_for() -> None:
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_a_drawing_whose_values_moved_disagrees(case: str) -> None:
     """Every case: the comparison reaches its values, so moving them is seen."""
-    assert _numbers(VegaRenderer().draw(_intent(case)).spec) > 0
-    disagreements = renderer_disagreements(_Tampered(edit=_shifted), _intent(case))
+    assert _numbers(VegaRenderer.packaged().draw(_intent(case)).spec) > 0
+    disagreements = renderer_disagreements(_Tampered(palette=packaged_palette("dark"), edit=_shifted), _intent(case))
     assert any("without the intent's value" in line for line in disagreements), disagreements
 
 
@@ -166,7 +168,9 @@ def test_a_drawing_that_drops_a_row_disagrees() -> None:
             if not (isinstance(datum, dict) and "budget_exhausted" in (datum.get("label"), datum.get("display")))
         ]
 
-    disagreements = renderer_disagreements(_Tampered(edit=drop_a_row), _intent("breakdown"))
+    disagreements = renderer_disagreements(
+        _Tampered(palette=packaged_palette("dark"), edit=drop_a_row), _intent("breakdown")
+    )
     assert "did not draw 'budget_exhausted', which the values table holds" in disagreements
 
 
@@ -174,18 +178,20 @@ def test_a_drawing_of_an_identity_the_intent_does_not_hold_disagrees() -> None:
     def add_a_row(values: list[Any]) -> list[Any]:
         return [*values, {"label": "invented", "value": 1.0}]
 
-    disagreements = renderer_disagreements(_Tampered(edit=add_a_row), _intent("breakdown"))
+    disagreements = renderer_disagreements(
+        _Tampered(palette=packaged_palette("dark"), edit=add_a_row), _intent("breakdown")
+    )
     assert "drew 'invented', which the intent does not hold" in disagreements
 
 
 def test_the_conformance_run_raises_on_a_disagreement() -> None:
     with pytest.raises(AssertionError, match="breakdown"):
-        assert_renderer_conforms(_Tampered(edit=_shifted), [_intent("breakdown")])
+        assert_renderer_conforms(_Tampered(palette=packaged_palette("dark"), edit=_shifted), [_intent("breakdown")])
 
 
 def test_a_conformance_run_over_no_intents_is_refused() -> None:
     with pytest.raises(ValueError, match="no intents"):
-        assert_renderer_conforms(VegaRenderer(), [])
+        assert_renderer_conforms(VegaRenderer.packaged(), [])
 
 
 # =============================================================================
@@ -202,7 +208,7 @@ def test_a_drawn_name_that_is_no_spelling_of_an_identity_is_refused() -> None:
             for datum in values
         ]
 
-    renderer = _Tampered(edit=rename)
+    renderer = _Tampered(palette=packaged_palette("dark"), edit=rename)
     with pytest.raises(ValueError, match="not one spelling of the intent's identities"):
         renderer.drawn_data(renderer.draw(_intent("delta_table")))
 
@@ -224,8 +230,52 @@ def test_the_vega_themes_palette_supplies_the_slots_the_vocabulary_names() -> No
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
 def test_a_renderer_configures_and_draws_in_the_theme_it_was_built_with(theme: Any) -> None:
-    renderer = VegaRenderer(theme=theme)
+    renderer = VegaRenderer.packaged(theme)
     chart = renderer.draw(_intent("breakdown"))
 
-    assert renderer.config() == vega_config(theme)
-    assert vega_config(theme)["background"] in renderer.svg(chart)
+    assert renderer.config() == vega_config(packaged_palette(theme))
+    assert vega_config(packaged_palette(theme))["background"] in renderer.svg(chart)
+
+
+# =============================================================================
+# The host's palette reaches the renderer
+# =============================================================================
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_a_host_that_declares_a_palette_is_drawn_in_it_whatever_the_theme(theme: Any) -> None:
+    """A declared palette is never replaced: ``theme`` names the packaged variant and is not read here."""
+    renderer = VegaRenderer.for_style(toyhost_profile().style, theme=theme)
+    config = renderer.config()
+
+    assert renderer.palette == TOYHOST_PALETTE
+    assert config["background"] == TOYHOST_PALETTE.background
+    assert config["range"]["category"] == list(TOYHOST_PALETTE.series)
+    assert config["range"]["chart-seq"] == list(TOYHOST_PALETTE.sequential)
+    assert config["bar"]["color"] == TOYHOST_PALETTE.series[0]
+    assert config["axis"]["labelColor"] == TOYHOST_PALETTE.ink
+    assert config["style"]["chart-context"]["color"] == TOYHOST_PALETTE.context
+    assert config["style"]["chart-value-on-fill"]["color"] == TOYHOST_PALETTE.on_fill
+    assert TOYHOST_PALETTE.background in renderer.svg(renderer.draw(_intent("breakdown")))
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_a_host_that_declares_no_palette_is_drawn_in_the_packaged_one(theme: Any) -> None:
+    """The stated default: no declared palette draws in the packaged variant ``theme`` names."""
+    renderer = VegaRenderer.for_style(StyleProfile(), theme=theme)
+
+    assert renderer.palette == packaged_palette(theme)
+    assert renderer.config() == vega_config(packaged_palette(theme))
+
+
+def test_a_host_palette_and_the_packaged_one_build_the_same_config_keys() -> None:
+    """One builder for both palettes: a host theme changes colours, never the config's shape."""
+
+    def keys(node: Any, at: str = "") -> set[str]:
+        if not isinstance(node, dict):
+            return set()
+        return {f"{at}.{key}" for key in node} | {
+            path for key, child in node.items() for path in keys(child, f"{at}.{key}")
+        }
+
+    assert keys(vega_config(TOYHOST_PALETTE)) == keys(vega_config(packaged_palette("dark")))

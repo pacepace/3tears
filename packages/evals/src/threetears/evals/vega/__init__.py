@@ -6,8 +6,8 @@ for a browser to draw needs nothing past the core. The core
 :class:`~threetears.evals.analysis.viz.ChartIntent` and never imports this package; this package reads
 intents and adds a picture, and decides nothing a reader is told.
 
-- :class:`VegaRenderer` is the :class:`~threetears.evals.analysis.viz.ChartRenderer`: built once with a
-  theme, it draws an intent (:meth:`~VegaRenderer.draw`), gives the browser its config, rasterises
+- :class:`VegaRenderer` is the :class:`~threetears.evals.analysis.viz.ChartRenderer`: built once for a
+  host's style (:meth:`~VegaRenderer.for_style` — its declared palette, else the packaged one), it draws an intent (:meth:`~VegaRenderer.draw`), gives the browser its config, rasterises
   (:meth:`~VegaRenderer.png`, :meth:`~VegaRenderer.svg`) and reads its drawing back for the core's
   conformance check (:func:`~threetears.evals.analysis.viz.renderer_disagreements`).
 - :mod:`compiler` draws through one arm per chart type (:mod:`arms`); :mod:`spec_policy` is this
@@ -22,7 +22,7 @@ outside this package imports it.
 from __future__ import annotations
 
 from threetears.evals.vega.compiler import CompiledChart, CompiledColumn, compile_chart, draw_intent
-from threetears.evals.vega.palette import Theme, vega_config
+from threetears.evals.vega.palette import PaletteError, Theme, packaged_palette, vega_config
 from threetears.evals.vega.render import register_fonts, render_png, render_svg
 from threetears.evals.vega.renderer import VegaRenderer
 from threetears.evals.vega.spec_policy import SpecPolicyError, check_spec
@@ -31,6 +31,7 @@ from threetears.evals.vega.text_metrics import TextMetricsError, write_font_metr
 __all__ = [
     "CompiledChart",
     "CompiledColumn",
+    "PaletteError",
     "SpecPolicyError",
     "TextMetricsError",
     "Theme",
@@ -38,6 +39,7 @@ __all__ = [
     "check_spec",
     "compile_chart",
     "draw_intent",
+    "packaged_palette",
     "register_fonts",
     "render_png",
     "render_svg",

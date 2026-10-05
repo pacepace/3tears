@@ -5,7 +5,7 @@ chart, what it draws, in what order, against what baseline, in which unit, what 
 over, what has to be said beside it — those are decided here, once, and travel as a
 :class:`ChartIntent`. Colours, fonts, sizes, label placement and the grammar of any charting library
 are not here at all: a renderer (the Vega-Lite compiler under :mod:`threetears.evals.vega.compiler`
-is the first) reads an intent and a host's theme and returns its own form.
+is the first) reads an intent and a host's palette and returns its own form.
 
 **The vocabulary is small and closed.** Eight chart types (:data:`ChartType`, the stored
 ``Viz.type``), each with its typed data (:data:`~threetears.evals.analysis.viz.payloads.PAYLOAD_MODELS`),

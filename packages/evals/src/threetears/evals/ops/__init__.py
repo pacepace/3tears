@@ -33,6 +33,7 @@ from threetears.evals.ops.analysis import (
     campaigns_list,
     generation_key,
     report_read,
+    serialize_report,
 )
 from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import (
@@ -105,6 +106,7 @@ __all__ = [
     "job_poll",
     "parse_job_id",
     "report_read",
+    "serialize_report",
     "run_archive",
     "run_delete",
     "run_get",

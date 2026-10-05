@@ -180,7 +180,7 @@ class AnalysisGenerateParams(EvalBaseModel):
 class ReportReadParams(EvalBaseModel):
     """``report_read``."""
 
-    analysis_id: AnalysisId
+    campaign_id: CampaignId
     format: Format = "markdown"
 
 
@@ -290,7 +290,7 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
         eval_host.blocking_executor,
         report_read,
         eval_host,
-        params.analysis_id,
+        params.campaign_id,
         caller.scope_id,
         format=params.format,
     )
@@ -454,14 +454,14 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="report_read",
-            summary="Read a stored analysis as its report — Markdown, the schema's JSON, or script-free HTML.",
+            summary="Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML.",
             workflow=ANALYSE,
             permission="read",
             params=ReportReadParams,
             result=ReportDocument,
             handler=_report_read,
             render=render.render_report,
-            example={"analysis_id": analysis_id, "format": "markdown"},
+            example={"campaign_id": campaign_id, "format": "markdown"},
         ),
         Action(
             name="run_archive",

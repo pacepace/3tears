@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from threetears.evals.contracts import MeasureFamily, MetricDescriptor
-from threetears.evals.contracts.host import Bar, BarRegistry, HostProfile, MeasureRegistry, StyleProfile
+from threetears.evals.contracts.host import Bar, BarRegistry, ChartPalette, HostProfile, MeasureRegistry, StyleProfile
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.kind import FIELD_COUNT_ERROR
 from packages.evals.tests.fixtures.toyhost.sweepables import (
@@ -154,12 +154,21 @@ TOYHOST_BARS: tuple[Bar, ...] = (
 
 #: A style deliberately unlike the default on every axis, so the prompt-purity test is asserting
 #: something: a different register, a different locale, and a palette of its own. If host style
-#: could leak into the prompt, this profile is what would show it.
-TOYHOST_STYLE = StyleProfile(
-    tone_register="executive",
-    locale="en-GB",
-    vega_config={"background": "#0b1021", "range": {"category": ["#f4a259", "#5b8e7d", "#bc4b51"]}},
+#: could leak into the prompt, this profile is what would show it — and the palette is what a renderer
+#: built for this host draws in, so it is a palette no packaged one shares a colour with.
+TOYHOST_PALETTE = ChartPalette(
+    series=("#f4a259", "#5b8e7d", "#bc4b51", "#8cb8d6", "#9a6b3a", "#3d5f54", "#7e3337", "#58788e"),
+    sequential=("#f6e3c9", "#e9b97c", "#c98a3d", "#8a5a22"),
+    background="#0b1021",
+    ink="#f2efe6",
+    muted="#a8a49a",
+    grid="#262b3d",
+    rule="#4a4f63",
+    context="#6d6a72",
+    on_fill="#0b1021",
 )
+
+TOYHOST_STYLE = StyleProfile(tone_register="executive", locale="en-GB", chart_palette=TOYHOST_PALETTE)
 
 #: A caveat kind the ENGINE does not own, registered for the reason the two opposite-direction
 #: bars are registered: the four engine kinds were derived from one product's caveats, and a
@@ -222,6 +231,7 @@ __all__ = [
     "TOYHOST_CAVEAT_KINDS",
     "TOYHOST_ID",
     "TOYHOST_MEASURES",
+    "TOYHOST_PALETTE",
     "TOYHOST_STYLE",
     "toyhost_profile",
 ]

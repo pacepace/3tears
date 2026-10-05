@@ -27,6 +27,7 @@ same numbers.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal, Self
 
 from pydantic import Field, computed_field, model_validator
@@ -42,7 +43,7 @@ from threetears.evals.analysis.arms import (
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.quantities import display_scale
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureSummary
-from threetears.evals.contracts.campaign import EvalAnalysis
+from threetears.evals.contracts.campaign import EvalAnalysis, VariantIndexEntry
 from threetears.evals.contracts.metrics import MeritAxis
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.surface import CellFacts, DecisionSurface
@@ -473,9 +474,21 @@ def build_surface_table(analysis: EvalAnalysis) -> SurfaceTable:
         analysis: The analysis to read. Nothing is written back to it.
 
     Returns:
+        The table, as :func:`surface_table_of` lays out the analysis's frozen surface and variant index.
+    """
+    return surface_table_of(analysis.decision_surface, analysis.variant_index)
+
+
+def surface_table_of(surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry]) -> SurfaceTable:
+    """Lay out a decision surface — a stored analysis's, or one frozen from a campaign's evidence alone.
+
+    Args:
+        surface: The surface.
+        variant_index: The variant index that names its arms.
+
+    Returns:
         The table.
     """
-    surface = analysis.decision_surface
 
     control = surface.control_variant_key
     cells = sorted(surface.cells, key=lambda c: (c.variant_key != control, c.variant_key, c.apparatus_class_id))
@@ -493,8 +506,8 @@ def build_surface_table(analysis: EvalAnalysis) -> SurfaceTable:
     bar_columns = [_bar_column(bar, surface, cells) for bar in adjudicated]
     merit_columns = _merit_columns(surface, cells)
 
-    index = {entry.variant_key: entry for entry in analysis.variant_index}
-    distinguishing = distinguishing_axes(analysis.variant_index)
+    index = {entry.variant_key: entry for entry in variant_index}
+    distinguishing = distinguishing_axes(variant_index)
     multi_rig = multi_rig_variants(cells)
 
     rows = []
@@ -541,4 +554,5 @@ __all__ = [
     "SurfaceValue",
     "SurfaceVerdict",
     "build_surface_table",
+    "surface_table_of",
 ]

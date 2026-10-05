@@ -2,7 +2,8 @@
 
 - :mod:`model` — the :class:`Report` and its blocks (``text``, ``table``, ``chart``, ``disclosure``),
   with a published JSON Schema (``schema.json`` beside this module, :func:`report_json_schema`).
-- :mod:`build` — :func:`build_report`, laying a stored analysis out as one.
+- :mod:`build` — :func:`build_report`, laying a stored analysis out as one, and
+  :func:`build_code_only_report`, laying a campaign's evidence out as one when no analysis exists.
 - :mod:`serialize_md` and :mod:`serialize_html` — Markdown for an agent, and HTML that reads without a
   script. JSON is the model's own dump (:meth:`Report.to_canonical_json`).
 - :mod:`words` — the words a confidence, an evidence tier and an arm are read in, shared with the memo
@@ -17,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.analysis.report.build import build_report
+from threetears.evals.analysis.report.build import NO_ANALYSIS, build_code_only_report, build_report
 from threetears.evals.analysis.report.model import (
     REPORT_VERSION,
     SECTION_TITLES,
@@ -26,6 +27,7 @@ from threetears.evals.analysis.report.model import (
     DisclosureSource,
     Fact,
     Report,
+    ReportBasis,
     ReportBlock,
     ReportSection,
     ReportSource,
@@ -67,6 +69,7 @@ def published_report_schema() -> dict[str, Any]:
 
 
 __all__ = [
+    "NO_ANALYSIS",
     "REPORT_VERSION",
     "SCHEMA_PATH",
     "SECTION_TITLES",
@@ -75,6 +78,7 @@ __all__ = [
     "DisclosureSource",
     "Fact",
     "Report",
+    "ReportBasis",
     "ReportBlock",
     "ReportSection",
     "ReportSource",
@@ -82,6 +86,7 @@ __all__ = [
     "TableColumn",
     "TextBlock",
     "TextRole",
+    "build_code_only_report",
     "build_report",
     "published_report_schema",
     "report_html",

@@ -8,12 +8,18 @@ then never name the host::
 
     python -m threetears.evals run --host myapp.evals:build_host --scope dev --template T --subject S --model M
     python -m threetears.evals ls --host myapp.evals:build_host --scope dev
-    python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev
+    python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev --format html --out r.html
+    python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
 
 - ``run`` launches through :func:`~threetears.evals.run.start_run`, waits for the runs' jobs, and
   prints each run's summary. It exits 0 when every run completed and 1 when any did not.
 - ``ls`` prints the scope's templates, runs and campaigns.
-- ``report`` prints the campaign's analysis bundle as JSON
+- ``report`` prints the campaign's report (:func:`~threetears.evals.ops.report_read`, the same read the
+  ``report_read`` action makes): its newest analysis that is not archived, else a code-only report of its
+  evidence — which says, in its first lines, that no analysis was generated. ``--format`` is
+  ``markdown`` (the default), ``html`` (needs no script) or ``json`` (what the published schema
+  validates); ``--out PATH`` writes it to a file instead of stdout. No model is called.
+- ``bundle`` prints the campaign's analysis bundle as JSON
   (:func:`~threetears.evals.analysis.inspect_campaign_bundle`): what a generation would read, assembled
   without calling any model.
 
@@ -34,11 +40,13 @@ import importlib
 import sys
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, get_args
 
 from threetears.evals.analysis import inspect_campaign_bundle, list_campaigns
 from threetears.evals.contracts import EvalServiceError
 from threetears.evals.contracts.host import EvalHost
+from threetears.evals.ops import ReportFormat, report_read
 from threetears.evals.ops.summary import summarize_run
 from threetears.evals.run import LaunchHost, list_runs, list_templates, start_run
 
@@ -46,7 +54,7 @@ from threetears.evals.run import LaunchHost, list_runs, list_templates, start_ru
 HostFactory = Callable[[], EvalHost | LaunchHost]
 
 #: The commands the engine itself carries; a host command may take none of these names.
-ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report")
+ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report", "bundle")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -177,8 +185,19 @@ def build_parser(
     run.add_argument("--model", action="append", default=[], help="a candidate model; repeat for one arm each")
     run.add_argument("--k", type=int, default=1, help="repeats per case (default 1)")
     command("ls", "List the scope's templates, runs and campaigns.")
-    report = command("report", "Print a campaign's analysis bundle as JSON, without calling a model.")
+    report = command(
+        "report", "Print a campaign's report — its analysis, else its evidence alone — without calling a model."
+    )
     report.add_argument("campaign", help="the campaign, by id")
+    report.add_argument(
+        "--format",
+        choices=get_args(ReportFormat),
+        default="markdown",
+        help="markdown (default), html (needs no script) or json (the published schema's form)",
+    )
+    report.add_argument("--out", type=Path, metavar="PATH", help="write the report to PATH instead of stdout")
+    bundle = command("bundle", "Print a campaign's analysis bundle as JSON — what a generation would read.")
+    bundle.add_argument("campaign", help="the campaign, by id")
     for host_command in commands:
         host_command.configure(command(host_command.name, host_command.help))
     return parser
@@ -198,7 +217,7 @@ def run_cli(
         host_factory: The host to work in, for a product mounting these commands; ``None`` takes it
             from ``--host``.
         prog: The program name usage lines print.
-        commands: The host's own subcommands, mounted beside ``run``, ``ls`` and ``report``; each
+        commands: The host's own subcommands, mounted beside the engine's (:data:`ENGINE_COMMANDS`); each
             one's handler is handed the host the factory built.
 
     Returns:
@@ -221,7 +240,7 @@ def run_cli(
             if not isinstance(host, LaunchHost):
                 raise _Refused(
                     "run launches, so its host factory must return a LaunchHost — the EvalHost with the kinds "
-                    "it can launch; this one returned an EvalHost, which ls and report can read but nothing can launch"
+                    "it can launch; this one returned an EvalHost, which ls, report and bundle can read but nothing can launch"
                 )
             return asyncio.run(_launch(host, args))
         if (handler := handlers.get(args.command)) is not None:
@@ -230,6 +249,8 @@ def run_cli(
         eval_host = host.eval_host if isinstance(host, LaunchHost) else host
         if args.command == "ls":
             _list(eval_host, args.scope)
+        elif args.command == "report":
+            _report(eval_host, args)
         else:
             _say(inspect_campaign_bundle(eval_host, args.campaign, args.scope).model_dump_json(indent=2))
         return EXIT_OK
@@ -253,6 +274,28 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
     for summary in summaries:
         _say(summary.render())
     return EXIT_OK if all(summary.status == "completed" for summary in summaries) else EXIT_RUN_DID_NOT_COMPLETE
+
+
+def _report(host: EvalHost, args: argparse.Namespace) -> None:
+    """Print the campaign's report in the asked-for form, or write it to ``--out``.
+
+    Raises:
+        _Refused: ``--out`` cannot be written.
+    """
+    document = report_read(host, args.campaign, args.scope, format=args.format)
+    # Markdown and HTML end in a newline already; canonical JSON is the model's own dump, which does not,
+    # and a terminal or a file wants one.
+    body = document.body + ("\n" if document.format == "json" else "")
+    if args.out is None:
+        sys.stdout.write(body)
+        return
+    try:
+        args.out.write_text(body, encoding="utf-8")
+    except OSError as unwritable:
+        raise _Refused(f"--out {args.out}: cannot write the report there: {unwritable}") from unwritable
+    _say(
+        f"wrote the {document.basis.replace('_', '-')} report of campaign {args.campaign} ({args.format}) to {args.out}"
+    )
 
 
 def _list(host: EvalHost, scope_id: str) -> None:

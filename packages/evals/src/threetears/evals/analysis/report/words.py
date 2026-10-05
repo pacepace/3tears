@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from threetears.evals.analysis.arms import ArmStatus, arm_label, arm_levels, distinguishing_axes
+from threetears.evals.analysis.bundle import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.viz_refs import cell_arm_labels
 from threetears.evals.contracts.campaign import ConfidenceTier, EvalAnalysis, EvidenceTier
@@ -79,6 +80,19 @@ ARM_STATUS_WORDS = worded(
 )
 
 
+#: What a contrast's test said against the control, as a reader says it.
+COMPARISON_VERDICT_WORDS = worded(
+    {
+        "improved": "improved on the control",
+        "regressed": "regressed from the control",
+        "not_separated": "not separated from the control",
+        "untested": "untested",
+    },
+    ComparisonVerdict,
+    "a comparison verdict",
+)
+
+
 def arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
     """Name the arm a cell reference points at, as :func:`~threetears.evals.analysis.arms.arm_label` names it.
 
@@ -122,6 +136,7 @@ def positions(numbers: list[int]) -> str:
 
 __all__ = [
     "ARM_STATUS_WORDS",
+    "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",
     "EVIDENCE_TIER_WORDS",
     "arm_namer",

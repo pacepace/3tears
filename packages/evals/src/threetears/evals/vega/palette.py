@@ -1,4 +1,13 @@
-"""The server-side chart palette, and the Vega-Lite config built from it.
+"""The packaged chart palette, and the Vega-Lite config built from any palette.
+
+**Two palettes reach this module, and one config builder serves both.** A host declares its own
+:class:`~threetears.evals.contracts.host.ChartPalette` on its style profile, and a renderer built for that
+style draws in it; a host that declares none draws in the palette packaged here
+(:func:`packaged_palette`). :func:`vega_config` turns either into the Vega-Lite config — the only place a
+palette becomes Vega's vocabulary, so the host contract never names a Vega key. The packaged artifact is
+checked with the contract's own colour check
+(:func:`~threetears.evals.contracts.host.require_resolved_colour`), so "what a palette may hold" has one
+answer for both.
 
 The browser reads the palette straight off the CSS custom properties, so it can
 never drift from the design tokens. Python cannot do that, and two facts make the
@@ -27,11 +36,11 @@ hand-copied second one.
 from __future__ import annotations
 
 import json
-import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
+from threetears.evals.contracts.host import ChartPalette, StyleError, require_resolved_colour
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -93,15 +102,6 @@ CONTEXT_STYLE = "chart-context"
 #: the lightest one's ink and makes a contiguous block read as though it wrapped.
 SEQUENTIAL_RANGE = "chart-seq"
 
-#: Any colour notation the rasteriser silently renders as black instead of parsing.
-#: Matched against the whole palette on load, because the defect is invisible at
-#: render time and this is the last point at which it is cheap to catch.
-#:
-#: The bracket is attached, matching CSS's own function grammar. The twin in
-#: ``policy.py`` matches a whole spec string instead, because there a string can be
-#: a title rather than a colour; every value here is a colour.
-_UNRENDERABLE_COLOUR = re.compile(r"\b(?:oklch|oklab|lch|lab|color-mix)\(", re.IGNORECASE)
-
 
 class PaletteError(RuntimeError):
     """The chart palette artifact is missing or cannot be drawn with."""
@@ -115,8 +115,9 @@ def load_palette() -> dict[str, Any]:
         The parsed artifact.
 
     Raises:
-        PaletteError: The artifact is absent, or holds a colour notation the
-            server-side rasteriser would render as black.
+        PaletteError: The artifact is absent, or holds a colour that is not resolved
+            sRGB hex — refused by the contract's colour check, since the server-side
+            rasteriser renders another notation (oklch) as black.
     """
     try:
         raw = _PALETTE_PATH.read_text(encoding="utf-8")
@@ -127,12 +128,27 @@ def load_palette() -> dict[str, Any]:
             "artifact's own `$comment`."
         ) from exc
     palette: dict[str, Any] = json.loads(raw)
+    return check_palette_artifact(palette)
+
+
+def check_palette_artifact(palette: dict[str, Any]) -> dict[str, Any]:
+    """Hold every colour in a palette artifact to the contract's one colour check.
+
+    Args:
+        palette: A parsed palette artifact.
+
+    Returns:
+        ``palette``, unchanged.
+
+    Raises:
+        PaletteError: A colour is not resolved sRGB hex
+            (:func:`~threetears.evals.contracts.host.require_resolved_colour`).
+    """
     for path, colour in _colour_values(palette):
-        if _UNRENDERABLE_COLOUR.search(colour):
-            raise PaletteError(
-                f"chart palette value {path} is {colour!r}, which the server-side rasteriser renders as black "
-                "without raising — the artifact must carry resolved sRGB hex"
-            )
+        try:
+            require_resolved_colour(f"packaged chart palette value {path}", colour)
+        except StyleError as unresolved:
+            raise PaletteError(str(unresolved)) from unresolved
     return palette
 
 
@@ -248,8 +264,40 @@ def sequential_colors(theme: Theme) -> list[str]:
     return list(load_palette()[theme]["seq"])
 
 
-def vega_config(theme: Theme) -> dict[str, Any]:
-    """Build the Vega-Lite config that themes a compiled spec.
+def packaged_palette(theme: Theme) -> ChartPalette:
+    """The palette packaged with this renderer, in one of its two variants.
+
+    What a renderer draws in when its host declares no palette of its own — the host's stated choice,
+    since declaring one is a field on its style profile.
+
+    Args:
+        theme: Which variant.
+
+    Returns:
+        The palette, held to the contract like any host's.
+
+    Raises:
+        PaletteError: The artifact is absent or does not make a palette.
+    """
+    mode = load_palette()[theme]
+    try:
+        return ChartPalette(
+            series=tuple(mode["chart"]),
+            sequential=tuple(mode["seq"]),
+            background=mode["surface"],
+            ink=mode["ink"],
+            muted=mode["muted"],
+            grid=mode["grid"],
+            rule=mode["rule"],
+            context=mode["context"],
+            on_fill=mode["on_fill"],
+        )
+    except StyleError as refused:
+        raise PaletteError(f"the packaged {theme} palette is not a palette: {refused}") from refused
+
+
+def vega_config(palette: ChartPalette) -> dict[str, Any]:
+    """Build the Vega-Lite config that themes a compiled spec in ``palette``.
 
     The spec itself carries no colour, so this is the whole of a chart's
     appearance on the server side — and the mirror of what the browser assembles
@@ -264,30 +312,34 @@ def vega_config(theme: Theme) -> dict[str, Any]:
     complaining, so the symptom otherwise is only that the exported PNG stops looking
     like the report.
 
+    The colours are the palette's — a host's or :func:`packaged_palette` — and the type scale, weights
+    and font are this renderer's own, from the packaged artifact: a host themes colour, and the
+    renderer keeps the measurements its layout was taken at.
+
     Args:
-        theme: Which mode's palette to draw with.
+        palette: The colours to draw with.
 
     Returns:
         A Vega-Lite ``config`` object.
     """
-    palette = load_palette()
-    mode = palette[theme]
-    font = palette["font"]
+    artifact = load_palette()
+    font = artifact["font"]
     # The chart type scale and weights, resolved to px by the token build. Charts read
     # their OWN scale rather than borrowing the page's: they previously took `font.size.xs`
     # for labels and `font.size.sm` for titles — the two steps the design system defines
     # for captions and helper text — because those were the smallest available, not because
     # a chart element belongs there. A tick and the value written on a mark are where a chart
     # states its numbers, and neither of those is helper text.
-    sizes, weights = palette["font_size"], palette["font_weight"]
+    sizes, weights = artifact["font_size"], artifact["font_weight"]
     # Three ink levels. `chart.fg` carries everything except footnotes; `fg-2`/`fg-3` cap
     # around Lc 59 in dark by design, which is right for a caption and wrong for a value.
     # `on_fill` is the third, admitted by an amendment to the two-contrast-levels rule and
     # bounded to a value drawn over a mark — see `VALUE_ON_FILL_STYLE`.
-    ink, muted, grid, rule, context = mode["ink"], mode["muted"], mode["grid"], mode["rule"], mode["context"]
-    on_fill = mode["on_fill"]
+    ink, muted, grid, rule, context = palette.ink, palette.muted, palette.grid, palette.rule, palette.context
+    on_fill = palette.on_fill
+    single = palette.series[0]
     return {
-        "background": mode["surface"],
+        "background": palette.background,
         "font": font,
         # The default single-series mark colour. A chart whose identity channel is
         # its axis labels rather than its hues draws entirely in this one.
@@ -296,11 +348,11 @@ def vega_config(theme: Theme) -> dict[str, Any]:
         # not reach a mark whose colour rides on `stroke`, so an interval drawn as
         # a `rule` renders in Vega's own default — pure black, which on an obsidian
         # surface is an interval the reader cannot see. Established by rendering.
-        "mark": {"color": mode["chart"][0]},
-        "bar": {"color": mode["chart"][0]},
-        "rule": {"color": mode["chart"][0]},
-        "line": {"color": mode["chart"][0]},
-        "point": {"color": mode["chart"][0]},
+        "mark": {"color": single},
+        "bar": {"color": single},
+        "rule": {"color": single},
+        "line": {"color": single},
+        "point": {"color": single},
         # Two ranges, and the difference between them is why only one needs a ceiling.
         # `category` is a SET OF SLOTS: past its width Vega recycles, so the ninth
         # series takes the first's hue and two different things look identical — which
@@ -311,7 +363,7 @@ def vega_config(theme: Theme) -> dict[str, Any]:
         # `"chart-seq"` written as a literal rather than as `SEQUENTIAL_RANGE`, for the
         # same reason `"chart-zero-rule"` is below: a browser mirror's parity check that
         # reads THIS dict out of the source can only see a string key.
-        "range": {"category": series_colors(theme), "chart-seq": sequential_colors(theme)},
+        "range": {"category": list(palette.series), "chart-seq": list(palette.sequential)},
         "title": {
             "color": ink,
             "subtitleColor": muted,
@@ -447,10 +499,12 @@ __all__ = [
     "ZERO_RULE_STYLE",
     "PaletteError",
     "Theme",
+    "check_palette_artifact",
     "font_sizes",
     "font_weights",
     "geometry",
     "load_palette",
+    "packaged_palette",
     "sequential_colors",
     "series_colors",
     "series_slots",

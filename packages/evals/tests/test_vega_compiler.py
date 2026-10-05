@@ -38,6 +38,7 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.quantities import display_scale, strip_common_prefix
 from threetears.evals.vega.palette import (
+    packaged_palette,
     CONTEXT_STYLE,
     SEQUENTIAL_RANGE,
     VALUE_ON_FILL_STYLE,
@@ -853,7 +854,7 @@ class TestDistributionIsOnePanelWithAMarginal:
         one axis definition reaches every cell and the picture carries one rule."""
         spec = compile_chart("distribution", DISTRIBUTION).spec
         assert "facet" in spec and "layer" in spec["spec"]
-        svg = render_svg(spec, theme="dark")
+        svg = render_svg(spec, palette=packaged_palette("dark"))
         assert svg.count('aria-label="X-axis') == 1, "one x axis for the whole figure"
 
 
@@ -2204,11 +2205,11 @@ class TestTheMeasurementMatchesWhatTheRendererDraws:
         placement decision was measured at the name step, so the two have to hold
         the same number or a name proved to fit the gutter draws wider than it.
         """
-        assert vega_config("dark")["header"]["labelFontSize"] == font_sizes()["label"]
+        assert vega_config(packaged_palette("dark"))["header"]["labelFontSize"] == font_sizes()["label"]
 
     def test_the_config_still_answers_for_an_axis_that_states_nothing(self):
         """A generator-emitted axis with no size of its own is most likely numeric."""
-        assert vega_config("dark")["axis"]["labelFontSize"] == font_sizes()["tick"]
+        assert vega_config(packaged_palette("dark"))["axis"]["labelFontSize"] == font_sizes()["tick"]
 
 
 class TestTheSharedPrefixIsStripped:
@@ -2443,7 +2444,7 @@ class TestALegendThatSurvivesIsPlacedRatherThanDefaulted:
     @pytest.mark.parametrize("theme", ["light", "dark"])
     def test_a_surviving_legend_reads_across_rather_than_down_the_right_edge(self, theme):
         """A right-side vertical key takes its width out of the plot, which is fixed."""
-        legend = vega_config(theme)["legend"]
+        legend = vega_config(packaged_palette(theme))["legend"]
         assert legend["direction"] == "horizontal"
 
     @pytest.mark.parametrize("theme", ["light", "dark"])
@@ -2456,7 +2457,7 @@ class TestALegendThatSurvivesIsPlacedRatherThanDefaulted:
         "top-left under the title" describes. The rule's wording is what makes
         this worth pinning: it reads like an instruction to write `top-left`.
         """
-        assert vega_config(theme)["legend"]["orient"] == "top"
+        assert vega_config(packaged_palette(theme))["legend"]["orient"] == "top"
 
 
 class TestTheZeroLineIsDrawnWhereZeroIsAPlace:
@@ -2486,7 +2487,11 @@ class TestTheZeroLineIsDrawnWhereZeroIsAPlace:
         free to part — and a spec asking for a style nothing defines draws in
         Vega's own default, which is a black rule on a near-black surface.
         """
-        assert set(vega_config(theme)["style"]) == {ZERO_RULE_STYLE, CONTEXT_STYLE, VALUE_ON_FILL_STYLE}
+        assert set(vega_config(packaged_palette(theme))["style"]) == {
+            ZERO_RULE_STYLE,
+            CONTEXT_STYLE,
+            VALUE_ON_FILL_STYLE,
+        }
 
     def test_a_chart_whose_zero_is_its_own_edge_draws_no_rule(self):
         """The bars already start there; a rule would trace their bases."""
@@ -3549,7 +3554,7 @@ class TestSweepRankingRanksAndNeverManufacturesItsFinding:
             for index in range(stops + 2)
         ]
         spec = compile_chart("sweep_ranking", {**SWEEP_RANKING, "rows": rows}).spec
-        svg = render_svg(spec, theme="dark")
+        svg = render_svg(spec, palette=packaged_palette("dark"))
         cells = set(re.findall(r'fill="(rgb\([^)]*\)|#[0-9a-fA-F]{6})"', svg))
         assert len(cells) >= stops + 2, f"{stops + 2} levels drew only {len(cells)} distinct inks"
 

@@ -1,8 +1,9 @@
-"""The Vega-Lite renderer, as a :class:`~threetears.evals.analysis.viz.ChartRenderer` with a theme.
+"""The Vega-Lite renderer, as a :class:`~threetears.evals.analysis.viz.ChartRenderer` with a palette.
 
-**The theme is the renderer's, bound once.** A host builds one :class:`VegaRenderer` with the palette
-variant it draws in (:data:`~threetears.evals.vega.palette.Theme`) and the font directory its brand
-face lives in, and hands it every intent: :meth:`VegaRenderer.draw` returns the colourless spec a
+**The palette is the host's, bound once.** A host builds one :class:`VegaRenderer` for its style
+(:meth:`VegaRenderer.for_style`) — its declared :class:`~threetears.evals.contracts.host.ChartPalette`,
+or, when it declares none, the packaged palette in the variant it names — with the font directory its
+brand face lives in, and hands it every intent: :meth:`VegaRenderer.draw` returns the colourless spec a
 browser embeds with :meth:`VegaRenderer.config`, and :meth:`VegaRenderer.png` / :meth:`VegaRenderer.svg`
 rasterise it for a surface that cannot run a browser — which is the one place ``vl_convert`` is needed.
 
@@ -22,23 +23,60 @@ from typing import Any
 
 from threetears.evals.analysis.viz.intent import Cell, ChartIntent
 from threetears.evals.analysis.viz.quantities import strip_common_prefix
+from threetears.evals.contracts.host import ChartPalette, StyleProfile
 from threetears.evals.vega.compiler import DISPLAY_FIELD, CompiledChart, draw_intent
-from threetears.evals.vega.palette import Theme, vega_config
+from threetears.evals.vega.palette import Theme, packaged_palette, vega_config
 from threetears.evals.vega.render import DEFAULT_SCALE, render_png, render_svg
 
 
 @dataclass(frozen=True)
 class VegaRenderer:
-    """Draw chart intents as Vega-Lite, in one theme.
+    """Draw chart intents as Vega-Lite, in one palette.
+
+    Build it with :meth:`for_style` (a host's renderer) or :meth:`packaged` (the packaged palette, by
+    variant); the constructor takes the palette itself.
 
     Attributes:
-        theme: The palette variant every drawing is configured and rasterised in.
+        palette: The colours every drawing is configured and rasterised in.
         font_dir: The directory of font files a raster registers before drawing; ``None`` draws in
             whatever the host's font database resolves (warned about once per process).
     """
 
-    theme: Theme = "dark"
+    palette: ChartPalette
     font_dir: Path | None = None
+
+    @classmethod
+    def for_style(cls, style: StyleProfile, *, theme: Theme = "dark", font_dir: Path | None = None) -> VegaRenderer:
+        """The renderer a host draws with: its declared palette, or the packaged one when it declares none.
+
+        **The rule.** A style that declares ``chart_palette`` is drawn in exactly that palette, and
+        ``theme`` is not read. A style that declares none (``chart_palette is None``) is drawn in the
+        packaged palette's ``theme`` variant. That is a default the host chose by not declaring a palette —
+        not a substitute for one it declared, which is never replaced.
+
+        Args:
+            style: The host's style profile (``HostProfile.style``).
+            theme: Which packaged variant to draw in when the style declares no palette.
+            font_dir: The font directory, as on the constructor.
+
+        Returns:
+            The renderer.
+        """
+        palette = style.chart_palette if style.chart_palette is not None else packaged_palette(theme)
+        return cls(palette=palette, font_dir=font_dir)
+
+    @classmethod
+    def packaged(cls, theme: Theme = "dark", *, font_dir: Path | None = None) -> VegaRenderer:
+        """A renderer in the packaged palette's ``theme`` variant.
+
+        Args:
+            theme: Which variant.
+            font_dir: The font directory, as on the constructor.
+
+        Returns:
+            The renderer.
+        """
+        return cls(palette=packaged_palette(theme), font_dir=font_dir)
 
     def draw(self, intent: ChartIntent) -> CompiledChart:
         """Draw ``intent`` as a colourless Vega-Lite spec, held to this renderer's spec gate.
@@ -60,10 +98,10 @@ class VegaRenderer:
         Returns:
             The config, for a browser embedding a spec to pass beside it.
         """
-        return vega_config(self.theme)
+        return vega_config(self.palette)
 
     def png(self, chart: CompiledChart, *, scale: int = DEFAULT_SCALE) -> bytes:
-        """Rasterise a drawn chart to PNG in this renderer's theme. Needs ``vl_convert`` (the ``[vega]`` extra).
+        """Rasterise a drawn chart to PNG in this renderer's palette. Needs ``vl_convert`` (the ``[vega]`` extra).
 
         Args:
             chart: A chart :meth:`draw` returned.
@@ -72,10 +110,10 @@ class VegaRenderer:
         Returns:
             PNG bytes.
         """
-        return render_png(chart.spec, theme=self.theme, scale=scale, font_dir=self.font_dir)
+        return render_png(chart.spec, palette=self.palette, scale=scale, font_dir=self.font_dir)
 
     def svg(self, chart: CompiledChart) -> str:
-        """Render a drawn chart to SVG in this renderer's theme. Needs ``vl_convert`` (the ``[vega]`` extra).
+        """Render a drawn chart to SVG in this renderer's palette. Needs ``vl_convert`` (the ``[vega]`` extra).
 
         Args:
             chart: A chart :meth:`draw` returned.
@@ -83,7 +121,7 @@ class VegaRenderer:
         Returns:
             The SVG document.
         """
-        return render_svg(chart.spec, theme=self.theme, font_dir=self.font_dir)
+        return render_svg(chart.spec, palette=self.palette, font_dir=self.font_dir)
 
     def drawn_data(self, drawing: CompiledChart) -> list[dict[str, Cell]]:
         """Every inline datum the spec draws, each drawn name resolved to the identity it stands for.

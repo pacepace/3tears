@@ -46,7 +46,7 @@
     },
     "ChartBlock": {
       "additionalProperties": false,
-      "description": "A finding's chart: its intent, or why the stored chart cannot be drawn.",
+      "description": "A chart: a finding's (its intent, or why the stored chart cannot be drawn), or one code chose.\n\nA chart code chose — on a code-only report, one per measure the surface can draw — names no finding.",
       "properties": {
         "error": {
           "default": "",
@@ -581,7 +581,11 @@
             "arms",
             "surface",
             "time_axis",
-            "generation"
+            "generation",
+            "runs",
+            "measurement",
+            "apparatus",
+            "comparisons"
           ],
           "title": "Source",
           "type": "string"
@@ -627,13 +631,21 @@
     },
     "ReportSource": {
       "additionalProperties": false,
-      "description": "What the report is a report of, and how that analysis was generated.",
+      "description": "What the report is a report of, and how that analysis was generated — or that none was.",
       "properties": {
         "analysis_id": {
-          "description": "The analysis the report renders.",
-          "minLength": 1,
-          "title": "Analysis Id",
-          "type": "string"
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The analysis the report renders; None on a code-only report.",
+          "title": "Analysis Id"
         },
         "behavior": {
           "description": "The behaviour under analysis.",
@@ -642,7 +654,7 @@
           "type": "string"
         },
         "bundle_fingerprint": {
-          "description": "The fingerprint of the bundle it was written over.",
+          "description": "The fingerprint of the evidence bundle the analysis was written over; on a code-only report, of the bundle the report was computed from.",
           "minLength": 1,
           "title": "Bundle Fingerprint",
           "type": "string"
@@ -654,16 +666,24 @@
           "type": "string"
         },
         "generated_at": {
-          "description": "When the analysis was generated (ISO-8601).",
+          "description": "When the analysis was generated (ISO-8601); on a code-only report, when the evidence was assembled for it.",
           "minLength": 1,
           "title": "Generated At",
           "type": "string"
         },
         "generator_model": {
-          "description": "The model that wrote it, as the provider reported it.",
-          "minLength": 1,
-          "title": "Generator Model",
-          "type": "string"
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The model that wrote the analysis, as the provider reported it; None on a code-only report.",
+          "title": "Generator Model"
         },
         "scope_id": {
           "description": "The scope both live in.",
@@ -684,14 +704,12 @@
         }
       },
       "required": [
-        "analysis_id",
         "campaign_id",
         "scope_id",
         "subject_id",
         "subject_kind",
         "behavior",
         "generated_at",
-        "generator_model",
         "bundle_fingerprint"
       ],
       "title": "ReportSource",
@@ -731,7 +749,7 @@
           "type": "string"
         },
         "name": {
-          "description": "Which table this is: `evidence`, `arms`, `surface` or `unadjudicated_bars`.",
+          "description": "Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them) or `questions` (the declared questions, on a code-only report).",
           "minLength": 1,
           "title": "Name",
           "type": "string"
@@ -932,6 +950,15 @@
   "additionalProperties": false,
   "description": "One analysis, as a document every surface renders. See the module docstring for the contract.",
   "properties": {
+    "basis": {
+      "description": "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the report is the campaign's evidence as code computed it — no headline, no findings, no author's words.",
+      "enum": [
+        "analysis",
+        "code_only"
+      ],
+      "title": "Basis",
+      "type": "string"
+    },
     "blocks": {
       "description": "The report, in reading order.",
       "items": {
@@ -969,13 +996,13 @@
       "type": "integer"
     },
     "headline": {
-      "description": "The author's headline, as written; empty when the author wrote none.",
+      "description": "The author's headline, as written; empty when the author wrote none, and on a code-only report.",
       "title": "Headline",
       "type": "string"
     },
     "report_version": {
-      "const": 1,
-      "default": 1,
+      "const": 2,
+      "default": 2,
       "description": "This shape's version.",
       "title": "Report Version",
       "type": "integer"
@@ -986,6 +1013,7 @@
     }
   },
   "required": [
+    "basis",
     "headline",
     "finding_count",
     "source",
