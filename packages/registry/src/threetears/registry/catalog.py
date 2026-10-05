@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 from threetears.core.serialization import json_datetime
-from threetears.nats import Subjects
+from threetears.nats import Subjects, is_connection_closed
 from threetears.observe import get_logger
 from threetears.registry.config import get_definition_ttl
 from threetears.registry.routing import endpoints_callable_by
@@ -829,7 +829,10 @@ class ToolCatalog:
 
     every write to the bucket is counted: :attr:`persisting` turns ``False`` once
     :data:`WRITE_FAILURE_THRESHOLD` writes in a row have failed, and ``True`` again at the next one
-    that lands, so the registry's readiness says whether registrations are being recorded.
+    that lands, so the registry's readiness says whether registrations are being recorded. failures
+    on a CLOSED connection are counted again on their own: :attr:`connection_usable` turns ``False``
+    once :data:`WRITE_FAILURE_THRESHOLD` of them have failed since the last write that landed, which
+    the registry's liveness reports, because only a restart clears a closed connection.
     """
 
     def __init__(self) -> None:
@@ -842,6 +845,8 @@ class ToolCatalog:
         self._kv: KvBucketLike | None = None
         # writes to the bucket that have failed since the last one that landed.
         self._consecutive_write_failures = 0
+        # of those, the ones that failed on a closed connection; any other failure leaves it as it is.
+        self._closed_connection_write_failures = 0
 
     @property
     def persisting(self) -> bool:
@@ -856,6 +861,25 @@ class ToolCatalog:
         :rtype: bool
         """
         return self._consecutive_write_failures < WRITE_FAILURE_THRESHOLD
+
+    @property
+    def connection_usable(self) -> bool:
+        """whether the connection the catalog writes through can still carry a write.
+
+        ``False`` once :data:`WRITE_FAILURE_THRESHOLD` writes have failed on a CLOSED connection
+        (:func:`threetears.nats.is_connection_closed`) since the last write that landed, and
+        ``True`` again from the next write that lands. a closed connection is never reopened, so
+        nothing short of a restart clears it, and the registry's liveness reports this.
+
+        a deadline, no responders, an absent bucket or any other failure neither counts toward
+        it nor resets it: that is what a NATS outage looks like, which ends without a restart, and
+        a restart through one would only put the registry in a restart loop. those fail
+        :attr:`persisting`, which takes the registry out of rotation instead.
+
+        :return: whether the catalog's writes are not failing on a closed connection
+        :rtype: bool
+        """
+        return self._closed_connection_write_failures < WRITE_FAILURE_THRESHOLD
 
     async def load_from_kv(self, kv: KvBucketLike) -> None:
         """load catalog entries from NATS KV store.
@@ -986,7 +1010,10 @@ class ToolCatalog:
         self._write_landed()
 
     def _write_failed(self, exc: Exception, *, key: str) -> None:
-        """count one failed write, and say so at ERROR the moment the streak reaches the threshold.
+        """count one failed write, and say so at ERROR the moment a streak reaches the threshold.
+
+        a failure on a closed connection is counted toward :attr:`connection_usable` as well as
+        :attr:`persisting`; every other failure only toward :attr:`persisting`.
 
         :param exc: what the write raised
         :ptype exc: Exception
@@ -1011,6 +1038,24 @@ class ToolCatalog:
                     }
                 },
             )
+        if is_connection_closed(exc):
+            self._closed_connection_write_failures += 1
+            if self._closed_connection_write_failures == WRITE_FAILURE_THRESHOLD:
+                _logger.error(
+                    "catalog writes to its bucket have failed %d times on a closed NATS connection: %s: %s "
+                    "-- a closed connection is never reopened, so the registry reports itself not live and "
+                    "only a restart clears it",
+                    self._closed_connection_write_failures,
+                    type(exc).__name__,
+                    exc,
+                    extra={
+                        "extra_data": {
+                            "closed_connection_write_failures": self._closed_connection_write_failures,
+                            "key": key,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    },
+                )
 
     def _write_landed(self) -> None:
         """end a streak of failed writes, saying so when it had made the catalog stop persisting.
@@ -1021,9 +1066,15 @@ class ToolCatalog:
         if not self.persisting:
             _logger.info(
                 "catalog writes to its bucket are landing again",
-                extra={"extra_data": {"failed_before": self._consecutive_write_failures}},
+                extra={
+                    "extra_data": {
+                        "failed_before": self._consecutive_write_failures,
+                        "closed_connection_failed_before": self._closed_connection_write_failures,
+                    }
+                },
             )
         self._consecutive_write_failures = 0
+        self._closed_connection_write_failures = 0
 
     async def register(self, entry: CatalogEntry) -> None:
         """register tool in catalog and persist to KV, merging PER COPY.

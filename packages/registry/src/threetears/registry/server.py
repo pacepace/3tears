@@ -906,12 +906,22 @@ class RegistryServer:
                 # CATALOG_UNAVAILABLE, so it leaves rotation after a short streak of failed writes
                 # and returns at the next write that lands -- pods re-register every heartbeat, so
                 # a write is always coming. NOT liveness, for the reason the two checks above are
-                # not: the usual cause is a NATS outage, which a restart does not fix, and a
-                # terminal close is already the `nats` check's to report.
+                # not: the usual cause is a NATS outage, which a restart does not fix.
                 HealthCheck(
                     name="catalog_persisting",
                     probe=lambda: self._catalog.persisting,
                     tier=HealthTier.READY,
+                ),
+                # the one catalog failure that IS liveness: writes failing on a CLOSED connection.
+                # nats-py never reopens a closed connection, so a catalog bound to one fails every
+                # write until the process restarts, while the client itself -- which the `nats`
+                # check reads -- may be healthy on a successor. timeouts and every other outage-shaped
+                # failure never count toward it, so a NATS outage cannot put the registry in a
+                # restart loop.
+                HealthCheck(
+                    name="catalog_connection_usable",
+                    probe=lambda: self._catalog.connection_usable,
+                    tier=HealthTier.LIVE,
                 ),
                 # readiness gate: report NOT-READY until the Hub JWKS cache has had its first
                 # successful fetch. before it warms, the proxy verifies every identity token against

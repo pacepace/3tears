@@ -32,7 +32,10 @@ from threetears.nats import (
     NatsClient,
     NatsClientError,
     NatsKvBucket,
+    RequestError,
+    RequestTimeoutError,
     is_bucket_not_found,
+    is_connection_closed,
     is_key_not_found,
     is_nats_error,
 )
@@ -82,6 +85,8 @@ class _FakeWire:
 
     :ivar streams: the streams the server holds
     :ivar unanswered: when set, every request dies on its deadline, as a refused or unreachable one does
+    :ivar is_closed: when set, every request raises nats-py's ``ConnectionClosedError``, as a closed
+        connection does
     :ivar vanish_after_infos: drop every stream once this many ``STREAM.INFO`` requests were answered
     :ivar create_reply: the answer to a ``STREAM.CREATE``; ``None`` leaves it unanswered
     :ivar unacknowledged_publishes: how many KV writes in a row nothing acknowledges, as a broker in
@@ -119,6 +124,9 @@ class _FakeWire:
         self, subject: str, payload: bytes = b"", timeout: float | None = None, headers: Any = None
     ) -> _WireMsg:
         del payload, timeout, headers
+        if self.is_closed:
+            # what nats-py's own Client.request raises on a connection that has been closed
+            raise nats.errors.ConnectionClosedError
         if self.unanswered:
             raise nats.errors.TimeoutError
         reply: _WireMsg | None = None
@@ -768,6 +776,140 @@ class TestTheRawHandleClassifiers:
         assert not is_bucket_not_found(error)
         assert not is_key_not_found(error)
         assert not is_nats_error(error)
+        assert not is_connection_closed(error)
+
+
+class TestAClosedConnectionIsClassifiedByType:
+    """a closed connection is told apart from every outage-shaped failure, raw or through the wrapper.
+
+    A closed nats-py connection is never reopened, so whatever is bound to it fails until it is
+    rebuilt; a deadline, no responders or an absent bucket end, or are fixed, on their own. A
+    liveness check that restarts the process keys on this difference, so it is a type, never text.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_raw_write_on_a_closed_connection_is_connection_closed(self) -> None:
+        wire = _FakeWire()
+        wire.streams[_STREAM] = _kv_stream_config(_STREAM)
+        kv = await wire.jetstream().key_value(_BUCKET)
+        wire.is_closed = True
+        raised = await _nats_py_raises(kv.put("k", b"v"))
+        assert is_connection_closed(raised)
+        assert is_nats_error(raised)
+        assert not is_bucket_not_found(raised)
+
+    @pytest.mark.asyncio
+    async def test_a_wrapper_write_on_a_closed_connection_is_connection_closed(self) -> None:
+        # the write fails, the self-heal re-bind fails on the same closed connection, and the
+        # KvError the caller sees is chained to a KvError chained to nats-py's error.
+        wire = _FakeWire()
+        bucket = await _bound_handle(wire)
+        wire.is_closed = True
+
+        raised = await _raised_by(bucket.put(key="k", value=b"v"))
+
+        assert isinstance(raised, KvError), repr(raised)
+        assert is_connection_closed(raised)
+        assert not is_nats_error(raised), "the wrapper already translated it"
+
+    @pytest.mark.asyncio
+    async def test_a_wrapper_delete_on_a_closed_connection_is_connection_closed(self) -> None:
+        wire = _FakeWire()
+        bucket = await _bound_handle(wire)
+        wire.is_closed = True
+
+        raised = await _raised_by(bucket.delete(key="k"))
+
+        assert isinstance(raised, KvError), repr(raised)
+        assert is_connection_closed(raised)
+
+    @pytest.mark.asyncio
+    async def test_a_wrapper_write_nobody_answers_is_not_connection_closed(self) -> None:
+        wire = _FakeWire()
+        bucket = await _bound_handle(wire)
+        wire.unanswered = True
+
+        raised = await _raised_by(bucket.put(key="k", value=b"v"))
+
+        assert isinstance(raised, NatsClientError), repr(raised)
+        assert not is_connection_closed(raised), "a deadline is an outage, not a closed connection"
+
+    @pytest.mark.asyncio
+    async def test_a_wrapper_write_to_a_vanished_bucket_is_not_connection_closed(self) -> None:
+        wire = _FakeWire()
+        bucket = await _bound_handle(wire)
+        wire.streams.clear()
+
+        raised = await _raised_by(bucket.put(key="k", value=b"v"))
+
+        assert isinstance(raised, KvBucketNotFoundError), repr(raised)
+        assert not is_connection_closed(raised)
+
+    @pytest.mark.asyncio
+    async def test_a_raw_unanswered_request_is_not_connection_closed(self) -> None:
+        wire = _FakeWire()
+        wire.unanswered = True
+        raised = await _nats_py_raises(wire.jetstream().key_value(_BUCKET))
+        assert not is_connection_closed(raised)
+
+    @pytest.mark.asyncio
+    async def test_a_raw_no_responders_is_not_connection_closed(self) -> None:
+        wire = _FakeWire()
+        wire.streams[_STREAM] = _kv_stream_config(_STREAM)
+        kv = await wire.jetstream().key_value(_BUCKET)
+        wire.streams.clear()
+        raised = await _nats_py_raises(kv.get("k"))
+        assert isinstance(raised, nats.errors.NoRespondersError), repr(raised)
+        assert not is_connection_closed(raised)
+
+    @pytest.mark.asyncio
+    async def test_a_raw_absent_bucket_is_not_connection_closed(self) -> None:
+        raised = await _nats_py_raises(_FakeWire().jetstream().key_value(_BUCKET))
+        assert is_bucket_not_found(raised)
+        assert not is_connection_closed(raised)
+
+    def test_a_request_error_chained_to_a_closed_connection_is_connection_closed(self) -> None:
+        # the shape NatsClient.request raises for a request made on a closed connection
+        try:
+            try:
+                raise nats.errors.ConnectionClosedError
+            except nats.errors.ConnectionClosedError as exc:
+                raise RequestError("NATS connection closed during request: subject=s") from exc
+        except RequestError as error:
+            assert is_connection_closed(error)
+
+    def test_an_error_raised_while_handling_a_closed_connection_is_not_connection_closed(self) -> None:
+        # implicit chaining (__context__) says only what was being handled, not what failed
+        try:
+            try:
+                raise nats.errors.ConnectionClosedError
+            except nats.errors.ConnectionClosedError:
+                raise KvError("an unrelated failure in the handler")  # noqa: B904 -- implicit chaining is the case
+        except KvError as error:
+            assert error.__context__ is not None
+            assert not is_connection_closed(error)
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(nats.errors.TimeoutError(), id="nats-timeout"),
+            pytest.param(nats.errors.NoRespondersError(), id="nats-no-responders"),
+            pytest.param(nats.errors.ConnectionReconnectingError(), id="nats-reconnecting"),
+            pytest.param(nats.errors.ConnectionDrainingError(), id="nats-draining"),
+            pytest.param(TimeoutError("nats: connection closed"), id="builtin-timeout-with-a-matching-message"),
+            pytest.param(KvError("nats: connection closed"), id="kv-error-with-a-matching-message-and-no-cause"),
+            pytest.param(RequestTimeoutError("request timed out"), id="wrapper-request-timeout"),
+        ],
+    )
+    def test_outage_shaped_failures_are_not_connection_closed(self, error: BaseException) -> None:
+        assert not is_connection_closed(error)
+
+    def test_a_cyclic_cause_chain_terminates(self) -> None:
+        first = KvError("first")
+        second = KvError("second")
+        first.__cause__ = second
+        second.__cause__ = first
+        assert not is_connection_closed(first)
 
 
 class TestARefusalDuringAnOperationsRebindKeepsItsType:

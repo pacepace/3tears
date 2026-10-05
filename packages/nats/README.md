@@ -12,7 +12,7 @@ Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives 
 - `attach_pipe` / `serve_pipe` / `open_pipe` -- a payload-agnostic byte pipe to whichever pod owns a key, for reaching a process that has no inbound network path. Rendezvous rides `forward`; the stream then moves to its own subjects with a sequenced framing (a lost frame raises rather than being skipped) and a credit window that stops the producer reading its source when the consumer falls behind.
 - `StreamTransport` -- narrow Protocol used by streaming consumers; lets test fakes substitute for the live client.
 - Errors -- `NatsClientError`, `SubscribeError`, `PublishError`, `RequestError`, `KvError`, and `KvBucketNotFoundError` (a `KvError`). See [KV errors](#kv-errors).
-- `is_bucket_not_found` / `is_key_not_found` / `is_nats_error` -- classify the failures of a RAW nats-py handle by type, so a consumer that keeps `nats.*` imports out of its code never matches nats-py class names as strings.
+- `is_bucket_not_found` / `is_key_not_found` / `is_nats_error` / `is_connection_closed` -- classify the failures of a RAW nats-py handle by type, so a consumer that keeps `nats.*` imports out of its code never matches nats-py class names as strings.
 
 ## Why a separate package
 
@@ -124,6 +124,8 @@ except Exception as exc:
 ```
 
 `is_bucket_not_found` is also true of `KvBucketNotFoundError`, so one predicate serves a consumer holding both kinds of handle. None of the three reads message text.
+
+`is_connection_closed` says a call failed because its connection is closed for good -- nats-py's `ConnectionClosedError`, raw or as the explicit cause of the `KvError` / `RequestError` the wrapper raised for it. A closed connection is the one transport failure that does not end by itself, so it is what a liveness check that should restart the process asks about; a deadline, no responders or an absent bucket answer `False`.
 
 
 ## Enforcement
