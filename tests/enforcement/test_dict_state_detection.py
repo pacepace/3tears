@@ -287,6 +287,19 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeNatsClient",
+        attr_name="_refills",
+        rationale=(
+            "the double's bucket name to declarer-refill map, standing in for the refill the real "
+            "client remembers with each declaration (ensure_kv_bucket(on_restored=...)) so a test "
+            "can drive a refill through restart_broker. The values are live coroutine functions, "
+            "which no backend can serialise or hand to another process -- same test-double "
+            "rationale as FakeNatsClient._subscribers below, and it lives for one test's client "
+            "instance"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeNatsClient",
         attr_name="_subscribers",
         rationale=(
             "the double's subject to callback map, standing in for the real client's "
