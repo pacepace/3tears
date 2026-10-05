@@ -99,6 +99,58 @@ packages (bumped in lock-step).
   `0` in that case). The new required field `n_results_tokens_unreported` counts the results whose
   token-metered rows left a count unreported, so a partial sum reads as a floor.
 
+### 3tears-evals: measures wave 5 — open families, per-kind rig seats, boolean and text measures, materiality, population, a reader conformance kit
+
+- **`MetricFamily` is open.** It is now a `str`; the engine's six families are named constants
+  (`MECHANICAL_FAMILY`, `CLASSIFIER_FAMILY`, `GOAL_STATE_FAMILY`, `RUBRIC_FAMILY`, `DUAL_AXIS_FAMILY`,
+  `COMPOSITE_FAMILY`) collected as `ENGINE_FAMILIES`. A host declares its own as
+  **`MeasureFamily(name, graded_by="code" | "judge", description)`** on
+  **`MeasureRegistry(descriptors, *, families=...)`** (also `from_catalog(..., families=...)`;
+  `MeasureRegistry.families` / `.family(name)`). A `code` family ranks and may be held to a bar like
+  `mechanical`; a `judge` family is described and never ranked. Refused (`MeasureRegistrationError`): a
+  descriptor naming a family neither the engine nor the host declares, a host family reusing an engine
+  name, a family declared twice; a family name that is not a lowercase identifier fails validation.
+  `is_code_graded(descriptor, measures)` is the one predicate the bundle's ranking filter and the bar-name
+  resolver ask.
+- **Applicability is per kind, as an allow-list of rig seats.** **Breaking:** `HostProfile.apparatus_applicability`
+  is removed. `KindContract(..., seats=frozenset({...}))` names what a kind's runs have — a pinned role
+  (seating every pin of it) or an apparatus dimension by name; every apparatus dimension a kind does not
+  seat is inapplicable to its runs, so a dimension added to the rig later cannot make that kind
+  `undecided`. `seats=None` (the default) holds a kind to every dimension. **Breaking:**
+  `HostProfile.omits_apparatus(dimension, observed)` now takes `(candidate_kind, value)` pairs for every run
+  in the cohort: a dimension is omitted only when no kind present seats it and no run recorded a level (a
+  recorded level is reported and logged). `HostProfile.omission_reason` is removed. Refused at
+  registration (`ProfileRegistrationError`): a seat naming neither a pinned role nor an apparatus
+  dimension, and an unseated dimension that does not carry `indeterminate_when_blank`. The core
+  `judge_config_ids` reader now answers blank, not `NO_JUDGE_CONFIGS`, for results nothing scored.
+- **A misspelled `observed_model_levers` key is refused** (`ProfileRegistrationError`): a key must be a
+  lever a campaign could declare — a fixed lever or a member an open family recognises.
+- **Boolean and text measures.** `EvalResult.host_measures` and `CandidateOutput.host_measures` are now
+  `dict[str, bool | float | str]`, typed by the measure's `data_type`; a value contradicting it is dropped
+  and reported. `MeasureSummary` gains a **boolean** shape (`rate`, `n_true`, `ci_low`/`ci_high` the Wilson
+  interval — `analysis.stats.wilson_interval(n_true, n)`) and a **text** shape (`texts`, every observation
+  listed whole, never aggregated); a reference reads a boolean's rate as its point estimate and refuses a
+  text measure. **Breaking:** `MeasureSummary.population` is required.
+- **Population.** Each measure is computed over its declared `population` on every bundle surface — a
+  `scored` measure leaves out harness-faulted results, an `all_observed` one keeps them — and every summary
+  states which. An undeclared measure takes the surface's: `scored` for cells and bars, `all_observed`
+  for run summaries and rollups. A bar on an `all_observed` measure reports no infra exclusions.
+- **Materiality.** `materiality(threshold, delta) -> "material" | "immaterial"` (`Materiality`) is the
+  one reader of `MetricDescriptor.materiality_threshold` (now `ge=0`). `MeasureMovement.materiality`
+  labels every bundle movement; `MeasureFacts` freezes `materiality_threshold` and `population` on the
+  decision surface; a `delta_table` row carries `materiality` and the compiled table marks an immaterial
+  delta and names it in a disclosure. The generator is told an immaterial movement carries no caveat.
+- **Classifier descriptors.** Core `confusion_cell` (categorical, `expected → predicted`, built by
+  `confusion_cell(expected, predicted)`, read by `confusion_of`; `CONFUSION_CELL_MEASURE`). The bundle
+  derives each label's precision and recall (boolean-shaped, with intervals) and F1 from a cell's
+  confusion counts, named `classifier:<statistic>:<label>` (`classifier_label_measure`,
+  `classifier_label_of`, `ClassifierStatistic`). A grep found no legacy classifier reader to delete.
+- **`threetears.evals.testing`** gains the reader conformance kit: `READER_CONFORMANCE_CASES`,
+  `ReaderConformanceCase`, `ReaderConformanceFailure`, `ReaderSample(profile, runs)` — every sweepable
+  read JSON-safe, deterministic, order-independent and side-effect free, an open family's members its own,
+  a residual reader JSON-safe, every run deriving a variant key. A sample with no runs is refused.
+- `threetears.evals.quick` exports `CALLABLE_KIND`; `callable_host` declares the callable kind with no seats.
+
 ### 3tears-evals ships its type marker
 
 - `py.typed` is now in the package, so an adopter's strict type checker reads `threetears.evals` annotations

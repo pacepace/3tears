@@ -148,5 +148,6 @@ CEILINGS: dict[str, dict[str, int]] = {
     "storage/__init__.py": {},
     "storage/memory.py": {},
     "testing/__init__.py": {},
+    "testing/reader_conformance.py": {},
     "testing/store_conformance.py": {},
 }

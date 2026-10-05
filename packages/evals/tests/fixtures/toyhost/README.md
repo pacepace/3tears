@@ -9,7 +9,8 @@ and nothing else.
 
 | Step | File | What it holds |
 |---|---|---|
-| Measures, bars, style | `profile.py` | The five measures, two bars in opposite directions, a style, a caveat kind the engine does not own, and the apparatus the host declares inapplicable — assembled into the `HostProfile` |
+| Measures, bars, style | `profile.py` | The five measures, two bars in opposite directions, a style, a caveat kind the engine does not own, and the measure family the host declares (`extraction_grade`) — assembled into the `HostProfile` |
+| Kind contract | `contract.py` | The extractor's overlays, its spec, and its rig seats — the apparatus its runs have |
 | Levers and apparatus | `sweepables.py` | The declared inputs and the two pinned roles, extending the engine's `SHARED_CORE` |
 | How one run resolves its levers | `variant.py` | The host's `VariantLeverReader`; the engine resolves the model, the kind and the kind contract's levers itself |
 | The world | `world.py` | Seven world dimensions, their handles, the mutable world they move, and switchable faults |
@@ -51,7 +52,8 @@ runner's own output, cell by cell.
   role the engine never declared** (`adjudicator`): who graded the work is a seat every product has.
 - **A model-graded variant** (`judge.py`): the same extractor and invoices under a rubric, scored
   by the engine's `JudgeService` through a scripted judge that grades what it was shown. The
-  profile still declares the judge axes inapplicable host-wide, which is not true of this variant.
+  extractor's seats leave the model-judge axes out, which is not true of this variant: a suite
+  driving it builds the profile with `every_seat=True`.
 - **Measures in four value shapes** — a bounded ratio, two unbounded quantities in opposite
   better-directions, and an unbounded count — across **all four merit axes**.
 - **Two bars in opposite directions**, so the ratchet's lower-is-better branch runs.

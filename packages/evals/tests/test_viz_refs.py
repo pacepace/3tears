@@ -85,6 +85,7 @@ def ref(arm: str, rig: str = RIG) -> str:
 def _numeric(name: str, mean: float, n: int, n_independent: int) -> MeasureSummary:
     sem = abs(mean) * 0.05 if n >= 2 else None
     return MeasureSummary(
+        population="scored",
         name=name,
         attribution_scope=SCOPE.get(name, "end_to_end"),
         higher_is_better=POLARITY[name],
@@ -100,7 +101,11 @@ def _numeric(name: str, mean: float, n: int, n_independent: int) -> MeasureSumma
 
 def _cell(arm: str, rig: str = RIG, *, n: int = 8, n_independent: int = 8, drop: tuple[str, ...] = ()) -> CellFacts:
     measures = [_numeric(name, value, n, n_independent) for name, value in VALUES[arm].items() if name not in drop]
-    measures.append(MeasureSummary(name="stop_reason", attribution_scope="end_to_end", n=n, categories=STOPS[arm]))
+    measures.append(
+        MeasureSummary(
+            population="scored", name="stop_reason", attribution_scope="end_to_end", n=n, categories=STOPS[arm]
+        )
+    )
     return CellFacts(
         variant_key=KEYS[arm],
         apparatus_class_id=rig,
@@ -501,7 +506,13 @@ def test_an_attribution_states_the_remainder_of_a_sole_component_a_host_declares
 
     def reading(name: str, scope: str, mean: float) -> MeasureSummary:
         return MeasureSummary(
-            name=name, attribution_scope=scope, higher_is_better=False, n=8, n_independent=8, mean=mean
+            population="scored",
+            name=name,
+            attribution_scope=scope,
+            higher_is_better=False,
+            n=8,
+            n_independent=8,
+            mean=mean,
         )
 
     means = {"A": (2000.0, 1500.0), "B": (1600.0, 1300.0)}
@@ -533,7 +544,8 @@ def test_an_attribution_states_the_remainder_of_a_sole_component_a_host_declares
                 *TOYHOST_MEASURES,
                 descriptor("host_whole_ms", "end_to_end"),
                 descriptor("host_part_ms", "subsystem", contained_by="host_whole_ms"),
-            ]
+            ],
+            families=toyhost_profile().measures.families,
         ),
     )
     stated = build(

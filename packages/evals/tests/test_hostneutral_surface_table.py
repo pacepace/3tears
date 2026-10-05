@@ -52,7 +52,9 @@ def _entry(model: str) -> VariantIndexEntry:
 
 
 def _summary(name: str, mean: float) -> MeasureSummary:
-    return MeasureSummary(name=name, attribution_scope="end_to_end", n=6, n_independent=2, mean=mean, sem=mean / 10)
+    return MeasureSummary(
+        population="scored", name=name, attribution_scope="end_to_end", n=6, n_independent=2, mean=mean, sem=mean / 10
+    )
 
 
 def _cell(variant_key: str, *, rig: str = RIG, latency: float = 900.0) -> CellFacts:

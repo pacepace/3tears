@@ -8,7 +8,6 @@ surface out of five.
 """
 
 import csv
-from dataclasses import replace
 import io
 import json
 import logging
@@ -108,7 +107,7 @@ _HOST_NOUN_IN_PROSE = re.compile(rf"\b(?:{'|'.join(HOST_NOUNS)})s?\b", re.IGNORE
 #: simulated user, and these tests are about a host that has both, so a run recording no simulated
 #: user is an UNRECORDED input here (partial context) rather than one the host declared it never
 #: had. A run naming no judge was not judged, which is a recorded level on any host.
-_JUDGED_HOST = replace(toyhost_profile(), apparatus_applicability={})
+_JUDGED_HOST = toyhost_profile(every_seat=True)
 
 
 def _catalog_names_of(row_name):

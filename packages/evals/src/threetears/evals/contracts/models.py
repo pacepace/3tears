@@ -3233,7 +3233,11 @@ class EvalResult(EvalDocumentModel):
     #
     # Required, like its two neighbours: {} = the host reported nothing, absent key = that
     # measure was not taken for this observation.
-    host_measures: dict[str, float]
+    #
+    # A value is typed by its descriptor's data type: a number for a numeric measure, a bool for
+    # a boolean one, a string for a categorical or text one. The bundle drops (and reports) a value
+    # whose type contradicts its descriptor rather than coercing it.
+    host_measures: dict[str, bool | float | str]
 
     # **There is no ``graph_version_hash`` here, and there is no subject-side
     # ``system_graph_version_hash`` either.** Both were declared apparatus that nothing ever

@@ -51,7 +51,7 @@ from threetears.evals.contracts.authored import Chart
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.campaign import ReadingKind, VariantIndexEntry
 from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.metrics import describe_reported_measure, remainder_withheld_reason
+from threetears.evals.contracts.metrics import describe_reported_measure, materiality, remainder_withheld_reason
 from threetears.evals.contracts.surface import CellFacts, DecisionSurface
 
 #: The dimension a sweep row gains when one arm was measured under more than one rig. Without it
@@ -293,6 +293,9 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
     for reading_ref in ref.measures:
         a = _read(surface, ref.a_cell, reading_ref)
         b = _read(surface, ref.b_cell, reading_ref)
+        # A measure's threshold is frozen on the surface; a judged dimension declares none, so its
+        # every difference is material.
+        facts = surface.measures.get(reading_ref.measure_id) if reading_ref.reading == "measure" else None
         rows.append(
             {
                 "metric": reading_ref.measure_id,
@@ -301,6 +304,7 @@ def _delta_table(ref: DeltaTableRef, surface: DecisionSurface, labels: dict[str,
                 "b": b.mean,
                 "unit": a.unit,
                 "delta": b.mean - a.mean,
+                "materiality": materiality(facts.materiality_threshold if facts else None, b.mean - a.mean),
                 # The smaller arm bounds any test the pair could support; the bundle carries no
                 # paired statistic, so no test was run and the row says so through `significant`.
                 "n": min(a.n, b.n),

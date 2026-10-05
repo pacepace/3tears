@@ -13,10 +13,15 @@ metadata on the registries, consumed generically.
 **Evaluability is derived from the profile, not declared beside it** (R10). The sweepables
 registry *is* the controllability map, the measures registry *is* the observability map, and the
 world registry *is* the representability map — so none of the three can drift from the thing it
-describes. **One declared exception, and it is the case derivation cannot reach:**
-:attr:`HostProfile.apparatus_applicability` names the shared-core apparatus dimensions a host does
-not HAVE, which no registry can express — the declaration it would have to be derived from belongs to
-the core, and ``SweepableRegistry.extend`` only appends. Drift is prevented by
+describes. **One declared exception, and it is the case derivation cannot reach:** each kind
+contract's :attr:`~threetears.evals.contracts.host.kinds.KindContract.seats` names the seats in the rig
+that kind's runs fill — pinned roles, or apparatus dimensions by name — and every apparatus dimension a
+kind does not seat is one its runs do not HAVE, which no registry can express: the declaration it would
+have to be derived from belongs to the core, and ``SweepableRegistry.extend`` only appends. It is
+declared per KIND rather than per host because one host grades one kind with a judge and another with
+code, and a host-wide answer is false for one of them. It is an allow-list — the seats a kind HAS, never
+the dimensions it lacks — so a dimension added to the rig later is inapplicable to every kind that has
+not claimed it, and cannot turn such a kind's runs ``undecided``. Drift is prevented by
 :meth:`HostProfile.omits_apparatus` reading the runs' own values instead, so the claim is checked
 against what happened rather than trusted. Recorded at ``boundary-patterns.md`` § Eval host-profile
 registry seam. **They are reached to different depths, and which is which is recorded here** because a
@@ -73,7 +78,7 @@ path with a test that both callers reach it, and it gains no entry here.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -209,40 +214,6 @@ class HostProfile:
     than asserted to be complete.
     """
 
-    apparatus_applicability: Mapping[str, Coverage] = field(default_factory=dict)
-    """Apparatus dimensions this host does not have, and why — the one state the engine cannot derive.
-
-    ``{dimension name: Coverage("inapplicable", reason)}``. The other two states are NOT declarable
-    here and are refused, because the engine already derives them from the reader: a dimension that
-    read a value is covered, and one that read a blank is uncovered. Only *inapplicable* is a fact
-    about the host rather than about a run, which is why it is the only one a host can say.
-
-    **Why this exists.** The shared core declares seven apparatus dimensions on the terms every LLM
-    product has them — a judge model and how it was asked, a per-dim divergence from its pin, a
-    judge configuration set, a simulated user and how it was asked, a spend ceiling — and six of
-    those read core ``EvalRun`` fields that are ``indeterminate_when_blank``.
-    For a host that has them, a blank there means the judge or simulator is *unrecoverable*, which is exactly
-    what should block a comparison. For a host that grades with code and simulates nobody, the same
-    blank is not an absence at all: there is no such thing to record. Without this map every such
-    host got four ``undecided`` apparatus confounds in every bundle, a real model read them and
-    declined to answer the campaign's declared question, and the fabricated unknowns also partitioned
-    the cell space through ``apparatus_class_id`` — so poolings the host had declared were refused.
-
-    **Same three-state vocabulary as :meth:`controllable` and :meth:`representability`, on purpose.**
-    ``world=None`` already makes representability ``inapplicable`` rather than ``uncovered``, on the
-    reasoning that *"this area is unevaluable" is a conclusion the map is not entitled to draw*. A
-    host with no simulated user is the same shape one axis over, so it gets the same answer in the
-    same type rather than a sentinel of its own — a sentinel would have to be chosen by the core,
-    which cannot tell an inapplicable dimension from a code-graded one from an unrecoverable one.
-
-    The ``reason`` is read in two places: at registration, where a blank one is refused, and by
-    :meth:`omits_apparatus`, which logs it when a run records a level for a dimension this map says
-    the host does not have — a claim its own data refutes, printed with the reason it was made on.
-
-    Empty is the normal case: a host that has every dimension the core
-    declares says nothing here.
-    """
-
     variant_levers: VariantLeverReader | None = None
     """How this host resolves a run's level of each of its OWN fixed levers. See :data:`VariantLeverReader`.
 
@@ -257,8 +228,9 @@ class HostProfile:
     """Levers whose INHERITED value is recoverable from what a run observably did.
 
     ``{lever name in the REGISTRY's vocabulary: the usage role whose ``model`` records its value}``.
-    A key that is not a registered lever name resolves against nothing; the registry does not
-    validate that today.
+    A key must be a lever a campaign could declare it swept — a fixed lever, or a member an open
+    family recognises — and anything else is refused at registration: a misspelled key would resolve
+    against nothing and leave the lever reading ``unknown`` with no error anywhere.
     A launch that did not name the lever as an overlay still ran at *some* value, and for a
     model-valued lever the role that spent the tokens is the record of which. The analysis
     bundle's effective-configuration lens reads this to distinguish ``inherited`` from
@@ -344,9 +316,9 @@ class HostProfile:
             BarRegistrationError: A bar contradicts the measure registry.
             ProfileRegistrationError: A name is registered as both a sweepable and a world
                 dimension, an ``observed_model_levers`` entry claims a lever name the engine
-                reserves, an ``apparatus_applicability`` entry names something this host's
-                registry does not declare as apparatus, a kind is contracted twice or two
-                contracts' lever prefixes overlap, a kind contract's lever is registered in
+                reserves or names no lever this host declares, a kind contract's seats name
+                neither a pinned role nor an apparatus dimension, or leave out a dimension whose
+                blank is a real level, a kind is contracted twice or two contracts' lever prefixes overlap, a kind contract's lever is registered in
                 :attr:`host_sweepables` as well, or the registry lacks a lever the engine resolves
                 for every run.
         """
@@ -364,7 +336,8 @@ class HostProfile:
         self.bars.validate_against(self.measures)
         self._refuse_a_name_in_both_registries()
         self._refuse_an_engine_reserved_lever()
-        self._refuse_an_unsound_inapplicability()
+        self._refuse_an_undeclared_observed_lever()
+        self._refuse_an_unsound_seat()
         self._refuse_a_malformed_listing_elision()
 
     def kind_contract(self, kind: str) -> KindContract:
@@ -543,157 +516,140 @@ class HostProfile:
                 "experimental k over evidence that varied the stimulus. Rename one of the two registrations"
             )
 
-    def _refuse_an_unsound_inapplicability(self) -> None:
-        """Refuse an ``apparatus_applicability`` entry that cannot mean what it says.
+    def _refuse_an_undeclared_observed_lever(self) -> None:
+        """Refuse an ``observed_model_levers`` key that names no lever this host declares.
 
-        Checked here because this is the only place the map and the sweepables registry are both in
-        hand — the registry cannot see a claim made *about* it, which is the same reason the overlap
-        and reserved-lever refusals live here.
+        The key is read by the bundle's effective-configuration lens, which recovers a lever's
+        inherited value from the usage role named beside it. A misspelled key recovers nothing and
+        refuses nothing: the lever it meant reads ``unknown`` in every bundle, and the entry sits there
+        looking like a live declaration. Admitted exactly when a campaign could declare the key as its
+        axis (:meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.refuse_as_axis`) — a
+        fixed lever, or a member an open family recognises.
 
-        **Any declared apparatus dimension is accepted, not only a shared-core one, and that is
-        wider than the recorded exception's ground.** The exception to ``boundary-patterns.md``
-        § Eval host-profile registry seam is argued from shared-core dimensions, where conforming
-        is not available at all: a host has no slot on a core declaration to derive from. For a
-        host's OWN dimension the entry is redundant — it could simply not declare it — and it is
-        deliberately not refused, for two reasons. It is governed identically (``omits_apparatus``
-        takes the runs' values either way, so a host's own dimension its data records is reported
-        exactly as a core one would be), and it is the only way to STAGE the
-        declaration-versus-data contradiction in a test, since the corpus that records a dimension
-        is by construction one the host declared. Narrowing it was tried and reverted: it refused
-        the three tests that hold this mechanism to its promise.
+        Raises:
+            ProfileRegistrationError: A key names no declarable lever, with the remedy the registry prints.
+        """
+        unknown = {
+            name: reason
+            for name in sorted(self.observed_model_levers)
+            if name != CANDIDATE_MODEL_LEVER and (reason := self.sweepables.refuse_as_axis(name)) is not None
+        }
+        if unknown:
+            raise ProfileRegistrationError(
+                f"host {self.host_id!r} declares observed_model_levers for {', '.join(unknown)}, which name no lever "
+                "this host declares — the lens would recover nothing and the lever would read unknown everywhere: "
+                + "; ".join(unknown.values())
+            )
 
-        Every defect is reported at once so a host fixing one sees the rest:
+    def _refuse_an_unsound_seat(self) -> None:
+        """Refuse a kind contract's seats that cannot mean what they say.
 
-        * **A name this host never declared.** Nothing would read the entry, so it would sit there
-          asserting an exemption for a dimension that does not exist — and it would survive a rename
-          of the dimension it was written for, still looking like a live declaration.
-        * **A name declared with a role other than apparatus.** Only apparatus is scanned for
-          confounds, so exempting a lever or a label suppresses nothing and misdescribes the host.
-        * **A state other than ``inapplicable``.** The engine derives the other two from the reader
-          — a value read is covered, a blank is uncovered — so ``covered`` here is a no-op and
-          ``uncovered`` restates what the blank already says. Accepting either would let a host
-          believe it had declared something.
-        * **An empty reason.** A dimension dropped from every confound scan with no stated why is the
-          unexplained silence :class:`Coverage` requires a reason to prevent, and the reason is what
-          :meth:`omits_apparatus` prints when the runs refute the claim.
-        * **A declaration that does not carry ``indeterminate_when_blank``.** :meth:`omits_apparatus`
-          decides "did a run record this" through
-          :meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.is_indeterminate`, which answers
-          False for every value when the flag is off — a blank there is a real level. So such an
-          entry would never omit anything AND would log a contradiction on every call about a value
-          nobody set: a silent no-op wearing a warning. Unreachable through the seven core apparatus
-          dimensions, all of which carry the flag; reachable by any host's own extension, which is
-          why it is refused here rather than left to be discovered.
+        Checked here because this is the only place the contracts and the registry are both in hand.
+        Every defect is reported at once:
+
+        * **An entry naming neither a pinned role nor an apparatus dimension.** Nothing would read it,
+          and the kind would not fill the seat it meant, so that seat's dimensions would drop out of
+          its runs' confound scans on a typo. A lever or a label is refused the same way: only
+          apparatus is scanned for confounds, so seating one says nothing.
+        * **An apparatus dimension left unseated that does not carry ``indeterminate_when_blank``.**
+          :meth:`omits_apparatus` decides "did a run record this" through
+          :meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.is_indeterminate`, which
+          answers False for every value when the flag is off — a blank there is a real level. Leaving
+          such a dimension unseated would never omit it AND would log a contradiction on every read
+          about a value nobody set: a silent no-op wearing a warning. Seat it.
 
         Raises:
             ProfileRegistrationError: Any defect above, with every instance named.
         """
+        roles = {role.name for role in self.sweepables.roles}
         defects: list[str] = []
-        for name, coverage in sorted(self.apparatus_applicability.items()):
-            declared = self.sweepables.get(name)
-            if declared is None:
-                defects.append(
-                    f"declares {name!r} inapplicable but never declares it as a sweepable at all — nothing "
-                    "would read the entry, and it would outlive a rename of whatever it was written for"
-                )
+        for contract in self.kinds:
+            if contract.seats is None:
                 continue
-            if declared.role != "apparatus":
-                defects.append(
-                    f"declares {name!r} inapplicable but declares it as a {declared.role} — only apparatus is "
-                    "scanned for confounds, so the entry suppresses nothing"
-                )
-            if coverage.state != "inapplicable":
-                defects.append(
-                    f"declares {name!r} as {coverage.state!r} — the engine derives that from the reader (a value "
-                    "read is covered, a blank is uncovered); inapplicable is the only state a host can add"
-                )
-            if not coverage.reason.strip():
-                defects.append(
-                    f"declares {name!r} inapplicable with no reason — the dimension then drops out of every "
-                    "confound scan with nothing saying why"
-                )
-            if not declared.indeterminate_when_blank:
-                defects.append(
-                    f"declares {name!r} inapplicable but the declaration does not carry "
-                    "indeterminate_when_blank — a blank there is a real recorded level, so "
-                    "`omits_apparatus` would read every blank as RECORDED, never omit the dimension, and "
-                    "log a contradiction on every call about a value nobody set. The entry would be a "
-                    "silent no-op wearing a warning"
-                )
+            for seat in sorted(contract.seats - roles):
+                declared = self.sweepables.get(seat)
+                if declared is None or declared.role != "apparatus":
+                    what = "nothing this host declares" if declared is None else f"a {declared.role}"
+                    defects.append(
+                        f"kind {contract.kind!r} seats {seat!r}, which is {what} — a seat names a pinned role "
+                        f"({', '.join(sorted(roles)) or 'none'}) or an apparatus dimension"
+                    )
+            seated = self._seated(contract.kind)
+            defects.extend(
+                f"kind {contract.kind!r} leaves {declared.name!r} unseated, but it does not carry "
+                "indeterminate_when_blank — a blank there is a real recorded level, so it would never be omitted "
+                "and every read would log a contradiction about a value nobody set; seat it"
+                for declared in self.sweepables.declarations
+                if declared.role == "apparatus"
+                and seated is not None
+                and declared.name not in seated
+                and not declared.indeterminate_when_blank
+            )
         if defects:
             raise ProfileRegistrationError(f"host profile {self.host_id!r} is unsound: " + "; ".join(defects))
 
-    def omission_reason(self, dimension: str) -> str:
-        """Why this host says it does not have ``dimension``.
+    def _seated(self, kind: str) -> frozenset[str] | None:
+        """The apparatus dimensions ``kind``'s runs have, each seated role expanded to its pins — None for all."""
+        seats = self.kind_contract(kind).seats
+        if seats is None:
+            return None
+        pins = {role.name: role.pins for role in self.sweepables.roles}
+        return frozenset(name for seat in seats for name in pins.get(seat, (seat,)))
 
-        The companion to :meth:`omits_apparatus`, and the reason a reporting surface never needs to
-        subscript :attr:`apparatus_applicability` itself: the invariant "the key exists exactly when
-        the method returned True" then spans one type rather than a method, a caller and a raw
-        mapping a second host's reporting would copy.
-
-        Args:
-            dimension: The declared apparatus input name.
-
-        Returns:
-            The declared reason, or ``""`` when this host declared nothing about it — which a
-            caller reaches only by asking before :meth:`omits_apparatus` said yes.
-        """
-        declared = self.apparatus_applicability.get(dimension)
-        return declared.reason if declared is not None else ""
-
-    def omits_apparatus(self, dimension: str, *values: Any) -> bool:
+    def omits_apparatus(self, dimension: str, observed: Iterable[tuple[str, Any]]) -> bool:
         """Whether a reporting surface should leave ``dimension`` out entirely, given what ran.
 
-        The single authority for the omission, and it takes the VALUES because a declaration alone
-        cannot be trusted with the decision. ``apparatus_applicability`` says "this host does not
-        have this dimension"; the runs are what say whether that is true. Registration can only
-        check the static shape of the claim — that the name is a declared apparatus input with a
-        reason — and cannot see a single run, so a host that declares ``judge_model`` inapplicable
-        and then records one would otherwise have a real apparatus DIFFERENCE silently dropped from
-        every surface. That is the failure mode ``world_conformance`` already has a rule against:
-        an unproved declaration must never render identically to a proved one.
+        The single authority for the omission. A dimension is omitted only when **no** kind among the
+        runs seats it (:attr:`~threetears.evals.contracts.host.kinds.KindContract.seats`, a pinned role
+        seating its pins) **and** no run recorded a level for it. Two things decide it, and neither
+        alone may:
 
-        So a non-blank value wins over the declaration: the dimension is reported, and the
-        contradiction is logged with the reason the host gave for a claim its own data refutes.
-        Reported rather than raised because this runs inside assembly of an analysis an operator
-        asked for, and a rig disagreement is exactly the thing they need to SEE — refusing the
-        bundle would withhold the evidence of the defect along with the defect.
+        * **The kinds present.** A store holding a judged kind's runs and a code-graded kind's runs
+          answers per cohort: a cohort with one judged run keeps the judge axes, so that run's
+          unrecoverable judge still reads ``undecided``; a cohort of code-graded runs alone omits them.
+          A host-wide answer is false for one of the two.
+        * **The values.** A kind's seats say "these runs have no such thing"; the runs are what say
+          whether that is true. A non-blank value wins over the declaration: the dimension is
+          reported, and the contradiction is logged. Reported rather than raised because this runs
+          inside assembly of an analysis an operator asked for, and a rig disagreement is exactly the
+          thing they need to SEE.
 
         Args:
             dimension: The declared apparatus input name.
-            *values: Every value observed for it across the runs under consideration. Pass them
-                all: one arm recording a level is enough to refute the claim, and a caller that
-                passes only the first would omit on the strength of the arm that agreed.
+            observed: ``(candidate kind, value)`` for every run under consideration. Pass them all: one
+                run of a kind that seats the dimension keeps it, and one run recording a level
+                refutes the claim, so a caller that passes only the first would omit on the strength of
+                the run that agreed.
 
         Returns:
-            True when the dimension is declared inapplicable and nothing contradicts it, which is
-            when a surface should behave as though the host never had it. False when it was never
-            declared, or when it was and a run recorded a level anyway.
+            True when no kind present seats the dimension and nothing contradicts it, which is
+            when a surface should behave as though the host never had it.
 
         Raises:
-            ValueError: No values were passed. Answering without them is the unvalidated omission
-                this method replaces, and it is available to a caller that simply forgets the
-                argument — so it is refused rather than defaulted.
+            ValueError: No runs were passed. Answering without them is the unvalidated omission this
+                method replaces, and it is available to a caller that simply forgets the argument — so
+                it is refused rather than defaulted.
         """
-        if not values:
+        observations = list(observed)
+        if not observations:
             raise ValueError(
-                f"omits_apparatus({dimension!r}) was called with no values — the check IS the values, and "
-                "answering without them is the unvalidated omission this method exists to replace. A caller "
-                "that genuinely has none reads `apparatus_applicability`, and owes its own reason for trusting "
-                "a declaration nothing has tested."
+                f"omits_apparatus({dimension!r}) was called with no runs — the check IS the kinds and values that "
+                "ran, and answering without them is the unvalidated omission this method exists to replace."
             )
-        declared = self.apparatus_applicability.get(dimension)
-        if declared is None:
+        if any((seated := self._seated(kind)) is None or dimension in seated for kind, _ in observations):
             return False
-        if recorded := [value for value in values if not self.sweepables.is_indeterminate(dimension, value)]:
+        if recorded := [
+            (kind, value) for kind, value in observations if not self.sweepables.is_indeterminate(dimension, value)
+        ]:
+            kind, value = recorded[0]
             log.warning(
-                "host %r declares apparatus dimension %r inapplicable (%s) but a run recorded %r — "
-                "reporting it rather than omitting it, because a recorded level is evidence the "
-                "declaration is wrong and dropping it would hide a real apparatus difference",
+                "host %r: kind %r does not seat apparatus dimension %r, but one of its runs recorded %r — "
+                "reporting it rather than omitting it, because a recorded level is evidence the seat declaration "
+                "is wrong and dropping it would hide a real apparatus difference",
                 self.host_id,
+                kind,
                 dimension,
-                declared.reason,
-                recorded[0],
+                value,
             )
             return False
         return True

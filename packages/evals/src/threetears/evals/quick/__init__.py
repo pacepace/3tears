@@ -17,10 +17,11 @@ and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.quick.cli import DEFAULT_PROG, HostFactory, build_parser, run_cli
-from threetears.evals.quick.one_call import Candidate, Scorer, callable_host, run_eval
+from threetears.evals.quick.one_call import CALLABLE_KIND, Candidate, Scorer, callable_host, run_eval
 from threetears.evals.quick.summary import EvalSummary, MeasureSummary, summarize_run
 
 __all__ = [
+    "CALLABLE_KIND",
     "DEFAULT_PROG",
     "Candidate",
     "EvalSummary",

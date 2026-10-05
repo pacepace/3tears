@@ -335,8 +335,8 @@ async def execute_toyhost_run(
     """Drive the whole matrix through the real runner, for the toy host.
 
     The standard matrix passes ``judge_service=None``: nothing it produces is model-scored, so the
-    judge phase is suppressed and every score axis stays ``None``, and the profile's
-    inapplicable-apparatus map keeps that from reading as four undecided confounds in the bundle.
+    judge phase is suppressed and every score axis stays ``None``, and the extractor's rig seats —
+    which leave the model-judge axes out — keep that from reading as undecided confounds in the bundle.
     A judged drive (``packages.evals.tests.fixtures.toyhost.judge``) passes a service, and the kind then renders
     the evidence that service scores.
 

@@ -25,7 +25,8 @@ class MeasureSummary(BaseModel):
     Attributes:
         name: The measure, as the host declares it.
         n: How many results carry it.
-        mean: Their mean; ``None`` when none does.
+        mean: Their mean — a boolean measure's is its rate; ``None`` when none does, or for a text
+            measure, whose words are listed by the analysis bundle and never averaged.
         minimum: The lowest value; ``None`` when none does.
         maximum: The highest value; ``None`` when none does.
     """
@@ -116,11 +117,13 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
     outcomes = [classify_result(result) for result in results]
     measures = []
     for name in host.profile.measures.names:
-        values = [result.host_measures[name] for result in results if name in result.host_measures]
+        carried = [result.host_measures[name] for result in results if name in result.host_measures]
+        # A text observation is words, never a number; a boolean counts as 1 or 0, so its mean is its rate.
+        values = [float(value) for value in carried if not isinstance(value, str)]
         measures.append(
             MeasureSummary(
                 name=name,
-                n=len(values),
+                n=len(carried),
                 mean=sum(values) / len(values) if values else None,
                 minimum=min(values) if values else None,
                 maximum=max(values) if values else None,

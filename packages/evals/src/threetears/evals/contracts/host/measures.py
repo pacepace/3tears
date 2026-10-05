@@ -34,7 +34,7 @@ from threetears.evals.contracts.host.attribution import HostAttributed
 # imports leaves of this package, so whichever of the two a process reaches first would find the
 # other half-initialised.
 if TYPE_CHECKING:
-    from threetears.evals.contracts.metrics import MeritAxis, MetricDescriptor
+    from threetears.evals.contracts.metrics import MeasureFamily, MeritAxis, MetricDescriptor
 
 
 class MeasureRegistrationError(ValueError):
@@ -56,26 +56,50 @@ class MeasureRegistry(HostAttributed):
     :class:`~threetears.evals.contracts.host.profile.HostProfile`.
     """
 
-    def __init__(self, descriptors: Iterable[MetricDescriptor]) -> None:
+    def __init__(self, descriptors: Iterable[MetricDescriptor], *, families: Iterable[MeasureFamily] = ()) -> None:
         """Validate and store one host's measure catalogue.
 
         Args:
             descriptors: The measures this host can see.
+            families: The host's own measure families, beyond the engine's
+                (:data:`~threetears.evals.contracts.metrics.ENGINE_FAMILIES`). A descriptor may name one of
+                these or an engine family, and nothing else.
 
         Raises:
             MeasureRegistrationError: The catalogue is unsound. Every defect is reported at once.
         """
         self._init_attribution()
         self._descriptors: tuple[MetricDescriptor, ...] = tuple(descriptors)
+        self._families: tuple[MeasureFamily, ...] = tuple(families)
         if defects := self._defects():
             raise MeasureRegistrationError("measure declaration is unsound: " + "; ".join(defects))
         self._by_name: dict[str, MetricDescriptor] = {d.name: d for d in self._descriptors}
+        self._family_by_name: dict[str, MeasureFamily] = {f.name: f for f in self._families}
+
+    def _family_defects(self) -> list[str]:
+        """Name every way the host's own families contradict the engine's or each other."""
+        from threetears.evals.contracts.metrics import ENGINE_FAMILIES
+
+        defects: list[str] = []
+        names = [family.name for family in self._families]
+        defects.extend(
+            f"family {name} is declared twice — a descriptor naming it could not say which it meant"
+            for name in sorted({name for name in names if names.count(name) > 1})
+        )
+        defects.extend(
+            f"family {name} is one of the engine's own — a host family needs a name of its own, or the engine's "
+            "would be redefined under every host that shares the process"
+            for name in sorted(set(names) & set(ENGINE_FAMILIES))
+        )
+        return defects
 
     def _defects(self) -> list[str]:
         """Name every way the catalogue contradicts what this registry promises."""
-        defects: list[str] = []
+        from threetears.evals.contracts.metrics import ENGINE_FAMILIES, containment_defects
+
+        defects: list[str] = self._family_defects()
         seen: set[str] = set()
-        from threetears.evals.contracts.metrics import containment_defects
+        known_families = set(ENGINE_FAMILIES) | {family.name for family in self._families}
 
         by_name = {d.name: d for d in self._descriptors}
         for descriptor in self._descriptors:
@@ -84,6 +108,11 @@ class MeasureRegistry(HostAttributed):
                     f"{descriptor.name} is declared twice — lookups key by name, so one would shadow the other"
                 )
             seen.add(descriptor.name)
+            if descriptor.family is not None and descriptor.family not in known_families:
+                defects.append(
+                    f"{descriptor.name} names family {descriptor.family!r}, which neither the engine nor this host "
+                    "declares — declare it as a MeasureFamily on the registry, or name one that exists"
+                )
             if descriptor.value_range is not None:
                 low, high = descriptor.value_range
                 if low > high:
@@ -97,16 +126,28 @@ class MeasureRegistry(HostAttributed):
         return defects
 
     @classmethod
-    def from_catalog(cls, catalog: Mapping[str, MetricDescriptor]) -> MeasureRegistry:
+    def from_catalog(
+        cls, catalog: Mapping[str, MetricDescriptor], *, families: Iterable[MeasureFamily] = ()
+    ) -> MeasureRegistry:
         """Build a registry from an existing ``{name: descriptor}`` catalogue.
 
         Args:
             catalog: The descriptors, keyed by name.
+            families: The host's own measure families.
 
         Returns:
             A validated registry over the catalogue's values.
         """
-        return cls(catalog.values())
+        return cls(catalog.values(), families=families)
+
+    @property
+    def families(self) -> tuple[MeasureFamily, ...]:
+        """The host's own measure families, in declaration order — the engine's are not repeated here."""
+        return self._families
+
+    def family(self, name: str) -> MeasureFamily | None:
+        """The host family named ``name``, or None when this host declares no family by that name."""
+        return self._family_by_name.get(name)
 
     @property
     def names(self) -> tuple[str, ...]:

@@ -66,7 +66,9 @@ def entry(model: str) -> VariantIndexEntry:
 
 def summary(name: str, mean: float, sem: float | None = None) -> MeasureSummary:
     """A numeric measure summary — a mean, and a spread when given."""
-    return MeasureSummary(name=name, attribution_scope="end_to_end", n=6, n_independent=2, mean=mean, sem=sem)
+    return MeasureSummary(
+        population="scored", name=name, attribution_scope="end_to_end", n=6, n_independent=2, mean=mean, sem=sem
+    )
 
 
 def cell(model: str | None = None, *, variant: str | None = None, rig: str = RIG, **overrides) -> CellFacts:
@@ -516,10 +518,22 @@ class TestCostAndLatencyColumns:
             c.measures = MeasureCollection(
                 measures=[
                     MeasureSummary(
-                        name=COST, attribution_scope="end_to_end", n=5, n_independent=2, mean=0.0123, sem=0.0021
+                        population="scored",
+                        name=COST,
+                        attribution_scope="end_to_end",
+                        n=5,
+                        n_independent=2,
+                        mean=0.0123,
+                        sem=0.0021,
                     ),
                     MeasureSummary(
-                        name=LATENCY, attribution_scope="end_to_end", n=4, n_independent=2, mean=41250.0, sem=900.0
+                        population="scored",
+                        name=LATENCY,
+                        attribution_scope="end_to_end",
+                        n=4,
+                        n_independent=2,
+                        mean=41250.0,
+                        sem=900.0,
                     ),
                 ]
             )

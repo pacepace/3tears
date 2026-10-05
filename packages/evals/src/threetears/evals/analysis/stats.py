@@ -30,6 +30,7 @@ pooled SD.
 from __future__ import annotations
 
 import math
+from statistics import NormalDist
 from typing import NamedTuple
 
 # Two-sided p-value below which a composite delta is called significant.
@@ -234,6 +235,36 @@ def ci_half_width(sem: float, n: int) -> float | None:
     if n < 2:
         return None
     return t_critical_two_sided(INTERVAL_LEVEL, n - 1) * sem
+
+
+def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
+    """The Wilson score interval on a proportion at :data:`INTERVAL_LEVEL` — how a boolean measure's rate is bounded.
+
+    Wilson rather than the normal approximation because a boolean measure's rate sits at 0 or 1
+    exactly when it is most interesting (every encounter on target, none), where the normal interval
+    collapses to a zero-width point and reads as certainty from three observations. Wilson stays
+    inside [0, 1] and keeps a width at the ends.
+
+    Args:
+        n_true: Observations that held.
+        n: Observations.
+
+    Returns:
+        ``(low, high)``, or ``None`` with no observations — there is no rate to bound.
+
+    Raises:
+        ValueError: ``n_true`` is negative or above ``n``.
+    """
+    if not 0 <= n_true <= n:
+        raise ValueError(f"a proportion needs 0 <= n_true <= n; got n_true={n_true}, n={n}")
+    if n == 0:
+        return None
+    z = NormalDist().inv_cdf(1 - (1 - INTERVAL_LEVEL) / 2)
+    rate = n_true / n
+    denominator = 1 + z * z / n
+    centre = (rate + z * z / (2 * n)) / denominator
+    half = z * math.sqrt(rate * (1 - rate) / n + z * z / (4 * n * n)) / denominator
+    return max(0.0, centre - half), min(1.0, centre + half)
 
 
 class SignificanceResult(NamedTuple):
@@ -488,4 +519,5 @@ __all__ = [
     "paired_change",
     "standard_error_of_mean",
     "t_critical_two_sided",
+    "wilson_interval",
 ]

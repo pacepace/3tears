@@ -207,6 +207,13 @@ def compile_delta_table(payload: DeltaTablePayload) -> CompiledChart:
     ]
     rows = [_delta_row(row) for row in payload.rows]
     disclosures: list[str] = []
+    if immaterial := [row.metric for row in payload.rows if row.materiality == "immaterial"]:
+        # Labelled, not hidden: the row is still drawn and tabulated, and this says which changes the
+        # host declared too small to act on, so a reader does not act on one.
+        disclosures.append(
+            f"{len(immaterial)} of {len(payload.rows)} changes are below their measure's materiality threshold "
+            f"({', '.join(immaterial)}) — immaterial: too small to act on, however clearly they clear their noise."
+        )
     if undrawn:
         # Named, never silently dropped: the table below the chart still counts
         # these rows, so an unexplained gap reads as a rendering fault.
@@ -250,7 +257,7 @@ def _delta_row(row: DeltaRow) -> dict[str, Any]:
         "metric": row.metric,
         "a": _with_unit(a * scale, unit),
         "b": _with_unit(b * scale, unit),
-        "delta": _signed_with_unit(delta * scale, unit),
+        "delta": _signed_with_unit(delta * scale, unit) + (" (immaterial)" if row.materiality == "immaterial" else ""),
         "change": f"{change:+.1%}" if change is not None else None,
         "effect": _effect_read(row),
     }

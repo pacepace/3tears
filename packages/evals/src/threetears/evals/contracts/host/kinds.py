@@ -148,12 +148,23 @@ class KindContract:
             beyond the engine's fields — whose templates are then refused any ``kind_spec`` at all.
         prefix: The namespace of this kind's levers, ``<prefix>.<field>``; the kind's name when
             omitted. Dotted lever names are what a pivot reads as open coordinates.
+        seats: The seats in the rig this kind's runs fill, as an ALLOW-list: each entry names a pinned
+            role of the host's registry (:class:`~threetears.evals.contracts.host.sweepables.RolePins` —
+            the engine's ``judge`` and ``simulator``, or one the host adds), which seats every pin of that
+            role, or names one apparatus dimension directly. Every apparatus dimension it does not seat is
+            inapplicable to this kind's runs: a blank there is no confound, and a dimension added to the
+            rig later — by the engine or the host — is inapplicable to this kind until it claims one,
+            so it cannot make the kind's runs ``undecided``. A recorded level still wins over the
+            declaration (:meth:`~threetears.evals.contracts.host.profile.HostProfile.omits_apparatus`).
+            ``None``, the default, declares nothing and holds the kind to every dimension — the
+            conservative reading for a kind that has not said.
     """
 
     kind: str
     overlays: type[BaseModel] | None = None
     spec: type[BaseModel] | None = None
     prefix: str | None = None
+    seats: frozenset[str] | None = None
     _knobs: tuple[_Knob, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:

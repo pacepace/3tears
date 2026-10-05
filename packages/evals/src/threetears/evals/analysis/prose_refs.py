@@ -328,6 +328,7 @@ def _example_surface() -> DecisionSurface:
     measures = MeasureCollection(
         measures=[
             MeasureSummary(
+                population="scored",
                 name=_EXAMPLE_MEASURE,
                 attribution_scope="end_to_end",
                 higher_is_better=False,
@@ -336,7 +337,12 @@ def _example_surface() -> DecisionSurface:
                 p95=1900.0,
             ),
             MeasureSummary(
-                name=_EXAMPLE_CHECK, attribution_scope="end_to_end", higher_is_better=True, n=12, mean=8 / 12
+                population="scored",
+                name=_EXAMPLE_CHECK,
+                attribution_scope="end_to_end",
+                higher_is_better=True,
+                n=12,
+                mean=8 / 12,
             ),
         ]
     )

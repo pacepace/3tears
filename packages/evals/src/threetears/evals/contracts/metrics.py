@@ -113,6 +113,28 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "TRANSCRIPT_DIM_ID",
     "METRIC_DESCRIPTORS",
     "CODE_GRADED_FAMILIES",
+    "CLASSIFIER_FAMILY",
+    "CLASSIFIER_LABEL_MEASURE_PREFIX",
+    "COMPOSITE_FAMILY",
+    "CONFUSION_CELL_MEASURE",
+    "CONFUSION_SEPARATOR",
+    "DUAL_AXIS_FAMILY",
+    "ENGINE_FAMILIES",
+    "GOAL_STATE_FAMILY",
+    "MECHANICAL_FAMILY",
+    "RUBRIC_FAMILY",
+    "ClassifierStatistic",
+    "GradedBy",
+    "MeasureFamily",
+    "MeasurePopulation",
+    "Materiality",
+    "classifier_label_measure",
+    "classifier_label_of",
+    "confusion_cell",
+    "confusion_of",
+    "describe_classifier_label",
+    "is_code_graded",
+    "materiality",
     "DERIVED_PER_RESULT_MEASURES",
     "DIAGNOSTIC_MEASURES",
     # The measure vocabulary is published, not internal: surfaces that carry a measure's
@@ -136,16 +158,35 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "strictest_class",
 ]
 
+#: What one observation of a measure is. ``boolean`` is a condition that held or did not, summarised
+#: as a rate with an interval (never averaged into a percentile); ``text`` is words — a ruling, a
+#: reason — listed as evidence and never aggregated at all.
 MetricDataType = Literal["numeric", "categorical", "boolean", "text"]
 
-MetricFamily = Literal[
-    "goal_state",
-    "rubric",
-    "dual_axis",
-    "classifier",
-    "mechanical",
-    "composite",
-]
+#: A measure family's name. **Open**: the engine's own families are the named constants below, and a
+#: host declares its own on its measure registry as a :class:`MeasureFamily`, saying whether code or a
+#: judge produced the number. A descriptor naming a family neither declares is refused where the host
+#: registers it, so a misspelled family is caught at startup rather than read as unclassified.
+MetricFamily = str
+
+#: Measured the same way everywhere by code: wall-clock, tokens, spend, counts.
+MECHANICAL_FAMILY: MetricFamily = "mechanical"
+#: A label compared against an expected one by code.
+CLASSIFIER_FAMILY: MetricFamily = "classifier"
+#: A goal-state check's verdict: code compared against what the candidate did.
+GOAL_STATE_FAMILY: MetricFamily = "goal_state"
+#: A judge's score on an authored rubric dimension.
+RUBRIC_FAMILY: MetricFamily = "rubric"
+#: The two reserved judge axes every judged run is scored on.
+DUAL_AXIS_FAMILY: MetricFamily = "dual_axis"
+#: A figure built over several results or runs: pass^k, the composite, a comparison's effect size.
+COMPOSITE_FAMILY: MetricFamily = "composite"
+
+#: Who produced a family's numbers. ``code`` is what the analysis generator may rank on and a bar on a
+#: described measure may name; ``judge`` is a model's opinion and never ranks.
+GradedBy = Literal["code", "judge"]
+
+_FAMILY_NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
 
 TransferabilityClass = Literal["mechanical", "judge_mediated", "scenario_bound"]
 
@@ -177,6 +218,46 @@ _CLASS_STRICTNESS: dict[TransferabilityClass, int] = {
 }
 
 
+class MeasureFamily(EvalBaseModel):
+    """One family of measures and who produces its numbers — the engine's six, or one a host declares.
+
+    A host declares a family when its measures are a kind of number none of the engine's families
+    names: a table's play-quality reading, a reviewer's tally. Declaring it on the host's
+    :class:`~threetears.evals.contracts.host.measures.MeasureRegistry` is what lets a descriptor name
+    it; ``graded_by`` is what decides whether its measures may be ranked on.
+    """
+
+    name: MetricFamily = Field(
+        pattern=_FAMILY_NAME_PATTERN, description="The family's name, as a descriptor's `family` spells it."
+    )
+    graded_by: GradedBy = Field(
+        description="`code` when code produced every number in the family; `judge` when a model's opinion did."
+    )
+    description: str = Field(min_length=1, description="What the family's measures are, in one sentence.")
+
+
+#: The engine's own families, by name. A host family may not reuse one of these names.
+ENGINE_FAMILIES: Mapping[MetricFamily, MeasureFamily] = {
+    family.name: family
+    for family in (
+        MeasureFamily(
+            name=MECHANICAL_FAMILY, graded_by="code", description="Measured by code the same way everywhere."
+        ),
+        MeasureFamily(
+            name=CLASSIFIER_FAMILY, graded_by="code", description="A label compared against an expected one."
+        ),
+        MeasureFamily(name=GOAL_STATE_FAMILY, graded_by="code", description="A goal-state check's verdict."),
+        MeasureFamily(name=RUBRIC_FAMILY, graded_by="judge", description="A judge's score on a rubric dimension."),
+        MeasureFamily(name=DUAL_AXIS_FAMILY, graded_by="judge", description="The two reserved judged axes."),
+        MeasureFamily(
+            name=COMPOSITE_FAMILY,
+            graded_by="judge",
+            description="A figure built over several results — pass^k, the composite, an effect size.",
+        ),
+    )
+}
+
+
 class MetricDescriptor(EvalBaseModel):
     """What a single measure is, independent of any particular value of it."""
 
@@ -187,7 +268,11 @@ class MetricDescriptor(EvalBaseModel):
     )
     family: MetricFamily | None = Field(
         default=None,
-        description="None when the measure has never been described. Missing is not 'mechanical' — see the unclassified arm of describe_measure.",
+        pattern=_FAMILY_NAME_PATTERN,
+        description=(
+            "One of the engine's families or one the host declares on its measure registry. None when the measure "
+            "has never been described. Missing is not 'mechanical' — see the unclassified arm of describe_measure."
+        ),
     )
     transferability_class: TransferabilityClass
     attribution_scope: AttributionScope
@@ -209,11 +294,12 @@ class MetricDescriptor(EvalBaseModel):
     )
     materiality_threshold: float | None = Field(
         default=None,
+        ge=0.0,
         description=(
-            "The magnitude, in this measure's own units, at or above which a caveat about it is worth "
-            "interrupting a reader for. None means the host declared none, and the engine then ATTACHES "
-            "every caveat on this measure — silence stays conservative, and the cost of not declaring one is "
-            "paid in attention rather than banked as a permanent banner."
+            "The magnitude, in this measure's own units, below which a difference in it is too small to act on. "
+            "A difference below it is labelled immaterial wherever the engine states one (`materiality`). None "
+            "means the host declared none, and every difference is then material — silence stays conservative, "
+            "and the cost of not declaring one is paid in attention rather than banked as a permanent banner."
         ),
     )
     formula: str | None = Field(
@@ -238,10 +324,10 @@ class MetricDescriptor(EvalBaseModel):
     population: MeasurePopulation | None = Field(
         default=None,
         description=(
-            "Which observations this measure is computed over. None means the measure has not yet named its "
-            "population. Nothing enforces comparability on it yet: it is declared so that two surfaces reporting "
-            "one measure name either agree or are forced to disagree in their names, and the check that acts on "
-            "it arrives with the memo."
+            "Which observations this measure is computed over. Every summary of it — a cell's, a bar's, a run's — "
+            "is computed over exactly that population and states which, so two populations are never pooled under "
+            "one name. None leaves it to the surface: the decision surface's cells and bars read `scored`, a run's "
+            "summary and the rollups `all_observed`, and each summary says which it used."
         ),
     )
     contained_by: str | None = Field(
@@ -1380,6 +1466,18 @@ _SEED: tuple[MetricDescriptor, ...] = (
         higher_is_better=True,
         description="Whether one classification matched its expected label.",
     ),
+    _d(
+        name="confusion_cell",  # CONFUSION_CELL_MEASURE, defined below beside the cell's format
+        data_type="categorical",
+        family="classifier",
+        transferability_class="scenario_bound",
+        attribution_scope="end_to_end",
+        formula="the expected label and the predicted one, as `expected → predicted` (see confusion_cell)",
+        description=(
+            "Which cell of the confusion matrix one classification landed in. Counted, never averaged: the counts "
+            "over a cell's results are its confusion matrix, from which per-label precision, recall and F1 are derived."
+        ),
+    ),
     # ---- Async-delivery lifecycle (per delivery) ----------------------------
     # The leaves of ``AsyncDelivery``, the engine's record of one piece of background work. What
     # the tool's work consisted of — its stop reasons, its own outcome buckets — is the kind's,
@@ -1489,9 +1587,11 @@ if len(METRIC_DESCRIPTORS) != len(_SEED):  # pragma: no cover - import-time inva
     raise RuntimeError(f"Duplicate measure name(s) in the metric seed: {_dupes}")
 
 
-#: The measure families a code path grades, with no judge between the candidate and the number —
-#: the only families the analysis generator may rank on, and the only ones a campaign bar on a
-#: DESCRIBED measure may name.
+#: The ENGINE's measure families a code path grades, with no judge between the candidate and the
+#: number — derived from :data:`ENGINE_FAMILIES`. Together with every host family declared
+#: ``graded_by="code"`` (:func:`is_code_graded`, the one predicate both readers call), these are the
+#: only families the analysis generator may rank on, and the only ones a campaign bar on a DESCRIBED
+#: measure may name.
 #:
 #: Admitting a family is a
 #: change to what every generated memo ranks on and to what every bar may be read on, so it is a
@@ -1505,8 +1605,59 @@ if len(METRIC_DESCRIPTORS) != len(_SEED):  # pragma: no cover - import-time inva
 #: now yields each check's 0/1 per observation under :func:`goal_check_measure`, so every check's
 #: pass rate is a ranked measure whether or not a bar names it. Held here, in the registry, because
 #: two readers must agree on it — the bundle's ranking filter and the bar-name resolver in
-#: ``contracts/declaration.py`` — and the second cannot import the first.
-CODE_GRADED_FAMILIES: frozenset[str] = frozenset({"mechanical", "classifier", "goal_state"})
+#: ``contracts/declaration.py`` — and the second cannot import the first; both ask
+#: :func:`is_code_graded`.
+CODE_GRADED_FAMILIES: frozenset[str] = frozenset(
+    name for name, family in ENGINE_FAMILIES.items() if family.graded_by == "code"
+)
+
+
+def is_code_graded(descriptor: MetricDescriptor, measures: MeasureRegistry) -> bool:
+    """Whether code, with no judge between the candidate and the number, produced this measure.
+
+    The engine's families answer from :data:`ENGINE_FAMILIES`; a host's own family answers from the
+    :class:`MeasureFamily` the host declared on ``measures``. A measure with no family — one nobody
+    described — is not code-graded: there is nothing to say it is.
+
+    Args:
+        descriptor: The measure's descriptor.
+        measures: The host's measure registry, which holds its declared families.
+
+    Returns:
+        True for a code-graded family.
+    """
+    if descriptor.family is None:
+        return False
+    if descriptor.family in ENGINE_FAMILIES:
+        return descriptor.family in CODE_GRADED_FAMILIES
+    declared = measures.family(descriptor.family)
+    return declared is not None and declared.graded_by == "code"
+
+
+#: How a difference in a measure reads against the measure's declared materiality threshold.
+Materiality = Literal["material", "immaterial"]
+
+
+def materiality(threshold: float | None, delta: float) -> Materiality:
+    """Whether a difference of ``delta`` in a measure is large enough to act on.
+
+    The ONE predicate over :attr:`MetricDescriptor.materiality_threshold`, called with the
+    descriptor's threshold by the analysis bundle and with the threshold a decision surface froze
+    (:class:`~threetears.evals.contracts.surface.MeasureFacts`) by every surface drawn from it, so
+    the two cannot disagree about one difference. A difference whose size is below the threshold is
+    ``immaterial``; at or above it, or when no threshold was declared, it is ``material``. Silence is
+    conservative — a host that has not said what is too small to matter gets every difference
+    treated as one that might.
+
+    Args:
+        threshold: The measure's declared threshold, in its own units, or None when it declared none.
+        delta: The difference, in the measure's own units. Its sign is ignored.
+
+    Returns:
+        ``immaterial`` only below a declared threshold.
+    """
+    return "immaterial" if threshold is not None and abs(delta) < threshold else "material"
+
 
 #: Measures reported so a reader can EXPLAIN a movement, and never ranked or held to a bar.
 #:
@@ -1747,6 +1898,135 @@ def describe_goal_check_rate(expression: str) -> MetricDescriptor:
     )
 
 
+#: The core measure a classification's confusion-matrix cell is reported under.
+CONFUSION_CELL_MEASURE = "confusion_cell"
+
+#: The separator between the two labels of a confusion cell — the expected one, then the predicted one.
+CONFUSION_SEPARATOR = " → "
+
+#: Characters escaped inside a label so a cell always splits into exactly the two labels it was made of.
+_CONFUSION_ESCAPES: tuple[tuple[str, str], ...] = (("%", "%25"), ("→", "%E2%86%92"))
+_CONFUSION_DECODED = {code: char for char, code in _CONFUSION_ESCAPES}
+_CONFUSION_UNESCAPE = re.compile("|".join(re.escape(code) for code in _CONFUSION_DECODED))
+
+
+def _escape_label(label: str) -> str:
+    for char, code in _CONFUSION_ESCAPES:
+        label = label.replace(char, code)
+    return label
+
+
+def _unescape_label(label: str) -> str:
+    return _CONFUSION_UNESCAPE.sub(lambda m: _CONFUSION_DECODED[m.group(0)], label)
+
+
+def confusion_cell(expected: str, predicted: str) -> str:
+    """The value a classification reports under ``confusion_cell``: ``expected → predicted``.
+
+    A label is free text, so the separator's arrow is escaped inside each label; :func:`confusion_of`
+    reads the two labels back exactly.
+
+    Args:
+        expected: The label the case expected.
+        predicted: The label the candidate gave.
+
+    Returns:
+        The cell, as one categorical value.
+
+    Raises:
+        ValueError: Either label is blank.
+    """
+    if not expected.strip() or not predicted.strip():
+        raise ValueError("a confusion cell needs both an expected and a predicted label")
+    return _escape_label(expected) + CONFUSION_SEPARATOR + _escape_label(predicted)
+
+
+def confusion_of(cell: str) -> tuple[str, str] | None:
+    """The ``(expected, predicted)`` labels of a value :func:`confusion_cell` made, or None for anything else.
+
+    Args:
+        cell: A ``confusion_cell`` value.
+
+    Returns:
+        The two labels, or None when the value is not one confusion cell.
+    """
+    parts = cell.split(CONFUSION_SEPARATOR)
+    if len(parts) != 2 or not all(part.strip() for part in parts):
+        return None
+    return _unescape_label(parts[0]), _unescape_label(parts[1])
+
+
+#: The per-label statistics a classifier's confusion matrix yields, each minted per label.
+ClassifierStatistic = Literal["precision", "recall", "f1"]
+
+#: The prefix a per-label classifier statistic is named under: ``classifier:<statistic>:<label>``.
+CLASSIFIER_LABEL_MEASURE_PREFIX = "classifier:"
+
+_CLASSIFIER_STATISTICS: tuple[ClassifierStatistic, ...] = ("precision", "recall", "f1")
+
+
+def classifier_label_measure(statistic: ClassifierStatistic, label: str) -> str:
+    """The measure name one label's precision, recall or F1 is reported under.
+
+    Minted rather than authored, like :func:`goal_check_measure`: a label set is the host's and open,
+    so the registry names each label's statistic and is the one reader of the name.
+
+    Args:
+        statistic: ``precision``, ``recall`` or ``f1``.
+        label: The label.
+
+    Returns:
+        ``classifier:<statistic>:<label>``, the label escaped as a figure reference requires.
+
+    Raises:
+        ValueError: The label is blank.
+    """
+    _require_name(label)
+    escaped = label
+    for char, code in _REFERENCE_ESCAPES:
+        escaped = escaped.replace(char, code)
+    return f"{CLASSIFIER_LABEL_MEASURE_PREFIX}{statistic}:{escaped}"
+
+
+def classifier_label_of(name: str) -> tuple[ClassifierStatistic, str] | None:
+    """The ``(statistic, label)`` a name was minted for by :func:`classifier_label_measure`, or None.
+
+    Args:
+        name: Any measure name.
+
+    Returns:
+        The statistic and the label, verbatim, or None when the name is not a per-label measure.
+    """
+    if not name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX):
+        return None
+    statistic, _, escaped = name[len(CLASSIFIER_LABEL_MEASURE_PREFIX) :].partition(":")
+    label = _REFERENCE_UNESCAPE.sub(lambda m: _REFERENCE_DECODED[m.group(0)], escaped)
+    if statistic not in _CLASSIFIER_STATISTICS or not label.strip():
+        return None
+    return statistic, label
+
+
+def describe_classifier_label(statistic: ClassifierStatistic, label: str) -> MetricDescriptor:
+    """Describe one label's precision, recall or F1 — derived from a cell's confusion matrix.
+
+    Args:
+        statistic: ``precision``, ``recall`` or ``f1``.
+        label: The label.
+
+    Returns:
+        The descriptor, named by :func:`classifier_label_measure`, carrying the core statistic's meaning.
+    """
+    core = METRIC_DESCRIPTORS[statistic]
+    return core.model_copy(
+        update={
+            "name": classifier_label_measure(statistic, label),
+            "description": f"{core.description} For the label {label!r}.",
+            "reader_prose": f"the {statistic} of the label {label!r}",
+            "merit_axis": "quality",
+        }
+    )
+
+
 def partition_components(whole: str, *extra: dict[str, MetricDescriptor], measures: MeasureRegistry) -> list[str]:
     """Every measure declared a component of ``whole``, sorted.
 
@@ -1937,7 +2217,8 @@ def describe_measure(name: str, measures: MeasureRegistry) -> MetricDescriptor:
     """Describe any measure name, seeded or not. Total by construction.
 
     Resolution order, most specific first: the seeded core, then a goal-state check's pass-rate
-    measure (named by :func:`goal_check_measure`, a namespace the registry mints), then **the
+    measure (named by :func:`goal_check_measure`, a namespace the registry mints), then a per-label
+    classifier statistic (named by :func:`classifier_label_measure`, another), then **the
     host's own catalogue** (``measures``), then a raw goal-state path expression (recognised by its DSL
     root — ``state.`` or ``variation.``; a call-form check has no such root, which is why reports
     carry a check under its minted name). Anything left is unclassified and is
@@ -1989,6 +2270,8 @@ def describe_measure(name: str, measures: MeasureRegistry) -> MetricDescriptor:
     # redefine what a check's measure is by declaring a name inside it.
     if (expression := goal_check_of(name)) is not None:
         return describe_goal_check_rate(expression)
+    if (per_label := classifier_label_of(name)) is not None:
+        return describe_classifier_label(*per_label)
 
     declared = _host_declared(name, measures)
     if declared is not None:

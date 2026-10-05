@@ -80,7 +80,7 @@ from threetears.evals.analysis.reporting import (
     measurement_window_disclosure,
     project_score_records,
 )
-from threetears.evals.analysis.stats import ci_half_width, standard_error_of_mean
+from threetears.evals.analysis.stats import ci_half_width, standard_error_of_mean, wilson_interval
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
 from threetears.evals.contracts.campaign import (
     BatteryRef,
@@ -95,15 +95,22 @@ from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, HostP
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_variant_identity
 from threetears.evals.contracts.metrics import (
-    CODE_GRADED_FAMILIES,
+    CONFUSION_CELL_MEASURE,
     DIAGNOSTIC_MEASURES,
     AttributionScope,
+    ClassifierStatistic,
+    MeasurePopulation,
     MetricDescriptor,
+    classifier_label_measure,
+    confusion_of,
     describe_measure,
     describe_phase_timing,
     describe_reported_measure,
     describe_rubric_dim,
     goal_check_measure,
+    Materiality,
+    is_code_graded,
+    materiality,
     partition_components,
     remainder_withheld_reason,
 )
@@ -122,6 +129,7 @@ from threetears.evals.contracts.surface import CellFacts, JudgedDimensionFacts, 
 from threetears.evals.contracts.usage_capture import count_substituted_deliveries, production_replicating_cost
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
+    from threetears.evals.contracts.host.measures import MeasureRegistry
     from threetears.evals.contracts.campaign import EvalCampaign
     from threetears.evals.contracts.models import EvalRun
 
@@ -364,6 +372,14 @@ class MeasureMovement(EvalDocumentModel):
     n_b: int = Field(ge=0, description="Observations at the second level.")
     direction: Literal["improved", "regressed", "flat"] = Field(
         description="The movement read against its own noise — flat when it does not clear it."
+    )
+    materiality: Materiality = Field(
+        description=(
+            "The movement read against the host's declared materiality threshold for this measure: `immaterial` "
+            "when the delta is smaller than the threshold — too small to act on however clearly it clears its "
+            "noise — and `material` otherwise, including when no threshold is declared. A caveat on an immaterial "
+            "movement belongs in no finding."
+        )
     )
 
 
@@ -1731,14 +1747,7 @@ def _lever_value(record: ScoreRecord, lever: str, effective_by_run: dict[str, di
     return _INHERITED_DEFAULT_LEVEL if effective is None else effective.value
 
 
-#: The code-graded families, read from the registry — see
-#: :data:`~threetears.evals.contracts.metrics.CODE_GRADED_FAMILIES` for the rule that sets them. Held there
-#: rather than here because the bar-name resolver must agree with this filter and cannot import
-#: this module.
-_CODE_GRADED_FAMILIES = CODE_GRADED_FAMILIES
-
-
-def _is_reportable(descriptor: MetricDescriptor) -> bool:
+def _is_reportable(descriptor: MetricDescriptor, measures: MeasureRegistry) -> bool:
     """Whether a measure belongs on the bundle's measure surfaces — what the generator reads and ranks from.
 
     Three filters, each excluding a class of measure that would otherwise mislead:
@@ -1746,9 +1755,11 @@ def _is_reportable(descriptor: MetricDescriptor) -> bool:
     - **Seeded only.** ``family is None`` marks a name nobody has described; the
       registry itself refuses to guess at one, and pooling it here would be that same
       guess made silently.
-    - **Code-graded families only.** The generator ranks on mechanism, never on judged
-      quality — and quality already has a home in the ``reporting`` lenses.
-      This is a filter on registry *metadata*, not on a subject or scenario type.
+    - **Code-graded families only** (:func:`~threetears.evals.contracts.metrics.is_code_graded`, the
+      predicate the bar-name resolver asks too, so the two cannot disagree). The generator ranks on
+      mechanism, never on judged quality — and quality already has a home in the ``reporting`` lenses.
+      This is a filter on registry *metadata*, not on a subject or scenario type. A host's own family
+      is admitted exactly when the host declared it ``graded_by="code"``.
 
       **``classifier`` is admitted beside ``mechanical``, and the omission was a real
       defect**: the descriptive-telemetry rule's ranking half is about JUDGE scores — "no judge can score
@@ -1782,11 +1793,13 @@ def _is_reportable(descriptor: MetricDescriptor) -> bool:
       and the divergence lens see it; its missing direction is what keeps every direction-
       reading surface — a superlative, a bar — from treating it as a merit. Categorical
       measures are kept without a direction: they carry the *how did it conclude* signal
-      (a forced-vs-voluntary split) that is ranked on as a rate, not a value.
+      (a forced-vs-voluntary split) that is ranked on as a rate, not a value. **Boolean and text
+      measures are kept too**: a boolean is summarised as a rate with an interval and a text
+      measure is listed as evidence, and neither is ever averaged into a distribution.
     """
-    if descriptor.family not in _CODE_GRADED_FAMILIES:
+    if not is_code_graded(descriptor, measures):
         return False
-    if descriptor.data_type == "categorical":
+    if descriptor.data_type in ("categorical", "boolean", "text"):
         return True
     if descriptor.data_type != "numeric":
         return False
@@ -1803,9 +1816,15 @@ def _value_fits(descriptor: MetricDescriptor, value: float | str) -> bool:
     Dropping the observation instead keeps the blast radius at one measure — and the drop
     is reported rather than silent (see ``MeasureCollection.unreported_observations``).
     """
-    if descriptor.data_type == "categorical":
+    if descriptor.name == CONFUSION_CELL_MEASURE:
+        # A confusion cell is categorical AND has a format: one that does not split into its two labels
+        # could not be counted into the matrix the per-label statistics are derived from.
+        return isinstance(value, str) and confusion_of(value) is not None
+    if descriptor.data_type in ("categorical", "text"):
         return isinstance(value, str)
-    return not isinstance(value, str)
+    if descriptor.data_type == "boolean":
+        return isinstance(value, bool)
+    return not isinstance(value, (str, bool))
 
 
 def _scalar_leaves(model: BaseModel) -> Iterator[tuple[str, float | str]]:
@@ -2050,20 +2069,33 @@ def _open_map_leaves(
     # refuses reserved LEVERS, neither of which is this. No host in the tree collides today.
     for name, value in result.host_measures.items():
         if name.strip():
-            yield name, float(value), describe_measure(name, profile.measures)
+            yield name, value, describe_measure(name, profile.measures)
 
 
-def _measure_collection(results: list[EvalResult], *, profile: HostProfile) -> MeasureCollection:
+def _measure_collection(
+    results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
+) -> MeasureCollection:
     """Build the scope-tagged measure surface over a set of results.
 
     See :func:`_collect_measures`, which this wraps for the callers that need only the
     collection and not the provenance of each measure.
     """
-    return _collect_measures(results, profile=profile)[0]
+    return _collect_measures(results, profile=profile, undeclared=undeclared)[0]
 
 
-def _collect_measures(results: list[EvalResult], *, profile: HostProfile) -> tuple[MeasureCollection, dict[str, str]]:
+def _collect_measures(
+    results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
+) -> tuple[MeasureCollection, dict[str, str]]:
     """Build the measure surface, and say what one observation of each measure describes.
+
+    **Each measure is computed over its own population** (``MetricDescriptor.population``): a
+    ``scored`` measure leaves out every result the harness faulted, an ``all_observed`` one keeps
+    them, and every summary states which it was. ``results`` is therefore EVERY result in scope,
+    faulted ones included — the walk does the excluding, per measure, so a cell, a bar, a run summary
+    and a divergence lens reporting one measure name report it over one population. A measure that
+    declares none is computed over ``undeclared``, the population of the surface asking: ``scored``
+    for the decision surface's cells and bars, ``all_observed`` for a run's summary and the rollups,
+    which is what each of those always computed.
 
     The second return value maps every pooled measure to its **observation unit**:
     ``'result'`` for the result's own scalars, its open maps, and the leaves of any single
@@ -2111,9 +2143,14 @@ def _collect_measures(results: list[EvalResult], *, profile: HostProfile) -> tup
         *,
         report_gaps: bool,
         case_id: str,
+        faulted: bool,
         carrier: str | None = None,
     ) -> None:
-        if not _is_reportable(descriptor):
+        # Outside its population before anything else: a faulted result is not an observation of a
+        # `scored` measure at all, so it can neither contribute a value nor be reported as one lost.
+        if faulted and (descriptor.population or undeclared) == "scored":
+            return
+        if not _is_reportable(descriptor, profile.measures):
             # An undescribed NUMBER from a telemetry source is the loss worth reporting: a
             # measurement the code emits that the registry cannot explain. Three things stay
             # quiet, each for its own reason — an undescribed string (almost always an
@@ -2134,10 +2171,11 @@ def _collect_measures(results: list[EvalResult], *, profile: HostProfile) -> tup
 
     for result in results:
         case_id = result.test_case_id
+        faulted = harness_faulted(result)
         for name, value, descriptor in _lineage_leaves(result, profile=profile):
-            record(outer, name, value, descriptor, report_gaps=False, case_id=case_id)
+            record(outer, name, value, descriptor, report_gaps=False, case_id=case_id, faulted=faulted)
         for name, value, descriptor in _open_map_leaves(result, profile=profile):
-            record(outer, name, value, descriptor, report_gaps=True, case_id=case_id)
+            record(outer, name, value, descriptor, report_gaps=True, case_id=case_id, faulted=faulted)
         for name, value, report_gaps, carrier, observation_unit in chain(
             _carrier_leaves(result, profile=profile), _derived_leaves(result), _goal_check_leaves(result)
         ):
@@ -2148,6 +2186,7 @@ def _collect_measures(results: list[EvalResult], *, profile: HostProfile) -> tup
                 describe_measure(name, profile.measures),
                 report_gaps=report_gaps,
                 case_id=case_id,
+                faulted=faulted,
                 carrier=carrier,
             )
             inner_units[name] = observation_unit
@@ -2171,8 +2210,16 @@ def _collect_measures(results: list[EvalResult], *, profile: HostProfile) -> tup
     pooled = {**{name: entry for name, entry in inner.items() if name not in EvalResult.model_fields}, **outer}
 
     measures = [
-        _measure_summary(*pooled[name], n_independent=len(cases_by_name.get(name, ()))) for name in sorted(pooled)
+        _measure_summary(
+            *pooled[name],
+            n_independent=len(cases_by_name.get(name, ())),
+            population=pooled[name][0].population or undeclared,
+        )
+        for name in sorted(pooled)
     ]
+    confusion = next((measure for measure in measures if measure.name == CONFUSION_CELL_MEASURE), None)
+    if confusion is not None:
+        measures = sorted([*measures, *_classifier_label_summaries(confusion)], key=lambda measure: measure.name)
     present = {measure.attribution_scope for measure in measures}
     collection = MeasureCollection(
         measures=measures,
@@ -2188,21 +2235,94 @@ def _collect_measures(results: list[EvalResult], *, profile: HostProfile) -> tup
     return collection, {name: units[name] for name in pooled}
 
 
+def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummary]:
+    """Each label's precision, recall and F1, derived from a cell's confusion matrix.
+
+    The matrix is the ``confusion_cell`` measure's category counts — one count per
+    ``expected → predicted`` pair — so the per-label statistics are counted from what the walk already
+    pooled, over the same population, never re-read from the results. Precision and recall are
+    proportions, so each is a boolean-shaped summary: its rate, the count behind it, and the Wilson
+    interval. F1 is not a proportion of anything, so it is a numeric summary with a mean and no
+    spread — none is estimable from one matrix.
+
+    Args:
+        confusion: The ``confusion_cell`` summary.
+
+    Returns:
+        The derived summaries, named by :func:`~threetears.evals.contracts.metrics.classifier_label_measure`.
+        A label never predicted has no precision; one never expected has no recall.
+    """
+    pairs: dict[tuple[str, str], int] = {}
+    for cell, count in confusion.categories.items():
+        if (labels := confusion_of(cell)) is not None:
+            pairs[labels] = pairs.get(labels, 0) + count
+    derived: list[MeasureSummary] = []
+    for label in sorted({label for pair in pairs for label in pair}):
+        hits = pairs.get((label, label), 0)
+        predicted = sum(count for (_, given), count in pairs.items() if given == label)
+        expected = sum(count for (wanted, _), count in pairs.items() if wanted == label)
+        rates: tuple[tuple[ClassifierStatistic, int], ...] = (("precision", predicted), ("recall", expected))
+        for statistic, n in rates:
+            if n:
+                interval = wilson_interval(hits, n)
+                derived.append(
+                    MeasureSummary(
+                        name=classifier_label_measure(statistic, label),
+                        attribution_scope=confusion.attribution_scope,
+                        higher_is_better=True,
+                        population=confusion.population,
+                        n=n,
+                        rate=hits / n,
+                        n_true=hits,
+                        ci_low=None if interval is None else interval[0],
+                        ci_high=None if interval is None else interval[1],
+                    )
+                )
+        derived.append(
+            MeasureSummary(
+                name=classifier_label_measure("f1", label),
+                attribution_scope=confusion.attribution_scope,
+                higher_is_better=True,
+                population=confusion.population,
+                n=expected,
+                mean=2 * hits / (predicted + expected),
+            )
+        )
+    return derived
+
+
 def _measure_summary(
-    descriptor: MetricDescriptor, values: list[float | str], *, n_independent: int = 0
+    descriptor: MetricDescriptor,
+    values: list[float | str],
+    *,
+    n_independent: int = 0,
+    population: MeasurePopulation,
 ) -> MeasureSummary:
-    """Summarise one measure's observations — a distribution, or category counts.
+    """Summarise one measure's observations in the shape its data type takes.
 
     Args:
         descriptor: The measure's registry descriptor, carried onto the summary.
         values: Its observations, at least one.
         n_independent: Distinct test cases behind those observations.
+        population: The population those observations were drawn from, stated on the summary.
 
     Returns:
-        A categorical summary (counts) or a numeric one (distribution + SEM).
+        A categorical summary (counts), a boolean one (rate + Wilson interval), a text one (every
+        observation listed, nothing aggregated) or a numeric one (distribution + SEM).
     """
     shape: dict[str, Any]
-    if descriptor.data_type == "categorical":
+    if descriptor.data_type == "text":
+        shape = {"texts": [str(value) for value in values]}
+    elif descriptor.data_type == "boolean":
+        n_true = sum(1 for value in values if value is True)
+        interval = wilson_interval(n_true, len(values))
+        shape = {
+            "rate": n_true / len(values),
+            "n_true": n_true,
+            "ci_low": None if interval is None else interval[0],
+            "ci_high": None if interval is None else interval[1],
+        }
+    elif descriptor.data_type == "categorical":
         counts: dict[str, int] = {}
         for value in values:
             counts[str(value)] = counts.get(str(value), 0) + 1
@@ -2237,6 +2357,7 @@ def _measure_summary(
         name=descriptor.name,
         attribution_scope=descriptor.attribution_scope,
         higher_is_better=descriptor.higher_is_better,
+        population=population,
         n=len(values),
         n_independent=n_independent,
         **shape,
@@ -2733,8 +2854,8 @@ def _apparatus_levels(
         — a run that pinned no judge config, say — never reaches this function as a blank at
         all, which is how a level that looks empty stops being read as an absence.
 
-        A dimension the host declares it does not HAVE
-        (:attr:`~threetears.evals.contracts.host.profile.HostProfile.apparatus_applicability`) is absent from the
+        A dimension these runs do not HAVE — pinned to a rig seat no kind among them fills
+        (:attr:`~threetears.evals.contracts.host.kinds.KindContract.seats`) — is absent from the
         result entirely rather than present with a ``None`` level. That absence is the claim the
         confound scan already makes about a dimension that held still, and it is what keeps the
         dimension out of the apparatus class as well, since that is built from these keys.
@@ -2762,7 +2883,10 @@ def _apparatus_levels(
     omitted = {
         declared.name
         for declared in apparatus
-        if runs and profile.omits_apparatus(declared.name, *(values_by_run[run.id][declared.name] for run in runs))
+        if runs
+        and profile.omits_apparatus(
+            declared.name, [(run.candidate_kind, values_by_run[run.id][declared.name]) for run in runs]
+        )
     }
     for run in runs:
         values = values_by_run[run.id]
@@ -2944,18 +3068,21 @@ def _confound_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) ->
     return catalog
 
 
-def _movement(name: str, a: MeasureSummary, b: MeasureSummary) -> MeasureMovement:
-    """Grade one measure's movement between two levels against its own noise.
+def _movement(descriptor: MetricDescriptor, a: MeasureSummary, b: MeasureSummary) -> MeasureMovement:
+    """Grade one measure's movement between two levels against its own noise, and against what matters.
 
     Args:
-        name: The measure's registry name.
+        descriptor: The measure's descriptor — its name, and the materiality threshold the delta is
+            labelled against (:func:`~threetears.evals.contracts.metrics.materiality`).
         a: Its summary at the first level.
         b: Its summary at the second level.
 
     Returns:
         The movement, with ``direction`` ``flat`` unless the difference clears
-        :data:`_DIVERGENCE_SE_MULTIPLE` standard errors of that difference.
+        :data:`_DIVERGENCE_SE_MULTIPLE` standard errors of that difference, and ``materiality``
+        ``immaterial`` when the difference is below the measure's declared threshold.
     """
+    name = descriptor.name
     mean_a, mean_b = float(a.mean or 0.0), float(b.mean or 0.0)
     delta = mean_b - mean_a
     # Unestimable on either side means unestimable overall — a level with one observation
@@ -2976,6 +3103,7 @@ def _movement(name: str, a: MeasureSummary, b: MeasureSummary) -> MeasureMovemen
         n_a=a.n,
         n_b=b.n,
         direction=direction,
+        materiality=materiality(descriptor.materiality_threshold, delta),
     )
 
 
@@ -3114,7 +3242,7 @@ def _carried_by(
     at_a = {m.name: m for m in level_a.measures}
     at_b = {m.name: m for m in level_b.measures}
     components = [
-        _movement(name, at_a[name], at_b[name])
+        _movement(catalog[name], at_a[name], at_b[name])
         for name in partition_components(whole.name, catalog, measures=profile.measures)
         if name in at_a and name in at_b and at_a[name].mean is not None and at_b[name].mean is not None
     ]
@@ -3186,7 +3314,9 @@ def _scope_divergences(
         levels = sorted(by_level)
         collected = {
             level: _collect_measures(
-                [result for run_id in by_level[level] for result in results_by_run.get(run_id, [])], profile=profile
+                [result for run_id in by_level[level] for result in results_by_run.get(run_id, [])],
+                profile=profile,
+                undeclared="all_observed",
             )
             for level in levels
         }
@@ -3203,8 +3333,8 @@ def _scope_divergences(
                     profile=profile,
                 )
                 for unit, e_a, e_b, s_a, s_b in _comparable_pairs(collections[level_a], collections[level_b], catalog):
-                    whole = _movement(e_a.name, e_a, e_b)
-                    part = _movement(s_a.name, s_a, s_b)
+                    whole = _movement(catalog[e_a.name], e_a, e_b)
+                    part = _movement(catalog[s_a.name], s_a, s_b)
                     if whole.direction == part.direction:
                         continue
                     withheld = _unsound_subtraction(
@@ -3375,7 +3505,7 @@ def _run_summary(
         prod_cost_usd=sum(prod_costs) if prod_costs else None,
         mean_prod_cost_usd=(sum(prod_costs) / len(prod_costs)) if prod_costs else None,
         n_prod_cost_usd=len(prod_costs),
-        measures=_measure_collection(run_results, profile=profile),
+        measures=_measure_collection(run_results, profile=profile, undeclared="all_observed"),
     )
 
 
@@ -4488,13 +4618,15 @@ def _cannot_tell_on(bar: BarName, counted: list[EvalResult], judged_rows: dict[s
 
 
 def _bar_reading(
-    bar: BarName, counted: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
+    bar: BarName, members: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
 ) -> _BarReading | None:
-    """Read one bar's value over one cell's non-faulted results, from where its kind is carried.
+    """Read one bar's value over one cell's results, from where its kind is carried.
 
     Args:
         bar: The resolved bar name — its kind says where the value lives.
-        counted: The cell's non-faulted results.
+        members: The cell's results, faulted ones included. A measure is read over its own population
+            (:func:`_collect_measures` leaves a fault out of a ``scored`` one); a judged dimension over
+            the non-faulted results, as every score is.
         judged_rows: Projected judged-score rows by result id, for a judged dimension.
         profile: The host whose vocabulary this reads.
 
@@ -4505,13 +4637,14 @@ def _bar_reading(
         # A check's rate is the measure the walk publishes for it, read here rather than recomputed,
         # so a bar's value and the cell's measure are one number by construction.
         name = bar.name if bar.kind == "measure" else goal_check_measure(bar.name)
-        summary = next((m for m in _measure_collection(counted, profile=profile).measures if m.name == name), None)
+        collection = _measure_collection(members, profile=profile, undeclared="scored")
+        summary = next((m for m in collection.measures if m.name == name), None)
         if summary is None or summary.mean is None:
             return None
         return summary.mean, summary.sem, summary.n, summary.n_independent
     rows = [
         (float(record.value), record.test_case_id)
-        for result in counted
+        for result in _non_faulted(members)
         for dimension, record in _judged_values(judged_rows.get(result.id, []))
         if dimension == bar.name and record.value is not None
     ]
@@ -4577,9 +4710,12 @@ def _bar_adjudications(
             reason = resolved.reason
         else:
             readings = {
-                key: _bar_reading(resolved, counted, judged_rows, profile=profile)
-                for key, counted in counted_by_cell.items()
+                key: _bar_reading(resolved, members, judged_rows, profile=profile)
+                for key, members in results_by_cell.items()
             }
+            # A measure computed over every observation excluded none; reporting the cell's faults as
+            # excluded from it would describe a population the value was not computed over.
+            keeps_faults = resolved.kind == "measure" and resolved.descriptor.population == "all_observed"
             if any(reading is not None for reading in readings.values()):
                 state = "adjudicated"
                 for key, members in results_by_cell.items():
@@ -4594,7 +4730,7 @@ def _bar_adjudications(
                             sem=sem,
                             n=n,
                             n_independent=n_independent,
-                            n_infra_excluded=len(members) - len(counted_by_cell[key]),
+                            n_infra_excluded=0 if keeps_faults else len(members) - len(counted_by_cell[key]),
                             n_cannot_tell=_cannot_tell_on(resolved, counted_by_cell[key], judged_rows),
                             cleared=cleared,
                         )
@@ -4678,7 +4814,9 @@ def _cell_measures(
                 repeats_per_case_min=cell.repeats_per_case_min,
                 repeats_per_case_max=cell.repeats_per_case_max,
                 n_infra_excluded=len(members) - len(counted),
-                measures=_measure_collection(counted, profile=profile),
+                # Every member, faulted ones included: the walk leaves a fault out of each measure whose
+                # population is `scored` and keeps it in one whose population is `all_observed`.
+                measures=_measure_collection(members, profile=profile, undeclared="scored"),
                 judged=judged_by_cell.get(key, []),
                 short_runs={run_id: short_runs[run_id] for run_id in run_ids if run_id in short_runs},
                 incomplete_runs={run_id: incomplete_runs[run_id] for run_id in run_ids if run_id in incomplete_runs},
@@ -4706,6 +4844,8 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
             unit=bundle.measure_catalog[name].unit,
             merit_axis=bundle.measure_catalog[name].merit_axis,
             higher_is_better=bundle.measure_catalog[name].higher_is_better,
+            materiality_threshold=bundle.measure_catalog[name].materiality_threshold,
+            population=bundle.measure_catalog[name].population,
         )
         for name in names
     }
@@ -4841,7 +4981,7 @@ def _telemetry_rollup(
         total_cost_usd=budget.total_cost_usd,
         incomplete_cost_usd=budget.incomplete_cost_usd,
         unattributed_cost_usd=budget.unattributed_cost_usd,
-        measures=_measure_collection(results, profile=profile),
+        measures=_measure_collection(results, profile=profile, undeclared="all_observed"),
         tokens=_token_rollup(results),
     )
 

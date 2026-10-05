@@ -313,21 +313,23 @@ def test_the_variant_key_is_computed_over_what_ran_not_over_what_the_launch_name
 
 def test_a_profile_registers_its_kinds_levers_itself_and_refuses_a_second_contract_for_a_kind():
     """Named once, on ``kinds``: every lens reads the contract's levers off the profile's registry."""
+    # Seats dropped: they name the toy host's own apparatus, which this bare shared-core host does not declare.
+    contract = replace(TOY_EXTRACTOR_CONTRACT, seats=None)
     profile = HostProfile(
-        host_id="registered", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()), kinds=(TOY_EXTRACTOR_CONTRACT,)
+        host_id="registered", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()), kinds=(contract,)
     )
 
-    for lever in TOY_EXTRACTOR_CONTRACT.lever_names:
+    for lever in contract.lever_names:
         declared = profile.sweepables.get(lever)
         assert declared is not None and declared.role == "lever", f"{lever} is not on the registry lenses read"
     assert profile.host_sweepables.get("extractor.prompt_style") is None, "the host registered nothing by hand"
-    assert profile.kind_contract(TOY_EXTRACTOR_KIND) is TOY_EXTRACTOR_CONTRACT
+    assert profile.kind_contract(TOY_EXTRACTOR_KIND) is contract
     assert profile.kind_contract("another-kind") == KindContract("another-kind"), (
         "a kind with no contract is asked an empty one, which refuses anything it is handed"
     )
 
     with pytest.raises(ProfileRegistrationError, match="more than one contract"):
-        replace(profile, kinds=(TOY_EXTRACTOR_CONTRACT, TOY_EXTRACTOR_CONTRACT))
+        replace(profile, kinds=(contract, contract))
 
 
 def test_a_profile_refuses_a_kinds_lever_the_host_registered_by_hand():

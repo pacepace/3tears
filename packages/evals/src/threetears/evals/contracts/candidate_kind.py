@@ -285,16 +285,17 @@ class CandidateOutput(EvalBaseModel):
     what excludes the cell and what the run's own stop reason quotes.
     """
 
-    host_measures: dict[str, float] = {}
+    host_measures: dict[str, bool | float | str] = {}
     """What the host's own grader measured about this cell, by registered measure name.
 
     The mechanical grade a kind computes itself, for the kinds whose scoring is code rather
-    than a model: ``field_accuracy`` for an extractor, ``classifier_accuracy`` and
-    ``parse_failure_rate`` for a classifier. Lands verbatim on
+    than a model: ``field_accuracy`` for an extractor, ``match`` and ``confusion_cell`` for a
+    classifier. Typed by the measure's data type — a number, a bool, or a string for a categorical
+    or text measure. Lands verbatim on
     :attr:`~threetears.evals.contracts.models.EvalResult.host_measures`, which the analysis bundle reads
     through the measure registry.
 
-    **A name and a float is engine vocabulary, which is why this crosses in the open while a
+    **A name and a value is engine vocabulary, which is why this crosses in the open while a
     host-named stream does not.** The engine already owns what a measure IS — the registry
     declares its population, range and merit axis, and the descriptor lookup resolves the
     name — so carrying one names no tool, no transport and no subject. What it deliberately

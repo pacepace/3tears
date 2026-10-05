@@ -7,8 +7,8 @@ and never learns what it is driving.
 **Everything it is not.** No conversation, so no simulated other side. No subject minted from a
 snapshot — the extractor's configuration IS the subject, and it arrives as the batch's own
 recorded levers. No model grader: ``field_accuracy`` is computed here, against an adjudicated
-key, which is why the profile declares the core's three model-grader apparatus dimensions
-inapplicable. The standard matrix wires no judge service; ``judged=True`` is the variant that does.
+key, which is why the extractor's kind contract seats none of the core's model-judge apparatus
+dimensions. The standard matrix wires no judge service; ``judged=True`` is the variant that does.
 
 **The scripted client is the only thing swapped out, and it reports usage.** A cell that spent
 nothing observable would leave the run with no usage rows and no cost, and every claim about the

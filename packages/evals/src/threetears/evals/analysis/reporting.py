@@ -877,7 +877,7 @@ class ScoreRecord(EvalBaseModel):
     # composite comment above refuses one field over. One row per result carries the grade,
     # so averaging the column is the arm's accuracy and filtering it to 0 names the cases
     # that arm missed.
-    host_measures: dict[str, float] = {}
+    host_measures: dict[str, bool | float | str] = {}
 
     @model_validator(mode="after")
     def _only_the_quality_row_carries_the_hosts_grade(self) -> ScoreRecord:
@@ -2423,7 +2423,7 @@ def compute_comparison_sets(
         # that rule per input rather than per tuple.
         #
         # ``omits_apparatus`` takes every arm's VALUE rather than the declaration alone: a host that
-        # declared a role inapplicable and whose runs recorded one is contradicting itself, and the
+        # left a seat unfilled and whose runs recorded one is contradicting itself, and the
         # runs win.
         #
         # **The two digest arms below stay, and are not redundant with it.** Both read a RUN-LEVEL
@@ -2439,7 +2439,7 @@ def compute_comparison_sets(
         pins_differ = any(
             sweepables.comparability(name, values) == "differs"
             for name, values in pin_values.items()
-            if not profile.omits_apparatus(name, *values)
+            if not profile.omits_apparatus(name, zip((run.candidate_kind for run in grouped), values, strict=True))
         )
         recorded_attributions = {
             canonical_digest(dict(sorted(judges.items())))

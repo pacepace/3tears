@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from threetears.evals.contracts.metrics import AttributionScope
+from threetears.evals.contracts.metrics import AttributionScope, MeasurePopulation
 from threetears.evals.contracts.base import EvalDocumentModel
 
 
@@ -28,8 +28,15 @@ class MeasureSummary(EvalDocumentModel):
     attribute a change to the subject under test at all) and ``higher_is_better`` (which
     end is the bad one).
 
-    A measure is either numeric (the distribution fields populated, ``categories`` empty)
-    or categorical (``categories`` populated with counts, the distribution ``None``).
+    A measure takes exactly one of four shapes, by its descriptor's ``data_type``:
+
+    - **numeric** — the distribution fields populated;
+    - **categorical** — ``categories`` populated with counts;
+    - **boolean** — ``rate`` and ``n_true``, with ``ci_low``/``ci_high`` the Wilson interval on the
+      rate. A condition is counted, never averaged into a percentile;
+    - **text** — ``texts``, every observation listed as evidence in observation order. Never
+      aggregated: no mean, no mode, no count of distinct values stands in for what was said.
+
     ``sem`` is the standard error of the mean — the dispersion requirement, so no point
     estimate arrives without its spread. It is ``None`` rather than 0.0 below two
     observations, where the spread is unestimable rather than zero.
@@ -43,6 +50,14 @@ class MeasureSummary(EvalDocumentModel):
     )
     higher_is_better: bool | None = Field(
         default=None, description="Direction, or None for a categorical measure (which has no direction)."
+    )
+    population: MeasurePopulation = Field(
+        description=(
+            "Which observations this summary was computed over: `scored` left out the ones the harness faulted, "
+            "`all_observed` kept them. The measure's declared population when it declares one; otherwise the "
+            "population of the surface it sits on. Two summaries of one name over different populations are "
+            "different figures."
+        )
     )
     n: int = Field(ge=0, description="Observations contributing to this measure.")
     n_independent: int = Field(
@@ -91,6 +106,25 @@ class MeasureSummary(EvalDocumentModel):
     categories: dict[str, int] = Field(
         default_factory=dict, description="Value counts for a categorical measure; empty for a numeric one."
     )
+    rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "A boolean measure's share of observations that held (`n_true / n`), with `ci_low`/`ci_high` its "
+            "Wilson interval. None on every other shape."
+        ),
+    )
+    n_true: int | None = Field(
+        default=None, ge=0, description="A boolean measure's observations that held. None on every other shape."
+    )
+    texts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "A text measure's observations, each listed whole, in observation order — evidence to read, never a "
+            "statistic. Empty on every other shape."
+        ),
+    )
 
     def bad_tail(self) -> float | None:
         """The percentile at this measure's *worse* end, whichever end that is.
@@ -109,23 +143,35 @@ class MeasureSummary(EvalDocumentModel):
 
     @model_validator(mode="after")
     def _exactly_one_shape(self) -> MeasureSummary:
-        """Reject a summary that is neither a distribution nor a set of counts, or both.
+        """Reject a summary that is not exactly one of the four shapes.
 
-        The numeric/categorical split is a real either-or, and leaving it to convention
-        means every consumer re-derives the discriminant its own way — one checks
-        ``categories``, another ``p95 is not None``, a third the catalog's ``data_type`` — and they
-        disagree the first time a half-populated summary appears. Enforcing it here makes
-        the shape unrepresentable rather than merely undocumented.
+        The split is a real either-or, and leaving it to convention means every consumer re-derives
+        the discriminant its own way — one checks ``categories``, another ``p95 is not None``, a third
+        the catalog's ``data_type`` — and they disagree the first time a half-populated summary
+        appears. Enforcing it here makes the shape unrepresentable rather than merely undocumented.
 
         Raises:
-            ValueError: If both arms are populated, or neither is.
+            ValueError: If more than one shape is populated, or none is, or a boolean's count does not
+                match its rate.
         """
         numeric = any(value is not None for value in (self.mean, self.p05, self.p50, self.p95, self.max))
-        if numeric == bool(self.categories):
+        boolean = self.rate is not None or self.n_true is not None
+        shapes = {
+            "numeric": numeric,
+            "categorical": bool(self.categories),
+            "boolean": boolean,
+            "text": bool(self.texts),
+        }
+        populated = sorted(name for name, present in shapes.items() if present)
+        if len(populated) != 1:
             raise ValueError(
-                f"measure {self.name!r} must be either numeric (distribution set, categories empty) "
-                f"or categorical (categories set, distribution empty); got numeric={numeric}, "
-                f"categories={bool(self.categories)}"
+                f"measure {self.name!r} must take exactly one shape (numeric, categorical, boolean or text); "
+                f"got {populated or 'none'}"
+            )
+        if boolean and (self.rate is None or self.n_true is None or self.n_true > self.n):
+            raise ValueError(
+                f"boolean measure {self.name!r} needs both rate and n_true, with n_true at most n; "
+                f"got rate={self.rate}, n_true={self.n_true}, n={self.n}"
             )
         return self
 

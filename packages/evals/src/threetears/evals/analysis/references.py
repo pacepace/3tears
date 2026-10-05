@@ -261,14 +261,21 @@ def _resolve_measure(surface: DecisionSurface, cell: CellFacts, ref: str, measur
             f"has none — its evidence is its category counts, which only a `breakdown` chart draws; in prose, "
             f"reference one category's count as `{{{{<cell>|{measure_id}|measure|count:<category>}}}}`"
         )
-    if summary.mean is None:
+    if summary.texts:
+        raise UnresolvableReference(
+            f"reference names measure {measure_id!r} at cell {ref!r} as a point estimate, but it is text — its "
+            "observations are evidence to quote, listed whole, and no number stands for what was said"
+        )
+    # A boolean measure's point estimate is its rate, bounded by the Wilson interval its summary carries.
+    point = summary.rate if summary.rate is not None else summary.mean
+    if point is None:
         raise UnresolvableReference(f"reference names measure {measure_id!r} at cell {ref!r}, which has no mean (n=0)")
     facts = _measure_facts(surface, measure_id)
     return ResolvedReading(
         cell_ref=ref,
         measure_id=measure_id,
         reading="measure",
-        mean=summary.mean,
+        mean=point,
         n=summary.n,
         n_cases=summary.n_independent or None,
         sem=summary.sem,
