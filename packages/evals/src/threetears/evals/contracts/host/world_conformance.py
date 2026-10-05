@@ -15,12 +15,16 @@ that: **an unproved declaration must never render identically to a proved one**,
 :attr:`ConformanceResult.proved` is a single property every renderer reads rather than a rule
 written in prose and enforced nowhere.
 
-Five checks live here.
+Six checks live here.
 
 * **Round trip** — synthesize a value, seed it, read it back. Catches a seeder wired to nothing.
 * **Perception A/B** — render the subject view at two values and assert it moved. This is the
   check that survives a refactor: delete the renderer and the declaration fails the next day
   rather than going on saying "supported".
+* **Perception stillness** — move a dimension and assert every surface its ``perceived_by`` does not
+  name held still; for a judge-only dimension, every surface. The other half of A/B: a surface that
+  shows hidden state *beside* what it is declared to carry still moves where A/B looks, so only this
+  finds it — and a judge-only dimension's "no subject sees this" becomes a checked claim.
 * **Ambient isolation** — hold every declared dimension fixed, move the surroundings, and assert
   the subject's view did not follow. Movement attributable to nothing declared is perception of
   undeclared state, which is the founding defect found mechanically rather than by an incident.
@@ -70,7 +74,14 @@ from threetears.evals.contracts.host.world import Triggered, WorldDimension, Wor
 from threetears.evals.contracts.host.world_schema import UnsupportedSchemaError, honoured_kind, json_equal
 
 #: One conformance check.
-CheckName = Literal["round_trip", "perception_ab", "ambient_isolation", "independence", "vocabulary_completeness"]
+CheckName = Literal[
+    "round_trip",
+    "perception_ab",
+    "perception_stillness",
+    "ambient_isolation",
+    "independence",
+    "vocabulary_completeness",
+]
 
 #: What a check concluded.
 #:
@@ -91,8 +102,10 @@ Outcome = Literal["passed", "failed", "unavailable"]
 #: * ``no_perturbation_binding`` — the proof needed the host to move state no run controls, and
 #:   this host cannot. samsung-frame-art-loader will carry this one forever: a brightness sensor, a
 #:   heartbeat and a human with a remote all move its world.
-#: * ``nothing_to_observe`` — no dimension here is perceived, so there is no view for the check to
-#:   watch. Recorded rather than passed, because a check with nothing to look at proves nothing.
+#: * ``nothing_to_observe`` — there is no surface for the check to watch: no dimension here is
+#:   perceived, or (for stillness) the dimension is perceived by every surface the registry names, or
+#:   every other surface also perceives a sibling that moved with it. Recorded rather than passed,
+#:   because a check with nothing to look at proves nothing.
 #: * ``schema_admits_too_few_values`` — the dimension's own schema cannot supply the distinct
 #:   values the check needed, so there is nothing to vary it between. A declared shape making a
 #:   proof unreachable, which is what ``unavailable`` means — not an engine gap, and not a failure.
@@ -312,6 +325,11 @@ def obligation_rows(declared: WorldDimension) -> frozenset[ObligationRow]:
 def obligations(declared: WorldDimension) -> tuple[CheckName, ...]:
     """The per-dimension checks this dimension's shape owes, derived and never declared.
 
+    ``perception_stillness`` is owed by every dimension, perceived or not: a judge-only dimension
+    claims no surface shows it, and a perceived one claims the surfaces it names are the only ones.
+    Whether there is another surface to watch is a fact about the registry rather than the shape,
+    so a dimension with none still owes the check and records ``nothing_to_observe``.
+
     ``ambient_isolation`` and ``vocabulary_completeness`` are absent here and are not thereby
     optional: both are the ``every_dimension`` row's obligations, and each asks one question of
     the whole registry rather than one per dimension, so the kit discharges each once. Reporting
@@ -328,6 +346,7 @@ def obligations(declared: WorldDimension) -> tuple[CheckName, ...]:
         owed.append("round_trip")
     if declared.perceivable:
         owed.append("perception_ab")
+    owed.append("perception_stillness")
     if declared.seedable:
         owed.append("independence")
     return tuple(owed)
@@ -365,6 +384,7 @@ async def check_world_conformance(
     per_dimension: tuple[tuple[CheckName, _DimensionCheck], ...] = (
         ("round_trip", _round_trip),
         ("perception_ab", _perception_ab),
+        ("perception_stillness", _perception_stillness),
         ("independence", _independence),
     )
     results: list[ConformanceResult] = []
@@ -480,34 +500,10 @@ async def _perception_ab(registry: WorldRegistry, declared: WorldDimension) -> C
             ),
         )
     surfaces = declared.perceived_by
-    await _rebase(registry)
-    try:
-        pair = await _distinct_held_values(registry, declared, 2)
-    except _SchemaTooNarrow as narrow:
-        return _too_narrow("perception_ab", declared, narrow)
-    except _NotHeld as unheld:
-        return _not_held("perception_ab", declared, unheld)
-    renders: dict[str, list[Any]] = {surface: [] for surface in surfaces}
-    tried: list[Any] = []
-    not_held: list[Any] = []
-    for value in (*pair, *_boundary_values_beside(declared.schema, pair)):
-        if not any(json_equal(value, generated) for generated in pair) and await _incoherence(
-            registry, declared, value
-        ):
-            # A boundary the host does not hold beside this world is not a state a subject can be in here.
-            not_held.append(value)
-            continue
-        if qualification := await _put(registry, declared, value):
-            if any(json_equal(value, generated) for generated in pair):
-                return _setup_never_landed("perception_ab", declared, value, qualification)
-            # A boundary the world does not hold as itself — a model that fills an empty value with
-            # its defaults — is not a state a subject can be in, so it is not tried, and is named.
-            not_held.append(value)
-            continue
-        tried.append(value)
-        rendered = await registry.call(view, surfaces=surfaces)
-        for surface in surfaces:
-            renders[surface].append(rendered.get(surface))
+    swept = await _sweep(registry, declared, "perception_ab", surfaces)
+    if isinstance(swept, ConformanceResult):
+        return swept
+    renders, tried, not_held = swept.renders, swept.tried, swept.not_held
     skipped = f"; boundary value(s) {not_held!r} were not held by the world as seeded, so not tried" if not_held else ""
     if still := [surface for surface in surfaces if all(body == renders[surface][0] for body in renders[surface])]:
         return ConformanceResult(
@@ -529,6 +525,204 @@ async def _perception_ab(registry: WorldRegistry, declared: WorldDimension) -> C
             f"with them attached perceives this dimension on each{skipped}"
         ),
     )
+
+
+async def _perception_stillness(registry: WorldRegistry, declared: WorldDimension) -> ConformanceResult:
+    """Move the dimension and require every surface it does NOT name to hold still.
+
+    Perception A/B proves the named surfaces move; nothing there proves the unnamed ones do not, and a
+    judge-only dimension's "no subject sees this" is otherwise a declaration nobody checked. The leak
+    this finds is the one A/B cannot: a player surface that shows hidden state *in addition to* what it
+    is declared to carry passes A/B, because every distinction the declared surface carries is still
+    there. So: put the dimension at the same values A/B uses (:func:`_sweep` — a distinct pair the host
+    holds, plus the schema's boundaries), render the whole subject view at each, and require every
+    surface outside ``perceived_by`` to render identically every time. For a judge-only dimension that
+    is every surface the registry names.
+
+    **Movement a sibling accounts for is not a leak.** A host can hold a dimension's value beside a
+    sibling only by moving that sibling — a coupling it declares — and a surface perceiving the moved
+    sibling then moves for a declared reason. Such surfaces are left out of this verdict and named in
+    it; whether the sibling should have moved at all is independence's question, not this one.
+
+    **The surfaces watched are the ones the registry names** — the union of every ``perceived_by``. A
+    surface no dimension names is not a surface the kit can ask the host to render, so a leak onto one
+    is outside this check; ambient isolation is no help there either, and the detail does not claim it.
+
+    Args:
+        registry: The host's registry.
+        declared: Any dimension.
+
+    Returns:
+        The verdict.
+    """
+    if unattended := _refuse_unattended("perception_stillness", declared):
+        return unattended
+    everywhere = tuple(dict.fromkeys(surface for d in registry.declarations for surface in d.perceived_by))
+    unnamed = tuple(surface for surface in everywhere if surface not in declared.perceived_by)
+    if not unnamed:
+        return ConformanceResult(
+            check="perception_stillness",
+            outcome="unavailable",
+            dimension=declared.name,
+            qualification="nothing_to_observe",
+            detail=(
+                f"no dimension here is perceived by any surface, so there is no subject view for {declared.name} "
+                "to leak into and nothing for this check to watch"
+                if not everywhere
+                else f"{declared.name} is perceived by every surface this registry names ({list(everywhere)!r}), "
+                "so there is no other surface for it to leak into and nothing for this check to watch"
+            ),
+        )
+    if not declared.settable:
+        return ConformanceResult(
+            check="perception_stillness",
+            outcome="unavailable",
+            dimension=declared.name,
+            qualification="no_perturbation_binding",
+            detail=(
+                f"no run controls {declared.name} and this host binds no way to move it out of band, so whether "
+                f"surface(s) {list(unnamed)!r} stay still when it moves is unproved"
+            ),
+        )
+    swept = await _sweep(registry, declared, "perception_stillness", everywhere)
+    if isinstance(swept, ConformanceResult):
+        return swept
+    accounted = {
+        surface
+        for sibling in registry.declarations
+        if sibling.name in swept.siblings_moved
+        for surface in sibling.perceived_by
+    }
+    watched = [surface for surface in unnamed if surface not in accounted]
+    excused = (
+        f"; surface(s) {sorted(set(unnamed) - set(watched))!r} were not judged, because sibling(s) "
+        f"{sorted(swept.siblings_moved)!r} they perceive moved with it"
+        if len(watched) < len(unnamed)
+        else ""
+    )
+    skipped = (
+        f"; boundary value(s) {swept.not_held!r} were not held by the world as seeded, so not tried"
+        if swept.not_held
+        else ""
+    )
+    if not watched:
+        return ConformanceResult(
+            check="perception_stillness",
+            outcome="unavailable",
+            dimension=declared.name,
+            qualification="nothing_to_observe",
+            detail=(
+                f"every surface outside {declared.name}'s perceived_by also perceives a sibling that moved with "
+                f"it, so no surface could be attributed to {declared.name} alone{excused}"
+            ),
+        )
+    claim = (
+        f"{declared.name} is perceived by no surface"
+        if not declared.perceivable
+        else f"{declared.name} is perceived by {list(declared.perceived_by)!r} alone"
+    )
+    if moved := [
+        surface for surface in watched if any(body != swept.renders[surface][0] for body in swept.renders[surface])
+    ]:
+        shown = "; ".join(f"{surface}: {swept.renders[surface]!r}" for surface in moved)
+        return ConformanceResult(
+            check="perception_stillness",
+            outcome="failed",
+            dimension=declared.name,
+            detail=(
+                f"{claim}, yet across {swept.tried!r} surface(s) {moved!r} rendered differently ({shown}) — that "
+                "surface shows this dimension without declaring it, so a subject reading it perceives state the "
+                f"declaration says it cannot{excused}{skipped}"
+            ),
+        )
+    return ConformanceResult(
+        check="perception_stillness",
+        outcome="passed",
+        dimension=declared.name,
+        detail=(
+            f"{claim}, and surface(s) {watched!r} rendered identically across {swept.tried!r}, so no other "
+            f"surface this registry names shows it{excused}{skipped}"
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _Swept:
+    """What one dimension's subject view rendered at each value :func:`_sweep` put it at."""
+
+    renders: Mapping[str, Sequence[Any]]
+    """Surface → its rendering at each value tried, in order."""
+
+    tried: Sequence[Any]
+    """The values the dimension was put at and held."""
+
+    not_held: Sequence[Any]
+    """Boundary values the host does not hold beside this world, so not tried."""
+
+    siblings_moved: frozenset[str]
+    """Other dimensions whose read differed across the values tried."""
+
+
+async def _sweep(
+    registry: WorldRegistry, declared: WorldDimension, check: CheckName, surfaces: tuple[str, ...]
+) -> _Swept | ConformanceResult:
+    """Put the dimension at a distinct pair plus its boundaries and render ``surfaces`` at each.
+
+    The one value walk both perception checks take, so a value one of them tries is a value the other
+    tries: the distinct pair (two values, so at least one differs from whatever the world held) plus the
+    schema's boundaries (:func:`_boundary_values`), because a summary surface answers only at an edge.
+
+    Args:
+        registry: The host's registry.
+        declared: A settable, attended dimension — the caller checks.
+        check: The check asking, for the verdict a failed setup records.
+        surfaces: The surfaces to attach when rendering.
+
+    Returns:
+        The renderings, or the verdict that ends the check: a setup that never landed, or a dimension
+        whose values the schema or the host's coherence handle cannot supply.
+    """
+    view = registry.subject_view
+    assert view is not None, "callers have a surface to render, which the registry refuses without a subject_view"
+    await _rebase(registry)
+    try:
+        pair = await _distinct_held_values(registry, declared, 2)
+    except _SchemaTooNarrow as narrow:
+        return _too_narrow(check, declared, narrow)
+    except _NotHeld as unheld:
+        return _not_held(check, declared, unheld)
+    renders: dict[str, list[Any]] = {surface: [] for surface in surfaces}
+    sibling_reads: dict[str, list[Any]] = {
+        other.name: [] for other in registry.declarations if other.name != declared.name and other.read is not None
+    }
+    tried: list[Any] = []
+    not_held: list[Any] = []
+    for value in (*pair, *_boundary_values_beside(declared.schema, pair)):
+        if not any(json_equal(value, generated) for generated in pair) and await _incoherence(
+            registry, declared, value
+        ):
+            # A boundary the host does not hold beside this world is not a state a subject can be in here.
+            not_held.append(value)
+            continue
+        if qualification := await _put(registry, declared, value):
+            if any(json_equal(value, generated) for generated in pair):
+                return _setup_never_landed(check, declared, value, qualification)
+            # A boundary the world does not hold as itself — a model that fills an empty value with
+            # its defaults — is not a state a subject can be in, so it is not tried, and is named.
+            not_held.append(value)
+            continue
+        tried.append(value)
+        rendered = await registry.call(view, surfaces=surfaces)
+        for surface in surfaces:
+            renders[surface].append(rendered.get(surface))
+        for other in registry.declarations:
+            if other.name in sibling_reads:
+                assert other.read is not None
+                sibling_reads[other.name].append(await registry.call(other.read))
+    moved = frozenset(
+        name for name, reads in sibling_reads.items() if any(not json_equal(read, reads[0]) for read in reads)
+    )
+    return _Swept(renders=renders, tried=tried, not_held=not_held, siblings_moved=moved)
 
 
 async def _ambient_isolation(registry: WorldRegistry) -> ConformanceResult:
