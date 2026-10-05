@@ -20,7 +20,7 @@ import asyncpg
 import pytest
 
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
@@ -186,9 +186,9 @@ def yugabyte_config() -> YugabyteConnectionConfig:
 
 
 @pytest.fixture
-def agent_internal_config() -> AgentInternalConnectionConfig:
-    """default :class:`AgentInternalConnectionConfig`."""
-    return AgentInternalConnectionConfig(
+def agent_internal_config() -> BorrowedPoolConnectionConfig:
+    """default :class:`BorrowedPoolConnectionConfig`."""
+    return BorrowedPoolConnectionConfig(
         datasource_type=DataSourceType.AGENT_INTERNAL,
         schema_name="agent_abc123",
     )
@@ -223,7 +223,7 @@ class TestConstruction:
 
     @pytest.mark.asyncio
     async def test_init_agent_internal_with_external_pool(
-        self, agent_internal_config: AgentInternalConnectionConfig, monkeypatch: pytest.MonkeyPatch
+        self, agent_internal_config: BorrowedPoolConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """agent-internal driver borrows the passed-in pool: queries run on it, none is created, close leaves it."""
         create_pool = AsyncMock()
@@ -283,7 +283,7 @@ class TestClose:
 
     @pytest.mark.asyncio
     async def test_close_borrowed_pool_does_not_call_pool_close(
-        self, agent_internal_config: AgentInternalConnectionConfig
+        self, agent_internal_config: BorrowedPoolConnectionConfig
     ) -> None:
         """borrowed-pool path: :meth:`close` MUST NOT close the pool."""
         pool = _build_mock_pool()
@@ -461,7 +461,7 @@ class TestBorrowedPool:
     """AGENT_INTERNAL config branch uses the external pool, doesn't close it."""
 
     @pytest.mark.asyncio
-    async def test_external_pool_used_for_fetch(self, agent_internal_config: AgentInternalConnectionConfig) -> None:
+    async def test_external_pool_used_for_fetch(self, agent_internal_config: BorrowedPoolConnectionConfig) -> None:
         """fetch routes through the borrowed pool's acquired connection."""
         pool = _build_mock_pool(fetch_records=[{"x": 1}])
         driver = AsyncpgDriver(agent_internal_config, external_pool=pool)
@@ -470,7 +470,7 @@ class TestBorrowedPool:
 
     @pytest.mark.asyncio
     async def test_owns_pool_false_for_borrowed(
-        self, agent_internal_config: AgentInternalConnectionConfig, monkeypatch: pytest.MonkeyPatch
+        self, agent_internal_config: BorrowedPoolConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """the borrowed path never creates a pool of its own, even after use."""
         create_pool = AsyncMock()
@@ -485,7 +485,7 @@ class TestBorrowedPool:
 
     @pytest.mark.asyncio
     async def test_close_does_not_close_borrowed_pool(
-        self, agent_internal_config: AgentInternalConnectionConfig
+        self, agent_internal_config: BorrowedPoolConnectionConfig
     ) -> None:
         """borrowed pool is NOT closed by the driver's :meth:`close`."""
         pool = _build_mock_pool()
@@ -844,7 +844,7 @@ class TestABorrowedConnectionIsScopedToItsSchema:
     @pytest.mark.asyncio
     async def test_fetch_sets_search_path_on_the_borrowed_connection(
         self,
-        agent_internal_config: AgentInternalConnectionConfig,
+        agent_internal_config: BorrowedPoolConnectionConfig,
     ) -> None:
         """
         :return: nothing
@@ -873,7 +873,7 @@ class TestABorrowedConnectionIsScopedToItsSchema:
         :return: nothing
         :rtype: None
         """
-        cfg = AgentInternalConnectionConfig(
+        cfg = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name='weird"name',
         )

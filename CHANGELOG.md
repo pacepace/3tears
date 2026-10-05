@@ -6,6 +6,39 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Geo: building layers from other layers
+
+- **Added, `threetears.geo`:** `cut` cuts one layer by another within a shared key (a state,
+  say), naming each piece `<coarse id>-<fine id>`. Each part of a cut is judged on its own and
+  dropped when narrower or smaller than the caller's thresholds (`min_width_m`, `min_area_km2`),
+  since two sources' boundaries disagree by a few meters; features no piece covers are reported.
+  `replace_features` swaps a layer's features for a set of keys, refusing replacements that cover
+  other keys. `missing_features` names the ids a consumer needs that a layer lacks. `mean_width_m`
+  and `area_km2` measure in a local projection around each shape's latitude. Measured on US
+  counties cut by congressional districts: slivers 4 to 10 m wide, coastline fragments up to
+  0.6 km², the smallest real piece 5.3 km².
+
+### Datasources: geo blocks beside their tables, and the borrowed-pool config named for what it is
+
+- **Added, `GeoConfig.check_against_tables`:** refuses a geo layer that names a table, or a column
+  of it, the declaring tables lack, with `GeoLayerConfig.columns_read` listing every column a layer
+  reads (feature id, geometry, version, bounding box, and its bands' attributes, rank and rollup).
+  The one copy the SDK and the Hub both run for a tool pod's `geo:` block.
+- **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as
+  its docstring asked once a second use appeared: a tool pod's platform geography layers are read
+  for tiles through Hub's pool, scoped to the pod's `ns_<hex>` schema, with no datasource row. The
+  discriminator is unchanged (`agent_internal`). No alias: rename at the call site.
+
+### Core: L1 bulk writes, and imports without the NATS client
+
+- **Added, L1 backends:** `upsert_many` writes many rows as `upsert` would one by one (SQLite in
+  one transaction; DuckDB in one columnar statement, about twenty times faster than
+  `executemany`). `column_types` exposes a table's declared types.
+  `DuckDBBackend.load_parquet` loads a Parquet file into a table in one statement.
+- **Fixed:** importing `threetears.core.collections.derived`, and with it `threetears.geo`, no
+  longer needs the optional NATS client (core's `nats` extra). The cross-pod build lock is
+  imported where `DerivedCollection` takes it.
+
 ## v0.64.0 -- 2026-10-04
 
 ### Models: the Claude CLI pool on claude-agent-sdk 0.2.163

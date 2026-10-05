@@ -161,7 +161,7 @@ from threetears.core.utils.pg_pool_kwargs import (
     get_pg_pool_kwargs,
 )
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
@@ -317,7 +317,7 @@ class DriverCancellationError(asyncio.CancelledError):
 # the driver accepts either. agent-internal uses a different shape
 # entirely (no host/port/credentials) and is handled separately.
 _PgConfig = PostgresConnectionConfig | YugabyteConnectionConfig
-_AnyConfig = _PgConfig | AgentInternalConnectionConfig
+_AnyConfig = _PgConfig | BorrowedPoolConnectionConfig
 
 
 @dataclasses.dataclass
@@ -414,7 +414,7 @@ class AsyncpgDriver(Driver):
     :param config: per-driver connection config; postgres / yugabyte
         carry connection identity + pool sizing; agent-internal
         carries only the schema name (the pool is borrowed)
-    :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig | AgentInternalConnectionConfig
+    :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig | BorrowedPoolConnectionConfig
     :param external_pool: pre-existing :class:`asyncpg.Pool` to borrow.
         ONLY supplied for the AGENT_INTERNAL branch by the factory;
         external (postgres / yugabyte) callers pass None and the
@@ -441,7 +441,7 @@ class AsyncpgDriver(Driver):
         """capture config + optional borrowed pool. no I/O.
 
         :param config: per-driver connection config
-        :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig | AgentInternalConnectionConfig
+        :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig | BorrowedPoolConnectionConfig
         :param external_pool: pre-existing pool to borrow (agent-internal)
         :ptype external_pool: asyncpg.Pool | None
         :param datasource_name: name of the datasource this driver serves;
@@ -548,7 +548,7 @@ class AsyncpgDriver(Driver):
         # external_pool= for that case. defending against a future
         # caller that constructs the driver directly with mismatched
         # args.
-        if isinstance(self._config, AgentInternalConnectionConfig):
+        if isinstance(self._config, BorrowedPoolConnectionConfig):
             raise DriverConnectError(
                 "AsyncpgDriver: AGENT_INTERNAL config requires external_pool="
                 " (Hub's L3 pool); cannot open a fresh pool from agent_internal"
@@ -1301,7 +1301,7 @@ class AsyncpgDriver(Driver):
         :return: safe-to-log identity string
         :rtype: str
         """
-        if isinstance(self._config, AgentInternalConnectionConfig):
+        if isinstance(self._config, BorrowedPoolConnectionConfig):
             return f"agent_internal://{self._config.schema_name}"
         cfg: _PgConfig = self._config
         return f"{cfg.host}:{cfg.port}/{cfg.database}"

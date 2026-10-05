@@ -50,7 +50,6 @@ from abc import abstractmethod
 from typing import Any, ClassVar, Generic
 
 from threetears.core.collections.base import BaseCollection, EntityT
-from threetears.nats import LockHeld, nats_distributed_lock
 from threetears.observe import get_logger, traced
 
 __all__ = ["DerivedCollection"]
@@ -217,6 +216,11 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
     async def _derive_cross_pod(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
         """hold the cross-pod build lock, then derive and persist."""
+        # imported here, not at module load: the lock needs the optional NATS client
+        # (core's ``nats`` extra), and importing this module must not require it.
+        # a deployment that derives across pods installs the extra.
+        from threetears.nats import LockHeld, nats_distributed_lock
+
         lock_key = self.build_lock_key(key)
         try:
             # cancel_on_loss=False: the build lock only stops a stampede of identical

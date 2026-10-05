@@ -10,13 +10,15 @@ import enum
 import json
 import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from threetears.core.backends.schema_sql import json_default
-from threetears.core.cache.base import build_select_clause
+from threetears.core.cache.base import build_select_clause, bulk_columns
 from threetears.observe import get_logger
 
 __all__ = [
@@ -38,6 +40,17 @@ except ImportError:
     _UUID_TYPES = (uuid.UUID,)
 
 log = get_logger(__name__)
+
+
+def _quote(identifier: str) -> str:
+    """an identifier quoted for DuckDB, so names with spaces or capitals survive.
+
+    :param identifier: a table or column name
+    :ptype identifier: str
+    :return: the quoted identifier
+    :rtype: str
+    """
+    return '"' + identifier.replace('"', '""') + '"'
 
 
 class DuckDBBackend:
@@ -161,6 +174,90 @@ class DuckDBBackend:
 
         with self._db_lock:
             self._db.execute(sql, values)
+
+    def upsert_many(
+        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...] = "id"
+    ) -> int:
+        """insert or update many rows in one columnar statement, as ``upsert`` would one by one.
+
+        each column travels as one list and is unnested in the insert, which is
+        roughly twenty times faster than DuckDB's ``executemany`` (measured on a
+        168-column table: 2.6 s against 54 s for 20,000 rows).
+
+        :param table: destination table name
+        :ptype table: str
+        :param rows: the rows, each keyed by column name, every pk column present
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: how many rows were written
+        :rtype: int
+        :raises ValueError: when the rows do not all name the same columns
+        """
+        _ = self._pk_columns(primary_key)  # validate shape; INSERT OR REPLACE honours the declared key
+        schema = self._schema_info.get(table, {})
+        columns = bulk_columns(rows, schema)
+        if rows:
+            lists = [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in rows] for c in columns]
+            # values are already serialized to each column's storage form, so the insert's own
+            # conversion types them; the registry's names are logical (VARCHAR_UUID), not SQL
+            select = ", ".join(f"unnest(${i}) AS {_quote(c)}" for i, c in enumerate(columns, 1))
+            sql = f"INSERT OR REPLACE INTO {_quote(table)} ({', '.join(_quote(c) for c in columns)}) SELECT {select}"
+            with self._db_lock:
+                self._db.execute(sql, lists)
+        return len(rows)
+
+    def load_parquet(self, table: str, path: str | Path, *, row_number_column: str | None = None) -> int:
+        """load a Parquet file into a table this backend created, in one statement.
+
+        DuckDB reads Parquet natively, so this is the fast path for an analytic
+        table filled from a file: the file's columns that the table declares are
+        loaded and the rest are ignored; table columns the file lacks stay null.
+
+        :param table: the destination table
+        :ptype table: str
+        :param path: the Parquet file
+        :ptype path: str | Path
+        :param row_number_column: a table column to fill with each row's position
+            (from 0), as a key for files that carry none
+        :ptype row_number_column: str | None
+        :return: how many rows the file held
+        :rtype: int
+        :raises ValueError: when the table is not one this backend created
+        """
+        schema = self._schema_info.get(table)
+        if schema is None:
+            raise ValueError(f"unknown table {table!r}: load_parquet fills tables this backend created")
+        with self._db_lock:
+            in_file = {
+                row[0] for row in self._db.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
+            }
+            columns = [c for c in schema if c in in_file and c != row_number_column]
+            selects = [_quote(c) for c in columns]
+            if row_number_column is not None:
+                columns.insert(0, row_number_column)
+                selects.insert(0, "row_number() OVER () - 1")
+            self._db.execute(
+                f"INSERT OR REPLACE INTO {_quote(table)} ({', '.join(_quote(c) for c in columns)}) "
+                f"SELECT {', '.join(selects)} FROM read_parquet(?)",
+                [str(path)],
+            )
+            (count,) = self._db.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()
+        log.info(
+            "loaded a Parquet file into an L1 table",
+            extra={"extra_data": {"table": table, "rows": count, "columns": len(columns)}},
+        )
+        return int(count)
+
+    def column_types(self, table: str) -> Mapping[str, str]:
+        """the declared column types of a table this backend created, by column name.
+
+        :param table: the table
+        :ptype table: str
+        :return: each column's DuckDB type (empty for a table it does not know)
+        :rtype: Mapping[str, str]
+        """
+        return MappingProxyType(dict(self._schema_info.get(table, {})))
 
     def select_by_id(
         self,

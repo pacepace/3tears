@@ -6,6 +6,7 @@ Parametrized to run against both SQLite and DuckDB backends.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 
 import pytest
@@ -270,3 +271,70 @@ class TestReset:
         assert backend.is_initialized() is True
         backend.reset()
         assert backend.is_initialized() is False
+
+
+class TestBulkWrites:
+    """``upsert_many`` writes as ``upsert`` would row by row, on every backend."""
+
+    def test_rows_round_trip(self, backend: L1Backend) -> None:
+        rows = [_sample_row(), {**_sample_row(), "name": "Bob", "age": 41}]
+        assert backend.upsert_many("test_entities", rows) == 2
+        for row in rows:
+            got = backend.select_by_id("test_entities", row["id"])
+            assert got is not None
+            assert (got["name"], got["age"], got["data"]) == (row["name"], row["age"], row["data"])
+
+    def test_an_existing_row_is_updated(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+        backend.upsert_many("test_entities", [{**row, "name": "Carol"}])
+        got = backend.select_by_id("test_entities", row["id"])
+        assert got is not None and got["name"] == "Carol"
+
+    def test_no_rows_writes_nothing(self, backend: L1Backend) -> None:
+        assert backend.upsert_many("test_entities", []) == 0
+
+    def test_ragged_rows_are_refused(self, backend: L1Backend) -> None:
+        full, partial = _sample_row(), {"id": str(uuid.uuid4()), "name": "Dan"}
+        with pytest.raises(ValueError, match="row 1 names different columns"):
+            backend.upsert_many("test_entities", [full, partial])
+
+    def test_column_types_are_public(self, backend: L1Backend) -> None:
+        types = backend.column_types("test_entities")
+        assert set(types) >= {"id", "name", "age", "active", "data", "created_at"}
+        assert backend.column_types("no_such_table") == {}
+
+
+def test_duckdb_loads_a_parquet_file(tmp_path: Path) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    from sqlalchemy import BigInteger
+
+    from threetears.core.cache.duckdb import DuckDBBackend
+
+    metadata = MetaData()
+    Table(
+        "results",
+        metadata,
+        Column("row_key", BigInteger, primary_key=True),
+        Column("state", String(2)),
+        Column("votes", Integer),
+        Column("note", String(20)),
+    )
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    # the file has a column the table does not declare, and lacks one it does
+    duckdb.sql(
+        "COPY (SELECT * FROM (VALUES ('TX', 10, 1), ('GA', 7, 2)) AS t(state, votes, extra)) TO "
+        f"'{tmp_path / 'r.parquet'}' (FORMAT parquet)"
+    )
+    try:
+        assert backend.load_parquet("results", tmp_path / "r.parquet", row_number_column="row_key") == 2
+        rows = backend.execute_query("SELECT row_key, state, votes, note FROM results ORDER BY row_key")
+        assert rows == [
+            {"row_key": 0, "state": "TX", "votes": 10, "note": None},
+            {"row_key": 1, "state": "GA", "votes": 7, "note": None},
+        ]
+        with pytest.raises(ValueError, match="unknown table"):
+            backend.load_parquet("missing", tmp_path / "r.parquet")
+    finally:
+        backend.reset()

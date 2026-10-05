@@ -30,6 +30,16 @@ from threetears.geo.collection import (
 from threetears.geo.features import FeatureCache, FeatureEntity, FeatureLoader
 from threetears.geo.geometry import decode_geometry, geometry_bounds, point_geometry
 from threetears.geo.mvt import encode_tile, project_to_tile
+from threetears.geo.overlay import (
+    KeyedFeature,
+    LayerOverlayError,
+    Overlay,
+    area_km2,
+    cut,
+    mean_width_m,
+    missing_features,
+    replace_features,
+)
 from threetears.geo.tiles import (
     MAX_MERCATOR_LATITUDE,
     TILE_EXTENT,
@@ -72,4 +82,12 @@ __all__ = [
     "tile_bounds",
     "tile_for_point",
     "validate_attribute_value",
+    "KeyedFeature",
+    "LayerOverlayError",
+    "Overlay",
+    "area_km2",
+    "cut",
+    "mean_width_m",
+    "missing_features",
+    "replace_features",
 ]

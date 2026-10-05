@@ -14,17 +14,19 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any
 
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import (
     CACHED_AT_COLUMN,
     TABLES_WITHOUT_CACHE_STAMP,
-    entry_is_fresh,
     build_select_clause,
+    bulk_columns,
+    entry_is_fresh,
 )
 from threetears.observe import counter, get_logger
 
@@ -341,6 +343,52 @@ class SQLiteBackend:
         except sqlite3.OperationalError:
             conn.execute("ROLLBACK")
             raise
+
+    def upsert_many(
+        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...] = "id"
+    ) -> int:
+        """insert or update many rows in one transaction, as ``upsert`` would one by one.
+
+        :param table: destination table name
+        :ptype table: str
+        :param rows: the rows, each keyed by column name, every pk column present
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: how many rows were written
+        :rtype: int
+        :raises ValueError: when the rows do not all name the same columns
+        """
+        pk_cols = self._pk_columns(primary_key)
+        schema = self._schema_info.get(table, {})
+        columns = bulk_columns(rows, schema)
+        if rows:
+            update_cols = [c for c in columns if c not in pk_cols]
+            sql = (
+                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+                f"ON CONFLICT ({', '.join(pk_cols)}) DO UPDATE SET "
+                + ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+            )
+            values = [tuple(self.serialize_value(row[c], schema.get(c, "TEXT")) for c in columns) for row in rows]
+            conn = self.get_connection()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.executemany(sql, values)
+                conn.execute("COMMIT")
+            except sqlite3.OperationalError:
+                conn.execute("ROLLBACK")
+                raise
+        return len(rows)
+
+    def column_types(self, table: str) -> Mapping[str, str]:
+        """the declared column types of a table this backend created, by column name.
+
+        :param table: the table
+        :ptype table: str
+        :return: each column's SQLite type (empty for a table it does not know)
+        :rtype: Mapping[str, str]
+        """
+        return MappingProxyType(dict(self._schema_info.get(table, {})))
 
     def select_by_id(
         self,

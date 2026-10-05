@@ -27,7 +27,7 @@ import pytest
 from threetears.datasources.introspection import compute_column_hash
 
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     PostgresConnectionConfig,
 )
 from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
@@ -498,7 +498,7 @@ class TestBorrowedPoolLive:
         )
         assert pool is not None
         try:
-            config = AgentInternalConnectionConfig(
+            config = BorrowedPoolConnectionConfig(
                 datasource_type=DataSourceType.AGENT_INTERNAL,
                 schema_name=schema,
             )
@@ -551,7 +551,7 @@ async def test_borrowed_pool_microbenchmark_under_one_ms(
     )
     assert pool is not None
     try:
-        config = AgentInternalConnectionConfig(
+        config = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name=schema,
         )

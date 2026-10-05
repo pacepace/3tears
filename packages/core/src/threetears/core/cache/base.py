@@ -12,7 +12,7 @@ Holds four things, not one:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
@@ -21,6 +21,7 @@ __all__ = [
     "MISSING",
     "TABLES_WITHOUT_CACHE_STAMP",
     "build_select_clause",
+    "bulk_columns",
     "entry_is_fresh",
 ]
 
@@ -155,6 +156,24 @@ def build_select_clause(
     return ", ".join(deduped)
 
 
+def bulk_columns(rows: Sequence[Mapping[str, Any]], schema: Mapping[str, str]) -> list[str]:
+    """the columns a bulk write writes: those the rows name, in the table's order, all rows alike.
+
+    :param rows: the rows to write
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :param schema: the table's declared columns (empty when unknown: every named column is written)
+    :ptype schema: Mapping[str, str]
+    :return: the columns, filtered to the table's as ``upsert`` filters them
+    :rtype: list[str]
+    :raises ValueError: when the rows do not all name the same columns
+    """
+    named = set(rows[0]) if rows else set()
+    ragged = next((i for i, row in enumerate(rows) if set(row) != named), None)
+    if ragged is not None:
+        raise ValueError(f"row {ragged} names different columns from row 0; a bulk write needs every row alike")
+    return [c for c in schema if c in named] if schema else sorted(named)
+
+
 @runtime_checkable
 class L1Backend(Protocol):
     """Protocol defining the interface for L1 cache backends.
@@ -184,6 +203,36 @@ class L1Backend(Protocol):
         :ptype primary_key: str | tuple[str, ...]
         :return: nothing
         :rtype: None
+        """
+        ...
+
+    def upsert_many(
+        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...] = "id"
+    ) -> int:
+        """insert or update many rows in one statement, as ``upsert`` would one by one.
+
+        every row must name the same columns; a bulk write with ragged rows has
+        no single meaning for the columns some rows leave out.
+
+        :param table: destination table name
+        :ptype table: str
+        :param rows: the rows, each keyed by column name, every pk column present
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: how many rows were written
+        :rtype: int
+        :raises ValueError: when the rows do not all name the same columns
+        """
+        ...
+
+    def column_types(self, table: str) -> Mapping[str, str]:
+        """the declared column types of a table this backend created, by column name.
+
+        :param table: the table
+        :ptype table: str
+        :return: each column's backend type (empty for a table it does not know)
+        :rtype: Mapping[str, str]
         """
         ...
 
