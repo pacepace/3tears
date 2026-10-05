@@ -93,7 +93,7 @@ packages (bumped in lock-step).
   `subject_filter`, `run_status` (a run status or `all`, default `completed`), `predicted_cost` (the structured
   result `launch_estimate` returned), `min_absolute_change`, `min_relative_change`, `export_format` (`csv` |
   `json`) and `export_run_ids` (named apart from `campaign_create`'s `run_ids`, which means membership).
-  `launch_estimate` takes `run_launch`'s own `template_id`, `models` and `k_runs` (default 1, as `run_launch`'s),
+  `launch_estimate` takes `run_launch`'s own `template_id`, `models` and `k_runs` (default `DEFAULT_LAUNCH_K_RUNS`, as `run_launch`'s),
   plus `n_test_cases` (at least 1) and `subject_filter`.
 - **`OpsHost.count_template_cases`** (new, `TemplateCaseCounter`, default `None`): how many cases a launch of a
   template runs, the host's answer. A host without one has `launch_estimate` refused, saying so.
