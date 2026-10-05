@@ -4,6 +4,9 @@ The rung-zero example (``test_rung_zero.py``) is the happy path read from outsid
 edges: a candidate that raises fails its cell and a scorer that misbehaves excludes it; every input
 ``run_eval`` refuses is refused before anything is stored; a caller's own host is used as given; the
 case set is content-addressed; and a cancelled call settles the run it started.
+
+The tests that count cells pass ``k=1``, so each count is one per case rather than one per case per
+repeat; the default repeat count is pinned in ``test_launch_k_default.py``.
 """
 
 from __future__ import annotations
@@ -43,7 +46,7 @@ async def test_a_raising_candidate_fails_its_cell_and_says_why() -> None:
             raise RuntimeError("cannot do two")
         return int(case["n"])
 
-    summary = await run_eval(CASES, flaky, [size], scope_id=SCOPE)
+    summary = await run_eval(CASES, flaky, [size], scope_id=SCOPE, k=1)
     assert summary.status == "completed"
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (2, 1, 0)
     assert summary.measures[0].n == 2 and summary.measures[0].mean == pytest.approx(2.0)
@@ -59,7 +62,7 @@ async def test_a_scorer_returning_no_finite_number_excludes_the_cell(returned: A
     def odd_grade(case: Mapping[str, Any], answer: Any) -> Any:
         return returned
 
-    summary = await run_eval(CASES[:1], double, [odd_grade], scope_id=SCOPE)
+    summary = await run_eval(CASES[:1], double, [odd_grade], scope_id=SCOPE, k=1)
     assert (summary.n_scored, summary.n_candidate_failed, summary.n_excluded) == (0, 0, 1)
     assert f"the scorer odd_grade returned {said}" in summary.errors[0]
 
@@ -68,13 +71,13 @@ async def test_a_raising_scorer_excludes_the_cell_and_names_the_scorer() -> None
     def broken(case: Mapping[str, Any], answer: Any) -> float:
         raise KeyError("expected")
 
-    summary = await run_eval(CASES[:1], double, [even, broken], scope_id=SCOPE)
+    summary = await run_eval(CASES[:1], double, [even, broken], scope_id=SCOPE, k=1)
     assert summary.n_excluded == 1
     assert "the scorer broken raised KeyError" in summary.errors[0]
 
 
 async def test_a_bool_scores_as_one_or_zero() -> None:
-    summary = await run_eval(CASES, double, [even], scope_id=SCOPE)
+    summary = await run_eval(CASES, double, [even], scope_id=SCOPE, k=1)
     (measure,) = summary.measures
     assert (measure.mean, measure.minimum, measure.maximum, measure.n) == (1.0, 1.0, 1.0, 3)
 
@@ -87,7 +90,7 @@ async def test_the_answer_is_stored_verbatim_when_json_holds_it_and_as_its_repr_
         return {case["n"]} if case["n"] == 1 else case["n"]
 
     host = callable_host([graded])
-    summary = await run_eval(CASES[:2], as_set, [graded], scope_id=SCOPE, host=host)
+    summary = await run_eval(CASES[:2], as_set, [graded], scope_id=SCOPE, host=host, k=1)
     stored = []
     for result in list_results(host.storage, summary.run_id, SCOPE):
         trace = get_result_trace(host.storage, result)
@@ -103,7 +106,7 @@ async def test_a_callers_host_is_used_as_given_world_and_all() -> None:
     def on_time_rate(case: Mapping[str, Any], answer: Any) -> float:
         return 1.0
 
-    summary = await run_eval(CASES, double, [on_time_rate], scope_id=SCOPE, host=host, model="doubler")
+    summary = await run_eval(CASES, double, [on_time_rate], scope_id=SCOPE, host=host, model="doubler", k=1)
     assert summary.status == "completed"
     assert {m.name: m.n for m in summary.measures}[ON_TIME_RATE] == 3
     (run,) = list_runs(host, SCOPE)

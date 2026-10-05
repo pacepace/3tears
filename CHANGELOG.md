@@ -33,11 +33,15 @@ packages (bumped in lock-step).
   against no run's cost cap or metered-call ceiling; they are shared across arms, so no single run's cap
   could carry them honestly.
 
-### 3tears-evals: `run_launch` and `launch_estimate` default to `DEFAULT_LAUNCH_K_RUNS`
+### 3tears-evals: every launch surface defaults to `DEFAULT_LAUNCH_K_RUNS`
 
-- **Behaviour change:** both actions defaulted `k_runs` to 1 while every other launch entrypoint uses
-  `DEFAULT_LAUNCH_K_RUNS` (3). They now read the constant, so an agent's default launch repeats each case as
-  often as any other launch does — and costs that much more; a host's spend cap still bounds it.
+- **Behaviour change:** the `run_launch` and `launch_estimate` actions, ops `LaunchArguments.k_runs`, ops
+  `launch_estimate`, the CLI's `run --k` and `run_eval(k=...)` each defaulted the repeat count to 1, while
+  `start_run`, `start_universal_battery` and the analysis lenses used `DEFAULT_LAUNCH_K_RUNS` (3). Every one
+  now reads the constant, so a launch that names no repeat count repeats each case as often wherever it is
+  made — and costs that much more; a host's spend cap still bounds it. **Adopters: a `run_eval` call or a
+  `run` command that relied on one repeat must now pass `k=1` / `--k 1`.** Each surface is pinned by what it
+  does with an omitted count (`tests/test_launch_k_default.py`).
 
 ### 3tears-evals: the read lenses are typed and in the action catalogue
 

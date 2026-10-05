@@ -31,7 +31,7 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.models import EvalRun
+from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS, EvalRun
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.run.authoring import get_template
 from threetears.evals.run.reads import list_runs
@@ -174,7 +174,7 @@ def launch_estimate(
     *,
     template_id: str,
     models: list[str],
-    k_runs: int = 1,
+    k_runs: int = DEFAULT_LAUNCH_K_RUNS,
     n_variations: int = 0,
     n_test_cases: int | None = None,
     subject_id: str | None = None,
