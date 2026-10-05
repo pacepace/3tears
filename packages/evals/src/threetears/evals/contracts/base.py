@@ -50,7 +50,7 @@ import re
 from collections.abc import Mapping
 from typing import Annotated, Any, Self
 
-from pydantic import BaseModel, ConfigDict, JsonValue, PlainValidator, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, JsonValue, PlainValidator, StringConstraints, TypeAdapter, model_validator
 
 from threetears.observe import get_logger
 
@@ -113,6 +113,12 @@ VerbatimJsonObject = Annotated[dict[str, JsonValue], PlainValidator(_verbatim_js
 #: A host's opaque payload: its top-level keys kept exactly as written, its values unread and
 #: unvalidated. The type of ``host_payload`` on a run and a test case, which the engine never reads.
 VerbatimObject = Annotated[dict[str, Any], PlainValidator(_VERBATIM_OBJECT.validate_python)]
+
+#: A string kept exactly as written, leading and trailing whitespace included: a serialized body (a CSV
+#: export, a report) whose bytes are its producer's. The stance strips every other string, and a stripped
+#: body differs from the one its serializer wrote — a CSV loses its final row terminator, a report its
+#: final newline — so two surfaces handing back one export would not be byte-identical.
+VerbatimText = Annotated[str, StringConstraints(strip_whitespace=False)]
 
 
 class EvalBaseModel(BaseModel):
@@ -259,4 +265,5 @@ __all__ = [
     "EvalDocumentModel",
     "VerbatimJsonObject",
     "VerbatimObject",
+    "VerbatimText",
 ]

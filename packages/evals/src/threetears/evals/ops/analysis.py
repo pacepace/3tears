@@ -26,7 +26,7 @@ from threetears.evals.analysis.service import (
     prepare_analysis_generation,
     run_analysis_generation,
 )
-from threetears.evals.contracts.base import EvalBaseModel
+from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
 from threetears.evals.contracts.campaign import EvalCampaign
 from threetears.evals.contracts.errors import ConflictError, ValidationFailedError
 from threetears.evals.contracts.host import EvalHost
@@ -94,7 +94,10 @@ class ReportDocument(EvalBaseModel):
     )
     analysis_id: str | None = Field(description="The analysis the report renders; None on a code-only report.")
     format: ReportFormat
-    body: str = Field(description="The report in that form: Markdown, canonical JSON, or script-free HTML.")
+    body: VerbatimText = Field(
+        description="The report in that form, exactly as its serializer wrote it: Markdown, canonical JSON, or "
+        "script-free HTML."
+    )
 
 
 class AnalysisDeleted(EvalBaseModel):

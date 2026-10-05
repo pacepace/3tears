@@ -27,14 +27,22 @@ from threetears.evals.ops import (
     AnalysisListing,
     CampaignLine,
     CampaignListing,
+    CostEstimate,
     EvalSummary,
+    HistoryResult,
     JobsStarted,
     JobStatus,
+    PivotTable,
     ReportDocument,
     RunDeleted,
     RunLine,
     RunListing,
+    ScoreExport,
     TemplateListing,
+    estimate_text,
+    export_text,
+    history_text,
+    pivot_text,
 )
 
 if TYPE_CHECKING:
@@ -48,6 +56,8 @@ def _type_word(schema: Mapping[str, Any]) -> str:
     """A parameter's type as a reader says it: ``string``, ``list of string``, ``one of a|b``, ``optional …``."""
     if "enum" in schema:
         return "one of " + "|".join(str(value) for value in schema["enum"])
+    if "const" in schema:
+        return str(schema["const"])
     if "anyOf" in schema:
         kinds = [option for option in schema["anyOf"] if option.get("type") != "null"]
         words = " or ".join(_type_word(option) for option in kinds)
@@ -247,6 +257,26 @@ def render_report(document: ReportDocument) -> str:
     return document.body
 
 
+def render_pivot(table: PivotTable) -> str:
+    """A pivot: each cell with its denominators, and every caveat the table carries."""
+    return pivot_text(table)
+
+
+def render_history(result: HistoryResult) -> str:
+    """Each contestant's series, with each step's regression verdict and the test behind it."""
+    return history_text(result)
+
+
+def render_estimate(estimate: CostEstimate) -> str:
+    """A launch's predicted cost, model by model, and the total with its band."""
+    return estimate_text(estimate)
+
+
+def render_export(export: ScoreExport) -> str:
+    """The export, after a line saying how many rows it holds and what it left out."""
+    return export_text(export)
+
+
 def render_run_deleted(deleted: RunDeleted) -> str:
     """What deleting a run removed."""
     detached = ", ".join(deleted.campaigns_detached) or "none"
@@ -271,10 +301,14 @@ __all__ = [
     "render_analysis_deleted",
     "render_campaign",
     "render_campaigns",
+    "render_estimate",
+    "render_export",
     "render_help_index",
     "render_help_page",
+    "render_history",
     "render_job_status",
     "render_jobs_started",
+    "render_pivot",
     "render_report",
     "render_run_deleted",
     "render_run_line",

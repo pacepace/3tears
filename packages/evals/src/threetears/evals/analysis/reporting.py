@@ -35,12 +35,12 @@ import json
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, get_args
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.contracts.base import EvalBaseModel
+from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
 from threetears.evals.contracts.hashing import canonical_digest, canonical_json
 from threetears.evals.contracts.host.profile import HostProfile
 from threetears.evals.contracts.host.sweepables import CANDIDATE_MODEL_LEVER
@@ -5539,7 +5539,10 @@ def compute_orphaned_runs(
 # dependency and the dependency-manifest rule governs — CSV covers DuckDB/pandas
 # ingestion, which is the stated need. A format outside this set is refused rather
 # than defaulted, so a typo'd `format=jsom` is a visible error, not a silent CSV.
-EXPORT_FORMATS = ("csv", "json")
+ExportFormat = Literal["csv", "json"]
+
+#: :data:`ExportFormat`'s values, in the order a refusal lists them.
+EXPORT_FORMATS: tuple[ExportFormat, ...] = get_args(ExportFormat)
 
 # A score record's open maps — neither is a column of its own. `factors` carries the
 # host's levers; `host_measures` carries a code-graded kind's own grade. Each flattens to
@@ -5672,11 +5675,69 @@ def serialize_export(projection: ScoreProjection, *, fmt: str) -> str:
     Raises:
         ExportError: ``fmt`` is not one this surface can emit.
     """
-    if fmt == "csv":
-        return export_records_csv(projection.records)
-    if fmt == "json":
-        return json.dumps(projection.model_dump(mode="json"))
+    match export_format(fmt):
+        case "csv":
+            return export_records_csv(projection.records)
+        case "json":
+            return json.dumps(projection.model_dump(mode="json"))
+
+
+def export_format(fmt: str) -> ExportFormat:
+    """The export format a caller named, or the refusal naming the ones there are.
+
+    Args:
+        fmt: The format as the caller spelled it.
+
+    Returns:
+        It, as an :data:`ExportFormat`.
+
+    Raises:
+        ExportError: ``fmt`` is not one this surface can emit.
+    """
+    for known in EXPORT_FORMATS:
+        if fmt == known:
+            return known
     raise ExportError(f"unknown export format {fmt!r} — one of {', '.join(EXPORT_FORMATS)}")
+
+
+class ScoreExport(EvalBaseModel):
+    """A projection's rows serialized for analysis elsewhere, with the account a CSV body cannot carry.
+
+    ``body`` is :func:`serialize_export`'s output byte for byte. The JSON form already holds the
+    exclusions and the completeness disclosures; the CSV form is the flat rows alone, so the counts
+    ride beside the body here — an export whose every result was excluded and one over an empty scope
+    are both a header row, and only these fields tell them apart.
+    """
+
+    format: ExportFormat
+    body: VerbatimText = Field(description="The export, exactly as serialized: CSV text or a JSON ScoreProjection.")
+    n_records: int = Field(description="How many rows the export holds — one per projected observation.")
+    exclusions: ProjectionExclusions
+    #: ``run_id -> DEGRADED sentence`` for the exported runs that came up short of their matrix.
+    completeness_disclosures: dict[str, str] = {}
+
+
+def export_projection(projection: ScoreProjection, *, fmt: str) -> ScoreExport:
+    """Serialize a projection in the named format, with the counts that qualify its rows.
+
+    Args:
+        projection: The rows to export, plus what the projection dropped.
+        fmt: ``"csv"`` or ``"json"``.
+
+    Returns:
+        The export.
+
+    Raises:
+        ExportError: ``fmt`` is not one this surface can emit.
+    """
+    known = export_format(fmt)
+    return ScoreExport(
+        format=known,
+        body=serialize_export(projection, fmt=known),
+        n_records=len(projection.records),
+        exclusions=projection.exclusions,
+        completeness_disclosures=projection.completeness_disclosures,
+    )
 
 
 # =============================================================================
@@ -6142,6 +6203,7 @@ __all__ = [
     "CostEstimateCell",
     "CostEstimateError",
     "ExportError",
+    "ExportFormat",
     "FrontierDominator",
     "FrontierError",
     "FrontierPoint",
@@ -6163,6 +6225,7 @@ __all__ = [
     "ProgramBudget",
     "ProjectionExclusions",
     "RegressionFlag",
+    "ScoreExport",
     "ScoreProjection",
     "ScoreRecord",
     "SeriesPoint",
@@ -6187,6 +6250,8 @@ __all__ = [
     "difference_was_declared_at_launch",
     "dim_judge_model",
     "disjoint_window_pairs",
+    "export_format",
+    "export_projection",
     "export_records_csv",
     "format_significance",
     "format_window_gap",

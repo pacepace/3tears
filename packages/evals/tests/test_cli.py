@@ -24,7 +24,16 @@ from threetears.evals.analysis import NO_ANALYSIS, published_report_schema
 from threetears.evals.contracts import CandidateOutput, EvalRun, EvalTestCase, JudgedArtifact
 from threetears.evals.ops import report_read
 from threetears.evals.quick import callable_host, run_cli, run_eval
-from threetears.evals.run import KindWiring, LaunchableKind, LaunchHost, LaunchRequest, default_job_timeout, launch_run
+from threetears.evals.quick import cli as quick_cli
+from threetears.evals.run import (
+    KindWiring,
+    LaunchableKind,
+    LaunchHost,
+    LaunchRequest,
+    default_job_timeout,
+    launch_run,
+    start_run,
+)
 from packages.evals.tests.fixtures.courierhost import (
     COURIER_KIND,
     COURIER_LAUNCH_SETTINGS,
@@ -215,6 +224,28 @@ def test_run_exits_one_when_a_run_does_not_complete(capsys: pytest.CaptureFixtur
     )
     assert run_cli(_courier_run_args("planner-lite"), host_factory=lambda: launch_host) == 1
     assert "failed: planner-lite" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("given", "launched"), [(["--max-cost-usd", "7.5"], 7.5), ([], None)])
+def test_run_hands_the_launch_the_max_cost_it_is_given(
+    given: list[str], launched: float | None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--max-cost-usd`` reaches the launch as ``run_launch``'s ``max_cost_usd`` does; omitted, the host's applies."""
+    seen: list[float | None] = []
+
+    async def recording(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs["max_cost_usd"])
+        return await start_run(*args, **kwargs)
+
+    monkeypatch.setattr(quick_cli, "start_run", recording)
+
+    assert run_cli([*_courier_run_args("planner-lite"), *given], host_factory=courier_launch_host) == 0
+    assert seen == [launched]
+
+
+def test_run_relays_the_launchers_refusal_of_a_cap_that_is_not_positive(capsys: pytest.CaptureFixture[str]) -> None:
+    assert run_cli([*_courier_run_args("planner-lite"), "--max-cost-usd", "0"], host_factory=courier_launch_host) == 2
+    assert "max_cost_usd" in capsys.readouterr().err
 
 
 def _graded(case: Mapping[str, Any], answer: Any) -> float:
