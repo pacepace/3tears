@@ -1,9 +1,7 @@
 """the one owner of a bucket that is the persisted copy of an in-memory structure.
 
-The tool registry and the hub's agent router each kept a catalog in memory and its copy in a bucket,
-each through its own persistence class holding a raw nats-py handle -- the handle that did not follow
-a move to a successor connection, so every write after a NATS rolling restart failed until the pod
-was deleted by hand. These pin what the shared owner does in their place: declare under the exact
+A service such as the tool registry keeps a catalog in memory and its copy in a bucket. These pin
+what the shared owner of that bucket does: declare under the exact
 name, retry a start the broker did not answer, load once, write memory back after the first load and
 on every refill, and stop when told.
 

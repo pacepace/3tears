@@ -9,8 +9,7 @@ imports out of their own production code by enforcement, and were left matching 
 exception class NAMES as strings, which survives a nats-py rename only by luck.
 
 These predicates are that match done properly: by type, inside 3tears, which owns the nats-py
-dependency. None of them reads message text. :func:`is_connection_closed` also serves a consumer of
-the wrapper itself, which has no closed-connection type and chains nats-py's error as the cause.
+dependency. None of them reads message text.
 
 Resolved lazily from :mod:`threetears.nats` like every other nats-py-backed name there, so a
 process that only uses the L1 tier never loads the client to import the package.
@@ -20,10 +19,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from nats.errors import (
-    ConnectionClosedError as _NatsConnectionClosedError,
-    Error as _NatsError,
-)
+from nats.errors import Error as _NatsError
 from nats.js.errors import (
     BucketNotFoundError as _NatsBucketNotFoundError,
     KeyDeletedError as _NatsKeyDeletedError,
@@ -37,7 +33,6 @@ from threetears.nats.errors import KvBucketNotFoundError
 __all__ = [
     "JS_ERR_STREAM_NOT_FOUND",
     "is_bucket_not_found",
-    "is_connection_closed",
     "is_key_not_found",
     "is_nats_error",
 ]
@@ -124,44 +119,3 @@ def is_key_not_found(exc: BaseException) -> bool:
     :rtype: bool
     """
     return isinstance(exc, (_NatsKeyNotFoundError, _NatsKeyDeletedError))
-
-
-def is_connection_closed(exc: BaseException) -> bool:
-    """whether ``exc`` failed because the NATS connection it ran on is CLOSED for good.
-
-    ``True`` for nats-py's ``ConnectionClosedError`` -- what every call on a nats-py connection
-    raises once that connection has been closed, by the client or by a retired connection a handle
-    is still bound to -- whether it arrives raw or as the explicit cause (``raise ... from``) of the
-    error a 3tears wrapper raised for it. The wrapper has no closed-connection type of its own: a
-    :class:`~threetears.nats.NatsKvBucket` operation raises a :class:`~threetears.nats.KvError`, and
-    a request a :class:`~threetears.nats.RequestError`, each chained to what nats-py raised, and a
-    failed self-heal re-bind chains one ``KvError`` to another before the nats-py exception. So the
-    ``__cause__`` chain is followed to its end; ``__context__`` is not, since an exception merely
-    raised WHILE handling a closed-connection one did not fail because of it.
-
-    A closed connection is the one transport failure that does not end by itself: nats-py never
-    reopens a closed connection, so whatever holds it fails until it is rebuilt -- by a restart, if
-    nothing in the process rebuilds it.
-
-    ``False`` for everything else, deliberately including:
-
-    - a deadline (``nats.errors.TimeoutError``, the wrapper's ``PublishTimeoutError``): what an
-      unreachable broker, an outage or a missing grant looks like, all of which end, or are fixed,
-      without this process restarting;
-    - a ``NoRespondersError``, raw or wrapped: nobody answered on a connection that is open;
-    - an absent bucket (:func:`is_bucket_not_found`);
-    - a reconnecting or draining connection, which is still live.
-
-    :param exc: the exception to classify
-    :ptype exc: BaseException
-    :return: ``True`` when the exception, or an explicit cause beneath it, is a closed connection
-    :rtype: bool
-    """
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    found = False
-    while current is not None and id(current) not in seen and not found:
-        seen.add(id(current))
-        found = isinstance(current, _NatsConnectionClosedError)
-        current = current.__cause__
-    return found

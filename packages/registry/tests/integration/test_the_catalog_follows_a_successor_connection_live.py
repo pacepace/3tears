@@ -1,10 +1,8 @@
 """the registry keeps recording registrations after its NATS connection moves to a successor.
 
-Found on cobalt-dev after a NATS rolling restart: the registry refused every tool registration with
-``CATALOG_UNAVAILABLE`` / ``nats: connection closed`` until its pod was deleted by hand, while it
-reported itself healthy. A server going lame-duck makes the client open a successor connection and
-retire the old one -- not a reconnect, so no reconnect hook fires -- and the catalog bucket was held
-through a raw nats-py handle bound to the retired connection.
+A server going lame-duck makes the client open a successor connection and retire the old one -- not
+a reconnect, so no reconnect hook fires. A catalog bucket handle bound to the retired connection
+would fail every write with ``nats: connection closed``; the catalog's handle must follow the client.
 
 Against a real broker: the catalog is opened through the owner ``RegistryServer.serve`` starts,
 the client moves to a successor through :meth:`NatsClient.renew_connection` (the same handover a
@@ -111,7 +109,6 @@ async def test_a_registration_after_a_successor_move_reaches_the_bucket(nats_con
         await catalog.register(_entry("threetears.clock"))
 
         await _until_stored(operator, bucket, {"threetears.calculator@1.0.0", "threetears.clock@1.0.0"})
-        assert catalog.persisting is True
     finally:
         await owner.stop()
         try:

@@ -15,10 +15,10 @@ owner exists for both:
   gone, and only the service holds them. This owner declares the bucket with ``on_restored`` set to
   its ``write_back``, so the client writes the copy back from memory every time that happens --
   through the live handle, which follows the client across a credential renewal or a move off a
-  lame-duck server, rather than a raw nats-py handle left bound to a retired connection.
+  lame-duck server.
 
-The bucket is declared under its exact name (``prefix_namespace=False``): these buckets have always
-carried a bare name, and every deployment's grants name it so.
+The bucket is declared under its exact name (``prefix_namespace=False``): these buckets carry a bare
+name, and every deployment's grants name it so.
 """
 
 from __future__ import annotations

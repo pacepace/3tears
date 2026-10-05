@@ -20,23 +20,31 @@ the client moves to a successor connection.
   client creates the bucket's stream again after the declaration: a restoration round that found the
   stream absent, an owner's storage recreate, or a self-heal re-open on a handle's next operation.
   The refill runs in the background and settles only when it returns; one that raises is logged at
-  ERROR and retried, and one cancelled stays owed. The same parameters are on `KvDeclaring` and
-  `FakeNatsClient.ensure_kv_bucket`.
+  ERROR and retried, and one cancelled stays owed. `FakeNatsClient.ensure_kv_bucket` takes the same
+  parameters.
 - **Added, `threetears.nats.PersistedCopyBucket`:** the one owner of a bucket that is the persisted
   copy of memory. It declares under the exact name in the background, retried with capped backoff
   and an ERROR per failed attempt until it lands, runs `load` once at the first declaration, runs
   `write_back` then and on every refill, and `stop()` ends a declaration still retrying.
-- **Changed, `open_kv_stream`:** returns `KvStreamOpening(kv, created)` instead of the bare handle,
-  and takes `detect_creation`, which looks the stream up before a declaring create so `created` says
-  whether this call made it.
-- **Added, `KvBucketLike.list_keys`.** `NatsKvBucket.list_keys` follows the client onto its current
-  connection before listing, like every other operation.
+- **Changed, `NatsKvBucket.list_keys`:** follows the client onto its current connection before
+  listing, like every other operation.
 - **Added, `FakeNatsClient`:** `restart_broker` and `reconnect` run every refill owed, so a
   consumer's fake-based tests drive the same path, and `refill_owed(name)` says whether one still is.
-- **Added, `threetears.nats.is_connection_closed(exc)`:** whether a call failed because its
-  connection is closed for good: nats-py's `ConnectionClosedError`, raw or as the explicit cause of
-  the `KvError` / `RequestError` the wrapper raised for it. Classified by type; a deadline, no
-  responders or an absent bucket answer `False`.
+
+#### Changed, breaking for structural implementers and `open_kv_stream` callers
+
+A class that satisfies `KvBucketLike` or `KvDeclaring` structurally -- a consumer's test fake
+declaring `# parity-with:` either protocol, or any hand-rolled double passed where one is expected --
+no longer satisfies it until it is updated. Update it in the same commit that relocks to this release.
+
+- **`KvBucketLike` gains `list_keys`.** Structural implementers must add
+  `async list_keys(*, prefix: str = "") -> list[str]` (an empty bucket is `[]`). `FakeKvBucket`
+  already has it, so a subclass inherits it.
+- **`KvDeclaring.ensure_kv_bucket` gains the keyword parameters `prefix_namespace: bool = True` and
+  `on_restored: KvRestoredHook | None = None`.** Structural implementers must accept both.
+- **`open_kv_stream` returns `KvStreamOpening(kv, created)`** instead of the bare handle, and takes
+  `detect_creation`, which looks the stream up before a declaring create so `created` says whether
+  this call made it. A caller reads `.kv` for the handle.
 
 ### Registry: the tool catalog keeps recording registrations after a NATS rolling restart
 
@@ -58,13 +66,10 @@ client retired when it moved off a lame-duck server.
 - **Added:** `ToolCatalog.persisting` and `WRITE_FAILURE_THRESHOLD`. Three catalog writes failing in
   a row, for any reason, make the registry's new `catalog_persisting` readiness check fail, until a
   write lands.
-- **Added:** `ToolCatalog.connection_usable` and the registry's `catalog_connection_usable`
-  liveness check. Three catalog writes failing on a CLOSED connection (`is_connection_closed`) since
-  the last write that landed fail liveness, so Kubernetes restarts the registry: nats-py never
-  reopens a closed connection, and only a restart clears it. The crossing is logged at ERROR, saying
-  so. Timeouts, no responders, an absent bucket and every other failure never count toward it, so a
-  NATS outage takes the registry out of rotation but never into a restart loop. A liveness check
-  restarts the pod only where the registry's Deployment carries a `livenessProbe`.
+- **Liveness unchanged:** a catalog write failure is never a liveness failure. A connection closed
+  for good is already caught by the registry's existing `nats` liveness check: the catalog's bucket
+  follows the client's current connection, so its writes fail on a closed connection only when the
+  client's own connection is closed.
 - **Removed, `RegistryServer`:** the authorizer `initialize(js, namespace)` hook. The registry
   called it, through `hasattr`, with a raw JetStream context; no authorizer in 3tears or its
   consumers implemented it, and it was the last raw JetStream handle in the registry. An authorizer

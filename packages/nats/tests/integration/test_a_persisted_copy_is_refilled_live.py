@@ -1,9 +1,7 @@
 """a bucket that is the persisted copy of memory is put back AND refilled after the server loses it.
 
-Found on cobalt-dev: after a NATS rolling restart the registry refused every tool registration with
-``CATALOG_UNAVAILABLE`` until its pod was deleted by hand. Its catalog bucket was held through a raw
-nats-py handle that did not follow the client, and a bucket the client puts back after a restart
-comes back empty. :class:`~threetears.nats.PersistedCopyBucket` declares the bucket through the
+A bucket the client puts back after a restart comes back empty, and only the service holds what
+belongs in it. :class:`~threetears.nats.PersistedCopyBucket` declares the bucket through the
 client with a refill, and this proves both paths that create it again on a real broker:
 
 - the client reconnects (nats-py's real reconnect path), and its restoration finds the stream gone;

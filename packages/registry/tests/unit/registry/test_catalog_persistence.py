@@ -1,12 +1,11 @@
 """the registry's catalog bucket comes back after a NATS restart that lost it, with the catalog in it.
 
-Found live in a cold-start validation: a NATS restart that lost its JetStream storage -- what a
-restarted NATS pod on Kubernetes can do, whatever the declared storage -- took the ``tool_catalog``
-bucket with it, and every registration answered ``CATALOG_UNAVAILABLE`` until the registry itself was
-restarted by hand. Found again on cobalt-dev after a NATS rolling restart: the bucket was held through
-a raw nats-py handle that stayed bound to a retired connection.
+A NATS restart that loses its JetStream storage -- what a restarted NATS pod on Kubernetes can do,
+whatever the declared storage -- takes the ``tool_catalog`` bucket with it, and a client's move to a
+successor connection retires the connection a bucket handle was opened on. Either one, unhealed,
+leaves every registration answering ``CATALOG_UNAVAILABLE`` until the registry restarts.
 
-The bucket is now owned by :class:`threetears.nats.PersistedCopyBucket`, built by
+The bucket is owned by :class:`threetears.nats.PersistedCopyBucket`, built by
 :func:`threetears.registry.catalog_persistence.catalog_bucket`. These drive that owner over the
 shipped in-memory client, :class:`threetears.core.testing.kv.FakeNatsClient`, whose
 ``restart_broker`` loses every bucket, puts back the declared ones empty and runs their refills, as

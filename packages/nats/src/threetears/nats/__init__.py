@@ -115,7 +115,6 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     from threetears.nats.raw_errors import (
         JS_ERR_STREAM_NOT_FOUND,
         is_bucket_not_found,
-        is_connection_closed,
         is_key_not_found,
         is_nats_error,
     )
@@ -318,13 +317,7 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
     ),
     "kv": ("NatsKvBucket",),
     "oplog": ("AppendResult", "OpLog", "OpRecord"),
-    "raw_errors": (
-        "JS_ERR_STREAM_NOT_FOUND",
-        "is_bucket_not_found",
-        "is_connection_closed",
-        "is_key_not_found",
-        "is_nats_error",
-    ),
+    "raw_errors": ("JS_ERR_STREAM_NOT_FOUND", "is_bucket_not_found", "is_key_not_found", "is_nats_error"),
     "user_jwt": (
         "account_public_key",
         "generate_account_seed",
@@ -598,7 +591,6 @@ __all__ = [
     # classifying a RAW nats-py handle's failures without importing nats-py
     "JS_ERR_STREAM_NOT_FOUND",
     "is_bucket_not_found",
-    "is_connection_closed",
     "is_key_not_found",
     "is_nats_error",
 ]

@@ -8,15 +8,14 @@ when that write fails.
 the bucket is owned by :class:`threetears.nats.PersistedCopyBucket`, built here by
 :func:`catalog_bucket` so its name and shape are stated once:
 
-- **exact name.** the bucket has always carried the bare name every deployment's NATS permissions
+- **exact name.** the bucket carries the bare name every deployment's NATS permissions
   grant (``$KV.tool_catalog.>``, ``KV_tool_catalog``), so it is declared without the namespace
   prefix; a prefixed name would orphan the persisted catalog and fall outside the grant.
-- **the shape it has always had**, now stated: file storage, history 1, and ``allow_direct`` set
-  (nats-py's own create left it unset; the first declaration of a live bucket sets it in place).
+- **its shape, stated:** file storage, history 1, and ``allow_direct`` set (a bucket found live
+  without ``allow_direct`` has it set in place by the declaration).
 - **a handle that follows the client.** the owner hands the catalog the client's own bucket handle,
-  which rebinds across a credential renewal or a move off a lame-duck server. the raw nats-py handle
-  this replaced stayed bound to the retired connection, and every write after a NATS rolling
-  restart failed until the pod was deleted by hand.
+  which rebinds across a credential renewal or a move off a lame-duck server. a handle bound to one
+  connection would fail every write once the client retires that connection.
 - **one recovery policy.** a start whose broker does not answer still serves from memory; the
   owner declares in the background until it lands, loads what an earlier registry persisted once
   (never replacing an entry registered since), and writes the catalog back. whenever the client
