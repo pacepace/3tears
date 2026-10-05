@@ -232,6 +232,7 @@ def _public_homes(name: str, exported: dict[str, frozenset[str]]) -> list[str]:
     for root in PUBLIC_ROOTS:
         try:
             names = _exports(root, exported)
+        # NOSILENT: a root whose extra is not installed drops out of the suggestion only; the finding stands.
         except ImportError:
             continue
         if name in names:

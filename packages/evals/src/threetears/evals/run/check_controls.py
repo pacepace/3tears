@@ -370,7 +370,12 @@ def refuse_non_discriminating_checks(
         for entry in controls.checks
         if entry.check not in declared
     ]
-    armed = _armed_by_seed(template, profile.world)
+    try:
+        armed = _armed_by_seed(template, profile.world)
+    except ValueError as unnamed:
+        raise ValidationFailedError(
+            f"template {template.name!r}: its world_seed states world state a control cannot be built over: {unnamed}"
+        ) from unnamed
     for name, end_state in controls.end_states.items():
         defects += [f"control {name!r}: {defect}" for defect in _end_state_defects(end_state, profile, armed=armed)]
     if defects:
@@ -398,24 +403,24 @@ def refuse_non_discriminating_checks(
         )
 
 
-def _armed_by_seed(template: EvalTemplate, world: WorldRegistry | None) -> frozenset[str] | None:
-    """The triggered dimensions the template's seed arms, or None when its seed names nothing this host declares.
+def _armed_by_seed(template: EvalTemplate, world: WorldRegistry | None) -> frozenset[str]:
+    """The triggered dimensions the template's seed arms.
 
     Args:
         template: The template.
         world: The host's world registry, or None for a host that declares no world.
 
     Returns:
-        The names; None when the seed cannot be named, which the do-nothing control refuses on its own.
+        The names.
+
+    Raises:
+        ValueError: The seed states something the registry does not declare.
     """
-    try:
-        seeded = _named(world, template.world_seed.namespaces)
-    except ValueError:
-        return None
+    seeded = _named(world, template.world_seed.namespaces)
     return frozenset(name for name in seeded if _is_triggered(world, name))
 
 
-def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, armed: frozenset[str] | None) -> list[str]:
+def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, armed: frozenset[str]) -> list[str]:
     """What a control end state states that this host's world or tools could not hold.
 
     A control is evidence only if it is a state a run could leave: a key no dimension declares, a
@@ -435,8 +440,7 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, arme
     Args:
         end_state: The control.
         profile: The host whose world and tools the control is held to.
-        armed: The triggered dimensions the template's seed arms; None when its seed cannot be named,
-            where the seed's own refusal is the finding.
+        armed: The triggered dimensions the template's seed arms.
 
     Returns:
         One sentence per defect.
@@ -472,13 +476,12 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, arme
     # check over a dimension that can never fire.
     stated = [*end_state.fired, *(name for name in end_state.fired_armed if name not in end_state.fired)]
     defects.extend(undefined for name in stated if (undefined := undefined_fired_dimension(name, world)) is not None)
-    if armed is not None:
-        defects.extend(
-            f"fired_armed names {name!r}, which this template's seed does not arm — a firing of the seed's armed "
-            "event on a dimension the seed never armed is a state no run could leave"
-            for name in end_state.fired_armed
-            if undefined_fired_dimension(name, world) is None and name not in armed
-        )
+    defects.extend(
+        f"fired_armed names {name!r}, which this template's seed does not arm — a firing of the seed's armed "
+        "event on a dimension the seed never armed is a state no run could leave"
+        for name in end_state.fired_armed
+        if undefined_fired_dimension(name, world) is None and name not in armed
+    )
     for call in end_state.calls:
         if (undefined := undefined_action(call.tool, call.action, profile.tool_actions)) is not None:
             defects.append(undefined)
