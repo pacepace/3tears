@@ -57,7 +57,10 @@ the coupling, never an ``unavailable`` one. ``unavailable`` keeps meaning what t
 **Two conventions the kit fixes, because a generic caller needs them fixed.** A ``subject_view``
 binding is called with one keyword, ``surfaces``, holding the surface names to render; and a
 ``seed``, ``perturb`` or ``fire`` binding is called with the value as its single positional
-argument, ``fire`` with none. Everything else about a host stays the host's business.
+argument, ``fire`` with none. A triggered dimension's ``seed`` binding ARMS an event and returns the
+host's identity of it — a non-empty string, which a cell's world session keeps so a firing of the
+seed's own event is told from one the world makes of its own on that dimension; the round trip fails
+a seed binding that returns none. Everything else about a host stays the host's business.
 
 The checks are derived from an obligations table, one row per registrable shape; its rows are
 :data:`ObligationRow`.
@@ -67,7 +70,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from threetears.evals.contracts.dsl import DSLError, extract_paths
 from threetears.evals.contracts.host.world import Triggered, WorldDimension, WorldRegistry
@@ -406,6 +409,8 @@ async def _round_trip(registry: WorldRegistry, declared: WorldDimension) -> Conf
     The value is chosen to *differ from what is there*, which is the difference between this
     check and a decorative one: synthesizing whatever the schema offers first would let a seeder
     that does nothing pass whenever the schema's first value happened to be the world's default.
+    A triggered dimension's seed must also name the event it armed, since a run's world session
+    refuses a seed that does not — so this is the check that finds it before a run does.
 
     Args:
         registry: The host's registry.
@@ -426,7 +431,23 @@ async def _round_trip(registry: WorldRegistry, declared: WorldDimension) -> Conf
         return _too_narrow("round_trip", declared, narrow)
     except _NotHeld as not_held:
         return _not_held("round_trip", declared, not_held)
-    if qualification := await _apply(registry, declared, value):
+    applied = await _apply(registry, declared, value)
+    if (
+        isinstance(declared.when, Triggered)
+        and declared.write_handle == declared.seed
+        and (not isinstance(applied.written, str) or not applied.written)
+    ):
+        return ConformanceResult(
+            check="round_trip",
+            outcome="failed",
+            dimension=declared.name,
+            detail=(
+                f"{declared.name} is triggered, and its seed handle armed {value!r} and returned {applied.written!r} "
+                "rather than the identity of the event it armed — a cell needs it to tell the seed's firing from one "
+                "the world makes of its own on this dimension, and refuses the seed without it"
+            ),
+        )
+    if qualification := applied.qualification:
         return ConformanceResult(
             check="round_trip",
             outcome="unavailable",
@@ -1324,7 +1345,17 @@ async def _incoherence(registry: WorldRegistry, declared: WorldDimension, value:
     return [str(reason) for reason in await registry.call(handle, world)]
 
 
-async def _apply(registry: WorldRegistry, declared: WorldDimension, value: Any) -> Qualification | None:
+class _Applied(NamedTuple):
+    """What putting a dimension at a value came to."""
+
+    #: ``arming_only`` when the value was armed and this host fires nothing; None when the host's handles
+    #: claim the dimension now holds it.
+    qualification: Qualification | None
+    #: What the write handle returned — for a triggered dimension's seed, the identity of the event it armed.
+    written: Any
+
+
+async def _apply(registry: WorldRegistry, declared: WorldDimension, value: Any) -> _Applied:
     """Put the dimension at ``value`` through the host's own handles, believing the result.
 
     Args:
@@ -1333,19 +1364,18 @@ async def _apply(registry: WorldRegistry, declared: WorldDimension, value: Any) 
         value: A schema-valid value.
 
     Returns:
-        ``arming_only`` when the value was armed and this host fires nothing; None when the host's
-        handles claim the dimension now holds it.
+        Whether it holds the value or was only armed, and what the write handle returned.
     """
     handle = declared.write_handle
     assert handle is not None, "callers check settability before instantiating"
-    await registry.call(handle, value)
+    written = await registry.call(handle, value)
     when = declared.when
     if not isinstance(when, Triggered):
-        return None
+        return _Applied(None, written)
     if when.fire is None:
-        return "arming_only"
+        return _Applied("arming_only", written)
     await registry.call(when.fire)
-    return None
+    return _Applied(None, written)
 
 
 async def _put(registry: WorldRegistry, declared: WorldDimension, value: Any) -> Qualification | None:
@@ -1364,7 +1394,7 @@ async def _put(registry: WorldRegistry, declared: WorldDimension, value: Any) ->
         ``arming_only`` or ``seeding_did_not_take`` when the value is not in the world; None when
         it is.
     """
-    if qualification := await _apply(registry, declared, value):
+    if qualification := (await _apply(registry, declared, value)).qualification:
         return qualification
     read = declared.read
     assert read is not None, "a settable dimension has a read handle — the registry refuses seed and perturb without"

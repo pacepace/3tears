@@ -288,7 +288,7 @@ def refuse_unsupplied_world(
     is the exception, refused unless the action's schema closes the value, because nothing but
     that schema can say a parameter is not text the model wrote.
 
-    **What fires is asked too.** A goal check's ``fired("<dimension>")`` must name a triggered dimension
+    **What fires is asked too.** A goal check's ``fired("<dimension>")`` or ``fired_armed("<dimension>")`` must name a triggered dimension
     the host declares, and a seed scheduling ambient perturbation needs a world with a
     ``perturb_ambient`` handle — each is a template asking for a world event no run of this host could
     produce, and a check over one scores False on every trial.

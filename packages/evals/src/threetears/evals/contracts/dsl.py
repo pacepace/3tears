@@ -49,10 +49,12 @@ Call parameters (``calls()`` returns the matching calls' recorded parameters, in
     all(it.note_text.length > 0 for it in calls("inventory.place_order"))
 
 World events (``fired()`` reads which triggered dimensions fired during the cell, by the rig or in the
-world — never world state, and never at t=0)::
+world — never world state, and never at t=0; ``fired_armed()`` reads only a firing of the event the
+cell's seed armed, so the world's own firing on the same dimension does not satisfy it)::
 
     fired("inventory.restock_alarm")
     not fired("support.escalation")
+    fired_armed("inventory.restock_alarm")
 
 Generator predicates (``it`` binds to each element)::
 
@@ -117,7 +119,7 @@ from __future__ import annotations
 import ast
 import copy
 import itertools
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -126,6 +128,7 @@ from threetears.evals.contracts.prose import schema_is_prose, schema_nodes_at
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.host.world import WorldRegistry
+    from threetears.evals.contracts.world_events import Firings
 
 
 class DSLError(ValueError):
@@ -218,6 +221,7 @@ _BUILTINS = frozenset(
         "last_call_was",
         "calls",
         "fired",
+        "fired_armed",
         "any",
         "all",
     }
@@ -233,7 +237,7 @@ class _EvalContext:
     variation: dict[str, Any]
     binding: dict[str, Any]  # `it` -> current element inside any()/all()
     world: WorldRegistry | None  # how `state.<dimension>` resolves a name; None declares no world at all
-    fired: Collection[str] | None  # the triggered dimensions that fired; None when no world events were recorded
+    fired: Firings | None  # what fired, and which firings were armed; None when no world events were recorded
 
 
 # =============================================================================
@@ -319,10 +323,10 @@ def _validate(tree: ast.AST) -> None:
                 # A computed spec would leave the authoring gate unable to name the action whose
                 # schema says which parameters are free text, so it could neither refuse nor admit.
                 raise DSLError("calls() takes one 'tool.action' string literal.")
-            if node.func.id == "fired" and _fired_name(node) is None:
+            if node.func.id in _FIRE_PREDICATES and _fired_name(node) is None:
                 # A computed name would leave the authoring gate unable to ask whether the dimension is a
                 # triggered one this host declares, so a typo would score False on every trial.
-                raise DSLError("fired() takes one dimension name as a string literal.")
+                raise DSLError(f"{node.func.id}() takes one dimension name as a string literal.")
         if isinstance(node, ast.GeneratorExp):
             if len(node.generators) != 1:
                 raise DSLError("any/all generators must have exactly one 'for' clause.")
@@ -839,11 +843,16 @@ def undefined_action(tool: str, action: str, actions: Callable[[str], frozenset[
     return f"{tool} has no action {action!r} (its actions: {', '.join(sorted(known))})"
 
 
+#: The predicates that read a cell's world events, each naming one triggered dimension as a string literal:
+#: ``fired`` for any firing, ``fired_armed`` for a firing of the event the cell's seed armed.
+_FIRE_PREDICATES = frozenset({"fired", "fired_armed"})
+
+
 def _fired_name(node: ast.Call) -> str | None:
-    """The dimension a ``fired()`` call names, or None when it names none as one string literal.
+    """The dimension a ``fired()`` or ``fired_armed()`` call names, or None when it names none as one string literal.
 
     Args:
-        node: A ``fired`` call.
+        node: A ``fired`` or ``fired_armed`` call.
 
     Returns:
         The name.
@@ -857,7 +866,7 @@ def _fired_name(node: ast.Call) -> str | None:
 
 
 def referenced_fires(expression: str) -> tuple[str, ...]:
-    """Every dimension a goal check names through ``fired()``, in source order, each once.
+    """Every dimension a goal check names through ``fired()`` or ``fired_armed()``, in source order, each once.
 
     The one walk over what a check reads of a cell's world events: the authoring gate asks whether each
     name is a triggered dimension the host declares (:func:`undefined_fire_references`), and a
@@ -872,12 +881,18 @@ def referenced_fires(expression: str) -> tuple[str, ...]:
     Raises:
         DSLError: The expression does not parse.
     """
+    calls = [
+        node
+        for node in ast.walk(parse(expression).body)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FIRE_PREDICATES
+    ]
     named: list[str] = []
-    for node in ast.walk(parse(expression).body):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "fired":
-            name = _fired_name(node)
-            if name is not None and name not in named:
-                named.append(name)
+    # Sorted by position: ``ast.walk`` is breadth-first, so a name nested deeper would otherwise be
+    # reported after a shallower one that comes later in the text.
+    for node in sorted(calls, key=lambda call: (call.lineno, call.col_offset)):
+        name = _fired_name(node)
+        if name is not None and name not in named:
+            named.append(name)
     return tuple(named)
 
 
@@ -1026,7 +1041,7 @@ def evaluate(
     ledger: CallLedger,
     world: WorldRegistry | None,
     variation: dict[str, Any] | None = None,
-    fired: Collection[str] | None = None,
+    fired: Firings | None = None,
 ) -> bool:
     """Evaluate a goal-state expression and return its boolean result.
 
@@ -1039,9 +1054,10 @@ def evaluate(
             host that declares no world, where any ``state`` path raises.
         variation: Variation parameter dict (test case's variation_params).
             Defaults to empty when omitted.
-        fired: The triggered dimensions that fired during the cell, read by ``fired()``. None when no
-            world events were recorded for this evaluation, where ``fired()`` raises rather than
-            answering False: an evaluation with no record cannot say nothing fired.
+        fired: What fired during the cell — read by ``fired()`` — and which firings were of the event the
+            seed armed — read by ``fired_armed()``. None when no world events were recorded for this
+            evaluation, where both raise rather than answering False: an evaluation with no record cannot
+            say nothing fired.
 
     Returns:
         ``True`` if the expression's value is truthy after coercion;
@@ -1049,7 +1065,7 @@ def evaluate(
 
     Raises:
         DSLError: For malformed expressions, for a ``state`` path on a host that declares no world,
-            and for ``fired()`` with no world events recorded. A path that names no declared dimension, or that does not resolve inside one,
+            and for ``fired()`` or ``fired_armed()`` with no world events recorded. A path that names no declared dimension, or that does not resolve inside one,
             returns ``False`` via :data:`Missing` semantics instead.
     """
     tree = parse(expression)
@@ -1069,7 +1085,7 @@ def evaluate_with_detail(
     ledger: CallLedger,
     world: WorldRegistry | None,
     variation: dict[str, Any] | None = None,
-    fired: Collection[str] | None = None,
+    fired: Firings | None = None,
 ) -> tuple[bool, str]:
     """Evaluate and return ``(result, detail)`` for trace inspection.
 
@@ -1085,7 +1101,7 @@ def evaluate_with_detail(
         ledger: The calls the candidate made, as :func:`evaluate` takes it.
         world: The host's world registry, as :func:`evaluate` takes it.
         variation: Variation parameter dict. Defaults to empty when omitted.
-        fired: The triggered dimensions that fired, as :func:`evaluate` takes it.
+        fired: What fired, as :func:`evaluate` takes it.
 
     Returns:
         The boolean result and the resolved value's ``repr``, or ``"<Missing>"``.
@@ -1366,20 +1382,22 @@ def _eval_call(node: ast.Call, ctx: _EvalContext) -> Any:
         return _builtin_last_call_was(ctx.ledger, *_check_arity("last_call_was", args, 1))
     if func_name == "calls":
         return _builtin_calls(ctx.ledger, *_check_arity("calls", args, 1))
-    if func_name == "fired":
-        return _builtin_fired(ctx.fired, *_check_arity("fired", args, 1))
+    if func_name in _FIRE_PREDICATES:
+        return _builtin_fired(func_name, ctx.fired, *_check_arity(func_name, args, 1))
     raise DSLError(f"Unknown DSL function: {func_name}")
 
 
-def _builtin_fired(fired: Collection[str] | None, name: Any) -> bool:
-    """Whether the triggered dimension ``name`` fired during the cell, whoever caused it.
+def _builtin_fired(predicate: str, fired: Firings | None, name: Any) -> bool:
+    """Whether the triggered dimension ``name`` fired during the cell — for ``fired_armed``, as the seed's armed event.
 
     Args:
-        fired: The dimensions that fired, or None when no world events were recorded.
+        predicate: ``fired`` (any firing, whoever caused it) or ``fired_armed`` (a firing of the event
+            the cell's seed armed, so not the world's own firing on the same dimension).
+        fired: What fired, or None when no world events were recorded.
         name: The dimension.
 
     Returns:
-        Whether it fired.
+        Whether it fired as the predicate asks.
 
     Raises:
         DSLError: No world events were recorded for this evaluation. Answering False there would
@@ -1387,10 +1405,10 @@ def _builtin_fired(fired: Collection[str] | None, name: Any) -> bool:
     """
     if fired is None:
         raise DSLError(
-            f"fired({name!r}) reads the cell's world events, and none were recorded for this evaluation — "
+            f"{predicate}({name!r}) reads the cell's world events, and none were recorded for this evaluation — "
             "a cell that opened no world session has no record to read"
         )
-    return name in fired
+    return name in (fired.armed if predicate == "fired_armed" else fired.dimensions)
 
 
 def _check_arity(name: str, args: list[Any], expected: int) -> list[Any]:

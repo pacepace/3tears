@@ -6,7 +6,7 @@ cell left them: the calls its candidate made (the trace's
 ``calls`` …), the world it left behind (the trace's
 :attr:`~threetears.evals.contracts.models.EvalTrace.end_state`, read by ``state.<dimension>``), and the
 triggered dimensions that fired (the result's
-:attr:`~threetears.evals.contracts.models.EvalResult.world_events`, read by ``fired()``). So a stored
+:attr:`~threetears.evals.contracts.models.EvalResult.world_events`, read by ``fired()`` and ``fired_armed()``). So a stored
 result is re-graded from what its candidate DID and what its world BECAME, through
 :func:`~threetears.evals.run.runner.grade_goal_checks` — the function every kind grades a live cell
 with — and a change to the goal language reaches results stored before it without re-running them.
@@ -20,7 +20,7 @@ expression is a goal-state expression whose every input is stored. It leaves as 
   land);
 * an expression that reads world state, for a cell whose end state was not stored, or a re-check given
   no world registry to resolve ``state.<dimension>`` through;
-* an expression that reads ``fired()``, for a cell that recorded no world events;
+* an expression that reads ``fired()`` or ``fired_armed()``, for a cell that recorded no world events;
 * an outcome that is not a goal-state expression at all — a fact a kind computed itself and
   reported under its own wording (``field_accuracy >= 0.92`` names no root the language admits);
 * an expression reading ``variation.*`` whose test case no longer resolves.
@@ -47,7 +47,7 @@ from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.dsl import DSLError, extract_paths, reads_call_ledger, referenced_fires
 from threetears.evals.contracts.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.contracts.models import NON_TERMINAL_RUN_STATUSES, GoalStateOutcome
-from threetears.evals.contracts.world_events import fired_dimensions
+from threetears.evals.contracts.world_events import Firings
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
 from threetears.observe import get_logger
 
@@ -177,7 +177,7 @@ def recheck_result(
         has_events=result.world_events is not None,
         has_variation=variation is not None,
     )
-    fired = fired_dimensions(result.world_events) if result.world_events is not None else None
+    fired = Firings.of(result.world_events) if result.world_events is not None else None
 
     outcomes: list[GoalStateOutcome] = []
     flips: list[CheckFlip] = []

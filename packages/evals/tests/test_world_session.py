@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from threetears.evals.contracts import (
     EvalStorage,
+    Firings,
     ValidationFailedError,
     WorldEvent,
     WorldSeed,
@@ -44,7 +45,14 @@ from packages.evals.tests.fixtures.toyhost.run import (
     toyhost_arming_template,
     toyhost_template,
 )
-from packages.evals.tests.fixtures.toyhost.world import PAYMENT_HOLD_CONDITION, ToyWorld, toyhost_world
+from packages.evals.tests.fixtures.toyhost.world import (
+    PAYMENT_HOLD_CONDITION,
+    PAYMENT_HOLD_EVENT,
+    SUPERVISOR_REVIEW_EVENT,
+    ToyWorld,
+    ToyWorldFaults,
+    toyhost_world,
+)
 
 _CARRIERS = ("page_reader", "console")
 
@@ -77,6 +85,18 @@ class TestSeeding:
         # Armed, not fired: the hold is staged and the world still holds the default.
         assert (state.armed_payment_hold, state.payment_hold) == ("held", "released")
         assert session.events == ()
+        # The event the seed handle armed, by the identity it returned — set-at-t=0 dimensions arm nothing.
+        assert session.armed_events == {"payment_hold": PAYMENT_HOLD_EVENT}
+
+    async def test_a_triggered_seed_handle_that_names_no_event_is_refused(self) -> None:
+        registry, _state = toyhost_world(faults=ToyWorldFaults(arming_payment_hold_names_no_event=True))
+
+        with pytest.raises(WorldSessionError, match=r"payment_hold is triggered, so its seed handle arms an event"):
+            await WorldSession(registry).seed(_ARMING_SEED, attached=_CARRIERS)
+        # The same world, seeding nothing triggered, is fine: only an arming owes an identity.
+        await WorldSession(registry).seed(
+            WorldSeed(namespaces={"page_reader": {"document_language": "de"}}), attached=_CARRIERS
+        )
 
     async def test_a_refused_seed_writes_nothing_and_leaves_the_world_unopened(self) -> None:
         registry, state = toyhost_world()
@@ -177,10 +197,16 @@ class TestFiring:
 
         assert state.payment_hold == "held"
         assert event == WorldEvent(
-            kind="event", dimension=PAYMENT_HOLD, condition=PAYMENT_HOLD_CONDITION, caused_by="rig", armed=True, turn=2
+            kind="event",
+            dimension=PAYMENT_HOLD,
+            condition=PAYMENT_HOLD_CONDITION,
+            caused_by="rig",
+            event=PAYMENT_HOLD_EVENT,
+            armed=True,
+            turn=2,
         )
         assert session.events == (event,)
-        assert session.fired == frozenset({PAYMENT_HOLD})
+        assert session.fired == Firings(dimensions=frozenset({PAYMENT_HOLD}), armed=frozenset({PAYMENT_HOLD}))
 
     async def test_an_unarmed_trigger_is_not_fired(self) -> None:
         session, state = await _opened(WorldSeed())
@@ -222,7 +248,7 @@ class TestFiring:
         with pytest.raises(WorldSessionError, match=refusal):
             await session.fire(dimension)
         with pytest.raises(WorldSessionError, match=refusal):
-            session.observe(dimension)
+            session.observe(dimension, event="anything")
 
     async def test_nothing_moves_a_world_that_was_never_seeded(self) -> None:
         registry, _state = toyhost_world()
@@ -231,7 +257,7 @@ class TestFiring:
         with pytest.raises(WorldSessionError, match="never seeded"):
             await session.fire(PAYMENT_HOLD)
         with pytest.raises(WorldSessionError, match="never seeded"):
-            session.observe(PAYMENT_HOLD)
+            session.observe(PAYMENT_HOLD, event=PAYMENT_HOLD_EVENT)
         with pytest.raises(WorldSessionError, match="never seeded"):
             await session.at_turn(1)
         with pytest.raises(WorldSessionError, match="never seeded"):
@@ -240,13 +266,42 @@ class TestFiring:
     async def test_an_observed_firing_calls_nothing_and_records_the_world_caused_it(self) -> None:
         session, state = await _opened(WorldSeed())
 
-        signoff = session.observe("supervisor_signoff", turn=3)
-        hold = session.observe(PAYMENT_HOLD)
+        signoff = session.observe("supervisor_signoff", event="desk-review", turn=3)
+        hold = session.observe(PAYMENT_HOLD, event="nightly-audit")
 
         assert state.supervisor_signoff == "pending", "observing a firing must not make it happen"
         assert (signoff.kind, signoff.caused_by, signoff.armed, signoff.turn) == ("human", "world", False, 3)
-        assert (hold.kind, hold.caused_by, hold.turn) == ("event", "world", None)
-        assert session.fired == frozenset({"supervisor_signoff", PAYMENT_HOLD})
+        assert (hold.kind, hold.caused_by, hold.event, hold.turn) == ("event", "world", "nightly-audit", None)
+        assert session.fired == Firings(dimensions=frozenset({"supervisor_signoff", PAYMENT_HOLD}))
+
+    async def test_provenance_is_the_event_s_not_the_dimension_s(self) -> None:
+        """The seed armed the hold; the world also fires a hold of its own. Only the seed's event is armed."""
+        session, _state = await _opened()
+
+        own = session.observe(PAYMENT_HOLD, event="nightly-audit", turn=1)
+        assert own.armed is False, "the dimension being armed says nothing about which event fired"
+        assert session.fired == Firings(dimensions=frozenset({PAYMENT_HOLD}))
+
+        seeds = session.observe(PAYMENT_HOLD, event=PAYMENT_HOLD_EVENT, turn=2)
+        assert seeds.armed is True
+        assert session.fired == Firings(dimensions=frozenset({PAYMENT_HOLD}), armed=frozenset({PAYMENT_HOLD}))
+
+    async def test_an_armed_event_observed_under_another_dimension_it_moves_is_armed(self) -> None:
+        """One event can move two dimensions; the seed armed the event, so its firing on either is the seed's."""
+        seed = WorldSeed(namespaces={"console": {"payment_hold": "held", "supervisor_signoff": "approved"}})
+        session, _state = await _opened(seed)
+
+        assert session.observe("supervisor_signoff", event=PAYMENT_HOLD_EVENT).armed is True
+        assert session.observe("supervisor_signoff", event=SUPERVISOR_REVIEW_EVENT).armed is True
+        assert session.observe("supervisor_signoff", event="desk-review").armed is False
+
+    @pytest.mark.parametrize("event", ["", None, 7])
+    async def test_an_observed_firing_naming_no_event_is_refused(self, event: Any) -> None:
+        session, _state = await _opened()
+
+        with pytest.raises(WorldSessionError, match="names the host's identity of the event that fired"):
+            session.observe(PAYMENT_HOLD, event=event)
+        assert session.events == ()
 
 
 class TestAmbientPerturbation:
@@ -264,7 +319,7 @@ class TestAmbientPerturbation:
         # The toy rig reports nothing about what it moved, which is not the same as moving nothing.
         assert event == WorldEvent(kind="ambient", caused_by="rig", turn=2, moved=None)
         assert session.events == (event,)
-        assert session.fired == frozenset(), "ambient perturbation fires no dimension"
+        assert session.fired == Firings(), "ambient perturbation fires no dimension"
 
     async def test_what_the_rig_reports_moving_is_recorded(self) -> None:
         registry, _state = toyhost_world()
@@ -319,7 +374,7 @@ class TestEndState:
         with pytest.raises(WorldSessionError, match="end state was already read"):
             await session.fire(PAYMENT_HOLD)
         with pytest.raises(WorldSessionError, match="end state was already read"):
-            session.observe(PAYMENT_HOLD)
+            session.observe(PAYMENT_HOLD, event=PAYMENT_HOLD_EVENT)
         with pytest.raises(WorldSessionError, match="end state was already read"):
             await session.at_turn(1)
 
@@ -349,14 +404,25 @@ class TestEndState:
     ("fields", "refusal"),
     [
         ({"kind": "ambient", "dimension": "x", "condition": "c", "caused_by": "rig"}, "names no dimension"),
+        ({"kind": "ambient", "caused_by": "rig", "event": "e"}, "names no dimension, condition or event"),
+        ({"kind": "event", "dimension": "x", "condition": "c", "caused_by": "world"}, "its condition and the event"),
         ({"kind": "ambient", "caused_by": "world"}, "the rig's act"),
         ({"kind": "ambient", "caused_by": "rig", "armed": True}, "the rig's act"),
         ({"kind": "event", "caused_by": "world"}, "names the dimension that fired"),
-        ({"kind": "event", "dimension": "x", "condition": "c", "caused_by": "world", "moved": []}, "only ambient"),
-        ({"kind": "human", "dimension": "x", "condition": "c", "caused_by": "rig", "armed": True}, "only a person"),
-        ({"kind": "turn", "dimension": "x", "condition": "c", "caused_by": "rig"}, "only what the cell's seed armed"),
         (
-            {"kind": "turn", "dimension": "x", "condition": "c", "caused_by": "world", "turn": 0},
+            {"kind": "event", "dimension": "x", "condition": "c", "event": "e", "caused_by": "world", "moved": []},
+            "only ambient",
+        ),
+        (
+            {"kind": "human", "dimension": "x", "condition": "c", "event": "e", "caused_by": "rig", "armed": True},
+            "only a person",
+        ),
+        (
+            {"kind": "turn", "dimension": "x", "condition": "c", "event": "e", "caused_by": "rig"},
+            "only what the cell's seed armed",
+        ),
+        (
+            {"kind": "turn", "dimension": "x", "condition": "c", "event": "e", "caused_by": "world", "turn": 0},
             "greater than or equal",
         ),
     ],
@@ -396,6 +462,7 @@ async def test_the_toy_kind_fires_an_event_trigger_at_run_time_and_every_result_
                 dimension=PAYMENT_HOLD,
                 condition=PAYMENT_HOLD_CONDITION,
                 caused_by="rig",
+                event=PAYMENT_HOLD_EVENT,
                 armed=True,
                 turn=1,
             )

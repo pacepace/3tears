@@ -54,7 +54,7 @@ import random
 import time
 import uuid
 from collections import Counter
-from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import (
     AbstractContextManager,
     contextmanager,
@@ -112,7 +112,7 @@ from threetears.evals.contracts.models import (
 )
 from threetears.evals.contracts.scoring import CellSummary
 from threetears.evals.contracts.call_ledger import CallLedger
-from threetears.evals.contracts.world_events import WorldEvent
+from threetears.evals.contracts.world_events import Firings, WorldEvent
 from threetears.evals.contracts.world_session import WorldSession
 from threetears.evals.contracts.usage_capture import (
     ExternalRateTable,
@@ -2151,7 +2151,7 @@ def evaluate_goal_state(
     test_case: EvalTestCase,
     ledger: CallLedger,
     end_state: Mapping[str, Any],
-    fired: Collection[str] | None,
+    fired: Firings | None,
     world: WorldRegistry | None,
 ) -> list[GoalStateOutcome]:
     """Run every expression in ``template.goal_state_checks`` and capture outcomes.
@@ -2166,8 +2166,7 @@ def evaluate_goal_state(
         test_case: The case, for its variation parameters.
         ledger: The calls the candidate made that succeeded.
         end_state: The world the cell left behind, keyed by declared dimension name.
-        fired: The triggered dimensions that fired (:attr:`WorldSession.fired`), or ``None`` when no
-            world events were recorded.
+        fired: What fired (:attr:`WorldSession.fired`), or ``None`` when no world events were recorded.
         world: The host's world registry (``profile.world``).
 
     Returns:
@@ -2191,7 +2190,7 @@ def grade_goal_checks(
     *,
     ledger: CallLedger,
     end_state: Mapping[str, Any],
-    fired: Collection[str] | None,
+    fired: Firings | None,
     variation: Mapping[str, Any],
     world: WorldRegistry | None,
 ) -> list[GoalStateOutcome]:
@@ -2210,10 +2209,11 @@ def grade_goal_checks(
         ledger: The calls the candidate made that succeeded — a cell's, or a control's stated calls.
         end_state: The world to read, keyed by declared dimension name — a cell's end state, or a
             control end state.
-        fired: The triggered dimensions that fired, read by ``fired()`` — a cell's
-            (:attr:`~threetears.evals.contracts.world_session.WorldSession.fired`), or a control's stated
-            set. Required rather than defaulted: ``None`` says no world events were recorded, and a check
-            reading ``fired()`` then raises rather than scoring "nothing fired" for a cell nobody watched.
+        fired: What fired, read by ``fired()`` and ``fired_armed()`` — a cell's
+            (:attr:`~threetears.evals.contracts.world_session.WorldSession.fired`), a stored result's
+            (:meth:`~threetears.evals.contracts.world_events.Firings.of` its world events), or a control's.
+            Required rather than defaulted: ``None`` says no world events were recorded, and a check
+            reading either then raises rather than scoring "nothing fired" for a cell nobody watched.
         variation: The case parameters a check may read as ``variation.*``.
         world: The host's world registry (``profile.world``), so a path reads the dimension the
             authoring gate resolved it to.

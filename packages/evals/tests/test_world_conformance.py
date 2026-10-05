@@ -144,6 +144,19 @@ class TestRoundTrip:
         assert broken.outcome == "failed"
         assert "reads back 'peppol-einvoice'" in broken.detail
 
+    async def test_a_triggered_seed_that_names_no_event_fails_and_the_sound_one_passes(self) -> None:
+        """A cell refuses a triggered seed with no event identity; the kit is where that is found first."""
+        sound = _verdict(await _report(), "round_trip", "payment_hold")
+        broken = _verdict(
+            await _report(faults=ToyWorldFaults(arming_payment_hold_names_no_event=True)),
+            "round_trip",
+            "payment_hold",
+        )
+
+        assert sound.outcome == "passed"
+        assert broken.outcome == "failed"
+        assert "returned None rather than the identity of the event it armed" in broken.detail
+
     async def test_a_seeder_that_does_nothing_is_caught_even_at_the_world_s_own_default(self) -> None:
         """The value seeded is chosen to DIFFER from what is there, and that is load-bearing.
 

@@ -65,6 +65,12 @@ _BORN_DIGITAL_TEMPLATES = frozenset({"peppol-einvoice"})
 #: The event trigger's condition: the extraction being posted to the payables ledger.
 PAYMENT_HOLD_CONDITION = "extraction_posted"
 
+#: The host's identity of the event each triggered dimension's seed handle arms — what the seed handle returns,
+#: and so what a firing of the seed's own event names.
+PAYMENT_HOLD_EVENT = "posting-hold"
+OPERATOR_REVIEW_EVENT = "operator-review"
+SUPERVISOR_REVIEW_EVENT = "supervisor-review"
+
 #: The world every conformance check composes over: a paper template, so a scan has a quality to vary.
 _BASE_WORLD = {"vendor_template": "acme-2019"}
 
@@ -149,6 +155,13 @@ class ToyWorldFaults:
 
     Independence is the check that catches it, and it finds the incident nobody has had yet:
     nothing today composes preconditions, so nothing today would notice.
+    """
+
+    arming_payment_hold_names_no_event: bool = False
+    """A triggered seed handle that arms its event and returns nothing to name it by.
+
+    The value still arrives, so every other check stays green; only the round trip's arming half sees
+    that no cell could tell the seed's firing from one the world made of its own on the dimension.
     """
 
 
@@ -295,6 +308,18 @@ def toyhost_world(
         """The event trigger's fire handle: posting the extraction applies whatever hold was staged."""
         state.payment_hold = state.armed_payment_hold
 
+    def arm_operator_corrections(value: list[str]) -> str:
+        state.armed_corrections = list(value)
+        return OPERATOR_REVIEW_EVENT
+
+    def arm_supervisor_signoff(value: str) -> str:
+        state.supervisor_signoff = value
+        return SUPERVISOR_REVIEW_EVENT
+
+    def arm_payment_hold(value: str) -> str | None:
+        state.armed_payment_hold = value
+        return None if state.faults.arming_payment_hold_names_no_event else PAYMENT_HOLD_EVENT
+
     def perturb_processing_shift() -> None:
         state.processing_shift = "night" if state.processing_shift == "day" else "day"
 
@@ -320,11 +345,11 @@ def toyhost_world(
         "toy.seed_handwriting_present": lambda value: setattr(state, "handwriting_present", value),
         "toy.read_handwriting_present": lambda: state.handwriting_present,
         "toy.read_ingest_backlog": read_ingest_backlog,
-        "toy.arm_operator_corrections": lambda value: setattr(state, "armed_corrections", list(value)),
+        "toy.arm_operator_corrections": arm_operator_corrections,
         "toy.read_operator_corrections": lambda: list(state.operator_corrections),
-        "toy.arm_supervisor_signoff": lambda value: setattr(state, "supervisor_signoff", value),
+        "toy.arm_supervisor_signoff": arm_supervisor_signoff,
         "toy.read_supervisor_signoff": lambda: state.supervisor_signoff,
-        "toy.arm_payment_hold": lambda value: setattr(state, "armed_payment_hold", value),
+        "toy.arm_payment_hold": arm_payment_hold,
         "toy.read_payment_hold": lambda: state.payment_hold,
         "toy.holds": holds,
     }
@@ -463,7 +488,10 @@ def toyhost_world(
 
 
 __all__ = [
+    "OPERATOR_REVIEW_EVENT",
     "PAYMENT_HOLD_CONDITION",
+    "PAYMENT_HOLD_EVENT",
+    "SUPERVISOR_REVIEW_EVENT",
     "TOY_JUDGE_ONLY_EXPRESSION",
     "TOY_RESOLVABLE_EXPRESSIONS",
     "TOY_UNRESOLVABLE_EXPRESSION",

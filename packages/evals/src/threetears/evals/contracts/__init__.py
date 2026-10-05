@@ -29,7 +29,7 @@ from threetears.evals.contracts.campaign import (
     GenerationProvenance,
 )
 from threetears.evals.contracts.call_ledger import CallLedger, RecordedCall
-from threetears.evals.contracts.world_events import WorldEvent, WorldEventCause, WorldEventKind
+from threetears.evals.contracts.world_events import Firings, WorldEvent, WorldEventCause, WorldEventKind
 from threetears.evals.contracts.world_session import WorldSession, WorldSessionError
 from threetears.evals.contracts.candidate_kind import (
     CandidateOutput,
@@ -428,6 +428,7 @@ __all__ = [
     "ExtractedPaths",
     "Finding",
     "FindingResolution",
+    "Firings",
     "GenerationProvenance",
     "GoalCheckControl",
     "GoalCheckControls",

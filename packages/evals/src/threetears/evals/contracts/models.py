@@ -74,7 +74,8 @@ so they share its number; the one stored value the required fields change is
 ``GenerationProvenance.cell_model_version``, which the generator had never written. So did the
 cassette corpus — ``EvalCassette`` keyed by corpus and occurrence, ``EvalRun.cassette_corpus_id`` in
 place of ``cassette_version`` on the run and the result — and the background-work spend
-``AsyncDelivery`` carries.)
+``AsyncDelivery`` carries; and ``WorldEvent.event``, the identity of the event a firing names, required
+on every firing so a firing's ``armed`` is the event's provenance rather than the dimension's.)
 """
 
 
@@ -441,9 +442,20 @@ class ControlEndState(EvalDocumentModel):
     fired: list[str] = Field(
         default_factory=list,
         description=(
-            'Every triggered dimension that fired, by name — what a check reads with fired("<dimension>"). '
-            "The whole set, not an overlay: the do-nothing control fires nothing, so an empty list states a "
-            "candidate in whose cell nothing fired. Each name must be a triggered dimension the host declares."
+            'The triggered dimensions the candidate made fire, by name — what a check reads with fired("<dimension>"). '
+            "Laid over the do-nothing control's firings, which are what fires with no candidate action at all: "
+            "every clock-driven (turn-triggered) dimension, since the world's own clock moves whatever the "
+            "candidate does. Each name must be a triggered dimension the host declares."
+        ),
+    )
+    fired_armed: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The triggered dimensions on which the event the template's seed armed fired, by name — what a check "
+            'reads with fired_armed("<dimension>"). Each is also a firing, so it need not be repeated in `fired`. '
+            "Laid over the do-nothing control's, which are the clock-driven dimensions the seed arms. Each name "
+            "must be a triggered dimension the template's seed arms: a seed-armed firing of a dimension the seed "
+            "never armed is a state no run could leave."
         ),
     )
 

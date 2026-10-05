@@ -33,7 +33,7 @@ from threetears.evals.run.runner import RunnerOptions, run_one_result
 from packages.evals.tests.factories import make_eval_result, make_eval_trace, memory_storage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.world import PAYMENT_HOLD_CONDITION, toyhost_world
+from packages.evals.tests.fixtures.toyhost.world import PAYMENT_HOLD_CONDITION, PAYMENT_HOLD_EVENT, toyhost_world
 
 _KIND = "readback-probe"
 _MODEL_ONLY = {"model": SweepableValue.of("test/model", display="test/model")}
@@ -114,6 +114,7 @@ async def test_the_runner_stores_the_world_the_cell_left_though_the_kind_never_r
             dimension="payment_hold",
             condition=PAYMENT_HOLD_CONDITION,
             caused_by="rig",
+            event=PAYMENT_HOLD_EVENT,
             armed=True,
             turn=1,
         )
