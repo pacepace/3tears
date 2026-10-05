@@ -59,6 +59,18 @@ from threetears.evals.contracts.host.traces import CellIdentity, CellTrace, Trac
 from threetears.evals.contracts.host.values import IntervalScale, NominalScale, SweepableValue
 from threetears.evals.contracts.host.world import Triggered, WorldDimension, WorldRegistry
 from threetears.evals.contracts.host.world_schema import UnsupportedSchemaError, nested_schemas, schema_violations
+from threetears.evals.contracts.host.world_conformance import (
+    CheckName,
+    ConformanceResult,
+    ObligationRow,
+    Outcome,
+    Qualification,
+    WorldConformanceError,
+    WorldConformanceReport,
+    check_world_conformance,
+    obligation_rows,
+    obligations,
+)
 from threetears.evals.contracts.host.world_seed import SeedRefused, SeedWrite, check_seed
 from threetears.evals.contracts.host.bars import BarProposal, BarRegistrationError
 from threetears.evals.contracts.host.profile import (
@@ -104,9 +116,11 @@ __all__ = [
     "CellIdentity",
     "CellTimeoutFactory",
     "CellTrace",
+    "CheckName",
     "Comparability",
     "CompletionClients",
     "CompletionRole",
+    "ConformanceResult",
     "Coverage",
     "CoverageState",
     "EvalCellTimeout",
@@ -123,9 +137,12 @@ __all__ = [
     "MeasureRegistry",
     "NestedSchema",
     "NominalScale",
+    "ObligationRow",
     "Ordinal",
     "OrdinalScale",
+    "Outcome",
     "ProfileRegistrationError",
+    "Qualification",
     "RegistrationError",
     "ResidualReader",
     "ResolvedLevers",
@@ -150,14 +167,19 @@ __all__ = [
     "VariantLeverReader",
     "When",
     "WorldCapability",
+    "WorldConformanceError",
+    "WorldConformanceReport",
     "WorldDimension",
     "WorldPlacement",
     "WorldRegistrationError",
     "WorldRegistry",
     "check_seed",
+    "check_world_conformance",
     "default_cell_timeout",
     "freeze",
     "nested_schemas",
+    "obligation_rows",
+    "obligations",
     "schema_violations",
     "served_models_by_score",
 ]

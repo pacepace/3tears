@@ -41,14 +41,10 @@ from typing import Annotated, Any, TypeVar, get_args, get_origin
 
 import threetears.evals
 
-#: The public roots a host imports from (the package matrix's list).
-PUBLIC_ROOTS = (
-    "threetears.evals.contracts",
-    "threetears.evals.contracts.host",
-    "threetears.evals.run",
-    "threetears.evals.analysis",
-    "threetears.evals.gen",
-)
+#: The public roots a host imports from: the package's own tuple, which the package matrix test holds
+#: equal to the roots it enforces. Read rather than copied, because a copy here once dropped
+#: ``analysis.viz`` and left two of its reachable types unexported with this test green.
+PUBLIC_ROOTS = threetears.evals.PUBLIC_ROOTS
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _RAISES_ENTRY = re.compile(r"^\s{4}([A-Za-z_][A-Za-z0-9_.]*):")

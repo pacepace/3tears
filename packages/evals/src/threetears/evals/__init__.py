@@ -1,10 +1,14 @@
 """The eval engine: templates, cases, runs and results; the trial loop, its judge and simulated user; and the analysis over what runs produced.
 
-Four packages, each a public root: :mod:`~threetears.evals.contracts` (the stored shapes, and the
-host contract under :mod:`~threetears.evals.contracts.host`), :mod:`~threetears.evals.run` (launching,
-executing, judging and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, memos and
-reports) and :mod:`~threetears.evals.gen` (generating cases). Runs are launched on demand; there is no
-scheduled-run surface.
+Four packages: :mod:`~threetears.evals.contracts` (the stored shapes, and the host contract under
+:mod:`~threetears.evals.contracts.host`), :mod:`~threetears.evals.run` (launching, executing, judging
+and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, memos and reports, with
+charts under :mod:`~threetears.evals.analysis.viz`) and :mod:`~threetears.evals.gen` (generating
+cases). Runs are launched on demand; there is no scheduled-run surface.
+
+**Import only from a public root**, and only the names its ``__all__`` declares. The roots are
+:data:`PUBLIC_ROOTS`, which a consumer can read to check its own imports rather than keep a copy;
+``tests/test_package_matrix.py`` holds the tuple equal to the roots it enforces.
 
 **There is no installed host.** A product adopts the engine by building one
 :class:`~threetears.evals.contracts.host.EvalHost` — its vocabulary, its storage and its services —
@@ -15,3 +19,18 @@ and configures nothing, so two hosts in one process — even in one event loop �
 never meet. ``tests/test_two_hosts_one_process.py`` and ``tests/test_no_process_global_state.py``
 hold that.
 """
+
+#: The public roots, as absolute module names. A consumer imports from these and from no module
+#: below them, and only the names each root's ``__all__`` declares. ``contracts.host`` and
+#: ``analysis.viz`` are roots of their own inside a package: the contract a host implements, and
+#: the one root whose render needs ``vl_convert``.
+PUBLIC_ROOTS: tuple[str, ...] = (
+    "threetears.evals.contracts",
+    "threetears.evals.contracts.host",
+    "threetears.evals.run",
+    "threetears.evals.analysis",
+    "threetears.evals.analysis.viz",
+    "threetears.evals.gen",
+)
+
+__all__ = ["PUBLIC_ROOTS"]
