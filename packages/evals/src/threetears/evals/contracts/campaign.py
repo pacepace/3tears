@@ -2,9 +2,10 @@
 
 :class:`EvalCampaign` is the hub — a first-class stored entity that groups eval
 runs under one subject×behavior, so a generated ``EvalAnalysis`` has something to
-attach to. Subject / Behavior / Battery stay
-*references* (an existing host subject, an ``eval_template``, a scenario suite)
-rather than being reified into new tables; the campaign is the only new hub.
+attach to. Subject and Behavior stay *references* (an existing host subject, an
+``eval_template``) rather than being reified into new tables; the campaign is the only new hub.
+There is no battery pointer: the case set a run froze already enters its apparatus class, so a
+second reference to "the scenario suite" would be a second answer to one question.
 
 All three models mirror the shape of the sibling stored eval definitions
 (:class:`~threetears.evals.contracts.models.JudgeConfig` /
@@ -137,19 +138,6 @@ def evidence_tier_of(readings: list[ReadingKind]) -> EvidenceTier:
     return "directional" if "judged" in readings else "mechanical"
 
 
-class BatteryRef(EvalDocumentModel):
-    """Reference to the scenario suite (the "Battery") a campaign holds fixed.
-
-    A controlled variable, not an owned object: the suite lives in scenario
-    storage and this is only a pointer to a specific version of it. Kept as a
-    typed sub-model (rather than an open dict) so the two coordinates a caller
-    must supply — ``suite_id`` and ``version`` — are validated at the boundary.
-    """
-
-    suite_id: str = Field(min_length=1, description="Id of the referenced scenario suite.")
-    version: str = Field(min_length=1, description="Version of the suite held fixed for this campaign.")
-
-
 class CampaignWindow(EvalDocumentModel):
     """The [start, end] time span a campaign's runs cover — DERIVED, never stored.
 
@@ -172,10 +160,9 @@ class EvalCampaign(EvalDocumentModel):
     is curated, not queried: a run may belong to more than one campaign, and a campaign
     holds exactly the runs an operator attached to it.
 
-    Subject / Behavior / Battery are *references*, not FK-enforced fields:
-    ``subject_id`` points at an existing subject the host owns,
-    ``template_id`` at an existing ``eval_template``, and ``battery_ref`` at a
-    scenario suite version. ``subject_kind`` is a discriminator (free string) —
+    Subject and Behavior are *references*, not FK-enforced fields:
+    ``subject_id`` points at an existing subject the host owns and
+    ``template_id`` at an existing ``eval_template``. ``subject_kind`` is a discriminator (free string) —
     data the render/grouping layer keys on, never a code branch. **It has
     no default kind.** A blank means this campaign declared none; defaulting it to
     whichever kind the host happens to evaluate most would make every other
@@ -219,10 +206,6 @@ class EvalCampaign(EvalDocumentModel):
     )
     behavior: str = Field(min_length=1, description="Which aspect is under test, e.g. 'tool selection'.")
     template_id: str | None = Field(default=None, description="Reference to an existing eval_template (the Behavior).")
-    battery_ref: BatteryRef | None = Field(
-        default=None,
-        description="Reference to an existing scenario suite version (the controlled Battery), or None.",
-    )
     run_ids: list[str] = Field(
         default_factory=list,
         description="Curated membership; a run may belong to more than one campaign.",
@@ -1071,7 +1054,6 @@ class EvalInsight(EvalDocumentModel):
 __all__ = [
     "ENGINE_CAVEAT_KINDS",
     "AttemptOutcome",
-    "BatteryRef",
     "CampaignView",
     "CampaignWindow",
     "CoverageLens",

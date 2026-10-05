@@ -107,6 +107,7 @@ def _grouped_run(run_id: str) -> EvalRun:
     would let a passing assertion be carried by the wrong badge.
     """
     return EvalRun(
+        apparatus_provenance="commissioned",
         id=run_id,
         scope_id="u",
         template_id="tpl",
@@ -194,6 +195,7 @@ def test_measurement_window_is_derived_from_result_timestamps_and_not_the_runs_o
     finished = "2026-08-05T02:18:42.000000+00:00"
 
     arm_a = EvalRun(
+        apparatus_provenance="commissioned",
         id="arm-a",
         scope_id="u",
         subject_snapshot=_subject("e", "Maple"),
@@ -206,6 +208,7 @@ def test_measurement_window_is_derived_from_result_timestamps_and_not_the_runs_o
         rubric_scales={},
     )
     arm_b = EvalRun(
+        apparatus_provenance="commissioned",
         id="arm-b",
         scope_id="u",
         subject_snapshot=_subject("e", "Maple"),

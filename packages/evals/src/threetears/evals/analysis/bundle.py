@@ -83,7 +83,6 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.analysis.stats import ci_half_width, standard_error_of_mean, wilson_interval
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
 from threetears.evals.contracts.campaign import (
-    BatteryRef,
     CampaignWindow,
     EvalInsight,
     VariantIndexEntry,
@@ -99,6 +98,7 @@ from threetears.evals.contracts.metrics import (
     AttributionScope,
     ClassifierStatistic,
     MeasurePopulation,
+    MeritAxis,
     MetricDescriptor,
     classifier_label_measure,
     confusion_of,
@@ -116,7 +116,7 @@ from threetears.evals.contracts.metrics import (
 from threetears.evals.contracts.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
-from threetears.evals.contracts.models import EvalResult
+from threetears.evals.contracts.models import ApparatusProvenance, EvalResult
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -986,6 +986,135 @@ class TelemetryRollup(EvalDocumentModel):
     )
 
 
+class ControlsReading(EvalDocumentModel):
+    """What the campaign declared held still, beside what its runs say about the apparatus.
+
+    The declaration (:class:`~threetears.evals.contracts.declaration.ControlDeclaration`) is a claim
+    about every run the campaign holds, and each run records whether its apparatus was set or found
+    (:attr:`~threetears.evals.contracts.models.EvalRun.apparatus_provenance`). The two use the same
+    words, so they are compared value for value here, once, and a writer quotes the result rather
+    than reading a declaration of `commissioned` over a campaign half made of captured sessions.
+    """
+
+    declared_stimulus: Literal["controlled", "uncontrolled"] | None = Field(
+        default=None,
+        description="The declared stimulus control, or None when the campaign declared no design.",
+    )
+    stimulus_reason: str = Field(
+        default="", description="What varied instead, when the stimulus was declared uncontrolled; blank otherwise."
+    )
+    declared_apparatus: ApparatusProvenance | None = Field(
+        default=None,
+        description="The declared apparatus control (commissioned | witnessed), or None when no design was declared.",
+    )
+    run_provenance: dict[str, ApparatusProvenance] = Field(
+        default_factory=dict,
+        description=(
+            "Every resolved member run → the provenance it recorded. Read off the run, never the declaration; "
+            "archived and unresolved members are absent because nothing here pools them."
+        ),
+    )
+    contradicting_run_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Resolved member runs whose recorded provenance is not the declared apparatus, sorted. Empty when "
+            "they agree or when nothing was declared — the second is a different fact, said in `disclosure`."
+        ),
+    )
+    disclosure: str | None = Field(
+        default=None,
+        description=(
+            "The sentence a writer quotes when the declaration and the runs disagree, the runs mix provenances "
+            "with no declaration to say which was meant, or the stimulus was declared uncontrolled. None when "
+            "there is nothing a reader needs warning about."
+        ),
+    )
+
+
+class ShortCell(EvalDocumentModel):
+    """A cell holding fewer repetitions than the declaration intended — a short run, stated per cell.
+
+    ``intended_repetitions`` is per cell, so its shortfall is too: a campaign whose runs each delivered
+    their whole matrix can still leave one arm short of the repetitions the design set out to buy,
+    because the arm was launched at a smaller ``k`` or measured by fewer runs than its siblings.
+    """
+
+    variant_key: str = Field(min_length=1, description="The cell's variant coordinate.")
+    apparatus_class_id: str = Field(min_length=1, description="The cell's apparatus coordinate.")
+    intended: int = Field(ge=1, description="The declared `intended_repetitions`.")
+    observed: int = Field(
+        ge=1,
+        description=(
+            "The fewest times any one case ran in the cell (its `repeats_per_case_min`): the cell's weakest "
+            "replication, which pooling more repeats of its other cases does not repair."
+        ),
+    )
+    sentence: str = Field(min_length=1, description="The disclosure a writer quotes about this cell.")
+
+
+class MeritTier(EvalDocumentModel):
+    """One axis of the declared merit priority, and the bars that give verdicts on it."""
+
+    axis: MeritAxis = Field(description="The merit axis, in the campaign's declared priority order.")
+    bar_measure_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The adjudicated bars on this axis, in `bar_adjudications` order. Empty is a real state: the "
+            "campaign ranked this axis and holds itself to no bar on it, so no verdict can decide on it."
+        ),
+    )
+
+
+class QuestionScope(EvalDocumentModel):
+    """Which verdicts bear on one declared question — read off the axes the question names."""
+
+    question_id: str = Field(min_length=1, description="The live question's id.")
+    merit_axes: list[MeritAxis] = Field(
+        min_length=1,
+        description="The axes the question names, ranked by `merit_priority` first and then in the question's own order.",
+    )
+    bar_measure_ids: list[str] = Field(
+        default_factory=list,
+        description="The adjudicated bars on those axes, in the order of `merit_axes`.",
+    )
+    unbarred_axes: list[MeritAxis] = Field(
+        default_factory=list,
+        description=(
+            "Axes the question names that no adjudicated bar is on, in the order of `merit_axes`. An answer on "
+            "one of these rests on the cell measures alone, with no verdict to quote."
+        ),
+    )
+
+
+class VerdictOrder(EvalDocumentModel):
+    """The order verdicts are read in, as the campaign declared it — never as the writer would choose.
+
+    ``merit_priority`` is the tie-break when no bar picks a winner, and an empty one means the campaign
+    stated no preference, which the analysis must not invent. So the ranking is arithmetic over the
+    declaration and the bars' own axes, done here, and a bar on an axis the priority does not name is
+    listed as unranked rather than placed by guess.
+    """
+
+    merit_priority: list[MeritAxis] = Field(
+        default_factory=list,
+        description="The declared priority, strongest first. Empty = no stated preference.",
+    )
+    tiers: list[MeritTier] = Field(
+        default_factory=list, description="One per axis of `merit_priority`, in that order. Empty when it is."
+    )
+    unranked_bar_measure_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Adjudicated bars whose axis the priority does not name, or which serve no axis, in "
+            "`bar_adjudications` order. Every bar when no priority was stated."
+        ),
+    )
+    questions: list[QuestionScope] = Field(
+        default_factory=list,
+        description="One per live declared question that names at least one merit axis, in declaration order. An unscoped question is absent.",
+    )
+
+
 class AnalysisContextBundle(EvalDocumentModel):
     """The closed context bundle a generation prompt runs over.
 
@@ -1024,7 +1153,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=31, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=32, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -1039,9 +1168,6 @@ class AnalysisContextBundle(EvalDocumentModel):
     )
     behavior: str = Field(description="Which aspect is under test, e.g. 'extraction'.")
     template_id: str | None = Field(default=None, description="Referenced eval_template (the Behavior), or None.")
-    battery_ref: BatteryRef | None = Field(
-        default=None, description="Referenced scenario suite version (the Battery), or None."
-    )
     scope_id: str = Field(
         description=(
             "Storage scope the member runs were loaded from. The engine assigns it no meaning — nothing "
@@ -1146,6 +1272,34 @@ class AnalysisContextBundle(EvalDocumentModel):
             "analysed mid-sweep puts a still-running member here. Reported separately "
             "from short_runs because absence is not zero: treating these as complete would state as "
             "fact the very thing that was not recorded."
+        ),
+    )
+    short_cells: list[ShortCell] = Field(
+        default_factory=list,
+        description=(
+            "Every cell holding fewer repetitions than the declaration's `intended_repetitions`, ordered by "
+            "(variant_key, apparatus_class_id), each with the sentence to quote. A per-cell shortfall, which "
+            "`short_runs` cannot see: every run can deliver its whole matrix and an arm still hold fewer "
+            "repetitions than the design set out to buy. Counted by each cell's least-repeated case. Empty when "
+            "every cell met the intention — and empty too when the declaration states none, which makes a "
+            "shortfall undetectable rather than zero (`declared_design.intended_repetitions` is null then)."
+        ),
+    )
+    controls_reading: ControlsReading = Field(
+        default_factory=ControlsReading,
+        description=(
+            "The declared controls beside the provenance every resolved run recorded, compared value for value, "
+            "with the sentence to quote when they disagree, when runs mix commissioned and witnessed apparatus "
+            "with nothing declared, or when the stimulus was declared uncontrolled. Commissioned and witnessed "
+            "observations never share a cell, so a mixed campaign has separate cells for them."
+        ),
+    )
+    verdict_order: VerdictOrder = Field(
+        default_factory=VerdictOrder,
+        description=(
+            "The order verdicts are read in, as declared: the bars on each axis of `merit_priority`, strongest "
+            "first, the bars on no ranked axis, and for each live question the bars on the axes it names. An "
+            "empty priority means no stated preference — never rank the axes yourself."
         ),
     )
     measurement_windows: list[MeasurementWindow] = Field(
@@ -3833,7 +3987,7 @@ def _apparatus_classes(
     runs: list[EvalRun],
     apparatus_levels: dict[str, dict[str, str | None]],
 ) -> dict[str, ApparatusClass]:
-    """Classify each run's rig, so every observation it commissioned shares one class.
+    """Classify each run's rig, so every observation it carries shares one class.
 
     A launching host declares its apparatus at launch, so a batch's observations were all measured
     under the same rig and reading it per run is exact rather than an approximation. A host
@@ -3854,6 +4008,10 @@ def _apparatus_classes(
         run.id: apparatus_class_of(
             {dim: apparatus_levels.get(dim, {}).get(run.id) for dim in dimensions},
             dimensions=dimensions,
+            # Read off the run, never assumed: the launch path stamps `commissioned`, and a host
+            # capturing traffic it did not control writes `witnessed`. It enters the class id, so a
+            # captured session beside a launched arm of the same variant is two cells everywhere.
+            provenance=run.apparatus_provenance,
         )
         for run in runs
     }
@@ -3913,10 +4071,6 @@ def _observations(
                     # input to the cell — two observations from different batches with identical
                     # apparatus are one cell, which is the whole point of pooling across them.
                     apparatus_ref=run.id,
-                    # A launching host fixes its rig at launch and measures against it, which is what
-                    # `declared` means. A host that reads apparatus off traffic it did not
-                    # control supplies `witnessed`, and the two never pool.
-                    provenance="declared",
                     case_ref=result.test_case_id,
                 )
             )
@@ -4290,7 +4444,6 @@ def assemble_context_bundle(
         subject_kind=campaign.subject_kind,
         behavior=campaign.behavior,
         template_id=campaign.template_id,
-        battery_ref=campaign.battery_ref,
         scope_id=scope_id,
         run_ids=run_ids,
         unresolved_run_ids=unresolved,
@@ -4325,6 +4478,8 @@ def assemble_context_bundle(
         # rather than folded into the first — reporting unknown as complete is the same error
         # one layer down.
         completeness_unknown_run_ids=[run.id for run in runs if run.completeness is None],
+        short_cells=_short_cells(cells, campaign.declared_design),
+        controls_reading=_controls_reading(runs, campaign.declared_design),
         # ``full`` because this bundle's reader is a model that cannot go and look:
         # above the inline cap the collapsed form names two spans and says where to
         # get the rest, which is an instruction only a human at a terminal can follow.
@@ -4361,6 +4516,7 @@ def assemble_context_bundle(
     bundle.bar_adjudications = _bar_adjudications(
         campaign.behavior, campaign.declared_design, results_by_cell, projection.records, profile=profile
     )
+    bundle.verdict_order = _verdict_order(bundle.bar_adjudications, campaign.declared_design)
     # The decision surface, over the same grouping and the same population the bars were read over,
     # and before the catalog: its collections are measure collections like any other here, so the
     # catalog has to describe their names too.
@@ -4749,10 +4905,145 @@ def _bar_adjudications(
                 source=source,
                 state=state,
                 reason=reason,
+                merit_axis=None if isinstance(resolved, UnreadableBarName) else resolved.descriptor.merit_axis,
                 verdicts=verdicts,
             )
         )
     return adjudications
+
+
+def _short_cells(cells: list[Cell], design: CampaignDesign | None) -> list[ShortCell]:
+    """Name every cell holding fewer repetitions than the declaration intended.
+
+    A cell is counted by its least-repeated case, since that case is the cell's weakest replication
+    and pooling more of the others does not repair it.
+
+    Args:
+        cells: The pooled cells, in coordinate order.
+        design: The campaign's declaration, or None.
+
+    Returns:
+        One entry per short cell, in coordinate order. Empty when nothing was declared — an unstated
+        intention cannot be fallen short of — or when every cell met it. A cell with no case count
+        has no repetitions to compare and is not listed: its own facts already say its cases were
+        unrecorded, which is the honest answer (unknown, not short). The bundle's observations all
+        name their case, since ``EvalResult.test_case_id`` is required.
+    """
+    intended = design.intended_repetitions if design is not None else None
+    if intended is None:
+        return []
+    short = []
+    for cell in sorted(cells, key=lambda c: (c.variant_key, c.apparatus_class_id)):
+        observed = cell.repeats_per_case_min
+        if observed is None or observed >= intended:
+            continue
+        short.append(
+            ShortCell(
+                variant_key=cell.variant_key,
+                apparatus_class_id=cell.apparatus_class_id,
+                intended=intended,
+                observed=observed,
+                # Names no coordinate: the entry carries the cell's, and the writer's view renames those
+                # to the cell's alias, which a digest spelled into prose would bypass.
+                sentence=(
+                    f"This cell ran its least-repeated case {observed} times against the {intended} repetitions "
+                    "the campaign declared it intends per cell, so its estimates rest on less replication than "
+                    "the design set out to buy."
+                ),
+            )
+        )
+    return short
+
+
+def _controls_reading(runs: list[EvalRun], design: CampaignDesign | None) -> ControlsReading:
+    """Compare the declared controls with the provenance every resolved run recorded.
+
+    Args:
+        runs: The resolved member runs.
+        design: The campaign's declaration, or None.
+
+    Returns:
+        The reading. Its disclosure is composed from the branches actually taken: a declared apparatus
+        the runs contradict, a mix of provenances nobody declared, and an uncontrolled stimulus each
+        add their own sentence, and none of them adds one that did not happen.
+    """
+    provenance = {run.id: run.apparatus_provenance for run in sorted(runs, key=lambda r: r.id)}
+    controls = design.controls if design is not None else None
+    declared = controls.apparatus if controls is not None else None
+    contradicting = sorted(run_id for run_id, found in provenance.items() if declared is not None and found != declared)
+    sentences = []
+    if contradicting:
+        sentences.append(
+            f"This campaign declares its apparatus {declared}, but {len(contradicting)} of its {len(provenance)} "
+            f"resolved runs recorded otherwise ({', '.join(contradicting)}); their observations sit in cells of "
+            "their own, and a finding drawn from them is drawn from a different kind of evidence than the "
+            "declaration describes."
+        )
+    elif declared is None and len(set(provenance.values())) > 1:
+        sentences.append(
+            "This campaign declares no controls, and its runs mix commissioned and witnessed apparatus; the two "
+            "never share a cell, so an arm measured both ways is reported as two cells."
+        )
+    if controls is not None and controls.stimulus == "uncontrolled":
+        sentences.append(f"The stimulus was not held fixed: {controls.stimulus_reason.strip()}")
+    return ControlsReading(
+        declared_stimulus=controls.stimulus if controls is not None else None,
+        stimulus_reason=controls.stimulus_reason if controls is not None else "",
+        declared_apparatus=declared,
+        run_provenance=provenance,
+        contradicting_run_ids=contradicting,
+        disclosure=" ".join(sentences) or None,
+    )
+
+
+def _verdict_order(adjudications: list[BarAdjudication], design: CampaignDesign | None) -> VerdictOrder:
+    """Order the adjudicated bars by the campaign's declared merit priority, and scope them per question.
+
+    Only an ``adjudicated`` bar ranks: a bar with no verdict gives nothing to read in any order. A bar
+    keeps its ``bar_adjudications`` position within its axis, so the priority reorders axes and never
+    the bars on one.
+
+    Args:
+        adjudications: The bundle's bar adjudications, in their own order.
+        design: The campaign's declaration, or None.
+
+    Returns:
+        The order. With no declaration or an empty priority, every adjudicated bar is unranked and no
+        tier exists — the analysis must not invent a preference the campaign never stated.
+    """
+    priority = list(design.merit_priority) if design is not None else []
+    by_axis: dict[MeritAxis | None, list[str]] = defaultdict(list)
+    for bar in adjudications:
+        if bar.state == "adjudicated":
+            by_axis[bar.merit_axis].append(bar.measure_id)
+    ranked = set(priority)
+    unranked = [
+        bar.measure_id
+        for bar in adjudications
+        if bar.state == "adjudicated" and (bar.merit_axis is None or bar.merit_axis not in ranked)
+    ]
+    questions = []
+    for question in design.live_questions() if design is not None else []:
+        if not question.merit_axes:
+            continue
+        axes = sorted(
+            dict.fromkeys(question.merit_axes),
+            key=lambda axis: priority.index(axis) if axis in ranked else len(priority),
+        )
+        questions.append(
+            QuestionScope(
+                question_id=question.id,
+                merit_axes=axes,
+                bar_measure_ids=[measure for axis in axes for measure in by_axis.get(axis, [])],
+                unbarred_axes=[axis for axis in axes if not by_axis.get(axis)],
+            )
+        )
+    return VerdictOrder(
+        merit_priority=priority,
+        tiers=[MeritTier(axis=axis, bar_measure_ids=by_axis.get(axis, [])) for axis in priority],
+        unranked_bar_measure_ids=unranked,
+        questions=questions,
+    )
 
 
 def _cell_measures(

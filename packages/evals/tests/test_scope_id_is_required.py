@@ -61,7 +61,6 @@ def _observation() -> Observation:
         scope_id="scope-a",
         variant_key="v" * 64,
         apparatus_class_id="class-1",
-        provenance="declared",
     )
 
 

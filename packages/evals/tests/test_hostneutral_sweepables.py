@@ -30,6 +30,7 @@ ROLES = [("judge_request_settings", JUDGE_INPUTS), ("simulator_request_settings"
 
 def _run(**fields: Any) -> EvalRun:
     return EvalRun(
+        apparatus_provenance="commissioned",
         id="run-1",
         scope_id="scope-a",
         subject_snapshot=_SUBJECT,
@@ -98,6 +99,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     ((30, 8), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
     # 31/9: the three session world dimensions are a host's, so the core's apparatus set is unchanged.
     ((31, 9), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 32/10: provenance entered the apparatus class id and the reader fields joined the bundle; the
+    # core's apparatus DECLARATIONS are unchanged.
+    ((32, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 

@@ -172,6 +172,9 @@ def toyhost_observation(**toyhost_values: Any) -> EvalRun:
         scope_id=TOYHOST_SCOPE,
         # Observational: no template ran it, and the run says so rather than naming one.
         template_id="",
+        # And no rig was set for it: the host recorded the apparatus it found on work it did not
+        # control, which is what `witnessed` means.
+        apparatus_provenance="witnessed",
         test_case_ids=list(TOYHOST_DOCUMENTS),
         k_runs=1,
         candidate_kind=TOY_EXTRACTOR_KIND,

@@ -1292,6 +1292,10 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 test_case_ids=[case.id for case in test_cases],
                 variation_counts=wiring.variation_counts,
                 candidate_kind=request.kind,
+                # A launch is the act of fixing a rig and measuring against it, so every run it starts
+                # was commissioned. A witnessed run never comes through here: its writer is the host
+                # operation that captured traffic it did not control, and it says so itself.
+                apparatus_provenance="commissioned",
                 judge_model=judge.model if judge is not None else None,
                 model_role_provenance=role_provenance,
                 effective_judges=judge.effective_judges if judge is not None else None,

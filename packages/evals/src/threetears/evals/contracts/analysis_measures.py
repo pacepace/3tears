@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from threetears.evals.contracts.metrics import AttributionScope, MeasurePopulation
+from threetears.evals.contracts.metrics import AttributionScope, MeasurePopulation, MeritAxis
 from threetears.evals.contracts.base import EvalDocumentModel
 
 
@@ -292,6 +292,15 @@ class BarAdjudication(EvalDocumentModel):
             "carry with a direction. `not_numeric` — the measure is categorical or boolean, so a threshold "
             "has nothing to compare."
         )
+    )
+    merit_axis: MeritAxis | None = Field(
+        default=None,
+        description=(
+            "The merit axis the bar's measure serves, read off the descriptor the bar name resolved to — the "
+            "host's declaration, never inferred from the name. None when the name did not resolve (no verdict "
+            "exists, so it ranks nowhere) or the measure serves no axis. What the campaign's `merit_priority` "
+            "and each question's `merit_axes` are matched against (`verdict_order`)."
+        ),
     )
     reason: str | None = Field(default=None, description="Why no verdict exists, for the two non-adjudicated states.")
     verdicts: list[BarVerdict] = Field(

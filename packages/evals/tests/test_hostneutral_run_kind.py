@@ -21,6 +21,7 @@ _SUBJECT = SubjectSnapshot(subject_id="summarizer-3", subject_label="Summarizer,
 def _run_document(**fields: Any) -> dict[str, Any]:
     """A stored run document as the store hands it back — JSON, not a model."""
     run = EvalRun(
+        apparatus_provenance="commissioned",
         id="run-1",
         scope_id="scope-a",
         subject_snapshot=_SUBJECT,

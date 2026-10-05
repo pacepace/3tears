@@ -24,9 +24,12 @@ is newer than some of the data. That cost is paid deliberately, and :class:`Next
 is what keeps it from being pure refusal: the engine says what recording would unblock,
 and how many more observations it would pool.
 
-*Declared and witnessed never pool.* Whether an apparatus was set before the fact or
+*Commissioned and witnessed never pool.* Whether an apparatus was set before the fact or
 found after it is the difference between an experiment and a log, and an analysis that
-cannot see which it is holding will describe one as the other. The same distinction runs
+cannot see which it is holding will describe one as the other. It is a property of the RIG,
+so it lives on the apparatus class and enters the class id: a witnessed observation and a
+commissioned one under identical recorded dimensions are two classes, and so two cells,
+whatever reads a cell by its two coordinates downstream. The same distinction runs
 one axis over, and lands on the FIRST rule rather than this one: a state dimension the
 subject perceives that one run seeded and another merely witnessed is an apparatus
 dimension recorded at two values, so it refuses to merge and names itself.
@@ -46,6 +49,7 @@ from pydantic import Field, model_validator
 
 from threetears.evals.contracts.hashing import canonical_digest
 from threetears.evals.contracts.base import EvalDocumentModel
+from threetears.evals.contracts.models import ApparatusProvenance
 
 #: The cell model this module implements, stamped onto every analysis generated under it
 #: (``GenerationProvenance.cell_model_version``).
@@ -56,9 +60,7 @@ from threetears.evals.contracts.base import EvalDocumentModel
 #: cell pools or says changes — a dimension joining the apparatus or world coordinate (one moved
 #: through a host declaration counts, though no line here changes), or a renamed count. Why each
 #: earlier version moved is in this file's history.
-CELL_MODEL_VERSION: int = 9
-
-Provenance = Literal["declared", "witnessed"]
+CELL_MODEL_VERSION: int = 10
 
 
 class ApparatusClass(EvalDocumentModel):
@@ -77,15 +79,21 @@ class ApparatusClass(EvalDocumentModel):
     recording `ocr` hashed identically, pooled into a single cell of two observations, and emitted no
     ``RefusedMerge`` — a wrong MERGE, which is the one outcome nothing downstream can undo, and
     exactly what this module exists to refuse.
+
+    **Provenance is a third half, for the same reason.** Every surface downstream of the cell
+    algebra keys a cell by ``(variant_key, apparatus_class_id)``. While provenance rode beside the
+    class rather than inside it, a witnessed and a commissioned observation of one variant under
+    the same recorded rig were two cells sharing both coordinates, and every per-cell surface
+    keyed on them silently kept one and dropped the other.
     """
 
     apparatus_class_id: str = Field(
         min_length=1,
         description=(
-            "sha256 over BOTH halves under distinct keys: the sorted map of recorded dimension → level, "
-            "and the sorted NAMES of the dimensions that were not recorded. The second half is not optional — "
-            "pooling groups by this id before any merge rule is consulted, so an id covering the recorded map "
-            "alone lets two classes that measured different amounts share a cell."
+            "sha256 over three parts under distinct keys: the sorted map of recorded dimension → level, the "
+            "sorted NAMES of the dimensions that were not recorded, and the provenance. None is optional — "
+            "pooling groups by this id before any merge rule is consulted, so an id leaving one out lets two "
+            "classes that measured different amounts, or one set and one found, share a cell."
         ),
     )
     recorded: dict[str, str] = Field(
@@ -98,6 +106,14 @@ class ApparatusClass(EvalDocumentModel):
             "Apparatus dimensions this observation never recorded, sorted. Not an empty value and not a "
             "disagreement — a state nothing observed, which blocks a merge and generates a next-experiment."
         ),
+    )
+    provenance: ApparatusProvenance = Field(
+        description=(
+            "commissioned = the rig was set before the observations were made. witnessed = it was found "
+            "afterwards. Read off the run that carried it (`EvalRun.apparatus_provenance`). Digested into the "
+            "id, so cells never pool across the two: the distinction is what separates an experiment from a "
+            "log, and an analysis that cannot see it will describe one as the other."
+        )
     )
 
     @model_validator(mode="after")
@@ -128,6 +144,10 @@ class Observation(EvalDocumentModel):
     one, and is ``None`` when the apparatus was carried inline. It is provenance for a reader,
     never an input to the cell — two observations from different batches with identical
     apparatus are one cell, which is the whole point of pooling across batches.
+
+    It carries no provenance of its own: whether its rig was set or found is a property of the rig,
+    so it is read off the class its ``apparatus_class_id`` names, and there is no second field for
+    the two to disagree in.
     """
 
     id: str = Field(min_length=1, description="Stable id of this observation.")
@@ -137,13 +157,6 @@ class Observation(EvalDocumentModel):
     apparatus_ref: str | None = Field(
         default=None,
         description="The batch this was commissioned under, or None when the apparatus was carried inline.",
-    )
-    provenance: Provenance = Field(
-        description=(
-            "declared = the apparatus was set before the observation was made. witnessed = it was found "
-            "afterwards. Cells never pool across the two: the distinction is what separates an experiment "
-            "from a log, and an analysis that cannot see it will describe one as the other."
-        )
     )
     measures: dict[str, float] = Field(
         default_factory=dict,
@@ -178,7 +191,9 @@ class Cell(EvalDocumentModel):
 
     variant_key: str = Field(min_length=1, description="The cell's variant coordinate.")
     apparatus_class_id: str = Field(min_length=1, description="The cell's apparatus coordinate.")
-    provenance: Provenance = Field(description="Shared by every observation in the cell — cells never mix the two.")
+    provenance: ApparatusProvenance = Field(
+        description="The provenance of the cell's apparatus class, restated so a reader need not resolve the class.",
+    )
     n_observations: int = Field(
         ge=1,
         description=(
@@ -269,21 +284,19 @@ class RefusedMerge(EvalDocumentModel):
 
     variant_key: str = Field(min_length=1, description="The variant both cells share.")
     apparatus_class_ids: list[str] = Field(
-        min_length=1,
+        min_length=2,
         max_length=2,
         description=(
-            "The DISTINCT apparatus classes of the two cells that stayed apart, sorted — so **one** "
-            "id when the two share a rig and differ only in provenance, which is the ordinary shape "
-            "of a `provenance_differs` refusal. Not 'the two classes': a consumer reading that "
-            "sentence indexes `[1]` and is wrong the first time a host witnesses observations of a "
-            "rig it also commissioned."
+            "The apparatus classes of the two cells that stayed apart, sorted. Always two: provenance is "
+            "digested into the class id, so two same-variant cells are two classes even when they share "
+            "every recorded dimension and differ only in whether the rig was set or found."
         ),
     )
     reason: Literal["apparatus_differs", "apparatus_unknown", "provenance_differs"] = Field(
         description=(
             "apparatus_differs = a dimension was recorded at two values, so a rival explanation exists. "
             "apparatus_unknown = a dimension was never recorded, so whether it varied is undecidable — the "
-            "only one of the three that recording can fix. provenance_differs = one side was declared and "
+            "only one of the three that recording can fix. provenance_differs = one side was commissioned and "
             "the other witnessed."
         )
     )
@@ -375,6 +388,7 @@ class SubjectKeyInstability(EvalDocumentModel):
 def apparatus_class_of(
     recorded: Mapping[str, str | None],
     *,
+    provenance: ApparatusProvenance,
     dimensions: Collection[str] = (),
 ) -> ApparatusClass:
     """Classify one observation's rig from the dimensions it recorded.
@@ -386,19 +400,23 @@ def apparatus_class_of(
             registry knows about and this observation never mentioned reads as unrecorded
             rather than as a dimension that does not exist — those are different facts, and only the
             declaration can tell them apart.
+        provenance: Whether the rig was set (``commissioned``) or found (``witnessed``). Required:
+            only the writer of the observations knows, and a default would let a log read as an
+            experiment.
 
     Returns:
-        The class. Its id digests the recorded map AND the names of the unrecorded dimensions —
-        see :class:`ApparatusClass` for why the second half cannot be dropped.
+        The class. Its id digests the recorded map, the names of the unrecorded dimensions and the
+        provenance — see :class:`ApparatusClass` for why none of the three can be dropped.
     """
     known = {name: level for name, level in recorded.items() if level is not None}
     unknown = sorted((set(dimensions) | set(recorded)) - set(known))
     return ApparatusClass(
-        # Both halves, under distinct keys so a dimension NAMED as unknown can never collide
-        # with one RECORDED at a value that happens to equal its name.
-        apparatus_class_id=canonical_digest({"recorded": known, "unknown": unknown}),
+        # Every part under its own key so a dimension NAMED as unknown can never collide with one
+        # RECORDED at a value that happens to equal its name.
+        apparatus_class_id=canonical_digest({"provenance": provenance, "recorded": known, "unknown": unknown}),
         recorded=known,
         unknown_dimensions=unknown,
+        provenance=provenance,
     )
 
 
@@ -503,23 +521,23 @@ def pool_observations(
         KeyError: An observation references an apparatus class not in ``classes``, which
             would silently drop it from every cell.
     """
-    grouped: dict[tuple[str, str, Provenance], list[Observation]] = defaultdict(list)
+    grouped: dict[tuple[str, str], list[Observation]] = defaultdict(list)
     for obs in observations:
         if obs.apparatus_class_id not in classes:
             raise KeyError(f"observation {obs.id} references unknown apparatus class {obs.apparatus_class_id}")
-        grouped[(obs.variant_key, obs.apparatus_class_id, obs.provenance)].append(obs)
+        grouped[(obs.variant_key, obs.apparatus_class_id)].append(obs)
 
     cells = [
         Cell(
             variant_key=variant,
             apparatus_class_id=class_id,
-            provenance=provenance,
+            provenance=classes[class_id].provenance,
             n_observations=len(members),
             **_replication_of(members),
             observation_ids=sorted(o.id for o in members),
             unknown_dimensions=classes[class_id].unknown_dimensions,
         )
-        for (variant, class_id, provenance), members in sorted(grouped.items())
+        for (variant, class_id), members in sorted(grouped.items())
     ]
 
     refused = _refused_merges(cells, classes)
@@ -773,7 +791,6 @@ __all__ = [
     "Cell",
     "NextExperiment",
     "Observation",
-    "Provenance",
     "RefusedMerge",
     "SubjectKeyInstability",
     "apparatus_class_of",

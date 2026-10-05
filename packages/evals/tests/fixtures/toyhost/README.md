@@ -81,7 +81,10 @@ fields an extraction missed through `kind_payload`, which the engine stores verb
 
 The two campaigns' observational shapes are deliberate opposites: the corpus campaign declares an
 uncontrolled stimulus and a witnessed apparatus, the run-path campaign a controlled stimulus and a
-commissioned one.
+commissioned one. Each run records the same word itself (`EvalRun.apparatus_provenance`): the corpus
+writes `witnessed` on the batches it constructs, and the launch path stamps `commissioned` on every
+run it starts, so the bundle reads provenance off the run and compares it with the declaration
+(`controls_reading`).
 
 ## The store
 

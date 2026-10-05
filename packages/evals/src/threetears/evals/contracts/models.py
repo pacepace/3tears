@@ -1477,6 +1477,21 @@ RUN_STATUSES: frozenset[str] = frozenset(get_args(EvalRunStatus))
 #: Statuses from which a run never moves again.
 TERMINAL_RUN_STATUSES: frozenset[str] = RUN_STATUSES - NON_TERMINAL_RUN_STATUSES
 
+#: Whether a run's apparatus was set before the fact or found after it.
+#:
+#: * ``commissioned`` — a rig was chosen and the observations were gathered under it: the launch
+#:   path stamps this on every run it starts, because a launch is exactly the act of fixing a rig and
+#:   measuring against it.
+#: * ``witnessed`` — nothing set the apparatus; the host observed traffic it did not control (a real
+#:   user's session, captured afterwards) and recorded the apparatus it found.
+#:
+#: The difference between an experiment and a log. Cells never pool across it
+#: (:func:`~threetears.evals.analysis.cells.pool_observations`), and the same two words are what a
+#: campaign declares it held (:attr:`~threetears.evals.contracts.declaration.ControlDeclaration.apparatus`),
+#: so a declaration and the runs it governs are compared value for value rather than through a
+#: translation table.
+ApparatusProvenance = Literal["commissioned", "witnessed"]
+
 #: How a run arrived at one of its resolved role models. ``chosen`` means the launch
 #: named it and re-running with the same arguments pins the same model; ``inherited``
 #: means the role default supplied it, so the same launch arguments would pick up
@@ -1812,6 +1827,15 @@ class EvalRun(EvalDocumentModel):
     )
     k_runs: int = Field(ge=1, le=20)
     test_case_ids: list[str] = Field(min_length=1)
+    apparatus_provenance: ApparatusProvenance = Field(
+        description=(
+            "How this run's apparatus came to be: `commissioned` = a rig was set and the observations were gathered "
+            "under it (the launch path stamps it on every run it starts); `witnessed` = nothing set it, and the host "
+            "recorded the apparatus it found on traffic it did not control (a captured session). Required, with no "
+            "default: whoever writes a run is the only party that knows which it is, and a default would let a "
+            "captured log read as an experiment. The analysis reads it per observation, and the two never share a cell."
+        ),
+    )
     variation_counts: VariationCounts | None = Field(
         default=None,
         description=(
@@ -3651,6 +3675,7 @@ __all__ = [
     "TERMINAL_RUN_STATUSES",
     "TRANSCRIPT_DIM_ID",
     "ActorPolicy",
+    "ApparatusProvenance",
     "AsyncDelivery",
     "AsyncDeliveryStatus",
     "AsyncExternalSpend",

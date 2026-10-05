@@ -30,7 +30,6 @@ def _observation(
     klass: ApparatusClass,
     *,
     variant: str = _VARIANT,
-    provenance: str = "declared",
     case_ref: str | None = None,
 ) -> Observation:
     """One observation at a named class.
@@ -39,7 +38,6 @@ def _observation(
         obs_id: The observation's id.
         klass: The apparatus class it was measured under.
         variant: Its variant coordinate.
-        provenance: Whether the apparatus was declared or witnessed.
         case_ref: The case it exercised, or None for a host with no battery.
 
     Returns:
@@ -50,7 +48,6 @@ def _observation(
         scope_id="scope-a",
         variant_key=variant,
         apparatus_class_id=klass.apparatus_class_id,
-        provenance=provenance,  # type: ignore[arg-type]
         case_ref=case_ref,
     )
 
@@ -75,7 +72,7 @@ class TestTheMergeRule:
 
     def test_two_observations_with_the_same_variant_and_identical_apparatus_pool(self) -> None:
         """The base case, and the one that makes k accumulate across batches at all."""
-        klass = apparatus_class_of({"judge": "j-1", "template": "t-1"})
+        klass = apparatus_class_of({"judge": "j-1", "template": "t-1"}, provenance="commissioned")
         cells, refused, _ = _pool(
             _observation("obs-a", klass),
             _observation("obs-b", klass),
@@ -89,8 +86,8 @@ class TestTheMergeRule:
 
     def test_one_differing_dimension_keeps_them_apart_and_the_reason_is_stated(self) -> None:
         """A rival explanation exists, so the two stay separate rather than being averaged."""
-        left = apparatus_class_of({"judge": "j-1", "template": "t-1"})
-        right = apparatus_class_of({"judge": "j-2", "template": "t-1"})
+        left = apparatus_class_of({"judge": "j-1", "template": "t-1"}, provenance="commissioned")
+        right = apparatus_class_of({"judge": "j-2", "template": "t-1"}, provenance="commissioned")
         cells, refused, _ = _pool(
             _observation("obs-a", left),
             _observation("obs-b", right),
@@ -110,8 +107,12 @@ class TestTheMergeRule:
         the next-experiment: an operator told only "these did not pool" has nothing to do,
         while one told "recording ocr_engine_version on obs-b takes k from 1 to 2" does.
         """
-        recorded = apparatus_class_of({"ocr_engine_version": "tess-5.3.1"}, dimensions={"ocr_engine_version"})
-        missing = apparatus_class_of({"ocr_engine_version": None}, dimensions={"ocr_engine_version"})
+        recorded = apparatus_class_of(
+            {"ocr_engine_version": "tess-5.3.1"}, provenance="commissioned", dimensions={"ocr_engine_version"}
+        )
+        missing = apparatus_class_of(
+            {"ocr_engine_version": None}, provenance="commissioned", dimensions={"ocr_engine_version"}
+        )
 
         cells, refused, next_experiments = _pool(
             _observation("obs-a", recorded),
@@ -131,8 +132,8 @@ class TestTheMergeRule:
 
     def test_an_unknown_dimension_is_reported_as_undecidable_rather_than_as_a_difference(self) -> None:
         """Recorded-on-one-side is not a disagreement, and calling it one asserts an observation nobody made."""
-        recorded = apparatus_class_of({"judge": "j-1"}, dimensions={"judge"})
-        missing = apparatus_class_of({"judge": None}, dimensions={"judge"})
+        recorded = apparatus_class_of({"judge": "j-1"}, provenance="commissioned", dimensions={"judge"})
+        missing = apparatus_class_of({"judge": None}, provenance="commissioned", dimensions={"judge"})
 
         _, refused, _ = _pool(
             _observation("obs-a", recorded), _observation("obs-b", missing), classes=(recorded, missing)
@@ -143,18 +144,33 @@ class TestTheMergeRule:
             "and reporting it as apparatus_differs would claim a comparison nobody performed"
         )
 
-    def test_declared_and_witnessed_never_pool(self) -> None:
+    def test_commissioned_and_witnessed_never_pool(self) -> None:
         """The difference between an experiment and a log, which an analysis must not collapse."""
-        klass = apparatus_class_of({"judge": "j-1"})
+        commissioned = apparatus_class_of({"judge": "j-1"}, provenance="commissioned")
+        witnessed = apparatus_class_of({"judge": "j-1"}, provenance="witnessed")
         cells, refused, _ = _pool(
-            _observation("obs-a", klass, provenance="declared"),
-            _observation("obs-b", klass, provenance="witnessed"),
-            classes=(klass,),
+            _observation("obs-a", commissioned),
+            _observation("obs-b", witnessed),
+            classes=(commissioned, witnessed),
         )
 
-        assert len(cells) == 2, "same variant, same apparatus — and still two cells"
+        assert len(cells) == 2, "same variant, same recorded apparatus — and still two cells"
+        assert {cell.provenance for cell in cells} == {"commissioned", "witnessed"}
         assert [r.reason for r in refused] == ["provenance_differs"]
         assert refused[0].dimensions == [], "provenance names no dimension, and inventing one would be a false lead"
+
+    def test_provenance_enters_the_class_id_so_the_two_coordinates_name_one_cell(self) -> None:
+        """Every per-cell surface keys a cell by (variant, class) — so the class has to differ.
+
+        Were provenance a third coordinate beside the class, a witnessed and a commissioned cell
+        of one variant under the same recorded rig would share both coordinates, and every
+        surface keyed on them would keep one and silently drop the other.
+        """
+        commissioned = apparatus_class_of({"judge": "j-1"}, provenance="commissioned")
+        witnessed = apparatus_class_of({"judge": "j-1"}, provenance="witnessed")
+
+        assert commissioned.recorded == witnessed.recorded
+        assert commissioned.apparatus_class_id != witnessed.apparatus_class_id
 
 
 class TestCellsKeyOnTheVariant:
@@ -168,7 +184,7 @@ class TestCellsKeyOnTheVariant:
         under an identical rig are two cells sharing one apparatus class, whichever runs
         measured them.
         """
-        klass = apparatus_class_of({"judge": "j-1", "template": "t-1"})
+        klass = apparatus_class_of({"judge": "j-1", "template": "t-1"}, provenance="commissioned")
         cells, refused, next_experiments = _pool(
             _observation("obs-arm-a", klass, variant=_VARIANT),
             _observation("obs-arm-b", klass, variant=_OTHER_VARIANT),
@@ -188,7 +204,7 @@ class TestCellsKeyOnTheVariant:
         observations, and whether that is one case run three times or three cases run once is
         not something the count can say — the next class is what says it.
         """
-        klass = apparatus_class_of({"judge": "j-1"})
+        klass = apparatus_class_of({"judge": "j-1"}, provenance="commissioned")
         cells, _, _ = _pool(
             _observation("obs-1", klass),
             _observation("obs-2", klass),
@@ -215,7 +231,7 @@ class TestACellStatesItsReplicationRatherThanACount:
         The two cells are indistinguishable on ``n_observations``, which is exactly why that field
         cannot be the repeat count — an assertion on the count alone passes for both.
         """
-        klass = apparatus_class_of({"judge": "j-1"})
+        klass = apparatus_class_of({"judge": "j-1"}, provenance="commissioned")
         repeated, _, _ = _pool(
             *(_observation(f"obs-{i}", klass, case_ref="case-a") for i in range(3)),
             classes=(klass,),
@@ -235,7 +251,7 @@ class TestACellStatesItsReplicationRatherThanACount:
         Two batches of the same five cases, each run once, are five cases run twice in the cell,
         which is the reading a run's ``k_runs`` of 1 cannot give.
         """
-        klass = apparatus_class_of({"judge": "j-1"})
+        klass = apparatus_class_of({"judge": "j-1"}, provenance="commissioned")
         observations = [
             Observation(
                 id=f"obs-{batch}-{case}",
@@ -243,7 +259,6 @@ class TestACellStatesItsReplicationRatherThanACount:
                 variant_key=_VARIANT,
                 apparatus_class_id=klass.apparatus_class_id,
                 apparatus_ref=batch,
-                provenance="declared",
                 case_ref=f"case-{case}",
             )
             for batch in ("run-1", "run-2")
@@ -258,7 +273,7 @@ class TestACellStatesItsReplicationRatherThanACount:
 
     def test_an_unevenly_repeated_cell_states_its_fewest_and_its_most(self) -> None:
         """One case lost an observation: two cases, three and two repeats, stated as a range."""
-        klass = apparatus_class_of({"judge": "j-1"})
+        klass = apparatus_class_of({"judge": "j-1"}, provenance="commissioned")
         cells, _, _ = _pool(
             _observation("obs-a1", klass, case_ref="case-a"),
             _observation("obs-a2", klass, case_ref="case-a"),
@@ -272,7 +287,7 @@ class TestACellStatesItsReplicationRatherThanACount:
 
     def test_a_cell_partly_off_the_battery_states_no_case_count(self) -> None:
         """Counting only the observations that named a case would describe evidence the cell does not hold."""
-        klass = apparatus_class_of({"judge": "j-1"})
+        klass = apparatus_class_of({"judge": "j-1"}, provenance="commissioned")
         cells, _, _ = _pool(
             _observation("obs-a", klass, case_ref="case-a"),
             _observation("obs-b", klass, case_ref="case-a"),
@@ -316,7 +331,12 @@ class TestTheModelsRefuseToMisreport:
     def test_a_dimension_cannot_be_both_recorded_and_unknown(self) -> None:
         """Two producers disagreeing about whether something was observed makes the class unreadable."""
         with pytest.raises(ValueError, match="both recorded and unknown"):
-            ApparatusClass(apparatus_class_id="x", recorded={"judge": "j-1"}, unknown_dimensions=["judge"])
+            ApparatusClass(
+                apparatus_class_id="x",
+                recorded={"judge": "j-1"},
+                unknown_dimensions=["judge"],
+                provenance="commissioned",
+            )
 
     def test_the_observation_count_cannot_disagree_with_the_observations_behind_it(self) -> None:
         """A cell reporting a sample size no evidence supports is the failure this whole model fixes."""
@@ -324,7 +344,7 @@ class TestTheModelsRefuseToMisreport:
             Cell(
                 variant_key=_VARIANT,
                 apparatus_class_id="x",
-                provenance="declared",
+                provenance="commissioned",
                 n_observations=5,
                 observation_ids=["obs-a"],
             )
@@ -347,7 +367,7 @@ class TestTheModelsRefuseToMisreport:
             Cell(
                 variant_key=_VARIANT,
                 apparatus_class_id="x",
-                provenance="declared",
+                provenance="commissioned",
                 n_observations=4,
                 n_cases=n_cases,
                 repeats_per_case_min=low,
@@ -371,7 +391,7 @@ class TestTheModelsRefuseToMisreport:
         cell = Cell(
             variant_key=_VARIANT,
             apparatus_class_id="x",
-            provenance="declared",
+            provenance="commissioned",
             n_observations=4,
             n_cases=n_cases,
             repeats_per_case_min=low,
@@ -388,13 +408,12 @@ class TestTheModelsRefuseToMisreport:
 
     def test_an_observation_referencing_an_unknown_class_is_refused_not_dropped(self) -> None:
         """Silently dropping it would remove evidence from every cell with nothing marking the loss."""
-        klass = apparatus_class_of({"judge": "j-1"})
+        klass = apparatus_class_of({"judge": "j-1"}, provenance="commissioned")
         stray = Observation(
             id="obs-x",
             scope_id="scope-a",
             variant_key=_VARIANT,
             apparatus_class_id="not-a-class",
-            provenance="declared",
         )
 
         with pytest.raises(KeyError, match="unknown apparatus class"):
@@ -413,8 +432,10 @@ class TestTheClassIdCarriesWhatWasNotMeasured:
         identically to one that had nothing to record, pooled into a single cell, and emitted no
         refusal — the unknown-blocks-a-merge rule was live and unreachable.
         """
-        measured_less = apparatus_class_of({"judge": "j-1", "ocr": None}, dimensions={"judge", "ocr"})
-        measured_all = apparatus_class_of({"judge": "j-1"}, dimensions={"judge"})
+        measured_less = apparatus_class_of(
+            {"judge": "j-1", "ocr": None}, provenance="commissioned", dimensions={"judge", "ocr"}
+        )
+        measured_all = apparatus_class_of({"judge": "j-1"}, provenance="commissioned", dimensions={"judge"})
 
         assert measured_less.recorded == measured_all.recorded, "the fixture must agree on what was recorded"
         assert measured_less.apparatus_class_id != measured_all.apparatus_class_id, (
@@ -423,8 +444,10 @@ class TestTheClassIdCarriesWhatWasNotMeasured:
 
     def test_the_unknown_dimension_actually_reaches_the_refusal(self) -> None:
         """The end-to-end claim: distinct ids, two cells, and the rule fires."""
-        measured_less = apparatus_class_of({"judge": "j-1", "ocr": None}, dimensions={"judge", "ocr"})
-        measured_all = apparatus_class_of({"judge": "j-1"}, dimensions={"judge"})
+        measured_less = apparatus_class_of(
+            {"judge": "j-1", "ocr": None}, provenance="commissioned", dimensions={"judge", "ocr"}
+        )
+        measured_all = apparatus_class_of({"judge": "j-1"}, provenance="commissioned", dimensions={"judge"})
 
         cells, refused, _ = _pool(
             _observation("obs-partial", measured_less),
@@ -443,8 +466,10 @@ class TestTheClassIdCarriesWhatWasNotMeasured:
         would be wrong if it also split two observations whose measurements were identical —
         including identically silent.
         """
-        left = apparatus_class_of({"judge": "j-1", "ocr": None}, dimensions={"judge", "ocr"})
-        right = apparatus_class_of({"judge": "j-1", "ocr": None}, dimensions={"judge", "ocr"})
+        left = apparatus_class_of({"judge": "j-1", "ocr": None}, provenance="commissioned", dimensions={"judge", "ocr"})
+        right = apparatus_class_of(
+            {"judge": "j-1", "ocr": None}, provenance="commissioned", dimensions={"judge", "ocr"}
+        )
 
         assert left.apparatus_class_id == right.apparatus_class_id
         cells, refused, _ = _pool(_observation("obs-a", left), _observation("obs-b", right), classes=(left,))
@@ -463,9 +488,9 @@ class TestANextExperimentPromisesOnlyWhatRecordingCanDeliver:
         already disagree groups a pair recording cannot join, and the promised k is summed over
         all of them. Left unnarrowed this variant reached the bundle and then the generator.
         """
-        recorded_v1 = apparatus_class_of({"ocr": "v1"}, dimensions={"ocr"})
-        recorded_v2 = apparatus_class_of({"ocr": "v2"}, dimensions={"ocr"})
-        never_recorded = apparatus_class_of({"ocr": None}, dimensions={"ocr"})
+        recorded_v1 = apparatus_class_of({"ocr": "v1"}, provenance="commissioned", dimensions={"ocr"})
+        recorded_v2 = apparatus_class_of({"ocr": "v2"}, provenance="commissioned", dimensions={"ocr"})
+        never_recorded = apparatus_class_of({"ocr": None}, provenance="commissioned", dimensions={"ocr"})
 
         _, _, next_experiments = _pool(
             _observation("obs-v1", recorded_v1),
@@ -488,8 +513,8 @@ class TestANextExperimentPromisesOnlyWhatRecordingCanDeliver:
         The tell that the arithmetic went wrong, and worth asserting directly: an operator handed
         a next-experiment with no observations named has been told to act and given nowhere to act.
         """
-        recorded_v1 = apparatus_class_of({"ocr": "v1"}, dimensions={"ocr"})
-        recorded_v2 = apparatus_class_of({"ocr": "v2"}, dimensions={"ocr"})
+        recorded_v1 = apparatus_class_of({"ocr": "v1"}, provenance="commissioned", dimensions={"ocr"})
+        recorded_v2 = apparatus_class_of({"ocr": "v2"}, provenance="commissioned", dimensions={"ocr"})
 
         _, refused, next_experiments = _pool(
             _observation("obs-v1", recorded_v1),

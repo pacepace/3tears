@@ -118,6 +118,10 @@ class CurationStore(Protocol):
         """Destroy one analysis, reporting whether it was there."""
         ...
 
+    def load_campaign(self, campaign_id: str, scope_id: str, /) -> EvalCampaign | None:
+        """Load one campaign within a scope, or ``None`` — what an archive reads before it writes."""
+        ...
+
     def save_campaign(self, campaign: EvalCampaign, /) -> None:
         """Write a campaign; raises ``StorageError`` (``ConflictError`` on a lost ``if_match``) rather than returning a flag."""
         ...
@@ -394,6 +398,50 @@ def set_analysis_archived(
     persisted = storage.load_analysis(analysis_id, scope_id)
     if persisted is None:
         raise NotFoundError("analysis", analysis_id)
+    return persisted
+
+
+@serialized_campaign_write
+def set_campaign_archived(storage: CurationStore, campaign_id: str, scope_id: str, *, archived: bool) -> EvalCampaign:
+    """Archive or un-archive a campaign — retire it from listings without destroying anything.
+
+    An archived campaign keeps its members, its declaration and every analysis generated over it;
+    what changes is that a listing asked for active campaigns (``archived=False``) leaves it out. Its
+    member runs are untouched: they may belong to other campaigns, and archiving a run is its own
+    curation (:func:`set_run_archived`), with its own effect on every cohort.
+
+    **A read-modify-write under the campaign write lock**, like every other writer of an existing
+    campaign (:mod:`threetears.evals.contracts.campaign_writes`): campaigns carry no ETag, so the lock
+    is what keeps an archive from dropping a concurrent membership change in this process.
+
+    Idempotent: setting the state a campaign already carries writes nothing.
+
+    Args:
+        storage: Eval storage backend.
+        campaign_id: Campaign to curate.
+        scope_id: The scope it lives in.
+        archived: Target state. ``True`` retires it, ``False`` restores it.
+
+    Returns:
+        The campaign as persisted.
+
+    Raises:
+        NotFoundError: No campaign with that id in the scope, including one deleted between the
+            write and the re-read.
+        StorageError: The write failed.
+    """
+    current = storage.load_campaign(campaign_id, scope_id)
+    if current is None:
+        raise NotFoundError("campaign", campaign_id)
+    if current.archived == archived:
+        return current
+    storage.save_campaign(current.model_copy(update={"archived": archived}))
+    log.info("eval.set_campaign_archived campaign=%s scope=%s archived=%s", campaign_id, scope_id, archived)
+    # Re-read for the reason set_run_archived does: the caller is told this is "the campaign as
+    # persisted", and only storage can say what that is.
+    persisted = storage.load_campaign(campaign_id, scope_id)
+    if persisted is None:
+        raise NotFoundError("campaign", campaign_id)
     return persisted
 
 
@@ -698,5 +746,6 @@ __all__ = [
     "load_run_as_listed",
     "require_delete_confirmation",
     "set_analysis_archived",
+    "set_campaign_archived",
     "set_run_archived",
 ]
