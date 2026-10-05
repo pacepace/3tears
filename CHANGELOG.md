@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.65.0 -- 2026-10-05
+
 ### NATS: a declared KV bucket can carry its exact name and be refilled when it comes back empty
 
 A service that keeps an in-memory structure's persisted copy in a KV bucket could not declare it
