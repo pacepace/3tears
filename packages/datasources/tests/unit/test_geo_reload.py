@@ -148,3 +148,11 @@ def test_the_vocabulary_names_every_refusal_the_contract_describes() -> None:
         "GENERATION_OUT_OF_RANGE",
         "RELOAD_FAILED",
     } == GEO_RELOAD_ERROR_CODES
+
+
+def test_the_retained_generations_include_the_one_before_the_current() -> None:
+    # a client holds a TileJSON for a moment after a reload, so the version before the current one
+    # must still have rows
+    from threetears.datasources.geo_reload import RETAINED_GENERATIONS
+
+    assert RETAINED_GENERATIONS >= 2

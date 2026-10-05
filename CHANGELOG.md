@@ -32,7 +32,11 @@ packages (bumped in lock-step).
   the reported generation, forward only (a generation below the version is refused
   `GENERATION_BEHIND` with the version in the reply). New subject
   `Subjects.hub_geo_layers_reloaded` (`{ns}.hub.geo.layers.reloaded`), granted to tool pods to
-  publish and to the hub to answer.
+  publish and to the hub to answer. The hub serves a layer's tiles at its current version and the
+  one before it (`RETAINED_GENERATIONS`), so a pod keeps those two generations' rows.
+- **Added, `EpochClient.advance_to`:** moves a durable epoch forward to a target in one statement and
+  never back, so concurrent writers meeting one target leave it there (where `bump` would carry it
+  past). Durable subjects only.
 - **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as
   its docstring asked once a second use appeared: a tool pod's platform geography layers are read
   for tiles through Hub's pool, scoped to the pod's `ns_<hex>` schema, with no datasource row. The

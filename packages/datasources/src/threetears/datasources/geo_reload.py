@@ -22,6 +22,17 @@ A pod reports a generation it has fully written:
 A pod picks its next generation as one above both its own highest stamped generation
 and the version the hub last answered.
 
+**Retention.** The hub serves a layer's tiles at its current version and the
+:data:`RETAINED_GENERATIONS` - 1 before it, since a client holds a TileJSON (and so a
+version) for a short while after a reload; it refuses any other version, built or not.
+So a pod keeps the rows of its last :data:`RETAINED_GENERATIONS` reported generations
+and may delete older ones once the hub has answered the report that superseded them.
+
+**The pod's duties,** in order: write every row of the new generation, each stamped
+with it in the layer's ``version_column``; report it; on success, delete generations
+older than the retained ones. A load that fails part way is never reported, so its
+rows are never read.
+
 **Hub responder obligations:**
 
 1. Subscribe :meth:`threetears.nats.Subjects.hub_geo_layers_reloaded` in a queue group
@@ -31,7 +42,8 @@ and the version the hub last answered.
    not verify, or names anything but a tool pod, is answered ``IDENTITY_REFUSED``.
 3. Every named layer must be registered (``LAYER_NOT_REGISTERED``) under a provider
    namespace the verified pod owns (``LAYER_NOT_OWNED``), and every generation must
-   be within :data:`MAX_GENERATION_STEP` of the layer's version
+   be within :data:`MAX_GENERATION_STEP` of the layer's version (which is 1 before it
+   has ever moved)
    (``GENERATION_OUT_OF_RANGE``) and not below it (``GENERATION_BEHIND``). These are
    checked for all layers before any version moves; a refusal moves none.
 4. Move each layer's version to its generation, only after the check above, and reply
@@ -39,6 +51,10 @@ and the version the hub last answered.
    ``correlation_id`` and each layer's version.
 5. A failure after verification is answered ``RELOAD_FAILED``; the rule makes the
    retry safe.
+6. Serve tiles only at versions from the current one back through
+   :data:`RETAINED_GENERATIONS` of them, refusing any other without caching the refusal:
+   a version not yet reached has no rows, and one past retention may have lost them,
+   and a tile built from no rows would be cached as an empty map.
 
 ``error_code`` vocabulary: :data:`GEO_RELOAD_ERROR_CODES`.
 """
@@ -63,6 +79,7 @@ __all__ = [
     "GEO_RELOAD_ERROR_CODES",
     "MAX_GENERATION_STEP",
     "MAX_RELOADED_LAYERS",
+    "RETAINED_GENERATIONS",
     "GeoLayersReloadedReply",
     "GeoLayersReloadedRequest",
     "GeoReloadError",
@@ -79,6 +96,10 @@ MAX_RELOADED_LAYERS: Final[int] = 100
 #: how far one report may move a layer's version. a step this large is a mis-stamped
 #: generation, not a run of missed reports, and each step is a durable write and a broadcast.
 MAX_GENERATION_STEP: Final[int] = 1000
+
+#: generations of a layer the hub serves tiles for: the current version and the ones just before
+#: it. a pod keeps the rows of this many of its latest reported generations.
+RETAINED_GENERATIONS: Final[int] = 2
 
 #: seconds a pod waits for the hub's answer
 DEFAULT_GEO_RELOAD_TIMEOUT_SECONDS: Final[float] = 30.0

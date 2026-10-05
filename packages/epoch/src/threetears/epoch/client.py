@@ -246,6 +246,21 @@ _BUMP_SQL = (
 
 _CURRENT_SQL = "SELECT epoch FROM config_epochs WHERE subject_path = $1"
 
+#: moves a durable epoch forward to a target in one statement, and never back: the row lock
+#: serializes concurrent writers and the WHERE leaves a row already at or past the target
+#: untouched, so two writers advancing to one target cannot carry it past it. no row returned
+#: means nothing moved.
+_ADVANCE_SQL = (
+    "INSERT INTO config_epochs (subject_path, epoch, payload) "
+    "VALUES ($1, $2, $3::jsonb) "
+    "ON CONFLICT (subject_path) DO UPDATE SET "
+    "epoch = EXCLUDED.epoch, "
+    "payload = EXCLUDED.payload, "
+    "date_updated = now() "
+    "WHERE config_epochs.epoch < EXCLUDED.epoch "
+    "RETURNING epoch"
+)
+
 
 class EpochClient:
     """publish-side client for cross-pod config-epoch coherence.
@@ -444,3 +459,53 @@ class EpochClient:
             )
 
         return new_epoch
+
+    @traced
+    async def advance_to(
+        self,
+        subject: Subject,
+        epoch: int,
+        payload: dict[str, Any] | None = None,
+    ) -> int:
+        """move a durable subject's epoch forward to ``epoch``, never back, then broadcast.
+
+        for an epoch that names something outside the counter -- a tile version that must
+        equal the generation of the rows it reads -- where :meth:`bump`'s "one more" would
+        let two concurrent writers carry it past the value both meant. one statement under
+        the row lock: a subject already at or past ``epoch`` is left as it is and nothing is
+        broadcast. durable subjects only; an ephemeral counter has no target to meet.
+
+        callers MUST invoke after the mutation the new epoch names has committed, as for
+        :meth:`bump`.
+
+        :param subject: target subject, of a durable family
+        :ptype subject: Subject
+        :param epoch: the epoch to reach, at least 1
+        :ptype epoch: int
+        :param payload: opaque hint forwarded to subscribers when the epoch moves
+        :ptype payload: dict[str, Any] | None
+        :return: the subject's epoch afterwards
+        :rtype: int
+        :raises ValueError: for a subject outside the durable families, or an epoch below 1
+        """
+        if not _is_durable(subject):
+            raise ValueError(f"advance_to needs a durable epoch subject; {subject.path!r} counts in NATS KV")
+        if epoch < 1:
+            raise ValueError(f"an epoch to advance to is at least 1, not {epoch}")
+        payload_json = json.dumps(payload) if payload is not None else None
+        row = await self._pool.fetchrow(_ADVANCE_SQL, subject.path, epoch, payload_json)
+        result: int
+        if row is None:
+            result = await self.current(subject)
+        else:
+            result = int(row["epoch"])
+            message = EpochBumpMessage(subject_path=subject.path, epoch=result, payload=payload)
+            try:
+                await self._nats.publish(subject=subject, message=message)
+            except PublishError as exc:
+                log.warning(
+                    "epoch advance broadcast failed; the row already moved, and subscribers catch up via "
+                    "the next catch-up pass or a per-message echo",
+                    extra={"extra_data": {"subject": subject.path, "epoch": result, "error": str(exc)}},
+                )
+        return result

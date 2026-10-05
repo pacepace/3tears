@@ -39,7 +39,7 @@ from threetears.core.data.migrations import MigrationRunner
 from threetears.epoch import EpochClient, EpochListener
 from threetears.epoch.migrations import register as register_epoch
 from threetears.nats import NatsClient, set_default_namespace
-from threetears.nats.subjects import Subject
+from threetears.nats.subjects import Subject, Subjects
 
 pytestmark = pytest.mark.integration
 
@@ -401,3 +401,31 @@ async def test_a_recreated_bucket_is_detected_and_the_pod_recovers(
         await client.bump(subject)
         await listener.catch_up(subject, on_bump)
         assert "bump" in reloads
+
+
+@pytest.mark.asyncio
+async def test_concurrent_advances_to_one_target_stop_at_it(
+    pg_pool: asyncpg.Pool,
+    nats_container: str,
+) -> None:
+    """two writers advancing one durable subject to the same target leave it at the target.
+
+    a tile version must equal the generation of the rows it reads; two hub replicas answering
+    one reload report (a retry racing the first) each advance to it, and "one more" from each
+    would carry the version past it to a generation with no rows.
+    """
+    set_default_namespace("itest")
+
+    async with (
+        await _connect_pod(nats_container, "writer-1") as w1_nc,
+        await _connect_pod(nats_container, "writer-2") as w2_nc,
+    ):
+        w1 = EpochClient(pg_pool, w1_nc)
+        w2 = EpochClient(pg_pool, w2_nc)
+        subject = Subjects.datasource_tile_epoch("ds-advance", "parcels")
+
+        results = await asyncio.gather(*(client.advance_to(subject, 3) for client in (w1, w2, w1, w2)))
+
+        assert results == [3, 3, 3, 3]
+        assert await w1.current(subject) == 3
+        assert await w2.advance_to(subject, 2) == 3
