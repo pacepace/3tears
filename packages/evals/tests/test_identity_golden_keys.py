@@ -50,14 +50,14 @@ PINNED_IDENTITY_VERSION = 22
 _TOY_CONTEXT = {
     "subject_state": None,
     "seeded_world": "082338b40e87dda25cf60934744cc37392a995447545889bcfb8db3dbe977e16",
-    "case_basis": "20394a9cfcbe0b4e00a65bd76d05d893850950511b28f444cd53a6efda588edd",
+    "case_basis": "0ee4684cf928e3aef19a726e51eaf1713606616aacbb42db60bde0650d8d4734",
     "roles": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     "cassette": "c7978efdb5bf6764fcf4785ba9fc5d0464e9d3e39dc798d06349188b85803d28",
     "tool_permissions": "baf5287548d904d9d942c97182d06b2bbc9ba2c35129e6cc9f1302922224e915",
     "world": "35efc88198267d603fa880ed25f36644d541fd4a5884a401dfb08b60867e7742",
     "scope": "toyhost-scope",
 }
-_TOY_CONTEXT_KEY = "18c390263ad67c8b5a408aaf784f9e25710d94842939aee2a5b09a89be185231"
+_TOY_CONTEXT_KEY = "9b804fe9cec9adda042e579368a936d7af43e4a604384f3e53012fc5844e60c6"
 
 _COURIER_CONTEXT = {
     "subject_state": {},
