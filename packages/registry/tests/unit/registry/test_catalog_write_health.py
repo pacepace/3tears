@@ -174,3 +174,21 @@ async def test_a_catalog_with_no_bucket_bound_is_persisting() -> None:
     catalog = ToolCatalog()
     await catalog.register(_entry("tool.a"))
     assert catalog.persisting is True
+
+
+@pytest.mark.asyncio
+async def test_one_failed_write_back_over_many_entries_counts_once() -> None:
+    """a write-back writes every entry; against a dead bucket it is ONE failed operation, so a single
+    pass over a large catalog does not take the registry out of rotation on its own."""
+    catalog, bucket = await _bound_catalog()
+    for index in range(WRITE_FAILURE_THRESHOLD + 2):
+        await catalog.register(_entry(f"tool.n{index}"))
+    bucket.become_unreachable(KvError("nats: connection closed"))
+
+    failed = await catalog.restore_to_kv(bucket)
+    assert len(failed) == WRITE_FAILURE_THRESHOLD + 2
+    assert catalog.persisting is True
+
+    for _ in range(WRITE_FAILURE_THRESHOLD - 1):
+        await catalog.restore_to_kv(bucket)
+    assert catalog.persisting is False, "failed passes in a row do"

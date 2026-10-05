@@ -19,14 +19,18 @@ owner exists for both:
 
 The bucket is declared under its exact name (``prefix_namespace=False``): these buckets carry a bare
 name, and every deployment's grants name it so.
+
+Writes to the copy are watched by :class:`CopyWriteHealth`: a service whose copy is not being kept
+reports itself not ready (never not live) until a write lands again.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, TypeVar
 
 from threetears.observe import get_logger
 from threetears.observe.resilience import retry_until_done
@@ -34,9 +38,161 @@ from threetears.observe.resilience import retry_until_done
 if TYPE_CHECKING:
     from threetears.nats.kv import KvBucketLike, KvDeclaring
 
-__all__ = ["PersistedCopyBucket"]
+__all__ = ["WRITE_FAILURE_THRESHOLD", "CopyWriteHealth", "PersistedCopyBucket"]
 
 log = get_logger(__name__)
+
+_T = TypeVar("_T")
+
+#: how many write operations on a persisted copy may fail in a row before its service stops
+#: reporting itself ready. One failed operation is a blip a NATS reconnect explains; three in a row,
+#: with every change and every sync writing the copy, is a bucket that is not taking writes.
+WRITE_FAILURE_THRESHOLD: Final[int] = 3
+
+
+class CopyWriteHealth:
+    """whether writes to a persisted copy are landing, as a readiness probe reads it.
+
+    **What is counted is write operations, not keys.** A single write (a registration's put, a
+    deregistration's delete) is one operation. A pass that writes many entries -- a periodic sync, a
+    write-back into a bucket that came back empty -- is one operation too, run inside
+    :meth:`operation`: it fails if any of its writes failed, lands if all of them landed, and counts
+    as nothing if it wrote nothing. So one sync over many entries against a dead bucket counts once,
+    not once per entry.
+
+    :attr:`persisting` turns ``False`` once :data:`WRITE_FAILURE_THRESHOLD` operations in a row have
+    failed, logged once at ERROR, and ``True`` again from the next operation that lands, logged at
+    INFO. It is ``True`` before any write: a copy that has made no write has had none fail.
+
+    Read it from a READINESS check only, never liveness: an outage ends on its own and a restart
+    through one is a restart loop, and a closed connection is already the client's own ``nats``
+    liveness check to report, since the copy writes through the client's current connection.
+
+    :param copy: what the copy is, for the log lines (``tool catalog``, ``agent catalog``)
+    :ptype copy: str
+    :param consequence: what failing to keep it means, said in the ERROR line (``registrations are
+        not being recorded, and the registry reports itself not ready until a write lands``)
+    :ptype consequence: str
+    :param threshold: failed operations in a row that make the copy not persisting
+    :ptype threshold: int
+    """
+
+    def __init__(self, *, copy: str, consequence: str, threshold: int = WRITE_FAILURE_THRESHOLD) -> None:
+        self._copy = copy
+        self._consequence = consequence
+        self._threshold = threshold
+        # operations that have failed since the last one that landed
+        self._consecutive_failures = 0
+        # the open pass, while one is running: whether any of its writes failed, and the first failure
+        self._pass_failure: tuple[Exception, str] | None = None
+        self._pass_writes = 0
+        self._in_pass = False
+
+    @property
+    def persisting(self) -> bool:
+        """whether the latest write operations are landing.
+
+        :return: ``False`` once :data:`WRITE_FAILURE_THRESHOLD` operations in a row have failed
+        :rtype: bool
+        """
+        return self._consecutive_failures < self._threshold
+
+    async def write(self, operation: Awaitable[_T], *, key: str) -> _T:
+        """await one write to the copy, counting its outcome; whatever it raised is raised again.
+
+        Inside :meth:`operation` the outcome is held for the pass instead of counted on its own.
+
+        :param operation: the write (a put or a delete on the bucket)
+        :ptype operation: Awaitable[_T]
+        :param key: the key it writes, for the log
+        :ptype key: str
+        :return: what the write returned
+        :rtype: _T
+        :raises Exception: whatever the write raised, after counting it
+        """
+        if self._in_pass:
+            self._pass_writes += 1
+        try:
+            result = await operation
+        except Exception as exc:
+            if self._in_pass:
+                if self._pass_failure is None:
+                    self._pass_failure = (exc, key)
+            else:
+                self._failed(exc, key=key)
+            raise
+        if not self._in_pass:
+            self._landed()
+        return result
+
+    @asynccontextmanager
+    async def operation(self) -> AsyncIterator[None]:
+        """run a pass of many writes as ONE operation: failed if any write failed, landed if all did.
+
+        A pass that wrote nothing counts as nothing, so it cannot end a streak of failures. Passes do
+        not nest; a pass inside a pass is part of the outer one.
+
+        :return: a context in which :meth:`write` holds outcomes for the pass
+        :rtype: AsyncIterator[None]
+        """
+        if self._in_pass:
+            yield
+            return
+        self._in_pass = True
+        self._pass_failure = None
+        self._pass_writes = 0
+        try:
+            yield
+        finally:
+            self._in_pass = False
+            failure, self._pass_failure = self._pass_failure, None
+            if failure is not None:
+                self._failed(failure[0], key=failure[1])
+            elif self._pass_writes:
+                self._landed()
+
+    def _failed(self, exc: Exception, *, key: str) -> None:
+        """count one failed operation, saying so at ERROR the moment the streak reaches the threshold.
+
+        :param exc: what the (first failed) write raised
+        :ptype exc: Exception
+        :param key: the key it wrote
+        :ptype key: str
+        :return: nothing
+        :rtype: None
+        """
+        self._consecutive_failures += 1
+        if self._consecutive_failures == self._threshold:
+            log.error(
+                "%s writes to its bucket have failed %d times in a row: %s: %s -- %s",
+                self._copy,
+                self._consecutive_failures,
+                type(exc).__name__,
+                exc,
+                self._consequence,
+                extra={
+                    "extra_data": {
+                        "copy": self._copy,
+                        "consecutive_write_failures": self._consecutive_failures,
+                        "key": key,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                },
+            )
+
+    def _landed(self) -> None:
+        """end a streak of failed operations, saying so when it had made the copy stop persisting.
+
+        :return: nothing
+        :rtype: None
+        """
+        if not self.persisting:
+            log.info(
+                "%s writes to its bucket are landing again",
+                self._copy,
+                extra={"extra_data": {"copy": self._copy, "failed_before": self._consecutive_failures}},
+            )
+        self._consecutive_failures = 0
 
 
 class PersistedCopyBucket:

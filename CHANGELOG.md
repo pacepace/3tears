@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### NATS: one write-health watch for a persisted copy
+
+- **Added, `threetears.nats.CopyWriteHealth` and `WRITE_FAILURE_THRESHOLD`:** whether writes to a
+  persisted-copy bucket are landing, for a READINESS check (never liveness: a closed connection is
+  already the `nats` liveness check's to report). It counts write operations, not keys: a single
+  put or delete is one, and a pass of many writes run inside `operation()` (a sync, a write-back) is
+  one, failed if any of its writes failed and counting as nothing if it wrote nothing. `persisting`
+  turns `False` after `WRITE_FAILURE_THRESHOLD` (3) failed operations in a row, logged once at
+  ERROR, and back on the next that lands, logged at INFO.
+- **Changed, `threetears.registry.ToolCatalog`:** uses it instead of its own copy. A write-back, a
+  pod's deregistration sweep and a promotion each count as one operation, where before every entry
+  they wrote counted, so one failed pass over a large catalog no longer takes the registry out of
+  rotation by itself. `threetears.registry.catalog.WRITE_FAILURE_THRESHOLD` is the shared value.
+
 ### Geo: building layers from other layers
 
 - **Added, `threetears.geo`:** `cut` cuts one layer by another within a shared key (a state,
