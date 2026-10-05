@@ -585,12 +585,14 @@ def _log_generation(
     # cannot say which attempt truncated, and diagnosing a billed failure meant correlating
     # timestamps across two loggers.
     log.info(
-        "eval analysis generated (%s) for campaign=%s: cost=$%.4f prompt_tokens=%d completion_tokens=%d model=%s stop_reason=%s",
+        "eval analysis generated (%s) for campaign=%s: cost=$%.4f prompt_tokens=%s completion_tokens=%s model=%s stop_reason=%s",
         attempt,
         bundle.campaign_id,
         cost,
-        result.input_tokens,
-        result.output_tokens,
+        # A count the provider did not report is logged as such: ``%d`` would fail on it inside the
+        # logging call and lose the whole line, and a ``0`` would claim a measurement.
+        "unreported" if result.input_tokens is None else result.input_tokens,
+        "unreported" if result.output_tokens is None else result.output_tokens,
         result.model or model,
         result.stop_reason,
     )

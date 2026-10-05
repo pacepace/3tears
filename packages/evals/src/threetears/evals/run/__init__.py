@@ -44,7 +44,7 @@ from threetears.evals.run.curation import (
     set_run_archived,
 )
 from threetears.evals.run.definition_seed import load_seed_corpus, seed_eval_definitions
-from threetears.evals.run.fidelity import FidelityContract
+from threetears.evals.run.fidelity import FidelityContract, callers_missing_the_constructor, resolve_constructor
 from threetears.evals.run.jobs import (
     AdmissionTicket,
     EvalJobManager,
@@ -189,6 +189,7 @@ __all__ = [
     "assert_preconditions",
     "build_judge_context",
     "build_judge_service",
+    "callers_missing_the_constructor",
     "cancel_run",
     "create_judge_config",
     "create_rubric_dim",
@@ -229,6 +230,7 @@ __all__ = [
     "rejudge_result",
     "reproducible_judge_inputs",
     "require_delete_confirmation",
+    "resolve_constructor",
     "run_blocking",
     "run_judge_llm",
     "sample_concurrent_eval_jobs",

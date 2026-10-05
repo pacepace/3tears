@@ -432,13 +432,15 @@ async def run_judge_llm(
         total_reasoning = sum_optional_tokens(total_reasoning, getattr(result, "reasoning_tokens", None))
         judge_model = getattr(result, "model", "") or judge_model
         judge_price_source = getattr(result, "price_source", None) or judge_price_source
-        if attempt_input or attempt_output:
+        # Logged whenever the provider reported anything about the attempt's spend — a call with
+        # unreported counts and a known cost still spent, and a truthiness test would drop it.
+        if attempt_input is not None or attempt_output is not None or attempt_cost is not None:
             cost_str = f" cost=${attempt_cost:.6f}" if attempt_cost is not None else ""
             log.info(
                 "eval_judge: model=%s input=%s output=%s%s judge=%s case=%s attempt=%d/%d",
                 getattr(result, "model", "unknown") or "unknown",
-                attempt_input,
-                attempt_output,
+                "unreported" if attempt_input is None else attempt_input,
+                "unreported" if attempt_output is None else attempt_output,
                 cost_str,
                 label,
                 case_id,

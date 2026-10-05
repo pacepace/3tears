@@ -183,12 +183,15 @@ def _split_at_module_boundary(constructor: str) -> tuple[object, list[str]]:
 
 
 def _referenced_names(source: str) -> set[str]:
-    """Collect every identifier a module's source mentions.
+    """Collect every identifier a module's source USES — reads, as a call or as a value.
 
-    Covers the three ways a caller can name a function: an import alias, a bare
-    call, and an attribute access on the module. An AST walk rather than a
-    substring search, so a name inside a comment or a docstring does not count
-    as reaching it.
+    Covers the two ways a caller can use a function: a bare name (``build(...)``, or
+    ``factory=build`` handing it on) and an attribute access on the module or class
+    (``product.build(...)``). An import is deliberately not a use: a caller that still imports
+    the constructor and builds its own object instead is exactly the drift a fidelity contract
+    exists to catch, and counting the import would leave it green. Names in store context
+    (``build = ...``) are not uses either. An AST walk rather than a substring search, so a
+    name inside a comment or a docstring does not count as reaching it.
 
     Args:
         source: Python source text.
@@ -198,15 +201,13 @@ def _referenced_names(source: str) -> set[str]:
     """
     names: set[str] = set()
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Name):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             names.add(node.id)
-        elif isinstance(node, ast.Attribute):
+        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
             names.add(node.attr)
             qualified = _attribute_chain(node)
             if qualified is not None:
                 names.add(qualified)
-        elif isinstance(node, ast.alias):
-            names.add(node.asname or node.name.rpartition(".")[2])
     return names
 
 

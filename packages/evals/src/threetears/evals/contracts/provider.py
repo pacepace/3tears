@@ -58,9 +58,11 @@ class CompletionResult(Protocol):
 
     A structural contract over the host's concrete result type. Every member is something an eval
     call site reads, and every member is read-only — so a frozen dataclass, a frozen Pydantic model
-    or a plain object with these attributes all satisfy it. ``cost_usd`` and ``reasoning_tokens``
-    are ``float | None`` / ``int | None`` because a provider that reported nothing is a different
-    fact from one that reported zero, and per-role usage rows are built on that distinction.
+    or a plain object with these attributes all satisfy it. ``cost_usd``, ``input_tokens``,
+    ``output_tokens`` and ``reasoning_tokens`` are ``float | None`` / ``int | None`` because a
+    provider that reported nothing is a different fact from one that reported zero, and per-role
+    usage rows are built on that distinction: a ``None`` count is carried as unknown into every
+    usage row and rollup, never summed as zero.
 
     ``stop_reason`` is a NORMALIZED value (:data:`StopReason`), not the provider's own string. An
     implementation that passes a raw provider string through (OpenAI's ``length``, say) reads as
@@ -74,13 +76,13 @@ class CompletionResult(Protocol):
         ...
 
     @property
-    def input_tokens(self) -> int:
-        """Prompt tokens the provider counted."""
+    def input_tokens(self) -> int | None:
+        """Prompt tokens the provider counted, or ``None`` when it reported no count."""
         ...
 
     @property
-    def output_tokens(self) -> int:
-        """Completion tokens the provider counted, reasoning included."""
+    def output_tokens(self) -> int | None:
+        """Completion tokens the provider counted, reasoning included, or ``None`` when it reported no count."""
         ...
 
     @property
@@ -503,7 +505,7 @@ def describe_incomplete_completion(result: CompletionResult) -> str | None:
     truncating finish is commonly reasoning tokens eating the whole budget, but this
     reports what the provider actually said — ``output_tokens`` and the
     ``reasoning_tokens`` subset — and says "unreported" where the provider reported
-    no split, rather than asserting a cause it cannot see. ``reasoning_tokens`` is
+    no count or no split, rather than asserting a cause it cannot see. Both are
     ``None`` for unknown and ``0`` for a reported zero; collapsing those would invent
     a fact.
 
@@ -517,10 +519,13 @@ def describe_incomplete_completion(result: CompletionResult) -> str | None:
     if result.stop_reason not in INCOMPLETE_STOP_REASONS:
         return None
 
+    output = (
+        "output token count unreported" if result.output_tokens is None else f"{result.output_tokens} output token(s)"
+    )
     if result.reasoning_tokens is None:
-        split = f"{result.output_tokens} output token(s), reasoning split unreported"
+        split = f"{output}, reasoning split unreported"
     else:
-        split = f"{result.output_tokens} output token(s), of which {result.reasoning_tokens} were reasoning"
+        split = f"{output}, of which {result.reasoning_tokens} were reasoning"
 
     cause = _CUT_SHORT_CAUSES[result.stop_reason]
 

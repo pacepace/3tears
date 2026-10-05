@@ -2,9 +2,10 @@
 
 :mod:`threetears.evals.run.fidelity` is the engine half of a fidelity contract: it resolves a dotted
 constructor path and reads each declared caller's source for a reference to it. The toy host
-declares no fidelity contract, so no toy test can fail without a change here. The substitute
-evidence is a throwaway package under ``tmp_path`` holding a document parser. It has no host
-type, no adapter import and no host vocabulary.
+declares one contract, over a module-level function (``test_fidelity_adoption.py`` is its canary),
+which reaches neither property below: a method constructor, and a module that exists but fails to
+import. The evidence for those is a throwaway package under ``tmp_path`` holding a document parser.
+It has no host type, no adapter import and no host vocabulary.
 
 Two properties are pinned, each from both sides:
 

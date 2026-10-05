@@ -88,8 +88,9 @@ class ToyJudgeCompletion:
     """
 
     content: str
-    input_tokens: int
-    output_tokens: int
+    #: ``None`` is a provider that reported no count — unknown, never zero.
+    input_tokens: int | None
+    output_tokens: int | None
     cost_usd: float | None
     model: str
     price_source: str | None
@@ -101,10 +102,16 @@ class ToyJudgeCompletion:
 class ScriptedJudgeClient:
     """A judge client satisfying :class:`~threetears.evals.contracts.CompletionClient`, scoring from its prompt."""
 
-    def __init__(self) -> None:
-        """Start with no calls recorded."""
+    def __init__(self, *, reports_token_counts: bool = True) -> None:
+        """Start with no calls recorded.
+
+        Args:
+            reports_token_counts: ``False`` is a provider that reports its price but omits the token
+                counts, which the engine must carry as unknown rather than as zero.
+        """
         #: Every ``(system, user)`` prompt pair the client was sent, in call order.
         self.calls: list[tuple[str, str]] = []
+        self._reports_token_counts = reports_token_counts
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, str] | None = None
@@ -137,8 +144,8 @@ class ScriptedJudgeClient:
             }
         return ToyJudgeCompletion(
             content=json.dumps(reply),
-            input_tokens=len(user) // 4,
-            output_tokens=40,
+            input_tokens=len(user) // 4 if self._reports_token_counts else None,
+            output_tokens=40 if self._reports_token_counts else None,
             cost_usd=TOY_JUDGE_COST_USD,
             price_source=TOY_JUDGE_PRICE_SOURCE,
             model=TOY_JUDGE_MODEL,

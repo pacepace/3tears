@@ -14,6 +14,7 @@ and nothing else.
 | How one run resolves its levers | `variant.py` | The host's `VariantLeverReader`; the engine resolves the model, the kind and the kind contract's levers itself |
 | The world | `world.py` | Seven world dimensions, their handles, the mutable world they move, and switchable faults |
 | The candidate kind | `kind.py` | The `CandidateKind` — an invoice extractor and the scripted client that drives it |
+| The product's own call, and proof the eval shares it | `product.py`, `fidelity.py` | The one constructor of an extraction request, which production and the kind both call, and the `FidelityContract` registering it; `tests/test_fidelity_adoption.py` is the source canary over it |
 | What a launch may turn | `contract.py` | The extractor's `KindContract`: its overlay model and its template spec model |
 | The host value | `host.py` | The one `EvalHost` handed to every entrypoint |
 | Launching | `launch.py` | The `LaunchHost` and the extractor's launcher, for `start_run` |

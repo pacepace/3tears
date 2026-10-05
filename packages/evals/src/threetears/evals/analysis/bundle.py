@@ -111,6 +111,7 @@ from threetears.evals.contracts.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.contracts.models import EvalResult
+from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
     ResultOutcome,
@@ -749,12 +750,33 @@ class JudgedMeasure(EvalDocumentModel):
 
 
 class TokenRollup(EvalDocumentModel):
-    """Summed token usage across results — visible cost of generation (§Visible Costs)."""
+    """Summed token usage across results — visible cost of generation (§Visible Costs).
 
-    prompt_tokens: int = Field(ge=0, description="Summed prompt tokens over results carrying usage.")
-    completion_tokens: int = Field(ge=0, description="Summed completion tokens.")
-    reasoning_tokens: int = Field(
-        ge=0, description="Summed reasoning tokens; 0 when no counted result reported a split."
+    A count a provider did not report is left out of its sum, never added as zero — the same rule
+    cost follows (``n_cost_unpriced``). Each sum is ``None`` when no row reported that count at all,
+    and ``n_results_tokens_unreported`` says how many results' prompt or completion counts are
+    missing from the sums, so a partial sum reads as "at least this much".
+    """
+
+    prompt_tokens: int | None = Field(
+        ge=0,
+        description="Summed reported prompt tokens over results carrying usage; None when no row reported one.",
+    )
+    completion_tokens: int | None = Field(
+        ge=0, description="Summed reported completion tokens; None when no row reported one."
+    )
+    reasoning_tokens: int | None = Field(
+        ge=0,
+        description="Summed reasoning tokens; None when no counted row reported a split, 0 only when one reported zero.",
+    )
+    n_results_tokens_unreported: int = Field(
+        ge=0,
+        description=(
+            "Results carrying usage with at least one token-metered row (any role but external) whose prompt or "
+            "completion count the provider did not report. Those counts are absent from the sums, not zero: read "
+            "the sums as 'at least this much' when this is non-zero. External rows, metered in provider units, "
+            "carry no token counts by design and are not counted here."
+        ),
     )
     n_results_with_usage: int = Field(
         ge=0,
@@ -3239,17 +3261,30 @@ def _scope_divergences(
 
 
 def _token_rollup(results: list[EvalResult]) -> TokenRollup | None:
-    """Sum token usage across results carrying a usage breakdown, or None."""
-    prompt = completion = reasoning = 0
+    """Sum token usage across results carrying a usage breakdown, or None.
+
+    Sums what was reported (:func:`~threetears.evals.contracts.provider.sum_optional_tokens`, the
+    package's one definition of that) and counts the results whose token-metered rows left a count
+    unreported, rather than adding an unreported count as zero.
+    """
+    prompt: int | None = None
+    completion: int | None = None
+    reasoning: int | None = None
     n_with_usage = 0
+    n_unreported = 0
     for result in results:
         if not result.usage:
             continue
         n_with_usage += 1
         for role in result.usage:
-            prompt += role.prompt_tokens or 0
-            completion += role.completion_tokens or 0
-            reasoning += role.reasoning_tokens or 0
+            prompt = sum_optional_tokens(prompt, role.prompt_tokens)
+            completion = sum_optional_tokens(completion, role.completion_tokens)
+            reasoning = sum_optional_tokens(reasoning, role.reasoning_tokens)
+        if any(
+            row.role != "external" and (row.prompt_tokens is None or row.completion_tokens is None)
+            for row in result.usage
+        ):
+            n_unreported += 1
     if n_with_usage == 0:
         return None
     return TokenRollup(
@@ -3257,6 +3292,7 @@ def _token_rollup(results: list[EvalResult]) -> TokenRollup | None:
         completion_tokens=completion,
         reasoning_tokens=reasoning,
         n_results_with_usage=n_with_usage,
+        n_results_tokens_unreported=n_unreported,
     )
 
 
