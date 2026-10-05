@@ -1374,7 +1374,8 @@ class EvalTestCase(EvalDocumentModel):
         description=(
             "The template this case was generated from, or None for a WITNESSED case — the stimulus of a session "
             "a host observed rather than one a template set, recorded through `record_witnessed_cell` under a "
-            "witnessed run (whose own `template_id` is None for the same reason). Required with no default, so "
+            "witnessed run (whose own `template_id` is None for the same reason, unless the run is judged, when it "
+            "names the template whose intent and rubric the judge reads). Required with no default, so "
             "every writer states which it is: a None is a case no template produced, never a template id "
             "forgotten. A launch refuses a case whose template is not the one it runs, so a witnessed case "
             "can never be launched."
@@ -1913,7 +1914,14 @@ class EvalRun(EvalDocumentModel):
     scope_id: str = Field(min_length=1)
 
     # What runs
-    template_id: str | None = Field(default=None, description="None = ad-hoc run from explicit test_case_ids")
+    template_id: str | None = Field(
+        default=None,
+        description=(
+            "The template the run launched; for a witnessed run, the template its cells are judged against "
+            "(`stamp_witnessed_judge`), None when it is unjudged. None on a commissioned run = ad-hoc, from explicit "
+            "test_case_ids."
+        ),
+    )
     subject_snapshot: SubjectSnapshot = Field(
         description=(
             "Who was measured, in the engine's vocabulary: a required non-empty key, a separate reader-facing "

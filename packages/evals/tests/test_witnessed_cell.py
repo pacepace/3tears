@@ -122,13 +122,15 @@ async def test_a_witnessed_cell_is_the_runners_cell_for_the_same_output() -> Non
     assert len(paired) == len(cases) * run.k_runs
     # The arming template fires a trigger, so the world-event and end-state hops are exercised, not empty.
     assert all(result.world_events for result, _ in paired)
+    # The toy run names its template; a witnessed run names one only to be judged against it, and its cases never.
+    unjudged = run.model_copy(update={"template_id": None})
     for runner_result, output in paired:
         runner_trace = host.storage.load_eval_trace(runner_result.id, runner_result.scope_id)
         assert runner_trace is not None
-        result, trace = record_witnessed_cell(
+        result, trace = await record_witnessed_cell(
             host,
-            run,
-            by_id[runner_result.test_case_id],
+            unjudged,
+            by_id[runner_result.test_case_id].model_copy(update={"template_id": None}),
             output,
             k_iteration=runner_result.k_iteration,
             result_id=runner_result.id,
@@ -173,7 +175,7 @@ def _output(**overrides: Any) -> CandidateOutput:
     return CandidateOutput(**fields)
 
 
-def _record(host: EvalHost, run: EvalRun, case: EvalTestCase, output: CandidateOutput, **overrides: Any) -> Any:
+async def _record(host: EvalHost, run: EvalRun, case: EvalTestCase, output: CandidateOutput, **overrides: Any) -> Any:
     call: dict[str, Any] = {
         "k_iteration": 1,
         "result_id": "result-1",
@@ -181,12 +183,12 @@ def _record(host: EvalHost, run: EvalRun, case: EvalTestCase, output: CandidateO
         "judged_artifact": JudgedArtifact.UNJUDGED,
     }
     call.update(overrides)
-    return record_witnessed_cell(host, run, case, output, **call)
+    return await record_witnessed_cell(host, run, case, output, **call)
 
 
-def test_a_session_its_participants_ended_is_recorded_under_no_template_with_the_callers_ids() -> None:
+async def test_a_session_its_participants_ended_is_recorded_under_no_template_with_the_callers_ids() -> None:
     host, run, case = _witnessed_run()
-    result, trace = _record(host, run, case, _output())
+    result, trace = await _record(host, run, case, _output())
     assert (result.id, result.scored_at, trace.id) == ("result-1", _AT, eval_trace_doc_id("result-1"))
     assert result.stop_cause is ConversationStopCause.PARTICIPANTS_ENDED
     assert (result.test_case_id, result.candidate_kind, result.model) == ("session-1", TOY_EXTRACTOR_KIND, "gm/model")
@@ -200,26 +202,28 @@ def test_a_session_its_participants_ended_is_recorded_under_no_template_with_the
     assert stored is not None and stored.stop_cause is ConversationStopCause.PARTICIPANTS_ENDED
 
 
-def test_recording_the_same_observation_twice_is_the_same_record() -> None:
+async def test_recording_the_same_observation_twice_is_the_same_record() -> None:
     host, run, case = _witnessed_run()
-    first = _record(host, run, case, _output())
-    second = _record(host, run, case, _output())
+    first = await _record(host, run, case, _output())
+    second = await _record(host, run, case, _output())
     assert [doc.model_dump() for doc in first] == [doc.model_dump() for doc in second]
 
 
-def test_spans_the_host_collected_land_on_the_trace_and_the_latency() -> None:
+async def test_spans_the_host_collected_land_on_the_trace_and_the_latency() -> None:
     host, run, case = _witnessed_run()
     spans = CellTrace(spans=[{"name": "agent.invoke"}], total_ms=1200.0, llm_ms=900.0, tool_ms=None)
-    result, trace = _record(host, run, case, _output(), spans=spans)
+    result, trace = await _record(host, run, case, _output(), spans=spans)
     assert trace.otel_trace == [{"name": "agent.invoke"}]
     assert result.latency is not None
     assert (result.latency.total_ms, result.latency.llm_ms, result.latency.tool_ms) == (1200.0, 900.0, None)
 
 
-def test_a_witnessed_runs_completeness_is_summarized_from_the_cells_its_host_recorded() -> None:
+async def test_a_witnessed_runs_completeness_is_summarized_from_the_cells_its_host_recorded() -> None:
     host, run, case = _witnessed_run(k_runs=2)
     cells = [
-        CellSummary.from_result(_record(host, run, case, _output(), k_iteration=k, result_id=f"r-{k}")[0], persisted=p)
+        CellSummary.from_result(
+            (await _record(host, run, case, _output(), k_iteration=k, result_id=f"r-{k}"))[0], persisted=p
+        )
         for k, p in ((1, True), (2, False))
     ]
     completeness = summarize_completeness(run, cells)
@@ -233,61 +237,68 @@ def test_a_witnessed_runs_completeness_is_summarized_from_the_cells_its_host_rec
         pytest.param(
             {"apparatus_provenance": "commissioned"}, {}, {}, "only a witnessed run's cells", id="commissioned-run"
         ),
-        pytest.param({"judge_model": "judge/model"}, {}, {}, "names judge model", id="run-names-a-judge"),
+        pytest.param(
+            {"judge_model": "judge/model"}, {}, {}, "names a template exactly when it is judged", id="judge-no-template"
+        ),
+        pytest.param(
+            {"template_id": "tpl-1"}, {}, {}, "names a template exactly when it is judged", id="template-no-judge"
+        ),
         pytest.param({"test_case_ids": ["session-2"]}, {}, {}, "is not one of run", id="case-outside-the-run"),
         pytest.param({}, {"scope_id": "elsewhere"}, {}, "a witnessed cell's case belongs", id="case-in-another-scope"),
-        pytest.param({}, {"template_id": "tpl-1"}, {}, "a witnessed cell's case belongs", id="case-under-a-template"),
+        pytest.param({}, {"template_id": "tpl-1"}, {}, "a witnessed case names none", id="case-under-a-template"),
         pytest.param({}, {}, {"k_iteration": 2}, r"outside run run-witnessed's repeats \(1\.\.1\)", id="k-past-k-runs"),
         pytest.param({}, {}, {"k_iteration": 0}, r"outside run run-witnessed's repeats", id="k-zero"),
     ],
 )
-def test_a_cell_that_does_not_belong_to_a_witnessed_run_is_refused(
+async def test_a_cell_that_does_not_belong_to_a_witnessed_run_is_refused(
     run_overrides: dict[str, Any], case_overrides: dict[str, Any], call_overrides: dict[str, Any], names: str
 ) -> None:
     host, run, case = _witnessed_run(**run_overrides)
     case = case.model_copy(update=case_overrides)
     with pytest.raises(ValueError, match=names):
-        _record(host, run, case, _output(), **call_overrides)
+        await _record(host, run, case, _output(), **call_overrides)
 
 
 @pytest.mark.parametrize("cause", [ConversationStopCause.USER_DONE, ConversationStopCause.SIMULATOR_ERROR])
-def test_a_simulators_stop_cause_is_refused_on_a_session_with_no_simulator(cause: ConversationStopCause) -> None:
+async def test_a_simulators_stop_cause_is_refused_on_a_session_with_no_simulator(cause: ConversationStopCause) -> None:
     host, run, case = _witnessed_run()
     with pytest.raises(ValueError, match=f"cannot have stopped on '{cause.value}'"):
-        _record(host, run, case, _output(stop_cause=cause))
+        await _record(host, run, case, _output(stop_cause=cause))
 
 
 @pytest.mark.parametrize("cause", [None, ConversationStopCause.MAX_TURNS, ConversationStopCause.APPARATUS_ERROR])
-def test_every_other_stop_cause_is_recorded(cause: ConversationStopCause | None) -> None:
+async def test_every_other_stop_cause_is_recorded(cause: ConversationStopCause | None) -> None:
     host, run, case = _witnessed_run()
-    assert _record(host, run, case, _output(stop_cause=cause))[0].stop_cause == cause
+    assert (await _record(host, run, case, _output(stop_cause=cause)))[0].stop_cause == cause
 
 
-def test_output_contradicting_the_kinds_declaration_is_refused() -> None:
+async def test_output_contradicting_the_kinds_declaration_is_refused() -> None:
     host, run, case = _witnessed_run()
     with pytest.raises(CandidateKindDefect):
-        _record(host, run, case, _output(), judged_artifact=JudgedArtifact.TRANSCRIPT)
+        await _record(host, run, case, _output(), judged_artifact=JudgedArtifact.TRANSCRIPT)
     evidence = JudgeEvidence(case_material="the dungeon", artifact="we open the door")
     with pytest.raises(CandidateKindDefect):
-        _record(host, run, case, _output(judge_evidence=evidence))
+        await _record(host, run, case, _output(judge_evidence=evidence))
     # The declaration honoured: evidence rendered for a transcript kind is kept with its declaration.
-    _, trace = _record(host, run, case, _output(judge_evidence=evidence), judged_artifact=JudgedArtifact.TRANSCRIPT)
+    _, trace = await _record(
+        host, run, case, _output(judge_evidence=evidence), judged_artifact=JudgedArtifact.TRANSCRIPT
+    )
     assert (trace.judge_evidence, trace.judged_artifact) == (evidence, JudgedArtifact.TRANSCRIPT)
 
 
-def test_background_spend_reported_twice_is_refused() -> None:
+async def test_background_spend_reported_twice_is_refused() -> None:
     host, run, case = _witnessed_run()
     usage = [RoleUsage(role="inner_agent", model="scout/model", call_count=1, cost_usd=0.1, price_source="script")]
     with pytest.raises(ValueError, match="reported inner_agent usage on its telemetry"):
-        _record(host, run, case, _output(telemetry=CandidateTelemetry(usage=usage)))
+        await _record(host, run, case, _output(telemetry=CandidateTelemetry(usage=usage)))
 
 
-def test_a_kind_landing_the_derived_accuracy_is_refused() -> None:
+async def test_a_kind_landing_the_derived_accuracy_is_refused() -> None:
     host, run, case = _witnessed_run()
     with pytest.raises(ValueError, match="which the engine derives from each observation's 'match'"):
-        _record(host, run, case, _output(host_measures={"match": True, "accuracy": 1.0}))
+        await _record(host, run, case, _output(host_measures={"match": True, "accuracy": 1.0}))
     # The verdict alone is the shape a classifier lands.
-    assert _record(host, run, case, _output(host_measures={"match": True}))[0].host_measures == {"match": True}
+    assert (await _record(host, run, case, _output(host_measures={"match": True})))[0].host_measures == {"match": True}
 
 
 # --- a case under no template --------------------------------------------------------------------
