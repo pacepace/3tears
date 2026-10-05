@@ -83,6 +83,39 @@ def test_the_canary_names_an_eval_caller_that_stops_calling_the_constructor(dive
     assert callers_missing_the_constructor(diverged) == [diverged_kind_module]
 
 
+@pytest.fixture
+def import_only_kind_module(tmp_path: Path) -> Iterator[str]:
+    """A copy of the toy kind that still IMPORTS the constructor but builds its own request."""
+    source = Path(toy_kind.__file__).read_text(encoding="utf-8")
+    assert source.count(_CONSTRUCTOR_CALL) == 1, "the toy kind no longer spells its constructor call as expected"
+    diverged = source.replace(_CONSTRUCTOR_CALL, _INLINE_REQUEST)
+    # Landed, and landed the way this case needs: the call is gone and the import is still there.
+    assert "extraction_request(" not in diverged
+    assert "import ExtractionRequest, extraction_request" in diverged
+    name = f"import_only_toy_kind_{uuid.uuid4().hex}"
+    (tmp_path / f"{name}.py").write_text(diverged, encoding="utf-8")
+    sys.path.insert(0, str(tmp_path))
+    importlib.invalidate_caches()
+    try:
+        yield name
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop(name, None)
+
+
+def test_an_import_left_behind_does_not_count_as_reaching_the_constructor(import_only_kind_module: str) -> None:
+    """The drift a canary most often misses: the call was replaced and the import never cleaned up."""
+    (contract,) = TOYHOST_FIDELITY_CONTRACTS
+    production, _eval = contract.callers
+    diverged = FidelityContract(
+        behavior=contract.behavior,
+        constructor=contract.constructor,
+        callers=(production, import_only_kind_module),
+        why=contract.why,
+    )
+    assert callers_missing_the_constructor(diverged) == [import_only_kind_module]
+
+
 async def test_production_and_the_eval_hand_the_provider_identical_requests() -> None:
     """The boundary-equality half: the canary proves the eval REACHES the constructor, this the same bytes."""
     path = await execute_toyhost_run(host=toyhost_host())

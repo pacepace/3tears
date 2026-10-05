@@ -13,8 +13,9 @@ packages (bumped in lock-step).
   source canary that proves its eval path calls the production constructor: register a `FidelityContract`
   naming the constructor and its callers, and assert `callers_missing_the_constructor` returns `[]`. The
   toy host now declares one (`tests/fixtures/toyhost/product.py`, `fidelity.py`) as the worked example.
-  An unused import of the constructor still counts as reaching it; an adopter's lint (F401) is what
-  catches that shape.
+  **Behaviour change:** a caller now reaches the constructor only by USING it (a call, or handing the
+  function on as a value). An import alone no longer counts, so an eval path that still imports the
+  constructor but builds its own object is named, where it used to pass.
 
 ### 3tears-evals: a provider may omit its token counts
 
