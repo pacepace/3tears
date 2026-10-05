@@ -580,6 +580,25 @@ async def test_paid_calls_in_a_run_that_declared_no_rates_are_volume_outside_its
     assert result.cost_usd == pytest.approx(0.012)
 
 
+async def test_a_provider_reported_charge_reaches_the_cells_cost_where_the_run_holds_no_rate() -> None:
+    """Background work billed per image: the provider's own charge prices calls no rate covers."""
+    spend = AsyncExternalSpend(provider="images", calls=2, money=0.08)
+    result = await _one_cell(_FakeReportingKind([_scout(cost_usd=0.01, external_spend=[spend])]), rates=_RATES)
+
+    (external,) = [row for row in result.usage if row.role == "external"]
+    assert (external.cost_usd, external.price_source, external.call_count) == (0.08, "images:reported", 2)
+    assert result.cost_usd == pytest.approx(0.002 + 0.01 + 0.08)
+
+
+async def test_a_provider_reported_charge_wins_over_the_runs_rate_for_the_same_unit() -> None:
+    spend = AsyncExternalSpend(provider="search", calls=2, provider_units=4, provider_unit="credits", money=0.05)
+    result = await _one_cell(_FakeReportingKind([_scout(cost_usd=0.01, external_spend=[spend])]), rates=_RATES)
+
+    (external,) = [row for row in result.usage if row.role == "external"]
+    assert (external.cost_usd, external.price_source) == (0.05, "search:reported")
+    assert result.cost_usd == pytest.approx(0.002 + 0.01 + 0.05)
+
+
 async def test_a_substituted_delivery_adds_nothing_to_the_cost() -> None:
     seeded = AsyncDelivery(tool="scout_ahead", status="delivered", substituted=True)
     result = await _one_cell(_FakeReportingKind([seeded]), rates=_RATES)

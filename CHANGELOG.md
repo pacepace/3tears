@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: background work carries its provider's own charge
+
+- **`AsyncExternalSpend.money: float | None`** (new, default `None`, `>= 0`). Background work whose
+  provider bills a figure per call (an image generator charging per image) reports it here. Before,
+  the delivery seam could carry only calls and units, so a rate table was the only way to price it and
+  a provider-reported charge was dropped. `None` means the provider reported no charge — unpriced and
+  unknown, never `0`; `0.0` is a reported zero.
+  - **The rule:** a reported charge wins over the run's rate for the same `(provider, unit)` and prices
+    calls the run holds no rate for; with neither, the calls stay counted and unpriced, and a run whose
+    `cost_roles` include `external` records the cell's `cost_usd` as unknown (`None`). The row's
+    `price_source` is `"<provider>:reported"`.
+  - **What it does not change:** the blended composition. A run that declared no external rates still
+    leaves `external` out of `cost_roles`, so a reported charge lands on the cell's `external` row but
+    not in its `cost_usd`.
+  - **`AsyncExternalSpend.as_external_spend() -> ExternalSpend`** (new): the one conversion both
+    readers of a delivery's spend take — `async_delivery_usage` and `cell_cost`, which each rebuilt
+    `ExternalSpend` by hand and both dropped the charge.
+  - **New refusal:** a negative `money` fails validation.
+  - Stored shape: an added optional field, so `EVAL_SCHEMA_VERSION` is unchanged (a document written
+    before it means what it says: no charge reported).
+
 ### 3tears-evals: a bar on a measure with no better end is refused at registration
 
 - **Breaking: `BarRegistry.validate_against` refuses a bar whose measure declares no better direction**

@@ -38,6 +38,7 @@ from pydantic import (
 from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel, VerbatimJsonObject, VerbatimObject
 from threetears.evals.contracts.call_ledger import CallLedger, RecordedCall
 from threetears.evals.contracts.dsl import DSLError, extract_paths, parse, referenced_fires
+from threetears.evals.contracts.host.spend import ExternalSpend
 from threetears.evals.contracts.host.subject import SubjectSnapshot
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.host.world import WorldPlacement, WorldRegistry
@@ -2447,10 +2448,13 @@ AsyncDeliveryStatus = Literal["delivered", "failed", "undelivered"]
 class AsyncExternalSpend(EvalDocumentModel):
     """Paid non-LLM calls one piece of background work made at one provider, as the work reports them.
 
-    The caller reports and the engine prices: these are the calls and the provider's own units, never
-    dollars. The runner prices them at the run's declared rate for exactly this ``(provider, unit)``
-    (:meth:`~threetears.evals.contracts.usage_capture.RoleUsageLedger.add_external`), and leaves them
-    counted and unpriced where no rate was declared.
+    The caller reports and the engine prices: these are the calls, the provider's own units, and —
+    only where the provider itself billed a figure — what it charged. A charge the provider reported
+    (``money``) is an observation and wins over any rate; otherwise the runner prices the units at the
+    run's declared rate for exactly this ``(provider, unit)``
+    (:meth:`~threetears.evals.contracts.spend.ExternalRateTable.money_for`), and leaves them counted and
+    unpriced — unknown, never ``0`` — where neither exists. :meth:`as_external_spend` is the one
+    conversion every reader takes, so no reader can rebuild the report and drop a field of it.
     """
 
     provider: str | None = Field(description="Who was called; None only when the work could not say")
@@ -2461,6 +2465,32 @@ class AsyncExternalSpend(EvalDocumentModel):
     provider_unit: str | None = Field(
         default=None, description="The bare name of that unit ('credits'); set exactly when provider_units is"
     )
+    money: float | None = Field(
+        default=None,
+        ge=0.0,
+        description=(
+            "What the provider charged for these calls, in USD, as the provider itself reported it. None when it "
+            "reported no charge — unpriced, never 0; a declared rate may still price the units. 0.0 is a real, "
+            "reported zero."
+        ),
+    )
+
+    def as_external_spend(self) -> ExternalSpend:
+        """This report in the metering seam's vocabulary — every field, the provider's charge included.
+
+        The single conversion the readers of a delivery's spend take (the usage fold and the cell's cost),
+        so the two cannot disagree about what the work reported.
+
+        Returns:
+            The same report as an :class:`~threetears.evals.contracts.host.spend.ExternalSpend`.
+        """
+        return ExternalSpend(
+            provider=self.provider,
+            calls=self.calls,
+            provider_units=self.provider_units,
+            provider_unit=self.provider_unit,
+            money=self.money,
+        )
 
     @model_validator(mode="after")
     def _unit_named_with_its_count(self) -> Self:

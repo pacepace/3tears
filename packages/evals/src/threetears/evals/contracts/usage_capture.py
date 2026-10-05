@@ -411,9 +411,10 @@ def async_delivery_usage(
     A substituted entry reports no spend (``AsyncDelivery`` refuses one that does), so a replayed or
     seeded payload can contribute no dollars here. An entry reporting dollars but no token counts
     (an evicted trace) yields a cost-only row: a true statement about what the record evidences,
-    where a zero would be an invented measurement. Paid non-LLM calls are priced at the run's own
+    where a zero would be an invented measurement. Paid non-LLM calls carry the charge their provider
+    reported where it reported one, which wins over any rate; otherwise they are priced at the run's own
     rate for each ``(provider, unit)`` (:meth:`RoleUsageLedger.add_external`), and left counted and
-    unpriced where it declared none.
+    unpriced — unknown, never zero — where neither exists.
 
     Args:
         deliveries: The cell's background work, as its kind reported it; ``None`` when it watched none.
@@ -447,14 +448,7 @@ def async_delivery_usage(
                 price_source=entry.price_source,
             )
         for spend in entry.external_spend:
-            external.add_external(
-                ExternalSpend(
-                    provider=spend.provider,
-                    calls=spend.calls,
-                    provider_units=spend.provider_units,
-                    provider_unit=spend.provider_unit,
-                )
-            )
+            external.add_external(spend.as_external_spend())
     return [*inner.rows(), *external.rows()]
 
 
@@ -500,9 +494,12 @@ def cell_cost(
     when :func:`blended_cost` finds a model call that went unpriced, and also when the cell's
     background work reported paid non-LLM calls (:class:`~threetears.evals.contracts.models.AsyncExternalSpend`)
     that a run with declared rates could not price: such a run's ``cost_roles`` name ``external``,
-    so its total claims those calls, and a provider or unit it holds no rate for is spend the total
-    would otherwise silently leave out. A run that declared no rates claims no external dollars, so
-    its unpriced calls are volume only. A substituted delivery reports no spend at all
+    so its total claims those calls, and a call whose provider reported no charge and whose
+    ``(provider, unit)`` the run holds no rate for is spend the total would otherwise silently leave
+    out. A provider-reported charge prices its calls whatever the table holds, and wins over a rate
+    it does hold. A run that declared no rates claims no external dollars, so its external calls are
+    volume only in this total — a reported charge still lands on its ``external`` row, but the
+    composition stamped on the result (``cost_roles``) does not sum that role. A substituted delivery reports no spend at all
     (:class:`~threetears.evals.contracts.models.AsyncDelivery` refuses one that does), so a replayed or
     seeded payload can make the cost neither larger nor unknown.
 
@@ -519,13 +516,7 @@ def cell_cost(
     if "external" in cost_roles and rate_table is not None:
         for entry in async_deliveries or ():
             for spend in entry.external_spend:
-                reported = ExternalSpend(
-                    provider=spend.provider,
-                    calls=spend.calls,
-                    provider_units=spend.provider_units,
-                    provider_unit=spend.provider_unit,
-                )
-                if rate_table.money_for(reported) is None:
+                if rate_table.money_for(spend.as_external_spend()) is None:
                     return None
     return blended_cost(usage, cost_roles)
 

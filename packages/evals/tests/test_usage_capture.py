@@ -11,6 +11,7 @@ from threetears.evals.contracts.spend import ExternalRateTable
 from threetears.evals.contracts.usage_capture import (
     RoleUsageLedger,
     async_delivery_usage,
+    cell_cost,
     count_substituted_deliveries,
     production_replicating_cost,
     program_cost,
@@ -244,6 +245,98 @@ def test_external_units_are_reported_with_their_unit_or_not_at_all():
         AsyncExternalSpend(provider="search_api", calls=1, provider_units=2, provider_unit="credits").provider_units
         == 2
     )
+
+
+# ---------------------------------------------------------------------------
+# A provider-reported charge crosses the delivery seam
+# ---------------------------------------------------------------------------
+
+#: A run that prices search credits and holds no rate for images.
+_SEARCH_ONLY = ExternalRateTable(rates={("search_api", "credits"): 0.008})
+
+
+def _images(**charge):
+    """Background work that generated two images at a provider billing per image."""
+    return _work(cost_usd=0.01, external_spend=[AsyncExternalSpend(provider="image_api", calls=2, **charge)])
+
+
+def _external_row(rows):
+    (row,) = [row for row in rows if row.role == "external"]
+    return row
+
+
+def test_a_provider_reported_charge_lands_as_the_external_cost_with_no_rate_table():
+    row = _external_row(async_delivery_usage([_images(money=0.08)], rate_table=None))
+    assert (row.provider, row.call_count, row.cost_usd, row.price_source) == (
+        "image_api",
+        2,
+        0.08,
+        "image_api:reported",
+    )
+
+
+def test_a_provider_reported_charge_wins_over_the_declared_rate():
+    table = ExternalRateTable(rates={("image_api", "images"): 1.0})
+    work = _work(
+        external_spend=[
+            AsyncExternalSpend(provider="image_api", calls=2, provider_units=2, provider_unit="images", money=0.08)
+        ]
+    )
+    row = _external_row(async_delivery_usage([work], rate_table=table))
+    assert (row.cost_usd, row.price_source) == (0.08, "image_api:reported")
+
+
+def test_a_reported_zero_charge_is_a_priced_zero_not_unknown():
+    row = _external_row(async_delivery_usage([_images(money=0.0)], rate_table=None))
+    assert (row.cost_usd, row.price_source) == (0.0, "image_api:reported")
+
+
+def test_calls_with_neither_a_charge_nor_a_rate_are_unknown_never_zero():
+    row = _external_row(async_delivery_usage([_images()], rate_table=_SEARCH_ONLY))
+    assert row.cost_usd is None and row.price_source is None and row.call_count == 2
+
+
+def test_a_cells_cost_carries_a_charge_its_run_holds_no_rate_for():
+    """The run's composition claims external dollars; a reported charge prices calls no rate covers."""
+    deliveries = [_images(money=0.08)]
+    usage = async_delivery_usage(deliveries, rate_table=_SEARCH_ONLY)
+    assert cell_cost(usage, async_deliveries=deliveries, rate_table=_SEARCH_ONLY) == pytest.approx(0.01 + 0.08)
+
+
+def test_a_cells_cost_is_unknown_when_a_call_has_neither_a_charge_nor_a_rate():
+    deliveries = [_images()]
+    usage = async_delivery_usage(deliveries, rate_table=_SEARCH_ONLY)
+    assert cell_cost(usage, async_deliveries=deliveries, rate_table=_SEARCH_ONLY) is None
+
+
+def test_a_cells_cost_prices_units_at_the_rate_when_no_charge_was_reported():
+    deliveries = [
+        _work(
+            cost_usd=0.01,
+            external_spend=[
+                AsyncExternalSpend(provider="search_api", calls=2, provider_units=4, provider_unit="credits")
+            ],
+        )
+    ]
+    usage = async_delivery_usage(deliveries, rate_table=_SEARCH_ONLY)
+    assert cell_cost(usage, async_deliveries=deliveries, rate_table=_SEARCH_ONLY) == pytest.approx(0.01 + 0.032)
+
+
+def test_a_negative_charge_is_refused():
+    with pytest.raises(ValidationError, match="money"):
+        AsyncExternalSpend(provider="image_api", calls=1, money=-0.01)
+    assert AsyncExternalSpend(provider="image_api", calls=1, money=0.0).money == 0.0
+
+
+def test_the_conversion_to_the_metering_vocabulary_carries_every_reported_field():
+    """The two readers of a delivery's spend share one conversion; a field it drops reaches neither.
+
+    Held structurally: every field the report declares must arrive under its own name, so a field
+    added to ``AsyncExternalSpend`` without a home on ``ExternalSpend`` (or dropped on the way) fails here.
+    """
+    report = AsyncExternalSpend(provider="image_api", calls=3, provider_units=3, provider_unit="images", money=0.12)
+    converted = report.as_external_spend()
+    assert {name: getattr(converted, name) for name in AsyncExternalSpend.model_fields} == report.model_dump()
 
 
 # ---------------------------------------------------------------------------
