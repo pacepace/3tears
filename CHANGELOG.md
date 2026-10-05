@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.66.0 -- 2026-10-05
+
 ### Wake: a check that found nothing is a fire status of its own
 
 A consumer can run a check before a fire starts anything -- new mail, a changed page -- and wake the
