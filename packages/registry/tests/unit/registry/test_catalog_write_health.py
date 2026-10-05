@@ -192,3 +192,42 @@ async def test_one_failed_write_back_over_many_entries_counts_once() -> None:
     for _ in range(WRITE_FAILURE_THRESHOLD - 1):
         await catalog.restore_to_kv(bucket)
     assert catalog.persisting is False, "failed passes in a row do"
+
+
+@pytest.mark.asyncio
+async def test_a_pods_deregistration_sweep_over_many_tools_counts_once() -> None:
+    """a pod serving several tools leaves; its sweep rewrites each shared entry, and against a dead
+    bucket that is one failed operation, not one per tool."""
+    catalog, bucket = await _bound_catalog()
+    for index in range(WRITE_FAILURE_THRESHOLD + 2):
+        entry = _entry(f"tool.n{index}")
+        entry.endpoints.append(ToolEndpoint(pod_id="pod-002", status="available"))
+        await catalog.register(entry)
+    bucket.become_unreachable(KvError("nats: connection closed"))
+
+    affected = await catalog.deregister_pod("pod-002")
+    assert len(affected) == WRITE_FAILURE_THRESHOLD + 2
+    assert catalog.persisting is True
+
+    for _ in range(WRITE_FAILURE_THRESHOLD - 1):
+        await _failed_registration(catalog, bucket, "tool.more")
+    assert catalog.persisting is False, "the sweep was one of the failed operations in the streak"
+
+
+@pytest.mark.asyncio
+async def test_a_promotion_over_many_tools_counts_once() -> None:
+    """a pod's promotion writes each tool it serves; a failed promotion is one failed operation."""
+    catalog, bucket = await _bound_catalog()
+    for index in range(WRITE_FAILURE_THRESHOLD + 2):
+        pending = _entry(f"tool.p{index}")
+        pending.endpoints[0].status = "pending"
+        await catalog.register(pending)
+    bucket.become_unreachable(KvError("nats: connection closed"))
+
+    with pytest.raises(KvError):
+        await catalog.mark_ready("pod-001")
+    assert catalog.persisting is True
+
+    for _ in range(WRITE_FAILURE_THRESHOLD - 1):
+        await _failed_registration(catalog, bucket, "tool.more")
+    assert catalog.persisting is False

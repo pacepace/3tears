@@ -118,3 +118,48 @@ async def test_a_pass_that_raises_still_counts_its_failure() -> None:
             async with health.operation():
                 await health.write(_fail(), key="k")
     assert health.persisting is False
+
+
+@pytest.mark.asyncio
+async def test_a_single_write_from_another_task_during_an_open_pass_counts_on_its_own() -> None:
+    import asyncio
+
+    health = _health()
+    gate = asyncio.Event()
+
+    async def sweep() -> None:
+        async with health.operation():
+            with pytest.raises(_Down):
+                await health.write(_fail(), key="sweep")
+            await gate.wait()
+
+    async def registrations() -> None:
+        # failing writes from a concurrent task are their own operations, not the sweep's
+        for _ in range(WRITE_FAILURE_THRESHOLD - 1):
+            await _failed_write(health)
+        gate.set()
+
+    await asyncio.gather(sweep(), registrations())
+    assert health.persisting is False, "two failed registrations and one failed sweep are three operations"
+
+
+@pytest.mark.asyncio
+async def test_overlapping_passes_in_two_tasks_each_count_once() -> None:
+    import asyncio
+
+    health = _health()
+    both_open = asyncio.Barrier(2)
+
+    async def failing_pass() -> None:
+        async with health.operation():
+            await both_open.wait()
+            for _ in range(WRITE_FAILURE_THRESHOLD + 1):
+                with pytest.raises(_Down):
+                    await health.write(_fail(), key="k")
+
+    await asyncio.gather(failing_pass(), failing_pass())
+    assert health.persisting is True, "two failed passes are two operations, not one per write"
+    async with health.operation():
+        with pytest.raises(_Down):
+            await health.write(_fail(), key="k")
+    assert health.persisting is False

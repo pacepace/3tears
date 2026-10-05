@@ -14,7 +14,8 @@ packages (bumped in lock-step).
   put or delete is one, and a pass of many writes run inside `operation()` (a sync, a write-back) is
   one, failed if any of its writes failed and counting as nothing if it wrote nothing. `persisting`
   turns `False` after `WRITE_FAILURE_THRESHOLD` (3) failed operations in a row, logged once at
-  ERROR, and back on the next that lands, logged at INFO.
+  ERROR, and back on the next that lands, logged at INFO. A pass belongs to the task that opened it,
+  so concurrent passes and writes (a heartbeat sweep beside a registration) are each counted alone.
 - **Changed, `threetears.registry.ToolCatalog`:** uses it instead of its own copy. A write-back, a
   pod's deregistration sweep and a promotion each count as one operation, where before every entry
   they wrote counted, so one failed pass over a large catalog no longer takes the registry out of
@@ -66,7 +67,9 @@ packages (bumped in lock-step).
   read and written by. `DuckDBBackend.load_parquet` loads a Parquet file into a table in one
   statement. First consumer: the reports product's Tableau evaluator, which loads an extract
   snapshot into DuckDB L1 (its backlog item RPT-T3B1) and today bulk-inserts on the backend's
-  connection and reads its private schema.
+  connection and reads its private schema. **Breaking for out-of-repo implementers:** `upsert_many`
+  and `column_types` are now part of the `L1Backend` protocol, so an L1 backend written outside
+  3tears must add both to keep satisfying it.
 - **Fixed, `SQLiteBackend`:** a write that fails for any reason rolls its transaction back. It
   rolled back only on `OperationalError`, so a constraint or binding error left `BEGIN IMMEDIATE`
   open, holding the write lock against the thread's next write. A table whose every column is its

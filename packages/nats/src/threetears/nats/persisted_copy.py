@@ -29,6 +29,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Final, TypeVar
 
@@ -50,6 +52,14 @@ _T = TypeVar("_T")
 WRITE_FAILURE_THRESHOLD: Final[int] = 3
 
 
+@dataclass
+class _Pass:
+    """one open pass: how many writes it made, and the first that failed."""
+
+    writes: int = 0
+    failure: tuple[Exception, str] | None = None
+
+
 class CopyWriteHealth:
     """whether writes to a persisted copy are landing, as a readiness probe reads it.
 
@@ -63,6 +73,10 @@ class CopyWriteHealth:
     :attr:`persisting` turns ``False`` once :data:`WRITE_FAILURE_THRESHOLD` operations in a row have
     failed, logged once at ERROR, and ``True`` again from the next operation that lands, logged at
     INFO. It is ``True`` before any write: a copy that has made no write has had none fail.
+
+    A pass belongs to the task that opened it (a context variable), so passes and single writes
+    running concurrently -- a heartbeat's sweep beside a registration -- are each counted on their
+    own; only writes the opening task makes, or tasks it starts, join its pass.
 
     Read it from a READINESS check only, never liveness: an outage ends on its own and a restart
     through one is a restart loop, and a closed connection is already the client's own ``nats``
@@ -83,10 +97,8 @@ class CopyWriteHealth:
         self._threshold = threshold
         # operations that have failed since the last one that landed
         self._consecutive_failures = 0
-        # the open pass, while one is running: whether any of its writes failed, and the first failure
-        self._pass_failure: tuple[Exception, str] | None = None
-        self._pass_writes = 0
-        self._in_pass = False
+        # the open pass of the task asking, if it opened one; per instance, so two copies never share one
+        self._pass: ContextVar[_Pass | None] = ContextVar(f"copy_write_pass_{id(self)}", default=None)
 
     @property
     def persisting(self) -> bool:
@@ -110,18 +122,18 @@ class CopyWriteHealth:
         :rtype: _T
         :raises Exception: whatever the write raised, after counting it
         """
-        if self._in_pass:
-            self._pass_writes += 1
+        open_pass = self._pass.get()
+        if open_pass is not None:
+            open_pass.writes += 1
         try:
             result = await operation
         except Exception as exc:
-            if self._in_pass:
-                if self._pass_failure is None:
-                    self._pass_failure = (exc, key)
-            else:
+            if open_pass is None:
                 self._failed(exc, key=key)
+            elif open_pass.failure is None:
+                open_pass.failure = (exc, key)
             raise
-        if not self._in_pass:
+        if open_pass is None:
             self._landed()
         return result
 
@@ -130,25 +142,24 @@ class CopyWriteHealth:
         """run a pass of many writes as ONE operation: failed if any write failed, landed if all did.
 
         A pass that wrote nothing counts as nothing, so it cannot end a streak of failures. Passes do
-        not nest; a pass inside a pass is part of the outer one.
+        not nest; a pass opened inside one (in the same task) is part of the outer one. A pass in
+        another task is its own.
 
         :return: a context in which :meth:`write` holds outcomes for the pass
         :rtype: AsyncIterator[None]
         """
-        if self._in_pass:
+        if self._pass.get() is not None:
             yield
             return
-        self._in_pass = True
-        self._pass_failure = None
-        self._pass_writes = 0
+        opened = _Pass()
+        token = self._pass.set(opened)
         try:
             yield
         finally:
-            self._in_pass = False
-            failure, self._pass_failure = self._pass_failure, None
-            if failure is not None:
-                self._failed(failure[0], key=failure[1])
-            elif self._pass_writes:
+            self._pass.reset(token)
+            if opened.failure is not None:
+                self._failed(opened.failure[0], key=opened.failure[1])
+            elif opened.writes:
                 self._landed()
 
     def _failed(self, exc: Exception, *, key: str) -> None:
