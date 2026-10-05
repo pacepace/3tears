@@ -103,7 +103,10 @@ class LaunchSettings(BaseModel):
         judge_concurrency: How many judge calls one cell makes at once.
         enforcement_enabled: Whether the cost and metered-call ceilings are enforced at all.
         max_cost_usd: The run cost ceiling a run inherits when its launch names none.
-        max_metered_calls: The metered-call ceiling a run inherits when its launch names none.
+        max_metered_calls: The metered-call ceiling a run inherits when its launch names none, or
+            ``None`` for a host that declares it has NO metered tools: its runs record a ceiling of
+            ``0`` (origin ``none_declared``), a metered call on one is refused and counted, and a
+            launch naming a ceiling is refused, since it would bound nothing.
         max_out_of_run_cost_usd: The most a launch's out-of-run calls — its case generation, which runs
             before any run exists and so under no run's cap — may together be priced at before they are
             made (:class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`). Enforced exactly when
@@ -120,7 +123,7 @@ class LaunchSettings(BaseModel):
     judge_concurrency: int = Field(gt=0)
     enforcement_enabled: bool
     max_cost_usd: float = Field(gt=0)
-    max_metered_calls: int = Field(gt=0)
+    max_metered_calls: int | None = Field(gt=0)
     max_out_of_run_cost_usd: float = Field(gt=0)
     setting_names: dict[str, str] = Field(default_factory=dict)
 
@@ -1318,7 +1321,8 @@ async def start_run(
         ValidationFailedError: A model named twice, more runs than one launch may start, a negative
             ``n_variations``, a variation model the generation needs and the launch does not name or one
             nothing would call, a ``k_runs`` outside the run's bounds, a non-positive ``max_cost_usd``
-            or ``max_metered_calls``, a ``cassette_mode`` that is not a mode, a replay naming no corpus
+            or ``max_metered_calls`` (or any ``max_metered_calls`` on a host declaring no metered tools),
+            a ``cassette_mode`` that is not a mode, a replay naming no corpus
             or a corpus that is no capture of this template in this scope, a template naming a
             kind with no launcher, a launch argument that kind cannot honour, an overlay the kind's
             model refuses (named by field), an apparatus setting the kind does not honour, a generating
@@ -1337,6 +1341,14 @@ async def start_run(
     # candidate's first metered call and measure a candidate that could not search.
     if max_metered_calls is not None and max_metered_calls <= 0:
         raise ValidationFailedError(f"max_metered_calls must be > 0 (got {max_metered_calls})")
+    # A host that declares no metered tools has nothing for a ceiling to bound, and recording one would
+    # claim a bound the run never had.
+    if max_metered_calls is not None and host.settings().max_metered_calls is None:
+        raise ValidationFailedError(
+            f"max_metered_calls={max_metered_calls} names a metered-call ceiling, and host "
+            f"{host.eval_host.profile.host_id!r} declares no metered tools, so it would bound nothing; launch "
+            "without max_metered_calls"
+        )
     # The run model bounds k_runs, but it is built after the cases are resolved — so an out-of-range
     # value from a surface that does not bound it at the wire would be refused after generation had
     # been paid for. Checked against the model's own field, so the bound is stated once.
@@ -1931,7 +1943,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                     enforcement_enabled=eval_enforcement_enabled,
                 ),
                 max_metered_calls_origin=MeteredCallLedger.resolve_ceiling_origin(
-                    max_metered_calls, enforcement_enabled=eval_enforcement_enabled
+                    max_metered_calls,
+                    configured_max_metered_calls=configured_max_metered_calls,
+                    enforcement_enabled=eval_enforcement_enabled,
                 ),
             )
         except ValidationError as e:

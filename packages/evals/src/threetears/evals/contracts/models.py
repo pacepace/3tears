@@ -1660,6 +1660,14 @@ ModelRoleOrigin = Literal["chosen", "inherited"]
 #: both ceilings share. The name is cost's because cost came first.
 CostCapOrigin = Literal["chosen", "inherited", "uncapped"]
 
+#: Which tier supplied a run's metered-call ceiling (:attr:`EvalRun.max_metered_calls_origin`): the
+#: three :data:`CostCapOrigin` tiers, read with the currency swapped, and one more —
+#: ``none_declared``, a host declaring it has no metered tools (``LaunchSettings.max_metered_calls``
+#: of ``None``). That run records a ceiling of ``0``: no metered call may happen, and one that does
+#: contradicts the host's declaration and is refused and counted. Distinct from ``uncapped``, which
+#: is a host with metered tools whose enforcement is off.
+MeteredCallOrigin = Literal["chosen", "inherited", "uncapped", "none_declared"]
+
 
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
     """Every dim a judged cell of this kind is scored on, in the order the judge phase calls them.
@@ -2281,21 +2289,22 @@ class EvalRun(EvalDocumentModel):
 
     max_metered_calls: int | None = Field(
         default=None,
-        gt=0,
+        ge=0,
         description=(
             "Effective per-run ceiling on METERED THIRD-PARTY CALLS in force, after the "
             "override-or-config cascade — the quota max_cost_usd cannot see, since that counts "
             "LLM dollars and a search credit or a billed image generation is neither. None "
             "means the run was unbounded (eval enforcement disabled) or its writer recorded no "
-            "ceiling; max_metered_calls_origin tells those apart. Reaching it REFUSES further metered "
+            "ceiling; max_metered_calls_origin tells those apart. 0 means the host declared it has no "
+            "metered tools (origin none_declared), so any metered call is refused. Reaching it REFUSES further metered "
             "calls and records the count on metered_calls_refused — it never stops the run, "
             "because a hard stop would discard a partly-measured matrix."
         ),
     )
-    max_metered_calls_origin: CostCapOrigin | None = Field(
+    max_metered_calls_origin: MeteredCallOrigin | None = Field(
         default=None,
         description=(
-            "Which tier of the cascade supplied max_metered_calls — see CostCapOrigin. Kept "
+            "Which tier of the cascade supplied max_metered_calls — see MeteredCallOrigin. Kept "
             "beside the ceiling for the reason max_cost_usd_origin is: the ceiling is stored "
             "resolved, and a resolved number cannot say whether the launch named it or "
             "the host's configured default did — and only the second kind moves "
@@ -3853,6 +3862,7 @@ class EvalCassette(EvalDocumentModel):
 
 __all__ = [
     "ApparatusSettingValue",
+    "MeteredCallOrigin",
     "CANDIDATE_SPEAKER",
     "EVAL_SCHEMA_VERSION",
     "NON_TERMINAL_RUN_STATUSES",
