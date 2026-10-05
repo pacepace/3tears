@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-audit"
-version = "0.64.0"
+version = "0.66.0"
 description = "unified audit envelope, fire-and-forget publish helper, and the audit erasure rule and hub anonymization request for the 3tears platform"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -25,11 +25,11 @@ classifiers = [
 dependencies = [
     # the persister stores ``details`` through threetears.core.serialization.to_stored_json, the
     # one stored form of a datetime every storage tier writes
-    "3tears>=0.64.0,<0.65.0",
+    "3tears>=0.66.0,<0.67.0",
     # [client]: this package uses the NATS client at runtime, and nats-py is an
     # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
-    "3tears-nats[client]>=0.64.0,<0.65.0",
-    "3tears-observe>=0.64.0,<0.65.0",
+    "3tears-nats[client]>=0.66.0,<0.67.0",
+    "3tears-observe>=0.66.0,<0.67.0",
     "pydantic>=2.0",
 ]
 

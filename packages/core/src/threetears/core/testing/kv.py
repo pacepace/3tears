@@ -53,7 +53,9 @@ use:
   :meth:`FakeNatsClient.reconnect` runs every hook, as a real reconnect does.
 - :meth:`FakeNatsClient.ensure_kv_bucket` declares as the real client does, and remembers a
   declaration that may create, on memory or file storage; :meth:`FakeNatsClient.restart_broker`
-  loses every bucket, puts back only the remembered ones, then runs the reconnect hooks.
+  loses every bucket, puts back only the remembered ones, runs each declaration's ``on_restored``
+  refill with its bucket (one that raises stays owed, :meth:`FakeNatsClient.refill_owed`), then
+  runs the reconnect hooks.
 
 the fake stores data in a plain dict keyed by bucket name so multiple
 buckets created from the same client share no state. revision counter
@@ -102,6 +104,18 @@ class _Entry:
     value: bytes
     revision: int
     expires_at: timedelta | None = None
+
+
+@dataclass
+class _Refill:
+    """a remembered declaration's refill, and whether its bucket is owed it.
+
+    :ivar on_restored: the declarer's refill, handed the bucket
+    :ivar owed: whether the bucket was created again since a refill last returned
+    """
+
+    on_restored: Callable[[FakeKvBucket], Awaitable[None]]
+    owed: bool = False
 
 
 # parity-with: threetears.nats.kv.KvBucketLike
@@ -740,6 +754,9 @@ class FakeNatsClient:
         # :meth:`ensure_kv_bucket` with a create, on memory or file storage, and so puts back after a
         # reconnect. names only -- the fake bucket carries its own config.
         self._remembered: set[str] = set()
+        # bucket name -> the declarer's refill (``ensure_kv_bucket(on_restored=...)``) and whether the
+        # bucket is owed it, as the real client remembers it with the declaration.
+        self._refills: dict[str, _Refill] = {}
 
     @property
     def remembered_declarations(self) -> frozenset[str]:
@@ -777,8 +794,9 @@ class FakeNatsClient:
         bucket stays absent until an operation through a handle that may create it recreates it
         (the wrapper's self-heal, :meth:`FakeKvBucket.vanish`) -- through a bind-only handle the
         operation raises :class:`threetears.nats.KvBucketNotFoundError` until a declaration puts
-        the bucket back. Entries are never put back -- republishing them is the declarer's job,
-        and a test of that job runs it from a reconnect hook.
+        the bucket back. Entries are put back only by their declarer: a declaration given
+        ``on_restored`` is owed its refill once its bucket is created again, and :meth:`reconnect`
+        runs it with the bucket.
 
         :return: None
         :rtype: None
@@ -786,9 +804,43 @@ class FakeNatsClient:
         for name, bucket in self._buckets.items():
             if name in self._remembered:
                 bucket.wipe()
+                refill = self._refills.get(name)
+                if refill is not None:
+                    refill.owed = True
             else:
                 bucket.vanish()
         await self.reconnect()
+
+    def refill_owed(self, name: str) -> bool:
+        """whether the declaration of ``name`` is owed its refill: its bucket was created again and no refill has returned since.
+
+        :param name: bucket name, as declared
+        :ptype name: str
+        :return: ``True`` while a refill is owed; ``False`` for a declaration with no refill
+        :rtype: bool
+        """
+        refill = self._refills.get(name)
+        return refill is not None and refill.owed
+
+    async def _run_owed_refills(self) -> None:
+        """run each owed refill with its bucket, as the real client's refill round does.
+
+        A refill settles the debt only by returning. One that raises is logged at ERROR naming the
+        bucket and stays owed for the next :meth:`reconnect`; a cancellation propagates and leaves
+        it owed.
+
+        :return: None
+        :rtype: None
+        """
+        for name, refill in list(self._refills.items()):
+            if not refill.owed:
+                continue
+            try:
+                await refill.on_restored(self._buckets[name])
+            except Exception as exc:  # noqa: BLE001 -- a declarer's hook; logged and left owed, as the real client does
+                log.error("refilling KV bucket %s failed: %s: %s -- it stays owed", name, type(exc).__name__, exc)
+                continue
+            refill.owed = False
 
     def add_reconnect_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
         """register an async hook run after each reconnect, as the real client does.
@@ -801,13 +853,16 @@ class FakeNatsClient:
         self._reconnect_callbacks.append(callback)
 
     async def reconnect(self) -> None:
-        """run every reconnect hook in registration order, as the real client does after reconnecting.
+        """run every owed refill, then every reconnect hook in registration order, as the real client does.
 
-        A hook that raises is logged and does not stop the others, matching the real dispatcher.
+        The real client's restoration, registered ahead of every hook, takes up any refill still
+        owed; the fake runs those first, in line. A hook that raises is logged and does not stop the
+        others, matching the real dispatcher.
 
         :return: None
         :rtype: None
         """
+        await self._run_owed_refills()
         for callback in list(self._reconnect_callbacks):
             try:
                 await callback()
@@ -929,6 +984,8 @@ class FakeNatsClient:
         create_if_missing: bool = True,
         owns_bucket: bool = False,
         drop_file_storage: bool = False,
+        prefix_namespace: bool = True,
+        on_restored: Callable[[FakeKvBucket], Awaitable[None]] | None = None,
     ) -> FakeKvBucket:
         """declare a bucket -- create it, or reconcile a live one in place -- or bind one somebody declared.
 
@@ -939,7 +996,7 @@ class FakeNatsClient:
         storage emptying the bucket as the real recreate does, and a live FILE bucket refused unless
         ``drop_file_storage`` -- and a declaration that may create,
         whatever its storage, is remembered (:attr:`remembered_declarations`) and put back by
-        :meth:`restart_broker`.
+        :meth:`restart_broker`, its ``on_restored`` refill with it (:meth:`refill_owed`).
 
         :param name: bucket suffix; the fake skips the namespace prefix
         :ptype name: str
@@ -959,17 +1016,31 @@ class FakeNatsClient:
         :param drop_file_storage: the owner may recreate a bucket live on file storage, emptying it;
             without it such a bucket is refused and left untouched. only with ``owns_bucket``
         :ptype drop_file_storage: bool
+        :param prefix_namespace: accepted for signature parity with the real client, where ``False``
+            names the bucket exactly. the fake has no namespace, so ``name`` is the bucket's name
+            either way
+        :ptype prefix_namespace: bool
+        :param on_restored: the declarer's refill, remembered with the declaration and run with the
+            bucket by :meth:`reconnect` once :meth:`restart_broker` has created it again; a
+            re-declaration without it gives it up. only with ``create_if_missing``
+        :ptype on_restored: Callable[[FakeKvBucket], Awaitable[None]] | None
         :return: the bucket, the same instance every later open receives
         :rtype: FakeKvBucket
         :raises ValueError: when ``owns_bucket=True`` with ``create_if_missing=False`` or file storage,
-            or ``drop_file_storage=True`` without ``owns_bucket``, as the real one
+            or ``drop_file_storage=True`` without ``owns_bucket``, or ``on_restored`` with
+            ``create_if_missing=False``, as the real one
         :raises KvConfigMismatch: when an owner finds the bucket live on file storage without
             ``drop_file_storage``, as the real one; the bucket is left as it is
         :raises KvBucketNotFoundError: when ``create_if_missing=False`` and the bucket is absent --
             never created, or lost to :meth:`FakeKvBucket.vanish` -- since a declaration asks the
             broker rather than the client's cache
         """
-        del history
+        del history, prefix_namespace
+        if on_restored is not None and not create_if_missing:
+            raise ValueError(
+                f"KV bucket {name!r}: on_restored needs create_if_missing=True -- a bind-only open never "
+                f"creates the bucket, so a refill could never be owed"
+            )
         if drop_file_storage and not owns_bucket:
             raise ValueError(
                 f"KV bucket {name!r}: drop_file_storage=True needs owns_bucket=True -- only the bucket's "
@@ -1021,6 +1092,15 @@ class FakeNatsClient:
         bucket.set_may_create(create_if_missing)
         if create_if_missing:
             self._remembered.add(name)
+            # the latest declaration's refill is the one remembered; one that keeps a refill keeps
+            # whatever is still owed
+            refill = self._refills.get(name)
+            if on_restored is None:
+                self._refills.pop(name, None)
+            elif refill is None:
+                self._refills[name] = _Refill(on_restored=on_restored)
+            else:
+                refill.on_restored = on_restored
         return bucket
 
     def _new_bucket(

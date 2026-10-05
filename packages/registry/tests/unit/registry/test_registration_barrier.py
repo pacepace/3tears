@@ -400,7 +400,7 @@ class TestCatalogMarkReady:
 
         catalog = ToolCatalog()
         kv = AsyncMock()
-        kv.keys = AsyncMock(return_value=[])
+        kv.list_keys = AsyncMock(return_value=[])
         kv.put = AsyncMock()
         kv.delete = AsyncMock()
         await catalog.load_from_kv(kv)
@@ -421,7 +421,7 @@ class TestCatalogMarkReady:
 
         kv.put.assert_called_once()
         call_args = kv.put.call_args
-        payload = json.loads(call_args[0][1].decode("utf-8"))
+        payload = json.loads(call_args.kwargs["value"].decode("utf-8"))
         assert payload["endpoints"][0]["status"] == "available"
 
     @pytest.mark.asyncio
@@ -436,7 +436,7 @@ class TestCatalogMarkReady:
 
         catalog = ToolCatalog()
         kv = AsyncMock()
-        kv.keys = AsyncMock(return_value=[])
+        kv.list_keys = AsyncMock(return_value=[])
         kv.put = AsyncMock()
         kv.delete = AsyncMock()
         await catalog.load_from_kv(kv)
@@ -488,7 +488,7 @@ class TestCatalogMarkReady:
 
         catalog = ToolCatalog()
         kv = AsyncMock()
-        kv.keys = AsyncMock(return_value=[])
+        kv.list_keys = AsyncMock(return_value=[])
         kv.put = AsyncMock()
         kv.delete = AsyncMock()
         await catalog.load_from_kv(kv)
@@ -509,6 +509,6 @@ class TestCatalogMarkReady:
         await catalog.mark_ready("pod-D")
 
         kv.put.assert_called_once()
-        payload = json.loads(kv.put.call_args[0][1].decode("utf-8"))
+        payload = json.loads(kv.put.call_args.kwargs["value"].decode("utf-8"))
         # the same instant, in the one stored form every storage tier writes
         assert payload["date_registered"] == "2024-01-15T12:00:00.000000+00:00"

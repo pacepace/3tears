@@ -14,7 +14,7 @@ from pydantic import Field
 
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.models import EvalRun
+from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS, EvalRun
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, run_job_id
 from threetears.evals.ops.summary import EvalSummary, summarize_run
@@ -65,7 +65,7 @@ class LaunchArguments(EvalBaseModel):
     template_id: str
     subject_id: str
     models: list[str] = Field(default_factory=list)
-    k_runs: int = 1
+    k_runs: int = DEFAULT_LAUNCH_K_RUNS
     n_variations: int = 0
     variation_model: str | None = None
     overlays: dict[str, Any] | None = None

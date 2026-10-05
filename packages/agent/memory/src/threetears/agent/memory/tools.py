@@ -37,6 +37,7 @@ from uuid_utils import uuid7
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field, model_validator
 
+from threetears.agent.memory.revisions import is_permanent, supersede
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_READ,
     ACTION_MEMORY_WRITE,
@@ -51,6 +52,7 @@ from threetears.agent.memory.collections import (
     MediaContentCollection,
     MemoriesCollection,
     MemoryChunkCollection,
+    MemoryConsolidationsCollection,
 )
 from langchain_core.embeddings import Embeddings
 
@@ -64,11 +66,13 @@ __all__ = [
     "ChunkSearchInput",
     "LedgerCallback",
     "MemoryAddInput",
+    "MemoryKeepInput",
     "MemoryRecallInput",
     "MemorySearchInput",
     "load_chunk_recall_tool",
     "load_chunk_search_tool",
     "load_memory_add_tool",
+    "load_memory_keep_tool",
     "load_memory_recall_tool",
     "load_memory_search_tool",
 ]
@@ -1043,6 +1047,13 @@ class MemoryAddInput(BaseModel):
             "digits, hyphens or underscores. Each name is used once."
         ),
     )
+    permanent: bool = Field(
+        default=False,
+        description=(
+            "True for what must never fade or be merged away: who someone is, a promise, "
+            "anything it would be wrong to forget."
+        ),
+    )
 
 
 async def load_memory_add_tool(
@@ -1056,6 +1067,7 @@ async def load_memory_add_tool(
     context_resolver: Callable[[], Any],
     similarity_dedup_threshold: float = 0.90,
     salience_seed: float = 0.5,
+    consolidations_collection: MemoryConsolidationsCollection | None = None,
 ) -> list[BaseTool]:
     """create a memory_add tool for explicit memory storage.
 
@@ -1098,6 +1110,11 @@ async def load_memory_add_tool(
         (design §3 per-user knob). default 0.5 matches the DB server
         default; a tuned value is honored on insert
     :ptype salience_seed: float
+    :param consolidations_collection: the edges a near-duplicate is replaced
+        through: the new memory is written, the old one linked to it and
+        superseded, never overwritten. Without it, and for a permanent old one,
+        the new memory is written beside the old
+    :ptype consolidations_collection: MemoryConsolidationsCollection | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -1108,6 +1125,7 @@ async def load_memory_add_tool(
         content: str,
         memory_type: str = "preference",
         alias: str | None = None,
+        permanent: bool = False,
     ) -> str:
         """store a memory about the user for future conversations."""
         # v0.7.5: validate alias format early. Per-user uniqueness is
@@ -1219,28 +1237,45 @@ async def load_memory_add_tool(
                     )
                     if existing_entity is None:
                         continue
-                    existing_entity.content = content
-                    existing_entity.type_memory = mt
-                    existing_entity.embedding = embedding
-                    await memories_collection.save_entity(existing_entity)
+                    if is_permanent(existing_entity) or consolidations_collection is None:
+                        # a permanent memory is never replaced; without edges
+                        # nothing is replaced. The new one is written beside it.
+                        break
+                    new_id = await supersede(
+                        memories_collection,
+                        consolidations_collection,
+                        agent_id=agent_id,
+                        source_ids=[existing_id],
+                        fields={
+                            "customer_id": customer_id,
+                            "user_id": user_id,
+                            "conversation_id": live_conversation_id,
+                            "message_id_source": live_message_id,
+                            "type_memory": mt,
+                            "content": content,
+                            "embedding": embedding,
+                            "alias": normalised_alias,
+                            "salience": salience_seed,
+                            "evergreen": permanent,
+                        },
+                        rationale="replaced by memory_add",
+                    )
                     log.info(
-                        "memory_add: updated existing similar memory",
+                        "memory_add: replaced a near-duplicate",
                         extra={
                             "extra_data": {
-                                "memory_id": str(existing_id),
+                                "memory_id": str(new_id),
+                                "replaced": str(existing_id),  # convert at border: log extra_data field
                                 "similarity": round(float(row["similarity"]), 3),
                                 "old_content": row["content"][:100],
                             }
                         },
                     )
-                    # v0.7.2: surface ``[memory:<id>]`` on the dedup
-                    # path so the agent can chain to memory_recall
-                    # without a separate memory_search round-trip.
+                    kept = " Kept permanently." if permanent else ""
                     return (
-                        f"Updated existing memory "
-                        f"[memory:{existing_id}] "
-                        f"(it was {float(row['similarity']):.0%} the same): "
-                        f"{content}."
+                        f"Stored as [memory:{new_id}]: {content}. It replaces "
+                        f"[memory:{existing_id}] ({float(row['similarity']):.0%} the same), "
+                        f"which stays readable by its id.{kept}"
                     )
         except Exception as exc:
             log.warning(
@@ -1262,6 +1297,7 @@ async def load_memory_add_tool(
                 "content": content,
                 "embedding": embedding,
                 "alias": normalised_alias,
+                "evergreen": permanent,
                 # honor the per-user salience_seed knob (design §3); without
                 # it the DB server default (0.5) applies and a tuned seed is
                 # a silent no-op.
@@ -1286,7 +1322,8 @@ async def load_memory_add_tool(
             # v0.7.2: surface ``[memory:<id>]`` so the agent can chain
             # to memory_recall without a follow-up memory_search.
             alias_clause = f" with alias '{normalised_alias}'" if normalised_alias is not None else ""
-            return f"Stored as [memory:{memory_id}]{alias_clause}: {content}."
+            kept = " Kept permanently." if permanent else ""
+            return f"Stored as [memory:{memory_id}]{alias_clause}: {content}.{kept}"
 
         except Exception as exc:
             # v0.7.5: surface alias-uniqueness collisions cleanly. The
@@ -1314,10 +1351,80 @@ async def load_memory_add_tool(
     memory_add.description = (
         "Remember something for every later conversation: about the person, about you, "
         "or anything else. Use it often. A memory that is nearly the same as one you "
-        "have updates that one instead. Returns [memory:<id>]."
+        "have replaces it, and the old one stays readable by its id. Set permanent for "
+        "what must never fade. Returns [memory:<id>]."
     )
 
     return [memory_add]
+
+
+class MemoryKeepInput(BaseModel):
+    """Input schema for memory_keep."""
+
+    memory_id: str = Field(description="The id from a [memory:<id>] line.")
+
+
+def load_memory_keep_tool(
+    user_id: UUID,
+    agent_id: UUID,
+    customer_id: UUID,
+    authorizer: MemoryAuthorizerDependencies,
+    memories_collection: MemoriesCollection,
+) -> list[BaseTool]:
+    """create memory_keep: pin a stored memory permanent.
+
+    A permanent (``evergreen``) memory never decays, is never merged by dream,
+    and is never replaced by a later conversation: a change to it is a new
+    memory beside it. The pin is one way; nothing here unpins.
+
+    :param user_id: the caller; a memory of anyone else is refused
+    :ptype user_id: UUID
+    :param agent_id: the partition
+    :ptype agent_id: UUID
+    :param customer_id: the tenant
+    :ptype customer_id: UUID
+    :param authorizer: rbac authorizer dependency bundle
+    :ptype authorizer: MemoryAuthorizerDependencies
+    :param memories_collection: the memories collection
+    :ptype memories_collection: MemoriesCollection
+    :return: list with one LangChain tool
+    :rtype: list[BaseTool]
+    """
+
+    @tool("memory_keep", args_schema=MemoryKeepInput)
+    async def memory_keep(memory_id: str) -> str:
+        """pin a memory permanent."""
+        try:
+            memory_uuid = UUID(memory_id.strip().removeprefix("[memory:").removesuffix("]"))
+        except ValueError:
+            return _tool_error("memory_keep", "memory_id", f"'{memory_id}' is not a memory id.")
+        try:
+            await authorize_memory_access(
+                action=ACTION_MEMORY_WRITE,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=user_id,
+                caller_agent_id=None,
+                deps=authorizer,
+            )
+        except MemoryAccessDenied as exc:
+            return _tool_error("memory_keep", "authorize", str(exc))
+        entity = await memories_collection.get((agent_id, memory_uuid))
+        if entity is None or entity.user_id != user_id:
+            return _tool_error("memory_keep", "memory_id", f"No memory [memory:{memory_uuid}].")
+        if entity.evergreen:
+            return f"[memory:{memory_uuid}] was already kept permanently."
+        entity.evergreen = True
+        await memories_collection.save_entity(entity)
+        return f"[memory:{memory_uuid}] is kept permanently: {entity.content}"
+
+    memory_keep.description = (
+        "Keep a memory permanently: it never fades, is never merged away, and a later "
+        "change is written beside it. For who someone is, a promise, anything it would "
+        "be wrong to forget."
+    )
+
+    return [memory_keep]
 
 
 # ---------------------------------------------------------------------------

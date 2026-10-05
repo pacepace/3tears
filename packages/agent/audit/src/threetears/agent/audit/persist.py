@@ -46,6 +46,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
+from threetears.agent.audit.migrations.v001_create_audit_events import AUDIT_EVENTS_V001_DDL
 from threetears.core.serialization import json_datetime, to_stored_json
 from threetears.nats import Subjects
 from threetears.observe import get_logger, spawn_background
@@ -76,48 +77,9 @@ AUDIT_STREAM_NAME = "audit"
 #: delivery attempts before an event that cannot be persisted is dead-lettered.
 AUDIT_MAX_DELIVER = 5
 
-#: the table and its indexes; idempotent (``IF NOT EXISTS``).
-AUDIT_EVENTS_DDL: tuple[str, ...] = (
-    "CREATE TABLE IF NOT EXISTS audit_events ("
-    "id UUID PRIMARY KEY, "
-    "timestamp TIMESTAMPTZ NOT NULL, "
-    "event_type TEXT NOT NULL, "
-    "action TEXT NOT NULL, "
-    "outcome TEXT NOT NULL DEFAULT 'success', "
-    "actor_user_id UUID, "
-    "acting_as_principal_id UUID, "
-    "calling_agent_id UUID, "
-    "owner_agent_id UUID, "
-    "customer_id UUID, "
-    "resource_namespace_id UUID, "
-    "resource_namespace_type TEXT, "
-    "correlation_id UUID NOT NULL, "
-    "conversation_id UUID, "
-    "details JSONB NOT NULL DEFAULT '{}', "
-    "ip_address TEXT)",
-    # an existing table (created before a column existed) gains every column the insert names beyond the
-    # key and the four required fields, with the CREATE's own type and default
-    *(
-        f"ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS {column}"
-        for column in (
-            "outcome TEXT NOT NULL DEFAULT 'success'",
-            "actor_user_id UUID",
-            "acting_as_principal_id UUID",
-            "calling_agent_id UUID",
-            "owner_agent_id UUID",
-            "customer_id UUID",
-            "resource_namespace_id UUID",
-            "resource_namespace_type TEXT",
-            "conversation_id UUID",
-            "details JSONB NOT NULL DEFAULT '{}'",
-            "ip_address TEXT",
-        )
-    ),
-    "CREATE INDEX IF NOT EXISTS idx_audit_events_time ON audit_events (timestamp)",
-    "CREATE INDEX IF NOT EXISTS idx_audit_events_customer_time ON audit_events (customer_id, timestamp DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events (event_type)",
-    "CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events (actor_user_id)",
-)
+#: the table and its indexes; idempotent (``IF NOT EXISTS``). Defined by the package's migrations,
+#: which never change once applied: a new column is a new migration, and joins this list there.
+AUDIT_EVENTS_DDL: tuple[str, ...] = AUDIT_EVENTS_V001_DDL
 
 #: an instant as JSON text: a full date-time with a ``T``, an optional fraction and an explicit offset or ``Z``.
 #: pydantic's wire spelling (``2026-10-01T12:30:00Z``) and the stored one both match; a date, a naive

@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import BaseModel
 
-from threetears.core.testing.kv import FakeNatsClient
+from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError
 from threetears.nats.kv import KvDeclaring
 
@@ -417,3 +417,83 @@ async def test_a_broker_restart_puts_back_only_what_this_client_declared() -> No
     assert declared.keys() == ()
     assert await opened.get(key="k") is None
     assert client.bucket_exists("opened"), "an operation through a handle heals a vanished bucket"
+
+
+@pytest.mark.asyncio
+async def test_a_broker_restart_runs_a_declarations_refill_with_its_bucket_before_the_hooks() -> None:
+    # the real client creates the declared bucket again, empty, and owes its declarer the refill;
+    # the fake runs it in line, ahead of the reconnect hooks, as the real restoration is registered first.
+    client = FakeNatsClient()
+    memory = {"tool-a": b"a", "tool-b": b"b"}
+    order: list[str] = []
+
+    async def _write_back(bucket: FakeKvBucket) -> None:
+        order.append("refill")
+        for key, value in memory.items():
+            await bucket.put(key=key, value=value)
+
+    async def _hook() -> None:
+        order.append("hook")
+
+    catalog = await client.ensure_kv_bucket(
+        name="tool_catalog", storage="file", prefix_namespace=False, on_restored=_write_back
+    )
+    client.add_reconnect_callback(_hook)
+    assert order == [], "the declaration itself owes no refill"
+
+    await client.restart_broker()
+
+    assert order == ["refill", "hook"]
+    assert sorted(catalog.keys()) == ["tool-a", "tool-b"]
+    assert not client.refill_owed("tool_catalog")
+
+
+@pytest.mark.asyncio
+async def test_a_refill_that_raises_stays_owed_until_one_returns() -> None:
+    client = FakeNatsClient()
+    attempts: list[int] = []
+
+    async def _write_back(bucket: FakeKvBucket) -> None:
+        attempts.append(len(attempts))
+        if len(attempts) == 1:
+            raise RuntimeError("nats: connection closed")
+        await bucket.put(key="k", value=b"v")
+
+    bucket = await client.ensure_kv_bucket(name="catalog", on_restored=_write_back)
+    await client.restart_broker()
+    assert client.refill_owed("catalog")
+    assert bucket.keys() == ()
+
+    await client.reconnect()
+
+    assert attempts == [0, 1]
+    assert not client.refill_owed("catalog")
+    assert bucket.keys() == ("k",)
+
+
+@pytest.mark.asyncio
+async def test_a_redeclaration_without_a_refill_gives_it_up() -> None:
+    client = FakeNatsClient()
+    ran: list[str] = []
+
+    async def _write_back(bucket: FakeKvBucket) -> None:
+        del bucket
+        ran.append("refill")
+
+    await client.ensure_kv_bucket(name="catalog", on_restored=_write_back)
+    await client.ensure_kv_bucket(name="catalog")
+    await client.restart_broker()
+
+    assert ran == []
+    assert not client.refill_owed("catalog")
+
+
+@pytest.mark.asyncio
+async def test_a_bind_only_declaration_cannot_take_a_refill() -> None:
+    client = FakeNatsClient(declared_buckets=["catalog"])
+
+    async def _write_back(bucket: FakeKvBucket) -> None:
+        del bucket
+
+    with pytest.raises(ValueError, match="on_restored needs create_if_missing=True"):
+        await client.ensure_kv_bucket(name="catalog", create_if_missing=False, on_restored=_write_back)

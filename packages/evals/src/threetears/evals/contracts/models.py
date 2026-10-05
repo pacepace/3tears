@@ -1114,8 +1114,8 @@ class EvalTemplate(EvalDocumentModel):
     # Scoring
     goal_state_checks: list[str] = Field(default_factory=list)
     # Authoring-time proof that each goal check discriminates (``GoalCheckControls``). Authoring
-    # requires it for every check a template declares; a template written past authoring (a host's
-    # seed, or a host saving one itself) can lack it, and is shown as unproven wherever it is read
+    # requires it for every check a template declares; a template written past authoring (saved
+    # straight to a store, or seeded before the seeder admitted templates through authoring) can lack it, and is shown as unproven wherever it is read
     # rather than taken as proven.
     goal_check_controls: GoalCheckControls | None = Field(
         default=None,
@@ -1125,7 +1125,7 @@ class EvalTemplate(EvalDocumentModel):
             "control; a hold check must pass when the candidate did nothing and fail on its control. "
             "Checked where the template is written; required for every goal check a create or an "
             "update authors. Never shown to the candidate, the simulated user or the judge. Null on a "
-            "template written past authoring (a host seed) — its checks are unproven, and say so."
+            "template written past authoring (saved straight to the store) — its checks are unproven, and say so."
         ),
     )
     rubric: list[RubricDim] = Field(default_factory=list)

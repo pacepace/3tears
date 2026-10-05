@@ -35,6 +35,7 @@ from threetears.nats import (
     RESULT_RETENTION_SECONDS,
     RESULT_STREAM_SUFFIX,
     NatsClient,
+    PersistedCopyBucket,
     Principal,
     Subjects,
     kv_key_scope_for,
@@ -42,7 +43,7 @@ from threetears.nats import (
 from threetears.observe import HealthCheck, HealthServer, HealthTier, InflightRequestsGauge, get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
-from threetears.registry.catalog_persistence import CatalogPersistence
+from threetears.registry.catalog_persistence import catalog_bucket
 from threetears.registry.discovery import DiscoveryHandler
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
@@ -382,7 +383,7 @@ class RegistryServer:
             self._health_port = int(env_port) if env_port else 8000
         self._nc: "NatsClient | None" = None
         self._catalog = ToolCatalog()
-        self._catalog_persistence: CatalogPersistence | None = None
+        self._catalog_bucket: PersistedCopyBucket | None = None
         self._collection_registry: CollectionRegistry | None = None
         self._heartbeat_collection: HeartbeatCollection | None = None
         self._registration_handler: RegistrationHandler | None = None
@@ -632,26 +633,12 @@ class RegistryServer:
         # self._usage_emitter. no-op (emit disabled) when unset.
         await self.apply_usage_emitter_factory(self._nc)
 
-        # the authorizer initializes against the raw JetStream context.
-        js = self._nc.jetstream_context()
-
-        authorizer = self._authorizer
-        if authorizer is not None and hasattr(authorizer, "initialize"):
-
-            async def _initialize_authorizer() -> None:
-                """initialize authorizer with JetStream context."""
-                await authorizer.initialize(js, self._namespace)
-
-            await retry_with_backoff(
-                _initialize_authorizer,
-                "registry.authorizer_initialize",
-            )
-
-        # the catalog bucket's owner: declares it and warm-loads the catalog now, and after every
-        # NATS reconnect declares it again and writes the catalog back -- a restart that lost the
-        # broker's storage takes the bucket, and every registration fails until it is back.
-        self._catalog_persistence = CatalogPersistence(catalog=self._catalog, nc=self._nc, bucket=self._kv_bucket)
-        await self._catalog_persistence.start()
+        # the catalog bucket's owner: declares it in the background, warm-loads the catalog once,
+        # and writes the catalog back whenever the client creates the bucket again -- a restart
+        # that lost the broker's storage takes the bucket, and every registration fails until it
+        # is back. the handle it binds follows the client across a renewal or a successor move.
+        self._catalog_bucket = catalog_bucket(catalog=self._catalog, client=self._nc, bucket=self._kv_bucket)
+        await self._catalog_bucket.start()
 
         await retry_with_backoff(
             self._ensure_result_stream,
@@ -915,6 +902,19 @@ class RegistryServer:
                     probe=lambda: self._call_proxy is not None and self._call_proxy.subscription_active,
                     tier=HealthTier.READY,
                 ),
+                # a replica whose catalog writes keep failing answers every registration with
+                # CATALOG_UNAVAILABLE, so it leaves rotation after a short streak of failed writes
+                # and returns at the next write that lands -- pods re-register every heartbeat, so
+                # a write is always coming. NOT liveness, for the reason the two checks above are
+                # not: the usual cause is a NATS outage, which a restart does not fix, and a
+                # terminal close is already the `nats` check's to report -- the catalog's bucket
+                # writes through the client's current connection, so its writes fail on a closed
+                # connection only when the client's own connection is closed.
+                HealthCheck(
+                    name="catalog_persisting",
+                    probe=lambda: self._catalog.persisting,
+                    tier=HealthTier.READY,
+                ),
                 # readiness gate: report NOT-READY until the Hub JWKS cache has had its first
                 # successful fetch. before it warms, the proxy verifies every identity token against
                 # an EMPTY keyset and rejects fail-closed (IDENTITY_REFUSED), so a k8s
@@ -961,8 +961,8 @@ class RegistryServer:
             await self._heartbeat_subscriber.stop()
         if self._registration_handler is not None:
             await self._registration_handler.stop()
-        if self._catalog_persistence is not None:
-            await self._catalog_persistence.stop()
+        if self._catalog_bucket is not None:
+            await self._catalog_bucket.stop()
 
         # BEFORE the connection closes, and not optional. `startup` calls
         # `start_invalidation_listener`, and every other component it starts is stopped

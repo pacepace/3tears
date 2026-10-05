@@ -254,7 +254,8 @@ def skill_shape_error(
     elif body is not None and tool is not None:
         error = (
             "a skill has a body or a tool, not both: a body skill is steps to follow, "
-            "a tool skill is one tool call; remove one of them"
+            "a tool skill is one tool call; remove one of them. To turn steps into a tool "
+            'call, give body as "" with the tool; to turn a tool call into steps, give tool as "" with the body'
         )
     elif arguments is not None and tool is None:
         error = "arguments need a tool: set tool, or leave arguments out"

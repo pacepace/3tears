@@ -187,12 +187,13 @@ class TestLoadAddMemoryTool:
         assert "Invalid memory_type" in result
         provider.aembed_query.assert_not_called()
 
-    async def test_dedup_updates_existing(
+    async def test_a_near_duplicate_without_edges_is_written_beside_not_over(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ):
         # seed an existing very-similar memory row so the Collection's
-        # find_similar_for_dedup surfaces it, then dedup triggers UPDATE
+        # find_similar_for_dedup surfaces it. With no edges collection to link
+        # a replacement through, the old one is kept and the new one stored.
         existing_id = uuid4()
         existing_row = {
             "memory_id": existing_id,
@@ -248,8 +249,9 @@ class TestLoadAddMemoryTool:
 
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
 
-        assert "Updated existing memory" in result
-        assert "95%" in result
+        assert result.startswith("Stored as [memory:") and "replaces" not in result
+        assert str(existing_id) not in result
+        assert not any("UPDATE memories" in str(c.args[0]) for c in pool.execute.call_args_list)
 
     async def test_no_dedup_below_threshold(
         self,

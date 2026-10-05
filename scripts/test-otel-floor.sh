@@ -57,6 +57,7 @@ uv run --isolated --no-project --python 3.14 \
     "${FLOOR_PINS[@]}" \
     --with "pytest>=8.0" \
     --with "pytest-asyncio>=0.23" \
+    --with "pytest-timeout>=2.3" \
     pytest \
         -c "$OBSERVE_DIR/pyproject.toml" \
         --import-mode=importlib \

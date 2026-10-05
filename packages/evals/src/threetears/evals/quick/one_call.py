@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals.contracts import (
+    DEFAULT_LAUNCH_K_RUNS,
     CandidateOutput,
     CellCassettes,
     CellSink,
@@ -361,7 +362,7 @@ async def run_eval(
     *,
     scope_id: str,
     host: EvalHost | None = None,
-    k: int = 1,
+    k: int = DEFAULT_LAUNCH_K_RUNS,
     model: str | None = None,
 ) -> EvalSummary:
     """Run ``candidate`` on every case ``k`` times, grade each answer with every scorer, and summarise.

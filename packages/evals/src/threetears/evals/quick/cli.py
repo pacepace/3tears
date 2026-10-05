@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, get_args
 
 from threetears.evals.analysis import inspect_campaign_bundle, list_campaigns
-from threetears.evals.contracts import EvalServiceError
+from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, EvalServiceError
 from threetears.evals.contracts.host import EvalHost
 from threetears.evals.ops import ReportFormat, report_read
 from threetears.evals.ops.summary import summarize_run
@@ -187,7 +187,12 @@ def build_parser(
     run.add_argument("--template", required=True, help="the template to run, by id")
     run.add_argument("--subject", required=True, help="the subject the runs measure, as the host names it")
     run.add_argument("--model", action="append", default=[], help="a candidate model; repeat for one arm each")
-    run.add_argument("--k", type=int, default=1, help="repeats per case (default 1)")
+    run.add_argument(
+        "--k",
+        type=int,
+        default=DEFAULT_LAUNCH_K_RUNS,
+        help=f"repeats per case (default {DEFAULT_LAUNCH_K_RUNS})",
+    )
     run.add_argument(
         "--max-cost-usd",
         type=float,

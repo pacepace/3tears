@@ -68,6 +68,9 @@ class _ScriptedServer:
         self.pull_binds: list[str] = []
         self.add_failures: list[Exception] = []
         self.stream_by_subject: dict[str, str] = {}
+        # when set, a create lands on the server and then is never acknowledged until it is released:
+        # a round cancelled there has created the stream without hearing so
+        self.unacknowledged_add: asyncio.Event | None = None
 
     def restart(self) -> None:
         """forget every stream and every consumer, as a restart that lost the broker's storage does.
@@ -86,6 +89,8 @@ class _ScriptedServer:
         if existing is not None and existing != config:
             raise _ApiError(10058, "stream name already in use with a different configuration")
         self.streams[config.name or ""] = dataclasses.replace(config)
+        if self.unacknowledged_add is not None:
+            await self.unacknowledged_add.wait()
         return object()
 
     async def update_stream(self, config: StreamConfig) -> Any:
@@ -712,3 +717,210 @@ async def test_shutdown_stops_a_restoration_still_retrying() -> None:
     await asyncio.sleep(1.0)
 
     assert len(server.add_failures) == remaining, "the restoration kept running after shutdown"
+
+
+# ---------------------------------------------------------------------------------------------------
+# a declared bucket that comes back empty is owed its declarer's refill
+# ---------------------------------------------------------------------------------------------------
+
+_CATALOG_STREAM = "KV_tool_catalog"
+
+
+class _Refills:
+    """records every refill the client runs, and can be told to fail or stop the next ones."""
+
+    def __init__(self) -> None:
+        self.buckets: list[Any] = []
+        self.failures: list[BaseException] = []
+
+    async def __call__(self, bucket: Any) -> None:
+        self.buckets.append(bucket)
+        if self.failures:
+            raise self.failures.pop(0)
+
+
+async def _settle() -> None:
+    """let every background task the client started run as far as it can without a timer."""
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_an_exact_name_declaration_is_not_prefixed_and_is_remembered_under_its_own_stream() -> None:
+    """the registry's catalog bucket is ``tool_catalog`` in every deployed grant, never ``{ns}-tool_catalog``."""
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+
+    bucket = await client.ensure_kv_bucket(name="tool_catalog", storage="file", prefix_namespace=False)
+    prefixed = await client.ensure_kv_bucket(name="tool_catalog", storage="file")
+
+    assert bucket.name == "tool_catalog"
+    assert prefixed.name == f"{_NS}-tool_catalog"
+    assert prefixed is not bucket, "the two names are two buckets, cached apart"
+    assert await client.kv_bucket(name="tool_catalog") is prefixed, "an ordinary open still prefixes"
+    assert server.streams[_CATALOG_STREAM].subjects == ["$KV.tool_catalog.>"]
+
+    server.restart()
+    await reconnected()
+    await _until(lambda: _CATALOG_STREAM in server.streams and f"KV_{_NS}-tool_catalog" in server.streams)
+    assert server.streams[_CATALOG_STREAM].storage == StorageType.FILE
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_restart_that_wiped_the_bucket_runs_the_refill_with_the_live_handle() -> None:
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    refills = _Refills()
+    bucket = await client.ensure_kv_bucket(
+        name="tool_catalog", storage="file", prefix_namespace=False, on_restored=refills
+    )
+    await _settle()
+    assert refills.buckets == [], "the declaration itself owes no refill"
+
+    server.restart()
+    await reconnected()
+    await _until(lambda: len(refills.buckets) == 1)
+
+    assert refills.buckets == [bucket]
+    assert _CATALOG_STREAM in server.streams
+    await _settle()
+    assert len(refills.buckets) == 1, "a refill that returned is not run again"
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_bucket_that_survived_the_reconnect_owes_no_refill() -> None:
+    """a network blip, or a restart that kept its file storage: the create is the idempotent no-op."""
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    refills = _Refills()
+    await client.ensure_kv_bucket(name="tool_catalog", storage="file", prefix_namespace=False, on_restored=refills)
+    adds_before = len(server.added)
+
+    await reconnected()
+    await _until(lambda: len(server.added) > adds_before)
+    await _settle()
+
+    assert refills.buckets == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_refill_that_raises_is_logged_at_error_naming_the_bucket_and_retried(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    refills = _Refills()
+    refills.failures.append(RuntimeError("nats: connection closed"))
+    await client.ensure_kv_bucket(name="tool_catalog", storage="file", prefix_namespace=False, on_restored=refills)
+
+    server.restart()
+    with caplog.at_level(logging.ERROR, logger="threetears.nats.client"):
+        await reconnected()
+        await _until(lambda: len(refills.buckets) == 2)
+
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("tool_catalog" in message and "nats: connection closed" in message for message in errors), errors
+    await _settle()
+    assert len(refills.buckets) == 2, "the refill that returned settled the debt"
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_round_cancelled_after_its_create_landed_leaves_the_refill_owed() -> None:
+    """the create reached the server, the round was replaced before it heard back: the debt survives.
+
+    The next round finds the stream live -- it cannot tell it was this client that created it -- so
+    only a debt recorded before the create can still be paid.
+    """
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    refills = _Refills()
+    await client.ensure_kv_bucket(name="tool_catalog", storage="file", prefix_namespace=False, on_restored=refills)
+
+    server.restart()
+    server.unacknowledged_add = asyncio.Event()
+    await reconnected()
+    await _until(lambda: _CATALOG_STREAM in server.streams)
+    await _settle()
+    assert refills.buckets == [], "the round has not finished its streams yet"
+
+    server.unacknowledged_add = None
+    await reconnected()  # a second reconnect replaces, and so cancels, the round still waiting
+
+    await _until(lambda: len(refills.buckets) == 1)
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_refill_cancelled_mid_way_stays_owed_and_the_next_round_takes_it_up() -> None:
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    refills = _Refills()
+    refills.failures.append(asyncio.CancelledError())
+    await client.ensure_kv_bucket(name="tool_catalog", storage="file", prefix_namespace=False, on_restored=refills)
+
+    server.restart()
+    await reconnected()
+    await _until(lambda: len(refills.buckets) == 1)
+    await _settle()
+    assert len(refills.buckets) == 1, "a cancelled refill ends its task; nothing re-runs it on a timer"
+
+    await reconnected()  # the stream survived this one; the debt alone is what makes the round refill
+
+    await _until(lambda: len(refills.buckets) == 2)
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_redeclaration_without_a_refill_gives_it_up() -> None:
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    refills = _Refills()
+    await client.ensure_kv_bucket(name="tool_catalog", storage="file", prefix_namespace=False, on_restored=refills)
+    await client.ensure_kv_bucket(name="tool_catalog", storage="file", prefix_namespace=False)
+
+    server.restart()
+    await reconnected()
+    await _until(lambda: _CATALOG_STREAM in server.streams)
+    await _settle()
+
+    assert refills.buckets == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_bind_only_declaration_cannot_take_a_refill() -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+
+    with pytest.raises(ValueError, match="on_restored needs create_if_missing=True"):
+        await client.ensure_kv_bucket(
+            name="tool_catalog", prefix_namespace=False, create_if_missing=False, on_restored=_Refills()
+        )
+
+    assert server.added == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_an_owner_whose_restoration_recreated_the_bucket_owes_the_refill() -> None:
+    """an owner's storage reconcile deletes the stream and creates it again: empty, so owed."""
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    refills = _Refills()
+    await client.ensure_kv_bucket(
+        name="ratelimits", history=1, direct=True, owns_bucket=True, drop_file_storage=True, on_restored=refills
+    )
+    server.restart()
+    server.streams[_RATELIMITS] = build_kv_stream_config(
+        bucket=f"{_NS}-ratelimits", ttl_seconds=0, history=1, storage_type=StorageType.FILE, direct=True
+    )
+
+    await reconnected()
+    await _until(lambda: len(refills.buckets) == 1)
+
+    assert server.deleted == [_RATELIMITS]
+    await client.shutdown()

@@ -169,17 +169,58 @@ def create_template(
     except ValidationError as e:
         raise ValidationFailedError(f"invalid template definition: {e}") from e
 
-    template = template.model_copy(update={"kind_spec": freeze(validated_kind_spec(template, profile=host.profile))})
-    require_known_tools_allowed(template.tools_allowed)
-    refuse_unsupplied_world(template, profile=host.profile)
-    refuse_non_discriminating_checks(template, profile=host.profile)
-    refuse_undeclared_world_seed(template)
-    refuse_undeliverable_template(template)
+    template = admit_template(
+        template,
+        profile=host.profile,
+        require_known_tools_allowed=require_known_tools_allowed,
+        refuse_undeclared_world_seed=refuse_undeclared_world_seed,
+        refuse_undeliverable_template=refuse_undeliverable_template,
+    )
 
     if host.storage.load_template_by_name(template.name, scope_id) is not None:
         raise ConflictError(f"a template named '{template.name}' already exists")
 
     host.storage.save_template(template)
+    return template
+
+
+def admit_template(
+    template: EvalTemplate,
+    *,
+    profile: HostProfile,
+    require_known_tools_allowed: Callable[[Sequence[str] | None], None],
+    refuse_undeclared_world_seed: Callable[[EvalTemplate], None],
+    refuse_undeliverable_template: Callable[[EvalTemplate], None],
+) -> EvalTemplate:
+    """Every refusal a template meets before it is first written, in :func:`create_template`'s order.
+
+    **The one list of create-time gates.** :func:`create_template` and the definition seeder
+    (:func:`~threetears.evals.run.definition_seed.seed_eval_definitions`) both admit a new template
+    through here, so a gate added to authoring reaches a host's seed corpus by construction rather
+    than by someone remembering to mirror it. What this does not ask is the store: the name's
+    uniqueness is the caller's question, because the two callers answer it differently — authoring
+    refuses a taken name, a seed reads it as an occupied slot.
+
+    Args:
+        template: The constructed template, in its scope.
+        profile: The host whose kinds, world, tools and action schemas the template is held to.
+        require_known_tools_allowed: The host's tool-catalog check, as for :func:`create_template`.
+        refuse_undeclared_world_seed: The host's seed walk, as for :func:`create_template`.
+        refuse_undeliverable_template: The host's kind-capability check, as for :func:`create_template`.
+
+    Returns:
+        The template with its ``kind_spec`` as the kind's spec model resolves it — every field,
+        defaults included — which is the shape it is stored in.
+
+    Raises:
+        ValidationFailedError: Any refusal :func:`create_template` documents other than the name's.
+    """
+    template = template.model_copy(update={"kind_spec": freeze(validated_kind_spec(template, profile=profile))})
+    require_known_tools_allowed(template.tools_allowed)
+    refuse_unsupplied_world(template, profile=profile)
+    refuse_non_discriminating_checks(template, profile=profile)
+    refuse_undeclared_world_seed(template)
+    refuse_undeliverable_template(template)
     return template
 
 
@@ -470,7 +511,7 @@ def update_template(
     # but only for the halves this write actually authors.
     refuse_unsupplied_world(template, profile=host.profile, authored=fields.keys())
     # Scoped the same way, to the writes that touch a check's proof: the checks, their controls,
-    # and the seed every control is laid over. A template a host seeded without controls stays editable
+    # and the seed every control is laid over. A template written past authoring without controls stays editable
     # in its other fields; the first write that authors its checks has to prove them.
     refuse_non_discriminating_checks(template, profile=host.profile, authored=fields.keys())
     # And once more for the world seed, only when this update WRITES it: a stored template
@@ -488,7 +529,7 @@ def update_template(
     # this is a no-op for a conversational template.
     #
     # **ARCHIVING is exempt, and without the exemption this guard is a trap.** A single-shot
-    # template a host seeded past authoring can fail it, and then every update fails —
+    # template written past authoring can fail it, and then every update fails —
     # `{"archived": True}` included. There is no delete or archive action beside this path,
     # so a template that cannot be updated cannot be retired either, and the operator's only
     # remaining move is to leave a broken template in the catalogue forever. Retiring
@@ -897,6 +938,7 @@ __all__ = [
     "JUDGE_CONFIG_SERVER_FIELDS",
     "RUBRIC_DIM_SERVER_FIELDS",
     "TEMPLATE_SERVER_FIELDS",
+    "admit_template",
     "create_judge_config",
     "create_rubric_dim",
     "create_template",

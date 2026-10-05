@@ -1,18 +1,20 @@
 """``ToolCatalog.restore_to_kv`` writes back what the catalog holds WHEN it writes, not what it held when it began.
 
-The restore runs in the background after every reconnect, and awaits each write. A tool
-deregistered while it runs has its key deleted by the deregistration; a restore working from a
-snapshot taken before that would put the key back, and the shared bucket would advertise a tool no
-replica holds -- read back by the next warm-loading registry.
+The write-back runs in the background whenever the bucket is created again, and awaits each write.
+A tool deregistered while it runs has its key deleted by the deregistration; a write-back working
+from a snapshot taken before that would put the key back, and the shared bucket would advertise a
+tool no replica holds -- read back by the next warm-loading registry.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Awaitable, Callable
+from datetime import timedelta
 
 import pytest
 
+from threetears.core.testing.kv import FakeKvBucket
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 
 from .copy_entries import uniform_entry
@@ -29,24 +31,19 @@ def _entry(name: str) -> CatalogEntry:
     )
 
 
-# parity-exempt: a raw nats-py KeyValue's put/delete over a dict, with a hook that runs mid-restore
-class _FakeKeyValue:
-    """a bucket whose first write lets a deregistration land, as one can while a restore awaits it."""
+# parity-with: threetears.nats.kv.KvBucketLike
+class _FakeBucketPausingOnFirstPut(FakeKvBucket):
+    """the shipped in-memory bucket, whose first write lets a deregistration land, as one can while a restore awaits it."""
 
     def __init__(self) -> None:
-        self.entries: dict[str, bytes] = {}
-        self.on_first_put: Any = None
+        super().__init__(bucket_name="tool_catalog", storage="file", direct=True)
+        self.on_first_put: Callable[[], Awaitable[None]] | None = None
 
-    async def put(self, key: str, value: bytes) -> int:
+    async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
         hook, self.on_first_put = self.on_first_put, None
         if hook is not None:
             await hook()
-        self.entries[key] = value
-        return len(self.entries)
-
-    async def delete(self, key: str) -> bool:
-        self.entries.pop(key, None)
-        return True
+        return await super().put(key=key, value=value, ttl=ttl)
 
 
 @pytest.mark.asyncio
@@ -54,7 +51,7 @@ async def test_a_tool_deregistered_during_the_restore_is_not_written_back() -> N
     catalog = ToolCatalog()
     await catalog.register(_entry("threetears.calculator"))
     await catalog.register(_entry("threetears.clock"))
-    kv = _FakeKeyValue()
+    kv = _FakeBucketPausingOnFirstPut()
 
     async def _deregister_the_other() -> None:
         await catalog.deregister("threetears.clock@1.0.0")
@@ -63,5 +60,9 @@ async def test_a_tool_deregistered_during_the_restore_is_not_written_back() -> N
     failed = await catalog.restore_to_kv(kv)
 
     assert failed == []
-    stored = {json.loads(value)["full_name"] for value in kv.entries.values()}
+    stored = set()
+    for key in await kv.list_keys():
+        value = await kv.get(key=key)
+        assert value is not None
+        stored.add(json.loads(value)["full_name"])
     assert stored == {"threetears.calculator@1.0.0"}

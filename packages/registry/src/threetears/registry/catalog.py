@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 from threetears.core.serialization import json_datetime
@@ -27,8 +27,12 @@ from threetears.observe import get_logger
 from threetears.registry.config import get_definition_ttl
 from threetears.registry.routing import endpoints_callable_by
 
+if TYPE_CHECKING:
+    from threetears.nats.kv import KvBucketLike
+
 __all__ = [
     "PERSISTED_SHAPE",
+    "WRITE_FAILURE_THRESHOLD",
     "AnnouncedDefinition",
     "CatalogEntry",
     "CopySelection",
@@ -39,6 +43,13 @@ __all__ = [
 ]
 
 _logger = get_logger(__name__)
+
+#: how many catalog writes in a row may fail before the catalog stops reporting itself as
+#: persisting (:attr:`ToolCatalog.persisting`). One failed write is a blip a NATS reconnect explains;
+#: three in a row, with pods re-registering on every heartbeat, is a catalog whose bucket is not
+#: taking writes -- every registration is answering ``CATALOG_UNAVAILABLE`` -- and the registry must
+#: stop reporting itself ready rather than look healthy through it.
+WRITE_FAILURE_THRESHOLD: Final[int] = 3
 
 #: the shape every catalog entry is written to KV in. an entry carrying no ``shape`` predates
 #: per-copy definitions and is translated once, by :meth:`ToolCatalog.load_from_kv`, rather than
@@ -815,14 +826,38 @@ class ToolCatalog:
     (pods) serving it. supports NATS KV persistence for recovery
     after restart, with all endpoints marked unavailable on load
     until heartbeats confirm liveness.
+
+    every write to the bucket is counted: :attr:`persisting` turns ``False`` once
+    :data:`WRITE_FAILURE_THRESHOLD` writes in a row have failed, and ``True`` again at the next one
+    that lands, so the registry's readiness says whether registrations are being recorded.
     """
 
     def __init__(self) -> None:
-        """initialize empty tool catalog."""
-        self._entries: dict[str, CatalogEntry] = {}
-        self._kv: Any | None = None
+        """initialize empty tool catalog, persisting nowhere until a bucket is bound.
 
-    async def load_from_kv(self, kv: Any) -> None:
+        :return: nothing
+        :rtype: None
+        """
+        self._entries: dict[str, CatalogEntry] = {}
+        self._kv: KvBucketLike | None = None
+        # writes to the bucket that have failed since the last one that landed.
+        self._consecutive_write_failures = 0
+
+    @property
+    def persisting(self) -> bool:
+        """whether writes to the catalog's bucket are landing.
+
+        ``False`` once :data:`WRITE_FAILURE_THRESHOLD` writes in a row have failed -- every
+        registration is then answering ``CATALOG_UNAVAILABLE`` -- and ``True`` again from the next
+        write that lands. ``True`` while no bucket is bound: a catalog that has not been given one
+        has made no write to fail.
+
+        :return: whether the latest writes are landing
+        :rtype: bool
+        """
+        return self._consecutive_write_failures < WRITE_FAILURE_THRESHOLD
+
+    async def load_from_kv(self, kv: KvBucketLike) -> None:
         """load catalog entries from NATS KV store.
 
         loads all entries and marks all endpoints as unavailable
@@ -832,36 +867,39 @@ class ToolCatalog:
         serving -- its bucket was unreachable at start -- must not overwrite
         a live registration with a persisted copy marked unavailable.
 
+        an empty bucket lists no keys. a listing or read that fails raises, so the caller's
+        declaration is retried rather than a failed read being taken for an empty bucket.
+
         **the one place an older persisted shape is read.** every value passes through
         :func:`_translate_persisted_entry` before it becomes a :class:`CatalogEntry`; an entry
         written before per-copy definitions loses its entry-level definition there, and its
         copies are shown to nobody until their pods announce again.
 
-        :param kv: NATS KV store instance
-        :ptype kv: Any
+        :param kv: the catalog's bucket
+        :ptype kv: KvBucketLike
+        :return: nothing
+        :rtype: None
+        :raises KvError: when the bucket's keys could not be listed or an entry could not be read
         """
         self._kv = kv
-        try:
-            keys = await kv.keys()
-        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an empty bucket answers "no keys" by raising, and the raw client's error type is not importable past the NATS wrapper; the catalog starts empty and fills from the next heartbeat's manifests, and the reason is logged so a real listing failure is not mistaken for an empty bucket
-            _logger.warning(
-                "catalog KV listed no keys; starting with an empty catalog that fills from the next manifests",
-                extra={"extra_data": {"reason": type(exc).__name__, "detail": str(exc)}},
-            )
-            keys = []
+        keys = await kv.list_keys()
         for key in keys:
-            kv_entry = await kv.get(key)
-            data = json.loads(kv_entry.value.decode("utf-8"))
+            raw = await kv.get(key=key)
+            if raw is None:
+                # deleted between the listing and the read: a deregistration that reached the
+                # bucket, which the load must not bring back.
+                continue
+            data = json.loads(raw.decode("utf-8"))
             entry = CatalogEntry.from_dict(_translate_persisted_entry(data))
             for endpoint in entry.endpoints:
                 endpoint.status = "unavailable"
             self._entries.setdefault(entry.full_name, entry)
         _logger.info(
             "loaded catalog from KV",
-            extra={"extra_data": {"entry_count": len(self._entries)}},
+            extra={"extra_data": {"entry_count": len(self._entries), "keys_listed": len(keys)}},
         )
 
-    async def restore_to_kv(self, kv: Any) -> list[str]:
+    async def restore_to_kv(self, kv: KvBucketLike) -> list[str]:
         """bind ``kv`` for every later write and write every entry this catalog holds into it.
 
         what a bucket that came back empty after a NATS restart needs: the in-memory catalog is the
@@ -869,8 +907,8 @@ class ToolCatalog:
         starting registry. each entry is written the way a registration writes it; one that fails
         is logged and named in the result, and the rest are still written.
 
-        :param kv: raw nats-py KeyValue handle of the declared bucket
-        :ptype kv: Any
+        :param kv: the catalog's bucket
+        :ptype kv: KvBucketLike
         :return: the full names of the entries that could not be written; empty when all were
         :rtype: list[str]
         """
@@ -904,12 +942,88 @@ class ToolCatalog:
         :ptype entry: CatalogEntry
         :return: nothing
         :rtype: None
+        :raises KvError: when the write failed
         """
         if self._kv is not None:
-            await self._kv.put(
-                _sanitize_kv_key(entry.full_name),
-                json.dumps(entry.to_dict()).encode("utf-8"),
+            await self._put(self._kv, _sanitize_kv_key(entry.full_name), entry)
+
+    async def _put(self, kv: KvBucketLike, key: str, entry: CatalogEntry) -> None:
+        """write ``entry`` under ``key``, counting the outcome toward :attr:`persisting`.
+
+        :param kv: the bound bucket
+        :ptype kv: KvBucketLike
+        :param key: the entry's KV key
+        :ptype key: str
+        :param entry: the entry, serialized as it is persisted
+        :ptype entry: CatalogEntry
+        :return: nothing
+        :rtype: None
+        :raises KvError: when the write failed; counted, then raised to the caller
+        """
+        try:
+            await kv.put(key=key, value=json.dumps(entry.to_dict()).encode("utf-8"))
+        except Exception as exc:
+            self._write_failed(exc, key=key)
+            raise
+        self._write_landed()
+
+    async def _delete(self, kv: KvBucketLike, key: str) -> None:
+        """delete ``key``, counting the outcome toward :attr:`persisting`.
+
+        :param kv: the bound bucket
+        :ptype kv: KvBucketLike
+        :param key: the entry's KV key
+        :ptype key: str
+        :return: nothing
+        :rtype: None
+        :raises KvError: when the delete failed; counted, then raised to the caller
+        """
+        try:
+            await kv.delete(key=key)
+        except Exception as exc:
+            self._write_failed(exc, key=key)
+            raise
+        self._write_landed()
+
+    def _write_failed(self, exc: Exception, *, key: str) -> None:
+        """count one failed write, and say so at ERROR the moment the streak reaches the threshold.
+
+        :param exc: what the write raised
+        :ptype exc: Exception
+        :param key: the key it wrote
+        :ptype key: str
+        :return: nothing
+        :rtype: None
+        """
+        self._consecutive_write_failures += 1
+        if self._consecutive_write_failures == WRITE_FAILURE_THRESHOLD:
+            _logger.error(
+                "catalog writes to its bucket have failed %d times in a row: %s: %s -- registrations are "
+                "not being recorded, and the registry reports itself not ready until a write lands",
+                self._consecutive_write_failures,
+                type(exc).__name__,
+                exc,
+                extra={
+                    "extra_data": {
+                        "consecutive_write_failures": self._consecutive_write_failures,
+                        "key": key,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                },
             )
+
+    def _write_landed(self) -> None:
+        """end a streak of failed writes, saying so when it had made the catalog stop persisting.
+
+        :return: nothing
+        :rtype: None
+        """
+        if not self.persisting:
+            _logger.info(
+                "catalog writes to its bucket are landing again",
+                extra={"extra_data": {"failed_before": self._consecutive_write_failures}},
+            )
+        self._consecutive_write_failures = 0
 
     async def register(self, entry: CatalogEntry) -> None:
         """register tool in catalog and persist to KV, merging PER COPY.
@@ -1016,8 +1130,7 @@ class ToolCatalog:
         kv_deleted = True
         if self._kv is not None:
             try:
-                kv_key = _sanitize_kv_key(full_name)
-                await self._kv.delete(kv_key)
+                await self._delete(self._kv, _sanitize_kv_key(full_name))
             except Exception as exc:  # noqa: BLE001 -- the local drop above already succeeded
                 # The local entry is gone but the shared KV copy is not, so every other node still
                 # discovers this tool. Deregistration is not complete, and saying so at info would
@@ -1058,12 +1171,8 @@ class ToolCatalog:
             if not entry.endpoints:
                 to_remove.append(full_name)
             elif self._kv is not None:
-                kv_key = _sanitize_kv_key(full_name)
                 try:
-                    await self._kv.put(
-                        kv_key,
-                        json.dumps(entry.to_dict()).encode("utf-8"),
-                    )
+                    await self._put(self._kv, _sanitize_kv_key(full_name), entry)
                 except Exception as exc:  # noqa: BLE001 -- one tool's KV write must not strand the rest
                     # The in-memory endpoint is ALREADY removed at this point. Letting this
                     # propagate abandoned the loop mid-way with `_entries` mutated and `affected`
@@ -1260,9 +1369,9 @@ class ToolCatalog:
                 continue
             targets.append((full_name, entry, endpoint))
 
-        if self._kv is not None:
-            for full_name, entry, endpoint in targets:
-                kv_key = _sanitize_kv_key(full_name)
+        kv = self._kv
+        if kv is not None:
+            for full_name, entry, _endpoint in targets:
                 projected_endpoints = [_replace_endpoint_status(ep, pod_id, "available") for ep in entry.endpoints]
                 projected_entry = CatalogEntry(
                     tool_name=entry.tool_name,
@@ -1271,10 +1380,7 @@ class ToolCatalog:
                     endpoints=projected_endpoints,
                     date_registered=entry.date_registered,
                 )
-                await self._kv.put(
-                    kv_key,
-                    json.dumps(projected_entry.to_dict()).encode("utf-8"),
-                )
+                await self._put(kv, _sanitize_kv_key(full_name), projected_entry)
 
         promoted: list[str] = []
         for full_name, _entry, endpoint in targets:

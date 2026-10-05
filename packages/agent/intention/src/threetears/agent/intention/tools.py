@@ -20,7 +20,7 @@ and never exposes it in the Pydantic schema: user isolation is the
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -185,6 +185,7 @@ async def load_intention_log_tool(
     similarity_dedup_threshold: float = _DEFAULT_DEDUP_THRESHOLD,
     salience_seed: float = _DEFAULT_SALIENCE_SEED,
     near_dup_bump: float = _DEFAULT_NEAR_DUP_BUMP,
+    on_logged: Callable[[IntentionEntity], Awaitable[None]] | None = None,
 ) -> list[BaseTool]:
     """create an ``intention_log`` tool bound to a user + the collection.
 
@@ -216,6 +217,10 @@ async def load_intention_log_tool(
     :ptype salience_seed: float
     :param near_dup_bump: salience increment applied on a dedup refresh
     :ptype near_dup_bump: float
+    :param on_logged: told of each NEW want once it is stored, so a consumer can
+        record it (a timeline entry); a refreshed want is the same want and is
+        not told again. Its failure is logged and the want stays logged.
+    :ptype on_logged: Callable[[IntentionEntity], Awaitable[None]] | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -359,6 +364,14 @@ async def load_intention_log_tool(
             "intention_log: stored new open want",
             extra={"extra_data": {"intention_id": str(intention_id), "content": text[:100]}},
         )
+        if on_logged is not None:
+            try:
+                await on_logged(entity)
+            except Exception as exc:  # the want is stored; a record of it failing must not unlog it
+                log.error(
+                    "intention_log: the want is stored but on_logged failed",
+                    extra={"extra_data": {"intention_id": str(intention_id), "error": str(exc)}},
+                )
         return f"Logged as [intention:{intention_id}]: {text}"
 
     intention_log.description = (

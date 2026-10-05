@@ -31,6 +31,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from threetears.langgraph.fence import mint_nonce, untrusted_fence, with_fence_rules
 from uuid_utils import uuid7
 
+from threetears.agent.memory.revisions import is_permanent, retract, supersede
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_EXTRACT,
     MemoryAuthorizerDependencies,
@@ -38,7 +39,7 @@ from threetears.agent.memory.authorize import (
 )
 from langchain_core.embeddings import Embeddings
 
-from threetears.agent.memory.collections import MemoriesCollection
+from threetears.agent.memory.collections import MemoriesCollection, MemoryConsolidationsCollection
 from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.prompts import ExtractionPrompts
@@ -167,8 +168,8 @@ class _ActionTally:
     """counts of what :meth:`MemoryExtractor._execute_actions` did with the resolved actions.
 
     :ivar added: new memories written
-    :ivar updated: existing memories rewritten
-    :ivar deleted: existing memories removed
+    :ivar updated: existing memories revised: a new memory, the old one superseded or, when permanent, kept beside it
+    :ivar deleted: existing memories retracted: out of ambient recall, never removed
     :ivar skipped: NOOPs, and UPDATE / DELETE targets that were absent or not the user's
     :ivar failed: actions that raised
     """
@@ -258,6 +259,7 @@ class MemoryExtractor:
         on_memory_created: Callable[["MemoryEntity"], Awaitable[None]] | None = None,
         rate_limit_bucket_create_if_missing: bool = True,
         rate_limit_key_scope: str | None = None,
+        consolidations_collection: MemoryConsolidationsCollection | None = None,
     ) -> None:
         """initialize the extractor with the memories Collection + rbac authorizer.
 
@@ -312,8 +314,13 @@ class MemoryExtractor:
             :func:`~threetears.nats.subject_permissions.kv_key_scope_for` scope. ``None`` keys by the
             conversation alone, for a bucket this extractor's process has to itself
         :ptype rate_limit_key_scope: str | None
+        :param consolidations_collection: the provenance edges an UPDATE links the old
+            memory to its replacement with. Without it an UPDATE is skipped: a memory is
+            never overwritten in place
+        :ptype consolidations_collection: MemoryConsolidationsCollection | None
         :raises ValueError: when ``rate_limit_key_scope`` is not one literal subject token
         """
+        self._consolidations = consolidations_collection
         if rate_limit_key_scope is not None and not KV_KEY_SCOPE_GRAMMAR.match(rate_limit_key_scope):
             raise ValueError(
                 f"MemoryExtractor rate_limit_key_scope {rate_limit_key_scope!r} must be one literal subject "
@@ -1206,41 +1213,82 @@ class MemoryExtractor:
                             )
 
                 elif action == "UPDATE":
+                    # Nothing is overwritten: the revision is a new memory, and the old
+                    # one is linked to it and superseded -- or, when it is permanent,
+                    # kept as it is with the revision beside it.
                     updated_content = act["content"]
                     updated_type = act.get("type", candidate["type"])
-                    new_embedding = await _safe_aembed_query(
-                        self._embedding_provider,
-                        updated_content,
-                    )
-                    if new_embedding is None:
-                        # the embedding helper already logged why; the rewrite cannot land without one.
-                        tally.failed += 1
-                        continue
                     memory_uuid = UUID(act["memory_id"])
-                    update_entity: MemoryEntity | None = await self._memories.get(
-                        (agent_id, memory_uuid),
-                    )
-                    if update_entity is None or update_entity.user_id != user_id:
+                    old_entity: MemoryEntity | None = await self._memories.get((agent_id, memory_uuid))
+                    if old_entity is None or old_entity.user_id != user_id:
                         tally.skipped += 1
                         continue
-                    update_entity.content = updated_content
-                    update_entity.type_memory = updated_type
-                    update_entity.embedding = new_embedding
-                    await self._memories.save_entity(update_entity)
+                    if self._consolidations is None and not is_permanent(old_entity):
+                        log.warning(
+                            "memory UPDATE skipped: no consolidations collection to link the revision with",
+                            extra={"extra_data": {"memory_id": str(memory_uuid)}},
+                        )
+                        tally.skipped += 1
+                        continue
+                    new_embedding = await _safe_aembed_query(self._embedding_provider, updated_content)
+                    if new_embedding is None:
+                        # the embedding helper already logged why; the revision cannot land without one.
+                        tally.failed += 1
+                        continue
+                    fields = {
+                        "customer_id": old_entity.customer_id,
+                        "user_id": old_entity.user_id,
+                        "conversation_id": conversation_id,
+                        "type_memory": updated_type,
+                        "content": updated_content,
+                        "embedding": new_embedding,
+                        "salience": self._config.salience_seed,
+                    }
+                    if is_permanent(old_entity):
+                        now = datetime.now(UTC)
+                        beside = self._memories.create(
+                            {
+                                **fields,
+                                "memory_id": UUID(str(uuid7())),
+                                "agent_id": agent_id,
+                                "date_created": now,
+                                "date_updated": now,
+                            }
+                        )
+                        await self._memories.save_entity(beside)
+                        revised_id = beside.memory_id
+                    else:
+                        assert self._consolidations is not None
+                        revised_id = await supersede(
+                            self._memories,
+                            self._consolidations,
+                            agent_id=agent_id,
+                            source_ids=[memory_uuid],
+                            fields=fields,
+                            rationale="revised by a later conversation",
+                        )
                     tally.updated += 1
-                    summaries.append((act["memory_id"], updated_content))
+                    summaries.append(
+                        (str(revised_id), updated_content)
+                    )  # convert at border: the summary callback takes the id as text
 
                 elif action == "DELETE":
+                    # Nothing is deleted: the memory is retracted -- out of ambient
+                    # recall, tagged with why, still recallable by id. A permanent
+                    # memory is never retracted.
                     memory_uuid = UUID(act["memory_id"])
-                    delete_entity: MemoryEntity | None = await self._memories.get(
-                        (agent_id, memory_uuid),
-                    )
+                    delete_entity: MemoryEntity | None = await self._memories.get((agent_id, memory_uuid))
                     if delete_entity is None or delete_entity.user_id != user_id:
                         tally.skipped += 1
                         continue
-                    # Hard-delete under the unified model; v017's CASCADE
-                    # FKs propagate to any chunks + media attached.
-                    await self._memories.delete((agent_id, memory_uuid))
+                    if not await retract(
+                        self._memories,
+                        agent_id=agent_id,
+                        memory_id=memory_uuid,
+                        reason="no longer true, by a later conversation",
+                    ):
+                        tally.skipped += 1
+                        continue
                     tally.deleted += 1
 
                 else:

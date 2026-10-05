@@ -158,6 +158,7 @@ from threetears.nats.errors import (
     RequestTimeoutError,
     SubscribeError,
 )
+from threetears.nats.persisted_copy import PersistedCopyBucket
 from threetears.nats.renewal_request import (
     CREDENTIAL_RENEWAL_SUBJECT_TOKEN,
     CredentialRenewalReason,
@@ -526,6 +527,7 @@ __all__ = [
     "require_system_account",
     # KV
     "NatsKvBucket",
+    "PersistedCopyBucket",
     # op-log (durable write-path WAL)
     "AppendResult",
     "OpLog",
