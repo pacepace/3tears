@@ -53,6 +53,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/viz/arms/frontier.py": {},
     "analysis/viz/arms/null_result.py": {},
     "analysis/viz/arms/sweep_ranking.py": {},
+    "analysis/viz/arms/timeseries.py": {},
     "analysis/viz/compiler.py": {},
     "analysis/viz/models.py": {},
     "analysis/viz/palette.py": {},

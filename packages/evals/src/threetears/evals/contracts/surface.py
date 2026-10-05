@@ -28,7 +28,9 @@ A leaf module: the analysis models import it, so it imports neither them nor the
 
 from __future__ import annotations
 
-from pydantic import Field
+from typing import Literal
+
+from pydantic import Field, field_validator, model_validator
 
 from threetears.evals.contracts.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.contracts.metrics import MeasurePopulation, MeritAxis
@@ -149,6 +151,71 @@ class CellFacts(EvalDocumentModel):
     )
 
 
+#: What a campaign's time positions are: the builds a host labels (``release``), or the UTC days its runs
+#: started on (``date``).
+TimeAxisBasis = Literal["release", "date"]
+
+
+class TimePosition(EvalDocumentModel):
+    """One point on a campaign's time axis — the runs at one build or on one day, and what they measured.
+
+    ``cells`` are computed exactly as the surface's own cells are, over this position's runs alone: the same
+    pooling, the same non-faulted population and the same judged transposition, so a cell's reading here and
+    its reading on the whole surface are one rule applied to two sets of observations.
+    """
+
+    key: str = Field(
+        min_length=1, description="The position's name: the build's label value, or the day as YYYY-MM-DD."
+    )
+    first_run_at: str = Field(description="When the earliest run at this position was created, ISO-8601.")
+    last_run_at: str = Field(description="When the latest run at this position was created, ISO-8601.")
+    run_ids: list[str] = Field(min_length=1, description="The runs at this position that measured something, sorted.")
+    cells: list[CellFacts] = Field(
+        min_length=1,
+        description="Every cell measured at this position, ordered by (variant_key, apparatus_class_id).",
+    )
+
+
+class TimeAxis(EvalDocumentModel):
+    """The campaign's runs placed in time — present only when they span two builds or two days.
+
+    **Ordered by when each position first ran**, never by its name: a build label is the host's string and
+    nothing here can sort it ("0.10" against "0.9"), while the order the runs happened in is a fact every run
+    records. A date axis is in calendar order by the same rule.
+    """
+
+    basis: TimeAxisBasis = Field(
+        description=(
+            "`release` when the positions are the builds the host labels; `date` when they are the UTC days the "
+            "runs started on — the fallback when the host labels no build, a run recorded none, or every run "
+            "recorded the same one."
+        )
+    )
+    release_label: str | None = Field(
+        default=None,
+        description="The host label the positions name, on a `release` axis; None on a `date` axis.",
+    )
+    positions: list[TimePosition] = Field(
+        min_length=2, description="The positions, earliest first. Two or more, or there is no axis."
+    )
+
+    @field_validator("positions")
+    @classmethod
+    def _positions_are_distinct(cls, positions: list[TimePosition]) -> list[TimePosition]:
+        """Refuse two positions under one name — a reader could not tell which point is which."""
+        keys = [position.key for position in positions]
+        if repeated := sorted({key for key in keys if keys.count(key) > 1}):
+            raise ValueError(f"time positions must be distinct; repeated: {', '.join(repeated)}")
+        return positions
+
+    @model_validator(mode="after")
+    def _release_names_its_label(self) -> TimeAxis:
+        """A release axis says which label it reads, and a date axis reads none."""
+        if (self.basis == "release") != (self.release_label is not None):
+            raise ValueError("a `release` time axis names its release_label, and a `date` axis names none")
+        return self
+
+
 class DecisionSurface(EvalDocumentModel):
     """The campaign's measured cells and the bars they were held to — frozen at generation.
 
@@ -177,6 +244,13 @@ class DecisionSurface(EvalDocumentModel):
             "Empty when no cell names a judged dimension."
         ),
     )
+    time_axis: TimeAxis | None = Field(
+        default=None,
+        description=(
+            "The campaign's runs placed in time, each position carrying its own cells; None when the runs share one "
+            "build and one day. What a `timeseries` chart draws, and the only thing it can draw."
+        ),
+    )
 
 
 __all__ = [
@@ -185,4 +259,7 @@ __all__ = [
     "JudgedDimensionFacts",
     "JudgedReading",
     "MeasureFacts",
+    "TimeAxis",
+    "TimeAxisBasis",
+    "TimePosition",
 ]

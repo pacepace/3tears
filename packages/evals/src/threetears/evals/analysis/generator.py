@@ -384,7 +384,11 @@ async def generate_analysis(
     refuse_an_undescribable_arm_table(bundle)
     system_prompt, user_message, contract = first_request(bundle, prompt, profile)
     sent_digest = user_message_digest(user_message)
-    resolved_prompt_version = prompt_version if prompt_version is not None else prompt_content_version(prompt, profile)
+    resolved_prompt_version = (
+        prompt_version
+        if prompt_version is not None
+        else prompt_content_version(prompt, profile, time_axis=bundle.time_axis is not None)
+    )
     tally.prompt_version = resolved_prompt_version
     tally.calls += 1
     result = await client.generate(system=system_prompt, user=user_message, response_format=contract)
@@ -728,9 +732,20 @@ def _repair_user_message(user_message: str, refusal: str, previous: str) -> str:
     return user_message + _REPAIR_INSTRUCTION.format(refusal=refusal, previous=previous)
 
 
-def _vocabularies(profile: HostProfile) -> tuple[frozenset[str], dict[str, str]]:
-    """The caveat kinds and chart types on offer — the chart types with how each reads its lists."""
-    return ENGINE_CAVEAT_KINDS | profile.caveat_kinds, dict(viz_refs.CHART_READINGS)
+def _vocabularies(profile: HostProfile, *, time_axis: bool) -> tuple[frozenset[str], dict[str, str]]:
+    """The caveat kinds and chart types on offer — the chart types with how each reads its lists.
+
+    ``timeseries`` is on offer only where the bundle carries a time axis
+    (:attr:`~threetears.evals.analysis.bundle.AnalysisContextBundle.time_axis`): it draws nothing else, so a
+    menu offering it over a bundle without one would invite a chart that can only be refused — and the
+    refusal costs a paid repair. Off the menu, the contract the response is checked against refuses it too.
+    """
+    readings = {
+        name: reads
+        for name, reads in viz_refs.CHART_READINGS.items()
+        if time_axis or name not in viz_refs.TIME_VIZ_TYPES
+    }
+    return ENGINE_CAVEAT_KINDS | profile.caveat_kinds, readings
 
 
 def _assemble_and_validate(
@@ -755,7 +770,7 @@ def _assemble_and_validate(
     _reject_incomplete_generation(result)
     payload = _parse_payload(result)
     try:
-        document = validate_authored(payload, *_vocabularies(profile))
+        document = validate_authored(payload, *_vocabularies(profile, time_axis=bundle.time_axis is not None))
     except (ValidationError, OffVocabulary) as refused:
         raise SoundnessRefusal(f"generator output does not match the analysis contract: {refused}") from refused
     _reject_mismatched_question_answers(document, bundle)
@@ -1025,7 +1040,8 @@ def first_request(bundle: AnalysisContextBundle, prompt: str, profile: HostProfi
     Returns:
         ``(system, user, response_format)``.
     """
-    return assemble_system_prompt(prompt, profile), build_user_message(bundle), response_format(*_vocabularies(profile))
+    contract = response_format(*_vocabularies(profile, time_axis=bundle.time_axis is not None))
+    return assemble_system_prompt(prompt, profile), build_user_message(bundle), contract
 
 
 def build_user_message(bundle: AnalysisContextBundle) -> str:
@@ -1167,7 +1183,7 @@ def assemble_system_prompt(prompt: str, profile: HostProfile) -> str:
     return assembled
 
 
-def prompt_content_version(prompt: str, profile: HostProfile) -> str:
+def prompt_content_version(prompt: str, profile: HostProfile, *, time_axis: bool) -> str:
     """The version a generation records for its prompt — a short hash of what the model is told.
 
     The one derivation of it: :func:`generate_analysis` records it on every analysis it writes, and
@@ -1175,15 +1191,21 @@ def prompt_content_version(prompt: str, profile: HostProfile) -> str:
     one version of one prompt. Over the ASSEMBLED system prompt and the CONTRACT sent with it, not
     the registry text alone: two hosts whose styles picked different registers told the model
     different things, and so do two builds whose schemas differ under one prompt.
+    That includes the chart menu, which offers ``timeseries`` only over a bundle with a time axis: the
+    model was told a different contract there, so the version says so.
 
     Args:
         prompt: The resolved ``eval_analysis_gen`` system prompt, from the registry.
         profile: The host's profile, whose register and caveat kinds the assembly adds.
+        time_axis: Whether the bundle the prompt is sent with carries a time axis — whether the chart
+            menu offered ``timeseries``.
 
     Returns:
         A stable, edit-sensitive 12-character version tag.
     """
-    contract = json.dumps(response_format(*_vocabularies(profile)), sort_keys=True, separators=(",", ":"))
+    contract = json.dumps(
+        response_format(*_vocabularies(profile, time_axis=time_axis)), sort_keys=True, separators=(",", ":")
+    )
     told = assemble_system_prompt(prompt, profile) + "\n" + contract
     return hashlib.sha256(told.encode("utf-8")).hexdigest()[:12]
 
@@ -1239,6 +1261,7 @@ def _decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
         bars=bundle.bar_adjudications,
         measures=cell_measure_facts(bundle),
         dimensions=cell_dimension_facts(bundle),
+        time_axis=bundle.time_axis,
     )
 
 

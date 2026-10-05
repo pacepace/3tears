@@ -165,14 +165,13 @@ class TestRegistry:
     def test_unregistered_type_returns_none_rather_than_raising(self):
         """`None` is 'nothing checked this', which a caller must not read as 'valid'.
 
-        `timeseries` is the example because it is genuinely unregistered — the
-        type exists on the stored model and has no payload model, so a payload of
-        any shape passes through unchecked. Picking a registered type here would
-        make the test pass for the wrong reason the day that type is migrated,
-        which is exactly what happened to its predecessor.
+        `scatter` is the example because no model is registered for it. Every type the stored
+        model declares now has one (``timeseries``, its predecessor here, was the last), so the
+        example is a name nothing declares — picking a registered type would make the test pass for
+        the wrong reason, which is exactly what happened to its predecessors.
         """
-        assert parse_payload("timeseries", {"anything": True}) is None
-        assert "timeseries" not in PAYLOAD_MODELS
+        assert parse_payload("scatter", {"anything": True}) is None
+        assert "scatter" not in PAYLOAD_MODELS
 
     def test_registry_lists_only_types_the_viz_model_declares(self):
         """A payload model for a type the stored model cannot hold would never run."""
@@ -180,6 +179,12 @@ class TestRegistry:
 
         declared = set(Viz.model_fields["type"].annotation.__args__)
         assert set(PAYLOAD_MODELS) <= declared
+
+    def test_every_type_the_viz_model_declares_is_validated(self):
+        """The other direction: a stored type with no model would be stored unchecked."""
+        from threetears.evals.contracts.campaign import Viz
+
+        assert set(Viz.model_fields["type"].annotation.__args__) <= set(PAYLOAD_MODELS)
 
     @pytest.mark.parametrize("viz_type", sorted(PAYLOAD_MODELS), ids=sorted(PAYLOAD_MODELS))
     def test_every_type_inherits_the_shared_caption_field(self, viz_type):

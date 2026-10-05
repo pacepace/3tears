@@ -121,7 +121,7 @@ RULES — what separates a real analysis from a plausible one.
    Then cut. Most campaigns need three to five findings and two or three next steps; add one only if a decision rests on it. A fact about the rig that changes no conclusion here — every conversation ending on the turn limit, a check nothing could fail — is a caveat on the finding it qualifies. It becomes a finding, with empty `axes`, only when it changes which result a reader should trust. Delete any sentence that repeats another, any caveat that would not change what the reader does, and any next step no decision turns on. Be subject-agnostic: levers and findings are data, so never assume the subject is of any particular kind.
 
 14. CHARTS — SELECT ON THE CLAIM, NOT ON THE DATA. Every finding carries a `chart`: you choose its type and name the cells and readings it draws; the schema says how each type reads its lists, and the engine draws every number. A chart that names what the table does not hold is refused; one that resolves but cannot be drawn is dropped with a note, and the finding stands.
-   The same rows support several types, so ask of your claim: how many measures carry position, one or two? Does the finding fix one of them at a tolerance? Is the ordering time — if so, no type here draws time, and two `distribution` charts, one per period, are the most it supports. Then route:
+   The same rows support several types, so ask of your claim: how many measures carry position, one or two? Does the finding fix one of them at a tolerance? Is the ordering time — if so, `timeseries` draws it, and only where the bundle carries a `time_axis`; without one nothing here draws time. Then route:
    - nothing moved and a mechanism says why → `null_result`
    - a whole-run measure moved and part of it cannot be placed → `attribution`
    - one measure splits into parts known to sum to it → `breakdown`
@@ -129,6 +129,7 @@ RULES — what separates a real analysis from a plausible one.
    - two arms compared across several measures, where exact values matter → `delta_table`
    - two measures trade off and neither is fixed → `frontier`
    - combinations of levers ranked on one measure, the other stated as a tolerance → `sweep_ranking`
+   - one reading moved across the builds or days of `time_axis` → `timeseries`
    A finding that fits two routes is usually two findings. A frontier for a claim that names a price should be a sweep ranking; a breakdown whose parts do not sum is an attribution.
    `none` is a claim that the evidence has none of these shapes — true of a coverage gap or a single number with nothing to compare — never a way to save effort: a long analysis earns as many charts per finding as a short one. When the data cannot support a claim, weaken the claim or change the type; never pick a rendering because it looks more decisive, or drop the cohorts that muddy it.
    A caption says what the chart cannot: a conclusion, a limit on it, or a caveat the reader would not otherwise reach — empty when there is nothing. It does not restate what is drawn, narrate how it is drawn, or repeat what the renderer appends (truncation, filtering, interval coverage, unplaced or unpriced contestants). A caption claiming significance quotes the comparison lens's statistic or says the difference was not tested.
@@ -139,7 +140,8 @@ RULES — what separates a real analysis from a plausible one.
 - null_result — two cells, an established null only (rule 4); `note` names the threshold, tolerance or window that found nothing, and a blank one is refused. For three or more levels use `distribution`.
 - breakdown — one cell, and either one categorical measure or two or more numeric measures sharing a unit; measures only. A categorical measure with a single category is not a breakdown: chart `none` and state the concentration in the title.
 - attribution — two cells, baseline first; the whole-run measure, then the part; the lever in `axis`; two different measures in one unit, never judged. The engine decides any remainder: an unplaced one reads `not placeable`, and you never compute one.
-- sweep_ranking — the ranked reading, which must be higher-is-better, then its companion; no cells names every cell. Cells must differ in their levels, every arm must have describable levels, and all categorical levers together may show at most four distinct levels."""
+- sweep_ranking — the ranked reading, which must be higher-is-better, then its companion; no cells names every cell. Cells must differ in their levels, every arm must have describable levels, and all categorical levers together may show at most four distinct levels.
+- timeseries — exactly one reading, drawn at every position of `time_axis`, earliest first; no cells names every cell, and one cell is one line. A line needs an interval at two positions; a position a cell lacks is a gap the engine states."""
 
 
 __all__ = [

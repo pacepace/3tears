@@ -444,7 +444,11 @@ class TestThePromptVersionIsWhatTheModelWasTold:
         profile = toyhost_profile()
         system, _, contract = first_request(_bundle(), PROMPT, profile)
         told = system + "\n" + json.dumps(contract, sort_keys=True, separators=(",", ":"))
-        assert prompt_content_version(PROMPT, profile) == hashlib.sha256(told.encode("utf-8")).hexdigest()[:12]
+        assert _bundle().time_axis is None, "the toy campaign runs on one day under no build label"
+        assert (
+            prompt_content_version(PROMPT, profile, time_axis=False)
+            == hashlib.sha256(told.encode("utf-8")).hexdigest()[:12]
+        )
 
 
 @dataclass

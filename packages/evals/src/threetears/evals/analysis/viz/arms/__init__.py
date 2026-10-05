@@ -24,6 +24,7 @@ from threetears.evals.analysis.viz.arms.distribution import compile_distribution
 from threetears.evals.analysis.viz.arms.frontier import compile_frontier
 from threetears.evals.analysis.viz.arms.null_result import compile_null_result
 from threetears.evals.analysis.viz.arms.sweep_ranking import compile_sweep_ranking
+from threetears.evals.analysis.viz.arms.timeseries import compile_timeseries
 from threetears.evals.analysis.viz.compiler import CompiledChart
 
 #: ``Viz.type`` → the arm that draws it.
@@ -38,6 +39,7 @@ ARMS: dict[str, Callable[[Any], CompiledChart]] = {
     "frontier": compile_frontier,
     "null_result": compile_null_result,
     "sweep_ranking": compile_sweep_ranking,
+    "timeseries": compile_timeseries,
 }
 
 

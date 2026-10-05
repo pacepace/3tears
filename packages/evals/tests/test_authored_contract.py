@@ -186,7 +186,7 @@ class TestTheCheckOnReturn:
 
     def test_a_chart_type_off_the_menu_is_refused(self):
         payload = _payload()
-        payload["findings"][0]["chart"]["type"] = "timeseries"
+        payload["findings"][0]["chart"]["type"] = "scatter"
         with pytest.raises(authored.OffVocabulary):
             authored.validate_authored(payload, KINDS, TYPES)
 

@@ -26,6 +26,7 @@ from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS, parse_payload
 from threetears.evals.analysis.viz_refs import (
     CHART_READINGS,
     REFERENCEABLE_VIZ_TYPES,
+    TIME_VIZ_TYPES,
     build_viz_payload,
     dominated_flags,
     reference_from_chart,
@@ -43,6 +44,8 @@ from threetears.evals.contracts.surface import (
     JudgedDimensionFacts,
     JudgedReading,
     MeasureFacts,
+    TimeAxis,
+    TimePosition,
 )
 
 
@@ -99,8 +102,18 @@ def _numeric(name: str, mean: float, n: int, n_independent: int) -> MeasureSumma
     )
 
 
-def _cell(arm: str, rig: str = RIG, *, n: int = 8, n_independent: int = 8, drop: tuple[str, ...] = ()) -> CellFacts:
-    measures = [_numeric(name, value, n, n_independent) for name, value in VALUES[arm].items() if name not in drop]
+def _cell(
+    arm: str,
+    rig: str = RIG,
+    *,
+    n: int = 8,
+    n_independent: int = 8,
+    drop: tuple[str, ...] = (),
+    scale: float = 1.0,
+) -> CellFacts:
+    measures = [
+        _numeric(name, value * scale, n, n_independent) for name, value in VALUES[arm].items() if name not in drop
+    ]
     measures.append(
         MeasureSummary(
             population="scored", name="stop_reason", attribution_scope="end_to_end", n=n, categories=STOPS[arm]
@@ -158,20 +171,51 @@ def _bar(cells: list[CellFacts]) -> BarAdjudication:
     )
 
 
+#: The default surface's time axis: two builds, the second measuring every arm a tenth slower.
+BUILDS = ("0.9", "0.10")
+
+
+def time_axis() -> TimeAxis:
+    """Every arm measured at two builds — the arms' own values, then the same values a tenth larger."""
+    return TimeAxis(
+        basis="release",
+        release_label="app_version",
+        positions=[
+            TimePosition(
+                key=build,
+                first_run_at=f"2026-10-0{day}T00:00:00+00:00",
+                last_run_at=f"2026-10-0{day}T01:00:00+00:00",
+                run_ids=[f"run-{build}"],
+                cells=sorted(
+                    (_cell(arm, scale=scale) for arm in ("A", "B", "C")),
+                    key=lambda c: (c.variant_key, c.apparatus_class_id),
+                ),
+            )
+            for day, build, scale in ((1, BUILDS[0], 1.0), (2, BUILDS[1], 1.1))
+        ],
+    )
+
+
 def surface(
     cells: list[CellFacts] | None = None,
     *,
     latency_axis: tuple[str, ...] = ("total_ms", "llm_ms", "tool_ms"),
     facts: dict[str, MeasureFacts] | None = None,
+    timed: TimeAxis | None | bool = True,
 ) -> DecisionSurface:
-    """Three cells under one rig unless told otherwise: a judged dimension, a categorical measure, a bar."""
+    """Three cells under one rig unless told otherwise: a judged dimension, a categorical measure, a bar.
+
+    ``timed`` gives it :func:`time_axis` by default, a given axis, or none (``None``/``False``).
+    """
     cells = cells if cells is not None else [_cell(arm) for arm in ("A", "B", "C")]
+    axis = time_axis() if timed is True else (timed or None)
     return DecisionSurface(
         control_variant_key=KEYS["A"],
         cells=sorted(cells, key=lambda c: (c.variant_key, c.apparatus_class_id)),
         bars=[_bar(cells)],
         measures=facts if facts is not None else measure_facts(latency_axis),
         dimensions={"reply.grounding": JudgedDimensionFacts(higher_is_better=True, value_range=(1.0, 5.0))},
+        time_axis=axis,
     )
 
 
@@ -233,6 +277,7 @@ VALID: dict[str, Chart] = {
     "attribution": chart("attribution", [ref("A"), ref("B")], ["total_ms", "llm_ms"]),
     "frontier": chart("frontier", [], ["pass_rate", "cost_usd", "total_ms"]),
     "sweep_ranking": chart("sweep_ranking", [], ["pass_rate", "cost_usd"]),
+    "timeseries": chart("timeseries", [], ["total_ms"]),
 }
 
 
@@ -249,7 +294,7 @@ def valid(kind: str, **update: Any) -> Chart:
 def test_the_valid_population_is_the_whole_menu():
     # A type on the menu with no entry here would be silently unchecked by the gate below.
     assert set(VALID) == set(REFERENCEABLE_VIZ_TYPES) == set(CHART_READINGS)
-    assert "timeseries" not in REFERENCEABLE_VIZ_TYPES
+    assert TIME_VIZ_TYPES <= REFERENCEABLE_VIZ_TYPES
     assert REFERENCEABLE_VIZ_TYPES <= set(PAYLOAD_MODELS)
 
 
@@ -329,8 +374,8 @@ def test_one_measure_reads_as_a_categorical_breakdown_and_several_as_numeric_par
 
 def test_a_type_off_the_menu_is_a_programming_error_not_a_refusal():
     """`validate_authored` refuses a type off the menu before this is reached; a caller that skipped it cannot be repaired."""
-    with pytest.raises(ValueError, match=r"chart type 'timeseries' is not one of") as raised:
-        reference_from_chart(chart("timeseries", [ref("A"), ref("B")], ["total_ms"]))
+    with pytest.raises(ValueError, match=r"chart type 'scatter' is not one of") as raised:
+        reference_from_chart(chart("scatter", [ref("A"), ref("B")], ["total_ms"]))
     assert not isinstance(raised.value, SoundnessRefusal)
 
 
