@@ -60,6 +60,60 @@ packages (bumped in lock-step).
 - Identity: no ``IDENTITY_VERSION`` change — no predicate moved. The toy fixture host's golden variant keys
   were re-pinned because its registrations gained a lever.
 
+### 3tears-evals: out-of-run spend, priced generating launches, launch-set apparatus, hosts with no metered tools
+
+- **Calls made outside any run are priced before they are made and ledgered once they are.** A launch's
+  case generation and the rubric proposer had no run around them, so nothing bounded or recorded them.
+  ``OutOfRunBudget`` (``threetears.evals.contracts``) admits a unit of work's calls together — asking the
+  client what each can cost at most and refusing the set, before any call, when the ceilings pass the cap
+  or (under an enforced cap) the client cannot say — and writes one ``OutOfRunSpend`` document per call,
+  returned or raised. **New stored document type** ``eval_out_of_run_spend`` (in ``EVAL_DOC_TYPES``;
+  ``EvalStorage.save_out_of_run_spend`` / ``query_out_of_run_spend``). **Breaking:** ``BoundCompletionClient``
+  and ``VariationLLM`` gain ``price_ceiling(*, system, user, response_format=None) -> float | None`` — the
+  host's ceiling for one call from its rate for the model and the output cap it built the client with
+  (``PricedCompletion``); ``propose_draft`` takes a ``BoundCompletionClient`` and a required ``budget=`` and
+  returns ``ProposedDraft(proposal, spend)``; ``generate_variations`` takes ``budget=`` (required exactly
+  with ``llm``) and ``GeneratedVariations`` gains ``spend``; new ``price_variations`` quotes a generation
+  without calling. ``LaunchSettings`` gains a required ``max_out_of_run_cost_usd``.
+  **Adopters' stores:** the store conformance kit's new case ``doc_types.every_engine_type_is_stored``
+  writes one document of every engine type, so a store routing by ``doc_type`` goes red until it routes
+  ``eval_out_of_run_spend``.
+- **The engine prices a generating launch before any call.** Before the kind's launcher runs, each arm
+  is planned by the kind (``LaunchableKind.plan_arm(request) -> ArmPlan``, required of a kind that
+  generates) and priced by the host (``LaunchHost.launch_pricer``, a ``LaunchPricer`` taking an
+  ``ArmQuote`` and returning an ``ArmPrice``; ``threetears.evals.ops.history_launch_pricer`` is the
+  engine's own, over the scope's usage history). An arm predicted above its run's cap is refused, as is
+  an unpredictable one whose cap is inherited (a launch-named cap goes ahead), and a generating launch
+  under an enforced cap on a host with no pricer. The launch hands the launcher one
+  ``LaunchRequest.generation_budget`` for the whole launch (capped at ``max_out_of_run_cost_usd``,
+  ledgered under the launch's group); the launch tail refuses a model-written generation that budget never
+  ledgered, and an arm that runs more cases than, or another model than, its plan. The battery prices
+  every template's generating arms before launching any. A pricing port rather than moving the
+  estimator: the package matrix keeps ``run`` off ``analysis``, and the estimator is an analysis over
+  history that a host with its own rate card replaces. **Adopters (DoW):** replace
+  ``refuse_generating_launch_over_cap`` with ``plan_arm`` on the router kind and
+  ``launch_pricer=history_launch_pricer(eval_host)``; pass ``budget=request.generation_budget``; give
+  ``DowCompletionClient`` a ``price_ceiling``.
+- **A launch sets host-declared apparatus values** (``apparatus_settings``), so one template can be
+  compared at two adjudicator seats. Threaded through ``start_run``, ``start_universal_battery``,
+  ``LaunchRequest``, ``ops.LaunchArguments``, the ``run_launch`` action (and so the FastMCP tool) and the
+  CLI (``--apparatus-settings JSON``). A kind lists what its launcher reads
+  (``LaunchableKind.apparatus_settings``; ``LaunchHost`` refuses a name that is not one of the host's own
+  ``apparatus`` declarations, and ``settable_apparatus`` says which are); a launch setting any other, or a
+  value that is not a string, bool or finite number (``ApparatusSettingValue``), is refused before the
+  launcher. New ``EvalRun.apparatus_settings``.
+- **Identity: ``IDENTITY_VERSION`` 22 → 23.** New context component ``apparatus_settings`` (composed for
+  every run, ``{}`` a level), so every stored context key re-derives; variant keys are unchanged. Every
+  golden was re-pinned under v23.
+- **A host can declare it has no metered tools.** ``LaunchSettings.max_metered_calls=None``: its runs
+  record ``max_metered_calls=0`` with origin ``none_declared`` (new ``MeteredCallOrigin``, the type of
+  ``EvalRun.max_metered_calls_origin``), whatever its enforcement; a metered call is refused, counted and
+  logged as contradicting the declaration; a launch naming ``max_metered_calls`` there is refused.
+  **Breaking:** ``MeteredCallLedger.resolve_ceiling_origin`` takes ``configured_max_metered_calls``.
+  **Adopters (DoW):** replace the ceiling of 1 with ``None``.
+- **Public exports:** ``derive_variant_identity`` and ``count_substituted_deliveries`` from
+  ``threetears.evals.contracts``.
+
 ## v0.66.0 -- 2026-10-05
 
 ### 3tears-evals: the definition seed writes every judge config, and admits templates through authoring's gates
