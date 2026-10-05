@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the toy host's run names its cases (tests only)
+
+- **The `toyhost_run` test fixture's `EvalRun.test_case_ids` are now the test-case ids** (`<template id>:<document>`),
+  not the document ids the cases are drawn over — the shape every real run freezes and the package's readers rely
+  on. The `record_witnessed_cell` equivalence test no longer corrects the ids on its own copy of the run; it asserts
+  the fixture's. The toy goldens in `test_identity_golden_keys.py` are re-pinned: `case_basis` (which digests
+  `test_case_ids`) and the context key composed from it moved, every other component and both variant keys held.
+  The key derivation is unchanged, so `IDENTITY_VERSION` stays at 22 with no ledger entry. No library change.
+
 ### 3tears-evals: calibration ratings and judge-versus-human agreement
 
 - **`CalibrationRating` is a standalone document** (`doc_type="calibration_rating"`, in `EVAL_DOC_TYPES`, so the

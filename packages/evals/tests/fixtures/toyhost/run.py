@@ -318,7 +318,8 @@ def toyhost_run(
             "template_id": template.id,
             "candidate_model": model,
             "k_runs": RUN_K,
-            "test_case_ids": list(RUN_DOCUMENTS),
+            # The CASE ids, as every launch freezes them — not the documents the cases are drawn over.
+            "test_case_ids": [case.id for case in toyhost_test_cases(template)],
             "max_cost_usd": TOYHOST_COST_CEILING_USD,
             "resolved_world_seed": dict(template.world_seed.namespaces),
             # The algebra over the FACTS this run produced: what the kind seeds, through the

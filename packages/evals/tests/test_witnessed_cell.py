@@ -109,10 +109,9 @@ async def _runner_cells() -> tuple[EvalHost, EvalRun, list[EvalTestCase], list[t
     finished = datetime.now(UTC)
     assert all(started <= datetime.fromisoformat(result.scored_at) <= finished for result, _ in paired)
     assert len({result.id for result, _ in paired}) == len(paired)
-    # The toy run names its documents where a launch freezes its cases' ids, so the run carried here
-    # names the cases it ran — the denominator the witnessed op holds a case to. No key the cell carries
-    # digests this list (the variant is the run's levers).
-    return host, run.model_copy(update={"test_case_ids": [case.id for case in cases]}), cases, paired
+    # The run names the cases it ran — the denominator the witnessed op holds a case to.
+    assert run.test_case_ids == [case.id for case in cases]
+    return host, run, cases, paired
 
 
 async def test_a_witnessed_cell_is_the_runners_cell_for_the_same_output() -> None:
