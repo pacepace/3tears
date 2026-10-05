@@ -133,7 +133,11 @@ own `seed` handles, then each attached carrier's `settle` handle before the firs
 each turn (`at_turn`, which applies any ambient perturbation the template's seed scheduled), and fires
 or observes its triggered dimensions (`fire`, `observe`). Once `invoke` returns, the runner reads every
 attached dimension back through its `read` handle and stores it as the cell's end state; what fired is
-stored on the result as `world_events`. A goal check reads the end state as `state.<dimension>`, the
+stored on the result as `world_events`. The profile's registry is the declaration and its handles are
+the world conformance proves; if your world is real per-cell state, declare
+`WorldRegistry(..., binds_per_cell=True)` and have each cell's `prepare` call
+`world.bind(<that cell's handle table>)` before `seed` — every call the session makes then lands in that
+cell's world, and a session that seeds unbound is refused. A goal check reads the end state as `state.<dimension>`, the
 calls the kind recorded on its `CallLedger`, and what fired as `fired("<dimension>")`; grade them with
 `grade_goal_checks`, and a stored run re-grades from all three with `recheck_goal_states`.
 

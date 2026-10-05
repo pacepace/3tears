@@ -25,6 +25,26 @@ read at t=0 grades the seed, not what the candidate did — the founding defect 
 runner's read after ``invoke`` is what makes the stored end state the world the cell LEFT, for every
 kind, including one that never thought to read it.
 
+**Whose world a call lands in is fixed per session, before anything moves.** The profile's registry is
+the DECLARATION every reader reads — preconditions, goal checks, the bundle, coverage, authoring — and
+its binding table is the world the conformance kit proves. A host whose world is real per-cell state
+(a fresh game world over its own store) cannot let two cells share that table, so the kind hands its
+cell's own table to :meth:`WorldSession.bind` before seeding. The session then holds a session-local
+registry carrying the profile's declarations over that table (built by
+:meth:`~threetears.evals.contracts.host.world.WorldRegistry.with_bindings`, held to the profile's own
+rules), and every call it makes goes through it. Two cells cannot cross-write because neither holds a
+path to the other's table — there is no "current world" to look up, so there is nothing to look up
+wrongly, whether the cells run concurrently, in two runs, or with ``prepare`` in a child task.
+
+**An unbound session calls the profile's own table — unless the host declared that it must not.** A
+host whose handles are stateless or open per-cell state themselves (the default,
+``binds_per_cell=False``) needs no bind and changes nothing. A host that declares
+``binds_per_cell=True`` is saying its table is the conformance kit's and nobody else's, so a session
+seeding without a bind is refused: a forgotten bind is a loud :class:`WorldSessionError` on the first
+cell rather than every cell writing into one shared world. The default stays permissive because the
+opposite default would make every existing host bind its own table to itself — a ritual that proves
+nothing — while the declaration puts the refusal exactly where the hazard is.
+
 **What it refuses is the kind's code, not the cell's luck.** Every :class:`WorldSessionError` is a kind
 asking for something its host's world cannot give or the moment does not allow, so every cell would do
 the same: it is not caught at the dispatch site, and ends the run. A refused seed is the exception —
@@ -37,7 +57,7 @@ one cell.
 from __future__ import annotations
 
 import copy
-from collections.abc import Collection
+from collections.abc import Callable, Collection, Mapping
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
@@ -59,7 +79,8 @@ class WorldSession:
     """One cell's handle on the host's world, and the record of what happened to it.
 
     Built by the runner, one per cell, over the host profile's world registry, and handed to the kind's
-    ``prepare``. A kind that seeds no world never calls it, and the cell then records neither world
+    ``prepare``. A kind whose host binds per cell calls :meth:`bind` with that cell's own table before
+    :meth:`seed`. A kind that seeds no world never calls it, and the cell then records neither world
     events nor an end state — nobody opened the world, which is a different fact from an empty one.
     """
 
@@ -70,6 +91,7 @@ class WorldSession:
             registry: The host's world registry (``profile.world``).
         """
         self._registry = registry
+        self._bound = False
         self._attached: tuple[str, ...] | None = None
         self._seeded: tuple[str, ...] = ()
         self._ambient_turns: frozenset[int] = frozenset()
@@ -79,7 +101,47 @@ class WorldSession:
 
     @property
     def registry(self) -> WorldRegistry:
-        """The host's world this session moves."""
+        """The world this session moves: the profile's registry, or after :meth:`bind` this cell's own.
+
+        Either way it carries the profile's declarations, so reading a dimension off it reads the same
+        answer. A kind that calls a handle itself calls it here, and so lands in this cell's world.
+        """
+        return self._registry
+
+    @property
+    def bound(self) -> bool:
+        """Whether this cell bound its own world (:meth:`bind`)."""
+        return self._bound
+
+    def bind(self, bindings: Mapping[str, Callable[..., Any]]) -> WorldRegistry:
+        """Make this cell's world the one ``bindings`` resolves to — every later call this session makes lands there.
+
+        Call it once, from ``prepare``, before :meth:`seed`. Required when the host's world declares
+        ``binds_per_cell``; allowed on any host. The table is held to the profile's own rules by
+        :meth:`~threetears.evals.contracts.host.world.WorldRegistry.with_bindings`: exactly the handles
+        the profile binds, each callable in its role's shape.
+
+        Args:
+            bindings: This cell's table — ``{handle: callable}``, closing over this cell's world.
+
+        Returns:
+            The session-local registry, also :attr:`registry` from here on.
+
+        Raises:
+            WorldSessionError: The session was already bound, or already seeded — a bind after the seed
+                would move every later call to a world the seed never wrote.
+            WorldRegistrationError: The table's handle set differs from the declaration's, or a callable
+                cannot be called in its role's shape.
+        """
+        if self._bound:
+            raise WorldSessionError("this cell's world was already bound; a world session binds once per cell")
+        if self._attached is not None:
+            raise WorldSessionError(
+                "this cell's world was already seeded through the profile's bindings; bind before seeding, or the "
+                "seed and everything after it land in two different worlds"
+            )
+        self._registry = self._registry.with_bindings(bindings)
+        self._bound = True
         return self._registry
 
     @property
@@ -131,12 +193,18 @@ class WorldSession:
 
         Raises:
             SeedRefused: The seed walk refused a value. Nothing has been written.
-            WorldSessionError: The session was already seeded; ``attached`` names a carrier no declared
-                dimension names; or the seed schedules ambient perturbation and the host's world has no
-                ambient-perturbation handle.
+            WorldSessionError: The session was already seeded; the host's world binds per cell and this
+                session was never bound; ``attached`` names a carrier no declared dimension names; or the
+                seed schedules ambient perturbation and the host's world has no ambient-perturbation handle.
         """
         if self._attached is not None:
             raise WorldSessionError("this cell's world was already seeded; a world session seeds once per cell")
+        if self._registry.binds_per_cell and not self._bound:
+            raise WorldSessionError(
+                "this host's world binds per cell (binds_per_cell=True) and this cell's session was never bound; "
+                "call world.bind(<this cell's bindings>) before seed, or every cell writes into the one world the "
+                "profile's bindings reach"
+            )
         carriers = {declared.carrier for declared in self._registry.declarations}
         if unknown := sorted(set(attached) - carriers):
             raise WorldSessionError(

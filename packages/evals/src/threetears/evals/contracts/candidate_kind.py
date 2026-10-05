@@ -542,7 +542,9 @@ class CandidateKind(Protocol):
                 replay. The cell's, like ``span_window``: it already names the corpus and the case.
             world: This cell's handle on the host's world, or ``None`` for a host that declares none. A
                 kind that seeds a world seeds it here (:meth:`~threetears.evals.contracts.world_session.WorldSession.seed`),
-                which settles each attached carrier before the first turn; it fires triggers and announces
+                which settles each attached carrier before the first turn — after binding this cell's own
+                world first (:meth:`~threetears.evals.contracts.world_session.WorldSession.bind`) when its
+                host's world declares ``binds_per_cell``; it fires triggers and announces
                 turns through the same handle in :meth:`invoke`, so keep it on the returned instance. The
                 runner reads the world's end state back through it once ``invoke`` returns and records
                 what fired, so a kind that seeds beside it leaves the cell with neither. The cell's, like

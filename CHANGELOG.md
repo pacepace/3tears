@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: per-cell world binding
+
+- **`WorldSession.bind(bindings) -> WorldRegistry`** (new). Every cell's session was built over the
+  profile's one registry, so a host whose world is real per-cell state (a fresh game world over its own
+  store per cell) could only find "this cell's world" through shared state — the last world attached,
+  or a ContextVar — and concurrent runs could cross-write. A kind now hands its cell's own handle table
+  to `world.bind(...)` from `prepare`, before `seed`; the session holds a session-local registry
+  carrying the profile's declarations over that table, and every call it makes (seed, settle, ambient
+  perturbation, fire, end-state read) lands there. `WorldSession.registry` is that registry after a bind
+  (the profile's before), so a kind calling a handle itself also reaches its own cell. New
+  `WorldSession.bound`. Refused with `WorldSessionError`: a second bind; a bind after seeding.
+- **`WorldRegistry(..., binds_per_cell=False)`** (new) and `WorldRegistry.binds_per_cell`. `True`
+  declares the registry's own table is the world conformance proves and nothing more, so **a session
+  over it that seeds without binding is refused** (`WorldSessionError`), before any write. `False`, the
+  default, keeps an unbound session calling the profile's table, so hosts whose handles are stateless or
+  open per-cell state themselves change nothing. `extend(..., binds_per_cell=)` can turn it on, never off.
+- **`WorldRegistry.with_bindings(bindings) -> WorldRegistry`** (new): the same declaration over a
+  different table, carrying the dimensions, handles, base world, addressing, `binds_per_cell` and host
+  attribution. Refused with `WorldRegistrationError`: a table whose handle set differs from the
+  registry's (missing or extra), and any callable the constructor's own checks refuse (not callable, or
+  not callable in its role's shape).
+- The conformance kit is unchanged: it proves the profile registry's own table.
+
 ### 3tears-evals: world conformance checks that unnamed surfaces stay still
 
 - **`perception_stillness`** (new `CheckName`, run by `check_world_conformance`, owed by every
