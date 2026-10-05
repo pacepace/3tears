@@ -393,6 +393,11 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # where its price came from and the ledger stores that, so a provider name arriving here would
     # be one host's pricing claimed for every host's dollars.
     "contracts/usage_capture.py",
+    # A cell's world events and the session every world-bearing kind seeds, fires and reads back
+    # through: dimension names and conditions are the host's words carried as data. A host noun here
+    # would be one host's world written into every kind's cell.
+    "contracts/world_events.py",
+    "contracts/world_session.py",
     # The stored eval models. Host-coupled while ``EvalRun`` and ``EvalResult`` carried a host's
     # subject, overlays and async tool record; the last of those has left, and with it the per-type entry ``ContextComponents`` needed while the module around it was not
     # scanned. A host noun arriving here would be one host's shape stored by every host.

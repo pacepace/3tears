@@ -48,6 +48,12 @@ Call parameters (``calls()`` returns the matching calls' recorded parameters, in
     any(it.priority == "rush" for it in calls("inventory.add_note"))
     all(it.note_text.length > 0 for it in calls("inventory.place_order"))
 
+World events (``fired()`` reads which triggered dimensions fired during the cell, by the rig or in the
+world — never world state, and never at t=0)::
+
+    fired("inventory.restock_alarm")
+    not fired("support.escalation")
+
 Generator predicates (``it`` binds to each element)::
 
     any(it.sku == "X" for it in state.inventory.orders)
@@ -111,7 +117,7 @@ from __future__ import annotations
 import ast
 import copy
 import itertools
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -211,6 +217,7 @@ _BUILTINS = frozenset(
         "call_count",
         "last_call_was",
         "calls",
+        "fired",
         "any",
         "all",
     }
@@ -226,6 +233,7 @@ class _EvalContext:
     variation: dict[str, Any]
     binding: dict[str, Any]  # `it` -> current element inside any()/all()
     world: WorldRegistry | None  # how `state.<dimension>` resolves a name; None declares no world at all
+    fired: Collection[str] | None  # the triggered dimensions that fired; None when no world events were recorded
 
 
 # =============================================================================
@@ -311,6 +319,10 @@ def _validate(tree: ast.AST) -> None:
                 # A computed spec would leave the authoring gate unable to name the action whose
                 # schema says which parameters are free text, so it could neither refuse nor admit.
                 raise DSLError("calls() takes one 'tool.action' string literal.")
+            if node.func.id == "fired" and _fired_name(node) is None:
+                # A computed name would leave the authoring gate unable to ask whether the dimension is a
+                # triggered one this host declares, so a typo would score False on every trial.
+                raise DSLError("fired() takes one dimension name as a string literal.")
         if isinstance(node, ast.GeneratorExp):
             if len(node.generators) != 1:
                 raise DSLError("any/all generators must have exactly one 'for' clause.")
@@ -782,6 +794,24 @@ def referenced_actions(expression: str) -> tuple[tuple[str, str], ...]:
     return tuple(named)
 
 
+def reads_call_ledger(expression: str) -> bool:
+    """Whether a goal check reads the cell's call ledger at all — through any call builtin.
+
+    Args:
+        expression: A goal-state expression.
+
+    Returns:
+        Whether it calls ``called_before``, ``called_after``, ``call_count``, ``last_call_was`` or ``calls``.
+
+    Raises:
+        DSLError: The expression does not parse.
+    """
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _ACTION_BUILTINS
+        for node in ast.walk(parse(expression).body)
+    )
+
+
 def undefined_action(tool: str, action: str, actions: Callable[[str], frozenset[str] | None] | None) -> str | None:
     """Why ``tool.action`` names nothing its host defines, or None when it does or the host cannot say.
 
@@ -807,6 +837,97 @@ def undefined_action(tool: str, action: str, actions: Callable[[str], frozenset[
     if not known:
         return f"{tool} has no action {action!r} (this host lists no actions for {tool!r} — is it a tool the host has?)"
     return f"{tool} has no action {action!r} (its actions: {', '.join(sorted(known))})"
+
+
+def _fired_name(node: ast.Call) -> str | None:
+    """The dimension a ``fired()`` call names, or None when it names none as one string literal.
+
+    Args:
+        node: A ``fired`` call.
+
+    Returns:
+        The name.
+    """
+    if len(node.args) != 1 or node.keywords:
+        return None
+    (argument,) = node.args
+    if isinstance(argument, ast.Constant) and isinstance(argument.value, str) and argument.value:
+        return argument.value
+    return None
+
+
+def referenced_fires(expression: str) -> tuple[str, ...]:
+    """Every dimension a goal check names through ``fired()``, in source order, each once.
+
+    The one walk over what a check reads of a cell's world events: the authoring gate asks whether each
+    name is a triggered dimension the host declares (:func:`undefined_fire_references`), and a
+    precondition refuses any — at t=0 nothing has fired.
+
+    Args:
+        expression: A goal-state expression.
+
+    Returns:
+        The named dimensions.
+
+    Raises:
+        DSLError: The expression does not parse.
+    """
+    named: list[str] = []
+    for node in ast.walk(parse(expression).body):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "fired":
+            name = _fired_name(node)
+            if name is not None and name not in named:
+                named.append(name)
+    return tuple(named)
+
+
+def undefined_fire_references(expression: str, world: WorldRegistry | None) -> tuple[str, ...]:
+    """Every ``fired()`` name in a goal check that is not a triggered dimension of the host's world.
+
+    A misspelled or untriggered name does not fail loudly at run time: nothing ever fires under it, so
+    ``fired()`` is False on every trial and reads as the candidate's failure. A dimension that is
+    declared but not triggered is refused too — it arrives at t=0 and has no condition to fire.
+
+    Args:
+        expression: A goal-state expression.
+        world: The host's world registry, or None for a host that declares no world.
+
+    Returns:
+        One reason per name that is not a triggered dimension, in source order.
+
+    Raises:
+        DSLError: The expression does not parse.
+    """
+    return tuple(
+        reason
+        for name in referenced_fires(expression)
+        if (reason := undefined_fired_dimension(name, world)) is not None
+    )
+
+
+def undefined_fired_dimension(name: str, world: WorldRegistry | None) -> str | None:
+    """Why ``name`` is not a triggered dimension of the host's world, or None when it is.
+
+    The one answer both gates that hold a fired name to the host give: a goal check's ``fired()``
+    references (:func:`undefined_fire_references`) and a control's stated ``fired`` set
+    (``threetears.evals.run.check_controls``) — shared for :func:`undefined_action`'s reason, so a check
+    and its control are held to one rule.
+
+    Args:
+        name: A dimension named as having fired.
+        world: The host's world registry, or None for a host that declares no world.
+
+    Returns:
+        One sentence naming the defect, or None.
+    """
+    if world is None:
+        return f"fired({name!r}) reads world events, and this host declares no world"
+    declared = world.get(name)
+    if declared is None:
+        return f"fired({name!r}) names no dimension this host's world declares"
+    if declared.when == "initial":
+        return f"fired({name!r}) names a dimension set at t=0 — only a triggered dimension fires"
+    return None
 
 
 def undefined_call_references(
@@ -905,6 +1026,7 @@ def evaluate(
     ledger: CallLedger,
     world: WorldRegistry | None,
     variation: dict[str, Any] | None = None,
+    fired: Collection[str] | None = None,
 ) -> bool:
     """Evaluate a goal-state expression and return its boolean result.
 
@@ -917,18 +1039,23 @@ def evaluate(
             host that declares no world, where any ``state`` path raises.
         variation: Variation parameter dict (test case's variation_params).
             Defaults to empty when omitted.
+        fired: The triggered dimensions that fired during the cell, read by ``fired()``. None when no
+            world events were recorded for this evaluation, where ``fired()`` raises rather than
+            answering False: an evaluation with no record cannot say nothing fired.
 
     Returns:
         ``True`` if the expression's value is truthy after coercion;
         ``False`` otherwise (including ``Missing`` results).
 
     Raises:
-        DSLError: For malformed expressions, and for a ``state`` path on a host that declares no
-            world. A path that names no declared dimension, or that does not resolve inside one,
+        DSLError: For malformed expressions, for a ``state`` path on a host that declares no world,
+            and for ``fired()`` with no world events recorded. A path that names no declared dimension, or that does not resolve inside one,
             returns ``False`` via :data:`Missing` semantics instead.
     """
     tree = parse(expression)
-    ctx = _EvalContext(end_state=end_state, ledger=ledger, variation=variation or {}, binding={}, world=world)
+    ctx = _EvalContext(
+        end_state=end_state, ledger=ledger, variation=variation or {}, binding={}, world=world, fired=fired
+    )
     result = _eval_node(tree.body, ctx)
     if result is Missing:
         return False
@@ -942,6 +1069,7 @@ def evaluate_with_detail(
     ledger: CallLedger,
     world: WorldRegistry | None,
     variation: dict[str, Any] | None = None,
+    fired: Collection[str] | None = None,
 ) -> tuple[bool, str]:
     """Evaluate and return ``(result, detail)`` for trace inspection.
 
@@ -957,6 +1085,7 @@ def evaluate_with_detail(
         ledger: The calls the candidate made, as :func:`evaluate` takes it.
         world: The host's world registry, as :func:`evaluate` takes it.
         variation: Variation parameter dict. Defaults to empty when omitted.
+        fired: The triggered dimensions that fired, as :func:`evaluate` takes it.
 
     Returns:
         The boolean result and the resolved value's ``repr``, or ``"<Missing>"``.
@@ -965,7 +1094,9 @@ def evaluate_with_detail(
         DSLError: As :func:`evaluate` raises it.
     """
     tree = parse(expression)
-    ctx = _EvalContext(end_state=end_state, ledger=ledger, variation=variation or {}, binding={}, world=world)
+    ctx = _EvalContext(
+        end_state=end_state, ledger=ledger, variation=variation or {}, binding={}, world=world, fired=fired
+    )
     value = _eval_node(tree.body, ctx)
     if value is Missing:
         return False, "<Missing>"
@@ -1235,7 +1366,31 @@ def _eval_call(node: ast.Call, ctx: _EvalContext) -> Any:
         return _builtin_last_call_was(ctx.ledger, *_check_arity("last_call_was", args, 1))
     if func_name == "calls":
         return _builtin_calls(ctx.ledger, *_check_arity("calls", args, 1))
+    if func_name == "fired":
+        return _builtin_fired(ctx.fired, *_check_arity("fired", args, 1))
     raise DSLError(f"Unknown DSL function: {func_name}")
+
+
+def _builtin_fired(fired: Collection[str] | None, name: Any) -> bool:
+    """Whether the triggered dimension ``name`` fired during the cell, whoever caused it.
+
+    Args:
+        fired: The dimensions that fired, or None when no world events were recorded.
+        name: The dimension.
+
+    Returns:
+        Whether it fired.
+
+    Raises:
+        DSLError: No world events were recorded for this evaluation. Answering False there would
+            score a cell whose events nobody recorded as one in which nothing fired.
+    """
+    if fired is None:
+        raise DSLError(
+            f"fired({name!r}) reads the cell's world events, and none were recorded for this evaluation — "
+            "a cell that opened no world session has no record to read"
+        )
+    return name in fired
 
 
 def _check_arity(name: str, args: list[Any], expected: int) -> list[Any]:
@@ -1416,8 +1571,12 @@ __all__ = [
     "extract_paths",
     "extract_text_matches",
     "parse",
+    "reads_call_ledger",
     "referenced_actions",
+    "referenced_fires",
     "undefined_action",
     "undefined_call_references",
+    "undefined_fire_references",
+    "undefined_fired_dimension",
     "world_prose_matches",
 ]

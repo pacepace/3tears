@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import EvalResult, EvalStorage
+from threetears.evals.contracts import EvalResult, EvalStorage, WorldSession
 from threetears.evals.contracts.candidate_kind import (
     CandidateOutput,
     CandidateTelemetry,
@@ -373,6 +373,7 @@ class _RigFailsToPrepareKind(ToyExtractorKind):
         world_seed: WorldSeed,
         span_window: CellSpanWindow,
         cassettes: CellCassettes | None,
+        world: WorldSession | None,
     ) -> ToyExtractorInstance:
         self.prepared += 1
         if self.prepared == 1:
@@ -383,6 +384,7 @@ class _RigFailsToPrepareKind(ToyExtractorKind):
             world_seed=world_seed,
             span_window=span_window,
             cassettes=cassettes,
+            world=world,
         )
 
 

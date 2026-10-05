@@ -30,8 +30,12 @@ from threetears.evals.run.check_controls import (
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import EVERY_FIELD_EMITTED, toyhost_template
 
-#: A hold check over world state: the operator's corrections stay as the seed put them.
-_CORRECTIONS_UNTOUCHED = "state.operator_corrections.length == 1"
+#: A hold check over world state: the document's language stays as the seed put it.
+#:
+#: Over a dimension set at t=0. A triggered one (the operator's corrections) is armed by the seed rather
+#: than set by it, so the do-nothing control does not hold its seeded value — a hold check over it
+#: would grade the seed as though the condition had already happened.
+_LANGUAGE_UNTOUCHED = 'state.document_language == "de"'
 
 
 def _with_hold_check() -> EvalTemplate:
@@ -40,17 +44,17 @@ def _with_hold_check() -> EvalTemplate:
     assert controls is not None
     return template.model_copy(
         update={
-            "goal_state_checks": [*template.goal_state_checks, _CORRECTIONS_UNTOUCHED],
+            "goal_state_checks": [*template.goal_state_checks, _LANGUAGE_UNTOUCHED],
             "goal_check_controls": GoalCheckControls(
                 checks=[
                     *controls.checks,
-                    GoalCheckControl(check=_CORRECTIONS_UNTOUCHED, intent="hold", control="corrections-added"),
+                    GoalCheckControl(check=_LANGUAGE_UNTOUCHED, intent="hold", control="language-rewritten"),
                 ],
                 end_states={
                     **controls.end_states,
-                    "corrections-added": ControlEndState(
-                        describes="The extractor appended a correction the operator never made.",
-                        world={"console": {"operator_corrections": ["reprice", "void"]}},
+                    "language-rewritten": ControlEndState(
+                        describes="The extractor rewrote the document's language to the one its labels are in.",
+                        world={"page_reader": {"document_language": "fr"}},
                     ),
                 },
             ),
@@ -59,17 +63,20 @@ def _with_hold_check() -> EvalTemplate:
 
 
 def test_the_do_nothing_control_is_the_seed_named_by_dimension_with_no_calls() -> None:
+    """The seed less what it armed: ``operator_corrections`` is triggered, and its condition never happened."""
     profile = toyhost_profile()
+    template = toyhost_template()
+    assert template.world_seed.namespaces["console"] == {"operator_corrections": ["reprice"]}
 
-    idle = do_nothing_end_state(toyhost_template(), world=profile.world)
+    idle = do_nothing_end_state(template, world=profile.world)
 
     assert idle.end_state == {
         "document_language": "de",
         "scan_quality": "faint",
         "vendor_template": "acme-2019",
-        "operator_corrections": ["reprice"],
     }
     assert idle.ledger.calls == []
+    assert idle.fired == frozenset()
 
 
 def test_a_named_control_lays_its_dimensions_over_the_seed_and_records_its_calls() -> None:
@@ -78,11 +85,11 @@ def test_a_named_control_lays_its_dimensions_over_the_seed_and_records_its_calls
     controls = template.goal_check_controls
     assert controls is not None
 
-    stated = control_end_state(template, controls.end_states["corrections-added"], world=profile.world)
+    stated = control_end_state(template, controls.end_states["language-rewritten"], world=profile.world)
     emitted = control_end_state(template, controls.end_states["all-fields-emitted"], world=profile.world)
 
-    assert stated.end_state["operator_corrections"] == ["reprice", "void"]
-    assert stated.end_state["document_language"] == "de"
+    assert stated.end_state["document_language"] == "fr"
+    assert stated.end_state["scan_quality"] == "faint"
     assert len(emitted.ledger.calls) == 4
 
 
@@ -94,7 +101,7 @@ def test_the_toy_template_s_checks_each_discriminate_in_both_directions() -> Non
         for d in check_discriminations(_with_hold_check(), profile=profile)
     }
 
-    assert verdicts == {EVERY_FIELD_EMITTED: (False, True), _CORRECTIONS_UNTOUCHED: (True, False)}
+    assert verdicts == {EVERY_FIELD_EMITTED: (False, True), _LANGUAGE_UNTOUCHED: (True, False)}
     refuse_non_discriminating_checks(_with_hold_check(), profile=profile)
 
 

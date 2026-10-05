@@ -200,17 +200,12 @@ class TestWhatAHostSupplies:
         assert refused.value.kind == "misplaced"
         assert "supplied by 'till'" in str(refused.value)
 
-    def test_the_skips_pass_over_what_the_run_writes_and_what_nothing_seeds(self) -> None:
-        seed = {"run_owned": {"anything": 1}, "shelf": {"stock": 3, "ledger": []}}
+    def test_a_key_the_run_writes_itself_is_refused_like_any_undeclared_key(self) -> None:
+        """No pass-over: the walk once skipped a run-owned ledger key, and a skipped key is an unchecked one.
 
-        writes = check_seed(
-            _dotted_registry(), seed, skip_namespaces={"run_owned"}, skip_keys={"ledger"}, attached={"shelf"}
-        )
-
-        assert [write.name for write in writes] == ["shelf.stock"]
-
-    def test_without_the_skips_the_same_seed_is_refused(self) -> None:
-        """The other direction on the same fixture, so a walk ignoring every unknown key would fail here."""
+        ``check_seed`` takes no skip arguments any more, so the one shape that needed them — a key no
+        dimension declares, sitting beside one that does — is refused, naming the undeclared key.
+        """
         with pytest.raises(SeedRefused) as refused:
             check_seed(_dotted_registry(), {"shelf": {"stock": 3, "ledger": []}})
 

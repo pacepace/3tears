@@ -1304,6 +1304,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 # The world and the tool bound the template states, frozen as this run launched them:
                 # the template is editable, and the runner hands the candidate the template's seed.
                 resolved_world_seed=dict(template.world_seed.namespaces),
+                resolved_ambient_perturbation_turns=list(template.world_seed.ambient_perturbation_turns),
                 resolved_tools_allowed=list(template.tools_allowed) if template.tools_allowed is not None else None,
                 cassette_mode=request.cassette_mode,
                 cassette_corpus_id=request.cassette_corpus_id,

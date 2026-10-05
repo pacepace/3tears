@@ -175,6 +175,7 @@ class _FakeGmKind:
         world_seed: Any,
         span_window: Any,
         cassettes: CellCassettes | None,
+        world: Any,
     ) -> _FakeSession:
         session = _FakeSession(variant_config.candidate_model)
         if cassettes is not None and self._wire:

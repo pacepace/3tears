@@ -61,6 +61,7 @@ from threetears.evals.contracts import (
     MetricDescriptor,
     RoleUsage,
     WorldSeed,
+    WorldSession,
     VariantConfig,
     withhold_failure_detail,
 )
@@ -77,7 +78,6 @@ from threetears.evals.contracts.host import (
     SweepableValue,
     WorldDimension,
     WorldRegistry,
-    check_seed,
     default_cell_timeout,
 )
 from threetears.evals.run import (
@@ -269,14 +269,14 @@ class RoutePlannerKind:
         world_seed: WorldSeed,
         span_window: CellSpanWindow,
         cassettes: CellCassettes | None,
+        world: WorldSession | None,
     ) -> _Planned:
-        """Seed the depot through the engine's seed walk, then read it back through the declared read."""
+        """Seed the depot through the cell's world session, then read it back through the declared read."""
+        assert world is not None, "the courier declares a world, so every cell is handed its session"
         try:
-            writes = check_seed(self._world, world_seed.namespaces, attached=self.CARRIERS)
+            await world.seed(world_seed, attached=self.CARRIERS)
         except SeedRefused as refused:
             raise CandidatePreparationFailed(f"apparatus: {refused}", termination="seed_failed") from refused
-        for write in writes:
-            await self._world.call(write.handle, write.value)
         closures = await self._world.call("courier.read_closures")
         return _Planned(model=variant_config.candidate_model, road_closures=closures)
 

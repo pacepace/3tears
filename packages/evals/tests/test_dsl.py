@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 import threetears.evals.contracts.dsl as _dsl
+from threetears.evals.contracts import Precondition
 from threetears.evals.contracts.dsl import DSLError, Missing, evaluate, evaluate_with_detail, extract_paths, parse
-from threetears.evals.contracts.host import WorldDimension, WorldRegistry
+from threetears.evals.contracts.host import Triggered, WorldDimension, WorldRegistry
 from threetears.evals.contracts.call_ledger import CallLedger
 
 
@@ -908,3 +910,70 @@ def test_extraction_refuses_what_evaluation_would_refuse():
 
     with pytest.raises(DSLError):
         extract_paths("os.system('rm -rf /')")
+
+
+# =============================================================================
+# fired(): what the cell's world events say fired, never world state and never t=0
+# =============================================================================
+
+
+class TestFired:
+    """``fired("<dimension>")`` reads the triggered dimensions that fired during the cell."""
+
+    @staticmethod
+    def _triggered_world() -> WorldRegistry:
+        return WorldRegistry(
+            [
+                WorldDimension(
+                    name="restock_alarm",
+                    carrier="shelf",
+                    schema={"type": "boolean"},
+                    matters="the alarm a scenario presumes goes off mid-run",
+                    seed="arm",
+                    read="read",
+                    when=Triggered(kind="event", condition="stock_runs_out"),
+                ),
+                WorldDimension(
+                    name="stock",
+                    carrier="shelf",
+                    schema={"type": "integer"},
+                    matters="what is on the shelf",
+                    seed="set",
+                    read="read",
+                ),
+            ],
+            bindings={"arm": lambda value: None, "set": lambda value: None, "read": lambda: None},
+        )
+
+    def test_fired_is_true_exactly_for_a_dimension_that_fired(self) -> None:
+        call = {"end_state": {}, "ledger": CallLedger(), "world": None}
+        assert evaluate('fired("restock_alarm")', fired={"restock_alarm"}, **call) is True
+        assert evaluate('fired("restock_alarm")', fired=set(), **call) is False
+        assert evaluate('not fired("restock_alarm")', fired=set(), **call) is True
+
+    def test_fired_with_no_world_events_recorded_raises_rather_than_answering_false(self) -> None:
+        with pytest.raises(DSLError, match="none were recorded"):
+            evaluate('fired("restock_alarm")', end_state={}, ledger=CallLedger(), world=None, fired=None)
+
+    @pytest.mark.parametrize("expression", ["fired(variation.alarm)", "fired()", 'fired("a", "b")', 'fired("")'])
+    def test_fired_takes_one_dimension_name_as_a_string_literal(self, expression: str) -> None:
+        with pytest.raises(DSLError, match="one dimension name as a string literal"):
+            parse(expression)
+
+    def test_referenced_fires_names_each_dimension_once_in_source_order(self) -> None:
+        expression = 'fired("b") and (fired("a") or not fired("b"))'
+        assert _dsl.referenced_fires(expression) == ("b", "a")
+
+    def test_a_fired_name_that_is_not_a_triggered_dimension_is_named(self) -> None:
+        world = self._triggered_world()
+        assert _dsl.undefined_fire_references('fired("restock_alarm")', world) == ()
+        assert _dsl.undefined_fire_references('fired("restock_alarn")', world) == (
+            "fired('restock_alarn') names no dimension this host's world declares",
+        )
+        assert "set at t=0" in _dsl.undefined_fire_references('fired("stock")', world)[0]
+        assert "declares no world" in _dsl.undefined_fire_references('fired("stock")', None)[0]
+
+    def test_a_precondition_reading_fired_is_refused_where_it_is_written(self) -> None:
+        with pytest.raises(ValidationError, match="before any trigger could fire"):
+            Precondition(expression='fired("restock_alarm")', presumes="the alarm already went off")
+        Precondition(expression="state.stock >= 1", presumes="something is on the shelf")

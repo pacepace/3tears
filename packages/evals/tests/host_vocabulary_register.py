@@ -111,6 +111,8 @@ CEILINGS: dict[str, dict[str, int]] = {
     "contracts/store_port.py": {},
     "contracts/surface.py": {},
     "contracts/usage_capture.py": {},
+    "contracts/world_events.py": {},
+    "contracts/world_session.py": {},
     "gen/__init__.py": {},
     "gen/prompts/__init__.py": {},
     "gen/prompts/boundary_gen.py": {},

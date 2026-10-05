@@ -37,7 +37,7 @@ from pydantic import (
 
 from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel, VerbatimJsonObject, VerbatimObject
 from threetears.evals.contracts.call_ledger import CallLedger, RecordedCall
-from threetears.evals.contracts.dsl import DSLError, extract_paths, parse
+from threetears.evals.contracts.dsl import DSLError, extract_paths, parse, referenced_fires
 from threetears.evals.contracts.host.subject import SubjectSnapshot
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.host.world import WorldPlacement, WorldRegistry
@@ -47,6 +47,7 @@ from threetears.evals.contracts.judge_attribution import (
     attribution_state,
 )
 from threetears.evals.contracts.prose import ModelProse
+from threetears.evals.contracts.world_events import WorldEvent
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -269,6 +270,37 @@ class WorldSeed(EvalDocumentModel):
 
     namespaces: dict[str, Any] = Field(default_factory=dict)
 
+    ambient_perturbation_turns: list[Annotated[int, Field(ge=1)]] = Field(
+        default_factory=list,
+        description=(
+            "The candidate turns, counted from 1, before which the host's ambient-perturbation handle moves "
+            "state no dimension declares — so a run, and not only the conformance kit, exposes a candidate that "
+            "perceives undeclared state. Empty perturbs nothing. Applied by the cell's world session when the "
+            "kind reaches each turn (``WorldSession.at_turn``) and recorded on the result's ``world_events``; a "
+            "turn the cell never reached is never applied. Refused at authoring on a host whose world has no "
+            "ambient-perturbation handle, and frozen onto the run beside the namespaces "
+            "(``EvalRun.resolved_ambient_perturbation_turns``)."
+        ),
+    )
+
+    @field_validator("ambient_perturbation_turns")
+    @classmethod
+    def _each_turn_once(cls, value: list[int]) -> list[int]:
+        """Refuse a turn named twice: perturbation is applied once per named turn, so a repeat states nothing.
+
+        Args:
+            value: The turns.
+
+        Returns:
+            They, unchanged.
+
+        Raises:
+            ValueError: A turn appears more than once.
+        """
+        if len(set(value)) != len(value):
+            raise ValueError(f"ambient_perturbation_turns names a turn twice: {value!r}")
+        return value
+
 
 class Precondition(EvalDocumentModel):
     """One thing a template presumes about the world before the subject's first turn.
@@ -326,12 +358,19 @@ class Precondition(EvalDocumentModel):
             It unchanged.
 
         Raises:
-            ValueError: The expression is malformed or uses something outside the grammar.
+            ValueError: The expression is malformed or uses something outside the grammar, or reads
+                ``fired()``.
         """
         try:
             parse(value)
+            fires = referenced_fires(value)
         except DSLError as malformed:
             raise ValueError(f"precondition expression does not parse: {malformed}") from malformed
+        if fires:
+            raise ValueError(
+                f"precondition reads fired({fires[0]!r}), and a precondition reads the world at t=0, before any "
+                "trigger could fire — a check on what fired is a goal check"
+            )
         return value
 
     @property
@@ -394,6 +433,14 @@ class ControlEndState(EvalDocumentModel):
         description=(
             "The case parameters the checks are evaluated under, for a check that reads variation.*. "
             "The do-nothing control is evaluated under the same parameters, so only the behaviour differs."
+        ),
+    )
+    fired: list[str] = Field(
+        default_factory=list,
+        description=(
+            'Every triggered dimension that fired, by name — what a check reads with fired("<dimension>"). '
+            "The whole set, not an overlay: the do-nothing control fires nothing, so an empty list states a "
+            "candidate in whose cell nothing fired. Each name must be a triggered dimension the host declares."
         ),
     )
 
@@ -1922,6 +1969,16 @@ class EvalRun(EvalDocumentModel):
             "world seed."
         ),
     )
+    resolved_ambient_perturbation_turns: list[int] = Field(
+        default_factory=list,
+        description=(
+            "The template's ``world_seed.ambient_perturbation_turns`` as THIS run froze it at launch — the turns "
+            "before which the host's ambient perturbation moved undeclared state. Persisted beside "
+            "``resolved_world_seed`` for its reason (the template is mutable and versioned) and hashed into the "
+            "measurement context with it, so a run that perturbed and one that did not are never pooled as "
+            "repetitions of one condition. Empty when the template scheduled none."
+        ),
+    )
 
     kind_spec: dict[str, Any] = Field(
         default_factory=dict,
@@ -2921,6 +2978,13 @@ class EvalTrace(EvalDocumentModel):
     #: checks against. Stored so a re-check re-grades from what the candidate did rather than from
     #: the verdicts alone. ``None`` when the kind keeps no ledger.
     call_ledger: CallLedger | None = None
+    #: The world the cell left behind, keyed by declared dimension name: every dimension of every carrier
+    #: the cell attached, read back through its ``read`` handle once the kind's ``invoke`` returned (or
+    #: earlier, when the kind read it to grade against — one read either way). Stored so a re-check
+    #: re-grades a ``state.*`` check from what the world held rather than from the verdict alone.
+    #: ``None`` when nothing was read: a host with no world, a kind that never seeded through its world
+    #: session, or a cell cut off before its end state was read.
+    end_state: VerbatimJsonObject | None = None
 
     @model_validator(mode="after")
     def _evidence_and_its_declaration_travel_together(self) -> Self:
@@ -3197,6 +3261,18 @@ class EvalResult(EvalDocumentModel):
             "What this cell's candidate kind reported that only the kind can name, stored verbatim and read by "
             "nothing in the engine (``CandidateOutput.kind_payload``). The host that owns the kind is the one "
             "reader. None for a kind that reports none."
+        ),
+    )
+    world_events: list[WorldEvent] | None = Field(
+        default=None,
+        description=(
+            "What moved this cell's world after it was seeded, in order: each triggered dimension that fired "
+            "(by the rig through the host's fire handle, or in the world and recorded by the kind) and each "
+            "ambient perturbation the template's seed scheduled (:class:`WorldEvent`). Recorded by the cell's "
+            "world session, which the runner owns, so a cell cut off at its deadline keeps what fired before "
+            "it. ``[]`` means the cell's kind opened the world and nothing moved it; None means no world was "
+            "opened — a host that declares none, or a kind that never seeded through its session. "
+            "``fired(...)`` reads it, and a re-check re-grades a fired check from it."
         ),
     )
 

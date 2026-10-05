@@ -1,28 +1,34 @@
-"""Re-grade a stored run's goal checks from the call ledgers its cells stored.
+"""Re-grade a stored run's goal checks from what its cells stored: their call ledgers, end states and world events.
 
-A goal check's call predicates (``called_before``, ``call_count``, ``calls``, …) read the cell's
-call ledger, and the runner stores that ledger on the cell's trace
-(:attr:`~threetears.evals.contracts.models.EvalTrace.call_ledger`) exactly as the kind recorded it.
-So a stored result is re-graded from what its candidate DID, through
+A goal check reads three things about a finished cell, and the runner stores all three exactly as the
+cell left them: the calls its candidate made (the trace's
+:attr:`~threetears.evals.contracts.models.EvalTrace.call_ledger`, read by ``called_before``,
+``calls`` …), the world it left behind (the trace's
+:attr:`~threetears.evals.contracts.models.EvalTrace.end_state`, read by ``state.<dimension>``), and the
+triggered dimensions that fired (the result's
+:attr:`~threetears.evals.contracts.models.EvalResult.world_events`, read by ``fired()``). So a stored
+result is re-graded from what its candidate DID and what its world BECAME, through
 :func:`~threetears.evals.run.runner.grade_goal_checks` — the function every kind grades a live cell
 with — and a change to the goal language reaches results stored before it without re-running them.
-Nothing here is kind-shaped: no kind replays its own trace, because the ledger was stored as the
+Nothing here is kind-shaped: no kind replays its own trace, because each input was stored as the
 engine's own type.
 
 **What it re-grades, and what it leaves as stored.** It re-grades every stored outcome whose
-expression is a goal-state expression reading only the ledger and the case
-(``variation.*``, read from the stored test case). It leaves as stored, and names:
+expression is a goal-state expression whose every input is stored. It leaves as stored, and names:
 
-* an expression that reads world state (``state.*``) — a cell's end state is not stored on its
-  result, so there is nothing to re-read it from;
+* an expression that reads the call ledger, for a cell whose kind kept none (or whose trace did not
+  land);
+* an expression that reads world state, for a cell whose end state was not stored, or a re-check given
+  no world registry to resolve ``state.<dimension>`` through;
+* an expression that reads ``fired()``, for a cell that recorded no world events;
 * an outcome that is not a goal-state expression at all — a fact a kind computed itself and
   reported under its own wording (``field_accuracy >= 0.92`` names no root the language admits);
 * an expression reading ``variation.*`` whose test case no longer resolves.
 
 **What it does not re-check at all, and says so.** A result whose checks were not graded at the
 cell's end (any termination but ``completed``): a cell cut off on a deadline carries unevaluated,
-failed checks, and a replay must never turn those into passes. A result with no stored ledger: its
-kind kept none, or its trace did not land. A result one of whose checks no longer evaluates.
+failed checks, and a replay must never turn those into passes. A result one of whose checks no longer
+evaluates.
 
 Rewrites go through each result's ETag, so a result something else wrote meanwhile is named and
 left alone, and an applied re-check is idempotent: a second pass finds nothing to change.
@@ -34,16 +40,19 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
+from threetears.evals.contracts.call_ledger import CallLedger
+
 from pydantic import Field
 
 from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.dsl import DSLError, extract_paths
+from threetears.evals.contracts.dsl import DSLError, extract_paths, reads_call_ledger, referenced_fires
 from threetears.evals.contracts.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.contracts.models import NON_TERMINAL_RUN_STATUSES, GoalStateOutcome
+from threetears.evals.contracts.world_events import fired_dimensions
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.call_ledger import CallLedger
+    from threetears.evals.contracts.host.world import WorldRegistry
     from threetears.evals.contracts.models import EvalResult, EvalRun, EvalTestCase, EvalTrace
 
 log = logging.getLogger(__name__)
@@ -126,15 +135,28 @@ class RunRecheck(EvalBaseModel):
 
 
 def recheck_result(
-    result: EvalResult, ledger: CallLedger | None, *, variation: Mapping[str, Any] | None
+    result: EvalResult,
+    *,
+    ledger: CallLedger | None,
+    end_state: Mapping[str, Any] | None,
+    variation: Mapping[str, Any] | None,
+    world: WorldRegistry | None,
 ) -> tuple[ResultRecheck, list[GoalStateOutcome] | None]:
-    """Re-grade one stored result's goal checks against its stored call ledger.
+    """Re-grade one stored result's goal checks against what its cell stored.
+
+    What fired is read off the result itself (``world_events``); the ledger and the end state come off
+    its trace.
 
     Args:
         result: The stored result.
-        ledger: The call ledger its trace stored, or ``None`` when none was stored.
+        ledger: The call ledger its trace stored, or ``None`` when none was stored — an outcome reading
+            the ledger is then kept as stored.
+        end_state: The end state its trace stored, or ``None`` when none was — an outcome reading world
+            state is then kept as stored.
         variation: Its test case's variation parameters, or ``None`` when the test case no longer
             resolves — an outcome reading ``variation.*`` is then kept as stored.
+        world: The host's world registry, which ``state.<dimension>`` resolves through; ``None`` keeps
+            every outcome reading world state as stored.
 
     Returns:
         The report, and the outcomes to store — ``None`` when no verdict moved, so a caller
@@ -148,23 +170,34 @@ def recheck_result(
             result_id=result.id,
             not_rechecked=f"its checks were not graded at the cell's end (termination={result.termination})",
         ), None
-    if ledger is None:
-        return ResultRecheck(
-            result_id=result.id, not_rechecked="no call ledger is stored for it — its kind keeps none"
-        ), None
+    stored_inputs = _StoredInputs(
+        has_ledger=ledger is not None,
+        has_end_state=end_state is not None,
+        has_world=world is not None,
+        has_events=result.world_events is not None,
+        has_variation=variation is not None,
+    )
+    fired = fired_dimensions(result.world_events) if result.world_events is not None else None
 
     outcomes: list[GoalStateOutcome] = []
     flips: list[CheckFlip] = []
     kept: list[KeptOutcome] = []
     for stored in result.goal_state_outcomes:
-        reason = _kept_reason(stored.expression, has_variation=variation is not None)
+        reason = _kept_reason(stored.expression, stored_inputs)
         if reason is not None:
             kept.append(KeptOutcome(expression=stored.expression, reason=reason))
             outcomes.append(stored)
             continue
         try:
+            # An input this expression does not read is passed empty: ``_kept_reason`` has already kept
+            # every expression reading an input that was not stored.
             (regraded,) = grade_goal_checks(
-                [stored.expression], ledger=ledger, end_state={}, variation=variation or {}, world=None
+                [stored.expression],
+                ledger=ledger if ledger is not None else CallLedger(),
+                end_state=end_state if end_state is not None else {},
+                fired=fired,
+                variation=variation or {},
+                world=world,
             )
         except GoalCheckUnevaluable as unevaluable:
             return ResultRecheck(result_id=result.id, not_rechecked=f"a check no longer evaluates: {unevaluable}"), None
@@ -182,34 +215,56 @@ def recheck_result(
     return report, outcomes if flips else None
 
 
-def _kept_reason(expression: str, *, has_variation: bool) -> str | None:
-    """Why a stored outcome cannot be re-graded from a ledger, or None when it can.
+class _StoredInputs(EvalBaseModel):
+    """Which of a goal check's inputs one stored result can supply."""
+
+    has_ledger: bool
+    has_end_state: bool
+    has_world: bool
+    has_events: bool
+    has_variation: bool
+
+
+def _kept_reason(expression: str, inputs: _StoredInputs) -> str | None:
+    """Why a stored outcome cannot be re-graded from what its cell stored, or None when it can.
 
     Args:
         expression: The stored outcome's expression.
-        has_variation: Whether the result's test case resolved.
+        inputs: Which inputs the result can supply.
 
     Returns:
         The reason, or None.
     """
     try:
         paths = extract_paths(expression)
+        reads_calls = reads_call_ledger(expression)
+        reads_fired = bool(referenced_fires(expression))
     except DSLError:
         return "not a goal-state expression — a fact its kind computed and reported in its own words"
-    if paths.world:
-        return "it reads world state, and a cell's end state is not stored on its result"
-    if paths.variation and not has_variation:
+    if reads_calls and not inputs.has_ledger:
+        return "it reads the call ledger, and no call ledger is stored for its cell — its kind keeps none"
+    if paths.world and not inputs.has_end_state:
+        return "it reads world state, and its cell's end state was not stored"
+    if paths.world and not inputs.has_world:
+        return "it reads world state, and this re-check was given no world registry to resolve it through"
+    if reads_fired and not inputs.has_events:
+        return "it reads what fired, and its cell recorded no world events"
+    if paths.variation and not inputs.has_variation:
         return "it reads the case's variation, and the test case no longer resolves"
     return None
 
 
-def recheck_goal_states(store: RecheckStore, run_id: str, scope_id: str, *, apply: bool) -> RunRecheck:
-    """Re-grade every result of one stored run from its stored call ledgers, and optionally store the new verdicts.
+def recheck_goal_states(
+    store: RecheckStore, run_id: str, scope_id: str, *, world: WorldRegistry | None, apply: bool
+) -> RunRecheck:
+    """Re-grade every result of one stored run from what its cells stored, and optionally store the new verdicts.
 
     Args:
         store: The run's store.
         run_id: The run to re-check.
         scope_id: The partition it lives in.
+        world: The host's world registry (``profile.world``), through which a ``state.<dimension>`` check
+            reads a stored end state. ``None`` for a host that declares no world, whose checks read none.
         apply: ``False`` reports what would change and writes nothing.
 
     Returns:
@@ -240,7 +295,11 @@ def recheck_goal_states(store: RecheckStore, run_id: str, scope_id: str, *, appl
             case = store.load_test_case(result.test_case_id, scope_id)
             variations[result.test_case_id] = case.variation_params if case is not None else None
         report, outcomes = recheck_result(
-            result, trace.call_ledger if trace is not None else None, variation=variations[result.test_case_id]
+            result,
+            ledger=trace.call_ledger if trace is not None else None,
+            end_state=trace.end_state if trace is not None else None,
+            variation=variations[result.test_case_id],
+            world=world,
         )
         reports.append(report)
         if not apply or outcomes is None:

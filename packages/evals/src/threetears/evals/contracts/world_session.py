@@ -1,0 +1,350 @@
+"""One cell's live handle on the host's world: seed it, settle it, move it, and read back what it became.
+
+The host declares its world once, on its profile (:class:`~threetears.evals.contracts.host.world.WorldRegistry`).
+A cell uses it through one of these, which the runner builds per cell and hands to the kind's
+``prepare`` as ``world``. Everything a cell does to its world goes through here, so the runner can
+record it whatever way the cell ends — the same reason a cell's spend goes through its sink:
+
+1. :meth:`WorldSession.seed` — the case's seed, through the engine's seed walk
+   (:func:`~threetears.evals.contracts.host.world_seed.check_seed`) and the dimensions' own ``seed``
+   handles, for the carriers the kind attaches; then every attached carrier's ``settle`` handle,
+   awaited before the candidate's first turn. Seeding a triggered dimension ARMS it.
+2. :meth:`WorldSession.at_turn` — before each candidate turn, the ambient perturbation the seed
+   scheduled for that turn, if any.
+3. :meth:`WorldSession.fire` / :meth:`WorldSession.observe` — a triggered dimension's condition
+   happening: made to happen by the rig through the host's ``fire`` handle, or seen happening in the
+   world and recorded. Each is a :class:`~threetears.evals.contracts.world_events.WorldEvent`.
+4. :meth:`WorldSession.end_state` — every dimension of every attached carrier, read back through its
+   ``read`` handle. Read ONCE: a kind that grades its goal checks reads it here, and the runner, which
+   reads it after ``invoke`` returns for the cell's trace, gets the same reading. After it the world is
+   closed and nothing more may move it — a firing recorded after the end state was read would describe
+   a world the stored end state does not.
+
+**Why the runner, and not the kind, reads the end state back.** A kind that grades against a world it
+read at t=0 grades the seed, not what the candidate did — the founding defect of a world read. The
+runner's read after ``invoke`` is what makes the stored end state the world the cell LEFT, for every
+kind, including one that never thought to read it.
+
+**What it refuses is the kind's code, not the cell's luck.** Every :class:`WorldSessionError` is a kind
+asking for something its host's world cannot give or the moment does not allow, so every cell would do
+the same: it is not caught at the dispatch site, and ends the run. A refused seed is the exception —
+:class:`~threetears.evals.contracts.host.world_seed.SeedRefused` propagates for the kind to translate,
+because what a refusal costs is the kind's to say. A handle that raises propagates with its type
+intact, so a rig fault raised as :class:`~threetears.evals.contracts.host.ApparatusError` excludes the
+one cell.
+"""
+
+from __future__ import annotations
+
+import copy
+from collections.abc import Collection
+from typing import Any
+
+from pydantic import TypeAdapter, ValidationError
+
+from threetears.evals.contracts.base import VerbatimJsonObject
+from threetears.evals.contracts.host.world import Triggered, WorldDimension, WorldRegistry
+from threetears.evals.contracts.host.world_seed import SeedWrite, check_seed
+from threetears.evals.contracts.models import WorldSeed
+from threetears.evals.contracts.world_events import WorldEvent, fired_dimensions
+
+_END_STATE: TypeAdapter[dict[str, Any]] = TypeAdapter(VerbatimJsonObject)
+
+
+class WorldSessionError(Exception):
+    """A kind asked its cell's world session for something the host's world, or the moment, cannot give."""
+
+
+class WorldSession:
+    """One cell's handle on the host's world, and the record of what happened to it.
+
+    Built by the runner, one per cell, over the host profile's world registry, and handed to the kind's
+    ``prepare``. A kind that seeds no world never calls it, and the cell then records neither world
+    events nor an end state — nobody opened the world, which is a different fact from an empty one.
+    """
+
+    def __init__(self, registry: WorldRegistry) -> None:
+        """Bind the session to the host's world.
+
+        Args:
+            registry: The host's world registry (``profile.world``).
+        """
+        self._registry = registry
+        self._attached: tuple[str, ...] | None = None
+        self._seeded: tuple[str, ...] = ()
+        self._ambient_turns: frozenset[int] = frozenset()
+        self._perturbed: set[int] = set()
+        self._events: list[WorldEvent] = []
+        self._end_state: dict[str, Any] | None = None
+
+    @property
+    def registry(self) -> WorldRegistry:
+        """The host's world this session moves."""
+        return self._registry
+
+    @property
+    def opened(self) -> bool:
+        """Whether the kind seeded through this session — what opens the world for the cell."""
+        return self._attached is not None
+
+    @property
+    def attached(self) -> tuple[str, ...]:
+        """The carriers the kind attached when it seeded, sorted; empty before it has."""
+        return self._attached or ()
+
+    @property
+    def seeded(self) -> tuple[str, ...]:
+        """The dimensions the seed set — and so the triggered ones it armed — in the seed's order."""
+        return self._seeded
+
+    @property
+    def events(self) -> tuple[WorldEvent, ...]:
+        """Everything that moved the world after it was seeded, in order."""
+        return tuple(self._events)
+
+    @property
+    def fired(self) -> frozenset[str]:
+        """The triggered dimensions that fired, whoever caused them — what ``fired()`` reads."""
+        return fired_dimensions(self._events)
+
+    @property
+    def end_state_read(self) -> dict[str, Any] | None:
+        """The end state once it has been read, a copy; None until then."""
+        return copy.deepcopy(self._end_state)
+
+    async def seed(self, world_seed: WorldSeed, *, attached: Collection[str]) -> tuple[SeedWrite, ...]:
+        """Seed the cell's world for a subject attaching ``attached``, then settle each attached carrier.
+
+        Every write is checked before any is made (the seed walk), so a refused seed leaves the world as it
+        was. Each write goes through the dimension's own ``seed`` handle — the path the conformance kit
+        proves — and each attached carrier that declares a ``settle`` handle is awaited after all of them,
+        in carrier order, so the candidate's first turn meets the world the seed describes. Call it once
+        per cell, from ``prepare``, with the empty seed when the case sets nothing: it is also how the
+        cell says which carriers its subject holds, which the end state is read over.
+
+        Args:
+            world_seed: The case's seed, as ``prepare`` received it.
+            attached: The carriers the subject attaches.
+
+        Returns:
+            The writes made, in the seed's order.
+
+        Raises:
+            SeedRefused: The seed walk refused a value. Nothing has been written.
+            WorldSessionError: The session was already seeded; ``attached`` names a carrier no declared
+                dimension names; or the seed schedules ambient perturbation and the host's world has no
+                ambient-perturbation handle.
+        """
+        if self._attached is not None:
+            raise WorldSessionError("this cell's world was already seeded; a world session seeds once per cell")
+        carriers = {declared.carrier for declared in self._registry.declarations}
+        if unknown := sorted(set(attached) - carriers):
+            raise WorldSessionError(
+                f"the kind attaches carrier(s) {', '.join(map(repr, unknown))}, which no declared dimension names "
+                f"(carriers: {', '.join(sorted(carriers)) or 'none'})"
+            )
+        if world_seed.ambient_perturbation_turns and self._registry.perturb_ambient is None:
+            raise WorldSessionError(
+                "the seed schedules ambient perturbation before turn(s) "
+                f"{world_seed.ambient_perturbation_turns!r}, and this host's world declares no perturb_ambient handle"
+            )
+        writes = check_seed(self._registry, world_seed.namespaces, attached=attached)
+        for write in writes:
+            await self._registry.call(write.handle, write.value)
+        self._attached = tuple(sorted(set(attached)))
+        self._seeded = tuple(write.name for write in writes)
+        self._ambient_turns = frozenset(world_seed.ambient_perturbation_turns)
+        settle = self._registry.settle
+        for carrier in self._attached:
+            if (handle := settle.get(carrier)) is not None:
+                await self._registry.call(handle)
+        return writes
+
+    async def at_turn(self, turn: int) -> WorldEvent | None:
+        """Mark that the candidate is about to take turn ``turn``, applying any ambient perturbation due.
+
+        A kind calls it before each candidate turn, counted from 1. The perturbation scheduled for a turn is
+        applied once, however often that turn is announced.
+
+        Args:
+            turn: The turn about to be taken.
+
+        Returns:
+            The perturbation recorded, or None when none was due.
+
+        Raises:
+            WorldSessionError: The world is not open, or is already closed.
+        """
+        self._require_open("announce a turn")
+        if turn not in self._ambient_turns or turn in self._perturbed:
+            return None
+        handle = self._registry.perturb_ambient
+        # Refused at seed when absent, so a scheduled turn always has a handle here.
+        assert handle is not None
+        moved = await self._registry.call(handle)
+        self._perturbed.add(turn)
+        event = WorldEvent(
+            kind="ambient",
+            caused_by="rig",
+            turn=turn,
+            moved=None if moved is None else [str(name) for name in moved],
+        )
+        self._events.append(event)
+        return event
+
+    async def fire(self, dimension: str, *, turn: int | None = None) -> WorldEvent:
+        """Make a triggered dimension's condition happen, through the host's ``fire`` handle, and record it.
+
+        Args:
+            dimension: The triggered dimension.
+            turn: The candidate turn it fired before or during, counted from 1; None for a kind with no turns.
+
+        Returns:
+            The firing recorded.
+
+        Raises:
+            WorldSessionError: The world is not open or is closed; the dimension is undeclared, not
+                triggered, or on a carrier this cell did not attach; it has no fire handle (a ``human``
+                trigger never does — record a person's act with :meth:`observe`); or this cell's seed did
+                not arm it.
+        """
+        declared, trigger = self._triggered(dimension, verb="fire")
+        if trigger.fire is None:
+            raise WorldSessionError(
+                f"{dimension} has no fire handle, so the rig cannot make its condition happen"
+                + (
+                    " — only a person brings a human trigger about; record it with observe()"
+                    if trigger.kind == "human"
+                    else ""
+                )
+            )
+        if dimension not in self._seeded:
+            raise WorldSessionError(
+                f"{dimension} was not armed by this cell's seed, so firing it would record a condition the run "
+                "never set up"
+            )
+        await self._registry.call(trigger.fire)
+        return self._record(declared, trigger, caused_by="rig", turn=turn)
+
+    def observe(self, dimension: str, *, turn: int | None = None) -> WorldEvent:
+        """Record a triggered dimension's condition happening in the world, which the rig did not cause.
+
+        The candidate's own action brought an event about, or a person made a ruling: the world fired it,
+        and the kind saw it happen. Nothing is called. Allowed whether or not the seed armed it — a host's
+        world may hold conditions of its own — and the record says which.
+
+        Args:
+            dimension: The triggered dimension.
+            turn: The candidate turn it fired before or during, counted from 1; None for a kind with no turns.
+
+        Returns:
+            The firing recorded.
+
+        Raises:
+            WorldSessionError: The world is not open or is closed, or the dimension is undeclared, not
+                triggered, or on a carrier this cell did not attach.
+        """
+        declared, trigger = self._triggered(dimension, verb="observe")
+        return self._record(declared, trigger, caused_by="world", turn=turn)
+
+    async def end_state(self) -> dict[str, Any]:
+        """The world the cell left: every dimension of every attached carrier, read through its ``read`` handle.
+
+        Read once. The first call reads and closes the world; every later call — the runner's after
+        ``invoke``, when the kind read it first to grade — returns the same reading.
+
+        Returns:
+            Dimension name → value, in registration order, a copy.
+
+        Raises:
+            WorldSessionError: The world was never opened, or a read handle returned a value storage cannot
+                hold as JSON.
+        """
+        if self._attached is None:
+            raise WorldSessionError("this cell's world was never seeded, so it has no end state to read")
+        if self._end_state is None:
+            attached = set(self._attached)
+            read = {
+                declared.name: await self._registry.call(declared.read)
+                for declared in self._registry.declarations
+                if declared.carrier in attached and declared.read is not None
+            }
+            try:
+                self._end_state = _END_STATE.validate_python(read)
+            except ValidationError as unstorable:
+                raise WorldSessionError(
+                    f"a read handle returned a value the end state cannot store as JSON: {unstorable}"
+                ) from unstorable
+        return copy.deepcopy(self._end_state)
+
+    def _require_open(self, action: str) -> None:
+        """Refuse to move a world that is not open, or that is already closed.
+
+        Args:
+            action: What was asked, for the message.
+
+        Raises:
+            WorldSessionError: The world was never seeded, or its end state has been read.
+        """
+        if self._attached is None:
+            raise WorldSessionError(f"cannot {action}: this cell's world was never seeded")
+        if self._end_state is not None:
+            raise WorldSessionError(
+                f"cannot {action}: this cell's end state was already read, and anything recorded after it would "
+                "describe a world the stored end state does not"
+            )
+
+    def _triggered(self, dimension: str, *, verb: str) -> tuple[WorldDimension, Triggered]:
+        """The declaration and trigger of a dimension a firing names, or the refusal.
+
+        Args:
+            dimension: The dimension named.
+            verb: What was asked, for the message.
+
+        Returns:
+            Its declaration and its trigger.
+
+        Raises:
+            WorldSessionError: See :meth:`fire`.
+        """
+        self._require_open(f"{verb} {dimension}")
+        declared = self._registry.get(dimension)
+        if declared is None:
+            raise WorldSessionError(f"cannot {verb} {dimension}: this host's world declares no such dimension")
+        if not isinstance(declared.when, Triggered):
+            raise WorldSessionError(
+                f"cannot {verb} {dimension}: it is set at t=0, and only a triggered dimension fires"
+            )
+        if declared.carrier not in self.attached:
+            raise WorldSessionError(
+                f"cannot {verb} {dimension}: its carrier {declared.carrier!r} is not attached for this cell's subject"
+            )
+        return declared, declared.when
+
+    def _record(self, declared: WorldDimension, trigger: Triggered, *, caused_by: str, turn: int | None) -> WorldEvent:
+        """Append one firing to the record.
+
+        Args:
+            declared: The dimension that fired.
+            trigger: Its trigger.
+            caused_by: ``rig`` or ``world``.
+            turn: The turn, or None.
+
+        Returns:
+            The record.
+        """
+        event = WorldEvent.model_validate(
+            {
+                "kind": trigger.kind,
+                "dimension": declared.name,
+                "condition": trigger.condition,
+                "caused_by": caused_by,
+                "armed": declared.name in self._seeded,
+                "turn": turn,
+            }
+        )
+        self._events.append(event)
+        return event
+
+
+__all__ = ["WorldSession", "WorldSessionError"]
