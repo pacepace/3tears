@@ -6,6 +6,42 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the timeseries chart and the bundle's time axis
+
+- **The bundle places a campaign's runs in time.** `AnalysisContextBundle.time_axis: TimeAxis | None` (new) and
+  `time_axis_withheld: str | None` (new). A campaign whose measuring runs span two or more builds — the values of the
+  host's release label — or, failing that, two or more UTC days carries a `TimeAxis` (`basis`: `release` | `date`,
+  `release_label`, `positions`). Each `TimePosition` (`key`, `first_run_at`, `last_run_at`, `run_ids`, `cells`) holds
+  every cell measured at that position, computed by the decision surface's own algebra (re-pooled observations,
+  judged summaries, per-cell measures) over that position's runs alone. Positions are ordered by when each first ran,
+  never by name. A run with no observation takes no position. Without an axis, `time_axis_withheld` says what every
+  run shared (one day, and the host labels no build / every run recorded one build / N runs recorded none).
+  `measure_catalog` and the frozen surface's `measures` describe the axis's measures too. New exported models:
+  `TimeAxis`, `TimeAxisBasis`, `TimePosition` (from `threetears.evals.contracts`). Bundle `schema_version` 34 -> 35.
+- **`DecisionSurface.time_axis: TimeAxis | None`** (new): the axis is frozen onto the analysis with its cells, so a
+  stored timeseries resolves against what it was generated over.
+- **`HostProfile.release_label: str | None`** (new): the registered `label` sweepable whose value names the build
+  that ran. Refused at registration (`ProfileRegistrationError`) when it names an undeclared input or one of another
+  role. With none, or with a run that recorded no build, the axis falls back to days.
+- **The `timeseries` chart.** `TimeseriesPayload` (with `TimeseriesSeries`, `TimeseriesPoint`, `TimeseriesGap`) is
+  registered in `PAYLOAD_MODELS`, so every `Viz` type the stored model declares is now validated. Refused: fewer than
+  two positions, a repeated or blank position, no series, a repeated series label, a point off the axis, twice at one
+  position or out of the axis's order, no series with points at two positions, a gap off the axis or on a drawn
+  point, and a `basis` / `release_label` mismatch. Every point carries its interval (`ci.level`, `ci.variability`).
+  The compiler arm draws a panel per series (row facet named by the shared gutter header, one value axis across
+  panels, no hue), a line broken at each gap, each point's interval and its value; it discloses the axis order,
+  the intervals and each gap with its reason, and its values-as-drawn table is series, position, mean, low, high, n.
+- **`timeseries` on the analysis menu, only where there is time.** `viz_refs.TimeseriesRef` and its builder read one
+  reading at every position for each named cell (none names every cell; one cell is one line), through
+  `resolve_reading` over each position's cells; a position a cell lacks, or where it has no interval, is a payload
+  gap with its reason. Refused (`UnresolvableReference`) on a surface with no time axis, and when no cell has an
+  interval at two positions. `viz_refs.TIME_VIZ_TYPES` (new). The generator offers `timeseries` in the response
+  contract only for a bundle with a time axis, so one without cannot reference it. `prompt_content_version(prompt,
+  profile, *, time_axis)` now takes whether the menu offered it, since that changes what the model was told.
+- **Policy rule 11: a line through categories states their order.** A `line`, `trail` or `area` mark over a nominal
+  or ordinal position must state that order as a `sort` list or a `scale.domain`; Vega's default sorts by name.
+- The generator prompt's chart routing names `timeseries` (and that only a bundle with `time_axis` offers it).
+
 ### 3tears-evals: corrected comparisons, bar proposals and predicted cost
 
 - **Multiple comparisons are corrected.** `AnalysisContextBundle.multiple_comparisons: MultipleComparisons` (new):

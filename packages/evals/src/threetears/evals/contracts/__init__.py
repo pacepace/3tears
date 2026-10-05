@@ -279,6 +279,9 @@ from threetears.evals.contracts.surface import (
     JudgedDimensionFacts,
     JudgedReading,
     MeasureFacts,
+    TimeAxis,
+    TimeAxisBasis,
+    TimePosition,
 )
 from threetears.evals.contracts.usage_capture import CallUsage
 from threetears.evals.contracts.cassettes import SyncToolLike, ToolLike
@@ -490,6 +493,9 @@ __all__ = [
     "SyncActionSeam",
     "SyncToolLike",
     "SyncToolWrap",
+    "TimeAxis",
+    "TimeAxisBasis",
+    "TimePosition",
     "ToolLike",
     "ToolWrap",
     "TransferabilityClass",

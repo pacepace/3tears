@@ -55,6 +55,9 @@ cleanly — which is why they are mechanical here rather than left to review:
    a dashed line is a mark property the reader has learned to read as data.
 10. **A ranking is ordered by a measure it draws.** A block in one column of a sweep is the finding; ordering the rows by that column
     manufactures it, and the two are the same picture in a different sequence.
+11. **A line through categories states their order.** A line connects its points in the order its
+    scale puts them, and a categorical scale left to sort itself sorts by name — so builds ``0.9`` and
+    ``0.10`` draw as ``0.10`` then ``0.9``, and the slope between them is a trend the data never had.
 
 **What "a chart" means to these rules.** A composed spec is read as a set of
 FRAMES (:class:`_View`): a ``layer`` puts its marks in one frame sharing one set
@@ -140,6 +143,9 @@ _SHARED_SCALE_CHANNELS = tuple(_SHARED_SCALE_HARM)
 #: The argument list admits one level of nested brackets (a ``color-mix`` over an ``oklch``) and
 #: no more, so ``oklch(…) (observations)`` — a title that merely starts with one — is not a value.
 _UNRENDERABLE_COLOUR = re.compile(r"\s*(?:oklch|oklab|lch|lab|color-mix)\((?:[^()]|\([^()]*\))*\)\s*", re.IGNORECASE)
+
+#: Marks that CONNECT their points along a positional scale, so the scale's order is the order of the line.
+_CONNECTING_MARKS = frozenset({"line", "trail", "area"})
 
 #: Sentinel telling an ABSENT ``legend`` key from one explicitly set to ``None``.
 #: The two are opposite instructions — absent draws Vega-Lite's default legend,
@@ -483,6 +489,7 @@ def _check_view(view: _View) -> list[str]:
     violations.extend(_check_upright_text(view))
     violations.extend(_check_solid_grid(view))
     violations.extend(_check_ranked_by_its_measure(view))
+    violations.extend(_check_line_order(view))
     return violations
 
 
@@ -1210,6 +1217,42 @@ def _ranked_quantities(view: _View, identity: str, order: list[str]) -> dict[str
 def _non_increasing(values: list[float]) -> bool:
     """Whether a run of values never rises — the shape a descending ranking has."""
     return all(earlier >= later for earlier, later in itertools.pairwise(values))
+
+
+def _check_line_order(view: _View) -> list[str]:
+    """A connecting mark over a categorical position states the order of its categories.
+
+    A line, a trail or an area joins its points in the order of the scale they sit on. For a quantitative
+    or temporal scale that order is the values' own; for a nominal or ordinal one it is whatever the spec
+    states — and a spec that states nothing gets Vega-Lite's default, which sorts the categories by name.
+    Over builds that draws ``0.10`` before ``0.9``; over anything else it draws the alphabet. The picture
+    is a clean line either way, so nothing on it tells the reader the order is wrong.
+
+    **Stated means a list**: an explicit ``sort`` list, or an explicit ``scale.domain``, either of which
+    fixes the sequence the line walks. The channel is read off the mark's own encoding over the frame
+    root's, which is where a layered spec shares an encoding among its marks.
+    """
+    shared = (view.members[0][1].get("encoding") or {}) if view.members else {}
+    violations: list[str] = []
+    for unit in view.units:
+        mark = _mark_type(unit)
+        if mark not in _CONNECTING_MARKS:
+            continue
+        encoding = shared | (unit.get("encoding") or {})
+        for channel in ("x", "y"):
+            definition = encoding.get(channel)
+            if not isinstance(definition, dict) or definition.get("type") not in ("nominal", "ordinal"):
+                continue
+            stated = isinstance(definition.get("sort"), list) or isinstance(
+                (definition.get("scale") or {}).get("domain"), list
+            )
+            if not stated:
+                violations.append(
+                    f"a {mark} mark{_at(view.label)} connects its points along a categorical {channel} with no stated "
+                    "order — Vega sorts the categories by name, so the line draws a trend in an order the data never "
+                    "had; state the order as a `sort` list or a `scale.domain`"
+                )
+    return violations
 
 
 def _inline_rows(node: dict[str, Any]) -> list[dict[str, Any]]:

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from itertools import chain
@@ -135,7 +136,15 @@ from threetears.evals.contracts.result_condition import (
     counted_goal_verdicts,
     harness_faulted,
 )
-from threetears.evals.contracts.surface import CellFacts, JudgedDimensionFacts, JudgedReading, MeasureFacts
+from threetears.evals.contracts.surface import (
+    CellFacts,
+    JudgedDimensionFacts,
+    JudgedReading,
+    MeasureFacts,
+    TimeAxis,
+    TimeAxisBasis,
+    TimePosition,
+)
 from threetears.evals.contracts.usage_capture import count_substituted_deliveries, production_replicating_cost
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
@@ -1271,7 +1280,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=34, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=35, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -1590,6 +1599,19 @@ class AnalysisContextBundle(EvalDocumentModel):
             "per-arm numbers from here rather than pooling run summaries, which mix arms a run co-ran and "
             "include the observations the harness faulted."
         ),
+    )
+    time_axis: TimeAxis | None = Field(
+        default=None,
+        description=(
+            "The runs placed in time, when they span two or more builds (the host's release label) or, failing that, "
+            "two or more days: each position names its runs and carries every cell measured there, computed exactly "
+            "as `cell_measures` is over that position's runs alone. Earliest first. A `timeseries` chart draws one "
+            "reading across these positions; without a time axis no chart can draw time."
+        ),
+    )
+    time_axis_withheld: str | None = Field(
+        default=None,
+        description="Why there is no time axis — what every run shared — or None when there is one.",
     )
     confound_catalog: dict[str, str] = Field(
         default_factory=dict,
@@ -4671,6 +4693,19 @@ def assemble_context_bundle(
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
     )
+    # The time axis, over the same algebra the decision surface was just read with, and before the catalog
+    # for the same reason: its cells are measure collections the catalog has to describe.
+    bundle.time_axis, bundle.time_axis_withheld = _time_axis(
+        runs,
+        results_by_run,
+        observations,
+        {c.apparatus_class_id: c for c in apparatus_classes.values()},
+        projection.records,
+        campaign.declared_design,
+        short_runs=bundle.short_runs,
+        incomplete_runs=bundle.incomplete_runs,
+        profile=profile,
+    )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
@@ -4719,6 +4754,7 @@ def _measure_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> 
         bundle.telemetry.measures,
         *(summary.measures for summary in bundle.run_summaries),
         *(cell.measures for cell in bundle.cell_measures),
+        *(cell.measures for cell in _time_axis_cells(bundle)),
     ]
     names = {measure.name for collection in collections for measure in collection.measures}
     return {name: describe_reported_measure(name, profile.measures) for name in sorted(names)}
@@ -5512,6 +5548,136 @@ def _cell_measures(
     return facts
 
 
+def _time_axis(
+    runs: list[EvalRun],
+    results_by_run: dict[str, list[EvalResult]],
+    observations: list[Observation],
+    classes: dict[str, ApparatusClass],
+    records: list[ScoreRecord],
+    design: CampaignDesign | None,
+    *,
+    short_runs: dict[str, str],
+    incomplete_runs: dict[str, str],
+    profile: HostProfile,
+) -> tuple[TimeAxis | None, str | None]:
+    """Place the campaign's runs in time, or say why they cannot be.
+
+    **Each position's cells are the decision surface's own algebra over that position's runs**: the
+    observations re-pooled (:func:`~threetears.evals.analysis.cells.pool_observations`), the judged
+    dimensions summarised (:func:`_judged_measures`) and the cells measured (:func:`_cell_measures`) by the
+    same functions the whole surface is, so a cell's figure at one build and its figure over the campaign
+    differ only in which observations they read. A run that measured nothing has no place in time — it
+    cannot say what was measured when — and is left out of every position.
+
+    Args:
+        runs: The resolved member runs, in creation order.
+        results_by_run: Each run's results.
+        observations: Every observation the cell algebra pooled.
+        classes: Apparatus class id → the class, as the campaign's pooling read them.
+        records: The score projection, for judged dimensions.
+        design: The campaign's declaration, for the bar a judged dimension carries.
+        short_runs: The bundle's short-run sentences, by run id.
+        incomplete_runs: The bundle's incomplete-run statuses, by run id.
+        profile: The host, whose ``release_label`` names its builds.
+
+    Returns:
+        ``(axis, None)`` when the measuring runs span two or more positions, else ``(None, why)``.
+    """
+    measuring = [run for run in runs if results_by_run[run.id]]
+    if not measuring:
+        return None, "no run produced an observation, so nothing was measured at any time"
+    basis, grouped, single = _time_positions(measuring, results_by_run, profile=profile)
+    if len(grouped) < 2:
+        return None, single
+    positions = []
+    for key, members in grouped:
+        member_ids = {run.id for run in members}
+        slice_cells, _, _ = pool_observations([obs for obs in observations if obs.apparatus_ref in member_ids], classes)
+        slice_results = [result for run in members for result in results_by_run[run.id]]
+        result_ids = {result.id for result in slice_results}
+        by_cell = _results_by_cell(slice_cells, slice_results)
+        judged = _judged_measures([record for record in records if record.result_id in result_ids], by_cell, design)
+        positions.append(
+            TimePosition(
+                key=key,
+                first_run_at=members[0].created_at,
+                last_run_at=members[-1].created_at,
+                run_ids=sorted(member_ids),
+                cells=_cell_measures(
+                    slice_cells,
+                    by_cell,
+                    judged,
+                    short_runs=short_runs,
+                    incomplete_runs=incomplete_runs,
+                    profile=profile,
+                ),
+            )
+        )
+    release_label = profile.release_label if basis == "release" else None
+    return TimeAxis(basis=basis, release_label=release_label, positions=positions), None
+
+
+def _time_positions(
+    runs: list[EvalRun], results_by_run: dict[str, list[EvalResult]], *, profile: HostProfile
+) -> tuple[TimeAxisBasis, list[tuple[str, list[EvalRun]]], str]:
+    """Group the measuring runs into time positions, earliest first.
+
+    By the host's release label when it declares one, every run recorded it and the runs span two values of
+    it; otherwise by the UTC day each run was created on. Either way the positions are ordered by when their
+    earliest run was created, which is the one order every run records — a label is the host's string and
+    nothing here can sort it.
+
+    Args:
+        runs: The runs that measured something, in creation order.
+        results_by_run: Each run's results, which a label reader may read.
+        profile: The host, whose ``release_label`` names its builds.
+
+    Returns:
+        ``(basis, positions, why)``: each position's key and its runs in creation order, and — read only when
+        there is a single position — what every run shared, in the words of the branch that found it.
+
+    Raises:
+        RuntimeError: The release label names no registered input — registration refuses that, so the
+            profile was built around its own check.
+    """
+    release_why = "the host labels no build"
+    if profile.release_label is not None:
+        declared = profile.sweepables.get(profile.release_label)
+        if declared is None:
+            raise RuntimeError(f"release_label {profile.release_label!r} names no registered input")
+        values = {run.id: declared.read(run, results_by_run[run.id]) for run in runs}
+        unrecorded = [run.id for run in runs if values[run.id] is None or not str(values[run.id]).strip()]
+        if unrecorded:
+            release_why = f"{len(unrecorded)} of {len(runs)} runs recorded no {profile.release_label}"
+        elif len({str(value) for value in values.values()}) > 1:
+            return "release", _group_in_order(runs, lambda run: str(values[run.id])), ""
+        else:
+            release_why = f"every run recorded one {profile.release_label} ({next(iter(values.values()))})"
+    by_day = _group_in_order(runs, _utc_day)
+    return "date", by_day, f"every run started on one day ({by_day[0][0]}) and {release_why}"
+
+
+def _group_in_order(runs: list[EvalRun], key: Callable[[EvalRun], str]) -> list[tuple[str, list[EvalRun]]]:
+    """Group runs by ``key``, each group in creation order and the groups ordered by their earliest run."""
+    groups: dict[str, list[EvalRun]] = {}
+    for run in sorted(runs, key=lambda r: (r.created_at, r.id)):
+        groups.setdefault(key(run), []).append(run)
+    return list(groups.items())
+
+
+def _utc_day(run: EvalRun) -> str:
+    """The UTC calendar day a run was created on, as YYYY-MM-DD."""
+    created = datetime.fromisoformat(run.created_at)
+    if created.tzinfo is not None:
+        created = created.astimezone(UTC)
+    return created.date().isoformat()
+
+
+def _time_axis_cells(bundle: AnalysisContextBundle) -> list[CellFacts]:
+    """Every cell on the bundle's time axis, at every position — empty when there is no axis."""
+    return [cell for position in bundle.time_axis.positions for cell in position.cells] if bundle.time_axis else []
+
+
 def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]:
     """What each measure named in the bundle's cells IS — the catalogue half of a decision surface.
 
@@ -5523,9 +5689,10 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
         bundle: An assembled bundle.
 
     Returns:
-        One entry per measure name appearing in any cell, in name order.
+        One entry per measure name appearing in any cell — the time axis's included — in name order.
     """
-    names = sorted({measure.name for cell in bundle.cell_measures for measure in cell.measures.measures})
+    cells = [*bundle.cell_measures, *_time_axis_cells(bundle)]
+    names = sorted({measure.name for cell in cells for measure in cell.measures.measures})
     return {
         name: MeasureFacts(
             unit=bundle.measure_catalog[name].unit,

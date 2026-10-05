@@ -61,6 +61,8 @@ class TestConformingSpecs:
         """
         spec = _bar(mark="line")
         spec["encoding"]["x"]["scale"] = {"zero": False}
+        # A line through categories states their order (rule 11), so this one does.
+        spec["encoding"]["y"]["sort"] = ["a", "b"]
         spec["title"] = {"text": "latency", "subtitle": "Axis is cropped to the data and excludes zero."}
         assert check_spec(spec) == []
 

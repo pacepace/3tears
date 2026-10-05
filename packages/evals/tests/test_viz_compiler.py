@@ -298,12 +298,13 @@ class TestCompilerRefusals:
     def test_a_type_with_no_compiler_raises(self):
         """Distinguishable from a malformed payload: nothing is wrong with the data.
 
-        `timeseries` is genuinely uncompiled — it has no payload model and no
-        dispatch arm. Its predecessor here named a type that has since been
-        migrated, which would have made this pass for the wrong reason.
+        `scatter` is genuinely uncompiled — it has no payload model and no
+        dispatch arm. Its predecessors here (``timeseries`` last) named types
+        that have since been migrated, which would have made this pass for the
+        wrong reason.
         """
         with pytest.raises(PayloadError, match="no compiler"):
-            compile_chart("timeseries", {"series": []})
+            compile_chart("scatter", {"series": []})
 
 
 class TestCompilerOutputPassesThePolicyGate:
@@ -432,6 +433,47 @@ SWEEP_RANKING = {
 }
 
 
+def _timeseries_ci(mean: float, half: float) -> dict:
+    return {
+        "low": mean - half,
+        "high": mean + half,
+        "mean": mean,
+        "level": 0.95,
+        "variability": "the cell's observations",
+    }
+
+
+#: One reading across four builds, two lines — the second missing a build, so the gap is in the
+#: payload every cross-type rule walks.
+TIMESERIES = {
+    "metric": "total_ms",
+    "unit": "ms",
+    "basis": "release",
+    "release_label": "app_version",
+    "positions": ["0.9", "0.10", "0.11", "0.12"],
+    "series": [
+        {
+            "label": "anthropic/model-a",
+            "points": [
+                {"position": "0.9", "ci": _timeseries_ci(1200.0, 90.0), "n": 12},
+                {"position": "0.10", "ci": _timeseries_ci(1150.0, 80.0), "n": 12},
+                {"position": "0.11", "ci": _timeseries_ci(980.0, 70.0), "n": 12},
+                {"position": "0.12", "ci": _timeseries_ci(940.0, 60.0), "n": 12},
+            ],
+        },
+        {
+            "label": "anthropic/model-b",
+            "points": [
+                {"position": "0.9", "ci": _timeseries_ci(1500.0, 120.0), "n": 12},
+                {"position": "0.11", "ci": _timeseries_ci(1320.0, 100.0), "n": 12},
+                {"position": "0.12", "ci": _timeseries_ci(1290.0, 90.0), "n": 12},
+            ],
+        },
+    ],
+    "gaps": [{"series": "anthropic/model-b", "position": "0.10", "reason": "the cell was not measured there"}],
+}
+
+
 #: One payload per drawable type, for the checks that must hold across all of them.
 EVERY_TYPE: dict[str, dict] = {
     "sweep_ranking": SWEEP_RANKING,
@@ -450,6 +492,7 @@ EVERY_TYPE: dict[str, dict] = {
         "a_label": "model-b",
         "b_label": "deepseek",
     },
+    "timeseries": TIMESERIES,
 }
 
 #: The types whose figure is a point plot rather than a stack of categorical rows.

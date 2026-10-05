@@ -290,6 +290,19 @@ class HostProfile:
     Empty is the normal case: a host with a small payload lists it whole.
     """
 
+    release_label: str | None = None
+    """The ``label`` sweepable whose value names the BUILD of the product that ran — an app version.
+
+    What lets a campaign's time axis be the builds it spanned rather than the days it ran on: two runs
+    carrying different values of it are two points in time, ordered by when each value first ran
+    (:class:`~threetears.evals.contracts.surface.TimeAxis`). Host-declared because a label is the host's
+    word and the engine cannot tell a build from any other identifier — a label naming a document batch
+    is no more a time than a model name is.
+
+    ``None`` for a host that labels no build, and then a time axis falls back to the days the runs started
+    on. A name that is not a registered ``label`` is refused at registration.
+    """
+
     sweepables: SweepableRegistry = field(init=False, repr=False, compare=False)
     """Every input this host's runs carry: :attr:`host_sweepables` plus each kind contract's levers.
 
@@ -319,8 +332,8 @@ class HostProfile:
                 reserves or names no lever this host declares, a kind contract's seats name
                 neither a pinned role nor an apparatus dimension, or leave out a dimension whose
                 blank is a real level, a kind is contracted twice or two contracts' lever prefixes overlap, a kind contract's lever is registered in
-                :attr:`host_sweepables` as well, or the registry lacks a lever the engine resolves
-                for every run.
+                :attr:`host_sweepables` as well, the registry lacks a lever the engine resolves
+                for every run, or ``release_label`` names no registered ``label``.
         """
         self._refuse_overlapping_kind_contracts()
         self._refuse_a_kind_lever_registered_by_hand()
@@ -339,6 +352,7 @@ class HostProfile:
         self._refuse_an_undeclared_observed_lever()
         self._refuse_an_unsound_seat()
         self._refuse_a_malformed_listing_elision()
+        self._refuse_a_release_label_that_is_not_a_label()
 
     def kind_contract(self, kind: str) -> KindContract:
         """The contract this host declares for ``kind`` — a contract declaring nothing when it declares none.
@@ -460,6 +474,26 @@ class HostProfile:
             raise ProfileRegistrationError(
                 f"host {self.host_id!r} declares listing_elisions that are not dotted identifier paths: "
                 f"{', '.join(repr(p) for p in bad)}"
+            )
+
+    def _refuse_a_release_label_that_is_not_a_label(self) -> None:
+        """Refuse a ``release_label`` naming anything but a registered ``label`` sweepable.
+
+        A misspelled name would read nothing on every run, and the time axis would fall back to dates with
+        no error anywhere; a lever or an apparatus input named here would place runs in time by what they
+        swept or what measured them, which is a comparison drawn as a timeline.
+
+        Raises:
+            ProfileRegistrationError: The name is undeclared, or declared with another role.
+        """
+        if self.release_label is None:
+            return
+        declared = self.sweepables.get(self.release_label)
+        if declared is None or declared.role != "label":
+            what = "is not declared" if declared is None else f"is declared as a {declared.role}"
+            raise ProfileRegistrationError(
+                f"host {self.host_id!r} names release_label {self.release_label!r}, which {what} — a release "
+                "label is a registered `label` sweepable naming the build that ran"
             )
 
     def _refuse_an_engine_reserved_lever(self) -> None:

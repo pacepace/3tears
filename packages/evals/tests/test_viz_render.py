@@ -265,6 +265,52 @@ PAYLOADS: dict[str, tuple[str, dict]] = {
             "b_label": "verbose_prompt",
         },
     ),
+    "timeseries": (
+        "timeseries",
+        {
+            "metric": "rules_accuracy",
+            "unit": None,
+            "basis": "date",
+            "positions": ["2026-10-01", "2026-10-02", "2026-10-03"],
+            "series": [
+                {
+                    "label": "model-a",
+                    "points": [
+                        {
+                            "position": day,
+                            "ci": {
+                                "low": m - 0.05,
+                                "high": m + 0.05,
+                                "mean": m,
+                                "level": 0.95,
+                                "variability": "the cell's observations",
+                            },
+                            "n": 10,
+                        }
+                        for day, m in (("2026-10-01", 0.7), ("2026-10-02", 0.74), ("2026-10-03", 0.81))
+                    ],
+                },
+                {
+                    "label": "model-b",
+                    "points": [
+                        {
+                            "position": day,
+                            "ci": {
+                                "low": m - 0.05,
+                                "high": m + 0.05,
+                                "mean": m,
+                                "level": 0.95,
+                                "variability": "the cell's observations",
+                            },
+                            "n": 10,
+                        }
+                        for day, m in (("2026-10-01", 0.6), ("2026-10-03", 0.66))
+                    ],
+                },
+            ],
+            "gaps": [{"series": "model-b", "position": "2026-10-02", "reason": "the cell was not measured there"}],
+        },
+    ),
 }
 
 
@@ -931,8 +977,9 @@ class TestPngPixels:
         The rasterised-width check is only load-bearing while a compiled spec sizes
         its inner views rather than itself, and each such shape is a compiler
         decision this file does not control — a concatenated distribution, a
-        pre-binned one whose counts panel is its only panel, and a sweep whose
-        barcode and ranking are two panels of one row. If the compiler ever wraps
+        pre-binned one whose counts panel is its only panel, a sweep whose
+        barcode and ranking are two panels of one row, and a time series faceted
+        into a panel per series. If the compiler ever wraps
         them in a sized parent, that check stops covering the nesting and passes for
         the wrong reason; this is what says so.
         """
@@ -942,7 +989,7 @@ class TestPngPixels:
             for spec in [compile_chart(viz_type, payload).spec]
             if "width" not in spec and '"width"' in json.dumps(spec)
         }
-        assert nested == {"distribution_with_values", "distribution_buckets_only", "sweep_ranking"}, (
+        assert nested == {"distribution_with_values", "distribution_buckets_only", "sweep_ranking", "timeseries"}, (
             f"nested-size shapes moved: {nested}"
         )
 

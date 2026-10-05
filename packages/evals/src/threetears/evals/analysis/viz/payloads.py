@@ -1352,6 +1352,108 @@ class SweepRankingPayload(_VizPayload):
         return [row for row in self.rows if abs(row.secondary_value - held.value) <= held.tolerance]
 
 
+class TimeseriesPoint(BaseModel):
+    """One series' estimate at one time position. Its interval is what the chart draws, so it is required."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    position: str = Field(min_length=1, description="The time position this point sits at — one of `positions`.")
+    ci: ConfidenceInterval = Field(description="The estimate and its interval at that position.")
+    n: int | None = Field(default=None, ge=0, description="Observations behind the point.")
+
+
+class TimeseriesSeries(BaseModel):
+    """One line: one cell's reading followed across the time axis."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    label: str = Field(min_length=1, description="The series' name — the line's identity, drawn at its end.")
+    points: list[TimeseriesPoint] = Field(min_length=1, description="Its points, in the axis's order.")
+
+
+class TimeseriesGap(BaseModel):
+    """A position a series has no point at, and why — a gap the line is broken across, never bridged."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    series: str = Field(min_length=1, description="The series' name, drawn or not.")
+    position: str = Field(min_length=1, description="The position it has no point at — one of `positions`.")
+    reason: str = Field(min_length=1, description="Why there is no point there.")
+
+
+class TimeseriesPayload(_VizPayload):
+    """One reading across the campaign's time axis, a line per series, every point with its interval.
+
+    **Time is an axis here, and identity rides on a label at each line's end.** Every other type puts its
+    categories on an axis; this one cannot, because both axes are taken — time and the value — so the line is
+    named where it ends, and the hue it draws in is never the only thing saying which line is which.
+
+    **A gap is stated, never bridged.** A line drawn straight across a position it has no point at is a value
+    the campaign did not measure, so a series' line breaks there and the payload names the gap.
+    """
+
+    metric: str = Field(min_length=1, description="The measure (or judged dimension) drawn.")
+    unit: str | None = Field(default=None, description="The unit every value is in. None when unitless.")
+    basis: Literal["release", "date"] = Field(
+        description="What the positions are: the builds the host labels, or the UTC days the runs started on."
+    )
+    release_label: str | None = Field(
+        default=None, description="The host label the positions name, on a `release` axis; None on a `date` axis."
+    )
+    positions: list[str] = Field(description="The time positions, earliest first — the axis, in its drawn order.")
+    series: list[TimeseriesSeries] = Field(description="The lines, in the order they should be read.")
+    gaps: list[TimeseriesGap] = Field(
+        default_factory=list, description="Each position a series has no point at, with why — disclosed, never drawn."
+    )
+
+    @field_validator("positions")
+    @classmethod
+    def _at_least_two_distinct_positions(cls, positions: list[str]) -> list[str]:
+        """Refuse an axis that is not a span of time, or one whose positions a reader cannot tell apart."""
+        if len(positions) < 2:
+            raise ValueError(f"needs at least 2 positions to be a time series, got {len(positions)}")
+        if any(not position.strip() for position in positions):
+            raise ValueError("every position needs a name")
+        if repeated := sorted({p for p in positions if positions.count(p) > 1}):
+            raise ValueError(f"positions must be unique; duplicated: {', '.join(repeated)}")
+        return positions
+
+    @model_validator(mode="after")
+    def _series_sit_on_the_axis(self) -> TimeseriesPayload:
+        """Refuse a series that is not a line along this axis, and a gap that contradicts a point.
+
+        Each point's position is on the axis, once, in the axis's order — a line connects its points in the
+        order they are listed, so a point out of order draws a trend backwards in time. At least one series
+        has two points, or there is no line at all. A gap names a position on the axis and never one where
+        its series has a point: a point and a gap at one position are two answers to one question.
+        """
+        if (self.basis == "release") != (self.release_label is not None):
+            raise ValueError("a `release` axis names its release_label, and a `date` axis names none")
+        if not self.series:
+            raise ValueError("needs at least 1 series; an empty time series has nothing to draw")
+        labels = [line.label for line in self.series]
+        if repeated := sorted({label for label in labels if labels.count(label) > 1}):
+            raise ValueError(f"series labels must be unique; duplicated: {', '.join(repeated)}")
+        order = {position: index for index, position in enumerate(self.positions)}
+        for line in self.series:
+            placed = [point.position for point in line.points]
+            if off := sorted({position for position in placed if position not in order}):
+                raise ValueError(f"series {line.label!r} has points at {', '.join(off)}, which the axis does not hold")
+            if repeated := sorted({position for position in placed if placed.count(position) > 1}):
+                raise ValueError(f"series {line.label!r} has more than one point at {', '.join(repeated)}")
+            if [order[position] for position in placed] != sorted(order[position] for position in placed):
+                raise ValueError(f"series {line.label!r} lists its points out of the axis's order")
+        if not any(len(line.points) >= 2 for line in self.series):
+            raise ValueError("no series has points at two positions — there is no line to draw")
+        drawn = {(line.label, point.position) for line in self.series for point in line.points}
+        for gap in self.gaps:
+            if gap.position not in order:
+                raise ValueError(f"a gap names position {gap.position!r}, which the axis does not hold")
+            if (gap.series, gap.position) in drawn:
+                raise ValueError(f"series {gap.series!r} has both a point and a gap at {gap.position!r}")
+        return self
+
+
 #: Viz type → the model validating its payload.
 #:
 #: A type absent from this map is UNVALIDATED, not valid. Keeping the registry
@@ -1365,6 +1467,7 @@ PAYLOAD_MODELS: dict[str, type[_VizPayload]] = {
     "frontier": FrontierPayload,
     "null_result": NullResultPayload,
     "sweep_ranking": SweepRankingPayload,
+    "timeseries": TimeseriesPayload,
 }
 
 
@@ -1430,6 +1533,10 @@ __all__ = [
     "SweepOmission",
     "SweepRankingPayload",
     "SweepRow",
+    "TimeseriesGap",
+    "TimeseriesPayload",
+    "TimeseriesPoint",
+    "TimeseriesSeries",
     "describe_validation",
     "infer_ordered",
     "parse_payload",

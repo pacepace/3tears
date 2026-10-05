@@ -52,7 +52,7 @@ from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.campaign import ReadingKind, VariantIndexEntry
 from threetears.evals.contracts.host.measures import MeasureRegistry
 from threetears.evals.contracts.metrics import describe_reported_measure, materiality, remainder_withheld_reason
-from threetears.evals.contracts.surface import CellFacts, DecisionSurface
+from threetears.evals.contracts.surface import CellFacts, DecisionSurface, TimePosition
 
 #: The dimension a sweep row gains when one arm was measured under more than one rig. Without it
 #: the two cells carry identical levels and draw as one configuration holding two ranks.
@@ -151,6 +151,16 @@ class SweepRankingRef(_Ref):
     cells: list[str] | None = Field(
         default=None, description="The configurations; every cell on the surface when omitted."
     )
+
+
+class TimeseriesRef(_Ref):
+    """One reading at each position of the campaign's time axis, one line per cell."""
+
+    cells: list[str] | None = Field(
+        default=None, description="The cells, one line each; every cell on the surface when omitted."
+    )
+    measure_id: str = Field(description="The measure (or judged dimension) drawn.")
+    reading: ReadingKind = Field(description="Its namespace.")
 
 
 def _repeated(values: Sequence[str]) -> str:
@@ -534,6 +544,79 @@ def _frontier(ref: FrontierRef, surface: DecisionSurface, labels: dict[str, str]
     }
 
 
+def _timeseries(ref: TimeseriesRef, surface: DecisionSurface, labels: dict[str, str]) -> dict[str, Any]:
+    """One line per cell across the time axis, each point the cell's reading over that position's runs.
+
+    The whole surface resolves the reading first, so a reading no position could draw — a categorical or
+    text measure, a name no cell measured — is refused in the resolver's own words. Then each position is
+    read as a surface of its own (its cells, the analysis's facts), through the same resolver, and a point
+    that position cannot give — the cell was not measured there, nothing was scored, or one observation left
+    it no interval — is a GAP named in the payload, never a guessed point.
+
+    Raises:
+        UnresolvableReference: The analysis has no time axis; a cell is unknown; the reading cannot be drawn
+            as a point; or no cell has an interval at two positions, so there is no line to draw.
+    """
+    axis = surface.time_axis
+    if axis is None:
+        raise UnresolvableReference(
+            "a timeseries draws the campaign's time axis and this analysis has none — its runs share one build and "
+            "one day; draw the comparison with another type"
+        )
+    cells = ref.cells if ref.cells is not None else list(cell_index(surface))
+    whole = [resolve_reading(surface, cell, ref.measure_id, ref.reading) for cell in cells]
+    series: list[dict[str, Any]] = []
+    gaps: list[dict[str, str]] = []
+    for cell in cells:
+        points = []
+        for position in axis.positions:
+            point, why = _position_point(position, surface, cell, ref)
+            if point is None:
+                gaps.append({"series": labels[cell], "position": position.key, "reason": why})
+            else:
+                points.append(point)
+        if points:
+            series.append({"label": labels[cell], "points": points})
+    if not any(len(line["points"]) >= 2 for line in series):
+        raise UnresolvableReference(
+            f"a timeseries draws {ref.measure_id!r} with an interval at two or more positions for at least one cell, "
+            f"and none of {', '.join(cells)} has one at two — name cells measured at two or more of "
+            f"{', '.join(position.key for position in axis.positions)}"
+        )
+    return {
+        "caption": ref.caption,
+        "metric": ref.measure_id,
+        "unit": whole[0].unit,
+        "basis": axis.basis,
+        "release_label": axis.release_label,
+        "positions": [position.key for position in axis.positions],
+        "series": series,
+        "gaps": gaps,
+    }
+
+
+def _position_point(
+    position: TimePosition, surface: DecisionSurface, cell: str, ref: TimeseriesRef
+) -> tuple[dict[str, Any] | None, str]:
+    """One cell's point at one time position, or why it has none — the reason taken from the branch that found it."""
+    at = DecisionSurface(cells=position.cells, measures=surface.measures, dimensions=surface.dimensions)
+    facts = cell_index(at).get(cell)
+    if facts is None:
+        return None, "the cell was not measured there"
+    if ref.reading == "judged":
+        judged = next((j for j in facts.judged if j.dimension == ref.measure_id), None)
+        if judged is None or judged.mean is None:
+            return None, "nothing was scored on it there"
+    else:
+        summary = next((m for m in facts.measures.measures if m.name == ref.measure_id), None)
+        if summary is None or (summary.rate if summary.rate is not None else summary.mean) is None:
+            return None, "it was not observed there"
+    reading = resolve_reading(at, cell, ref.measure_id, ref.reading)
+    if reading.ci_low is None or reading.ci_high is None:
+        return None, f"{reading.n} observation{'' if reading.n == 1 else 's'} there, too few for an interval"
+    return {"position": position.key, "ci": _interval(reading), "n": reading.n}, ""
+
+
 def _quality_bar(surface: DecisionSurface, quality: ReadingRef) -> float | None:
     """The adjudicated bar on the quality measure, when the surface holds exactly one threshold for it.
 
@@ -659,14 +742,19 @@ _CHARTS: dict[str, _Chart] = {
     "sweep_ranking": _Chart(
         SweepRankingRef, lambda r, surface, _labels, index, _measures: _sweep_ranking(r, surface, index)
     ),
+    "timeseries": _Chart(TimeseriesRef, lambda r, surface, labels, _index, _measures: _timeseries(r, surface, labels)),
 }
 
 #: Each builder, keyed by the reference type it compiles — derived from :data:`_CHARTS`.
 _BUILDERS = {chart.ref: chart.build for chart in _CHARTS.values()}
 
-#: The chart types the model may author. ``timeseries`` is absent on purpose: a campaign bundle has
-#: no time axis, so no chart could name one.
+#: The chart types the model may author.
 REFERENCEABLE_VIZ_TYPES: frozenset[str] = frozenset(_CHARTS)
+
+#: The chart types that draw the campaign's time axis — offered only to a bundle that has one
+#: (:func:`threetears.evals.analysis.generator.first_request`), and refused by their builder on a surface
+#: without one.
+TIME_VIZ_TYPES: frozenset[str] = frozenset({"timeseries"})
 
 
 #: How each chart type reads the unified chart's positional lists — the contract the model is told, and
@@ -679,6 +767,7 @@ CHART_READINGS: dict[str, str] = {
     "attribution": "two cells (baseline first), the end-to-end measure then the subsystem measure, and the lever in `axis`",
     "frontier": "the quality measure, then optionally the cost and the latency measures; cells, or none for every cell",
     "sweep_ranking": "the ranked measure then the secondary measure; cells, or none for every cell",
+    "timeseries": "exactly one measure, drawn at every position of the time axis; cells, one line each, or none for every cell",
 }
 
 
@@ -798,6 +887,12 @@ def reference_from_chart(chart: Chart) -> _Ref:
             latency_measure_id=measures[2].measure_id if len(measures) == 3 else None,
             caption=caption,
         )
+    if kind == "timeseries":
+        # One cell is a line: a single arm followed across builds is the case this chart exists for.
+        need(len(measures) == 1)
+        return TimeseriesRef(
+            cells=cells or None, measure_id=measures[0].measure_id, reading=measures[0].reading, caption=caption
+        )
     need(len(measures) == 2)  # sweep_ranking, the last type on the menu
     return SweepRankingRef(ranked=reading(0), secondary=reading(1), cells=cells_or_every_cell(), caption=caption)
 
@@ -831,6 +926,7 @@ def build_viz_payload(
 __all__ = [
     "CHART_READINGS",
     "REFERENCEABLE_VIZ_TYPES",
+    "TIME_VIZ_TYPES",
     "build_viz_payload",
     "cell_arm_labels",
     "dominated_flags",

@@ -106,6 +106,8 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     ((33, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
     # 34/10: the corrected families of comparisons joined the bundle; the apparatus partition is unchanged.
     ((34, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 35/10: the time axis joined the bundle; the apparatus partition is unchanged.
+    ((35, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 
