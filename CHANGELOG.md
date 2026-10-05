@@ -6,6 +6,77 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.65.0 -- 2026-10-05
+
+### NATS: a declared KV bucket can carry its exact name and be refilled when it comes back empty
+
+A service that keeps an in-memory structure's persisted copy in a KV bucket could not declare it
+through `ensure_kv_bucket`: the bucket was always named `{namespace}-{name}`, and after a NATS
+restart it came back empty with nothing told to refill it. So each such service held a raw nats-py
+handle, which stays bound to the connection it was opened on and fails with `connection closed` once
+the client moves to a successor connection.
+
+- **Added, `NatsClient.ensure_kv_bucket(prefix_namespace=True, on_restored=None)`:** with
+  `prefix_namespace=False` the name is used verbatim. `on_restored` is the declarer's refill
+  (`KvRestoredHook`, called with the live handle). A declaration given one is owed it each time the
+  client creates the bucket's stream again after the declaration: a restoration round that found the
+  stream absent, an owner's storage recreate, or a self-heal re-open on a handle's next operation.
+  The refill runs in the background and settles only when it returns; one that raises is logged at
+  ERROR and retried, and one cancelled stays owed. `FakeNatsClient.ensure_kv_bucket` takes the same
+  parameters.
+- **Added, `threetears.nats.PersistedCopyBucket`:** the one owner of a bucket that is the persisted
+  copy of memory. It declares under the exact name in the background, retried with capped backoff
+  and an ERROR per failed attempt until it lands, runs `load` once at the first declaration, runs
+  `write_back` then and on every refill, and `stop()` ends a declaration still retrying.
+- **Changed, `NatsKvBucket.list_keys`:** follows the client onto its current connection before
+  listing, like every other operation.
+- **Added, `FakeNatsClient`:** `restart_broker` and `reconnect` run every refill owed, so a
+  consumer's fake-based tests drive the same path, and `refill_owed(name)` says whether one still is.
+
+#### Changed, breaking for structural implementers and `open_kv_stream` callers
+
+A class that satisfies `KvBucketLike` or `KvDeclaring` structurally -- a consumer's test fake
+declaring `# parity-with:` either protocol, or any hand-rolled double passed where one is expected --
+no longer satisfies it until it is updated. Update it in the same commit that relocks to this release.
+
+- **`KvBucketLike` gains `list_keys`.** Structural implementers must add
+  `async list_keys(*, prefix: str = "") -> list[str]` (an empty bucket is `[]`). `FakeKvBucket`
+  already has it, so a subclass inherits it.
+- **`KvDeclaring.ensure_kv_bucket` gains the keyword parameters `prefix_namespace: bool = True` and
+  `on_restored: KvRestoredHook | None = None`.** Structural implementers must accept both.
+- **`open_kv_stream` returns `KvStreamOpening(kv, created)`** instead of the bare handle, and takes
+  `detect_creation`, which looks the stream up before a declaring create so `created` says whether
+  this call made it. A caller reads `.kv` for the handle.
+
+### Registry: the tool catalog keeps recording registrations after a NATS rolling restart
+
+After a NATS rolling restart the registry refused every tool registration with `CATALOG_UNAVAILABLE`
+/ `nats: connection closed` until its pod was deleted by hand, while it reported itself healthy. The
+catalog bucket was held through a raw nats-py handle, which stayed bound to the connection the
+client retired when it moved off a lame-duck server.
+
+- **Changed, `threetears.registry.catalog_persistence`:** the `tool_catalog` bucket is owned by
+  `threetears.nats.PersistedCopyBucket`, built by the new `catalog_bucket(catalog=, client=, bucket=)`,
+  under its exact name with file storage, history 1 and `allow_direct` stated. Its handle follows the
+  client across a renewal or a successor move, and the catalog is written back whenever the client
+  creates the bucket again. Bucket names on the wire are unchanged, so no grant changes.
+- **Removed:** `CatalogPersistence` and `CatalogBucketClient`. Call `catalog_bucket(...)` and
+  `start()` / `stop()` the owner it returns.
+- **Changed, `ToolCatalog`:** typed `KvBucketLike`. `load_from_kv` lists with `list_keys` (an empty
+  bucket is no keys) and raises a listing or read that fails, rather than taking it for an empty
+  bucket.
+- **Added:** `ToolCatalog.persisting` and `WRITE_FAILURE_THRESHOLD`. Three catalog writes failing in
+  a row, for any reason, make the registry's new `catalog_persisting` readiness check fail, until a
+  write lands.
+- **Liveness unchanged:** a catalog write failure is never a liveness failure. A connection closed
+  for good is already caught by the registry's existing `nats` liveness check: the catalog's bucket
+  follows the client's current connection, so its writes fail on a closed connection only when the
+  client's own connection is closed.
+- **Removed, `RegistryServer`:** the authorizer `initialize(js, namespace)` hook. The registry
+  called it, through `hasattr`, with a raw JetStream context; no authorizer in 3tears or its
+  consumers implemented it, and it was the last raw JetStream handle in the registry. An authorizer
+  that needs state builds it before it is passed in.
+
 ## v0.64.0 -- 2026-10-04
 
 ### Models: the Claude CLI pool on claude-agent-sdk 0.2.163
