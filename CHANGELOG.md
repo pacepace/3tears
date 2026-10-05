@@ -78,8 +78,8 @@ packages (bumped in lock-step).
   generations break the request's bounds is refused `INVALID_REQUEST` without asking the hub.
 - **Added, `EpochClient.advance_to`:** moves a durable epoch forward to a target in one statement and
   never back, so concurrent writers meeting one target leave it there (where `bump` would carry it
-  past). Durable subjects only. It records the epoch each move replaced and returns a
-  `DurableEpoch` (`epoch`, `previous`); `EpochClient.versions` reads both in one query. New
+  past). Durable subjects only. It, and a durable `bump`, record the epoch each move replaced;
+  it returns a `DurableEpoch` (`epoch`, `previous`); `EpochClient.versions` reads both in one query. New
   migration epoch v002 adds the nullable `config_epochs.previous_epoch` column; existing rows read
   `None` until their next move.
 - **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as

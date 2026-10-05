@@ -240,6 +240,9 @@ _BUMP_SQL = (
     "INSERT INTO config_epochs (subject_path, epoch, payload) "
     "VALUES ($1, 1, $2::jsonb) "
     "ON CONFLICT (subject_path) DO UPDATE SET "
+    # recorded on every move, so a subject bumped one at a time answers its previous epoch
+    # the same way one advanced past a gap does (SET reads the old row)
+    "previous_epoch = config_epochs.epoch, "
     "epoch = config_epochs.epoch + 1, "
     "payload = EXCLUDED.payload, "
     "date_updated = now() "
@@ -274,9 +277,10 @@ class DurableEpoch:
     """a durable subject's epoch and the one its latest move replaced.
 
     ``previous`` is recorded, never inferred: a durable epoch may move forward by more
-    than one, so the epoch before ``epoch`` is not ``epoch - 1``. It is ``None`` until the
-    subject has moved twice -- the first :meth:`EpochClient.advance_to` creates the row and
-    replaces nothing -- and for a subject that has never moved, whose ``epoch`` is ``0``.
+    than one, so the epoch before ``epoch`` is not ``epoch - 1``. Both :meth:`EpochClient.bump`
+    and :meth:`EpochClient.advance_to` record it. It is ``None`` until the subject has moved
+    twice -- the first move creates the row and replaces nothing -- and for a subject that has
+    never moved, whose ``epoch`` is ``0``.
 
     :ivar epoch: the subject's epoch, ``0`` when it has never moved
     :ivar previous: the epoch the latest move replaced, or ``None``

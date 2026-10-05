@@ -118,3 +118,15 @@ async def test_a_subject_that_never_moved_has_no_epochs(pool: asyncpg.Pool) -> N
     assert await _client(pool).versions(Subjects.datasource_tile_epoch("geo", "none")) == DurableEpoch(
         epoch=0, previous=None
     )
+
+
+async def test_a_bump_records_the_epoch_it_replaced_too(pool: asyncpg.Pool) -> None:
+    store = _PoolStore(pool)
+    await create_config_epochs_table(store)  # type: ignore[arg-type]
+    await add_previous_epoch_column(store)  # type: ignore[arg-type]
+    client = _client(pool)
+    subject = Subjects.datasource_tile_epoch("geo", "us_district")
+    await client.bump(subject)
+    assert await client.versions(subject) == DurableEpoch(epoch=1, previous=None)
+    await client.bump(subject)
+    assert await client.versions(subject) == DurableEpoch(epoch=2, previous=1)
