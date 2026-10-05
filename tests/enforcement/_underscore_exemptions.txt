@@ -80,6 +80,12 @@ packages/models/src/threetears/models/_claude_sdk_internals.py:send_control_requ
 packages/models/src/threetears/models/_claude_sdk_internals.py:install_tool_server#0:_query
 # rationale: Claude Agent SDK routes a CLI's tools/call through Query.sdk_mcp_servers, and Query is reachable only via ClaudeSDKClient._query; swapping the per-checkout tool server has no public API (reconnect_mcp_server refuses SDK servers), and test_claude_sdk_internals checks the member against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:remove_tool_server#0:_query
+# rationale: Claude Agent SDK 0.2.163 routes a CLI's tools/call through Query._sdk_mcp_bridges, one SdkMcpBridge per in-process server built when the client connects; a server swapped in per checkout needs its own bridge (and the replaced one closed), and there is no public API for either; test_claude_sdk_internals checks the member against the installed SDK
+packages/models/src/threetears/models/_claude_sdk_internals.py:install_tool_server#0:_sdk_mcp_bridges
+# rationale: Claude Agent SDK 0.2.163 routes a CLI's tools/call through Query._sdk_mcp_bridges, one SdkMcpBridge per in-process server built when the client connects; a server swapped in per checkout needs its own bridge (and the replaced one closed), and there is no public API for either; test_claude_sdk_internals checks the member against the installed SDK
+packages/models/src/threetears/models/_claude_sdk_internals.py:_close_bridge#0:_sdk_mcp_bridges
+# rationale: Claude Agent SDK routes a CLI's tools/call through Query.sdk_mcp_servers, and Query is reachable only via ClaudeSDKClient._query; removing the per-checkout tool server has no public API, and test_claude_sdk_internals checks the member against the installed SDK
+packages/models/src/threetears/models/_claude_sdk_internals.py:remove_tool_server#1:_query
 # rationale: Claude Agent SDK exposes the CLI subprocess nowhere; ClaudeSDKClient._transport._process.pid is the only way to get the pid the CLI pool kills on dispose (it falls back to a /proc marker scan when this answers None), and test_claude_sdk_internals checks both members against the installed SDK
 packages/models/src/threetears/models/_claude_sdk_internals.py:cli_process_pid#0:_process
 # rationale: Claude Agent SDK exposes the CLI subprocess nowhere; ClaudeSDKClient._transport._process.pid is the only way to get the pid the CLI pool kills on dispose (it falls back to a /proc marker scan when this answers None), and test_claude_sdk_internals checks both members against the installed SDK

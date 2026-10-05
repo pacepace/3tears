@@ -635,38 +635,45 @@ def _discover_pid(client: Any, marker: str) -> int | None:
     return None
 
 
-class _ContextBoundServer:
-    """An in-process MCP server whose tool calls run in one borrower's context.
+def _context_bound_server(server: Any, context: contextvars.Context) -> Any:
+    """A copy of an in-process MCP server whose tool calls run in one borrower's context.
 
     The SDK runs a tool call in a task spawned from its message-reader task, and that task was
     created when the CLI connected -- in whatever context STARTED the session. A pooled session is
     started before its borrower's call (a spare, in a context of its own), and when sessions were
-    reused every later borrower's tool calls ran with the first borrower's context variables: an ``interrupt()`` was captured into the first caller's list and the graph never
-    paused, tool-status events went to the first caller's callbacks, and the tool saw the first
-    caller's runnable config. Found by review and reproduced.
+    reused every later borrower's tool calls ran with the first borrower's context variables: an
+    ``interrupt()`` was captured into the first caller's list and the graph never paused,
+    tool-status events went to the first caller's callbacks, and the tool saw the first caller's
+    runnable config. Found by review and reproduced.
 
     Each call runs in a fresh copy of the borrower's context: a copy because two tool calls in one
     turn may run at once and a context cannot be entered twice, and a copy still shares the
     borrower's mutable values -- the list an interrupt is appended to is the same list.
+
+    A shallow copy of the server, with a handler table of its own, rather than a wrapper around
+    it: from SDK 0.2.163 the SDK serves the server through its own ``run()``, which reads the
+    server's own ``request_handlers``, and a wrapper forwarding ``run`` reached the original's
+    table and ran the call in the first caller's context again.
+
+    :param server: an in-process MCP server instance
+    :ptype server: Any
+    :param context: the borrower's context
+    :ptype context: contextvars.Context
+    :return: the copy
+    :rtype: Any
     """
+    from mcp.types import CallToolRequest  # noqa: PLC0415 -- arrives with the claude-cli extra
 
-    def __init__(self, server: Any, context: contextvars.Context) -> None:
-        from mcp.types import CallToolRequest  # noqa: PLC0415 -- arrives with the claude-cli extra
+    bound = copy.copy(server)
+    bound.request_handlers = dict(server.request_handlers)
+    original = bound.request_handlers.get(CallToolRequest)
+    if original is not None:
 
-        self._server = server
-        self.name = server.name
-        self.version = getattr(server, "version", None)
-        self.request_handlers = dict(server.request_handlers)
-        original = self.request_handlers.get(CallToolRequest)
-        if original is not None:
+        async def call_in_borrower_context(request: Any) -> Any:
+            return await asyncio.create_task(original(request), context=context.copy())
 
-            async def call_in_borrower_context(request: Any) -> Any:
-                return await asyncio.create_task(original(request), context=context.copy())
-
-            self.request_handlers[CallToolRequest] = call_in_borrower_context
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._server, name)
+        bound.request_handlers[CallToolRequest] = call_in_borrower_context
+    return bound
 
 
 def bind_tool_server_to_context(server: Any, context: contextvars.Context | None) -> Any:
@@ -681,7 +688,7 @@ def bind_tool_server_to_context(server: Any, context: contextvars.Context | None
     """
     if server is None or context is None:
         return server
-    return _ContextBoundServer(server, context)
+    return _context_bound_server(server, context)
 
 
 def repeats_on_every_call(exc: BaseException) -> bool:
@@ -886,9 +893,9 @@ class PooledCliSession:
                 await self.client.set_model(model)
                 self._model = model
             await send_control_request(self.client, {"subtype": "mcp_set_servers", "servers": {}}, timeout=30.0)
-            remove_tool_server(self.client, TOOL_SERVER_NAME)
+            await remove_tool_server(self.client, TOOL_SERVER_NAME)
             if tool_server is not None:
-                install_tool_server(
+                await install_tool_server(
                     self.client, TOOL_SERVER_NAME, bind_tool_server_to_context(tool_server, call_context)
                 )
                 await send_control_request(
@@ -916,7 +923,7 @@ class PooledCliSession:
         if self.closed:
             raise ClaudeCliSessionError("this Claude CLI session has been stopped")
         try:
-            remove_tool_server(self.client, TOOL_SERVER_NAME)
+            await remove_tool_server(self.client, TOOL_SERVER_NAME)
             await send_control_request(self.client, {"subtype": "mcp_set_servers", "servers": {}}, timeout=timeout)
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- any failure means the session cannot be trusted idle; the pool disposes it
             raise ClaudeCliSessionError(f"could not release the Claude CLI's tools: {exc}") from exc

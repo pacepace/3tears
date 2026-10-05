@@ -68,7 +68,7 @@ from threetears.agent.wake.config import (
     DEFAULT_WAKE_CONFIG,
     WakeConfig,
 )
-from threetears.agent.wake.dispatch import FireNoLongerInFlight, detect_silent_prefix, dispatch_wake
+from threetears.agent.wake.dispatch import FireNoLongerInFlight, detect_silent_prefix, dispatch_wake, is_tool_only
 from threetears.agent.wake.entities import (
     EncryptionService,
     WakeFireEntity,
@@ -272,6 +272,7 @@ __all__ = [
     "compute_generic_hmac_sha256_signature",
     "detect_silent_prefix",
     "dispatch_wake",
+    "is_tool_only",
     "get_wake_emitter",
     "load_wake_schedule_create_tool",
     "load_wake_schedule_delete_tool",

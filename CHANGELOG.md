@@ -6,6 +6,120 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.64.0 -- 2026-10-04
+
+### Models: the Claude CLI pool on claude-agent-sdk 0.2.163
+
+- **Changed:** `packages/models` requires `claude-agent-sdk>=0.2.163,<0.3`. 0.2.118's bundled CLI did
+  not know `claude-sonnet-5-5` and sent `thinking: disabled`, which the model refuses (400, "send
+  between_tools"); 0.2.163 knows it.
+- **Fixed, the CLI session pool:** 0.2.163 routes an in-process tool server's calls through
+  `Query._sdk_mcp_bridges`, one bridge per server built when the client connects. A tool server the
+  pool installs per checkout now gets its own bridge (and the replaced one is closed), and its calls
+  run in the borrower's context through a shallow copy of the server rather than a wrapper. The
+  private accesses are recorded in `_claude_sdk_internals` with their reasons.
+
+### Channels: a Discord bot reaches Discord through a proxy, and hears what it is sent
+
+- **Fixed, `DiscordAdapter`:** the client takes the proxy the environment names for discord.com
+  (`HTTPS_PROXY` or `ALL_PROXY`, unless `NO_PROXY` covers it), as httpx does; a `proxy` in the
+  adapter's config wins. discord.py's aiohttp session ignores those variables, so on a host that
+  reaches out only through a proxy every token check failed on name resolution.
+- **Fixed, `DiscordAdapter`:** its handlers are registered as `on_message` and `on_ready`, the names
+  discord.py dispatches to. `Client.event` registered them under their own names, `_on_message` and
+  `_on_ready`, so no inbound message ever reached a router.
+
+
+### Security: `ScrapeTool`'s SSRF guard checks every request, not only the target URL
+
+`ScrapeTool` refused a target whose host resolves to a private, loopback, link-local or reserved
+address, but checked only the URL it was given. The HTTP clients behind it follow redirects, so a
+public URL answering `302 Location: http://169.254.169.254/...` or `http://127.0.0.1/...` passed
+the check and the fetch went there.
+
+- **Fixed, in `threetears.scrape`:** while a tool's guard is on, every request its fetch sends is
+  checked the same way: each redirect hop, each detail link `ListingDetailDriver` follows, each
+  document `MultiDocumentDriver` fetches, and the default `RobotsGate`'s `robots.txt` read. It covers
+  the clients `ApiDriver`, `DocumentDriver`, `ListingDetailDriver`, `MultiDocumentDriver` and the
+  default robots fetcher build. A refused hop answers `refused: <reason>`, the same as a refused
+  target, logs a WARNING naming the URL, and counts against the target's fetch circuit as a fetch
+  that produced no page. A refused detail link costs only that row's detail fields, and a refused
+  `robots.txt` redirect reads as no file.
+- **Unchanged:** a tool built with `block_private_hosts=False`, and a driver rendered outside a tool,
+  follow redirects exactly as before.
+- **Not covered, and now documented as not covered:** the browser backends (`camoufox`, and
+  `nodriver` and `nodriver_download` through the sidecar) follow redirects inside the browser, so
+  only their target URL is checked. A client or fetcher the caller injects is used as given. DNS
+  rebinding is not caught; the guard's docstring had said it was.
+
+### Channels: a Discord bot can reach a user directly, and say how a reply will find it
+
+- **Added, `DiscordAdapter.send_direct(*, user_id, content) -> DirectMessageSent`:** opens (or
+  reuses) the bot's DM channel with a user over REST, without the gateway, sends the content split
+  to Discord's 2000-character limit, and returns the DM channel id and every sent message's id. A
+  reply in that DM carries the channel id; a reply to a sent message carries its id as
+  `reply_to_id`, so a caller that files both finds the conversation that reached out.
+- **Added, `threetears.channels.discord.DirectMessageSent`.**
+- **Added, `DiscordAdapter.identify() -> str`:** checks the token over REST, without the gateway, and
+  returns the bot's user name; a refused token raises `discord.LoginFailure` there.
+
+### Memory: nothing an agent remembers is destroyed, and a permanent memory is never touched
+
+Extraction's UPDATE overwrote a memory in place and its DELETE hard-deleted it; `memory_add`
+overwrote a near-duplicate. Each lost what the agent had remembered, with no trace of why.
+
+- **Added, `threetears.agent.memory.revisions`:** `supersede(memories, consolidations, *, agent_id,
+  source_ids, fields, rationale)` writes the replacing memory, links each old one to it in
+  `memory_consolidations` with the reason, and marks them superseded (out of ambient recall,
+  readable by id). `retract(memories, *, agent_id, memory_id, reason)` tags a memory `retracted`
+  with why and sets its salience to 0. `is_permanent(memory)` is what every writer asks first.
+  Dream's consolidation now writes through `supersede`.
+- **Changed, `MemoryExtractor`:** UPDATE is a `supersede` (rationale "revised by a later
+  conversation"); DELETE is a `retract`. New `consolidations_collection` argument: without it an
+  UPDATE is skipped, never written over. A permanent memory is never superseded or retracted: a
+  revision of one is written beside it.
+- **Changed, `memory_add`:** a near-duplicate is replaced through `supersede` (with
+  `consolidations_collection`, a new argument) or written beside the old one, never over it. New
+  `permanent` argument stores the memory `evergreen`.
+- **Added, `load_memory_keep_tool` / `memory_keep`:** pins a stored memory permanent. One way.
+- **Added, `MemoriesCollection.set_salience(agent_id, *, memory_ids, salience)`.**
+- **Changed, every search, dedup and Dream candidate query** skips a `retracted` memory.
+- **Changed, Dream's consolidation prompt** asks two judgments: `one_subject` (every source is about
+  the same person or thing, and the gist names no one they do not; false refuses the merge) and
+  `permanent` (the gist is stored `evergreen`). A reply without them reads as one subject, not
+  permanent.
+
+### Migrations: the rbac tables and audit_events are 3tears' own
+
+Until now 3tears declared no Postgres table for rbac or audit: each deploying application wrote
+its own DDL, and the shapes drifted (a missing grant index left the hub's grants held twice).
+
+- **Added, `threetears.agent.acl.migrations` (`agent_acl`, platform scope), v001:** `namespaces`,
+  `groups`, `group_members`, `roles`, `role_assignments`, with the platform's rules: namespace
+  names not unique (two servers may expose a tool of one name; a row is addressed by its id) and
+  `owner_namespace` a name with no foreign key (only a registry makes an agent's own namespace
+  row); non-workspace schema names unique, a
+  platform namespace one of the platform types; group and role names unique per owner scope;
+  `managed_by` NOT NULL DEFAULT 'manual'; the grant natural-key unique indexes that make
+  `ensure_group_role_assignment` race-safe. `agent_tools_platform` ALTERs `namespaces`: register
+  it with `depends_on=("agent_acl",)`. An application with its own tables adopts v001 by stamping
+  it once they match.
+- **Added, `threetears.agent.audit.migrations` (`agent_audit`, platform scope), v001:**
+  `audit_events` and its four indexes. The statements live in the migration, frozen;
+  `persist.AUDIT_EVENTS_DDL` reads them, so the runner and `ensure_audit_events_table` run one
+  definition.
+
+### Wakes and skills
+
+- **Added, `is_tool_only`:** a wake whose skill is one tool call runs it with no model and starts no
+  conversation for its fire; a skill with both steps and a tool is refused with how to switch. A
+  skill that is one tool call is not activated in a turn.
+- **Changed:** a skill tool takes the skill's name as well as its id.
+
+### Intentions
+
+- **Added, `intention_log(..., on_logged=...)`:** a consumer hears of each new want it stores.
+
 ## v0.63.1 -- 2026-10-04
 
 ### Telemetry flushes return within their timeout, and a failing export no longer feeds itself

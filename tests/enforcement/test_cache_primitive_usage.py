@@ -119,6 +119,13 @@ _CONFIG = CacheEnforcementConfig(
         "agent_wake_schedules": "WakeScheduleCollection",
         "wake_fires": "WakeFireCollection",
         "webhook_subscriptions": "WebhookSubscriptionCollection",
+        # the rbac tables (agent-acl v001) -- each already backed by its
+        # :mod:`threetears.agent.acl.collections` Collection.
+        "namespaces": "NamespaceCollection",
+        "groups": "GroupCollection",
+        "group_members": "GroupMemberCollection",
+        "roles": "RoleCollection",
+        "role_assignments": "RoleAssignmentCollection",
     },
     migration_table_allowlist=frozenset(
         {
@@ -149,6 +156,12 @@ _CONFIG = CacheEnforcementConfig(
             # resets with the broker. every other epoch counts in NATS
             # KV and touches no table at all.
             "config_epochs",
+            # audit_events (agent-audit v001) is an append-only trail written
+            # by :func:`threetears.agent.audit.persist.persist_audit_event` and
+            # read for prune and erasure only, in Postgres alone: nothing reads
+            # a row back on a hot path, so cache tiers would hold copies nobody
+            # asks for, and erasure would have caches to chase.
+            "audit_events",
         }
     ),
     exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_cache_exemptions.txt",

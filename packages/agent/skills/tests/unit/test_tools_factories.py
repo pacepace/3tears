@@ -457,7 +457,19 @@ class TestSkillGet:
         )
         out = await tool.ainvoke({"skill_id": "not-a-uuid"})
         assert "[TOOL ERROR]" in out
-        assert "invalid skill_id" in out
+        assert "no skill has the id or name" in out
+
+    async def test_a_skill_named_by_its_name_is_found(self) -> None:
+        """Models name skills by name as often as by id; a name must reach the skill."""
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        coll = FakeSkillsCollection()
+        await _seed_skill(coll, agent_id=agent_id, user_id=user_id, name="read_recent_timeline")
+        [tool] = load_skill_get_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll)
+        for raw in ("read_recent_timeline", "[skill:read_recent_timeline]"):
+            out = await tool.ainvoke({"skill_id": raw})
+            assert "[TOOL ERROR]" not in out, raw
+            assert "read_recent_timeline" in out
 
 
 class TestSkillUpdate:
@@ -660,6 +672,28 @@ class TestSkillInvoke:
         assert "[TOOL ERROR]" in out
         assert "replace" in out
         assert "wake" in out
+        assert state.active is None
+
+    async def test_a_tool_call_skill_is_not_activated_and_says_what_to_do(self) -> None:
+        """A skill that is one tool call has no steps; activating it would change nothing."""
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        coll = FakeSkillsCollection()
+        skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id, body=None)
+        coll.rows[(agent_id, skill_id)]["tool"] = "threetears.current_time"
+        state = _ActiveState()
+        [tool] = load_skill_invoke_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=coll,
+            invocations_collection=FakeInvocationsCollection(),
+            conversation_id_resolver=_new_uuid,
+            active_skill_probe=state.probe,
+            active_skill_setter=state.setter,
+        )
+        out = await tool.ainvoke({"skill_id": str(skill_id)})
+        assert "[TOOL ERROR]" in out
+        assert "threetears.current_time" in out and "wake" in out
         assert state.active is None
 
     async def test_disabled_rejected(self) -> None:
@@ -1104,6 +1138,8 @@ class TestToolCallSkill:
         )
         out = await update.ainvoke({"skill_id": str(skill_id), "tool": "loki.query"})
         assert "not both" in out
+        # and it says how to switch, since the agent came to make one
+        assert 'give body as "" with the tool' in out
         assert coll.rows[(agent_id, skill_id)]["body"] == "do the thing"
         assert coll.rows[(agent_id, skill_id)].get("tool") is None
 

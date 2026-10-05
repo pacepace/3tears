@@ -300,7 +300,7 @@ class TestParseSkillId:
     async def test_invalid_is_refused_without_a_lookup(self) -> None:
         for raw in ("not-a-uuid", "", "[skill:not-uuid]"):
             out, asked = await _get(raw)
-            assert out == f"[TOOL ERROR] skill_get: invalid skill_id {raw!r}"
+            assert out == f"[TOOL ERROR] skill_get: no skill has the id or name {raw!r}"
             assert asked == []
 
 

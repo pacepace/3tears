@@ -300,7 +300,9 @@ class TestDiscordAdapterConstructor:
         mock_discord.Intents.default.assert_called_once()
         assert mock_intents.messages is True
         assert mock_intents.message_content is True
-        mock_discord.Client.assert_called_once_with(intents=mock_intents)
+        from threetears.channels.discord import proxy_from_env
+
+        mock_discord.Client.assert_called_once_with(intents=mock_intents, proxy=proxy_from_env())
 
     @patch("threetears.channels.discord.discord")
     def test_stores_router(self, mock_discord: MagicMock) -> None:
@@ -466,6 +468,89 @@ class TestDiscordAdapterPostMessage:
         await adapter.post_message(channel="1", content="b")
 
         mock_client.login.assert_awaited_once()
+
+
+class TestDiscordAdapterIdentify:
+    """tests for identify: the token checked over REST, and the bot named."""
+
+    @patch("threetears.channels.discord.discord")
+    async def test_identify_logs_in_over_rest_and_names_the_bot(self, mock_discord: MagicMock) -> None:
+        """the bot's name comes back from a REST login; no gateway is opened."""
+        from threetears.channels.discord import DiscordAdapter
+
+        mock_client = MagicMock()
+        mock_client.login = AsyncMock()
+        mock_client.start = AsyncMock()
+        mock_client.user = "tidebot#0001"
+        mock_discord.Client.return_value = mock_client
+        adapter = DiscordAdapter(bot_token="bot-tok", router=_MockRouter())
+
+        assert await adapter.identify() == "tidebot#0001"
+        mock_client.login.assert_awaited_once_with("bot-tok")
+        mock_client.start.assert_not_awaited()
+
+    @patch("threetears.channels.discord.discord")
+    async def test_identify_raises_when_the_token_is_refused(self, mock_discord: MagicMock) -> None:
+        """a refused token raises at identify, where a caller is waiting to hear it."""
+        from threetears.channels.discord import DiscordAdapter
+
+        class _Refused(Exception):
+            pass
+
+        mock_client = MagicMock()
+        mock_client.login = AsyncMock(side_effect=_Refused("401"))
+        mock_discord.Client.return_value = mock_client
+        adapter = DiscordAdapter(bot_token="bad", router=_MockRouter())
+
+        with pytest.raises(_Refused):
+            await adapter.identify()
+
+
+class TestDiscordAdapterSendDirect:
+    """tests for send_direct: a DM to a user id over REST, handing back what a reply will carry."""
+
+    @staticmethod
+    def _client_with_dm(mock_discord: MagicMock, *, sent_ids: list[int]) -> tuple[MagicMock, MagicMock]:
+        dm = MagicMock()
+        dm.id = 5550001
+        dm.send = AsyncMock(side_effect=[MagicMock(id=i) for i in sent_ids])
+        user = MagicMock()
+        user.create_dm = AsyncMock(return_value=dm)
+        mock_client = MagicMock()
+        mock_client.login = AsyncMock()
+        mock_client.start = AsyncMock()
+        mock_client.fetch_user = AsyncMock(return_value=user)
+        mock_discord.Client.return_value = mock_client
+        return mock_client, dm
+
+    @patch("threetears.channels.discord.discord")
+    async def test_send_direct_opens_the_dm_over_rest_and_returns_its_handles(self, mock_discord: MagicMock) -> None:
+        """the DM channel id and the sent message's id come back; no gateway is opened."""
+        from threetears.channels.discord import DirectMessageSent, DiscordAdapter
+
+        mock_client, dm = self._client_with_dm(mock_discord, sent_ids=[9990001])
+        adapter = DiscordAdapter(bot_token="bot-tok", router=_MockRouter())
+
+        sent = await adapter.send_direct(user_id="424242", content="the tide turns at nine")
+
+        assert sent == DirectMessageSent(channel_id="5550001", message_ids=("9990001",))
+        mock_client.login.assert_awaited_once_with("bot-tok")
+        mock_client.start.assert_not_awaited()
+        mock_client.fetch_user.assert_awaited_once_with(424242)
+        dm.send.assert_awaited_once_with(content="the tide turns at nine")
+
+    @patch("threetears.channels.discord.discord")
+    async def test_send_direct_splits_long_content_and_returns_every_id(self, mock_discord: MagicMock) -> None:
+        """content past discord's limit goes as several messages, each id handed back in order."""
+        from threetears.channels.discord import DiscordAdapter
+
+        _client, dm = self._client_with_dm(mock_discord, sent_ids=[1, 2])
+        adapter = DiscordAdapter(bot_token="bot-tok", router=_MockRouter())
+
+        sent = await adapter.send_direct(user_id="7", content="x" * 2500)
+
+        assert sent.message_ids == ("1", "2")
+        assert [len(c.kwargs["content"]) for c in dm.send.await_args_list] == [2000, 500]
 
 
 # ---------------------------------------------------------------------------
@@ -1254,3 +1339,84 @@ class TestDiscordAdapterRichFormatting:
         assert "content" in send_kwargs
         assert send_kwargs["content"] == "plain text reply"
         assert "embed" not in send_kwargs
+
+
+_PROXY_VARS = (
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+)
+
+
+class TestDiscordProxy:
+    """The client takes the environment's proxy, as httpx does (metallm dev, 2026-10-04).
+
+    discord.py's aiohttp session ignores HTTPS_PROXY, so on a host that reaches out only
+    through a proxy every token check failed on name resolution.
+    """
+
+    @staticmethod
+    def _proxy_given(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], config: dict | None = None) -> object:
+        from threetears.channels.discord import DiscordAdapter
+
+        for name in _PROXY_VARS:
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        with patch("threetears.channels.discord.discord") as mock_discord:
+            DiscordAdapter(bot_token="t", router=_MockRouter(), config=config)
+            return mock_discord.Client.call_args.kwargs["proxy"]
+
+    def test_the_environments_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert (
+            self._proxy_given(monkeypatch, {"HTTPS_PROXY": "http://proxy.example:3128"}) == "http://proxy.example:3128"
+        )
+
+    def test_none_set_connects_directly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._proxy_given(monkeypatch, {}) is None
+
+    def test_no_proxy_covering_discord_connects_directly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        env = {"HTTPS_PROXY": "http://proxy.example:3128", "NO_PROXY": "localhost,discord.com"}
+        assert self._proxy_given(monkeypatch, env) is None
+
+    def test_a_configured_proxy_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        env = {"HTTPS_PROXY": "http://proxy.example:3128"}
+        assert (
+            self._proxy_given(monkeypatch, env, {"proxy": "http://other.example:8080"}) == "http://other.example:8080"
+        )
+
+
+class TestDiscordDispatch:
+    """A message discord.py dispatches reaches the router (metallm dev, 2026-10-04).
+
+    ``Client.event`` registered the adapter's handlers under their own names, ``_on_message``
+    and ``_on_ready``, which discord.py never dispatches to: no inbound message reached anyone.
+    Driven through a real ``discord.Client``, because a mocked one accepts any registration.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_dispatched_message_is_routed(self) -> None:
+        import discord
+
+        from threetears.channels.discord import DiscordAdapter
+
+        made: list[discord.Client] = []
+
+        class _Recording(discord.Client):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                made.append(self)
+
+        router = _MockRouter()
+        with patch("threetears.channels.discord.discord.Client", _Recording):
+            DiscordAdapter(bot_token="t", router=router)
+        [client] = made
+        message = _make_mock_message(content="hello")
+        # What Client.dispatch looks up for the "message" event: getattr(client, "on_" + event).
+        await getattr(client, "on_message")(message)
+        assert router.last_message is not None and router.last_message.content == "hello"
