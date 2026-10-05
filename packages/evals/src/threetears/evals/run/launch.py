@@ -155,17 +155,19 @@ class LaunchSettings(BaseModel):
 
 @dataclass(frozen=True, kw_only=True)
 class ArmPlan:
-    """What one arm of a generating launch will run, as its kind says before it generates.
+    """What one arm of a launch will run, as its kind says before its launcher runs.
 
-    A generating launch's cases do not exist until its kind's launcher has paid for them, so the
-    engine asks the kind (:attr:`LaunchableKind.plan_arm`) what the arm will run before calling the
-    launcher, prices that, and refuses an arm its cap cannot pay for before any call. The plan is a
+    Every arm is priced before any launcher runs — a generating launch's cases do not exist until its
+    launcher has paid for them, and a stored-case arm's launcher builds its clients and captures its
+    subject — so the engine asks the kind (:attr:`LaunchableKind.plan_arm`) what the arm will run,
+    prices that, and refuses an arm its cap cannot pay for before any launcher is called. The plan is a
     promise the launch tail holds the launcher to: a run freezing more cases than planned, or on
     another model, is refused, since it was priced as something it is not.
 
     Attributes:
-        case_count: The most cases the arm will run — an upper bound, since generation de-duplicates
-            and can keep fewer.
+        case_count: The most cases the arm will run. For an arm over stored cases (``n_variations=0``),
+            how many of the template's stored cases the kind plays; for a generating arm, at most
+            ``n_variations`` — an upper bound, since generation de-duplicates and can keep fewer.
         candidate_model: The model the arm will run on: the one the launch named, or the kind's role
             default for an arm that named none.
     """
@@ -187,7 +189,7 @@ class ArmPlan:
 
 @dataclass(frozen=True, kw_only=True)
 class ArmQuote:
-    """One arm of a generating launch, as the engine asks the host's pricer to price it.
+    """One arm of a launch, as the engine asks the host's pricer to price it — stored-case arms and generating ones alike.
 
     Attributes:
         scope_id: The scope the arm's run will live in, whose history a history pricer reads.
@@ -195,7 +197,10 @@ class ArmQuote:
         subject_id: The subject it measures.
         candidate_model: The model it runs on, as its plan named it.
         k_runs: Repeats of every case.
-        case_count: The cases it runs, as its plan bounded them.
+        case_count: The cases it runs, as its plan bounded them: the template's stored cases the kind plays
+            for an arm that generates none, or at most ``n_variations`` for one that generates.
+        n_variations: The cases the launch generates for the arm, or ``0`` for an arm over the template's
+            stored cases (:attr:`case_source`).
         cassette_mode: Its cassette mode, normalised.
         judge_model: The judge pin the launch named, unresolved; ``None`` when it named none and the arm's
             judge (if its kind has one) is the role default. A judge is part of what a run spends, so an arm
@@ -211,10 +216,16 @@ class ArmQuote:
     candidate_model: str
     k_runs: int
     case_count: int
+    n_variations: int
     cassette_mode: CassetteMode
     judge_model: str | None
     simulator_model: str | None
     apparatus_settings: Mapping[str, ApparatusSettingValue]
+
+    @property
+    def case_source(self) -> Literal["stored", "generated"]:
+        """Where the arm's cases come from: the template's ``stored`` cases, or ``generated`` by its launch."""
+        return "generated" if self.n_variations > 0 else "stored"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -247,7 +258,10 @@ class ArmPrice:
 
 
 class LaunchPricer(Protocol):
-    """The host's prediction of what one arm of a generating launch will cost, before anything is paid for.
+    """The host's prediction of what one arm of a launch will cost, before any launcher runs.
+
+    Asked of EVERY arm the engine prices — one over the template's stored cases and one whose cases its
+    launch generates alike (:attr:`ArmQuote.case_source`) — so one launch never prices two arms by two rules.
 
     A port on :class:`LaunchHost` because the prediction is a read over history — an analysis — and the
     run package imports no analysis: the host composes one. ``threetears.evals.ops.history_launch_pricer``
@@ -291,10 +305,12 @@ class LaunchHost:
             stamped on the run before the identity that hashes it. Required exactly when the
             profile declares a world, and refused when it declares none — a placement over a world
             the host does not have describes nothing. A host with no world records ``{}``.
-        launch_pricer: Predicts what each arm of a GENERATING launch will cost, so an arm its cap cannot
-            pay for is refused before the launch's paid generation call (:class:`LaunchPricer`). ``None``
-            for a host that prices no launch, whose generating launch under an enforced cap is refused
-            saying so — never run unpriced.
+        launch_pricer: Predicts what each arm of a launch will cost (:class:`LaunchPricer`), so an arm its cap
+            cannot pay for is refused before any launcher runs — before a generating launch's paid generation
+            call, and before a stored-case arm's launcher builds anything. Every arm of every launch is priced
+            through it, under an enforced cap. ``None`` for a host that prices no launch: its every arm is then
+            unpriceable, which an arm with a cap its launch named proceeds under and one with an inherited cap
+            is refused for — never run unpriced under a cap nobody chose.
         max_concurrent_jobs: How many runs' jobs execute at once in this process.
         on_job_progress: Called with ``(run id, progress)`` on every progress write — typically a
             broadcast to an operator's view — or ``None``.
@@ -644,9 +660,9 @@ class LaunchRequest:
             :func:`~threetears.evals.gen.generate_variations` as ``budget``; a generation a model wrote
             whose calls this budget never ledgered is refused at the launch tail. ``None`` for a launch
             that generates nothing.
-        arm_plan: For a launch that generates, what the kind planned this arm to run
-            (:attr:`LaunchableKind.plan_arm`) — the plan the arm was priced at, and the launch tail holds
-            its run to. ``None`` for a launch that generates nothing.
+        arm_plan: What the kind planned this arm to run (:attr:`LaunchableKind.plan_arm`) — the plan the arm
+            was priced at, and the launch tail holds its run to — for an arm over stored cases and a generating
+            one alike. ``None`` for a kind that plans nothing.
         launch_group: The launch this run is prepared into; the launch starts it with its siblings.
         settings: The host's launch settings as the launch read them, once, when it began — what its
             refusals were made under, and what :func:`launch_run` records and enforces the run's ceilings
@@ -755,11 +771,15 @@ class LaunchableKind:
         unhonoured_launch_arguments: The engine's launch arguments a run of this kind cannot honour; a
             launch supplying one is refused at the dispatch, naming it. Empty for a kind that honours
             every one.
-        plan_arm: What one arm of a GENERATING launch of this kind will run, asked before the launcher
-            is — the arm's case count and model (:class:`ArmPlan`) — so the engine can price the arm and
-            refuse one its cap cannot pay for before the launch's paid generation call. Required of a kind
-            that generates: a generating launch of a kind with none is refused at the dispatch. ``None``
-            for a kind that declines ``n_variations``, and refused beside it, since nothing would ask it.
+        plan_arm: What one arm of a launch of this kind will run, asked before the launcher is — the arm's
+            case count and model (:class:`ArmPlan`) — so the engine can price the arm and refuse one its cap
+            cannot pay for before any launcher runs. Asked of EVERY arm: for one over stored cases it counts the
+            template's stored cases the kind plays, and for a generating one it bounds the cases at
+            ``n_variations``. Called off the event loop, through the host's blocking executor, so it may read
+            the host's store; a plan the kind cannot make (an arm naming no model on a kind with no role
+            default, a template with no case to play) is a ``ValidationFailedError`` raised here. ``None`` for a
+            kind that plans nothing: under an enforced cap its every arm is unpriceable — refused under an
+            inherited cap, run under one its launch named — and nothing holds its launcher to a plan.
         apparatus_settings: The host-declared apparatus dimensions this kind's launcher sets its rig up
             from, each with the value its rig takes when a launch sets none — the kind's standing rig. A
             launch setting any other is refused at the dispatch; the :class:`LaunchHost` refuses a name the
@@ -777,12 +797,11 @@ class LaunchableKind:
     apparatus_settings: Mapping[str, ApparatusSettingValue] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
-        """Refuse a name that is not a launch argument, an arm plan for a kind that never generates, and a default no run could store.
+        """Refuse a name that is not a launch argument, and a default no run could store.
 
         Raises:
-            ValueError: An entry of ``unhonoured_launch_arguments`` is not a :data:`LaunchArgument`,
-                ``plan_arm`` is supplied for a kind that declines ``n_variations``, or an apparatus default
-                is not a string, a bool or a finite number.
+            ValueError: An entry of ``unhonoured_launch_arguments`` is not a :data:`LaunchArgument`, or an
+                apparatus default is not a string, a bool or a finite number.
         """
         try:
             defaults = _APPARATUS_SETTINGS.validate_python(dict(self.apparatus_settings))
@@ -797,11 +816,6 @@ class LaunchableKind:
             raise ValueError(
                 f"unhonoured_launch_arguments names {', '.join(unknown)}, which are not launch arguments; "
                 f"the arguments a kind can decline are {', '.join(get_args(LaunchArgument))}"
-            )
-        if self.plan_arm is not None and "n_variations" in self.unhonoured_launch_arguments:
-            raise ValueError(
-                "plan_arm plans the arms of a generating launch, and this kind declines n_variations, so nothing "
-                "would ever ask it; drop plan_arm, or honour n_variations"
             )
 
 
@@ -1095,9 +1109,8 @@ def _launchable(
     Raises:
         ValidationFailedError: The template names a kind with no launcher, the launch supplies an
             argument the kind cannot honour, a negative ``n_variations``, a variation model the
-            generation needs and the launch does not name or one nothing would call, a generating launch
-            of a kind that plans no arm, an apparatus setting the kind does not honour, or the kind's
-            models refuse the overlays or the spec.
+            generation needs and the launch does not name or one nothing would call, an apparatus setting
+            the kind does not honour, or the kind's models refuse the overlays or the spec.
     """
     if n_variations < 0:
         # Every surface reaches here; one without a wire-level bound would otherwise read a negative as
@@ -1125,14 +1138,6 @@ def _launchable(
     _refuse_a_variation_model_the_launch_cannot_use(
         template, n_variations=n_variations, variation_model=variation_model
     )
-    # A generating launch's arms are priced before its generation is paid for, from what the kind plans
-    # each to run — so a kind that cannot say is refused here, before anything is read or built.
-    if n_variations > 0 and launchable.plan_arm is None:
-        raise ValidationFailedError(
-            f"template {template.id!r} is a {candidate_kind!r} template, and that kind plans no arm of a generating "
-            f"launch (LaunchableKind.plan_arm), so this launch's {n_variations} generated case(s) cannot be priced "
-            "before the generation is paid for; launch it with n_variations=0, or declare the kind's plan_arm"
-        )
     settings = _validated_apparatus_settings(template, launchable, apparatus_settings)
     # What the launch may turn, and what the template states for its kind, are the kind's models'
     # answers, made here — before any arm is prepared, so a refusal leaves nothing built and no run
@@ -1205,9 +1210,9 @@ async def _dispatch(
         ValidationFailedError: The template names a kind with no launcher, the launch supplies an
             argument the kind cannot honour, an overlay the kind's model refuses, a template kind spec
             the kind's spec model refuses, a negative ``n_variations``, a variation model the generation
-            needs and the launch does not name or one nothing would call, a generating launch of a kind
-            that plans no arm, an apparatus setting the kind does not honour, a model named twice, or a
-            replay corpus that is not a capture of this template in this scope.
+            needs and the launch does not name or one nothing would call, an apparatus setting the kind does
+            not honour, a model named twice, or a replay corpus that is not a capture of this template in this
+            scope.
     """
     eval_host = host.eval_host
     template = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_template, template_id, scope_id)
@@ -1343,14 +1348,17 @@ async def start_run(
             share instead of asking for room of its own. Ignored with ``launch_group``, whose
             caller's admission covers it. When omitted, a launch that owns its group is admitted here.
 
-    **A launch that generates is priced before it pays for anything.** Its generation runs inside the
-    kind's launcher and before any run exists, so before calling the launcher this asks the kind what
-    each arm will run (:attr:`LaunchableKind.plan_arm`), asks the host's pricer what that will cost
+    **Every arm is priced before any launcher runs, by one rule.** Before calling the launcher this asks
+    the kind what each arm will run (:attr:`LaunchableKind.plan_arm` — the template's stored cases it
+    plays, or at most ``n_variations`` generated ones), asks the host's pricer what that will cost
     (:attr:`LaunchHost.launch_pricer`) and refuses an arm predicted above the cap its run will be held
-    to — or one nothing can predict whose cap the run would merely inherit, since unknown is not $0 and
-    an inherited cap is nobody's decision about this run (a cap the launch named is that decision, and
-    the run goes ahead under it). The generation's own calls are priced in turn before the first is
-    made, against the host's out-of-run cap (:attr:`LaunchRequest.generation_budget`).
+    to — or one nothing can predict (no pricer, no plan, or no history the pricer can bound) whose cap
+    the run would merely inherit, since unknown is not $0 and an inherited cap is nobody's decision
+    about this run (a cap the launch named is that decision, and the run goes ahead under it). The same
+    rule prices an arm over stored cases and one whose cases its launch generates, so a launch never
+    prices two arms two ways, and a host prices no arm of its own. A generating launch's generation's
+    own calls are priced in turn before the first is made, against the host's out-of-run cap
+    (:attr:`LaunchRequest.generation_budget`).
 
     Returns:
         The persisted runs, one per model in the order given (status ``pending``).
@@ -1366,10 +1374,9 @@ async def start_run(
             a ``cassette_mode`` that is not a mode, a replay naming no corpus
             or a corpus that is no capture of this template in this scope, a template naming a
             kind with no launcher, a launch argument that kind cannot honour, an overlay the kind's
-            model refuses (named by field), an apparatus setting the kind does not honour, a generating
-            launch of a kind that plans no arm, a generating arm predicted above its cap or unpriceable
-            under an inherited one (or any generating launch under an enforced cap on a host with no
-            pricer), or any refusal the kind's launcher makes.
+            model refuses (named by field), an apparatus setting the kind does not honour, an arm
+            predicted above its cap or unpriceable under an inherited one, a plan the kind refuses to make,
+            or any refusal the kind's launcher makes.
     """
     # The host's settings, read ONCE for the whole launch: every refusal below and every arm's tail
     # reads this snapshot, so a hot reload part-way cannot refuse, after its generation was paid for, a
@@ -1420,11 +1427,14 @@ async def _start_run(
     scope_id: str,
     launch_group: LaunchGroup | None,
     admission: AdmissionTicket | None,
+    priced: _PricedArms | None = None,
 ) -> list[EvalRun]:
     """:func:`start_run` under a settings snapshot its caller read — the launch's own, or a battery's.
 
     Args and Returns as :func:`start_run`; ``settings`` is the one read every refusal and every arm's
-    tail is made under.
+    tail is made under. ``priced`` is the battery's: its arms as its pre-flight already planned and priced
+    them under the same snapshot, which this launch then carries rather than pricing a second time —
+    ``None`` for a launch that prices its own arms.
 
     Raises:
         See :func:`start_run`.
@@ -1476,7 +1486,7 @@ async def _start_run(
     )
 
     async def prepare(group: LaunchGroup, dispatched: _Dispatched) -> list[EvalRun]:
-        """Price a generating launch's arms, then hand each arm, one per model, to the kind's launcher.
+        """Price every arm, then hand each arm, one per model, to the kind's launcher.
 
         Args:
             group: The launch the runs are prepared into.
@@ -1504,10 +1514,13 @@ async def _start_run(
             max_cost_usd=max_cost_usd,
             max_metered_calls=max_metered_calls,
         )
-        if n_variations > 0:
-            # Every arm priced before the first launcher runs: the launcher is what pays for the
-            # generation the arms share, so pricing an arm after it would refuse a launch already billed.
-            requests = await _priced_generating_arms(host, dispatched.launchable, requests)
+        # Every arm priced before the first launcher runs, whether it generates or not: a launcher is what
+        # pays for the generation the arms share and what builds an arm's clients, so pricing an arm after
+        # it would refuse a launch already billed. Priced exactly once — here, or by the battery's
+        # pre-flight, whose plans the arms then carry.
+        requests = (
+            await _priced_arms(host, dispatched.launchable, requests) if priced is None else priced.carried_by(requests)
+        )
         return [await dispatched.launchable.launch(request) for request in requests]
 
     # Preparing arms into a caller's group: that caller admitted the launch, and it starts the
@@ -1664,22 +1677,25 @@ def _arm_requests(
     ]
 
 
-def _planned(launchable: LaunchableKind, request: LaunchRequest) -> ArmPlan:
-    """Ask the kind what one arm of a generating launch will run, and refuse a plan the arm contradicts.
+async def _planned(host: LaunchHost, launchable: LaunchableKind, request: LaunchRequest) -> ArmPlan | None:
+    """Ask the kind what one arm will run, and refuse a plan the arm contradicts.
 
     Args:
-        launchable: The kind's registry entry; its ``plan_arm`` was checked present at the dispatch.
+        host: The host, whose blocking executor the plan is asked through — a plan may read the store.
+        launchable: The kind's registry entry.
         request: The arm.
 
     Returns:
-        The plan.
+        The plan, or ``None`` for a kind that plans nothing (:attr:`LaunchableKind.plan_arm`).
 
     Raises:
+        ValidationFailedError: The kind cannot plan the arm (its own refusal).
         ValueError: The plan names another model than the one the arm named — a kind defect.
     """
     plan_arm = launchable.plan_arm
-    assert plan_arm is not None, "the dispatch refuses a generating launch of a kind that plans no arm"
-    plan = plan_arm(request)
+    if plan_arm is None:
+        return None
+    plan = await run_blocking(host.eval_host.blocking_executor, plan_arm, request)
     if request.candidate_model is not None and plan.candidate_model != request.candidate_model:
         raise ValueError(
             f"kind {request.kind!r} planned an arm the launch named {request.candidate_model!r} on "
@@ -1688,33 +1704,100 @@ def _planned(launchable: LaunchableKind, request: LaunchRequest) -> ArmPlan:
     return plan
 
 
-async def _priced_generating_arms(
-    host: LaunchHost, launchable: LaunchableKind, requests: Sequence[LaunchRequest]
-) -> list[LaunchRequest]:
-    """Plan and price every arm of a generating launch, refusing before the generation is paid for.
-
-    An arm is refused when its predicted cost is above the cap its run will be held to, or when nothing
-    predicts it and that cap is one the run would merely inherit (the host's configured ceiling, which
-    nobody chose for this run): unknown is not $0. An arm with a cap the launch named and no prediction
-    goes ahead — the named cap is the most the operator chose to risk on a run nobody could price, and
-    the run's own cost cap enforces it as the spend arrives. With the host's enforcement off no cap is in
-    force, and nothing is priced.
+def _arm_described(request: LaunchRequest) -> str:
+    """One arm, as a pricing refusal names it: its model, its cases by source, its repeats and its template.
 
     Args:
-        host: The host: its settings resolve the cap, and its pricer predicts.
+        request: The arm, planned when its kind plans.
+
+    Returns:
+        The description.
+    """
+    plan = request.arm_plan
+    if plan is None:
+        model = repr(request.candidate_model) if request.candidate_model is not None else "its kind's default model"
+        return f"the arm on {model} of template {request.template.id!r} (its kind plans no arm)"
+    source = "generated" if request.n_variations > 0 else "stored"
+    return (
+        f"the arm on {plan.candidate_model!r} ({plan.case_count} {source} case(s) x {request.k_runs} repeat(s) "
+        f"of template {request.template.id!r})"
+    )
+
+
+async def _arm_price(host: LaunchHost, request: LaunchRequest) -> ArmPrice:
+    """What the host's pricer predicts ``request``'s arm will cost — or why nothing can.
+
+    An arm is unpriceable when the host prices no launch, when its kind plans no arm (nothing says what
+    it will run), or when the pricer predicts nothing; each is the same unknown to the caller, which is
+    the point: one rule reads it.
+
+    Args:
+        host: The host, whose pricer predicts.
+        request: The arm, planned when its kind plans.
+
+    Returns:
+        The price, or a price with no prediction and the reason there is none.
+    """
+    pricer = host.launch_pricer
+    if pricer is None:
+        return ArmPrice(
+            predicted_usd=None,
+            basis=f"host {host.eval_host.profile.host_id!r} prices no launch (LaunchHost.launch_pricer)",
+        )
+    plan = request.arm_plan
+    if plan is None:
+        return ArmPrice(
+            predicted_usd=None,
+            basis=f"kind {request.kind!r} plans no arm (LaunchableKind.plan_arm), so nothing says what it will run",
+        )
+    return await run_blocking(
+        host.eval_host.blocking_executor,
+        pricer,
+        ArmQuote(
+            scope_id=request.scope_id,
+            template_id=request.template.id,
+            subject_id=request.subject_id,
+            candidate_model=plan.candidate_model,
+            k_runs=request.k_runs,
+            case_count=plan.case_count,
+            n_variations=request.n_variations,
+            cassette_mode=request.cassette_mode,
+            judge_model=request.judge_model,
+            simulator_model=request.simulator_model,
+            apparatus_settings=request.apparatus_settings,
+        ),
+    )
+
+
+async def _priced_arms(
+    host: LaunchHost, launchable: LaunchableKind, requests: Sequence[LaunchRequest]
+) -> list[LaunchRequest]:
+    """Plan and price every arm of a launch by one rule, refusing before any launcher runs.
+
+    The engine's ONE pricing rule, for an arm over the template's stored cases and one whose cases its
+    launch generates alike. An arm is refused when its predicted cost is above the cap its run will be
+    held to, or when nothing predicts it (:func:`_arm_price`) and that cap is one the run would merely
+    inherit (the host's configured ceiling, which nobody chose for this run): unknown is not $0. An arm
+    with a cap the launch named and no prediction goes ahead — the named cap is the most the operator
+    chose to risk on a run nobody could price, and the run's own cost cap enforces it as the spend
+    arrives. With the host's enforcement off no cap is in force, and nothing is priced; every arm is
+    still planned, so the launch tail holds its launcher to what the kind said it would run.
+
+    Args:
+        host: The host: its pricer predicts.
         launchable: The kind's registry entry, whose ``plan_arm`` plans each arm.
         requests: The launch's arms, in order; every one carries the same ``max_cost_usd`` and the same
             settings snapshot.
 
     Returns:
-        The requests, each carrying its plan.
+        The requests, each carrying its plan (``None`` for a kind that plans nothing).
 
     Raises:
-        ValidationFailedError: An arm predicted above its cap, one unpredicted under an inherited cap, or
-            any arm under an enforced cap on a host with no pricer.
+        ValidationFailedError: An arm predicted above its cap, or one unpriceable under an inherited cap; or
+            the kind cannot plan an arm.
         ValueError: The kind planned an arm on another model than the one it named.
     """
-    planned = [replace(request, arm_plan=_planned(launchable, request)) for request in requests]
+    planned = [replace(request, arm_plan=await _planned(host, launchable, request)) for request in requests]
     # The launch's one read, as every arm carries it — never a fresh read, which a reload could make
     # disagree with the cap the arm's tail will record and enforce.
     settings = planned[0].settings
@@ -1725,37 +1808,13 @@ async def _priced_generating_arms(
     if cap is None:
         return planned
     origin = EvalRunCostCap.resolve_ceiling_origin(max_cost_usd, enforcement_enabled=settings.enforcement_enabled)
-    pricer = host.launch_pricer
-    first = planned[0]
-    if pricer is None:
-        raise ValidationFailedError(
-            f"this launch generates {first.n_variations} case(s) before its runs start, and host "
-            f"{host.eval_host.profile.host_id!r} prices no launch (LaunchHost.launch_pricer), so its arms cannot be "
-            f"held to their ${cap:.2f} cap before the generation is paid for; build the host with a launch pricer, "
-            "or launch with n_variations=0. Nothing was called"
-        )
     for request in planned:
-        plan = request.arm_plan
-        assert plan is not None
-        price = await run_blocking(
-            host.eval_host.blocking_executor,
-            pricer,
-            ArmQuote(
-                scope_id=request.scope_id,
-                template_id=request.template.id,
-                subject_id=request.subject_id,
-                candidate_model=plan.candidate_model,
-                k_runs=request.k_runs,
-                case_count=plan.case_count,
-                cassette_mode=request.cassette_mode,
-                judge_model=request.judge_model,
-                simulator_model=request.simulator_model,
-                apparatus_settings=request.apparatus_settings,
-            ),
-        )
-        what = (
-            f"the arm on {plan.candidate_model!r} ({plan.case_count} generated case(s) x {request.k_runs} repeat(s) "
-            f"of template {request.template.id!r})"
+        price = await _arm_price(host, request)
+        what = _arm_described(request)
+        refused = (
+            "Refused before the generation was paid for"
+            if request.n_variations > 0
+            else "Refused before any launcher ran"
         )
         if price.predicted_usd is None:
             if origin == "chosen":
@@ -1764,15 +1823,60 @@ async def _priced_generating_arms(
                 f"{what} cannot be priced: {price.basis}. Its cost is unknown, not $0, and its ${cap:.2f} cap is "
                 f"inherited from {settings.name_of('max_cost_usd')}, which nobody chose for it. Launch it naming "
                 "max_cost_usd — the most you will risk on a run nobody can price; what it costs then prices the next "
-                "launch. Refused before the generation was paid for"
+                f"launch. {refused}"
             )
         if price.predicted_usd > cap:
             raise ValidationFailedError(
                 f"{what} is predicted to cost ${price.predicted_usd:.2f} ({price.basis}), above its ${cap:.2f} cap. "
-                "Fewer generated cases, a smaller k_runs or a cheaper model brings it under; a larger max_cost_usd "
-                "raises the cap. Refused before the generation was paid for"
+                "Fewer cases, a smaller k_runs or a cheaper model brings it under; a larger max_cost_usd raises the "
+                f"cap. {refused}"
             )
     return planned
+
+
+@dataclass(frozen=True)
+class _PricedArms:
+    """One launch's arms as a battery's pre-flight planned and priced them, carried into the launch.
+
+    The battery prices every template's arms before launching any, so the launch it then makes must not
+    price them again — a second pricing is a second read of history that could disagree with the first,
+    and a second place the rule could drift. The launch carries these plans instead, and its tail holds
+    each launcher to them.
+
+    Attributes:
+        template_id: The template whose launch these arms are.
+        plans: Each arm's plan, in arm order (``None`` for a kind that plans nothing).
+    """
+
+    template_id: str
+    plans: tuple[ArmPlan | None, ...]
+
+    @classmethod
+    def of(cls, requests: Sequence[LaunchRequest]) -> _PricedArms:
+        """The plans ``requests`` carry, as :func:`_priced_arms` returned them.
+
+        Args:
+            requests: One launch's priced arms.
+
+        Returns:
+            Their plans.
+        """
+        return cls(requests[0].template.id, tuple(request.arm_plan for request in requests))
+
+    def carried_by(self, requests: Sequence[LaunchRequest]) -> list[LaunchRequest]:
+        """``requests``, each carrying the plan it was priced at.
+
+        Args:
+            requests: The launch's arms — the template's, built by :func:`_arm_requests` from the same
+                models the pre-flight priced, so in the same order and number.
+
+        Returns:
+            The requests with their plans.
+        """
+        assert requests[0].template.id == self.template_id and len(requests) == len(self.plans), (
+            "a battery's launch carries the plans its own template's arms were priced at"
+        )
+        return [replace(request, arm_plan=plan) for request, plan in zip(requests, self.plans, strict=True)]
 
 
 async def launch_as_group(
@@ -2340,18 +2444,19 @@ async def start_universal_battery(
     configs. Select per run by calling :func:`start_run` directly.
 
     **All or nothing.** Every refusal an arm of any template would make is made over the whole set
-    before anything launches: the engine's own — the dispatch's refusals, every generating template's
-    arms priced against their run caps, and every generating template's ``llm`` writer calls priced on the
-    host's ``variation`` client against the out-of-run cap its launch will be held to — and then the
-    host's, through ``preflight``, the check that calls what its launchers call. A battery that
+    before anything launches: the engine's own — the dispatch's refusals, every template's arms priced
+    against their run caps (by the one rule a launch prices its arms by, and only once: each template's
+    launch carries the plans its arms were priced at), and every generating template's ``llm`` writer calls
+    priced on the host's ``variation`` client against the out-of-run cap its launch will be held to — and
+    then the host's, through ``preflight``, the check that calls what its launchers call. A battery that
     generates therefore pays for no template's cases until every template's have been priced.
 
     **Its bounds are per launch, as a launch's are.** Each template is one launch, so each template's
     generation is held to the host's ``max_out_of_run_cost_usd`` on its own — a battery of N generating
     templates may spend up to N times that out of run — and each of its runs to its own cost cap, exactly
     as N separate launches would be. ``max_cost_usd`` names that per-run cap for every run of the
-    battery; without it every run inherits the host's, and a generating template whose arms no history
-    can price is then refused (unknown is not $0, and an inherited cap is nobody's decision about it).
+    battery; without it every run inherits the host's, and a template whose arms no history can price is
+    then refused (unknown is not $0, and an inherited cap is nobody's decision about it).
     The host's settings are read once, for the whole battery.
 
     Args:
@@ -2374,11 +2479,11 @@ async def start_universal_battery(
             :func:`start_run` takes them — refused before anything launches when any template's kind
             does not honour one.
         max_cost_usd: Optional per-run cost-cap override for every run the battery launches, as
-            :func:`start_run` takes it; must be ``> 0``. Also the cap each generating template's arms are
+            :func:`start_run` takes it; must be ``> 0``. Also the cap each template's arms are
             priced against before anything launches.
         preflight: The host's pre-flight, prepared once for the subject and models and then asked
             of every template before any launches, after the engine's own pricing. It checks what only the
-            host's launchers know; a generation's calls and its generating arms the battery prices itself.
+            host's launchers know; a generation's calls and every template's arms the battery prices itself.
 
     Returns:
         The ids of the launched runs: for each active universal template, one per model. An empty
@@ -2460,10 +2565,13 @@ async def start_universal_battery(
         # The refusals the dispatch itself makes, per template — a kind with no launcher, a battery
         # argument the kind cannot honour, a stored spec its model now refuses — through the same
         # function the dispatch calls, so a battery cannot launch its first templates and then be
-        # refused one of them. Then, for a generating battery, every template's arms and every template's
-        # writer calls are priced, so it cannot pay for its first templates' generations and then be
-        # refused a later template's. The writer is the host's, built in the role each launch builds it
-        # in; here it is asked its prices and never called.
+        # refused one of them. Then every template's arms are priced — by the one rule every launch's are,
+        # stored-case and generating alike — and, for a generating battery, every template's writer calls,
+        # so it cannot launch (or pay for the generations of) its first templates and then be refused a
+        # later one. Each template's priced plans are carried into its launch, which prices nothing again.
+        # The writer is the host's, built in the role each launch builds it in; here it is asked its prices
+        # and never called.
+        priced: dict[str, _PricedArms] = {}
         async with contextlib.AsyncExitStack() as pricing:
             writer: PricedCompletion | None = None
             for universal_template in templates:
@@ -2482,8 +2590,6 @@ async def start_universal_battery(
                         overlays=None,
                         apparatus_settings=apparatus_settings,
                     )
-                    if n_variations == 0:
-                        continue
                     # Through the functions each launch builds and prices its arms with. The group is
                     # provisional: nothing joins it, and its id stamps only a budget nothing is admitted to.
                     dispatched = _Dispatched(
@@ -2494,7 +2600,7 @@ async def start_universal_battery(
                         resolved.kind_spec,
                         resolved.apparatus_settings,
                     )
-                    requests = await _priced_generating_arms(
+                    requests = await _priced_arms(
                         host,
                         resolved.launchable,
                         _arm_requests(
@@ -2517,6 +2623,7 @@ async def start_universal_battery(
                             max_metered_calls=None,
                         ),
                     )
+                    priced[universal_template.id] = _PricedArms.of(requests)
                     if template_variation_model is None:
                         continue
                     # The calls this template's launch would make, quoted against the budget it would be
@@ -2581,6 +2688,7 @@ async def start_universal_battery(
                 max_metered_calls=None,
                 launch_group=None,
                 admission=ticket,
+                priced=priced[template.id],
             )
             run_ids += [run.id for run in runs]
         log.info(

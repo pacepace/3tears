@@ -427,10 +427,22 @@ async def test_the_reference_launcher_captures_the_subject_the_launch_names():
 
 
 async def test_an_arm_naming_no_model_is_refused_for_a_kind_with_no_default():
+    """The toy kind's plan refuses it, before the arm is priced or its launcher runs."""
     host, _storage = _launching()
 
     with pytest.raises(ValidationFailedError, match="no default candidate model; name one"):
         await _launch_one(host, models=[])
+
+
+async def test_an_unplanned_arm_naming_no_model_is_refused_at_the_tail_for_a_kind_with_no_default():
+    """A kind that plans nothing reaches its launcher under a cap the launch named, and the tail refuses it there."""
+    host, storage, handed = _launching_with(_wired, unhonoured=frozenset({"n_variations"}))
+
+    with pytest.raises(ValidationFailedError, match="no default candidate model; name one"):
+        await _launch_one(host, models=[], max_cost_usd=1.0)
+
+    assert len(handed) == 1, "the launcher ran; the tail refused"
+    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
 
 
 _OTHER_SCOPE_CASE = EvalTestCase(scope_id="another-scope", template_id=toyhost_template().id)

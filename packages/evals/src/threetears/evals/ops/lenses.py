@@ -235,10 +235,11 @@ def launch_estimate(
 def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     """The engine's launch pricer: an arm bounded from the scope's usage history of runs launched as it will be.
 
-    What a :class:`~threetears.evals.run.LaunchHost` takes as ``launch_pricer`` to price the arms of a
-    generating launch before the generation is paid for. **The history is the runs launched the way the
-    arm will be**: the same template on the same candidate model at the same cassette mode, under the same
-    judge and simulator pins (the model a launch named for the role, or none — a run that inherited the
+    What a :class:`~threetears.evals.run.LaunchHost` takes as ``launch_pricer`` to price every arm of a launch
+    before any launcher runs — an arm over the template's stored cases and one whose cases its launch generates
+    alike, priced by this one rule and counted by its source (``derived`` from the template's stored cases, or
+    ``generated``). **The history is the runs launched the way the arm will be**: the same template on the
+    same candidate model at the same cassette mode, under the same judge and simulator pins (the model a launch named for the role, or none — a run that inherited the
     role's default matches an arm naming none) and the same resolved apparatus settings, archived runs
     included. A run judged by another model, or with its rig set up otherwise, spent differently, and
     pricing an arm from it would bias the prediction by whatever the difference costs — low, when the arm's
@@ -273,7 +274,7 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             models=[quote.candidate_model],
             k_runs=quote.k_runs,
             n_test_cases=quote.case_count,
-            n_test_cases_source="generated",
+            n_test_cases_source="generated" if quote.case_source == "generated" else "derived",
             cassette_mode=quote.cassette_mode,
             template_id=quote.template_id,
             profile=host.profile,

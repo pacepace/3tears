@@ -101,12 +101,8 @@ nothing would call it — which the launcher asks of the host's client factory i
 (`clients("variation", request.variation_model)`), never the simulator's. The run records the model the
 client resolved to on `variation_counts.variation_model`; it enters no identity, because the cases it
 wrote are already hashed through `test_case_ids`. Generation runs before any run exists, so its calls
-are outside every run's cost cap and metered-call ceiling — and so **a generating launch is priced
-before it pays for anything**. Before calling the launcher the engine asks the kind what each arm will
-run (`LaunchableKind.plan_arm`, required of a kind that generates), prices it with the host's
-`LaunchHost.launch_pricer` (`threetears.evals.ops.history_launch_pricer` prices from the scope's usage
-history) and refuses an arm predicted above its run's cap, or one nothing can predict whose cap the run
-would merely inherit. The launcher hands `generate_variations` the request's
+are outside every run's cost cap and metered-call ceiling — which is one reason the engine prices every
+arm before any launcher runs (below). The launcher hands `generate_variations` the request's
 `budget=request.generation_budget`: every `llm` axis's call is priced on the writer's client
 (`price_ceiling`, the host's answer) against `LaunchSettings.max_out_of_run_cost_usd` before the first
 is made, and each is ledgered as an `OutOfRunSpend` document (`EvalStorage.query_out_of_run_spend`)
@@ -116,6 +112,18 @@ each launch will be held to) before any template launches, so it pays for no tem
 have been priced; its caps are per launch, as a launch's are (`start_universal_battery(max_cost_usd=...)`
 names the per-run cap). What was spent out of run is read back by `scope_out_of_run_spend` — the
 `scope_out_of_run_spend` action, and the CLI's `spend`.
+
+**Every arm is priced before any launcher runs, by one rule.** The engine asks the kind what each arm
+will run (`LaunchableKind.plan_arm` → `ArmPlan`: for an arm over stored cases, how many of the template's
+stored cases it plays; for a generating arm, at most `n_variations`) and, under an enforced cap, prices it
+with the host's `LaunchHost.launch_pricer` (`ArmQuote.case_source` says which; `threetears.evals.ops.history_launch_pricer`
+bounds it by the upper end of the band of runs launched the same way — template, model, cassette mode,
+judge and simulator pins, resolved apparatus settings) and refuses an arm predicted above its run's cap,
+or one nothing can predict — no pricer, no plan, or no history to bound — whose cap the run would merely
+inherit. An unpriceable arm under a cap the launch named runs under it. The launch tail holds each
+launcher to its plan (no more cases, no other model). A battery prices each template's arms once, in its
+pre-flight, and each template's launch carries those plans. A host therefore prices no arm itself: a
+wrapper that priced assembled runs would be a second rule, and a second pricing of the same arm.
 
 **Setting the rig at launch.** `apparatus_settings` sets host-declared apparatus values — who sits in an
 adjudicator's seat, say — so one template can be run at two of them and compared. A kind lists the ones

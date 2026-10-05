@@ -6,6 +6,48 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: every arm of every launch is priced by the engine, by one rule
+
+- **The engine prices every arm before any launcher runs** — an arm over the template's stored cases as
+  well as a generating one. It used to price only a generating launch's arms and leave every other arm to
+  the host, so one launch could price two arms by two rules, and a host's own rule (Dungeons of Wagons
+  priced an assembled run from a single result's point estimate, blind to the judge and simulator pins and
+  the rig) priced a session at a model seat from cheap history. Now one rule, for both: the kind plans the
+  arm, the host's ``launch_pricer`` predicts it, and the arm is refused when predicted above its cap, or when
+  it is unpriceable and its cap is inherited; an unpriceable arm under a cap the launch named runs under it.
+  The launch tail holds every planned arm's launcher to its plan (no more cases, no other model).
+- **``ArmQuote`` expresses stored cases.** **Breaking:** new required ``n_variations`` (``0`` for an arm over
+  stored cases), and a ``case_source`` property (``"stored"`` / ``"generated"``); ``case_count`` is the
+  plan's — the template's stored cases the kind plays, or at most ``n_variations``. ``history_launch_pricer``
+  prices both by the same rule (the band's upper end over runs launched the same way), counting a stored
+  arm's cases as ``derived``.
+- **``LaunchableKind.plan_arm`` plans every arm.** It is asked of every arm (no longer only a generating
+  launch's), off the event loop through the host's blocking executor, so it may count the store; a kind that
+  declines ``n_variations`` may now declare one (that refusal is gone). A plan the kind cannot make — an arm
+  naming no model on a kind with no role default, a template with nothing to play — is its own
+  ``ValidationFailedError``, raised before the arm is priced or its launcher runs.
+- **"Unpriceable" has one meaning.** No prediction, no ``launch_pricer`` on the host, and no ``plan_arm`` on
+  the kind are each the same unknown to the one rule. **Behaviour changes:** a host with no pricer is no
+  longer refused every generating launch outright — an arm with a cap its launch named now runs, as an arm
+  its pricer cannot predict already did; the dispatch's "generating launch of a kind that plans no arm"
+  refusal is gone for the same reason. And every stored-case arm under an enforced, inherited cap on a host
+  with no pricer or a kind with no plan is now refused, where it used to run unpriced. Refusals name what
+  was refused before: "Refused before any launcher ran", or "before the generation was paid for".
+- **No arm is priced twice.** The battery prices every template's arms in its pre-flight — stored-case
+  templates included, where it used to price only generating ones — and each template's launch carries those
+  plans instead of pricing again (it priced a generating battery's arms twice before).
+- **Adopters: delete your own pre-launch pricing.** A wrapper that priced the assembled run is now a second
+  rule and a second pricing of the same arm. For Dungeons of Wagons: drop ``dow.evals.launch_cap``'s
+  ``priced_kinds`` (hand the engine the kinds unwrapped), ``refuse_over_cap`` and ``predict_run_cost``; give
+  every kind — router, forge, session — a ``plan_arm`` that plans a stored-case arm too:
+  ``ArmPlan(case_count=<stored, unarchived cases of the template> if request.n_variations == 0 else
+  request.n_variations, candidate_model=request.candidate_model or <the kind's role default>)``
+  (``stored_case_counter`` already answers the count, and stays for ``launch_estimate``), raising
+  ``ValidationFailedError`` for a template with no stored case; keep ``launch_pricer=history_launch_pricer(...)``.
+  Expect stored-case launches that a single priced result used to admit to be refused under the inherited
+  cap until three priced results launched the same way exist: launch once naming ``max_cost_usd``. A host
+  constructing ``ArmQuote`` (a test pricer, say) passes ``n_variations``.
+
 ### 3tears-evals: a second review of the out-of-run spend, priced launches and apparatus settings
 
 - **A battery prices every template's generation before launching any.** It priced every template's arms up
