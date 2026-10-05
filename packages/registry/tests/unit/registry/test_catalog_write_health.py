@@ -215,19 +215,32 @@ async def test_a_pods_deregistration_sweep_over_many_tools_counts_once() -> None
 
 
 @pytest.mark.asyncio
-async def test_a_promotion_over_many_tools_counts_once() -> None:
-    """a pod's promotion writes each tool it serves; a failed promotion is one failed operation."""
+async def test_a_promotion_that_fails_part_way_is_one_failed_operation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """a promotion whose first put lands and whose next fails is ONE failed operation: without the
+    pass, the landed put would end the streak before the failed one restarted it."""
     catalog, bucket = await _bound_catalog()
-    for index in range(WRITE_FAILURE_THRESHOLD + 2):
+    for index in range(3):
         pending = _entry(f"tool.p{index}")
         pending.endpoints[0].status = "pending"
         await catalog.register(pending)
+
     bucket.become_unreachable(KvError("nats: connection closed"))
-
-    with pytest.raises(KvError):
-        await catalog.mark_ready("pod-001")
-    assert catalog.persisting is True
-
     for _ in range(WRITE_FAILURE_THRESHOLD - 1):
         await _failed_registration(catalog, bucket, "tool.more")
-    assert catalog.persisting is False
+    bucket.become_reachable()
+
+    real_put = bucket.put
+    puts = 0
+
+    async def first_lands_then_fails(**kwargs: object) -> int:
+        nonlocal puts
+        puts += 1
+        if puts > 1:
+            raise KvError("nats: connection closed")
+        return await real_put(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(bucket, "put", first_lands_then_fails)
+    with pytest.raises(KvError):
+        await catalog.mark_ready("pod-001")
+    assert puts == 2, "the promotion's first put landed and its second failed"
+    assert catalog.persisting is False, "the part-failed promotion is the streak's third failed operation"
