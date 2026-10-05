@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a launch names the model that writes its generated cases (`variation_model`)
+
+- **New launch argument `variation_model`** on `start_run`, `start_universal_battery`, `LaunchRequest`, ops
+  `LaunchArguments` / `run_launch`, the `run_launch` action and the quick CLI's `run` (`--variation-model`). It
+  names the model that writes a template's `llm` variation axes when the launch generates (`n_variations` > 0).
+  Before it, a kind with no simulated user could only borrow `simulator_model`, which recorded a simulator the
+  run never had and moved how its runs grouped for comparison.
+- **`n_variations` reaches every launch surface**: ops `LaunchArguments.n_variations`, the `run_launch` action's
+  `n_variations` (default 0), the CLI's `--n-variations`, and `launch_estimate` (ops and action), which prices
+  that many cases as `n_test_cases_source="generated"` — an upper bound; the generation calls are not priced.
+- **Refused before any spend, at the dispatch:** a launch generating for a template with an `llm` axis that
+  names no `variation_model`; a `variation_model` with `n_variations=0`; a `variation_model` for a template with
+  no `llm` axis. A battery hands the model only to its templates with an `llm` axis, and refuses one none of
+  them has. A launcher whose generation recorded another model than the one named is refused at `launch_run`.
+- **A role of its own:** `CompletionRole` gains `"variation"`, so a host's client factory resolves or refuses
+  the writer apart from the simulator. **Adopters: a factory that matches on role must handle `"variation"`.**
+- **Recorded, not hashed:** `VariationCounts.variation_model` (new, default `None`) is the RESOLVED model,
+  read off the client that made the calls. It enters no identity and `IDENTITY_VERSION` stays 22: the cases it
+  wrote are what the candidate faced and are already hashed through `test_case_ids`.
+- **Breaking:** `generate_variations(llm=...)` takes a `VariationLLM` (new, `threetears.evals.contracts`):
+  `SimulatorLLM` plus `model_name` — a host's `BoundCompletionClient` satisfies it. It refuses an `llm` client
+  for a template with no `llm` axis. `LaunchRequest` has a new required field, `variation_model`, which only
+  matters to code constructing one directly (`start_run` builds it).
+- **Outside the cost cap:** generation runs once per launch, before any run exists, so its calls count
+  against no run's cost cap or metered-call ceiling; they are shared across arms, so no single run's cap
+  could carry them honestly.
+
 ### 3tears-evals: `run_launch` and `launch_estimate` default to `DEFAULT_LAUNCH_K_RUNS`
 
 - **Behaviour change:** both actions defaulted `k_runs` to 1 while every other launch entrypoint uses

@@ -309,3 +309,19 @@ async def test_a_run_eval_host_is_one_the_cli_can_read(capsys: pytest.CaptureFix
     assert run_cli(["ls", "--scope", "batteries"], host_factory=lambda: host) == 0
     out = capsys.readouterr().out
     assert f"  {summary.run_id}  completed  _unused  template {summary.template_id}" in out
+
+
+@pytest.mark.parametrize(
+    ("given", "said"),
+    [
+        (["--n-variations", "2"], "cannot honour n_variations=2"),
+        (["--variation-model", "writer-a"], "variation_model='writer-a' names the model that writes generated cases"),
+    ],
+    ids=["n-variations", "variation-model"],
+)
+def test_run_hands_the_launch_both_generation_arguments(
+    given: list[str], said: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The courier kind declines generation, so the launch refusing them is the proof they reached it."""
+    assert run_cli([*_courier_run_args("planner-lite"), *given], host_factory=courier_launch_host) == 2
+    assert said in capsys.readouterr().err

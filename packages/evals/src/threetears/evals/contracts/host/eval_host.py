@@ -59,8 +59,12 @@ if TYPE_CHECKING:
     from threetears.evals.contracts.storage import EvalStorage
 
 #: The apparatus roles the engine asks a host for a completion client in. ``judge`` scores a cell,
-#: ``simulator`` plays the other side of a conversation, ``analysis`` writes a campaign's memo.
-CompletionRole = Literal["judge", "simulator", "analysis"]
+#: ``simulator`` plays the other side of a conversation, ``analysis`` writes a campaign's memo, and
+#: ``variation`` writes the values of a template's ``llm`` variation axes when a launch generates its
+#: cases (``n_variations``) — before any run starts, so outside every run's cost cap. A role of its
+#: own because it is a different job from the simulator's: a host resolves or refuses each role on
+#: its own, and a kind with no simulated user still generates.
+CompletionRole = Literal["judge", "simulator", "analysis", "variation"]
 
 
 class CompletionClients(Protocol):
@@ -117,7 +121,8 @@ class EvalHost:
             :func:`~threetears.evals.contracts.host.timeouts.default_cell_timeout` for a product with
             no timeout layer of its own.
         clients: Builds the completion clients the engine's own roles call — the judge on a
-            re-judge, the analysis generator. ``None`` for a product whose engine work calls no
+            re-judge, the analysis generator — and the client a kind's launcher asks for in the
+            ``variation`` role to write generated cases. ``None`` for a product whose engine work calls no
             model, and an entrypoint that needs one refuses rather than guessing.
     """
 

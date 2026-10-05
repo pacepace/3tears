@@ -175,6 +175,7 @@ def launch_estimate(
     template_id: str,
     models: list[str],
     k_runs: int = 1,
+    n_variations: int = 0,
     n_test_cases: int | None = None,
     subject_id: str | None = None,
 ) -> CostEstimate:
@@ -186,6 +187,11 @@ def launch_estimate(
         template_id: The template the launch would run; its cases and its kind price the grid.
         models: The models the launch would run, one arm each.
         k_runs: Repeats of every case, as the launch would take them.
+        n_variations: Cases the launch would generate before its arms run, as the launch takes them; a
+            launch that generates runs those cases rather than the stored ones, so they are priced as that
+            many (an upper bound, since generation de-duplicates). The generation calls themselves — the
+            ``variation`` role writing an ``llm`` axis — are not priced: they run before any run, outside
+            its cost cap, and leave no per-cell history to price them from.
         n_test_cases: A case count to price in place of the template's own, for a hypothetical grid.
         subject_id: Draw the history from this subject's runs alone.
 
@@ -213,6 +219,7 @@ def launch_estimate(
         models=models,
         k_runs=k_runs,
         n_test_cases=n_test_cases,
+        n_new_cases=n_variations,
         subject_id=subject_id,
         template_id=template_id,
         profile=eval_host.profile,

@@ -524,6 +524,7 @@ def test_a_launcher_reads_the_overlays_as_its_kinds_own_model():
         k_runs=1,
         scope_id=TOYHOST_SCOPE,
         n_variations=0,
+        variation_model=None,
         judge_model=None,
         judge_config_ids=None,
         simulator_model=None,

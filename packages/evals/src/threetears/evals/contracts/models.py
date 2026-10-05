@@ -1694,6 +1694,17 @@ class VariationCounts(EvalDocumentModel):
         ge=0,
         description="Of the kept cases, how many were already stored for this template with the same variation params.",
     )
+    variation_model: str | None = Field(
+        default=None,
+        description=(
+            "RESOLVED model that wrote the values of the template's llm-generated variation axes, as the client "
+            "that made the calls named it; None when no axis is llm-generated, so no model wrote any case. "
+            "Provenance of the stimulus, not a measurement condition: the cases it wrote are what the candidate "
+            "faced, and they are already hashed into the run's context key through `test_case_ids`, so it "
+            "enters no identity. Its calls run before the run starts and are outside the run's cost cap and "
+            "metered-call ceiling."
+        ),
+    )
 
     @property
     def short(self) -> bool:
