@@ -11,7 +11,10 @@ design notes
 
 - bucket names are auto-prefixed with the connected client's
   namespace (``{namespace}-{name}``). callers pass the unprefixed
-  suffix; the wrapper produces the full bucket name.
+  suffix; the wrapper produces the full bucket name. a declaration of a
+  bucket whose bare name its grants already carry passes
+  ``prefix_namespace=False`` to
+  :meth:`threetears.nats.NatsClient.ensure_kv_bucket` and names it exactly.
 - CAS semantics: :meth:`update` returns the new revision on success,
   ``None`` on revision mismatch. transport / bucket-existence
   failures raise :class:`KvError` (distinct from CAS-conflict); a bucket
@@ -39,7 +42,7 @@ import asyncio
 import dataclasses
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, runtime_checkable
@@ -84,6 +87,8 @@ __all__ = [
     "RECONCILED_KV_STREAM_FIELDS",
     "REQUESTABLE_KV_STREAM_FIELDS",
     "KvDeclaring",
+    "KvRestoredHook",
+    "KvStreamOpening",
     "KvTimings",
     "NatsKvBucket",
     "build_kv_stream_config",
@@ -493,6 +498,25 @@ def _normalised(field: str, value: Any) -> Any:
     return value
 
 
+class KvStreamOpening(NamedTuple):
+    """what one :func:`open_kv_stream` produced: the bound handle, and whether this call created the stream.
+
+    ``created`` is the signal a declarer needs to know its bucket came back EMPTY: true when an
+    owning declaration deleted the stream and created it again to change its storage, and -- for an
+    open asked to ``detect_creation`` -- when a ``STREAM.INFO`` just before the create found the
+    stream absent and the create then succeeded. JetStream's create is idempotent for an identical
+    config, so a create that succeeds says nothing by itself about whether the stream was there; the
+    lookup is what does. False for a bind, for a stream that was live (it survived, or another process
+    put it back first), for a create nobody answered, and for an open that did not ask.
+
+    :ivar kv: the bound nats-py KeyValue handle
+    :ivar created: whether this call created the bucket's backing stream, empty
+    """
+
+    kv: KeyValue
+    created: bool
+
+
 async def open_kv_stream(
     *,
     js: Any,
@@ -502,7 +526,8 @@ async def open_kv_stream(
     timings: KvTimings = DEFAULT_KV_TIMINGS,
     owns_bucket: bool = False,
     drop_file_storage: bool = False,
-) -> KeyValue:
+    detect_creation: bool = False,
+) -> KvStreamOpening:
     """create, reconcile or bind the JetStream stream behind a KV bucket.
 
     the two modes are the declarer's and the reader's, and they differ on what
@@ -545,15 +570,20 @@ async def open_kv_stream(
         dropping entries a NATS restart would have kept. without it such a bucket is refused
         (:func:`reconcile_kv_stream`). only with ``owns_bucket``
     :ptype drop_file_storage: bool
-    :return: bound nats-py KeyValue handle
-    :rtype: KeyValue
+    :param detect_creation: look the stream up (one ``STREAM.INFO``) before a declaring create, so
+        ``created`` can say whether this call made it. a self-heal re-open whose declarer refills
+        the bucket asks; a declaration does not, as its caller fills a bucket it just declared
+    :ptype detect_creation: bool
+    :return: the bound nats-py KeyValue handle, and whether this call created the stream (empty)
+    :rtype: KvStreamOpening
     :raises ValueError: ``owns_bucket`` on a bind-only open, which has no authority over the bucket,
         or on a bucket declared on file storage, whose contents are not ephemeral; or
         ``drop_file_storage`` without ``owns_bucket``
     :raises StreamSubjectsOverlapError: a different stream already owns ``$KV.{bucket}.>``
     :raises KvConfigMismatch: bind-only open found drift on the reconciled set, or an owner found
         the bucket live on file storage without ``drop_file_storage``
-    :raises KvError: creation or binding failed
+    :raises KvError: creation or binding failed, or the lookup ``detect_creation`` asked for failed
+        for a reason other than the stream's absence
     """
     _refuse_unownable_kv_bucket(
         full_name=full_name,
@@ -563,21 +593,32 @@ async def open_kv_stream(
         drop_file_storage=drop_file_storage,
     )
     if not create_if_missing:
-        return await _bind_kv_stream(js=js, full_name=full_name, config=config, timings=timings)
+        return KvStreamOpening(
+            kv=await _bind_kv_stream(js=js, full_name=full_name, config=config, timings=timings), created=False
+        )
 
+    absent_before = False
+    if detect_creation:
+        try:
+            await _live_stream_config(js=js, full_name=full_name, stream=config.name)
+        except KvBucketNotFoundError:
+            # NOSILENT: the answer itself -- the stream is absent, so a create that succeeds made it
+            absent_before = True
     add_exc: Exception | None = None
+    created = False
     try:
         await js.add_stream(config)
     except Exception as exc:  # noqa: BLE001 -- classified below, never swallowed
         _raise_if_subjects_overlap(exc, full_name=full_name, config=config)
         add_exc = exc
     if add_exc is None:
+        created = absent_before
         log.info(
-            "JetStream KV bucket created",
-            extra={"extra_data": {"bucket": full_name, "allow_direct": config.allow_direct}},
+            "JetStream KV bucket declared (created when absent; an identical live stream is left as it is)",
+            extra={"extra_data": {"bucket": full_name, "allow_direct": config.allow_direct, "created": created}},
         )
     elif getattr(add_exc, "err_code", None) == _JS_ERR_STREAM_NAME_IN_USE:
-        await reconcile_kv_stream(
+        created = await reconcile_kv_stream(
             js=js,
             full_name=full_name,
             config=config,
@@ -590,7 +631,9 @@ async def open_kv_stream(
             # creating it again a moment later. a single bind would report that window as a bucket
             # this principal could not create -- the wrong remedy for a bucket that is coming back
             # -- so the bind waits for the declarer, as every binder does.
-            return await _bind_when_declared(js=js, full_name=full_name, timings=timings)
+            return KvStreamOpening(
+                kv=await _bind_when_declared(js=js, full_name=full_name, timings=timings), created=created
+            )
     # else: the server never answered the create. That is what a permissions
     # refusal looks like -- and what an unreachable broker looks like -- so it is
     # NOT reconcilable and must not fall through to update_stream, which would be
@@ -613,7 +656,7 @@ async def open_kv_stream(
             f"open KV bucket failed: bucket={full_name}: create={add_exc!r} bind={bind_exc!r}. "
             f"{kv_grant_remedy(full_name)}"
         ) from bind_exc
-    return kv
+    return KvStreamOpening(kv=kv, created=created)
 
 
 async def _bind_when_declared(*, js: Any, full_name: str, timings: KvTimings) -> KeyValue:
@@ -789,7 +832,7 @@ async def reconcile_kv_stream(
     config: StreamConfig,
     owns_bucket: bool = False,
     drop_file_storage: bool = False,
-) -> None:
+) -> bool:
     """bring a live KV stream to its declaration, or say loudly which request was dropped.
 
     the declaring half of :func:`open_kv_stream`, run when the create found the stream live with
@@ -839,8 +882,10 @@ async def reconcile_kv_stream(
     :param drop_file_storage: the owner may recreate a bucket it finds live on file storage,
         dropping entries that would have survived a restart; only meaningful with ``owns_bucket``
     :ptype drop_file_storage: bool
-    :return: nothing
-    :rtype: None
+    :return: whether THIS call deleted the stream and created it again, empty -- an owner's storage
+        reconcile; ``False`` when it was reconciled in place, left as it is, or recreated by a
+        concurrent owner
+    :rtype: bool
     :raises KvConfigMismatch: an owner found the bucket live on file storage and was not given
         ``drop_file_storage``; the bucket is left as it is
     :raises KvError: the live config could not be read, or the update, delete or create was refused,
@@ -849,6 +894,7 @@ async def reconcile_kv_stream(
     """
     live = await _live_stream_config(js=js, full_name=full_name, stream=config.name)
     differences = kv_stream_differences(requested=config, actual=live)
+    recreated = False
     if owns_bucket and any(field in differences for field in _OWNED_RECREATE_KV_STREAM_FIELDS):
         if live.storage == StorageType.FILE and not drop_file_storage:
             raise KvConfigMismatch(
@@ -860,7 +906,9 @@ async def reconcile_kv_stream(
                 f"ensure_kv_bucket(owns_bucket=True, drop_file_storage=True) once; otherwise migrate "
                 f"its entries first."
             )
-        live = await _recreate_owned_kv_stream(js=js, full_name=full_name, config=config, differences=differences)
+        live, recreated = await _recreate_owned_kv_stream(
+            js=js, full_name=full_name, config=config, differences=differences
+        )
         differences = kv_stream_differences(requested=config, actual=live)
     reconciled_fields = RECONCILED_KV_STREAM_FIELDS + (_OWNED_IN_PLACE_KV_STREAM_FIELDS if owns_bucket else ())
     await _reconcile_in_place(
@@ -871,11 +919,12 @@ async def reconcile_kv_stream(
         differences=differences,
         reconciled_fields=reconciled_fields,
     )
+    return recreated
 
 
 async def _recreate_owned_kv_stream(
     *, js: Any, full_name: str, config: StreamConfig, differences: dict[str, tuple[Any, Any]]
-) -> StreamConfig:
+) -> tuple[StreamConfig, bool]:
     """delete an owned bucket's backing stream and create it again with the declared config.
 
     Only for drift JetStream will not update on a live stream (:data:`_OWNED_RECREATE_KV_STREAM_FIELDS`),
@@ -892,9 +941,9 @@ async def _recreate_owned_kv_stream(
     :ptype config: StreamConfig
     :param differences: the live drift that called for the recreate, for the log
     :ptype differences: dict[str, tuple[Any, Any]]
-    :return: the stream's config once it carries the declared storage: the declared one when this
-        call created it, the live one when a concurrent owner did
-    :rtype: StreamConfig
+    :return: the stream's config once it carries the declared storage -- the declared one when this
+        call created it, the live one when a concurrent owner did -- and whether this call created it
+    :rtype: tuple[StreamConfig, bool]
     :raises KvError: the delete or create was refused, or a concurrent process recreated the bucket
         with a storage other than the declared one
     :raises StreamSubjectsOverlapError: another stream owns the bucket's subjects
@@ -948,7 +997,7 @@ async def _recreate_owned_kv_stream(
             "JetStream KV bucket was recreated with its declared configuration by a concurrent declarer",
             extra={"extra_data": {"bucket": full_name, "recreated": _render_differences(recreated)}},
         )
-        return result
+        return result, False
     log.warning(
         "JetStream KV bucket %s recreated with its declared configuration (%s); JetStream cannot change "
         "that on a live stream, so its stream was deleted and created again and every entry it held was "
@@ -959,7 +1008,7 @@ async def _recreate_owned_kv_stream(
             "extra_data": {"bucket": full_name, "recreated": _render_differences(recreated), "entries_dropped": True}
         },
     )
-    return result
+    return result, True
 
 
 async def _reconcile_in_place(
@@ -1196,11 +1245,13 @@ class _KvHandleBinding(NamedTuple):
     :ivar kv: the nats-py handle
     :ivar entry_ttl: the per-entry TTL a bind-only open stamps on its writes, or ``None``
     :ivar bound_to: the connection the handle was bound through
+    :ivar created: whether this open created the bucket's stream, empty (:class:`KvStreamOpening`)
     """
 
     kv: KeyValue
     entry_ttl: timedelta | None
     bound_to: Any
+    created: bool
 
 
 async def _bind_kv_handle(
@@ -1215,6 +1266,7 @@ async def _bind_kv_handle(
     timings: KvTimings,
     owns_bucket: bool = False,
     drop_file_storage: bool = False,
+    detect_creation: bool = False,
 ) -> _KvHandleBinding:
     """open, create or reconcile a bucket and return the handle it yields.
 
@@ -1243,7 +1295,11 @@ async def _bind_kv_handle(
     :param drop_file_storage: the owner may recreate a bucket it finds live on file storage,
         dropping entries a NATS restart would have kept; only with ``owns_bucket``
     :ptype drop_file_storage: bool
-    :return: the handle, its per-entry TTL, and the connection it was bound through
+    :param detect_creation: look the stream up before a declaring create, so the binding can say
+        whether this open created it (:func:`open_kv_stream`)
+    :ptype detect_creation: bool
+    :return: the handle, its per-entry TTL, the connection it was bound through, and whether this
+        open created the bucket's stream
     :rtype: _KvHandleBinding
     :raises ValueError: if ``owns_bucket`` is asked of a bind-only open or a file bucket, or
         ``drop_file_storage`` without ``owns_bucket``
@@ -1259,7 +1315,7 @@ async def _bind_kv_handle(
     storage_type = StorageType.FILE if storage == "file" else StorageType.MEMORY
     ttl_seconds = int(ttl.total_seconds()) if ttl is not None else 0
 
-    kv = await open_kv_stream(
+    opening = await open_kv_stream(
         js=js,
         full_name=full_name,
         config=build_kv_stream_config(
@@ -1273,11 +1329,12 @@ async def _bind_kv_handle(
         timings=timings,
         owns_bucket=owns_bucket,
         drop_file_storage=drop_file_storage,
+        detect_creation=detect_creation,
     )
     entry_ttl: timedelta | None = None
     if not create_if_missing and ttl is not None and ttl_seconds > 0:
         entry_ttl = await _entry_ttl_for_bound_bucket(js=js, full_name=full_name, ttl=ttl)
-    return _KvHandleBinding(kv=kv, entry_ttl=entry_ttl, bound_to=bound_to)
+    return _KvHandleBinding(kv=opening.kv, entry_ttl=entry_ttl, bound_to=bound_to, created=opening.created)
 
 
 class NatsKvBucket:
@@ -1306,6 +1363,11 @@ class NatsKvBucket:
     :param drop_file_storage: the owner may recreate a bucket it finds live on file storage,
         dropping entries a NATS restart would have kept; only with ``owns_bucket``
     :ptype drop_file_storage: bool
+    :param on_recreated: called, with no arguments, each time a self-heal re-open of this handle
+        CREATED the bucket's stream -- it had vanished and came back empty. The declaring client
+        passes it to learn that the declaration owes its bucket a refill; ``None`` for a handle
+        nobody refills
+    :ptype on_recreated: Callable[[], None] | None
     """
 
     __slots__ = (
@@ -1318,6 +1380,7 @@ class NatsKvBucket:
         "_full_name",
         "_history",
         "_kv",
+        "_on_recreated",
         "_owns_bucket",
         "_storage",
         "_timings",
@@ -1340,6 +1403,7 @@ class NatsKvBucket:
         timings: KvTimings = DEFAULT_KV_TIMINGS,
         owns_bucket: bool = False,
         drop_file_storage: bool = False,
+        on_recreated: Callable[[], None] | None = None,
     ) -> None:
         self._client = client
         self._timings = timings
@@ -1373,6 +1437,9 @@ class NatsKvBucket:
         # the lifetime every write carries when its caller names none: a bind-only open's stand-in
         # for a bucket-wide TTL the declarer did not set (``_entry_ttl_for_bound_bucket``).
         self._entry_ttl = entry_ttl
+        # told when a self-heal re-open created the stream: the bucket came back empty, and only its
+        # declarer knows what belongs in it (NatsClient.ensure_kv_bucket's ``on_restored``).
+        self._on_recreated = on_recreated
 
     @property
     def name(self) -> str:
@@ -1410,6 +1477,7 @@ class NatsKvBucket:
         timings: KvTimings = DEFAULT_KV_TIMINGS,
         owns_bucket: bool = False,
         drop_file_storage: bool = False,
+        on_recreated: Callable[[], None] | None = None,
     ) -> NatsKvBucket:
         """open, create or reconcile a JetStream KV bucket.
 
@@ -1449,6 +1517,10 @@ class NatsKvBucket:
         :param drop_file_storage: the owner may recreate a bucket it finds live on file storage,
             dropping entries a NATS restart would have kept; only with ``owns_bucket``
         :ptype drop_file_storage: bool
+        :param on_recreated: called each time a later self-heal re-open of the handle creates the
+            bucket's stream. NOT called for this open: a declaration that creates its bucket is
+            answered by the handle it gets back. only :meth:`NatsClient.ensure_kv_bucket` passes it
+        :ptype on_recreated: Callable[[], None] | None
         :return: ready bucket
         :rtype: NatsKvBucket
         :raises ValueError: if ``owns_bucket`` is asked of a bind-only open or a file bucket, or
@@ -1487,6 +1559,7 @@ class NatsKvBucket:
             timings=timings,
             owns_bucket=owns_bucket,
             drop_file_storage=drop_file_storage,
+            on_recreated=on_recreated,
         )
 
     # ------------------------------------------------------------------
@@ -1509,6 +1582,17 @@ class NatsKvBucket:
         rather than with the field unset. so does ``owns_bucket``: a bucket another
         process put back first, with an expiry or storage of its own, is reconciled
         to the declared shape rather than bound as-is.
+
+        a re-open that CREATED the stream tells ``on_recreated``: the bucket is back
+        but empty, and this is the one place that learns so on a path no reconnect
+        runs -- a put after a wipe, or the first operation after a move to a
+        successor connection. a handle given one looks the stream up before the
+        create, since a create that succeeds does not say whether the stream was
+        already there.
+
+        :return: nothing
+        :rtype: None
+        :raises KvError: if the bucket could not be created or bound again
         """
         binding = await _bind_kv_handle(
             client=self._client,
@@ -1521,10 +1605,13 @@ class NatsKvBucket:
             timings=self._timings,
             owns_bucket=self._owns_bucket,
             drop_file_storage=self._drop_file_storage,
+            detect_creation=self._on_recreated is not None,
         )
         self._kv = binding.kv
         self._entry_ttl = binding.entry_ttl
         self._bound_to = binding.bound_to
+        if binding.created and self._on_recreated is not None:
+            self._on_recreated()
 
     async def _follow_connection(self) -> None:
         """rebind the handle when a credential renewal has replaced the connection it was bound on.
@@ -2076,6 +2163,10 @@ class NatsKvBucket:
         acknowledges nothing, and the server reaps it after its inactivity threshold -- a pod's
         grant carries no ``CONSUMER.DELETE``.
 
+        Like every other operation, it first follows the client onto its current connection
+        (:meth:`_follow_connection`), so a handle held across a credential renewal or a move off a
+        lame-duck server is bound on the connection the listing runs on.
+
         :param prefix: keep keys starting with this; ``""`` lists every key
         :ptype prefix: str
         :return: the live keys, in stream order
@@ -2085,7 +2176,8 @@ class NatsKvBucket:
             a declaring handle could not recreate it, or a bind-only handle's declarer did not return
             within ``KvTimings.bind_wait_for_declarer_seconds``
         :raises KvError: when the consumer cannot be created or the listing does not finish within
-            its bound -- an ungranted create is never answered, so it arrives here as a timeout
+            its bound -- an ungranted create is never answered, so it arrives here as a timeout --
+            or binding the bucket on the current connection failed for a reason other than its absence
         """
         if any(char in _KEY_WATCH_FORBIDDEN for char in prefix):
             raise ValueError(f"list_keys needs a literal prefix, got {prefix!r}")
@@ -2093,6 +2185,23 @@ class NatsKvBucket:
         narrowed = prefix == "" or prefix.endswith(".")
         filter_subject = f"{subject_prefix}{prefix}>" if narrowed else f"{subject_prefix}>"
         stream = f"{_KV_STREAM_PREFIX}{self._full_name}"
+        try:
+            # like every other operation: a handle whose connection was replaced (a credential
+            # renewal, a move off a lame-duck server) is bound again on the current one first.
+            await self._follow_connection()
+        except Exception as exc:
+            if not is_bucket_not_found(exc):
+                raise _kv_error(
+                    f"listing keys of {self._full_name} failed binding it on the current connection: {exc}",
+                    bucket=self._full_name,
+                    cause=exc,
+                ) from exc
+            # the bucket is gone on the connection it moved to: the listing below re-opens it.
+            log.info(
+                "KV bucket %s is absent on the connection its handle moved to; the listing re-opens it",
+                self._full_name,
+                extra={"extra_data": {"bucket": self._full_name}},
+            )
         try:
             found = await self._list_keys_within_bound(stream=stream, filter_subject=filter_subject)
         except KvBucketNotFoundError:
@@ -2426,6 +2535,14 @@ class KvBucketLike(Protocol):
 
     async def date_created(self) -> datetime: ...
 
+    async def list_keys(self, *, prefix: str = "") -> list[str]: ...
+
+
+#: what a declaration runs when its bucket came back EMPTY: the declarer's refill, handed the live
+#: handle (``on_restored`` on :meth:`threetears.nats.NatsClient.ensure_kv_bucket`). It runs until
+#: it returns; one that raises is retried.
+type KvRestoredHook = Callable[[KvBucketLike], Awaitable[None]]
+
 
 @runtime_checkable
 class KvCapable(Protocol):
@@ -2480,10 +2597,13 @@ class KvDeclaring(Protocol):
         create_if_missing: bool = True,
         owns_bucket: bool = False,
         drop_file_storage: bool = False,
+        prefix_namespace: bool = True,
+        on_restored: KvRestoredHook | None = None,
     ) -> KvBucketLike:
         """declare a KV bucket's configuration, or bind to one somebody else declared.
 
-        :param name: bucket name suffix, namespace-prefixed by the implementation
+        :param name: bucket name suffix, namespace-prefixed by the implementation unless
+            ``prefix_namespace`` is ``False``, when it is the bucket's exact name
         :ptype name: str
         :param ttl: time-to-live for entries, or ``None`` for no expiry
         :ptype ttl: timedelta | None
@@ -2504,10 +2624,18 @@ class KvDeclaring(Protocol):
         :param drop_file_storage: the owner may recreate a bucket it finds live on file storage,
             dropping entries a NATS restart would have kept; only with ``owns_bucket``
         :ptype drop_file_storage: bool
+        :param prefix_namespace: ``True`` names the bucket ``{namespace}-{name}``; ``False`` uses
+            ``name`` exactly, for a bucket whose bare name is what its grants already say
+        :ptype prefix_namespace: bool
+        :param on_restored: the declarer's refill, run with the live handle whenever the bucket's
+            stream was created again empty after this declaration -- by a restoration after a
+            reconnect, or by a self-heal re-open -- until it returns; only with ``create_if_missing``
+        :ptype on_restored: KvRestoredHook | None
         :return: ready bucket handle
         :rtype: KvBucketLike
         :raises ValueError: if ``owns_bucket`` is asked of a bind (``create_if_missing=False``) or of a
-            bucket on file storage, or ``drop_file_storage`` without ``owns_bucket``
+            bucket on file storage, or ``drop_file_storage`` without ``owns_bucket``, or ``on_restored``
+            of a bind
         :raises KvBucketNotFoundError: if the bucket does not exist and this call could not create it
         :raises KvError: if bucket creation or binding fails for any other reason
         :raises KvConfigMismatch: if ``create_if_missing`` is ``False`` and the live bucket differs
