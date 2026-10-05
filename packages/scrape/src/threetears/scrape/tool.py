@@ -29,12 +29,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
-import ipaddress
 import json
-import socket
 from enum import StrEnum
 from typing import Any
-from urllib.parse import urlparse
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.observe import get_logger
@@ -45,6 +42,7 @@ from .circuit import FetchDecision, TargetCircuit
 from threetears.core import fire_and_forget
 from threetears.core.egress import EgressDriver, EgressRegistry
 
+from ._private_hosts import PrivateHostRefusedError, refusing_private_hosts, ssrf_block_reason
 from .robots import RobotsDecision, RobotsGate
 from .session_state import usable_session_state
 from .collections import (
@@ -159,61 +157,6 @@ def _derive_target_id(url: str, field_schema: dict[str, Any]) -> str:
     return f"adhoc_{digest[:16]}"
 
 
-_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
-
-
-def _ssrf_block_reason(url: str) -> str | None:
-    """Return a reason to REFUSE fetching *url*, or ``None`` if it is allowed.
-
-    ``ScrapeTool`` fetches a caller-supplied URL, so without a guard it is an
-    SSRF vector: a caller (or a compromised upstream that influences the URL)
-    can point it at ``127.0.0.1``, a private ``10.x``/``192.168.x`` service, or
-    a cloud metadata endpoint (``169.254.169.254``). This refuses any non-
-    http(s) scheme and any host that RESOLVES to a private/loopback/link-local/
-    reserved address. Every resolved address is checked, so a public-looking
-    hostname that resolves to an internal address (DNS rebinding) is caught too.
-
-    Callers that deliberately scrape internal targets construct
-    :class:`ScrapeTool` with ``block_private_hosts=False`` to opt out.
-
-    :param url: the caller-supplied target URL.
-    :ptype url: str
-    :return: a human-readable refusal reason, or ``None`` when the URL is a
-        public http(s) target safe to fetch.
-    :rtype: str | None
-    """
-    parsed = urlparse(url)
-    scheme = parsed.scheme.lower()
-    if scheme not in _ALLOWED_URL_SCHEMES:
-        return f"scheme {parsed.scheme!r} is not allowed (only http/https)"
-    host = parsed.hostname
-    if not host:
-        return "URL has no host"
-    port = parsed.port or (443 if scheme == "https" else 80)
-    try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as exc:
-        return f"host {host!r} does not resolve ({exc})"
-    for info in infos:
-        ip_text = info[4][0]
-        try:
-            ip = ipaddress.ip_address(ip_text)
-        except ValueError:
-            # NOSILENT: a getaddrinfo entry that isn't a parseable IP literal can't be
-            # range-classified; skip it and check the remaining resolved addresses.
-            continue
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            return f"host {host!r} resolves to non-public address {ip_text} (private/loopback/link-local/reserved)"
-    return None
-
-
 class ScrapeTool(TearsTool):
     """Ad-hoc "fetch this URL, extract these fields" tool, backed by 3tears-scrape.
 
@@ -291,7 +234,13 @@ class ScrapeTool(TearsTool):
             a private/loopback/link-local/reserved address — the tool fetches a
             caller-supplied URL, so this closes the SSRF surface (internal
             services, ``169.254.169.254`` metadata) by default. Set ``False`` only
-            for a deployment that deliberately scrapes internal targets.
+            for a deployment that deliberately scrapes internal targets. The same check
+            runs on every request the fetch itself sends -- each redirect hop, each
+            link a driver follows, the ``robots.txt`` read -- through the clients this
+            package's HTTP drivers and default robots gate build. It does not reach
+            inside a browser backend (``camoufox``, ``nodriver``), where only the
+            target ``url`` is checked, nor a client or fetcher the caller injected;
+            see :mod:`threetears.scrape._private_hosts`
         :ptype block_private_hosts: bool
         """
         self._recipe_collection = recipe_collection
@@ -615,13 +564,25 @@ class ScrapeTool(TearsTool):
             self._robots.note_fetched(url)
 
         try:
-            page = await driver.render(
-                url,
-                timeout=self._default_timeout,
-                wait_for=wait_for,
-                nav_steps=nav_steps,
-                **extra,
-            )
+            # The first URL was checked before any gate; this scope checks every request the
+            # render then sends, which is where a redirect or a followed link goes.
+            with refusing_private_hosts(self._block_private_hosts):
+                page = await driver.render(
+                    url,
+                    timeout=self._default_timeout,
+                    wait_for=wait_for,
+                    nav_steps=nav_steps,
+                    **extra,
+                )
+        except PrivateHostRefusedError as exc:
+            # The same refusal as the one on the target URL, reached one hop later, so it
+            # answers the same way: `refused: <reason>`, not a fetch failure. Logged as a
+            # security event where it was decided. Still recorded as unreachable: a target
+            # that sends us inward on every poll yields no page and should back off like any
+            # other, and recording an outcome is also what returns the circuit's probe.
+            if self._circuit is not None:
+                await self._circuit.record_unreachable(target_id)
+            return None, f"refused: {exc.reason}", True
         except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any backend-specific driver error surfaces as a ToolResult, never crashes the tool call
             # `exc_info` and `error_type`, because this is the failure that opens the durable
             # circuit three lines below and suppresses the target for hours. Without them the
@@ -740,7 +701,7 @@ class ScrapeTool(TearsTool):
         # loopback/link-local target (or a non-http scheme) before any fetch,
         # unless this tool was built with block_private_hosts=False.
         if error is None and self._block_private_hosts:
-            ssrf_reason = _ssrf_block_reason(url)
+            ssrf_reason = ssrf_block_reason(url)
             if ssrf_reason is not None:
                 # Log the refusal: unlike a benign input error (missing url/schema), an SSRF
                 # refusal is a security event -- something tried to reach a non-public address,
@@ -794,7 +755,9 @@ class ScrapeTool(TearsTool):
         # already unhappy with us.
         robots_decision: RobotsDecision | None = None
         if declined_by is None and self._robots is not None:
-            robots_decision = await self._robots.check(url)
+            # The robots.txt read is a request too, and it can be redirected as well.
+            with refusing_private_hosts(self._block_private_hosts):
+                robots_decision = await self._robots.check(url)
             if not robots_decision.allowed:
                 # A disallowed path is not fetched unattended and not silently skipped: it is
                 # reported as needing a person, through the same shape a bot wall takes, so a

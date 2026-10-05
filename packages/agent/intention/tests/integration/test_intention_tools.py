@@ -172,6 +172,62 @@ class TestIntentionLog:
         finally:
             await pool.close()
 
+    async def test_on_logged_is_told_of_a_new_want_once_and_not_of_a_refresh(self, pg_schema: tuple[str, str]) -> None:
+        """A consumer records each new want (metallm files it on the timeline); a refresh is the same want."""
+        url, schema = pg_schema
+        await apply_migrations(url, schema)
+        pool = await make_pool(url, schema)
+        try:
+            coll, _l1 = build_collection(pool, _InMemoryNatsBus())
+            agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            told: list[uuid.UUID] = []
+
+            async def _record(entity: object) -> None:
+                told.append(entity.intention_id)  # type: ignore[attr-defined]
+
+            (log_tool,) = await load_intention_log_tool(
+                user_id,
+                _OneHotEmbedder(),
+                agent_id,
+                customer_id,
+                _authorizer(),
+                coll,  # type: ignore[arg-type]
+                on_logged=_record,
+            )
+            first = await log_tool.ainvoke({"content": "remember to ask about the trip"})
+            await log_tool.ainvoke({"content": "remember to ask about the trip"})
+
+            assert len(told) == 1 and f"[intention:{told[0]}]" in first
+        finally:
+            await pool.close()
+
+    async def test_a_failing_on_logged_leaves_the_want_logged(self, pg_schema: tuple[str, str]) -> None:
+        url, schema = pg_schema
+        await apply_migrations(url, schema)
+        pool = await make_pool(url, schema)
+        try:
+            coll, _l1 = build_collection(pool, _InMemoryNatsBus())
+            agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+            async def _broken(entity: object) -> None:
+                raise RuntimeError("the record could not be written")
+
+            (log_tool,) = await load_intention_log_tool(
+                user_id,
+                _OneHotEmbedder(),
+                agent_id,
+                customer_id,
+                _authorizer(),
+                coll,  # type: ignore[arg-type]
+                on_logged=_broken,
+            )
+            out = await log_tool.ainvoke({"content": "learn what the user is building"})
+
+            assert "Logged as" in out
+            assert await _count_open(pool, agent_id, user_id) == 1
+        finally:
+            await pool.close()
+
     async def test_log_distinct_creates_second(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
         await apply_migrations(url, schema)

@@ -544,6 +544,13 @@ _MEMORIES_SELECT_COLUMNS = (
 )
 
 
+#: A retracted memory (:func:`~threetears.agent.memory.revisions.retract`) no
+#: longer holds: no search, dedup or dream reads it, and only a recall by its
+#: id still opens it. ``?`` is the GIN-indexed key test on the tags array.
+_NOT_RETRACTED = "NOT (COALESCE(tags, '[]'::jsonb) ? 'retracted')"
+_NOT_RETRACTED_M = "NOT (COALESCE(m.tags, '[]'::jsonb) ? 'retracted')"
+
+
 class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     """Collection for memory entities with three-tier caching.
 
@@ -1119,7 +1126,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # the candidate set. The gist itself (superseded_by NULL) stays a
         # candidate, so a correction can still land on the live gist.
         rows = await self.l3_pool.fetch(
-            """
+            f"""
             SELECT memory_id, content, type_memory,
                    1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
@@ -1127,6 +1134,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
               AND (superseded_by IS NULL OR NOT EXISTS (
                     SELECT 1 FROM memories g
                     WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+              AND {_NOT_RETRACTED}
             ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
@@ -1320,6 +1328,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
               AND (superseded_by IS NULL OR NOT EXISTS (
                     SELECT 1 FROM memories g
                     WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+              AND {_NOT_RETRACTED}
               AND salience >= ${vec_salience_idx}
             ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
@@ -1374,6 +1383,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                   AND (superseded_by IS NULL OR NOT EXISTS (
                         SELECT 1 FROM memories g
                         WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+                  AND {_NOT_RETRACTED}
                   AND salience >= ${fts_salience_idx}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
@@ -1861,6 +1871,40 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             write.touches(*decayed_pks)
         return len(decayed_pks)
 
+    async def set_salience(
+        self,
+        agent_id: UUID,
+        *,
+        memory_ids: list[UUID],
+        salience: float,
+    ) -> None:
+        """set salience outright on non-evergreen memories: a retraction sets it below the ambient floor.
+
+        Like :meth:`bump_salience`, the raw pass is salience's only writer and
+        each row is evicted so a later ``get()`` reads it fresh. ``evergreen``
+        rows are never touched.
+
+        :param agent_id: partition column; required
+        :ptype agent_id: UUID
+        :param memory_ids: the memories
+        :ptype memory_ids: list[UUID]
+        :param salience: the value, clamped to 0..1
+        :ptype salience: float
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None or not memory_ids:
+            return None
+        async with self.bypassing_write(*[(agent_id, memory_id) for memory_id in memory_ids]):
+            await self.l3_pool.execute(
+                "UPDATE memories SET salience = GREATEST(0.0, LEAST(1.0, $1)) "
+                "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[]) AND NOT evergreen",
+                salience,
+                agent_id,
+                memory_ids,
+            )
+        return None
+
     async def bump_salience(
         self,
         memory_ids: list[UUID],
@@ -1988,6 +2032,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             "AND (m.superseded_by IS NULL OR NOT EXISTS ("
             "SELECT 1 FROM memories g "
             "WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
+            f"AND {_NOT_RETRACTED_M} "
             "ORDER BY m.date_created"
         )
         rows = await self.l3_pool.fetch(query, *params)

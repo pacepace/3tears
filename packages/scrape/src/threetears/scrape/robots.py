@@ -47,6 +47,8 @@ from urllib.robotparser import RobotFileParser
 
 from threetears.observe import get_logger
 
+from ._private_hosts import refuse_private_hosts
+
 if TYPE_CHECKING:
     from threetears.core.coordination.token_bucket import TokenBucket
     from threetears.core.egress import EgressDriver
@@ -565,6 +567,9 @@ def _default_fetch_via(egress: EgressDriver | None) -> Any:
             timeout=_FETCH_TIMEOUT_SECONDS,
             follow_redirects=True,
             transport=egress.httpx_transport() if egress is not None else None,
+            # A robots.txt that redirects inward is refused like any other guarded request;
+            # the refusal reaches `_load` as an unreadable file. See `._private_hosts`.
+            event_hooks={"request": [refuse_private_hosts]},
         ) as client:
             response = await client.get(url, headers={"user-agent": DEFAULT_USER_AGENT})
             return response.status_code, response.text

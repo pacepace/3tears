@@ -24,8 +24,6 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import Any
-from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -94,6 +92,7 @@ def _build_memory_collections(
 
 
 from .conftest import AsyncpgStore
+from .memory_support import PurposeChatModelFactory
 
 
 pytestmark = pytest.mark.integration
@@ -144,65 +143,6 @@ class _StubEmbedding:
         :rtype: int
         """
         return 1024
-
-
-class _StubChatModel:
-    """chat model stub returning a preconfigured content payload."""
-
-    def __init__(self, content: str) -> None:
-        """
-        :param content: text to return as ``response.content``
-        :ptype content: str
-        """
-        self._content = content
-
-    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
-        """return a MagicMock with ``content`` set to the preconfigured payload.
-
-        Accepts and ignores the gateway identity kwargs (``user_id`` /
-        ``conversation_id``) that ``_invoke_identity_kwargs`` threads onto
-        the invoke call -- a real ``GatewayChatModel`` consumes them; the
-        stub just tolerates them.
-        """
-        resp = MagicMock()
-        resp.content = self._content
-        return resp
-
-
-class _StubChatModelFactory:
-    """factory returning per-purpose stub chat models."""
-
-    def __init__(
-        self,
-        worthiness: str,
-        extraction: str,
-        resolution: str | None = None,
-    ) -> None:
-        """
-        :param worthiness: JSON content for the worthiness check
-        :ptype worthiness: str
-        :param extraction: JSON content for the extraction list
-        :ptype extraction: str
-        :param resolution: JSON content for the resolution step (optional)
-        :ptype resolution: str | None
-        """
-        self._by_purpose = {
-            "worthiness": _StubChatModel(worthiness),
-            "extraction": _StubChatModel(extraction),
-            "resolution": _StubChatModel(resolution or "[]"),
-        }
-
-    async def create_chat_model(self, purpose: str = "extraction") -> Any:
-        """
-        return the stub for the given purpose or a default empty-list stub.
-
-        :param purpose: "worthiness" | "extraction" | "resolution"
-        :ptype purpose: str
-        :return: stub chat model
-        :rtype: Any
-        """
-        result = self._by_purpose.get(purpose, _StubChatModel("[]"))
-        return result
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +435,7 @@ class TestMemoryExtractorAgainstLiveSchema:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            factory = _StubChatModelFactory(
+            factory = PurposeChatModelFactory(
                 worthiness=json.dumps({"worthy": True, "reason": "has facts"}),
                 extraction=json.dumps([{"type": "fact", "content": "User lives in Seattle"}]),
             )

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-models"
-version = "0.63.1"
+version = "0.64.0"
 description = "LangChain-native AI model factories with capability metadata, circuit breakers, and usage tracking for the 3tears platform"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -12,9 +12,9 @@ authors = [{name = "pace"}]
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "3tears-media-contracts>=0.63.0,<0.64.0",
-    "3tears-observe>=0.63.0,<0.64.0",
-    "3tears-tool-schema>=0.63.0,<0.64.0",
+    "3tears-media-contracts>=0.64.0,<0.65.0",
+    "3tears-observe>=0.64.0,<0.65.0",
+    "3tears-tool-schema>=0.64.0,<0.65.0",
     "pydantic>=2.0",
     "langchain-core>=0.3",
     # direct dependency, not just transitive-via-langchain-anthropic: the
@@ -50,12 +50,13 @@ dependencies = [
 # awareness and shouldn't gain one just for this.
 # claude-agent-sdk is bounded directly, not left to langchain-claude-code's open range: the session
 # pool drives private SDK internals (the query's control requests and in-process server table),
-# verified against 0.2.116-0.2.118. The agent switch (apply_flag_settings) and the rewind reset
+# verified against 0.2.116-0.2.118, and live on 0.2.163 (2026-10-04: pooled CLIs started, none turned
+# off, a claude-sonnet-5-5 call answered). The agent switch (apply_flag_settings) and the rewind reset
 # (rewind_conversation) are proven on SDK 0.2.116 with its bundled CLI 2.1.207, and the switch also
 # on SDK 0.2.118 / CLI 2.1.209; the rewind to a first message further needs the CLI's server-side
 # flag tengu_rewind_first_message. A CLI that refuses either, or a surface that moved, turns the
 # pool off after three calls in a row and every call runs on a CLI of its own.
-claude-cli = ["langchain-claude-code>=0.1.0", "claude-agent-sdk>=0.2.116,<0.3", "3tears-langgraph>=0.63.0,<0.64.0"]
+claude-cli = ["langchain-claude-code>=0.1.0", "claude-agent-sdk>=0.2.163,<0.3", "3tears-langgraph>=0.64.0,<0.65.0"]
 voyageai = ["langchain-voyageai>=0.3"]
 whisper = ["httpx>=0.27"]
 image = ["httpx>=0.27"]

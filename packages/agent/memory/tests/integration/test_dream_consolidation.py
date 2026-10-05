@@ -17,8 +17,6 @@ pgvector/pg16 database with a faked embedder + reflector:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import MagicMock
 
 import asyncpg
@@ -29,71 +27,17 @@ from threetears.agent.memory.collections import (
     MemoriesCollection,
     MemoryConsolidationsCollection,
 )
-from threetears.agent.memory.dream import DreamService
 from threetears.agent.memory.migrations import register as register_memory
-from threetears.agent.memory.types import MemoryConfig
 from threetears.conversations.migrations import register as register_conversations
-from threetears.core.collections import init_connection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 
 from .conftest import AsyncpgStore
+from .memory_support import insert_source, make_pool, make_service, vec
 
 
 pytestmark = pytest.mark.integration
-
-_DIM = 1024
-
-
-def _vec(seed: float) -> list[float]:
-    """a constant 1024-dim vector; equal seeds -> cosine 1.0 (cluster)."""
-    return [seed] * _DIM
-
-
-def _vec_sql(seed: float) -> str:
-    return "[" + ",".join([str(seed)] * _DIM) + "]"
-
-
-class StubEmbeddings:
-    """embedder returning a fixed gist vector (distinct from source vectors)."""
-
-    def __init__(self, gist_vector: list[float]) -> None:
-        self._gist = gist_vector
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self._gist for _ in texts]
-
-    def embed_query(self, text: str) -> list[float]:
-        _ = text
-        return self._gist
-
-    async def aembed_query(self, text: str) -> list[float]:
-        _ = text
-        return self._gist
-
-    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self._gist for _ in texts]
-
-
-class StubChatModel:
-    def __init__(self, content: str) -> None:
-        self._content = content
-
-    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
-        _ = kwargs
-        resp = MagicMock()
-        resp.content = self._content
-        return resp
-
-
-class StubReflectorFactory:
-    def __init__(self, content: str) -> None:
-        self._content = content
-
-    async def create_chat_model(self, purpose: str = "consolidation") -> Any:
-        _ = purpose
-        return StubChatModel(self._content)
 
 
 @pytest.fixture
@@ -113,76 +57,6 @@ async def applied_schema(pg_schema: tuple[str, str]) -> tuple[str, str]:
     return url, schema
 
 
-async def _make_pool(url: str, schema: str) -> asyncpg.Pool:
-    pool: asyncpg.Pool = await asyncpg.create_pool(
-        dsn=url,
-        min_size=1,
-        max_size=4,
-        server_settings={"search_path": f"{schema}, public"},
-        init=init_connection,
-    )
-    return pool
-
-
-def _make_service(
-    pool: asyncpg.Pool,
-    *,
-    gist_vector: list[float],
-    reflector_content: str = '{"gist": "merged gist", "rationale": "near-duplicates"}',
-) -> DreamService:
-    """wire a DreamService over real collections + stubbed embed/reflect."""
-    registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
-    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
-    authorizer = MagicMock(spec=MemoryAuthorizerDependencies)
-    memories = MemoriesCollection(registry=registry, config=config, authorizer=authorizer)
-    edges = MemoryConsolidationsCollection(registry=registry, config=config, nats_client=None)
-    return DreamService(
-        config=MemoryConfig(),
-        embedding_provider=StubEmbeddings(gist_vector),
-        chat_model_factory=StubReflectorFactory(reflector_content),
-        memories_collection=memories,
-        consolidations_collection=edges,
-    )
-
-
-async def _insert_source(
-    conn: asyncpg.Connection,
-    *,
-    agent_id: uuid.UUID,
-    customer_id: uuid.UUID | None,
-    user_id: uuid.UUID | None,
-    seed: float,
-    content: str,
-    conversation_id: uuid.UUID | None = None,
-    age_days: int = 0,
-    superseded_by: uuid.UUID | None = None,
-    type_memory: str = "fact",
-) -> tuple[uuid.UUID, uuid.UUID]:
-    """insert one embedded source memory; return (memory_id, conversation_id)."""
-    memory_id = uuid.uuid4()
-    conv_id = conversation_id or uuid.uuid4()
-    created = datetime.now(UTC) - timedelta(days=age_days)
-    await conn.execute(
-        "INSERT INTO memories ("
-        "memory_id, agent_id, customer_id, user_id, conversation_id, "
-        "type_memory, content, embedding, salience, superseded_by, "
-        "date_created, date_updated"
-        ") VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text::public.vector,0.5,$9,$10,$10)",
-        memory_id,
-        agent_id,
-        customer_id,
-        user_id,
-        conv_id,
-        type_memory,
-        content,
-        _vec_sql(seed),
-        superseded_by,
-        created,
-    )
-    return memory_id, conv_id
-
-
 async def _superseded_by(conn: asyncpg.Connection, memory_id: uuid.UUID) -> str | None:
     # normalise to str at the border: asyncpg yields stdlib uuid.UUID while a
     # gist id is a uuid_utils.UUID (uuid7); the two compare unequal despite an
@@ -194,7 +68,7 @@ async def _superseded_by(conn: asyncpg.Connection, memory_id: uuid.UUID) -> str 
 class TestDreamEndToEnd:
     async def test_cluster_merges_into_gist_non_destructively(self, applied_schema: tuple[str, str]) -> None:
         url, schema = applied_schema
-        pool = await _make_pool(url, schema)
+        pool = await make_pool(url, schema)
         conn = await asyncpg.connect(url)
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
@@ -208,7 +82,7 @@ class TestDreamEndToEnd:
             s_ids = []
             convs = []
             for i, age in enumerate((5, 3, 1)):
-                mid, conv = await _insert_source(
+                mid, conv = await insert_source(
                     conn,
                     agent_id=agent_id,
                     customer_id=customer_id,
@@ -219,7 +93,7 @@ class TestDreamEndToEnd:
                 )
                 s_ids.append(mid)
                 convs.append((age, conv))
-            singleton, _ = await _insert_source(
+            singleton, _ = await insert_source(
                 conn,
                 agent_id=agent_id,
                 customer_id=customer_id,
@@ -229,7 +103,7 @@ class TestDreamEndToEnd:
             )
             newest_conv = min(convs, key=lambda t: t[0])[1]  # smallest age = newest
 
-            service = _make_service(pool, gist_vector=_vec(0.9))
+            service = make_service(pool, gist_vector=vec(0.9))
             result = await service.run_consolidation(agent_id, customer_id=customer_id, user_id=user_id)
 
             assert result.gists_created == 1
@@ -283,7 +157,7 @@ class TestDreamEndToEnd:
 
     async def test_scope_isolation_across_users(self, applied_schema: tuple[str, str]) -> None:
         url, schema = applied_schema
-        pool = await _make_pool(url, schema)
+        pool = await make_pool(url, schema)
         conn = await asyncpg.connect(url)
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
@@ -294,7 +168,7 @@ class TestDreamEndToEnd:
 
             a_ids = [
                 (
-                    await _insert_source(
+                    await insert_source(
                         conn, agent_id=agent_id, customer_id=customer_id, user_id=user_a, seed=0.05, content=f"a{i}"
                     )
                 )[0]
@@ -302,14 +176,14 @@ class TestDreamEndToEnd:
             ]
             b_ids = [
                 (
-                    await _insert_source(
+                    await insert_source(
                         conn, agent_id=agent_id, customer_id=customer_id, user_id=user_b, seed=0.05, content=f"b{i}"
                     )
                 )[0]
                 for i in range(2)
             ]
 
-            service = _make_service(pool, gist_vector=_vec(0.9))
+            service = make_service(pool, gist_vector=vec(0.9))
             result = await service.run_consolidation(agent_id, customer_id=customer_id, user_id=user_a)
 
             assert result.gists_created == 1
@@ -330,7 +204,7 @@ class TestDreamEndToEnd:
 
     async def test_orphaned_supersession_self_heals(self, applied_schema: tuple[str, str]) -> None:
         url, schema = applied_schema
-        pool = await _make_pool(url, schema)
+        pool = await make_pool(url, schema)
         conn = await asyncpg.connect(url)
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
@@ -339,10 +213,10 @@ class TestDreamEndToEnd:
             user_id = uuid.uuid4()
 
             # a real live gist supersedes a source -> that source stays excluded.
-            live_gist, _ = await _insert_source(
+            live_gist, _ = await insert_source(
                 conn, agent_id=agent_id, customer_id=customer_id, user_id=user_id, seed=0.9, content="live gist"
             )
-            live_superseded, _ = await _insert_source(
+            live_superseded, _ = await insert_source(
                 conn,
                 agent_id=agent_id,
                 customer_id=customer_id,
@@ -354,7 +228,7 @@ class TestDreamEndToEnd:
             # a DEAD gist (id never inserted) supersedes two sources -> orphaned;
             # they must become eligible candidates again.
             dead_gist = uuid.uuid4()
-            orphan_a, _ = await _insert_source(
+            orphan_a, _ = await insert_source(
                 conn,
                 agent_id=agent_id,
                 customer_id=customer_id,
@@ -363,7 +237,7 @@ class TestDreamEndToEnd:
                 content="orphan a",
                 superseded_by=dead_gist,
             )
-            orphan_b, _ = await _insert_source(
+            orphan_b, _ = await insert_source(
                 conn,
                 agent_id=agent_id,
                 customer_id=customer_id,

@@ -341,7 +341,7 @@ class SkillListInput(BaseModel):
 class SkillGetInput(BaseModel):
     """Input schema for the ``skill_get`` tool."""
 
-    skill_id: str = Field(description="The [skill:<id>] from skill_list or skill_create.")
+    skill_id: str = Field(description="The [skill:<id>] from skill_list or skill_create, or the skill's name.")
 
 
 class SkillUpdateInput(BaseModel):
@@ -353,7 +353,7 @@ class SkillUpdateInput(BaseModel):
     lists).
     """
 
-    skill_id: str = Field(description="The [skill:<id>] to change.")
+    skill_id: str = Field(description="The [skill:<id>] or name of the skill to change.")
     name: str | None = None
     summary: str | None = None
     body: str | None = Field(default=None, description="New steps. An empty string removes them.")
@@ -378,13 +378,13 @@ class ToolSkillUpdateInput(SkillUpdateInput):
 class SkillDeleteInput(BaseModel):
     """Input schema for the ``skill_delete`` tool."""
 
-    skill_id: str = Field(description="The [skill:<id>] to delete.")
+    skill_id: str = Field(description="The [skill:<id>] or name of the skill to delete.")
 
 
 class SkillInvokeInput(BaseModel):
     """Input schema for the ``skill_invoke`` tool."""
 
-    skill_id: str = Field(description="The [skill:<id>] to use now.")
+    skill_id: str = Field(description="The [skill:<id>] or name of the skill to use now.")
     rationale: str | None = Field(
         default=None,
         description="Optional one line on why, kept with the record of this use.",
@@ -681,6 +681,37 @@ async def _check_tool_acl(
     if not permitted:
         return f"{label} entry {tool_name!r} not authorized for this user"
     return None
+
+
+async def _resolve_skill_ref(
+    collection: AgentSkillCollection, *, agent_id: UUID, user_id: UUID, raw: str
+) -> UUID | None:
+    """The skill a model named: its ``[skill:<id>]``, its bare id, or its name.
+
+    Models name skills by name as often as by id; refusing a name sent the
+    agent hunting for an id it could not see and reporting the skill broken.
+
+    :param collection: three-tier skills collection
+    :ptype collection: AgentSkillCollection
+    :param agent_id: caller's partition column
+    :ptype agent_id: UUID
+    :param user_id: caller's user UUID
+    :ptype user_id: UUID
+    :param raw: what the model passed
+    :ptype raw: str
+    :return: the skill's id, or ``None`` when neither an id nor a name matches
+    :rtype: UUID | None
+    """
+    parsed = _parse_skill_id(raw)
+    if parsed is not None:
+        return parsed
+    name = (raw or "").strip()
+    if name.startswith("[skill:") and name.endswith("]"):
+        name = name[len("[skill:") : -1].strip()
+    if not name:
+        return None
+    entity = await collection.find_by_name_for_user(agent_id=agent_id, user_id=user_id, name=name)
+    return entity.skill_id if entity is not None else None
 
 
 async def _load_skill_for_user(
@@ -1186,9 +1217,9 @@ def load_skill_get_tool(
     @tool("skill_get", args_schema=SkillGetInput)
     async def skill_get(skill_id: str) -> str:
         """Read full body + metadata for one prose-skill."""
-        parsed = _parse_skill_id(skill_id)
+        parsed = await _resolve_skill_ref(skills_collection, agent_id=agent_id, user_id=user_id, raw=skill_id)
         if parsed is None:
-            return _tool_error("skill_get", f"invalid skill_id {skill_id!r}")
+            return _tool_error("skill_get", f"no skill has the id or name {skill_id!r}")
 
         entity = await _load_skill_for_user(
             collection=skills_collection,
@@ -1257,9 +1288,9 @@ def load_skill_update_tool(
         """Edit a skill in place."""
         if not offer_tool_skills and (tool is not None or arguments is not None):
             return _tool_error("skill_update", TOOL_SKILLS_NOT_OFFERED)
-        parsed = _parse_skill_id(skill_id)
+        parsed = await _resolve_skill_ref(skills_collection, agent_id=agent_id, user_id=user_id, raw=skill_id)
         if parsed is None:
-            return _tool_error("skill_update", f"invalid skill_id {skill_id!r}")
+            return _tool_error("skill_update", f"no skill has the id or name {skill_id!r}")
 
         entity = await _load_skill_for_user(
             collection=skills_collection,
@@ -1440,9 +1471,9 @@ def load_skill_delete_tool(
     @tool("skill_delete", args_schema=SkillDeleteInput)
     async def skill_delete(skill_id: str) -> str:
         """Delete a prose-skill permanently. Invocation history cascades."""
-        parsed = _parse_skill_id(skill_id)
+        parsed = await _resolve_skill_ref(skills_collection, agent_id=agent_id, user_id=user_id, raw=skill_id)
         if parsed is None:
-            return _tool_error("skill_delete", f"invalid skill_id {skill_id!r}")
+            return _tool_error("skill_delete", f"no skill has the id or name {skill_id!r}")
 
         entity = await _load_skill_for_user(
             collection=skills_collection,
@@ -1534,9 +1565,9 @@ def load_skill_invoke_tool(
     @tool("skill_invoke", args_schema=SkillInvokeInput)
     async def skill_invoke(skill_id: str, rationale: str | None = None) -> str:
         """Activate a prose-skill for the rest of THIS turn."""
-        parsed = _parse_skill_id(skill_id)
+        parsed = await _resolve_skill_ref(skills_collection, agent_id=agent_id, user_id=user_id, raw=skill_id)
         if parsed is None:
-            return _tool_error("skill_invoke", f"invalid skill_id {skill_id!r}")
+            return _tool_error("skill_invoke", f"no skill has the id or name {skill_id!r}")
 
         try:
             active = active_skill_probe()
@@ -1565,6 +1596,15 @@ def load_skill_invoke_tool(
             return _tool_error(
                 "skill_invoke",
                 f"skill [skill:{entity.skill_id}] is disabled; re-enable via skill_update",
+            )
+
+        if entity.tool:
+            # A tool-call skill has no steps to take on; activating it would
+            # change nothing, and the turn would read as if the skill ran.
+            return _tool_error(
+                "skill_invoke",
+                f"skill [skill:{entity.skill_id}] is one call to {entity.tool}; call {entity.tool} "
+                "yourself, or attach the skill to a wake to run it on a schedule",
             )
 
         if entity.prompt_mode == "replace":

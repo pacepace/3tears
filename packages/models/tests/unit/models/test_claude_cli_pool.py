@@ -1171,9 +1171,35 @@ class TestAToolCallThroughTheSdksOwnDispatch:
                     await self.inbox.put({"type": "control_response", "response": response})
                 elif message.get("type") == "control_response":
                     self.answers.append(message)
-                    self.answered.set()
+                    if message.get("response", {}).get("request_id") == "call-1":
+                        self.answered.set()
+
+            def _mcp(self, request_id: str, payload: dict[str, Any]) -> None:
+                self.inbox.put_nowait(
+                    {
+                        "type": "control_request",
+                        "request_id": request_id,
+                        "request": {"subtype": "mcp_message", "server_name": "langchain-tools", "message": payload},
+                    }
+                )
 
             def send_tool_call(self) -> None:
+                # as the CLI does after mcp_set_servers: the MCP handshake, then the call. SDK 0.2.163
+                # serves an in-process server over a real MCP session, which answers nothing before it.
+                self._mcp(
+                    "init-1",
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 0,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "clientInfo": {"name": "cli", "version": "1"},
+                        },
+                    },
+                )
+                self._mcp("init-2", {"jsonrpc": "2.0", "method": "notifications/initialized"})
                 self.inbox.put_nowait(
                     {
                         "type": "control_request",
@@ -1231,7 +1257,7 @@ class TestAToolCallThroughTheSdksOwnDispatch:
             await client.disconnect()
 
         assert seen_config == ["B"], "the handler saw the conversation that started the CLI"
-        [answer] = transport.answers
+        [answer] = [a for a in transport.answers if a["response"].get("request_id") == "call-1"]
         assert answer["response"]["subtype"] == "success", f"the SDK did not route the call: {answer!r}"
 
 
@@ -1649,7 +1675,9 @@ class TestTheAgentSwitchRequest:
             sent.append(request)
             return {}
 
-        client = SimpleNamespace(_query=SimpleNamespace(_send_control_request=send, sdk_mcp_servers={}))
+        client = SimpleNamespace(
+            _query=SimpleNamespace(_send_control_request=send, sdk_mcp_servers={}, _sdk_mcp_bridges={})
+        )
         session = PooledCliSession(client, key="k", pid=None, marker="m")
         session.agents = agents
         return session, sent
@@ -1824,7 +1852,9 @@ class TestTheRealSessionMarksARefusalStructural:
         async def refuse(request: dict[str, Any], timeout: float) -> Any:
             raise Exception("Unknown setting: agent")  # noqa: TRY002 -- the SDK's own shape for a refusal
 
-        client = SimpleNamespace(_query=SimpleNamespace(_send_control_request=refuse, sdk_mcp_servers={}))
+        client = SimpleNamespace(
+            _query=SimpleNamespace(_send_control_request=refuse, sdk_mcp_servers={}, _sdk_mcp_bridges={})
+        )
         session = PooledCliSession(client, key="k", pid=None, marker="m")
         session.agents = frozenset({agent_name("persona A")})
         with pytest.raises(ClaudeCliSessionError) as raised:
