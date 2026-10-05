@@ -13,7 +13,7 @@ obvious workarounds wrong:
   have.** Reading the palette out of a stylesheet, or out of whatever directory a
   token build happens to write to, works on a machine that has just run that build
   and fails everywhere else. So the palette arrives here as an artifact that ships
-  *inside this package*, beside :mod:`~threetears.evals.analysis.viz.text_metrics`'s
+  *inside this package*, beside :mod:`~threetears.evals.vega.text_metrics`'s
   ``font_metrics.json``, and is resolved from this module's own directory.
 
 That is the whole of the contract with whoever supplies the palette: produce
@@ -196,7 +196,7 @@ def font_sizes() -> dict[str, float]:
     Read by the compiler as well as by :func:`vega_config`, because a layout
     decision taken from a string's width is only right if it measures at the size
     the renderer will draw that string at. The two uses are held together by
-    ``tests/test_viz_compiler.py``, which pins that the size the compiler
+    ``tests/test_vega_compiler.py``, which pins that the size the compiler
     measures a category label at is the size this config hands the axis — the pair
     is otherwise free to drift silently, and the symptom would be a label that was
     measured to fit and draws truncated.
@@ -415,7 +415,7 @@ def vega_config(theme: Theme) -> dict[str, Any]:
         #
         # Written as a literal rather than as `ZERO_RULE_STYLE` because a browser
         # mirror's parity check that reads THIS dict out of the source cannot resolve a
-        # name; `tests/test_viz_compiler.py` pins the literal to the constant instead, so
+        # name; `tests/test_vega_compiler.py` pins the literal to the constant instead, so
         # the pair is still held by a gate rather than by memory.
         #
         # `chart-context` is the same division applied to RECESSION. A mark that is

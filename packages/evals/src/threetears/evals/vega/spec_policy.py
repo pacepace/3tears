@@ -5,7 +5,7 @@
 :class:`~threetears.evals.analysis.viz.intent.ChartIntent` every renderer is handed. This module checks
 that the Vega-Lite spec drawn from it still satisfies them as a picture — and checks what only a
 rendered figure can break (upright text, an undashed grid, one scale across layers and panels, a colour
-the rasteriser can parse). It travels with the Vega-Lite half when that leaves the core.
+the rasteriser can parse). It is the Vega-Lite adapter's, and nothing in the core reads it.
 
 **This gate sits OUTSIDE the compiler, and that placement is the point.** The
 rules below are properties of a *Vega-Lite spec*, not of any particular thing
@@ -97,7 +97,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.evals.analysis.viz.palette import VALUE_ON_FILL_STYLE, series_slots, validated_slots
+from threetears.evals.vega.palette import VALUE_ON_FILL_STYLE, series_slots, validated_slots
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -178,7 +178,7 @@ def _palette_slots() -> int:
     """How many categorical slots the palette holds before Vega recycles from slot 1.
 
     Read from the artifact, never written here. Distinct from
-    :func:`~threetears.evals.analysis.viz.palette.validated_slots`, which marks where *validated
+    :func:`~threetears.evals.vega.palette.validated_slots`, which marks where *validated
     separation* ends: 1-4 are the validated hues and 5-8 the derived second tier.
     Passing this width is a warning, not a refusal — a palette that will not draw
     legitimate data has answered the wrong question: the palette never refuses to draw.
@@ -727,7 +727,7 @@ def _check_direct_labels(view: _View) -> list[str]:
 
     Two rules, and they answer two different questions:
 
-    * **The mandate.** Past :func:`~threetears.evals.analysis.viz.palette.validated_slots` a
+    * **The mandate.** Past :func:`~threetears.evals.vega.palette.validated_slots` a
       categorical colour encoding must be accompanied by a per-mark label. There
       is no exemption for a faceted chart: a key at the top of a figure is still a
       colour the reader has to carry, and at five series the colours are no longer

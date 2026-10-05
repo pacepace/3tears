@@ -20,13 +20,13 @@ from threetears.evals.analysis.reporting import (
     UNPAIRED_EFFECT_LABEL,
     significance_read,
 )
-from threetears.evals.analysis.viz.compiler import compile_chart
+from threetears.evals.analysis.viz import chart_intent
 from threetears.evals.analysis.viz.payloads import DeltaRow
 
 
 def _effect_cell(row: DeltaRow) -> str:
-    """The effect column the compiled delta table carries for one row, through the public compiler."""
-    [compiled] = compile_chart("delta_table", {"rows": [row.model_dump()]}).rows
+    """The effect column the compiled delta table carries for one row, through the public intent builder."""
+    [compiled] = chart_intent("delta_table", {"rows": [row.model_dump()]}).rows
     return str(compiled["effect"])
 
 

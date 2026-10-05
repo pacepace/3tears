@@ -1,7 +1,7 @@
 """The one number rule — what it writes at both ends of a value's range, and that it is the only one.
 
 The shared cases live in `fixtures/number-format-cases.json` beside this suite and are asserted by
-`test_viz_compiler.py` (a browser renderer that restates the rule pins the same table where it ships). What is here is the
+`test_vega_compiler.py` (a browser renderer that restates the rule pins the same table where it ships). What is here is the
 rule's two ENDS stated as properties rather than cases, the signed form, and the canary that keeps a
 second implementation from growing back: two formatters in one engine is how one analysis came to
 print a latency as ``1.235e+04`` beside an interval that spelled the same magnitude ``12,346``.

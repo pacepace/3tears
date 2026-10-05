@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.analysis.viz.compiler import (
+from threetears.evals.vega.compiler import (
     VEGA_LITE_SCHEMA,
     ValueAxis,
     _name_font_size,
@@ -37,7 +37,7 @@ from threetears.evals.analysis.viz.compiler import (
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
 from threetears.evals.analysis.viz.intents.frontier import CLASS_FIELD, CLASS_SHAPES, DISPLAY_FIELD
-from threetears.evals.analysis.viz.palette import CONTEXT_STYLE, font_weights, geometry
+from threetears.evals.vega.palette import CONTEXT_STYLE, font_weights, geometry
 
 #: The classes drawn in the context neutral rather than in the chart's own ink.
 #:
@@ -66,7 +66,7 @@ _POINT_SIZE = 320
 #: How far a contestant's mark extends past the point it is placed at, in px.
 #:
 #: :data:`_POINT_SIZE` is an area and a label offset is a distance, so the conversion
-#: is stated once — in :func:`~threetears.evals.analysis.viz.compiler.point_radius`, which is also
+#: is stated once — in :func:`~threetears.evals.vega.compiler.point_radius`, which is also
 #: where Vega's bounding-box convention is written down.
 _POINT_RADIUS = point_radius(_POINT_SIZE)
 

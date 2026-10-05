@@ -21,7 +21,7 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import MeasureMovement, assemble_context_bundle
 from threetears.evals.analysis.bundle import cell_measure_facts
-from threetears.evals.analysis.viz.compiler import compile_chart
+from threetears.evals.analysis.viz import chart_intent
 from threetears.evals.contracts import MetricDescriptor, materiality
 from threetears.evals.contracts.models import LatencyMetrics
 from threetears.evals.contracts.host import HostProfile, MeasureRegistry
@@ -164,7 +164,7 @@ def test_the_decision_surface_freezes_each_measures_threshold() -> None:
 
 def _delta_table(facts: dict[str, MeasureFacts]):
     payload = build(chart("delta_table", [ref("A"), ref("B")], ["pass_rate", "total_ms"]), surface(facts=facts))
-    return payload, compile_chart("delta_table", payload)
+    return payload, chart_intent("delta_table", payload)
 
 
 def test_a_delta_below_its_threshold_is_labelled_immaterial_on_the_surface() -> None:

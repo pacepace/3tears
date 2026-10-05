@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.analysis.viz import compile_chart
-from threetears.evals.analysis.viz.compiler import (
+from threetears.evals.vega import compile_chart
+from threetears.evals.vega.compiler import (
     ANCHOR_FIELD,
     DISPLAY_FIELD,
     KIND_FIELD,
@@ -37,7 +37,7 @@ from threetears.evals.analysis.viz.compiler import (
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.quantities import display_scale, strip_common_prefix
-from threetears.evals.analysis.viz.palette import (
+from threetears.evals.vega.palette import (
     CONTEXT_STYLE,
     SEQUENTIAL_RANGE,
     VALUE_ON_FILL_STYLE,
@@ -48,23 +48,18 @@ from threetears.evals.analysis.viz.palette import (
     vega_config,
 )
 from threetears.evals.analysis.viz.payloads import PayloadError
-from threetears.evals.analysis.viz.vega_policy import RANKING_SPEC_NAME, check_spec
-from threetears.evals.analysis.viz.render import render_svg
-from threetears.evals.analysis.viz.text_metrics import fits, text_width
-
-
-PAYLOAD = {
-    "parts": [
-        {"label": "confidence_met", "value": 19.0, "n": 9},
-        {"label": "budget_exhausted", "value": 42.0, "n": 21},
-        {"label": "tool_error", "value": 12.0, "n": 6},
-        {"label": "no_new_sources", "value": 27.0, "n": 13},
-    ],
-    "unit": "%",
-    "measure": "share of stops",
-    "total": 100.0,
-    "total_n": 49,
-}
+from threetears.evals.vega.spec_policy import RANKING_SPEC_NAME, check_spec
+from threetears.evals.vega.render import render_svg
+from threetears.evals.vega.text_metrics import fits, text_width
+from packages.evals.tests.chart_examples import (
+    DELTA_TABLE,
+    DISTRIBUTION,
+    EVERY_TYPE,
+    FRONTIER,
+    NULL_RESULT,
+    PAYLOAD,
+    SWEEP_RANKING,
+)
 
 
 def _mark_layers(spec, mark_type=None):
@@ -314,185 +309,10 @@ class TestCompilerOutputPassesThePolicyGate:
         fails the gate; the value is that this test fails the day a compiler
         change starts emitting a spec the report standard rejects.
         """
-        from threetears.evals.analysis.viz.vega_policy import check_spec
+        from threetears.evals.vega.spec_policy import check_spec
 
         assert check_spec(compile_chart("breakdown", PAYLOAD).spec) == []
 
-
-DISTRIBUTION = {
-    "groups": [
-        {
-            "label": "model-b",
-            "samples": [1200.0, 1450.0, 1310.0, 1600.0],
-            "ci": {"low": 1250.0, "high": 1520.0, "mean": 1390.0, "variability": "across 5 runs", "level": 0.95},
-            "n": 5,
-        },
-        {
-            "label": "deepseek",
-            "buckets": [{"range": "0-1s", "count": 2}, {"range": "1-2s", "count": 7}],
-            "ci": {"low": 1400.0, "high": 1900.0, "mean": 1650.0, "variability": "across 5 runs", "level": 0.95},
-            "n": 9,
-        },
-    ],
-    "unit": "ms",
-    "x_label": "pipeline_synthesis_ms",
-}
-
-NULL_RESULT = {
-    "groups": [
-        {
-            "label": "timeout=4s",
-            "ci": {"low": 0.71, "high": 0.85, "mean": 0.78, "variability": "across the 12 cases", "level": 0.95},
-            "n": 12,
-        },
-        {
-            "label": "timeout=8s",
-            "ci": {"low": 0.74, "high": 0.88, "mean": 0.81, "variability": "across the 12 cases", "level": 0.95},
-            "n": 12,
-        },
-    ],
-    "metric": "mean_composite",
-    "mechanism": "The batch never fills before the deadline at either setting.",
-}
-
-DELTA_TABLE = {
-    "rows": [
-        {
-            "metric": "cost_usd",
-            "a": 0.011,
-            "b": 0.019,
-            "unit": "usd",
-            "delta": 0.008,
-            "d_z": 1.2,
-            "p": 0.004,
-            "n": 24,
-            # Stated, because the row carries a single `n` — 24 PAIRS. An
-            # unpaired test over the same two arms has two sample sizes and no
-            # pair count, so a row that means this one has to say so.
-            "paired": True,
-            "significant": True,
-        },
-        {"metric": "total_ms", "a": 16162.0, "b": 11040.0, "unit": "ms", "delta": -5122.0},
-    ],
-    "a_label": "model-b",
-    "b_label": "deepseek",
-}
-
-
-#: The point plot — two contestants placed against each other, one of them beaten.
-#:
-#: The only entry below whose figure is not row-based, which is why several
-#: geometry assertions state their subject as "row-based" rather than "every".
-FRONTIER: dict = {
-    "points": [
-        {"label": "model-a-3.5-fast-lite", "cost": 0.0071, "quality": 0.2, "latency_ms": 31000.0},
-        {"label": "model-b", "cost": 0.0174, "quality": 0.0, "latency_ms": 48700.0, "dominated": True},
-    ],
-    "bar": 0.5,
-    "cost_label": "Cost per run (USD)",
-    "quality_label": "pass^k",
-}
-
-
-#: A four-configuration sweep over one categorical lever and two ordered ones.
-#:
-#: Shaped after the reference campaign rather than minimally: one lever whose levels
-#: are names, two whose levels are numbers, and a level nobody set — which is the
-#: combination that exercises both ink vocabularies and the absence sentinel in one
-#: figure, and the one a minimal fixture would have missed.
-SWEEP_RANKING = {
-    "ranked": {"measure": "pass^k", "unit": None},
-    "secondary": {"measure": "cost per run", "unit": "usd"},
-    "rows": [
-        {
-            "config": {"model": "gpt-5", "fetch_concurrency": "8", "search_depth": "2"},
-            "ranked_value": 0.72,
-            "secondary_value": 0.0111,
-            "n": 5,
-        },
-        {
-            "config": {"model": "model-b", "fetch_concurrency": "4", "search_depth": "2"},
-            "ranked_value": 0.61,
-            "secondary_value": 0.0094,
-            "n": 5,
-        },
-        {
-            "config": {"model": "gpt-5", "fetch_concurrency": "2", "search_depth": "1"},
-            "ranked_value": 0.55,
-            "secondary_value": 0.0142,
-            "n": 5,
-        },
-        {
-            "config": {"model": "model-b", "fetch_concurrency": "1", "search_depth": "—"},
-            "ranked_value": 0.5,
-            "secondary_value": 0.0081,
-            "n": 5,
-        },
-    ],
-}
-
-
-def _timeseries_ci(mean: float, half: float) -> dict:
-    return {
-        "low": mean - half,
-        "high": mean + half,
-        "mean": mean,
-        "level": 0.95,
-        "variability": "the cell's observations",
-    }
-
-
-#: One reading across four builds, two lines — the second missing a build, so the gap is in the
-#: payload every cross-type rule walks.
-TIMESERIES = {
-    "metric": "total_ms",
-    "unit": "ms",
-    "basis": "release",
-    "release_label": "app_version",
-    "positions": ["0.9", "0.10", "0.11", "0.12"],
-    "series": [
-        {
-            "label": "anthropic/model-a",
-            "points": [
-                {"position": "0.9", "ci": _timeseries_ci(1200.0, 90.0), "n": 12},
-                {"position": "0.10", "ci": _timeseries_ci(1150.0, 80.0), "n": 12},
-                {"position": "0.11", "ci": _timeseries_ci(980.0, 70.0), "n": 12},
-                {"position": "0.12", "ci": _timeseries_ci(940.0, 60.0), "n": 12},
-            ],
-        },
-        {
-            "label": "anthropic/model-b",
-            "points": [
-                {"position": "0.9", "ci": _timeseries_ci(1500.0, 120.0), "n": 12},
-                {"position": "0.11", "ci": _timeseries_ci(1320.0, 100.0), "n": 12},
-                {"position": "0.12", "ci": _timeseries_ci(1290.0, 90.0), "n": 12},
-            ],
-        },
-    ],
-    "gaps": [{"series": "anthropic/model-b", "position": "0.10", "reason": "the cell was not measured there"}],
-}
-
-
-#: One payload per drawable type, for the checks that must hold across all of them.
-EVERY_TYPE: dict[str, dict] = {
-    "sweep_ranking": SWEEP_RANKING,
-    "breakdown": PAYLOAD,
-    "distribution": DISTRIBUTION,
-    "null_result": NULL_RESULT,
-    "delta_table": DELTA_TABLE,
-    "frontier": FRONTIER,
-    "attribution": {
-        "end_to_end": {"measure": "total_ms", "delta": -31800.0, "a": 58300.0, "b": 26500.0, "n": 12},
-        "subsystem": {"measure": "tool_ms", "delta": -3800.0, "n": 12},
-        "unit": "ms",
-        "contained_by": "total_ms",
-        "unattributed_delta": -28000.0,
-        "lever": "pipeline.pipeline_model",
-        "a_label": "model-b",
-        "b_label": "deepseek",
-    },
-    "timeseries": TIMESERIES,
-}
 
 #: The types whose figure is a point plot rather than a stack of categorical rows.
 #:
@@ -546,7 +366,7 @@ def test_every_drawable_type_has_a_payload_here():
     gutter bound was migrated on one chart and asserted on that same chart, and
     four types kept the old value with the suite green.
 
-    `test_viz_render.py` pins its own `PAYLOADS` to `PAYLOAD_MODELS` for the same
+    `test_vega_render.py` pins its own `PAYLOADS` to `PAYLOAD_MODELS` for the same
     reason; this is the missing half of that pair.
     """
     from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS
@@ -569,7 +389,7 @@ def test_every_payload_model_has_a_compiler_arm():
     direction is the one a half-finished type produces, and the missing-model
     direction is the one a deleted type leaves behind.
     """
-    from threetears.evals.analysis.viz.arms import ARMS
+    from threetears.evals.vega.arms import ARMS
     from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS
 
     assert set(ARMS) == set(PAYLOAD_MODELS)
@@ -755,7 +575,7 @@ class TestFigureGeometry:
         check that can tell the two apart.
         """
         moved = geometry() | {"row_step": 100, "plot_min_height": 10, "bar_height": 7, "plot_width": 500}
-        monkeypatch.setattr("threetears.evals.analysis.viz.compiler.geometry", lambda: moved)
+        monkeypatch.setattr("threetears.evals.vega.compiler.geometry", lambda: moved)
         spec = compile_chart("breakdown", PAYLOAD).spec
         assert spec["height"] == 400, "the row step is not being read from the artifact"
         assert spec["width"] == 500, "the plot width is not being read from the artifact"
@@ -3213,7 +3033,7 @@ class TestACompiledSpecStatesNoAppearanceValue:
       a permission. Its limits are held where they bind rather than here: the
       payload's own palette ceiling in `test_viz_payloads.py`, and the gate over
       ANY producer's spec in
-      `test_viz_policy.py::TestAQuantitativeColourScaleIsHeldToTheSameRules`.
+      `test_vega_spec_policy.py::TestAQuantitativeColourScaleIsHeldToTheSameRules`.
 
     **The exposure argument this class used to carry is now the other way round,
     and that is deliberate rather than a loss.** It read: `_check_direct_labels`
@@ -3641,7 +3461,7 @@ class TestSweepRankingRanksAndNeverManufacturesItsFinding:
         Rule 10 only judges a frame that names itself a ranking, so
         ``_ranking_panel``'s ``"name": RANKING_SPEC_NAME`` is the whole of what
         makes the gate reachable on the only chart it was written for. Every
-        rule-10 case in ``test_viz_policy.py`` builds its own spec and sets that
+        rule-10 case in ``test_vega_spec_policy.py`` builds its own spec and sets that
         name itself — i.e. the tests supply the production wiring — so without
         this assertion the line can be deleted and the entire suite stays green
         while the rule silently goes inert. That is the exact state this work

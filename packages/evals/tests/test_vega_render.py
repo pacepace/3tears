@@ -33,11 +33,11 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.viz import compile_chart
-from threetears.evals.analysis.viz.compiler import point_radius
-from threetears.evals.analysis.viz.palette import geometry, load_palette, series_slots, vega_config
+from threetears.evals.vega import compile_chart
+from threetears.evals.vega.compiler import point_radius
+from threetears.evals.vega.palette import geometry, load_palette, series_slots, vega_config
 from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS
-from threetears.evals.analysis.viz.render import render_png, render_svg
+from threetears.evals.vega.render import render_png, render_svg
 
 
 PAYLOAD = {

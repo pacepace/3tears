@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.14"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -11,39 +11,39 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-3tears = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-acl = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-identity = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-intention = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-knowledge = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-memory = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-skills = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-tools = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-wake = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-workspace = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-backup = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-channels = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-conversations = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-datasources = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-enforcement = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-epoch = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-evals = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-geo = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-iam = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-langgraph = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-mcp = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-media-contracts = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-models = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-nats = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+langchain-openrouter = "2026-09-22T05:00:00Z"
+3tears-models = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-tools = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-object-store = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-observe = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-conversations = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-registry = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-scheduled-jobs = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-scrape = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-search = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-tool-schema = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-langchain-openrouter = "2026-09-22T05:00:00Z"
+3tears-mcp = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-wake = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-skills = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-channels = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-enforcement = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-epoch = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-acl = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-geo = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-intention = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-iam = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-evals = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-observe = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-langgraph = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-scheduled-jobs = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-knowledge = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-backup = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-media-contracts = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-scrape = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-datasources = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-memory = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 
 [manifest]
 members = [
@@ -122,6 +122,7 @@ dev = [
     { name = "trafilatura", specifier = ">=2.0.0" },
     { name = "types-jsonschema", specifier = ">=4.26" },
     { name = "types-pyyaml", specifier = ">=6.0" },
+    { name = "vl-convert-python", specifier = "==1.9.0.post1" },
 ]
 
 [[package]]
@@ -701,6 +702,10 @@ source = { editable = "packages/evals" }
 dependencies = [
     { name = "3tears-observe" },
     { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+vega = [
     { name = "vl-convert-python" },
 ]
 
@@ -708,8 +713,9 @@ dependencies = [
 requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "vl-convert-python", specifier = "==1.9.0.post1" },
+    { name = "vl-convert-python", marker = "extra == 'vega'", specifier = "==1.9.0.post1" },
 ]
+provides-extras = ["vega"]
 
 [[package]]
 name = "3tears-geo"

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.analysis.viz.compiler import (
+from threetears.evals.vega.compiler import (
     VEGA_LITE_SCHEMA,
     MarkValue,
     ValueAxis,
@@ -44,7 +44,7 @@ _POINT_SIZE = 80
 #:
 #: Derived from the size rather than written beside it: a point is sized by area and
 #: an axis has to be told a distance, and two numbers that must agree are two numbers
-#: that will not. The conversion is :func:`~threetears.evals.analysis.viz.compiler.point_radius`,
+#: that will not. The conversion is :func:`~threetears.evals.vega.compiler.point_radius`,
 #: which is where Vega's bounding-box convention is stated once.
 #:
 #: Two things read it, and they are the same fact twice. It is what the value axis

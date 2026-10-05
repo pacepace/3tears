@@ -3,10 +3,10 @@
 **A renderer, not a decider.** What a chart says — its order, its units, its values as drawn, what
 it must disclose — arrives decided in its :class:`~threetears.evals.analysis.viz.intent.ChartIntent`;
 this module turns that into a Vega-Lite spec and adds nothing a reader is told. One spec, two
-consumers: the browser embeds it and the server rasterises it (:mod:`threetears.evals.analysis.viz.render`)
+consumers: the browser embeds it and the server rasterises it (:mod:`threetears.evals.vega.render`)
 for surfaces that cannot run a browser, so layout computed here — label placement, axis domains — is
-identical on both. This half (with its arms, palette, text metrics, rasteriser and spec gate) leaves
-the core for an optional adapter; nothing in the intent half imports it.
+identical on both. This adapter (with its arms, palette, text metrics, rasteriser and spec gate) is
+optional — the ``[vega]`` extra — and nothing in the core imports it.
 
 **The spec carries no colour.** Every consumer supplies the palette as a
 Vega-Lite ``config``: the browser reads it from the CSS custom properties, so it
@@ -31,7 +31,7 @@ here rather than left to the renderer.** They are full model IDs with no aliases
 the gutter that holds them is a fixed 176px, and a renderer handed a name too long
 for that will truncate it — eating precisely the characters that say which build
 is being looked at. So the compiler measures
-(:mod:`threetears.evals.analysis.viz.text_metrics`), strips any prefix every series shares,
+(:mod:`threetears.evals.vega.text_metrics`), strips any prefix every series shares,
 and moves the names out of the gutter onto their own line when they still will not
 fit. The decision is baked into the spec, which is what keeps the two surfaces
 drawing one layout rather than each reaching its own conclusion about the same
@@ -39,8 +39,8 @@ string.
 
 **What is here is the machinery every chart shares; what draws one TYPE is not.**
 :func:`draw_intent` is the entry point for an intent and :func:`compile_chart` for a stored payload,
-and both resolve the chart's type through :data:`~threetears.evals.analysis.viz.arms.ARMS` — one
-module per type under :mod:`threetears.evals.analysis.viz.arms`, each importing this one and
+and both resolve the chart's type through :data:`~threetears.evals.vega.arms.ARMS` — one
+module per type under :mod:`threetears.evals.vega.arms`, each importing this one and
 none importing a sibling. So a type's shape is a file rather than a branch, and
 adding one touches nothing another type is drawn by. The value axis, the identity
 axis, the label placement, the title bound and the number formatting stay here
@@ -50,7 +50,7 @@ The arms are inside the boundary, not outside it, and they import that machinery
 name. Those names keep their leading underscore because the package as a whole
 exports one function and they are not part of that surface; within the package they
 are an ordinary intra-package contract. The underscore therefore marks the boundary
-of :mod:`threetears.evals.analysis.viz`, not of this file, and an arm reaching for
+of :mod:`threetears.evals.vega`, not of this file, and an arm reaching for
 ``ValueAxis`` is using the seam as designed rather than around it.
 """
 
@@ -61,7 +61,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, TypedDict
 
-from threetears.evals.analysis.viz.palette import (
+from threetears.evals.vega.palette import (
     VALUE_ON_FILL_STYLE,
     ZERO_RULE_STYLE,
     font_sizes,
@@ -71,8 +71,8 @@ from threetears.evals.analysis.viz.palette import (
 from threetears.evals.analysis.viz.intent import ChartAxis, ChartIdentity, ChartIntent, chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.quantities import strip_common_prefix
-from threetears.evals.analysis.viz.vega_policy import enforce_spec
-from threetears.evals.analysis.viz.text_metrics import fits, text_width, wrap_text
+from threetears.evals.vega.spec_policy import enforce_spec
+from threetears.evals.vega.text_metrics import fits, text_width, wrap_text
 
 #: The Vega-Lite schema the specs declare. Pinned rather than tracked: the spec is
 #: the durable artifact, and a stored analysis must draw the same chart next year.
@@ -87,7 +87,7 @@ VEGA_LITE_SCHEMA = "https://vega.github.io/schema/vega-lite/v6.json"
 #: recession on a near-black background and on a pale one — so a compiled opacity
 #: chosen for emphasis is right on at most one of the two surfaces a stored spec is
 #: rendered onto. A mark that carries no identity asks for
-#: :data:`~threetears.evals.analysis.viz.palette.CONTEXT_STYLE` by name instead and lets each
+#: :data:`~threetears.evals.vega.palette.CONTEXT_STYLE` by name instead and lets each
 #: renderer answer. The distinction is what this number means, not where it happens
 #: to be used: alpha here says *these marks pile up* or *this bound is unknown*,
 #: which is a fact about the data and is identical in both themes.
@@ -171,7 +171,7 @@ def point_radius(size: float) -> float:
     Vega's own convention and not d3's: ``vega-scenegraph`` draws the circle at
     ``sqrt(size) / 2``, where ``d3.symbolCircle`` would draw ``sqrt(size / pi)``.
     Taking the d3 reading gives a radius 13% too large, and the arithmetic looks right
-    on the page — ``tests/test_viz_render.py`` measures the radius the
+    on the page — ``tests/test_vega_render.py`` measures the radius the
     rasteriser actually drew, because that is the only thing that settles it.
 
     Args:
@@ -341,7 +341,7 @@ def draw_intent(intent: ChartIntent) -> CompiledChart:
     """
     # Imported inside the call rather than at module scope, and that is structural: every arm
     # imports this module's shared machinery, so a top-level import here would close a cycle.
-    from threetears.evals.analysis.viz.arms import ARMS
+    from threetears.evals.vega.arms import ARMS
 
     # Every chart type has an arm — `ARMS` is held to the type vocabulary key for key by test — so a type
     # with none is a registration mistake, not a data problem, and raises as one.
@@ -427,9 +427,9 @@ class _Categories:
       a truncation eats are the ones that distinguish one build from another.
 
     The decision is measured, not judged — see
-    :mod:`threetears.evals.analysis.viz.text_metrics` — and it is measured at the size the
+    :mod:`threetears.evals.vega.text_metrics` — and it is measured at the size the
     renderer will actually draw the axis label at, which is the coupling
-    ``test_viz_compiler.py`` pins.
+    ``test_vega_compiler.py`` pins.
     """
 
     field: str
@@ -1326,7 +1326,7 @@ def _label_lift(thickness: float, font_size: float) -> float:
     measurement: digits and a percent sign reach about seven tenths of the font size,
     so the remainder of the half-box is the daylight between the two, and a lift built
     from the band instead would leave them touching. What settles it either way is
-    ``tests/test_viz_render.py``, which reads the drawn pixels rather than
+    ``tests/test_vega_render.py``, which reads the drawn pixels rather than
     this arithmetic.
 
     Small enough to stay inside the row: at the row step this package draws on, a lift
