@@ -61,6 +61,9 @@ dev-dependencies = [
     # client rather than getting skipped.
     "nats-py>=2.10",
     "nkeys>=0.2",
+    # the Vega-Lite renderer's rasteriser is the `[vega]` extra of 3tears-evals, pinned exactly there;
+    # installed in dev, at the same pin, so the renderer's raster tests exercise the real converter.
+    "vl-convert-python==1.9.0.post1",
     "simpleeval>=1.0.4",
     "pint>=0.25.2",
     "trafilatura>=2.0.0",

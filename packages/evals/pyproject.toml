@@ -24,12 +24,17 @@ classifiers = [
 dependencies = [
     "3tears-observe>=0.64.0,<0.65.0",
     "pydantic>=2.0",
-    # Renders a report's charts to PNG. Pinned exactly: the analysis tests compare rendered
-    # output, and a vl-convert release bundles a different Vega-Lite.
-    "vl-convert-python==1.9.0.post1",
 ]
 
 [project.optional-dependencies]
+# The Vega-Lite chart renderer, `threetears.evals.vega`: its rasteriser draws a report's charts to
+# PNG and SVG. The core ships no charting library and never imports the renderer, so a host that
+# brings its own renderer installs without this. Pinned exactly: the renderer's tests compare
+# rendered output, and a vl-convert release bundles a different Vega-Lite.
+vega = [
+    "vl-convert-python==1.9.0.post1",
+]
+
 # The FastMCP transport (`threetears.evals.transports.fastmcp`): mounts the action catalogue as tools
 # on a FastMCP server. Optional, so the engine and its catalogue install without an MCP stack; the
 # floor is the first release an adopting host is known to run, and the cap the major this is tested against.

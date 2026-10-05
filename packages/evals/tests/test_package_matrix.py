@@ -1,22 +1,28 @@
 """Structural gate: the engine's packages import only what the allowed-dependency matrix permits.
 
-``threetears.evals`` is ten physical subpackages, and one allowed-dependency matrix says which may
+``threetears.evals`` is eleven physical subpackages, and one allowed-dependency matrix says which may
 import which:
 
-============  =========  =====  ========  ===  =======  =======  =====  ==================================================
-from          contracts  run    analysis  gen  storage  testing  quick  third-party
-============  =========  =====  ========  ===  =======  =======  =====  ==================================================
-contracts     yes        --     --        --   --       --       --     pydantic, threetears.observe
-run           yes        yes    --        --   --       --       --     pydantic, threetears.observe
-analysis      yes        --     yes       --   --       --       --     pydantic, threetears.observe; ``vl_convert`` only in viz.render
-gen           yes        --     --        yes  --       --       --     pydantic, threetears.observe
-storage       yes        --     --        --   yes      --       --     (none)
-testing       yes        --     --        --   --       yes      --     (none)
-quick         yes        yes    yes       --   yes      --       yes    pydantic
-============  =========  =====  ========  ===  =======  =======  =====  ==================================================
+============  =========  =====  ========  ===  =======  =======  =====  ====  ============================================
+from          contracts  run    analysis  gen  storage  testing  quick  vega  third-party
+============  =========  =====  ========  ===  =======  =======  =====  ====  ============================================
+contracts     yes        --     --        --   --       --       --     --    pydantic, threetears.observe
+run           yes        yes    --        --   --       --       --     --    pydantic, threetears.observe
+analysis      yes        --     yes       --   --       --       --     --    pydantic, threetears.observe
+gen           yes        --     --        yes  --       --       --     --    pydantic, threetears.observe
+storage       yes        --     --        --   yes      --       --     --    (none)
+testing       yes        --     --        --   --       yes      --     --    (none)
+quick         yes        yes    yes       --   yes      --       yes    --    pydantic
+vega          yes        --     yes       --   --       --       --     yes   threetears.observe; ``vl_convert`` only in vega.render
+============  =========  =====  ========  ===  =======  =======  =====  ====  ============================================
 
-Three more sit above the engine, as the surfaces an agent drives it through, and the table's columns
-do not name them:
+``vega`` is the optional Vega-Lite chart renderer (the ``[vega]`` extra): an adapter over the chart
+intent ``analysis`` decides, so it reaches ``analysis`` and nothing reaches it. Its column is empty
+but its own row, which is what keeps the core free of a charting library: no core package may import
+the renderer, and the rasteriser it takes (``vl_convert``) is the extra's dependency, never the core's.
+
+Three more sit above the engine, as the surfaces an agent drives it through, and the table does not
+name them:
 
 * ``ops`` -- typed operations and the job contract -- may import contracts, run, analysis and itself;
   pydantic and threetears.observe.
@@ -26,7 +32,7 @@ do not name them:
   each adapter its own server alone (``transports.fastmcp``: ``fastmcp``, the package's ``fastmcp`` extra).
 
 ``quick`` may import ``ops`` too, where the run summary it prints lives. Nothing in the engine imports
-any of the three.
+any of the three, and none of the three imports ``vega``.
 
 ``storage`` holds adapters behind the one port and ``testing`` the conformance kits an adopter runs
 against its own adapter; each needs nothing but the port it implements or checks, so neither may
@@ -92,7 +98,7 @@ TESTS_ROOT = Path(__file__).resolve().parent
 #: The repository root, which the probes run from.
 REPO_ROOT = TESTS_ROOT.parents[2]
 
-#: The matrix, for the ten packages.
+#: The matrix, for the eleven packages.
 ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "contracts": frozenset({"contracts"}),
     "run": frozenset({"contracts", "run"}),
@@ -101,6 +107,7 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "storage": frozenset({"contracts", "storage"}),
     "testing": frozenset({"contracts", "testing"}),
     "quick": frozenset({"contracts", "run", "analysis", "storage", "quick", "ops"}),
+    "vega": frozenset({"contracts", "analysis", "vega"}),
     "ops": frozenset({"contracts", "run", "analysis", "ops"}),
     "actions": frozenset({"contracts", "run", "ops", "actions"}),
     "transports": frozenset({"contracts", "ops", "actions", "transports"}),
@@ -116,21 +123,24 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "storage": frozenset(),
     "testing": frozenset(),
     "quick": frozenset({"pydantic"}),
+    "vega": frozenset({"threetears.observe"}),
     "ops": frozenset({"pydantic", "threetears.observe"}),
     "actions": frozenset({"pydantic", "threetears.observe"}),
     "transports": frozenset({"pydantic"}),
 }
 
-#: The one module-level third-party exception: the chart renderer and nothing else in analysis may
-#: import ``vl_convert``.
+#: The module-level third-party exceptions, one per extra: the Vega renderer's rasteriser and nothing
+#: else may import ``vl_convert``, the ``[vega]`` extra's dependency, and the FastMCP transport and
+#: nothing else may import ``fastmcp``, the ``[fastmcp]`` extra's.
 THIRD_PARTY_EXCEPTIONS: dict[str, frozenset[str]] = {
-    "analysis.viz.render": frozenset({"vl_convert"}),
+    "vega.render": frozenset({"vl_convert"}),
     "transports.fastmcp": frozenset({"fastmcp"}),
 }
 
 #: The public roots, relative to ``threetears.evals``. A consumer reaches a package only through one
 #: of these. ``contracts.host`` and ``analysis.viz`` are roots of their own inside a package: the first
-#: is the contract a host implements, the second the one root whose render needs ``vl_convert``.
+#: is the contract a host implements, the second the chart intent and the renderer seam. ``vega`` is the
+#: optional Vega-Lite renderer.
 PUBLIC_ROOTS: tuple[str, ...] = (
     "contracts",
     "contracts.host",
@@ -144,6 +154,7 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "ops",
     "actions",
     "transports.fastmcp",
+    "vega",
 )
 
 #: The consumers walked, as globs under the tests directory.
@@ -251,7 +262,7 @@ def test_placed_modules_obey_the_package_matrix() -> None:
 
 
 def test_placed_modules_import_only_their_third_party_column() -> None:
-    """Past the stdlib, the packages reach pydantic and threetears.observe; vl_convert only in viz.render."""
+    """Past the stdlib, the packages reach pydantic and threetears.observe; vl_convert only in vega.render."""
     _, third_party_violations = matrix_violations(SOURCE_ROOT)
     assert not third_party_violations, (
         "These third-party imports are outside the matrix's third-party column:\n  "
@@ -378,14 +389,14 @@ def consumer_files(tests_root: Path) -> list[tuple[str, Path]]:
 
 
 def _in_a_package(module: str) -> bool:
-    """Whether ``module`` is one of the ten packages or below one."""
+    """Whether ``module`` is one of the eleven packages or below one."""
     return placement(module) in ALLOWED_PACKAGES
 
 
 #: A string literal that IS a dotted path into one of the engine packages, below the package name.
 #: Whole-string and dotted only: a docstring or a sentence naming a module never matches, and a
 #: file path in slash form is a file to edit rather than a module to import, so it is left alone.
-_DOTTED_PACKAGE_PATH = re.compile(r"threetears\.evals\.(?:contracts|run|analysis|gen)(?:\.\w+)+")
+_DOTTED_PACKAGE_PATH = re.compile(r"threetears\.evals\.(?:contracts|run|analysis|gen|vega)(?:\.\w+)+")
 
 
 def _string_addressed_imports(tree: ast.AST, declared: dict[str, frozenset[str]]) -> Iterator[tuple[int, str]]:
@@ -523,14 +534,16 @@ def test_every_public_root_declares_what_it_binds() -> None:
 
 
 #: Each public root, imported first in a fresh interpreter, must load and must not load
-#: ``vl_convert``. Eager roots turn a submodule import into a whole-package import, so an import
-#: cycle surfaces only when a root is the FIRST thing a process imports; and the rasteriser is the
-#: analysis package's one optional dependency, which ``analysis.viz.render`` takes at call time so
-#: that compiling or validating a chart does not need it.
+#: ``vl_convert``; each root but the renderer's own must not load the renderer either. Eager roots turn
+#: a submodule import into a whole-package import, so an import cycle surfaces only when a root is the
+#: FIRST thing a process imports; and the rasteriser is the ``[vega]`` extra's one dependency, which
+#: ``vega.render`` takes at call time so that compiling a spec does not need it.
 _ROOT_PROBE = (
     "import importlib, sys\n"
     "importlib.import_module({module!r})\n"
     "assert 'vl_convert' not in sys.modules, 'importing {module} loaded vl_convert'\n"
+    "assert {module!r} == 'threetears.evals.vega' or 'threetears.evals.vega' not in sys.modules, "
+    "'importing {module} loaded the Vega renderer'\n"
 )
 
 
@@ -556,8 +569,8 @@ _WITHOUT_VL_CONVERT_PROBE = (
     "import sys\n"
     "sys.modules['vl_convert'] = None\n"
     "import threetears.evals.contracts, threetears.evals.contracts.host, threetears.evals.run, threetears.evals.gen\n"
-    "import threetears.evals.analysis\n"
-    "from threetears.evals.analysis.viz import compile_chart, render_png\n"
+    "import threetears.evals.analysis, threetears.evals.analysis.viz\n"
+    "from threetears.evals.vega import compile_chart, render_png\n"
     "try:\n"
     "    render_png({})\n"
     "except ImportError as exc:\n"
@@ -568,7 +581,7 @@ _WITHOUT_VL_CONVERT_PROBE = (
 
 
 def test_every_root_imports_without_the_rasteriser_installed() -> None:
-    """A host with no ``vl_convert`` can import every root, ``analysis.viz`` included, and only drawing fails."""
+    """A host with no ``vl_convert`` can import every root, ``vega`` included, and only rasterising fails."""
     proc = subprocess.run(
         [sys.executable, "-c", _WITHOUT_VL_CONVERT_PROBE],
         capture_output=True,
@@ -578,6 +591,37 @@ def test_every_root_imports_without_the_rasteriser_installed() -> None:
         check=False,
     )
     assert proc.returncode == 0, f"a root needed vl_convert to import, or drawing did not:\n{proc.stderr}"
+
+
+#: The core with neither the renderer nor its rasteriser importable: the toy host's analysis generated,
+#: read as its report, serialized three ways, and one finding's chart decided — everything a host does
+#: with charts short of drawing one. A host that installs ``3tears-evals`` without the ``[vega]`` extra
+#: and brings its own renderer (or none) is in exactly this state.
+_WITHOUT_THE_RENDERER_PROBE = (
+    "import asyncio, sys\n"
+    "sys.modules['vl_convert'] = None\n"
+    "sys.modules['threetears.evals.vega'] = None\n"
+    "from threetears.evals.analysis import finding_chart_intent, report_html, report_markdown\n"
+    "from packages.evals.tests.report_support import toy_report\n"
+    "host, analysis, report = asyncio.run(toy_report())\n"
+    "assert report.to_canonical_json() and report_markdown(report) and '<table' in report_html(report)\n"
+    "intent = finding_chart_intent(host.storage, analysis.id, analysis.scope_id, '0')\n"
+    "assert intent.type == 'delta_table' and intent.rows, intent\n"
+    "assert not [n for n in sys.modules if n.startswith('threetears.evals.vega.')]\n"
+)
+
+
+def test_the_core_runs_the_toy_analysis_without_the_renderer() -> None:
+    """Generating, reporting and deciding a chart need neither ``threetears.evals.vega`` nor ``vl_convert``."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _WITHOUT_THE_RENDERER_PROBE],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert proc.returncode == 0, f"the core needed the Vega renderer or its rasteriser:\n{proc.stderr}"
 
 
 # --- the checker fires: synthetic trees, one per forbidden and permitted shape ----------------------
@@ -614,6 +658,7 @@ _BASE_FILES = {
     "threetears/evals/run/jobs.py": "",
     "threetears/evals/analysis/stats.py": "",
     "threetears/evals/gen/proposers.py": "",
+    "threetears/evals/vega/compiler.py": "",
 }
 
 
@@ -663,6 +708,26 @@ _BASE_FILES = {
             "analysis",
         ),
         ("threetears/evals/__init__.py", "from threetears.evals.run import jobs\n", "threetears.evals.run.jobs", "run"),
+        # The core never reaches the renderer: not from analysis, which it draws for, nor from quick.
+        (
+            "threetears/evals/analysis/lens.py",
+            "from threetears.evals.vega.compiler import draw_intent\n",
+            "threetears.evals.vega.compiler",
+            "vega",
+        ),
+        (
+            "threetears/evals/quick/report.py",
+            "from threetears.evals.vega import compiler\n",
+            "threetears.evals.vega.compiler",
+            "vega",
+        ),
+        # Nor the renderer the engine machinery it has no business with.
+        (
+            "threetears/evals/vega/compiler.py",
+            "from threetears.evals.run.jobs import J\n",
+            "threetears.evals.run.jobs",
+            "run",
+        ),
     ],
 )
 def test_the_matrix_refuses_each_forbidden_edge(
@@ -686,6 +751,8 @@ def test_the_matrix_refuses_each_forbidden_edge(
         ("threetears/evals/run/loop.py", "from threetears.evals.legacy import execute_run\n"),
         # An unplaced module is held to no row at all.
         ("threetears/evals/legacy.py", "import acme.config\n"),
+        # The renderer reads the intent it draws.
+        ("threetears/evals/vega/compiler.py", "from threetears.evals.analysis.stats import mean\nfrom . import arms\n"),
     ],
 )
 def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, source: str) -> None:
@@ -700,7 +767,10 @@ def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, so
         ("threetears/evals/contracts/leaf.py", "import httpx\nimport pydantic\nimport json\n", ["httpx"]),
         ("threetears/evals/run/loop.py", "from langchain_openai import ChatOpenAI\n", ["langchain_openai"]),
         ("threetears/evals/analysis/lens.py", "import vl_convert\n", ["vl_convert"]),
-        ("threetears/evals/analysis/viz/render.py", "import vl_convert\nfrom pydantic import BaseModel\n", []),
+        # The rasteriser left the core with the renderer: where it used to be admitted, it is refused.
+        ("threetears/evals/analysis/viz/render.py", "import vl_convert\n", ["vl_convert"]),
+        ("threetears/evals/vega/render.py", "import vl_convert\nfrom threetears.observe import get_logger\n", []),
+        ("threetears/evals/vega/compiler.py", "import vl_convert\n", ["vl_convert"]),
         ("threetears/evals/run/loop.py", "from threetears.observe import get_logger\n", []),
         # A sibling family package the manifest does not declare is a dependency like any other.
         ("threetears/evals/run/loop.py", "from threetears.core import thing\n", ["threetears.core"]),
@@ -716,7 +786,7 @@ def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, so
     ],
 )
 def test_the_third_party_column(tmp_path: Path, relative: str, source: str, refused: list[str]) -> None:
-    """pydantic, observe and the stdlib pass everywhere; vl_convert only in viz.render; anything else is refused."""
+    """pydantic, observe and the stdlib pass where their row says; vl_convert only in vega.render; the rest is refused."""
     _, third_party = matrix_violations(_tree(tmp_path, {**_BASE_FILES, relative: source}))
     assert [v.target for v in third_party] == refused
 

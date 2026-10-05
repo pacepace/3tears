@@ -3,7 +3,7 @@
 An arm draws one decided :class:`~threetears.evals.analysis.viz.intent.ChartIntent` as a Vega-Lite
 spec. It owns its own shape and nothing else: what the chart says — order, units, values, disclosures —
 arrives decided in the intent, and the layout arithmetic, the marks, the value axis and the label
-placement come from :mod:`threetears.evals.analysis.viz.compiler`, which every arm imports and no arm
+placement come from :mod:`threetears.evals.vega.compiler`, which every arm imports and no arm
 imports from a sibling. That is what makes a new type a new file rather than a new branch in a shared
 function.
 
@@ -18,14 +18,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from threetears.evals.analysis.viz.arms.attribution import compile_attribution
-from threetears.evals.analysis.viz.arms.breakdown import compile_breakdown
-from threetears.evals.analysis.viz.arms.delta_table import compile_delta_table
-from threetears.evals.analysis.viz.arms.distribution import compile_distribution
-from threetears.evals.analysis.viz.arms.frontier import compile_frontier
-from threetears.evals.analysis.viz.arms.null_result import compile_null_result
-from threetears.evals.analysis.viz.arms.sweep_ranking import compile_sweep_ranking
-from threetears.evals.analysis.viz.arms.timeseries import compile_timeseries
+from threetears.evals.vega.arms.attribution import compile_attribution
+from threetears.evals.vega.arms.breakdown import compile_breakdown
+from threetears.evals.vega.arms.delta_table import compile_delta_table
+from threetears.evals.vega.arms.distribution import compile_distribution
+from threetears.evals.vega.arms.frontier import compile_frontier
+from threetears.evals.vega.arms.null_result import compile_null_result
+from threetears.evals.vega.arms.sweep_ranking import compile_sweep_ranking
+from threetears.evals.vega.arms.timeseries import compile_timeseries
 from threetears.evals.analysis.viz.intent import ChartIntent
 
 #: ``Viz.type`` → the arm that draws it.

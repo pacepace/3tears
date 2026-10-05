@@ -2,11 +2,11 @@
 
 Every payload here describes an invoice extractor — models, chunk sizes, parse and total
 latencies, field accuracy — so nothing in the input belongs to a
-conversational host. What is pinned is the compiler's public behaviour on the chart types a toy-host capture
+conversational host. What is pinned is the chart intent's public behaviour on the chart types a toy-host capture
 never draws (``attribution``, ``breakdown``, ``null_result``, ``sweep_ranking``) and the pieces
 every type shares:
 
-* the author's caption is served exactly as written, and what the compiler has to add travels
+* the author's caption is served exactly as written, and what the engine has to add travels
   as ``disclosures``, one idea per line, never joined onto the caption;
 * the wire shape (:class:`~threetears.evals.analysis.viz.intent.ChartIntent`) carries those lines apart;
 * every line of prose beside a chart is held to the rendering rule, one line at a time;
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.analysis.viz.compiler import compile_chart
 from threetears.evals.analysis.viz.quantities import display_scale
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError, describe_validation
@@ -127,13 +126,13 @@ class TestTheCaptionIsTheAuthorsLine:
 
     @pytest.mark.parametrize("viz_type", sorted(UNDRAWN_BY_THE_TOY_CAPTURE))
     def test_the_caption_is_served_exactly_as_written(self, viz_type):
-        chart = compile_chart(viz_type, {**UNDRAWN_BY_THE_TOY_CAPTURE[viz_type], "caption": AUTHOR})
+        chart = chart_intent(viz_type, {**UNDRAWN_BY_THE_TOY_CAPTURE[viz_type], "caption": AUTHOR})
         assert chart.disclosures, "the payload must leave the compiler something to disclose, or this proves nothing"
         assert chart.caption == AUTHOR
 
     @pytest.mark.parametrize("viz_type", sorted(UNDRAWN_BY_THE_TOY_CAPTURE))
     def test_no_caption_is_served_empty_with_the_disclosures_still_standing(self, viz_type):
-        chart = compile_chart(viz_type, UNDRAWN_BY_THE_TOY_CAPTURE[viz_type])
+        chart = chart_intent(viz_type, UNDRAWN_BY_THE_TOY_CAPTURE[viz_type])
         assert chart.caption == ""
         assert chart.disclosures
 
@@ -141,8 +140,8 @@ class TestTheCaptionIsTheAuthorsLine:
     def test_the_author_cannot_reword_a_disclosure(self, viz_type):
         payload = UNDRAWN_BY_THE_TOY_CAPTURE[viz_type]
         assert (
-            compile_chart(viz_type, {**payload, "caption": AUTHOR}).disclosures
-            == compile_chart(viz_type, payload).disclosures
+            chart_intent(viz_type, {**payload, "caption": AUTHOR}).disclosures
+            == chart_intent(viz_type, payload).disclosures
         )
 
 
@@ -150,7 +149,7 @@ class TestEachArmDisclosesOneIdeaPerLine:
     """Each arm's disclosures, in reading order, as separate lines."""
 
     def test_attribution_names_the_comparison_then_the_earned_remainder(self):
-        assert compile_chart("attribution", ATTRIBUTION).disclosures == [
+        assert chart_intent("attribution", ATTRIBUTION).disclosures == [
             "Comparing extractor_model: extractor-a → extractor-b.",
             (
                 "Unattributed is total_ms minus parse_ms, which the measure catalog declared a component of it "
@@ -159,20 +158,20 @@ class TestEachArmDisclosesOneIdeaPerLine:
         ]
 
     def test_attribution_carries_a_withheld_remainder_verbatim_as_its_own_line(self):
-        assert compile_chart("attribution", ATTRIBUTION_WITHHELD).disclosures == [
+        assert chart_intent("attribution", ATTRIBUTION_WITHHELD).disclosures == [
             "Comparing extractor_model: extractor-a → extractor-b.",
             ATTRIBUTION_WITHHELD["unattributed_withheld"],
         ]
 
     def test_breakdown_states_the_whole_the_parts_divide(self):
-        assert compile_chart("breakdown", BREAKDOWN).disclosures == ["The parts divide a total of 100% over n=10."]
+        assert chart_intent("breakdown", BREAKDOWN).disclosures == ["The parts divide a total of 100% over n=10."]
 
     def test_breakdown_with_no_whole_discloses_nothing(self):
         payload = {key: value for key, value in BREAKDOWN.items() if key not in ("total", "total_n")}
-        assert compile_chart("breakdown", payload).disclosures == []
+        assert chart_intent("breakdown", payload).disclosures == []
 
     def test_null_result_states_geometry_coverage_span_then_the_mechanism(self):
-        assert compile_chart("null_result", NULL_RESULT).disclosures == [
+        assert chart_intent("null_result", NULL_RESULT).disclosures == [
             "Intervals overlap on [0.72, 0.84]. Overlap alone does not establish a null.",
             "Intervals are 95% CIs.",
             "Intervals span across the 6 invoices.",
@@ -180,7 +179,7 @@ class TestEachArmDisclosesOneIdeaPerLine:
         ]
 
     def test_sweep_ranking_names_columns_spread_ramp_and_inference_apart(self):
-        assert compile_chart("sweep_ranking", SWEEP_RANKING).disclosures == [
+        assert chart_intent("sweep_ranking", SWEEP_RANKING).disclosures == [
             "Columns, left to right: chunk_size, extractor_model.",
             "cost per invoice runs from 0.009 usd to 0.015 usd and is not held — the ranking is not controlled for it.",
             "chunk_size draws as a light-to-dark ramp.",
@@ -195,7 +194,7 @@ class TestTheWireShapeCarriesBothAuthorsApart:
     def test_the_served_chart_keeps_the_caption_and_every_disclosure_line(self, viz_type):
         payload = {**UNDRAWN_BY_THE_TOY_CAPTURE[viz_type], "caption": AUTHOR}
         served = chart_intent(viz_type, payload).model_dump(mode="json")
-        compiled = compile_chart(viz_type, payload)
+        compiled = chart_intent(viz_type, payload)
         assert served["caption"] == AUTHOR
         assert served["disclosures"] == compiled.disclosures
 
@@ -213,13 +212,13 @@ class TestProseBesideTheChartIsNotGated:
 
     def test_an_unrenderable_colour_named_in_a_mechanism_compiles_and_is_carried_verbatim(self):
         mechanism = f"The overlap is the {_UNRENDERABLE} band."
-        compiled = compile_chart("null_result", {**NULL_RESULT, "mechanism": mechanism})
+        compiled = chart_intent("null_result", {**NULL_RESULT, "mechanism": mechanism})
         assert compiled.disclosures[-1] == mechanism
 
     def test_what_a_mechanism_claims_is_not_refused(self):
         """Code checks the structure of prose beside a chart, never what it says."""
         claim = "The two chunk sizes differ significantly on no invoice."
-        assert compile_chart("null_result", {**NULL_RESULT, "mechanism": claim}).disclosures[-1] == claim
+        assert chart_intent("null_result", {**NULL_RESULT, "mechanism": claim}).disclosures[-1] == claim
 
 
 class TestOneRulerAndOneNumberRule:
@@ -237,12 +236,12 @@ class TestOneRulerAndOneNumberRule:
             "parts": [{"label": "prompt_tokens", "value": 12345.6}, {"label": "output_tokens", "value": 800.0}],
             "unit": "tokens",
         }
-        drawn = compile_chart("breakdown", payload).values_as_drawn()
+        drawn = chart_intent("breakdown", payload).values_as_drawn()
         assert any(line.split()[-1] == "12346" for line in drawn), drawn
         assert not any("e+" in line for line in drawn), drawn
 
     def test_the_frontier_quality_bar_is_spelled_by_the_number_rule(self):
-        assert "The quality bar is 0.1235." in compile_chart("frontier", FRONTIER).disclosures
+        assert "The quality bar is 0.1235." in chart_intent("frontier", FRONTIER).disclosures
 
 
 class TestAMalformedPayloadNamesEveryOffendingField:
@@ -250,7 +249,7 @@ class TestAMalformedPayloadNamesEveryOffendingField:
 
     def test_every_offending_field_is_named(self):
         with pytest.raises(PayloadError) as refused:
-            compile_chart("breakdown", {"parts": [{"label": "", "value": "many"}], "unit": "%"})
+            chart_intent("breakdown", {"parts": [{"label": "", "value": "many"}], "unit": "%"})
         message = str(refused.value)
         assert "parts.0.label" in message and "parts.0.value" in message, message
 

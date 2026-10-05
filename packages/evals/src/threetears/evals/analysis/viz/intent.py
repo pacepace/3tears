@@ -4,7 +4,7 @@
 chart, what it draws, in what order, against what baseline, in which unit, what each interval varies
 over, what has to be said beside it — those are decided here, once, and travel as a
 :class:`ChartIntent`. Colours, fonts, sizes, label placement and the grammar of any charting library
-are not here at all: a renderer (the Vega-Lite compiler under :mod:`threetears.evals.analysis.viz.compiler`
+are not here at all: a renderer (the Vega-Lite compiler under :mod:`threetears.evals.vega.compiler`
 is the first) reads an intent and a host's theme and returns its own form.
 
 **The vocabulary is small and closed.** Eight chart types (:data:`ChartType`, the stored
@@ -280,7 +280,7 @@ def chart_intent(viz_type: str, payload: dict[str, Any]) -> ChartIntent:
         PayloadError: The payload is malformed, or its type has no intent builder.
         IntentPolicyError: The intent breaks a presentation rule.
     """
-    # Deferred for the reason `compile_chart` defers its arms: every builder imports this module's
+    # Deferred for the reason the Vega renderer's `draw_intent` defers its arms: every builder imports this module's
     # model, so a top-level import of the registry would close a cycle.
     from threetears.evals.analysis.viz.intents import INTENTS
     from threetears.evals.analysis.viz.policy import enforce_intent

@@ -21,7 +21,7 @@ from html.parser import HTMLParser
 from threetears.evals.analysis import report_html
 from threetears.evals.analysis.report import Report
 from packages.evals.tests.report_support import minimal_report, toy_report
-from packages.evals.tests.test_viz_compiler import EVERY_TYPE
+from packages.evals.tests.chart_examples import EVERY_TYPE
 from threetears.evals.analysis.viz import chart_intent
 
 #: Elements that execute, embed or load something — none belongs on a document that reads without a script.

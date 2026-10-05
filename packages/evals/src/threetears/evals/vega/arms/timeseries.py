@@ -10,7 +10,7 @@ another. Overlaying the lines in hues would have been the shorter figure and the
 **Time is ordinal, and its order is stated.** The positions are builds or days, earliest first, as the
 payload lists them; a categorical axis left to sort itself sorts alphabetically, and a line drawn through
 ``0.10`` before ``0.9`` is a trend the campaign never had. So the axis states its order as an explicit list,
-and the gate refuses a line that does not (:func:`~threetears.evals.analysis.viz.vega_policy._check_line_order`).
+and the gate refuses a line that does not (:func:`~threetears.evals.vega.spec_policy._check_line_order`).
 
 **A gap breaks the line.** A position a series has no point at is not interpolated across: each run of
 consecutive points is its own segment, and the gap is disclosed under the figure with its reason.
@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.viz.compiler import (
+from threetears.evals.vega.compiler import (
     DISPLAY_FIELD,
     KIND_FIELD,
     VALUE_LABEL_OFFSET,
@@ -40,7 +40,7 @@ from threetears.evals.analysis.viz.compiler import (
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
 from threetears.evals.analysis.viz.intents.timeseries import POSITION_FIELD
-from threetears.evals.analysis.viz.palette import font_sizes, font_weights, geometry
+from threetears.evals.vega.palette import font_sizes, font_weights, geometry
 
 #: The row key naming the run of consecutive points a row belongs to. A line connects the rows sharing one,
 #: so a gap — a position with no point — ends one segment and the next point starts another.

@@ -47,10 +47,9 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_payload,
 )
 from threetears.evals.analysis.report import Report, build_report
-from threetears.evals.analysis.viz.compiler import compile_chart
+from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
-from threetears.evals.analysis.viz.vega_policy import SpecPolicyError
 from threetears.evals.contracts.campaign import EvalAnalysisAttempt
 from threetears.evals.contracts.errors import NotFoundError, ProviderRefusedError, StorageError, ValidationFailedError
 from threetears.evals.contracts.models import EvalTestCase, utc_now_iso
@@ -65,7 +64,7 @@ if TYPE_CHECKING:
     from threetears.evals.contracts.storage import EvalStorage
     from threetears.evals.analysis.bundle import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
-    from threetears.evals.analysis.viz.compiler import CompiledChart
+    from threetears.evals.analysis.viz.intent import ChartIntent
     from threetears.evals.contracts.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
     from threetears.evals.contracts.models import EvalRun, EvalTemplate
     from threetears.evals.contracts.host.eval_host import EvalHost
@@ -748,8 +747,8 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     return build_report(get_analysis(storage, analysis_id, scope_id))
 
 
-def compile_finding_chart(storage: AnalysisStore, analysis_id: str, scope_id: str, finding_id: str) -> CompiledChart:
-    """Compile one finding's chart, for a surface that draws a single chart at a time.
+def finding_chart_intent(storage: AnalysisStore, analysis_id: str, scope_id: str, finding_id: str) -> ChartIntent:
+    """Decide one finding's chart, for a surface that draws a single chart at a time with its own renderer.
 
     Args:
         storage: Where the analysis is read.
@@ -758,11 +757,12 @@ def compile_finding_chart(storage: AnalysisStore, analysis_id: str, scope_id: st
         finding_id: The finding's position in the authored document, as a string (``"0"`` is the first).
 
     Returns:
-        The compiled chart — spec, plotted rows and the caption over them.
+        The chart's intent — what it draws and what it must say — for a
+        :class:`~threetears.evals.analysis.viz.ChartRenderer` to draw.
 
     Raises:
         NotFoundError: No such analysis, or no such finding, or the finding
-            carries no chart this build can draw.
+            carries no chart this build can decide.
     """
     analysis = get_analysis(storage, analysis_id, scope_id)
     # A finding is identified by its position in the authored document, as a string.
@@ -773,13 +773,12 @@ def compile_finding_chart(storage: AnalysisStore, analysis_id: str, scope_id: st
     if viz is None:
         raise NotFoundError("chart for finding", finding_id)
     try:
-        compiled = compile_chart(viz.type, viz.payload)
-    except (PayloadError, IntentPolicyError, SpecPolicyError) as exc:
+        return chart_intent(viz.type, viz.payload)
+    except (PayloadError, IntentPolicyError) as exc:
         # Surfaced rather than swallowed: this caller asked for THIS chart by id,
         # so an empty answer would read as "no chart here" when the truth is that
         # the stored payload cannot be drawn.
         raise NotFoundError("drawable chart for finding", f"{finding_id} ({exc})") from exc
-    return compiled
 
 
 # ---------------------------------------------------------------------------
@@ -1322,7 +1321,7 @@ __all__ = [
     "AnalysisStore",
     "PreparedGeneration",
     "analysis_report",
-    "compile_finding_chart",
+    "finding_chart_intent",
     "describe_insight_id_filters",
     "freeze_reporter_case",
     "get_analysis",

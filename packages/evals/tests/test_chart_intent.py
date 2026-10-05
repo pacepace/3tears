@@ -1,16 +1,15 @@
 """Chart intent: eval's own chart vocabulary, the rules it is held to, and the seam a renderer sits behind.
 
-Four things are pinned, each in both directions:
+Three things are pinned, each in both directions:
 
-- **The vocabulary is closed and complete.** Every stored chart type has a payload model, an intent
-  builder and a Vega-Lite arm, keyed alike; every type's intent round-trips through its JSON.
+- **The vocabulary is closed and complete.** Every stored chart type has a payload model and an intent
+  builder, keyed alike; every type's intent round-trips through its JSON. (That the Vega-Lite renderer has
+  an arm for each is the renderer's, in ``test_renderer_conformance.py``.)
 - **The policy reads the intent.** Each presentation rule refuses the shape it names (one test per
   refusal, each against an intent that otherwise passes), and :func:`chart_intent` enforces them, so no
   intent that breaks one leaves the entry point.
-- **A theme keeps the slot promise.** The Vega theme's palette supplies the slots the vocabulary
-  names, validated where the vocabulary says they are.
-- **The core never reaches the renderer.** No module outside the Vega-Lite half imports it, except the
-  two named debts that phase D chunk 24 retires by moving that half out.
+- **The core never reaches the renderer.** No core module imports ``threetears.evals.vega``, the Vega-Lite
+  renderer adapter, at all.
 """
 
 from __future__ import annotations
@@ -37,14 +36,12 @@ from threetears.evals.analysis.viz import (
     chart_intent,
     check_intent,
 )
-from threetears.evals.analysis.viz.arms import ARMS
 from threetears.evals.analysis.viz.intents import INTENTS
-from threetears.evals.analysis.viz.palette import series_slots, validated_slots
 from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS
 from threetears.evals.contracts.campaign import VizType
 from packages.evals.tests.import_resolution import absolute_module
 from packages.evals.tests.package_placement import eval_modules
-from packages.evals.tests.test_viz_compiler import EVERY_TYPE
+from packages.evals.tests.chart_examples import EVERY_TYPE
 
 
 def _intent(**update: Any) -> ChartIntent:
@@ -62,7 +59,6 @@ class TestTheVocabularyIsClosedAndComplete:
         stored = set(get_args(VizType))
         assert set(PAYLOAD_MODELS) == stored
         assert set(INTENTS) == stored
-        assert set(ARMS) == stored
 
     def test_the_shared_fixtures_cover_every_type(self) -> None:
         assert set(EVERY_TYPE) == set(get_args(VizType))
@@ -303,81 +299,56 @@ class TestTheIntentModel:
 
 
 # =============================================================================
-# A theme keeps the slot promise
-# =============================================================================
-
-
-def test_the_vega_themes_palette_supplies_the_slots_the_vocabulary_names() -> None:
-    """The vocabulary decides what a slot promises; the Vega theme's artifact has to keep it."""
-    assert validated_slots() == VALIDATED_SLOTS
-    assert series_slots() == SERIES_SLOTS
-
-
-# =============================================================================
 # The core never reaches the renderer
 # =============================================================================
 
-#: The Vega-Lite half, relative to ``threetears.evals`` — what moves out of the core into an adapter.
-VEGA_HALF: tuple[str, ...] = (
-    "analysis.viz.compiler",
-    "analysis.viz.arms",
-    "analysis.viz.palette",
-    "analysis.viz.text_metrics",
-    "analysis.viz.render",
-    "analysis.viz.vega_policy",
-)
-
-#: Core modules that still reach the Vega half, and what retires each. Exactly these, so a new edge fails
-#: and a retired one has to be struck from here.
-VEGA_DEBTS: dict[str, str] = {
-    "analysis.service": "compile_finding_chart, the per-chart Vega-Lite path — moves to the renderer adapter (chunk 24)",
-    "analysis.viz": "the public root re-exports the renderer — the names leave with it (chunk 24)",
-}
+#: The renderer adapter, relative to ``threetears.evals``. Nothing outside it may import it; the
+#: package matrix's ``vega`` row holds the same edge (and fires on a planted one), and this walk says it
+#: in the chart's own terms.
+RENDERER: str = "vega"
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 
 
-def _in_vega_half(relative: str) -> bool:
-    return any(relative == module or relative.startswith(module + ".") for module in VEGA_HALF)
+def _in_the_renderer(relative: str) -> bool:
+    return relative == RENDERER or relative.startswith(RENDERER + ".")
 
 
-def _vega_edges() -> dict[str, set[str]]:
-    """Every core module that imports the Vega half, and what it imports."""
+def _renderer_edges(root: Path) -> dict[str, set[str]]:
+    """Every module under ``root`` outside the renderer that imports it, and what it imports."""
     edges: dict[str, set[str]] = {}
-    for relative, path in eval_modules(_SOURCE_ROOT).items():
-        if _in_vega_half(relative):
+    for relative, path in eval_modules(root).items():
+        if _in_the_renderer(relative):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
-                base = absolute_module(path, node, root=_SOURCE_ROOT)
+                base = absolute_module(path, node, root=root)
                 targets = [f"{base}.{alias.name}" for alias in node.names] + [base]
             elif isinstance(node, ast.Import):
                 targets = [alias.name for alias in node.names]
             else:
                 continue
             for target in targets:
-                if target.startswith("threetears.evals.") and _in_vega_half(target.removeprefix("threetears.evals.")):
+                if target.startswith("threetears.evals.") and _in_the_renderer(
+                    target.removeprefix("threetears.evals.")
+                ):
                     edges.setdefault(relative, set()).add(target)
     return edges
 
 
-def test_no_core_module_imports_the_vega_half_but_the_named_debts() -> None:
-    assert set(_vega_edges()) == set(VEGA_DEBTS)
+def test_no_core_module_imports_the_renderer() -> None:
+    assert _renderer_edges(_SOURCE_ROOT) == {}
 
 
-def test_the_intent_and_the_report_reach_no_renderer() -> None:
-    """The halves 24 leaves in place — the intent, its builders, its policy and the report — are clean."""
-    edges = _vega_edges()
-    assert not [
-        module
-        for module in edges
-        if module.startswith(
-            ("analysis.viz.intent", "analysis.viz.policy", "analysis.report", "analysis.viz.quantities")
-        )
-    ]
+def test_the_walk_sees_an_edge_where_one_exists(tmp_path: Path) -> None:
+    """A walk that saw nothing would be broken, not clean — so plant the edge the service used to hold."""
+    service = tmp_path / "threetears" / "evals" / "analysis" / "service.py"
+    service.parent.mkdir(parents=True)
+    service.write_text("from threetears.evals.vega.compiler import compile_chart\n", encoding="utf-8")
+    (tmp_path / "threetears" / "evals" / "vega").mkdir()
+    (tmp_path / "threetears" / "evals" / "vega" / "compiler.py").write_text("", encoding="utf-8")
 
-
-def test_the_walk_sees_an_edge_where_one_exists() -> None:
-    """The service's debt is a real import, so a walk that saw nothing would be broken, not clean."""
-    assert "threetears.evals.analysis.viz.compiler.compile_chart" in _vega_edges()["analysis.service"]
+    assert _renderer_edges(tmp_path) == {
+        "analysis.service": {"threetears.evals.vega.compiler.compile_chart", "threetears.evals.vega.compiler"}
+    }

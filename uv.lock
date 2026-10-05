@@ -123,6 +123,7 @@ dev = [
     { name = "trafilatura", specifier = ">=2.0.0" },
     { name = "types-jsonschema", specifier = ">=4.26" },
     { name = "types-pyyaml", specifier = ">=6.0" },
+    { name = "vl-convert-python", specifier = "==1.9.0.post1" },
 ]
 
 [[package]]
@@ -702,12 +703,14 @@ source = { editable = "packages/evals" }
 dependencies = [
     { name = "3tears-observe" },
     { name = "pydantic" },
-    { name = "vl-convert-python" },
 ]
 
 [package.optional-dependencies]
 fastmcp = [
     { name = "fastmcp" },
+]
+vega = [
+    { name = "vl-convert-python" },
 ]
 
 [package.metadata]
@@ -715,9 +718,9 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "fastmcp", marker = "extra == 'fastmcp'", specifier = ">=3.4.2,<4" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "vl-convert-python", specifier = "==1.9.0.post1" },
+    { name = "vl-convert-python", marker = "extra == 'vega'", specifier = "==1.9.0.post1" },
 ]
-provides-extras = ["fastmcp"]
+provides-extras = ["vega", "fastmcp"]
 
 [[package]]
 name = "3tears-geo"

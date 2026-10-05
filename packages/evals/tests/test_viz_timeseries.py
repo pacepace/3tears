@@ -1,6 +1,6 @@
 """The ``timeseries`` chart: a time axis the bundle earns, a payload that draws it, and a gate on its order.
 
-Five halves, each pinned in both directions:
+Five parts, each pinned in both directions:
 
 - **The bundle's time axis** (``analysis/bundle.py``). A campaign spanning two builds the host labels, or
   failing that two days, carries one; each position's cells are the decision surface's own algebra over that
@@ -9,8 +9,9 @@ Five halves, each pinned in both directions:
 - **The host's release label** (``contracts/host/profile.py``). It must name a registered ``label``.
 - **The builder** (``analysis/viz_refs.py``). A chart over a surface with no time axis is refused; every
   point is the resolver's reading over its position; a position a cell lacks is a stated gap.
-- **The payload and the arm** (``analysis/viz/payloads.py``, ``analysis/viz/arms/timeseries.py``). Every
-  forbidden shape refused; the values-as-drawn table is the data.
+- **The payload and the intent** (``analysis/viz/payloads.py``, ``analysis/viz/intents/timeseries.py``).
+  Every forbidden shape refused; the values-as-drawn table is the data. How the Vega-Lite renderer draws
+  it, and its spec gate's order rule, are ``test_vega_timeseries.py``'s.
 - **The generator** (``analysis/generator.py``). The menu offers ``timeseries`` only over a bundle with a
   time axis, so a bundle without one cannot reference the chart — and the policy rule refuses a line
   through categories whose order is unstated.
@@ -31,9 +32,8 @@ from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.generator import first_request, generate_analysis, prompt_content_version
 from threetears.evals.analysis.references import cell_aliases, resolve_reading
-from threetears.evals.analysis.viz import compile_chart
+from threetears.evals.analysis.viz import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError, parse_payload
-from threetears.evals.analysis.viz.vega_policy import check_spec
 from threetears.evals.analysis.viz_refs import TimeseriesRef, build_viz_payload, reference_from_chart
 from threetears.evals.contracts.authored import NO_CHART, Chart, MeasureRef
 from threetears.evals.contracts.host.measures import MeasureRegistry
@@ -53,6 +53,8 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.chart_examples import timeseries_ci as _ci
+from packages.evals.tests.chart_examples import timeseries_payload as _payload
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 
 _NAMESPACE = uuid.UUID("0b8e6a52-41d7-4f0e-9c3a-7d25e1f4a9b6")
@@ -475,45 +477,6 @@ class TestTheBuilder:
 # =============================================================================
 
 
-def _ci(mean: float, half: float = 50.0) -> dict[str, Any]:
-    return {
-        "low": mean - half,
-        "high": mean + half,
-        "mean": mean,
-        "level": 0.95,
-        "variability": "the cell's observations",
-    }
-
-
-def _payload(**update: Any) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "metric": "total_ms",
-        "unit": "ms",
-        "basis": "date",
-        "positions": ["d1", "d2", "d3"],
-        "series": [
-            {
-                "label": "narrow",
-                "points": [
-                    {"position": "d1", "ci": _ci(900.0), "n": 6},
-                    {"position": "d2", "ci": _ci(990.0), "n": 6},
-                    {"position": "d3", "ci": _ci(1080.0), "n": 6},
-                ],
-            },
-            {
-                "label": "wide",
-                "points": [
-                    {"position": "d1", "ci": _ci(1400.0), "n": 6},
-                    {"position": "d3", "ci": _ci(1500.0), "n": 6},
-                ],
-            },
-        ],
-        "gaps": [{"series": "wide", "position": "d2", "reason": "the cell was not measured there"}],
-    }
-    payload.update(update)
-    return payload
-
-
 def _with_points(series: int, points: list[dict[str, Any]]) -> dict[str, Any]:
     payload = _payload()
     payload["series"] = copy.deepcopy(payload["series"])
@@ -563,10 +526,10 @@ class TestThePayloadRefusesWhatCannotBeDrawn:
         assert parse_payload("timeseries", _payload(basis="release", release_label="app_version")) is not None
 
 
-class TestTheArm:
+class TestTheIntent:
     def test_the_values_as_drawn_table_is_the_data(self) -> None:
         """Every drawn point, in drawn order, restated in the chart's unit — and nothing else."""
-        chart = compile_chart("timeseries", _payload())
+        chart = chart_intent("timeseries", _payload())
         expected = [
             {
                 "series": line["label"],
@@ -585,7 +548,7 @@ class TestTheArm:
             assert row == {
                 key: pytest.approx(value) if isinstance(value, float) else value for key, value in wanted.items()
             }
-        assert [column["header"] for column in chart.columns] == [
+        assert [column.header for column in chart.columns] == [
             "Series",
             "Day (UTC)",
             "Mean (s)",
@@ -597,7 +560,7 @@ class TestTheArm:
     def test_the_table_drawn_from_a_bundle_matches_the_bundles_numbers(self) -> None:
         bundle = _two_days()
         surface = _surface(bundle)
-        chart = compile_chart("timeseries", _build(bundle, _chart([])))
+        chart = chart_intent("timeseries", _build(bundle, _chart([])))
         drawn = {(row["series"], row["position"]): row for row in chart.rows}
         labels = {line["label"] for line in _build(bundle, _chart([]))["series"]}
 
@@ -612,93 +575,15 @@ class TestTheArm:
                     (reading.mean / 1000, reading.ci_low / 1000, reading.ci_high / 1000, reading.n)
                 )
 
-    def test_the_time_axis_states_its_order(self) -> None:
-        spec = compile_chart(
-            "timeseries",
-            _payload(
-                positions=["0.9", "0.10", "0.11"],
-                series=[
-                    {
-                        "label": "a",
-                        "points": [{"position": "0.9", "ci": _ci(1.0, 0.5)}, {"position": "0.10", "ci": _ci(2.0, 0.5)}],
-                    }
-                ],
-                gaps=[],
-            ),
-        ).spec
-        for layer in spec["spec"]["layer"]:
-            assert layer["encoding"]["x"]["sort"] == ["0.9", "0.10", "0.11"]
-
-    def test_a_gap_breaks_the_line_rather_than_bridging_it(self) -> None:
-        chart = compile_chart("timeseries", _payload())
-        segments = {
-            row["position"]: row["segment"] for row in chart.spec["data"]["values"] if row.get("series") == "wide"
-        }
-        assert segments["d1"] != segments["d3"]
-        narrow = {row["segment"] for row in chart.spec["data"]["values"] if row.get("series") == "narrow"}
-        assert len(narrow) == 1
-
     def test_the_disclosures_name_the_order_the_intervals_and_each_gap(self) -> None:
-        assert compile_chart("timeseries", _payload()).disclosures == [
+        assert chart_intent("timeseries", _payload()).disclosures == [
             "Days are UTC, in calendar order.",
             "Intervals are 95% CIs.",
             "Intervals span the cell's observations.",
             "Not drawn (the cell was not measured there): wide at d2.",
         ]
-        release = compile_chart("timeseries", _payload(basis="release", release_label="app_version"))
+        release = chart_intent("timeseries", _payload(basis="release", release_label="app_version"))
         assert release.disclosures[0] == "Builds of app_version are in the order each first ran."
-
-    def test_identity_rides_on_the_row_header_and_never_on_a_hue(self) -> None:
-        spec = compile_chart("timeseries", _payload()).spec
-        assert spec["facet"]["row"]["sort"] == ["narrow", "wide"]
-        assert "color" not in json.dumps(spec["spec"])
-
-    def test_the_compiled_spec_passes_the_gate(self) -> None:
-        assert check_spec(compile_chart("timeseries", _payload()).spec) == []
-
-
-# =============================================================================
-# The policy rule
-# =============================================================================
-
-
-def _line(x: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "title": "latency over builds",
-        "data": {"values": [{"p": "0.9", "v": 1}, {"p": "0.10", "v": 2}]},
-        "mark": "line",
-        "encoding": {
-            "x": x,
-            "y": {"field": "v", "type": "quantitative", "axis": {"title": "latency (ms)", "titleAngle": 0}},
-        },
-    }
-
-
-class TestALineThroughCategoriesStatesItsOrder:
-    @pytest.mark.parametrize("kind", ["nominal", "ordinal"])
-    def test_an_unstated_categorical_order_is_refused(self, kind: str) -> None:
-        violations = check_spec(_line({"field": "p", "type": kind}))
-        assert any("no stated order" in violation for violation in violations)
-
-    @pytest.mark.parametrize(
-        "stated",
-        [{"sort": ["0.9", "0.10"]}, {"scale": {"domain": ["0.9", "0.10"]}}],
-        ids=["sort", "domain"],
-    )
-    def test_a_stated_order_is_admitted(self, stated: dict[str, Any]) -> None:
-        assert check_spec(_line({"field": "p", "type": "ordinal"} | stated)) == []
-
-    def test_a_quantitative_or_temporal_line_orders_itself(self) -> None:
-        assert check_spec(_line({"field": "p", "type": "temporal", "axis": {"title": "when"}})) == []
-
-    def test_the_rule_reads_an_encoding_the_frame_shares(self) -> None:
-        spec = _line({"field": "p", "type": "ordinal"})
-        spec["layer"] = [{"mark": spec.pop("mark")}]
-        assert any("no stated order" in violation for violation in check_spec(spec))
-
-    def test_a_point_mark_is_not_a_line(self) -> None:
-        spec = _line({"field": "p", "type": "ordinal"}) | {"mark": "point"}
-        assert check_spec(spec) == []
 
 
 # =============================================================================
@@ -791,7 +676,7 @@ class TestTheMenuOffersTimeOnlyWhereThereIsTime:
         (resolution,) = analysis.resolutions
         assert resolution.chart is not None and resolution.chart.type == "timeseries"
         assert analysis.decision_surface.time_axis == bundle.time_axis
-        assert compile_chart("timeseries", resolution.chart.payload).rows
+        assert chart_intent("timeseries", resolution.chart.payload).rows
 
     def test_the_prompt_version_hashes_the_menu_that_was_sent(self) -> None:
         profile = toyhost_profile()
