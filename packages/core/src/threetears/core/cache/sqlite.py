@@ -27,6 +27,7 @@ from threetears.core.cache.base import (
     build_select_clause,
     bulk_columns,
     entry_is_fresh,
+    quote_identifier,
 )
 from threetears.observe import counter, get_logger
 
@@ -325,13 +326,14 @@ class SQLiteBackend:
             # locally. A table whose every column is its key has nothing to update.
             update_cols = [c for c in columns if c not in pk_cols]
             on_conflict = (
-                "DO UPDATE SET " + ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+                "DO UPDATE SET "
+                + ", ".join(f"{quote_identifier(c)} = EXCLUDED.{quote_identifier(c)}" for c in update_cols)
                 if update_cols
                 else "DO NOTHING"
             )
             sql = (
-                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
-                f"ON CONFLICT ({', '.join(pk_cols)}) {on_conflict}"
+                f"INSERT INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+                f"ON CONFLICT ({', '.join(quote_identifier(c) for c in pk_cols)}) {on_conflict}"
             )
             values = [tuple(self.serialize_value(row[c], schema.get(c, "TEXT")) for c in columns) for row in rows]
             self._in_write_transaction(lambda conn: conn.executemany(sql, values))
@@ -392,8 +394,8 @@ class SQLiteBackend:
         select_clause = build_select_clause(
             self._schema_info.get(table), table, self._with_stamp(table, columns, max_age_seconds)
         )
-        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
-        sql = f"SELECT {select_clause} FROM {table} WHERE {where_clause}"
+        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {where_clause}"
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, pk_vals)
@@ -452,14 +454,14 @@ class SQLiteBackend:
         pk_cols = self._pk_columns(primary_key)
         if len(pk_cols) == 1:
             placeholders = ", ".join(["?" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
+            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {quote_identifier(pk_cols[0])} IN ({placeholders})"
             params: tuple[Any, ...] = tuple(
                 self._serialize_pk_values(table, pk_cols, self._pk_values(eid, pk_cols))[0] for eid in entity_ids
             )
         else:
-            per_key = " AND ".join(f"{c} = ?" for c in pk_cols)
+            per_key = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
             disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {table} WHERE {disjunct}"
+            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {disjunct}"
             flat: list[Any] = []
             for eid in entity_ids:
                 flat.extend(self._serialize_pk_values(table, pk_cols, self._pk_values(eid, pk_cols)))
@@ -513,8 +515,8 @@ class SQLiteBackend:
         """
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
-        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
-        sql = f"DELETE FROM {table} WHERE {where_clause}"
+        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
         self._in_write_transaction(lambda conn: conn.execute(sql, pk_vals))
 
     def _in_write_transaction(self, write: Callable[[Any], object]) -> None:
@@ -539,7 +541,11 @@ class SQLiteBackend:
         except (
             BaseException
         ):  # prawduct:allow prawduct/broad-except -- rolls back whatever failed, then re-raises it unchanged
-            conn.execute("ROLLBACK")
+            # SQLite rolls back by itself on some failures (a full disk, an I/O error, an
+            # interrupt), and a ROLLBACK then raises "no transaction is active" in place of
+            # the error that caused it
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
 
     def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
@@ -687,7 +693,7 @@ class SQLiteBackend:
                 nullable = " NOT NULL"
                 if not is_composite_pk:
                     primary = " PRIMARY KEY"
-            columns.append(f'"{column.name}" {ddl_type}{nullable}{primary}')
+            columns.append(f"{quote_identifier(column.name)} {ddl_type}{nullable}{primary}")
 
         if self._stamps_cache_age(table.name):
             if any(col.name == CACHED_AT_COLUMN for col in table.columns):
@@ -695,14 +701,14 @@ class SQLiteBackend:
                     f"table {table.name!r} declares {CACHED_AT_COLUMN!r}, which is reserved "
                     f"for the L1 cache-age stamp and is injected by the backend",
                 )
-            columns.append(f'"{CACHED_AT_COLUMN}" REAL')
+            columns.append(f"{quote_identifier(CACHED_AT_COLUMN)} REAL")
 
         if is_composite_pk:
-            pk_clause = ", ".join(f'"{c}"' for c in pk_cols)
+            pk_clause = ", ".join(quote_identifier(c) for c in pk_cols)
             columns.append(f"PRIMARY KEY ({pk_clause})")
 
         columns_sql = ", ".join(columns)
-        return f"CREATE TABLE IF NOT EXISTS {table.name} ({columns_sql})"
+        return f"CREATE TABLE IF NOT EXISTS {quote_identifier(table.name)} ({columns_sql})"
 
     @staticmethod
     def _stamps_cache_age(table: str) -> bool:

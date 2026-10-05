@@ -32,7 +32,7 @@ try:
 except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
-from threetears.epoch.client import EpochClient, PoolLike
+from threetears.epoch.client import DurableEpoch, EpochClient, PoolLike
 from threetears.epoch.generation import EpochGenerationSource
 from threetears.epoch.listener import BumpCallback, EpochListener, ResetCallback
 from threetears.epoch.tick import catchup_tick
@@ -43,6 +43,7 @@ __all__ = [
     "ResetCallback",
     "catchup_tick",
     "EpochBumpMessage",
+    "DurableEpoch",
     "EpochClient",
     "EpochGenerationSource",
     "EpochListener",

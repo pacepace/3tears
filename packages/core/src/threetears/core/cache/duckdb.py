@@ -18,7 +18,7 @@ from types import MappingProxyType
 from typing import Any
 
 from threetears.core.backends.schema_sql import json_default
-from threetears.core.cache.base import build_select_clause, bulk_columns
+from threetears.core.cache.base import build_select_clause, bulk_columns, quote_identifier
 from threetears.observe import get_logger
 
 __all__ = [
@@ -40,17 +40,6 @@ except ImportError:
     _UUID_TYPES = (uuid.UUID,)
 
 log = get_logger(__name__)
-
-
-def _quote(identifier: str) -> str:
-    """an identifier quoted for DuckDB, so names with spaces or capitals survive.
-
-    :param identifier: a table or column name
-    :ptype identifier: str
-    :return: the quoted identifier
-    :rtype: str
-    """
-    return '"' + identifier.replace('"', '""') + '"'
 
 
 class DuckDBBackend:
@@ -190,8 +179,8 @@ class DuckDBBackend:
             lists = [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in latest] for c in columns]
             # values are already serialized to each column's storage form, so the insert's own
             # conversion types them; the registry's names are logical (VARCHAR_UUID), not SQL
-            select = ", ".join(f"unnest(${i}) AS {_quote(c)}" for i, c in enumerate(columns, 1))
-            sql = f"INSERT OR REPLACE INTO {_quote(table)} ({', '.join(_quote(c) for c in columns)}) SELECT {select}"
+            select = ", ".join(f"unnest(${i}) AS {quote_identifier(c)}" for i, c in enumerate(columns, 1))
+            sql = f"INSERT OR REPLACE INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) SELECT {select}"
             with self._db_lock:
                 self._db.execute(sql, lists)
         return len(rows)
@@ -224,12 +213,12 @@ class DuckDBBackend:
                 row[0] for row in self._db.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
             }
             columns = [c for c in schema if c in in_file and c != row_number_column]
-            selects = [_quote(c) for c in columns]
+            selects = [quote_identifier(c) for c in columns]
             if row_number_column is not None:
                 columns.insert(0, row_number_column)
                 selects.insert(0, "row_number() OVER () - 1")
             self._db.execute(
-                f"INSERT OR REPLACE INTO {_quote(table)} ({', '.join(_quote(c) for c in columns)}) "
+                f"INSERT OR REPLACE INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) "
                 f"SELECT {', '.join(selects)} FROM read_parquet(?)",
                 [str(path)],
             )
@@ -292,8 +281,8 @@ class DuckDBBackend:
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._pk_values(entity_id, pk_cols)
         select_clause = build_select_clause(self._schema_info.get(table), table, columns)
-        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
-        sql = f"SELECT {select_clause} FROM {table} WHERE {where_clause}"
+        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {where_clause}"
         with self._db_lock:
             result = self._db.execute(sql, list(pk_vals))
             result_columns = [desc[0] for desc in result.description]
@@ -346,12 +335,12 @@ class DuckDBBackend:
         pk_cols = self._pk_columns(primary_key)
         if len(pk_cols) == 1:
             placeholders = ", ".join(["?" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
+            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {quote_identifier(pk_cols[0])} IN ({placeholders})"
             params: list[Any] = list(entity_ids)
         else:
-            per_key = " AND ".join(f"{c} = ?" for c in pk_cols)
+            per_key = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
             disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {table} WHERE {disjunct}"
+            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {disjunct}"
             params = []
             for eid in entity_ids:
                 params.extend(self._pk_values(eid, pk_cols))
@@ -380,8 +369,8 @@ class DuckDBBackend:
         """
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._pk_values(entity_id, pk_cols)
-        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
-        sql = f"DELETE FROM {table} WHERE {where_clause}"
+        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
         with self._db_lock:
             self._db.execute(sql, list(pk_vals))
 
@@ -507,14 +496,14 @@ class DuckDBBackend:
                 nullable = " NOT NULL"
                 if not is_composite_pk:
                     primary = " PRIMARY KEY"
-            columns.append(f'"{column.name}" {ddl_type}{nullable}{primary}')
+            columns.append(f"{quote_identifier(column.name)} {ddl_type}{nullable}{primary}")
 
         if is_composite_pk:
-            pk_clause = ", ".join(f'"{c}"' for c in pk_cols)
+            pk_clause = ", ".join(quote_identifier(c) for c in pk_cols)
             columns.append(f"PRIMARY KEY ({pk_clause})")
 
         columns_sql = ", ".join(columns)
-        return f"CREATE TABLE IF NOT EXISTS {table.name} ({columns_sql})"
+        return f"CREATE TABLE IF NOT EXISTS {quote_identifier(table.name)} ({columns_sql})"
 
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:

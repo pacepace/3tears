@@ -15,6 +15,8 @@ version history:
 
 - v001 -- create the ``config_epochs`` table with subject_path PK,
   epoch counter, opaque payload, and update timestamp.
+- v002 -- add ``previous_epoch``, the value a durable subject's latest
+  :meth:`~threetears.epoch.client.EpochClient.advance_to` replaced.
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ from threetears.core.data.migrations import (
 )
 from threetears.epoch.migrations.v001_create_config_epochs import (
     create_config_epochs_table,
+)
+from threetears.epoch.migrations.v002_add_previous_epoch import (
+    add_previous_epoch_column,
 )
 
 PACKAGE_NAME = "epoch"
@@ -48,12 +53,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
         scope=MigrationScope.PLATFORM,
     )
     pkg.version(1)(create_config_epochs_table)
+    pkg.version(2)(add_previous_epoch_column)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_previous_epoch_column",
     "create_config_epochs_table",
     "register",
 ]

@@ -20,6 +20,8 @@ from threetears.datasources.geo_reload import (
     GeoLayersReloadedRequest,
     GeoReloadRefusedError,
     GeoReloadUnavailableError,
+    LayerVersions,
+    generations_to_delete,
     report_geo_layers_reloaded,
 )
 from threetears.nats import RequestTimeoutError, Subject, set_default_namespace
@@ -53,7 +55,7 @@ class _ScriptedRequests:
         return json.dumps(reply).encode()
 
 
-async def _report(nc: _ScriptedRequests, generations: dict[str, int] | None = None) -> dict[str, int]:
+async def _report(nc: _ScriptedRequests, generations: dict[str, int] | None = None) -> dict[str, LayerVersions]:
     return await report_geo_layers_reloaded(
         nc,  # type: ignore[arg-type]
         identity_token=_TOKEN,
@@ -63,8 +65,8 @@ async def _report(nc: _ScriptedRequests, generations: dict[str, int] | None = No
 
 class TestRequest:
     async def test_the_report_goes_to_the_hub_subject_with_the_token_and_generations(self) -> None:
-        nc = _ScriptedRequests({"success": True, "versions": {_LAYER: 2}})
-        assert await _report(nc) == {_LAYER: 2}
+        nc = _ScriptedRequests({"success": True, "versions": {_LAYER: 2}, "previous_versions": {_LAYER: 1}})
+        assert await _report(nc) == {_LAYER: LayerVersions(version=2, previous=1)}
         subject, body = nc.sent[0]
         assert subject == "3tears.hub.geo.layers.reloaded"
         assert body["identity_token"] == _TOKEN
@@ -74,6 +76,16 @@ class TestRequest:
         request = GeoLayersReloadedRequest(identity_token=_TOKEN, correlation_id=uuid7(), generations={_LAYER: 1})
         assert _TOKEN not in repr(request)
         assert _TOKEN in request.model_dump_json()
+
+    @pytest.mark.parametrize("generations", [{}, {_LAYER: 0}, {"": 2}])
+    async def test_a_report_out_of_bounds_is_refused_as_invalid_and_sends_nothing(
+        self, generations: dict[str, int]
+    ) -> None:
+        nc = _ScriptedRequests()
+        with pytest.raises(GeoReloadRefusedError) as caught:
+            await report_geo_layers_reloaded(nc, identity_token=_TOKEN, generations=generations)  # type: ignore[arg-type]
+        assert caught.value.error_code == "INVALID_REQUEST"
+        assert nc.sent == []
 
     def test_a_generation_below_one_is_refused_by_the_model(self) -> None:
         with pytest.raises(ValidationError):
@@ -117,15 +129,30 @@ class TestReply:
             await _report(nc)
 
     async def test_a_reply_to_another_request_is_not_an_answer(self) -> None:
-        stray = {"success": True, "correlation_id": str(uuid7()), "versions": {_LAYER: 2}}
+        stray = {
+            "success": True,
+            "correlation_id": str(uuid7()),
+            "versions": {_LAYER: 2},
+            "previous_versions": {_LAYER: 1},
+        }
         nc = _ScriptedRequests(stray, echo=False)
         with pytest.raises(GeoReloadUnavailableError):
             await _report(nc)
 
     async def test_a_success_that_does_not_carry_the_generation_is_not_trusted(self) -> None:
-        nc = _ScriptedRequests({"success": True, "versions": {_LAYER: 1}})
+        nc = _ScriptedRequests({"success": True, "versions": {_LAYER: 1}, "previous_versions": {_LAYER: None}})
         with pytest.raises(GeoReloadUnavailableError):
             await _report(nc)
+
+    async def test_a_success_that_does_not_carry_the_previous_version_is_not_trusted(self) -> None:
+        # without it the pod cannot tell which older generation clients still read
+        nc = _ScriptedRequests({"success": True, "versions": {_LAYER: 2}})
+        with pytest.raises(GeoReloadUnavailableError, match="previous"):
+            await _report(nc)
+
+    async def test_a_first_move_has_no_previous_version(self) -> None:
+        nc = _ScriptedRequests({"success": True, "versions": {_LAYER: 1}, "previous_versions": {_LAYER: None}})
+        assert await _report(nc, {_LAYER: 1}) == {_LAYER: LayerVersions(version=1, previous=None)}
 
     async def test_a_timeout_is_retryable(self) -> None:
         nc = _ScriptedRequests(RequestTimeoutError("no answer"))
@@ -150,9 +177,18 @@ def test_the_vocabulary_names_every_refusal_the_contract_describes() -> None:
     } == GEO_RELOAD_ERROR_CODES
 
 
-def test_the_retained_generations_include_the_one_before_the_current() -> None:
-    # a client holds a TileJSON for a moment after a reload, so the version before the current one
-    # must still have rows
-    from threetears.datasources.geo_reload import RETAINED_GENERATIONS
+class TestRetention:
+    """a pod keeps the two generations the hub serves -- the reported one and the recorded previous one."""
 
-    assert RETAINED_GENERATIONS >= 2
+    async def test_after_a_failed_load_the_previous_version_is_the_one_replaced_not_one_below(self) -> None:
+        # the hub was at 3; a load of 6 failed part way and was never reported; 7 is reported over 3
+        nc = _ScriptedRequests({"success": True, "versions": {_LAYER: 7}, "previous_versions": {_LAYER: 3}})
+        (reloaded,) = (await _report(nc, {_LAYER: 7})).values()
+        assert reloaded == LayerVersions(version=7, previous=3)
+        assert generations_to_delete({2, 3, 6, 7}, version=reloaded.version, previous=reloaded.previous) == {2, 6}
+
+    def test_a_first_move_keeps_only_the_reported_generation(self) -> None:
+        assert generations_to_delete({1, 2}, version=2, previous=None) == {1}
+
+    def test_nothing_the_hub_serves_is_deleted(self) -> None:
+        assert generations_to_delete({3, 7}, version=7, previous=3) == frozenset()

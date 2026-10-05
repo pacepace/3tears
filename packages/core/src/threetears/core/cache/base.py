@@ -23,6 +23,7 @@ __all__ = [
     "build_select_clause",
     "bulk_columns",
     "entry_is_fresh",
+    "quote_identifier",
 ]
 
 MISSING = object()
@@ -120,6 +121,22 @@ def entry_is_fresh(
     return now_monotonic - stored_at_monotonic <= max_age_seconds
 
 
+def quote_identifier(identifier: str) -> str:
+    """an identifier quoted for SQL, so a name with spaces, capitals or a keyword survives.
+
+    Every L1 backend quotes every table and column name it interpolates through this one
+    function: SQLite and DuckDB quote alike, and a backend that quoted some statements and not
+    others would create a table it could then not read. A converted extract's column names
+    (``% of Exp. In``) are the case that needs it.
+
+    :param identifier: a table or column name
+    :ptype identifier: str
+    :return: the quoted identifier, any double quote in it doubled
+    :rtype: str
+    """
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 def build_select_clause(
     schema: dict[str, str] | None,
     table: str,
@@ -153,7 +170,7 @@ def build_select_clause(
         unknown = [c for c in deduped if c not in schema]
         if unknown:
             raise ValueError(f"unknown columns for table {table}: {unknown}")
-    return ", ".join(deduped)
+    return ", ".join(quote_identifier(c) for c in deduped)
 
 
 def bulk_columns(rows: Sequence[Mapping[str, Any]], schema: Mapping[str, str]) -> list[str]:

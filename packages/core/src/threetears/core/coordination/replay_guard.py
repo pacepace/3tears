@@ -92,7 +92,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast, overload
 
 from threetears.observe import get_logger
 
@@ -104,7 +104,7 @@ if TYPE_CHECKING:
     # From the submodule, not the package: these three are Protocols that
     # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
     # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
-    from threetears.nats.kv import KvBucketLike, KvCapable, KvDeclaring
+    from threetears.nats.kv import KvBucketLike, KvCapable, KvDeclaring, KvDeclaringClient
 
     from threetears.core.coordination.replay_anchor import ReplayAnchor
 
@@ -141,6 +141,35 @@ class _ReconnectHooking(Protocol):
 class ReplayGuard:
     """records single-use nonces in a shared, TTL'd KV bucket; rejects any second sighting."""
 
+    # a declaring guard (the default) owns its bucket and needs a client that can declare one; a
+    # bind-only guard needs only the open. The overloads say so to a type checker, and __init__
+    # refuses at run time what slips past one.
+    @overload
+    def __init__(
+        self,
+        nats_client: "KvDeclaringClient",
+        *,
+        bucket_name: str,
+        ttl_seconds: int,
+        verifier_future_tolerance: timedelta,
+        anchor: "ReplayAnchor | None" = None,
+        create_if_missing: Literal[True] = True,
+        key_scope: str | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        nats_client: "KvCapable",
+        *,
+        bucket_name: str,
+        ttl_seconds: int,
+        verifier_future_tolerance: timedelta,
+        anchor: "ReplayAnchor | None" = None,
+        create_if_missing: Literal[False],
+        key_scope: str | None = None,
+    ) -> None: ...
+
     def __init__(
         self,
         nats_client: "KvCapable",
@@ -154,11 +183,11 @@ class ReplayGuard:
     ) -> None:
         """configure the guard; the bucket is opened by :meth:`bind`, which a service calls at start.
 
-        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`. A guard that
-            DECLARES its bucket (``create_if_missing=True``) declares it through
-            :meth:`threetears.nats.kv.KvDeclaring.ensure_kv_bucket` as its OWNER, so the client must
-            offer that too (:class:`threetears.nats.NatsClient` and the testing fake do); a bind-only
-            guard opens through :meth:`KvCapable.kv_bucket`
+        :param nats_client: a connected client. A guard that DECLARES its bucket
+            (``create_if_missing=True``) declares it as its OWNER, so it needs a
+            :class:`threetears.nats.kv.KvDeclaringClient` (:class:`threetears.nats.NatsClient` and
+            the testing fake are one); a bind-only guard opens through
+            :meth:`threetears.nats.kv.KvCapable.kv_bucket` alone
         :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a
             bucket dedicated to one assertion kind (e.g. ``pop_nonces``) so unrelated nonces never

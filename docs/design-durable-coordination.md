@@ -26,8 +26,11 @@ needs:
   not survive losing the node or the volume.
 - **No backups.** L3 is backed up. A JetStream volume is not.
 - **No schema, no migrations.** Long-lived state acquires a shape; KV gives it none.
-- **Storage is chosen at CREATE and never reconciled.** A wrong value is fixed by deleting
-  live state on a running cluster, not by shipping a fix.
+- **Storage is chosen at CREATE and reconciled only by the bucket's owner.** A declaration
+  with `owns_bucket=True` (memory storage only) deletes and recreates a bucket live on the
+  wrong storage, emptying it, and a file-backed one only with `drop_file_storage=True`. Any
+  other bucket keeps the storage it was created with, and a wrong value there is fixed by
+  deleting live state on a running cluster.
 
 `threetears.epoch` made the same call for its durable tile family: file storage survives
 only while its store directory survives, so it is a false guarantee against the failure it
@@ -414,11 +417,16 @@ The primitives keep their public surfaces apart from `ReplayGuard.record_unique`
 - **survey**: the entry-challenge guard, the panel lockout counter, and idempotency claims.
 - **scriob**: its login throttle.
 
-**The live buckets are converted, not abandoned.** The nonce buckets keep their names and a
-bucket's storage is never reconciled, so after release the new code binds the existing
-file-backed streams. Each one stays file-backed until deleted by name, and a deletion is a
-wipe: calls through that guard are refused for its reach while it is recreated
-memory-backed. The durable primitives' buckets are different: once their state lives in
+**The live buckets are converted, not abandoned.** The nonce buckets keep their names. Since
+0.66.0 a DECLARING guard (`create_if_missing=True`) owns its bucket: it declares it with
+`owns_bucket=True, drop_file_storage=True` on memory storage, so at its first boot on that
+release it deletes a file-backed nonce stream and recreates it memory-backed. That is a wipe,
+and safe for the reason a broker wipe is: the recreate's creation time refuses anything issued
+before it, so calls through the guard are refused for its reach and no replay is reopened. No
+nonce bucket is deleted by hand any more. A BIND-ONLY guard never declares and never recreates;
+it waits for its declarer. The declaring identity needs `STREAM.UPDATE` and `STREAM.DELETE` on
+its nonce stream as well as `STREAM.CREATE`, or its bind fails at startup while the bucket is
+still file-backed. The durable primitives' buckets are different: once their state lives in
 L3 they are genuinely unused, and they are deleted after the one-time copy. Both happen on
 cobalt-dev and then prod, after every consumer is released, dry run first, and a real
 sign-in verifies each.

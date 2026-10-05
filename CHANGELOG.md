@@ -19,7 +19,15 @@ packages (bumped in lock-step).
   wipe safe. A bind-only guard (`create_if_missing=False`) still only binds and never recreates.
   **Breaking for a client double with `kv_bucket` alone:** a declaring guard now refuses, at
   construction with a `TypeError`, a client without `ensure_kv_bucket`; `NatsClient` and
-  `threetears.core.testing.FakeNatsClient` have it.
+  `threetears.core.testing.FakeNatsClient` have it. Its constructor's overloads say the same to a
+  type checker: a declaring guard takes a `KvDeclaringClient`, a bind-only one a `KvCapable`.
+  **Breaking for a declaring consumer's NATS grants:** the identity a declaring guard runs as needs
+  `STREAM.UPDATE` and `STREAM.DELETE` on its nonce stream as well as `STREAM.CREATE`, or its bind
+  fails at startup while the bucket is still file-backed. The registry's `pop_nonces` grant already
+  carries them; the hub (proxy nonces), identity (DPoP nonces), survey and scriob check theirs before
+  relocking. `docs/design-durable-coordination.md` drops the by-hand nonce-bucket deletion.
+- **Added, `threetears.nats.kv.KvDeclaringClient`:** a client that both opens and declares KV
+  buckets (`KvCapable` and `KvDeclaring` together), for a consumer that owns its bucket.
 
 ### NATS: one write-health watch for a persisted copy
 
@@ -60,11 +68,20 @@ packages (bumped in lock-step).
   the reported generation, forward only (a generation below the version is refused
   `GENERATION_BEHIND` with the version in the reply). New subject
   `Subjects.hub_geo_layers_reloaded` (`{ns}.hub.geo.layers.reloaded`), granted to tool pods to
-  publish and to the hub to answer. The hub serves a layer's tiles at its current version and the
-  one before it (`RETAINED_GENERATIONS`), so a pod keeps those two generations' rows.
+  publish and to the hub to answer. The hub serves a layer's tiles at exactly two versions: its
+  current one and the PREVIOUS one, the version the current one replaced, which is recorded when
+  the version moves and never inferred as one below (generations skip: a failed, unreported load
+  leaves rows stamped with a generation nobody reported). The success reply carries each layer's
+  previous version (`previous_versions`), `report_geo_layers_reloaded` returns each layer's
+  `LayerVersions` (`version`, `previous`), and `generations_to_delete` names every stamped
+  generation a pod deletes after it: all but those two, failed loads' included. A report whose
+  generations break the request's bounds is refused `INVALID_REQUEST` without asking the hub.
 - **Added, `EpochClient.advance_to`:** moves a durable epoch forward to a target in one statement and
   never back, so concurrent writers meeting one target leave it there (where `bump` would carry it
-  past). Durable subjects only.
+  past). Durable subjects only. It records the epoch each move replaced and returns a
+  `DurableEpoch` (`epoch`, `previous`); `EpochClient.versions` reads both in one query. New
+  migration epoch v002 adds the nullable `config_epochs.previous_epoch` column; existing rows read
+  `None` until their next move.
 - **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as
   its docstring asked once a second use appeared: a tool pod's platform geography layers are read
   for tiles through Hub's pool, scoped to the pod's `ns_<hex>` schema, with no datasource row. The
@@ -88,7 +105,13 @@ packages (bumped in lock-step).
 - **Fixed, `SQLiteBackend`:** a write that fails for any reason rolls its transaction back. It
   rolled back only on `OperationalError`, so a constraint or binding error left `BEGIN IMMEDIATE`
   open, holding the write lock against the thread's next write. A table whose every column is its
-  key takes an upsert (`DO NOTHING`, where it built an empty `DO UPDATE SET`).
+  key takes an upsert (`DO NOTHING`, where it built an empty `DO UPDATE SET`). A write SQLite rolled
+  back by itself (a full disk, an I/O error, an interrupt) raises its own error, not a failed
+  `ROLLBACK`'s "no transaction is active".
+- **Fixed, L1 backends:** every table and column name either backend interpolates is quoted through
+  one helper, `threetears.core.cache.base.quote_identifier`, so a table or key column named with a
+  space or capitals (a converted extract's `% of Exp. In`) is created, written, read and deleted
+  alike. Only the bulk writes quoted before, so such a table could be filled but not read by id.
 - **Fixed:** `DerivedCollection`, and with it `threetears.geo`, no longer needs the optional NATS
   client (core's `nats` extra) to import or to derive on a single pod. With no NATS client there is
   no peer to coordinate with, so a derivation runs under the in-process gate alone and never

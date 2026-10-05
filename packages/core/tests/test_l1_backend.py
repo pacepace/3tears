@@ -380,6 +380,25 @@ def test_a_failed_sqlite_write_leaves_no_transaction_open() -> None:
         backend.reset()
 
 
+def test_a_write_sqlite_rolled_back_itself_raises_its_own_error() -> None:
+    """a full disk makes SQLite roll the transaction back itself; the error is the full disk, not the rollback."""
+    import sqlite3
+
+    from threetears.core.cache.sqlite import SQLiteBackend
+
+    backend = SQLiteBackend(db_name=f"test_{uuid.uuid4().hex[:8]}")
+    backend.initialize(_make_metadata())
+    try:
+        conn = backend.get_connection()
+        pages = conn.execute("PRAGMA page_count").fetchone()[0]
+        conn.execute(f"PRAGMA max_page_count = {pages + 2}")
+        with pytest.raises(sqlite3.OperationalError, match="full"):
+            backend.upsert_many("test_entities", [{**_sample_row(), "name": "x" * 4000} for _ in range(200)])
+        assert not conn.in_transaction
+    finally:
+        backend.reset()
+
+
 def test_a_sqlite_table_of_only_key_columns_takes_an_upsert() -> None:
     from threetears.core.cache.sqlite import SQLiteBackend
 
@@ -391,5 +410,41 @@ def test_a_sqlite_table_of_only_key_columns_takes_an_upsert() -> None:
         backend.upsert("tags", {"name": "a"}, primary_key="name")
         backend.upsert("tags", {"name": "a"}, primary_key="name")
         assert backend.execute_query("SELECT name FROM tags") == [{"name": "a"}]
+    finally:
+        backend.reset()
+
+
+@pytest.mark.parametrize("kind", ["sqlite", "duckdb"])
+def test_names_with_spaces_and_capitals_survive_every_statement(kind: str) -> None:
+    """a table and key column named as a converted extract names them: created, written, read, deleted."""
+    if kind == "duckdb":
+        pytest.importorskip("duckdb")
+        from threetears.core.cache.duckdb import DuckDBBackend
+
+        backend: L1Backend = DuckDBBackend()
+    else:
+        from threetears.core.cache.sqlite import SQLiteBackend
+
+        backend = SQLiteBackend(db_name=f"test_{uuid.uuid4().hex[:8]}")
+    metadata = MetaData()
+    Table(
+        "Results by County",
+        metadata,
+        Column("County Id", String(20), primary_key=True),
+        Column("% of Exp. In", String(20)),
+    )
+    backend.initialize(metadata)
+    try:
+        backend.upsert("Results by County", {"County Id": "51001", "% of Exp. In": "0.55"}, primary_key="County Id")
+        backend.upsert_many(
+            "Results by County", [{"County Id": "51003", "% of Exp. In": "0.99"}], primary_key="County Id"
+        )
+        assert backend.select_by_id(
+            "Results by County", "51001", primary_key="County Id", columns=["% of Exp. In"]
+        ) == {"% of Exp. In": "0.55"}
+        found = backend.select_batch("Results by County", ["51001", "51003"], primary_key="County Id")
+        assert {row["County Id"] for row in found} == {"51001", "51003"}
+        backend.delete_by_id("Results by County", "51001", primary_key="County Id")
+        assert backend.select_by_id("Results by County", "51001", primary_key="County Id") is None
     finally:
         backend.reset()

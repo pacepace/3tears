@@ -32,6 +32,8 @@ import random
 from collections.abc import AsyncIterator
 from typing import Any
 
+from uuid import uuid4
+
 import asyncpg
 import pytest
 
@@ -81,16 +83,21 @@ async def pg_schema(db_container: str) -> AsyncIterator[tuple[str, str]]:
     each test gets a clean schema with only the ``config_epochs``
     table provisioned. teardown drops the schema.
     """
-    schema = f"epoch_it_{id(object())}".lower().replace("-", "_")
+    # a fresh name per test: one built from id() can be reused, and a schema left behind by a
+    # failed setup would then read as already migrated
+    schema = f"epoch_it_{uuid4().hex[:12]}"
     conn = await asyncpg.connect(db_container)
     try:
         await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         await conn.execute(f'SET search_path TO "{schema}"')
         runner = MigrationRunner()
-        register_epoch(runner)
+        registered = register_epoch(runner)
         store = _AsyncpgStore(conn)
         count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-        assert count == 1, f"expected 1 epoch migration, applied {count}"
+        # a fresh schema takes every epoch migration
+        assert count == len(registered.versions), (
+            f"expected {len(registered.versions)} epoch migrations, applied {count}"
+        )
     finally:
         await conn.close()
 
@@ -426,6 +433,8 @@ async def test_concurrent_advances_to_one_target_stop_at_it(
 
         results = await asyncio.gather(*(client.advance_to(subject, 3) for client in (w1, w2, w1, w2)))
 
-        assert results == [3, 3, 3, 3]
+        # one of them moved it from nothing; the rest found it there, and none recorded a second move
+        assert [r.epoch for r in results] == [3, 3, 3, 3]
+        assert {r.previous for r in results} == {None}
         assert await w1.current(subject) == 3
-        assert await w2.advance_to(subject, 2) == 3
+        assert (await w2.advance_to(subject, 2)).epoch == 3

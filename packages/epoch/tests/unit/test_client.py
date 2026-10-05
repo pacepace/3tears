@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.epoch.client import EpochClient
+from threetears.epoch.client import DurableEpoch, EpochClient
 from threetears.epoch.wire import EpochBumpMessage
 from threetears.nats.errors import PublishError
 from threetears.nats.subjects import Subject, Subjects
@@ -93,11 +93,13 @@ class TestEpochClientAdvanceTo:
 
     @pytest.mark.asyncio
     async def test_a_move_is_one_conditional_upsert_and_is_broadcast(self) -> None:
-        pool = _pool_with_bump(returning_epoch=4)
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"epoch": 4, "previous_epoch": 3})
         nats = _nats_mock()
         subject = _durable_subject()
 
-        assert await EpochClient(pool, nats).advance_to(subject, 4, payload={"reason": "reload"}) == 4
+        moved = await EpochClient(pool, nats).advance_to(subject, 4, payload={"reason": "reload"})
+        assert moved == DurableEpoch(epoch=4, previous=3)
         sql, *args = pool.fetchrow.await_args.args
         assert "WHERE config_epochs.epoch < EXCLUDED.epoch" in sql
         assert args[:2] == [subject.path, 4]
@@ -106,11 +108,11 @@ class TestEpochClientAdvanceTo:
     @pytest.mark.asyncio
     async def test_a_subject_already_there_is_left_alone_and_not_broadcast(self) -> None:
         pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=6)
+        # the conditional upsert returns no row; the read that follows answers the row as it stands
+        pool.fetchrow = AsyncMock(side_effect=[None, {"epoch": 6, "previous_epoch": 2}])
         nats = _nats_mock()
 
-        assert await EpochClient(pool, nats).advance_to(_durable_subject(), 4) == 6
+        assert await EpochClient(pool, nats).advance_to(_durable_subject(), 4) == DurableEpoch(epoch=6, previous=2)
         nats.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
