@@ -20,6 +20,11 @@ import threetears.evals
 import threetears.evals.run
 from threetears.evals import PUBLIC_ROOTS, run
 from threetears.evals.contracts import AsyncDeliveryStatus, EvalRun, SCALES
+from threetears.evals.contracts import TURN_BUDGET_ENDED_KEY, blended_cost_roles, eval_trace_doc_id
+from threetears.evals.contracts import Firings, MATCH_MEASURE, CONFUSION_CELL_MEASURE
+from threetears.evals.contracts.host import UNSEATED_LEVEL
+from threetears.evals.run import EvalRunCostCap, resolve_ceiling_origin, resolve_effective_ceiling
+from threetears.evals.run import stamp_witnessed_judge
 from threetears.evals.contracts import host
 from threetears.evals.contracts.host import HostProfile
 from threetears.evals.testing import nonpublic_evals_imports
@@ -42,6 +47,7 @@ def _only(findings: tuple[NonPublicImport, ...]) -> NonPublicImport:
 
 
 def test_the_public_forms_pass(tmp_path: Path) -> None:
+    """Including every name an adopter was found reaching below a root for, each now exported from one."""
     _write(tmp_path, "public.py", _PUBLIC)
 
     assert nonpublic_evals_imports(tmp_path) == ()
