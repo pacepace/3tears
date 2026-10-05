@@ -77,10 +77,11 @@ class ExternalSpend:
             ``None`` means unreported — which is NOT the same as ``0.0``. A self-hosted
             backend costs a real, observed zero; an unpriced paid provider is a real cost
             nobody declared a rate for. One bucket cannot say which is which, so this field
-            has three states and all of them mean something. **No caller sets it today**:
-            the action seam is dollar-free by rule (a replay would report spend it never
-            incurred) and no delivering tool reports a charge yet, so the field is a
-            requirement standing ready rather than a live channel.
+            has three states and all of them mean something. **Only the delivery seam sets
+            it**: background work reports a provider's charge on
+            ``AsyncExternalSpend.money``, which reaches here through
+            ``AsyncExternalSpend.as_external_spend``. The action seam is dollar-free by rule
+            (a replay would report spend it never incurred), and drops it.
     """
 
     provider: str | None

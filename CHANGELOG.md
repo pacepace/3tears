@@ -6,6 +6,47 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a synchronous act path for the cassette action seam
+
+- **`SyncActionSeam`, `SyncToolLike`, `SyncToolWrap`** (new, exported from `threetears.evals.contracts`).
+  `ActionSeam` and `CassetteProxy.act` were async-only, so a host whose tools run as plain blocking calls
+  inside its own turn loop had to drive the coroutine to completion itself. Such a host now returns a
+  `SyncActionSeam` from `CassetteSeams.action_seam` (`recorded_tools` plus
+  `arm_sync_tools(wrap: SyncToolWrap)`); its tools are `SyncToolLike` (`name`, `can_dispatch`,
+  `act_sync(action, parameters)`), and the candidate calls the wrapped tools' `act_sync`.
+  `CassetteSeams.action_seam` is now typed `ActionSeam | SyncActionSeam | None`.
+- **`CassetteProxy.act_sync`** (new). Both entry points take one record-and-replay implementation on the
+  cell, so keys, occurrences, misses, exhaustion, corruption and the undispatchable-action passthrough
+  are the same on both paths, and a corpus captured on either replays on either.
+- **New refusals:**
+  - `CellCassettes.wire` refuses an action seam that is both an `ActionSeam` and a `SyncActionSeam`
+    (`ValueError`) or neither (`TypeError`), before anything is armed or a capture clears its case.
+  - A proxy refuses the entry point its seam did not bind (`TypeError`: `act` on a sync-wired tool,
+    `act_sync` on an async-wired one) before anything is keyed, so the call never falls through to the
+    wrapped tool's live method.
+  - `CassetteProxy(...)` refuses being given both or neither of `act` and `act_sync` (`ValueError`).
+
+### 3tears-evals: background work carries its provider's own charge
+
+- **`AsyncExternalSpend.money: float | None`** (new, default `None`, `>= 0`). Background work whose
+  provider bills a figure per call (an image generator charging per image) reports it here. Before,
+  the delivery seam could carry only calls and units, so a rate table was the only way to price it and
+  a provider-reported charge was dropped. `None` means the provider reported no charge — unpriced and
+  unknown, never `0`; `0.0` is a reported zero.
+  - **The rule:** a reported charge wins over the run's rate for the same `(provider, unit)` and prices
+    calls the run holds no rate for; with neither, the calls stay counted and unpriced, and a run whose
+    `cost_roles` include `external` records the cell's `cost_usd` as unknown (`None`). The row's
+    `price_source` is `"<provider>:reported"`.
+  - **What it does not change:** the blended composition. A run that declared no external rates still
+    leaves `external` out of `cost_roles`, so a reported charge lands on the cell's `external` row but
+    not in its `cost_usd`.
+  - **`AsyncExternalSpend.as_external_spend() -> ExternalSpend`** (new): the one conversion both
+    readers of a delivery's spend take — `async_delivery_usage` and `cell_cost`, which each rebuilt
+    `ExternalSpend` by hand and both dropped the charge.
+  - **New refusal:** a negative `money` fails validation.
+  - Stored shape: an added optional field, so `EVAL_SCHEMA_VERSION` is unchanged (a document written
+    before it means what it says: no charge reported).
+
 ### 3tears-evals: a bar on a measure with no better end is refused at registration
 
 - **Breaking: `BarRegistry.validate_against` refuses a bar whose measure declares no better direction**
