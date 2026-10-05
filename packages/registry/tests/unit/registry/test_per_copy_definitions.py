@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -54,7 +54,7 @@ def _kv() -> AsyncMock:
     :rtype: AsyncMock
     """
     kv = AsyncMock()
-    kv.keys = AsyncMock(return_value=[])
+    kv.list_keys = AsyncMock(return_value=[])
     kv.put = AsyncMock()
     kv.delete = AsyncMock()
     return kv
@@ -427,7 +427,7 @@ class TestDefinitionsSurviveTheProbeAndThePersistence:
 
         await catalog.mark_ready("pod-A")
 
-        payload = json.loads(kv.put.call_args[0][1].decode("utf-8"))
+        payload = json.loads(kv.put.call_args.kwargs["value"].decode("utf-8"))
         (persisted,) = payload["endpoints"]
         assert persisted["status"] == "available"
         assert [d["definition"]["description"] for d in persisted["definitions"]] == ["calc"]
@@ -490,14 +490,13 @@ class TestDefinitionsSurviveTheProbeAndThePersistence:
             "date_registered": datetime.now(UTC).isoformat(),
         }
         kv = AsyncMock()
-        kv.keys = AsyncMock(return_value=["threetears_calculator_AT_1_0_0"])
-        stored = MagicMock()
-        stored.value = json.dumps(legacy).encode("utf-8")
-        kv.get = AsyncMock(return_value=stored)
+        kv.list_keys = AsyncMock(return_value=["threetears_calculator_AT_1_0_0"])
+        kv.get = AsyncMock(return_value=json.dumps(legacy).encode("utf-8"))
         catalog = ToolCatalog()
 
         await catalog.load_from_kv(kv)
 
+        kv.get.assert_awaited_once_with(key="threetears_calculator_AT_1_0_0")
         held = catalog.get(_FULL)
         assert held is not None
         copy = held.get_endpoint("pod-A")
@@ -511,10 +510,8 @@ class TestDefinitionsSurviveTheProbeAndThePersistence:
         """the translation leaves the current shape alone; only liveness is reset."""
         current = entry("threetears.calculator", "1.0.0", endpoint("pod-A", tool_definition=definition("calc")))
         kv = AsyncMock()
-        kv.keys = AsyncMock(return_value=["k"])
-        stored = MagicMock()
-        stored.value = json.dumps(current.to_dict()).encode("utf-8")
-        kv.get = AsyncMock(return_value=stored)
+        kv.list_keys = AsyncMock(return_value=["k"])
+        kv.get = AsyncMock(return_value=json.dumps(current.to_dict()).encode("utf-8"))
         catalog = ToolCatalog()
 
         await catalog.load_from_kv(kv)

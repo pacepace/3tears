@@ -27,8 +27,10 @@ malformed, which would have removed grants the hub depends on.
 * Opened through :meth:`threetears.nats.kv.KvCapable.kv_bucket`, which takes a SUFFIX
   and layers the connection's ``{namespace}-`` over it. ``BaseCollection``,
   ``KVLease``, ``ReplayGuard``, ``TokenBucket``. The grant is ``{ns}-<suffix>``.
-* Opened by a direct ``js.key_value(bucket=...)`` with a bare constant, which receives
-  no prefix at all. ``threetears.registry.server``'s catalog. The grant is that bare
+* Declared through :meth:`threetears.nats.NatsClient.ensure_kv_bucket` with
+  ``prefix_namespace=False``, which uses the name verbatim. The registry's catalog,
+  owned by :class:`threetears.nats.PersistedCopyBucket` (built by
+  ``threetears.registry.catalog_persistence.catalog_bucket``). The grant is that bare
   name.
 * Opened by a direct ``js.create_key_value(bucket=...)`` with a name the component
   builds itself as ``f"{namespace}_thing"``. The hub's ``AgentConfigKV`` does this and
@@ -107,11 +109,11 @@ def test_the_lease_bucket_a_tool_pod_is_granted_is_the_one_kvlease_opens() -> No
 def test_the_registry_catalog_grant_matches_the_bucket_the_registry_opens() -> None:
     """The catalog grant is UNPREFIXED, and that is a property worth pinning.
 
-    ``RegistryServer`` opens its catalog with a direct ``js.key_value(bucket=...)``
-    rather than through ``kv_bucket``, so no namespace is ever applied. The grant is
-    therefore a bare name, and "normalising" it to ``{ns}-tool_catalog`` to match the
-    file's other entries would silently point the registry's authorisation at a bucket
-    that does not exist.
+    ``RegistryServer`` declares its catalog through ``PersistedCopyBucket``, which calls
+    ``ensure_kv_bucket(prefix_namespace=False)``, so no namespace is ever applied. The
+    grant is therefore a bare name, and "normalising" it to ``{ns}-tool_catalog`` to
+    match the file's other entries would silently point the registry's authorisation at
+    a bucket that does not exist.
 
     Read out of the server's own default rather than restated, so the two cannot drift.
     """
@@ -122,7 +124,7 @@ def test_the_registry_catalog_grant_matches_the_bucket_the_registry_opens() -> N
     default = inspect.signature(RegistryServer.__init__).parameters["kv_bucket"].default
     granted = kv_bucket_names(build_permissions(Principal.REGISTRY, conn_id="conn-1"))
     assert default in granted, (
-        f"the registry opens bucket {default!r} with a direct js.key_value (no namespace prefix), "
+        f"the registry declares bucket {default!r} by its exact name (no namespace prefix), "
         f"but its grants are {list(granted)}."
     )
     assert f"{_NAMESPACE}-{default}" not in granted, (

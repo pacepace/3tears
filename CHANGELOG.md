@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Registry: the tool catalog keeps recording registrations after a NATS rolling restart
+
+After a NATS rolling restart the registry refused every tool registration with `CATALOG_UNAVAILABLE`
+/ `nats: connection closed` until its pod was deleted by hand, while it reported itself healthy. The
+catalog bucket was held through a raw nats-py handle, which stayed bound to the connection the
+client retired when it moved off a lame-duck server.
+
+- **Changed, `threetears.registry.catalog_persistence`:** the `tool_catalog` bucket is owned by
+  `threetears.nats.PersistedCopyBucket`, built by the new `catalog_bucket(catalog=, client=, bucket=)`,
+  under its exact name with file storage, history 1 and `allow_direct` stated. Its handle follows the
+  client across a renewal or a successor move, and the catalog is written back whenever the client
+  creates the bucket again. Bucket names on the wire are unchanged, so no grant changes.
+- **Removed:** `CatalogPersistence` and `CatalogBucketClient`. Call `catalog_bucket(...)` and
+  `start()` / `stop()` the owner it returns.
+- **Changed, `ToolCatalog`:** typed `KvBucketLike`. `load_from_kv` lists with `list_keys` (an empty
+  bucket is no keys) and raises a listing or read that fails, rather than taking it for an empty
+  bucket.
+- **Added:** `ToolCatalog.persisting` and `WRITE_FAILURE_THRESHOLD`. Three catalog writes failing in
+  a row make the registry's new `catalog_persisting` readiness check fail, until a write lands.
+- **Removed, `RegistryServer`:** the undeclared `authorizer.initialize(js, namespace)` hook, which
+  no authorizer implemented.
+
 ## v0.64.0 -- 2026-10-04
 
 ### Models: the Claude CLI pool on claude-agent-sdk 0.2.163
