@@ -69,7 +69,12 @@ from threetears.evals.contracts.errors import (
     ValidationFailedError,
 )
 from threetears.evals.contracts.hashing import canonical_digest
-from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_context_identity, resolve_variant_identity
+from threetears.evals.contracts.identity import (
+    IDENTITY_VERSION,
+    derive_variant_identity,
+    resolve_context_identity,
+    resolve_variant_identity,
+)
 from threetears.evals.contracts.judge_attribution import (
     JudgeAttributionSource,
     attribution_state,
@@ -201,6 +206,7 @@ from threetears.evals.contracts.usage_capture import (
     ResolvedUsage,
     RoleUsageLedger,
     blended_cost_roles,
+    count_substituted_deliveries,
     production_replicating_cost,
     program_cost,
     resolve_result_usage,
@@ -593,6 +599,8 @@ __all__ = [
     # other route to it is a campaign write, which needs a stored campaign.
     "refuse_an_undeclarable_design",
     "resolve_bar_name",
+    "count_substituted_deliveries",
+    "derive_variant_identity",
     "resolve_context_identity",
     "resolve_result_condition",
     "resolve_result_usage",
