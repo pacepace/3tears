@@ -74,12 +74,14 @@ class OpsFixture:
         self.writers = writers
 
 
-def ops_fixture(*, generation: bool = True, gate: asyncio.Event | None = None) -> OpsFixture:
+def ops_fixture(*, generation: bool = True, gate: asyncio.Event | None = None, counts_cases: bool = True) -> OpsFixture:
     """The toy host as an operations host: its template saved, its corpus campaign stored.
 
     Args:
         generation: Whether the host generates analyses (its :class:`AnalysisGeneration`).
         gate: Holds every generation open until set, for a test that needs one running.
+        counts_cases: Whether the host counts a template's cases (``OpsHost.count_template_cases``) — the
+            toy kind runs its template's stored cases, so it counts those.
 
     Returns:
         The fixture.
@@ -108,7 +110,16 @@ def ops_fixture(*, generation: bool = True, gate: asyncio.Event | None = None) -
         return PROMPT
 
     settings = AnalysisGeneration(prompt_id=PROMPT_ID, resolve_prompt=prompt, max_output_tokens=4000, budget_s=60.0)
-    return OpsFixture(OpsHost(launch=launch, generation=settings if generation else None), campaign, writers)
+
+    def count_cases(template_id: str, candidate_kind: str, scope_id: str) -> int:
+        return len(storage.query_test_cases(scope_id, template_id=template_id))
+
+    host = OpsHost(
+        launch=launch,
+        generation=settings if generation else None,
+        count_template_cases=count_cases if counts_cases else None,
+    )
+    return OpsFixture(host, campaign, writers)
 
 
 async def settled(host: OpsHost, job_id: str, scope_id: str = TOYHOST_SCOPE) -> JobStatus:

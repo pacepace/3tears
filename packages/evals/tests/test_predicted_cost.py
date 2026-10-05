@@ -239,14 +239,22 @@ class TestTheLensTakesTheEstimateTheCallerMadeBeforeTheRun:
 
     def test_the_estimate_as_the_lens_returned_it_reaches_the_cells(self) -> None:
         storage, scope_id = self._stored()
-        estimate = _estimate(models=["sonnet"]).model_dump(mode="json")
 
-        table = self._pivot(storage, scope_id, estimate)
+        table = self._pivot(storage, scope_id, _estimate(models=["sonnet"]))
 
-        (cell,) = table["cells"]
-        assert cell["value"] == pytest.approx(0.30)
-        assert cell["predicted"]["value"] == pytest.approx(0.20)
-        assert cell["predicted"]["method_id"] == "usage-history"
+        (cell,) = table.cells
+        assert cell.value == pytest.approx(0.30)
+        assert cell.predicted is not None
+        assert cell.predicted.value == pytest.approx(0.20)
+        assert cell.predicted.method_id == "usage-history"
+
+    def test_the_estimate_as_a_caller_across_a_wire_holds_it_reaches_the_cells(self) -> None:
+        storage, scope_id = self._stored()
+
+        table = self._pivot(storage, scope_id, _estimate(models=["sonnet"]).model_dump(mode="json"))
+
+        (cell,) = table.cells
+        assert cell.predicted is not None and cell.predicted.value == pytest.approx(0.20)
 
     def test_something_that_is_not_an_estimate_is_refused(self) -> None:
         storage, scope_id = self._stored()

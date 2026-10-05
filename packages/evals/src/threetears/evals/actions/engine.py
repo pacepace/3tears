@@ -25,15 +25,19 @@ from threetears.evals.ops import (
     CampaignDefinition,
     CampaignLine,
     CampaignListing,
+    CostEstimate,
     EvalSummary,
+    HistoryResult,
     JobsStarted,
     JobStatus,
     LaunchArguments,
     OpsHost,
+    PivotTable,
     ReportDocument,
     RunDeleted,
     RunLine,
     RunListing,
+    ScoreExport,
     TemplateListing,
     analyses_list,
     analysis_delete,
@@ -43,12 +47,16 @@ from threetears.evals.ops import (
     campaigns_list,
     job_cancel,
     job_poll,
+    launch_estimate,
     report_read,
     run_archive,
     run_delete,
     run_get,
     run_launch,
     runs_list,
+    scope_export,
+    scope_history,
+    scope_pivot,
     templates_list,
 )
 from threetears.evals.run import run_blocking
@@ -88,6 +96,60 @@ GeneratorModel = Annotated[str | None, Field(description="The analysis generator
 Format = Annotated[
     Literal["markdown", "json", "html"],
     Field(description="The report's form: markdown (the memo), json (the schema's form), html (script-free)."),
+]
+RowFactor = Annotated[
+    str,
+    Field(
+        min_length=1,
+        description="The coordinate the rows are: a declared one (model, template_id, ...) or a dotted lever.",
+    ),
+]
+ColumnFactor = Annotated[
+    str,
+    Field(
+        min_length=1,
+        description="The coordinate the columns are; a pooled ranking across the rows is checked for reversal on it.",
+    ),
+]
+Metric = Annotated[str | None, Field(description="The measure to read; omitted reads the composite score.")]
+Weighting = Annotated[
+    str | None, Field(description="How a cell averages its observations; omitted takes equal per scenario.")
+]
+SubjectFilter = Annotated[str | None, Field(description="Read only this subject's runs; omitted reads every subject.")]
+RunStatusFilter = Annotated[
+    EvalRunStatus | Literal["all"],
+    Field(
+        description="Read only runs with this status, or 'all'. Completed unless named: a run still going is still "
+        "adding results."
+    ),
+]
+PredictedCost = Annotated[
+    dict[str, Any] | None,
+    Field(
+        description="A cost pivot's plan: the structured result launch_estimate returned before these runs. Each "
+        "planned model's cell then shows its predicted cost beside the cost observed."
+    ),
+]
+MinAbsoluteChange = Annotated[
+    float,
+    Field(description="The smallest move a regression flag counts, in the measure's unit; 0 lets the test decide."),
+]
+MinRelativeChange = Annotated[
+    float,
+    Field(description="The smallest move from the baseline a flag counts, as a fraction; 0 lets the test decide."),
+]
+ExportFormat = Annotated[
+    Literal["csv", "json"],
+    Field(
+        description="The export's form: csv (flat rows, a column per lever) or json (the rows and what was left out)."
+    ),
+]
+ExportRunIds = Annotated[
+    list[str] | None,
+    Field(description="Export only these runs, archived ones included since they are named; omitted exports all."),
+]
+CaseCount = Annotated[
+    int | None, Field(ge=1, description="A case count to price in place of the template's own, for a what-if grid.")
 ]
 
 
@@ -182,6 +244,46 @@ class ReportReadParams(EvalBaseModel):
 
     campaign_id: CampaignId
     format: Format = "markdown"
+
+
+class ScopePivotParams(EvalBaseModel):
+    """``scope_pivot``."""
+
+    row_factor: RowFactor
+    column_factor: ColumnFactor
+    metric: Metric = None
+    weighting: Weighting = None
+    subject_filter: SubjectFilter = None
+    run_status: RunStatusFilter = "completed"
+    predicted_cost: PredictedCost = None
+
+
+class ScopeHistoryParams(EvalBaseModel):
+    """``scope_history``."""
+
+    metric: Metric = None
+    min_absolute_change: MinAbsoluteChange = 0.0
+    min_relative_change: MinRelativeChange = 0.0
+    subject_filter: SubjectFilter = None
+    run_status: RunStatusFilter = "completed"
+
+
+class ScopeExportParams(EvalBaseModel):
+    """``scope_export``."""
+
+    export_format: ExportFormat = "csv"
+    run_status: RunStatusFilter = "completed"
+    export_run_ids: ExportRunIds = None
+
+
+class LaunchEstimateParams(EvalBaseModel):
+    """``launch_estimate`` — what a ``run_launch`` with the same arguments would cost."""
+
+    template_id: TemplateId
+    models: Models = Field(default_factory=list)
+    k_runs: KRuns = 1
+    n_test_cases: CaseCount = None
+    subject_filter: SubjectFilter = None
 
 
 class RunDeleteParams(EvalBaseModel):
@@ -296,6 +398,65 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
     )
 
 
+async def _scope_pivot(host: OpsHost, caller: Caller, params: ScopePivotParams) -> PivotTable:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        scope_pivot,
+        eval_host,
+        caller.scope_id,
+        row_factor=params.row_factor,
+        column_factor=params.column_factor,
+        metric=params.metric,
+        weighting=params.weighting,
+        subject_id=params.subject_filter,
+        status=params.run_status,
+        predicted_cost=params.predicted_cost,
+    )
+
+
+async def _scope_history(host: OpsHost, caller: Caller, params: ScopeHistoryParams) -> HistoryResult:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        scope_history,
+        eval_host,
+        caller.scope_id,
+        metric=params.metric,
+        min_absolute_change=params.min_absolute_change,
+        min_relative_change=params.min_relative_change,
+        subject_id=params.subject_filter,
+        status=params.run_status,
+    )
+
+
+async def _scope_export(host: OpsHost, caller: Caller, params: ScopeExportParams) -> ScoreExport:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        scope_export,
+        eval_host,
+        caller.scope_id,
+        format=params.export_format,
+        status=params.run_status,
+        run_ids=params.export_run_ids,
+    )
+
+
+async def _launch_estimate(host: OpsHost, caller: Caller, params: LaunchEstimateParams) -> CostEstimate:
+    return await run_blocking(
+        host.eval_host.blocking_executor,
+        launch_estimate,
+        host,
+        caller.scope_id,
+        template_id=params.template_id,
+        models=params.models,
+        k_runs=params.k_runs,
+        n_test_cases=params.n_test_cases,
+        subject_id=params.subject_filter,
+    )
+
+
 async def _run_delete(host: OpsHost, caller: Caller, params: RunDeleteParams) -> RunDeleted:
     eval_host = host.eval_host
     return await run_blocking(
@@ -382,6 +543,25 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
+            name="launch_estimate",
+            summary="Estimate what a run_launch would cost, from what the scope's runs have spent.",
+            workflow=RUN,
+            permission="read",
+            params=LaunchEstimateParams,
+            result=CostEstimate,
+            handler=_launch_estimate,
+            render=render.render_estimate,
+            example={"template_id": "tmpl-1", "models": ["model-a", "model-b"], "k_runs": 3},
+            detail=(
+                "Takes run_launch's own arguments: the template's cases, k_runs repeats, one arm per model — named, since "
+                "the default an empty run_launch runs has no name to look its history up by. Each "
+                "model is priced from its own history at the live cassette mode, with a prediction band once three "
+                "or more priced observations back it; a model with no history is named and left out of the total. "
+                "Pass the structured result to scope_pivot as predicted_cost after the runs land, to set each "
+                "prediction beside the cost observed. Spends nothing."
+            ),
+        ),
+        Action(
             name="job_poll",
             summary="Read where a job stands — a launched run or an analysis generation.",
             workflow=RUN,
@@ -462,6 +642,54 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_report_read,
             render=render.render_report,
             example={"campaign_id": campaign_id, "format": "markdown"},
+        ),
+        Action(
+            name="scope_pivot",
+            summary="Aggregate one measure over the scope's observations by two coordinates, cell by cell.",
+            workflow=ANALYSE,
+            permission="read",
+            params=ScopePivotParams,
+            result=PivotTable,
+            handler=_scope_pivot,
+            render=render.render_pivot,
+            example={"row_factor": "template_id", "column_factor": "model", "metric": "cost_usd"},
+            detail=(
+                "Every cell carries its denominators (observations and cases) and its spread, and the table names "
+                "what it left out and which runs measured less than they promised. A ranking pooled over the rows "
+                "that most rows contradict is flagged. A judged measure over several subjects is refused unless "
+                "subject_filter names one."
+            ),
+        ),
+        Action(
+            name="scope_history",
+            summary="Series one measure over time for each contestant in the scope, flagging regressions.",
+            workflow=ANALYSE,
+            permission="read",
+            params=ScopeHistoryParams,
+            result=HistoryResult,
+            handler=_scope_history,
+            render=render.render_history,
+            example={"metric": "cost_usd", "min_relative_change": 0.1},
+            detail=(
+                "A contestant is one resolved configuration within a subject, so a step is a re-run of the same "
+                "thing. Each step against the previous point carries a verdict and the test it rests on; a step "
+                "where the suite changed is marked so a new denominator does not read as a regression."
+            ),
+        ),
+        Action(
+            name="scope_export",
+            summary="Export the scope's observations as flat rows, CSV or JSON, for analysis elsewhere.",
+            workflow=ANALYSE,
+            permission="read",
+            params=ScopeExportParams,
+            result=ScoreExport,
+            handler=_scope_export,
+            render=render.render_export,
+            example={"export_format": "csv", "export_run_ids": [run_id]},
+            detail=(
+                "One row per observation, every lever and host measure its own column. CSV holds the rows alone, "
+                "so the result says beside it how many observations were left out and why; JSON carries both."
+            ),
         ),
         Action(
             name="run_archive",

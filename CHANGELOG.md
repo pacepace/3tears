@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the read lenses are typed and in the action catalogue
+
+- **Breaking: the read lenses return their models, not dicts.** `pivot` returns `PivotTable`, `history` returns
+  `HistoryResult`, `estimate_cost` and `estimate_launch_cost` return `CostEstimate`, and `export_results` returns
+  `ScoreExport` (new) in place of a bare string — `format`, `body` (the serializer's bytes, unchanged), `n_records`,
+  and the `exclusions` and `completeness_disclosures` a CSV body has no place for. A caller reading
+  `table["cells"]` reads `table.cells`; one wanting the old dict calls `.model_dump(mode="json")`. The computations
+  are unchanged. `pivot`'s `predicted_cost` takes the `CostEstimate` itself as well as its JSON form.
+  `export_projection(projection, *, fmt)` and `export_format(fmt)` (new, `analysis.reporting`) build an export and
+  resolve its format; `ExportFormat` is the `Literal` of `EXPORT_FORMATS`.
+- **The lens result types are exported from `threetears.evals.analysis`**: `PivotTable`, `PivotCell`, `SimpsonsFlag`,
+  `HistoryResult`, `MeasureSeries`, `SeriesPoint`, `RegressionFlag`, `CostEstimate`, `CostEstimateCell`,
+  `ScoreExport`, `ExportFormat` — a host no longer reaches into `analysis.reporting` for them.
+- **Four operations and four actions over them** (`threetears.evals.ops`, all `read`): `scope_pivot`,
+  `scope_history`, `scope_export` and `launch_estimate`, each the lens bound to the host, with its text
+  (`pivot_text`, `history_text`, `export_text`, `estimate_text`) carrying the table's caveats — what it left out,
+  which runs came up short, a Simpson's reversal. The catalogue grows from fifteen actions to nineteen. Their
+  parameters are flat and the scope is the caller's: `row_factor`, `column_factor`, `metric`, `weighting`,
+  `subject_filter`, `run_status` (a run status or `all`, default `completed`), `predicted_cost` (the structured
+  result `launch_estimate` returned), `min_absolute_change`, `min_relative_change`, `export_format` (`csv` |
+  `json`) and `export_run_ids` (named apart from `campaign_create`'s `run_ids`, which means membership).
+  `launch_estimate` takes `run_launch`'s own `template_id`, `models` and `k_runs` (default 1, as `run_launch`'s),
+  plus `n_test_cases` (at least 1) and `subject_filter`.
+- **`OpsHost.count_template_cases`** (new, `TemplateCaseCounter`, default `None`): how many cases a launch of a
+  template runs, the host's answer. A host without one has `launch_estimate` refused, saying so.
+- **The quick CLI's `run` takes `--max-cost-usd`**, handed to the launch as `run_launch`'s `max_cost_usd` is — so a
+  first, unpriced run can be launched from the command line under a cap of its own.
+- **Fixed: a report's body is its serializer's bytes.** `ReportDocument.body` was whitespace-stripped by the model
+  stance, so `report_read` and the CLI's `report` dropped the Markdown and HTML report's final newline.
+  `VerbatimText` (new, `contracts.base`) keeps a serialized body as written; `ScoreExport.body` uses it too, so a
+  CSV export keeps its final row terminator.
+
 ### 3tears-evals: the campaign's report, a code-only report, and the host's palette
 
 - **Breaking: `report_read` reads a campaign, not an analysis.** `report_read(host, campaign_id, scope_id, *,

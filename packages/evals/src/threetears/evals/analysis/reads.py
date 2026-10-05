@@ -43,7 +43,10 @@ from threetears.evals.analysis.reporting import (
     ExportError,
     FrontierError,
     HistoryError,
+    HistoryResult,
     PivotError,
+    PivotTable,
+    ScoreExport,
     cassette_mode_disclosure,
     completeness_disclosure,
     compute_comparison_sets,
@@ -56,9 +59,9 @@ from threetears.evals.analysis.reporting import (
     cross_subject_disclosure,
     measurement_window,
     measurement_window_disclosure,
+    export_projection,
     normalize_bar,
     project_score_records,
-    serialize_export,
 )
 from threetears.evals.analysis.stats import composite_significance
 from threetears.evals.contracts.arguments import normalize_blank
@@ -358,9 +361,9 @@ def pivot(
     weighting: str | None = None,
     subject_id: str | None = None,
     status: str | None = "completed",
-    predicted_cost: Mapping[str, Any] | None = None,
+    predicted_cost: CostEstimate | Mapping[str, Any] | None = None,
     profile: HostProfile,
-) -> dict[str, Any]:
+) -> PivotTable:
     """Aggregate a scope's observations over any two coordinates.
 
     Composed over ``list_runs`` plus the scope's results, projected
@@ -394,13 +397,14 @@ def pivot(
             same reason as :func:`comparison_sets` — an in-flight run's cells
             are still arriving. ``"all"`` aggregates over every run.
         predicted_cost: The estimate the caller made before these runs, as
-            :func:`estimate_cost` or :func:`estimate_launch_cost` returned it. Each cost cell at a
-            planned model then carries that model's predicted cost per observation beside the cost
-            it observed. ``None`` shows observed cost alone.
+            :func:`estimate_cost` or :func:`estimate_launch_cost` returned it — the model, or its JSON
+            form as a caller across a wire holds it. Each cost cell at a planned model then carries
+            that model's predicted cost per observation beside the cost it observed. ``None`` shows
+            observed cost alone.
         profile: The host whose vocabulary this reads.
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.PivotTable` dict.
+        The :class:`~threetears.evals.analysis.reporting.PivotTable`.
 
     Raises:
         ValidationFailedError: The pivot cannot be answered honestly — an
@@ -459,7 +463,7 @@ def pivot(
         # so a 500 would misattribute it and an empty table would read as
         # "no data" — the one answer that is definitely wrong.
         raise ValidationFailedError(str(e)) from e
-    return table.model_dump(mode="json")
+    return table
 
 
 def frontier(
@@ -541,7 +545,7 @@ def history(
     subject_id: str | None = None,
     status: str | None = "completed",
     profile: HostProfile,
-) -> dict[str, Any]:
+) -> HistoryResult:
     """Series one measure over time per contestant, flagging real regressions.
 
     Composed over ``list_runs`` plus the scope's results and delegated
@@ -568,7 +572,7 @@ def history(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.HistoryResult` dict.
+        The :class:`~threetears.evals.analysis.reporting.HistoryResult`.
 
     Raises:
         ValidationFailedError: The metric is not one this surface can series,
@@ -598,7 +602,7 @@ def history(
         )
     except HistoryError as e:
         raise ValidationFailedError(str(e)) from e
-    return result.model_dump(mode="json")
+    return result
 
 
 def program_budget(storage: LensStore, scope_id: str, *, list_runs: RunLister) -> dict[str, Any]:
@@ -670,13 +674,13 @@ def export_results(
     status: str | None = "completed",
     run_ids: list[str] | None = None,
     profile: HostProfile,
-) -> str:
+) -> ScoreExport:
     """Serialize the projection's flat rows for a scope as CSV or JSON.
 
     Composed over ``list_runs`` plus the scope's results, projected
     through :func:`~threetears.evals.analysis.reporting.project_score_records` — the same
     projection ``pivot`` reads — and serialized at one seam
-    (:func:`~threetears.evals.analysis.reporting.serialize_export`) so REST and MCP emit
+    (:func:`~threetears.evals.analysis.reporting.export_projection`) so every surface emits
     byte-identical exports.
 
     **Arguments arrive raw.** The format and status are normalized here, at
@@ -710,8 +714,9 @@ def export_results(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The serialized export body — CSV text or a JSON
-        :class:`~threetears.evals.analysis.reporting.ScoreProjection`.
+        The :class:`~threetears.evals.analysis.reporting.ScoreExport`: its body is CSV text or a JSON
+        :class:`~threetears.evals.analysis.reporting.ScoreProjection`, and beside it the row count,
+        the exclusions and the completeness disclosures a CSV body has no place for.
 
     Raises:
         ValidationFailedError: The format is not one this surface can emit,
@@ -763,7 +768,7 @@ def export_results(
         profile=profile,
     )
     try:
-        return serialize_export(projection, fmt=fmt)
+        return export_projection(projection, fmt=fmt)
     except ExportError as e:
         raise ValidationFailedError(str(e)) from e
 
@@ -784,7 +789,7 @@ def estimate_cost(
     subject_id: str | None = None,
     template_id: str | None = None,
     profile: HostProfile,
-) -> dict[str, Any]:
+) -> CostEstimate:
     """Predict a proposed sweep's cost from the scope's historical per-cell costs.
 
     Composed over ``list_runs`` plus the scope's results and delegated
@@ -842,7 +847,7 @@ def estimate_cost(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        A JSON-safe :class:`~threetears.evals.analysis.reporting.CostEstimate` dict,
+        The :class:`~threetears.evals.analysis.reporting.CostEstimate`,
         carrying ``n_test_cases_source`` (``"supplied"`` | ``"derived"`` |
         ``"default"``), ``template_case_count`` and ``template_candidate_kind``.
         Those three are RESOLVED here and echoed by the projection — the
@@ -918,7 +923,7 @@ def estimate_cost(
         )
     except CostEstimateError as e:
         raise ValidationFailedError(str(e)) from e
-    return estimate.model_dump(mode="json")
+    return estimate
 
 
 def estimate_launch_cost(
@@ -934,7 +939,7 @@ def estimate_launch_cost(
     k_runs: int = DEFAULT_LAUNCH_K_RUNS,
     n_new_cases: int = 0,
     profile: HostProfile,
-) -> dict[str, Any]:
+) -> CostEstimate:
     """Price a campaign launch before it is made, from the same arguments the launch takes.
 
     The launch shape is ``n_settings × models`` arms, each running the campaign's template's
@@ -964,7 +969,8 @@ def estimate_launch_cost(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        The same JSON-safe estimate :func:`estimate_cost` returns, carrying ``n_settings``.
+        The same :class:`~threetears.evals.analysis.reporting.CostEstimate` :func:`estimate_cost`
+        returns, carrying ``n_settings``.
 
     Raises:
         NotFoundError: No such campaign, or its template does not resolve.

@@ -13,6 +13,8 @@ then never name the host::
 
 - ``run`` launches through :func:`~threetears.evals.run.start_run`, waits for the runs' jobs, and
   prints each run's summary. It exits 0 when every run completed and 1 when any did not.
+  ``--max-cost-usd`` caps each run in place of the host's default, as ``run_launch``'s ``max_cost_usd``
+  does — the way to launch under a cap the host's inherited one would refuse.
 - ``ls`` prints the scope's templates, runs and campaigns.
 - ``report`` prints the campaign's report (:func:`~threetears.evals.ops.report_read`, the same read the
   ``report_read`` action makes): its newest analysis that is not archived, else a code-only report of its
@@ -184,6 +186,13 @@ def build_parser(
     run.add_argument("--subject", required=True, help="the subject the runs measure, as the host names it")
     run.add_argument("--model", action="append", default=[], help="a candidate model; repeat for one arm each")
     run.add_argument("--k", type=int, default=1, help="repeats per case (default 1)")
+    run.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        metavar="DOLLARS",
+        help="a per-run cost cap in dollars, in place of the host default (as run_launch's max_cost_usd)",
+    )
     command("ls", "List the scope's templates, runs and campaigns.")
     report = command(
         "report", "Print a campaign's report — its analysis, else its evidence alone — without calling a model."
@@ -262,7 +271,13 @@ def run_cli(
 async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
     """Launch the runs, wait for every job, and print each run's summary."""
     runs = await start_run(
-        host, template_id=args.template, subject_id=args.subject, models=args.model, k_runs=args.k, scope_id=args.scope
+        host,
+        template_id=args.template,
+        subject_id=args.subject,
+        models=args.model,
+        k_runs=args.k,
+        scope_id=args.scope,
+        max_cost_usd=args.max_cost_usd,
     )
     try:
         await host.job_manager.wait_for([run.id for run in runs])
