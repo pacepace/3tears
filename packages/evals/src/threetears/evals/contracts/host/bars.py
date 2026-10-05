@@ -246,10 +246,10 @@ class BarRegistry(HostAttributed):
             raise BarRegistrationError(
                 f"{self._host}cannot propose a bar on '{measure}' — this host does not declare it, so nothing could ever check it"
             )
-        if descriptor.higher_is_better is None:
+        if (what := no_better_end(descriptor)) is not None:
             raise BarRegistrationError(
-                f"{self._host}cannot propose a bar on '{measure}' — its descriptor declares no better direction, "
-                "so there is no such thing as clearing it"
+                f"{self._host}cannot propose a bar on '{measure}' — its descriptor declares no better direction "
+                f"— {what} — so there is no such thing as clearing it"
             )
         if not rationale.strip():
             raise BarRegistrationError(
@@ -257,11 +257,13 @@ class BarRegistry(HostAttributed):
                 "reason can only be obeyed"
             )
 
+        higher_is_better = descriptor.higher_is_better
+        assert higher_is_better is not None, "no_better_end refused a directionless measure above"
         proposed = Bar(
             behavior=behavior,
             measure=measure,
             threshold=observed,
-            higher_is_better=descriptor.higher_is_better,
+            higher_is_better=higher_is_better,
             rationale=rationale,
         )
         reason = self._vacuity(proposed, descriptor.value_range)
@@ -296,25 +298,36 @@ class BarRegistry(HostAttributed):
         return ""
 
     def validate_against(self, measures: MeasureRegistry) -> None:
-        """Refuse a bar naming a measure this host cannot see, or contradicting its descriptor.
+        """Refuse a bar naming a measure this host cannot see, cannot clear, or contradicts.
 
         ``Bar.measure`` and ``Bar.higher_is_better`` both restate facts the measure descriptor
         owns. Two sources of truth for one discrete fact stay agreed only while somebody checks,
         so this is the check — called from :class:`~threetears.evals.contracts.host.profile.HostProfile` at
         construction, where both registries are in hand.
 
+        A bar on a measure with no better end — a diagnostic or a raw count — is refused here as
+        :meth:`propose` refuses to seed one, through the same predicate (:func:`no_better_end`):
+        nothing ever reads it, so registering it would only make a sentence look like a standard.
+
         Args:
             measures: The host's measure registry.
 
         Raises:
-            BarRegistrationError: A bar names an undeclared measure, or declares the opposite
-                better-direction from the descriptor. Every defect is reported at once.
+            BarRegistrationError: A bar names an undeclared measure or one with no better end, or
+                declares the opposite better-direction from the descriptor. Every defect is reported
+                at once.
         """
         defects: list[str] = []
         for bar in self._bars:
             descriptor = measures.get(bar.measure)
             if descriptor is None:
                 defects.append(f"{bar.behavior}/{bar.measure} names a measure this host does not declare")
+                continue
+            if (what := no_better_end(descriptor)) is not None:
+                defects.append(
+                    f"{bar.behavior}/{bar.measure} names a measure that declares no better direction — {what} — "
+                    "so there is no such thing as clearing it, and the bar would never be read"
+                )
                 continue
             if contradicts_descriptor(descriptor, bar.higher_is_better):
                 defects.append(
@@ -344,7 +357,8 @@ def contradicts_descriptor(descriptor: MetricDescriptor | None, higher_is_better
     a bar naming nothing a result carries first, resolving a template's rubric dimensions and
     goal-state checks to descriptors of their own — so that arm keeps the predicate total rather
     than carrying a case. A declared measure with no better direction has no notion of clearing at
-    all, which is why :meth:`BarRegistry.propose` refuses to seed one.
+    all, so neither site hands it one either: both refuse it first through :func:`no_better_end`, as
+    :meth:`BarRegistry.propose` does before seeding.
 
     Args:
         descriptor: The measure's descriptor, or None when this host declares no such measure.
@@ -358,6 +372,33 @@ def contradicts_descriptor(descriptor: MetricDescriptor | None, higher_is_better
         and descriptor.higher_is_better is not None
         and descriptor.higher_is_better != higher_is_better
     )
+
+
+def no_better_end(descriptor: MetricDescriptor) -> str | None:
+    """Say which directionless shape a measure is — ``"a diagnostic"`` or ``"a raw count"`` — or None.
+
+    **The one predicate for "a bar on this can never be cleared".** A threshold means something only
+    against a better end, so every place that admits a bar asks this: registration
+    (:meth:`BarRegistry.validate_against`), the ratchet (:meth:`BarRegistry.propose`) and the
+    campaign gate (:func:`~threetears.evals.contracts.declaration.resolve_bar_name`). Each frames its
+    own refusal around the answer; none restates the rule, so they cannot come to disagree about
+    which measures it covers or what to call them.
+
+    The two names come off the descriptor's own declaration, never off the values: a directionless
+    measure that declares
+    :attr:`~threetears.evals.contracts.metrics.MetricDescriptor.diagnostic` is one, and any other is
+    a raw count — the same split the bundle makes when it decides which directionless measures it
+    carries.
+
+    Args:
+        descriptor: The measure's descriptor.
+
+    Returns:
+        ``"a diagnostic"`` or ``"a raw count"`` when the measure declares no better end, else None.
+    """
+    if descriptor.higher_is_better is not None:
+        return None
+    return "a diagnostic" if descriptor.diagnostic else "a raw count"
 
 
 __all__ = ["Bar", "BarProposal", "BarRegistrationError", "BarRegistry", "contradicts_descriptor"]

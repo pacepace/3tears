@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a bar on a measure with no better end is refused at registration
+
+- **Breaking: `BarRegistry.validate_against` refuses a bar whose measure declares no better direction**
+  — a diagnostic or a raw count — raising `BarRegistrationError` when a `HostProfile` is built. Before,
+  registration checked only that the measure was declared and that the bar's direction did not
+  contradict it, and a directionless descriptor contradicts nothing, so such a bar registered and was
+  never read. `BarRegistry.propose` and `resolve_bar_name` already refused the same case. All three now
+  ask one predicate, `threetears.evals.contracts.host.bars.no_better_end`, and say which shape the
+  measure is ("a diagnostic" or "a raw count", read off `MetricDescriptor.diagnostic`); `propose`'s
+  refusal names the shape too. A host registering such a bar must remove it. The toy and courier test
+  hosts register none.
+
 ### 3tears-evals: per-cell world binding
 
 - **`WorldSession.bind(bindings) -> WorldRegistry`** (new). Every cell's session was built over the
