@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.65.0 -- 2026-10-04
+
 ### Geo: building layers from other layers
 
 - **Added, `threetears.geo`:** `cut` cuts one layer by another within a shared key (a state,
