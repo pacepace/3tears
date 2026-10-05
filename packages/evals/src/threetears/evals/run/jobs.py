@@ -537,6 +537,29 @@ class EvalJobManager:
         """Get IDs of all active jobs."""
         return [jid for jid, t in self._tasks.items() if not t.done()]
 
+    async def wait_for(self, job_ids: Sequence[str]) -> None:
+        """Wait until every named run's job has ended, however it ended.
+
+        The awaitable a caller that launched runs and must read their results holds — a script, a
+        CLI, a test. It returns when each job has written its terminal status, so the run's stored
+        ``status`` is the answer to how it went; nothing is re-raised here, because a job records
+        its own ending and a failed run is a result, not an error of the wait.
+
+        **Waiting is not owning.** Cancelling the waiter leaves the jobs running, exactly as an
+        operator's view that stops polling does; a caller that owns the runs and must not leave
+        them behind cancels them itself (:meth:`cancel_job`, or :meth:`shutdown`).
+
+        A job this manager is not running returns at once: one that has ended is popped from the
+        manager as it ends, and the two cases cannot be told apart here, so the run's stored status
+        is the authority either way.
+
+        Args:
+            job_ids: The runs' ids, as :meth:`start_group` returned them.
+        """
+        tasks = [task for job_id in job_ids if (task := self._tasks.get(job_id)) is not None]
+        if tasks:
+            await asyncio.wait(tasks)
+
     def cancel_job(self, job_id: str, reason: str | None = None) -> bool:
         """Cancel a running job.
 

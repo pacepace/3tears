@@ -6,6 +6,39 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: `run_eval`, a command line, and rung zero
+
+- **`threetears.evals.quick`** (new public root): the batteries. It is the one package that composes
+  the others (`run`, `analysis`, `storage`), and nothing in the engine imports it.
+- **`run_eval(cases, candidate, scorers, *, scope_id, host=None, k=1, model=None) -> EvalSummary`**
+  (async): runs an async callable on every case `k` times, grades each answer with every scorer, and
+  returns the finished run's summary. `cases` is a list of JSON objects, handed to the candidate and
+  the scorers as given; each scorer is `(case, answer) -> float | bool`, reported as a measure named
+  by its `__name__` (higher is better, a bool counts as 1 or 0). A candidate that raises fails its
+  cell; a scorer that raises or returns no finite number excludes it. With no `host`, it builds
+  `callable_host(scorers)` — the shared core, one measure per scorer, no world, an
+  `InMemoryDocumentStore`; a caller's own host must declare a measure for every scorer. The launch
+  goes through `start_run`; the template is addressed by a digest of the cases, so calls over one
+  case list into one store share a template. Cancelled, it settles its run as `cancelled`. Refuses
+  (`ValueError`): no cases, a case that is not a JSON object with string keys, no scorers, a scorer
+  with no usable name or a repeated one, a scorer the given host has no measure for, and a candidate
+  with no `__name__` and no `model`.
+- **`EvalSummary`** / **`MeasureSummary`** / **`summarize_run(host, run_id, scope_id)`**: a stored run
+  as status, cell counts by `classify_result` (scored, failed by the candidate, excluded), each
+  measure's mean/min/max and `n`, and the errors; `EvalSummary.render()` for a terminal.
+- **`python -m threetears.evals`** with `run`, `ls` and `report`, each taking `--host module:factory`
+  and `--scope`. `run --template T --subject S --model M [--model M2] [--k N]` launches through
+  `start_run` (the factory must return a `LaunchHost`), waits, prints each run's summary, and exits 1
+  when a run did not complete; `ls` lists the scope's templates, runs and campaigns; `report CAMPAIGN`
+  prints the campaign's analysis bundle (`inspect_campaign_bundle`) as JSON, calling no model. A
+  refusal prints its reason and exits 2. **`run_cli(argv=None, *, host_factory=None, prog=...)`**
+  mounts the same commands under a product's CLI with its own host factory, and then `--host` does
+  not exist; `build_parser(prog, *, takes_host=True)` is the parser.
+- **`EvalJobManager.wait_for(job_ids)`** (new): waits until each named run's job has written its
+  terminal status. Cancelling the waiter leaves the jobs running.
+- **`packages/evals/examples/rung_zero.py`**: a case list, a classifier and two scorers in one file
+  under 60 lines, importing nothing but the engine and the standard library.
+
 ### 3tears-evals: storage ports by area, the in-memory adapter's own root, and a store conformance kit
 
 - **`threetears.evals.testing`** (new public root): the store conformance kit.

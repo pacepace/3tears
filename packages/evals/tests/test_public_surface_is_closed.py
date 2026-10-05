@@ -50,6 +50,7 @@ PUBLIC_ROOTS = (
     "threetears.evals.gen",
     "threetears.evals.storage",
     "threetears.evals.testing",
+    "threetears.evals.quick",
 )
 
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
