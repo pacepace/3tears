@@ -3407,18 +3407,18 @@ class TestCostEstimate:
         # Unfiltered, the basis pools both and lands between them — right for "what does a
         # run here cost on average", wrong for either specific proposal.
         pooled = compute_estimate_cost(runs, results, models=["sonnet"], k_runs=1, n_test_cases=1, profile=_JUDGED_HOST)
-        assert pooled.cells[0].estimated_cost == pytest.approx(0.55)
+        assert pooled.cells[0].predicted.value == pytest.approx(0.55)
 
         cheap = compute_estimate_cost(
             runs, results, models=["sonnet"], k_runs=1, n_test_cases=1, template_id="tpl-cheap", profile=_JUDGED_HOST
         )
-        assert cheap.cells[0].estimated_cost == pytest.approx(0.10)
+        assert cheap.cells[0].predicted.value == pytest.approx(0.10)
         assert cheap.cells[0].n_historical == 2
 
         dear = compute_estimate_cost(
             runs, results, models=["sonnet"], k_runs=1, n_test_cases=1, template_id="tpl-dear", profile=_JUDGED_HOST
         )
-        assert dear.cells[0].estimated_cost == pytest.approx(1.00)
+        assert dear.cells[0].predicted.value == pytest.approx(1.00)
 
     def test_an_ad_hoc_run_is_no_basis_for_any_proposed_template(self):
         """A run built from explicit test cases carries ``template_id=None``, so it matches none.
@@ -3459,9 +3459,9 @@ class TestCostEstimate:
 
         cell = estimate.cells[0]
         # Estimate = mean(0.20) × (2 cases × 1 k) = 0.40, with a non-degenerate band around it.
-        assert cell.estimated_cost == pytest.approx(0.40)
-        assert cell.interval_low is not None and cell.interval_high is not None
-        assert cell.interval_low < cell.estimated_cost < cell.interval_high
+        assert cell.predicted.value == pytest.approx(0.40)
+        assert cell.predicted.interval_low is not None and cell.predicted.interval_high is not None
+        assert cell.predicted.interval_low < cell.predicted.value < cell.predicted.interval_high
         assert estimate.total_interval_low < estimate.total_estimated_cost < estimate.total_interval_high
 
     def test_cost_is_matched_to_the_proposed_cassette_mode(self):
@@ -3493,10 +3493,10 @@ class TestCostEstimate:
 
         by_model = {cell.model: cell for cell in estimate.cells}
         assert by_model["haiku"].basis == "no_history"
-        assert by_model["haiku"].estimated_cost is None
+        assert by_model["haiku"].predicted is None
         assert estimate.n_uncovered_models == 1
         # The covered model still contributes; the total prices only what it could.
-        assert estimate.total_estimated_cost == pytest.approx(by_model["sonnet"].estimated_cost)
+        assert estimate.total_estimated_cost == pytest.approx(by_model["sonnet"].predicted.value)
 
     def test_a_single_historical_observation_has_unknown_spread_not_zero(self):
         run, results = self._history("sonnet", [0.10])
@@ -3507,9 +3507,9 @@ class TestCostEstimate:
 
         cell = estimate.cells[0]
         assert cell.n_historical == 1
-        assert cell.estimated_cost == pytest.approx(0.10)
+        assert cell.predicted.value == pytest.approx(0.10)
         # One sample: the point stands, the spread is unknown — never a false ± 0.
-        assert (cell.interval_low, cell.interval_high) == (None, None)
+        assert (cell.predicted.interval_low, cell.predicted.interval_high) == (None, None)
 
     def test_the_subject_filter_narrows_the_historical_basis(self):
         maple_run, maple_results = self._history("sonnet", [0.10, 0.10], subject="ent-maple")
@@ -3570,8 +3570,8 @@ class TestCostEstimate:
 
         cell = estimate.cells[0]
         assert cell.n_historical == 2
-        assert cell.estimated_cost == pytest.approx(0.1956)
-        assert (cell.interval_low, cell.interval_high) == (None, None)
+        assert cell.predicted.value == pytest.approx(0.1956)
+        assert (cell.predicted.interval_low, cell.predicted.interval_high) == (None, None)
         assert (estimate.total_interval_low, estimate.total_interval_high) == (None, None)
 
     def test_a_near_identical_pair_never_bounds_out_a_cost_twelve_percent_away(self):
@@ -3589,9 +3589,9 @@ class TestCostEstimate:
         )
 
         cell = estimate.cells[0]
-        twelve_percent_under = 0.88 * cell.estimated_cost
-        assert cell.interval_low is None or cell.interval_low <= twelve_percent_under, (
-            f"a two-observation basis bounded the sweep out at {cell.interval_low}, "
+        twelve_percent_under = 0.88 * cell.predicted.value
+        assert cell.predicted.interval_low is None or cell.predicted.interval_low <= twelve_percent_under, (
+            f"a two-observation basis bounded the sweep out at {cell.predicted.interval_low}, "
             f"excluding a cost only 12% below its own point estimate"
         )
 
@@ -3614,10 +3614,14 @@ class TestCostEstimate:
         )
 
         assert two.cells[0].n_historical == 2
-        assert (two.cells[0].interval_low, two.cells[0].interval_high) == (None, None)
+        assert (two.cells[0].predicted.interval_low, two.cells[0].predicted.interval_high) == (None, None)
         assert three.cells[0].n_historical == 3
-        assert three.cells[0].interval_low is not None and three.cells[0].interval_high is not None
-        assert three.cells[0].interval_low < three.cells[0].estimated_cost < three.cells[0].interval_high
+        assert three.cells[0].predicted.interval_low is not None and three.cells[0].predicted.interval_high is not None
+        assert (
+            three.cells[0].predicted.interval_low
+            < three.cells[0].predicted.value
+            < three.cells[0].predicted.interval_high
+        )
 
     def test_the_band_predicts_the_sweep_rather_than_locating_the_historical_mean(self):
         """A confidence interval on the mean is a narrower claim than the caller is making.
@@ -3641,7 +3645,7 @@ class TestCostEstimate:
         )
 
         cell = estimate.cells[0]
-        half_width = cell.interval_high - cell.estimated_cost
+        half_width = cell.predicted.interval_high - cell.predicted.value
         sem = standard_error_of_mean(costs)
         assert half_width > 1.96 * n_obs * sem, "the band is no wider than the confidence interval it replaced"
 
@@ -3669,8 +3673,8 @@ class TestCostEstimate:
         )
 
         by_model = {cell.model: cell for cell in estimate.cells}
-        assert by_model["sonnet"].interval_low is not None, "the well-founded cell keeps its own band"
-        assert by_model["haiku"].interval_low is None
+        assert by_model["sonnet"].predicted.interval_low is not None, "the well-founded cell keeps its own band"
+        assert by_model["haiku"].predicted.interval_low is None
         assert estimate.total_estimated_cost == pytest.approx(0.30)
         assert (estimate.total_interval_low, estimate.total_interval_high) == (None, None)
 

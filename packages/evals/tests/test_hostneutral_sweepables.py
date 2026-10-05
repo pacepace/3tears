@@ -104,6 +104,8 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     ((32, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
     # 33/10: judge-versus-human agreement joined the bundle; the apparatus partition is unchanged.
     ((33, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 34/10: the corrected families of comparisons joined the bundle; the apparatus partition is unchanged.
+    ((34, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 

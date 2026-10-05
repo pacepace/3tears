@@ -33,9 +33,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from pydantic import ValidationError
+
 from threetears.evals.analysis.reporting import (
     DEFAULT_WEIGHTING,
     METRIC_COMPOSITE,
+    CostEstimate,
     CostEstimateError,
     ExportError,
     FrontierError,
@@ -355,6 +358,7 @@ def pivot(
     weighting: str | None = None,
     subject_id: str | None = None,
     status: str | None = "completed",
+    predicted_cost: Mapping[str, Any] | None = None,
     profile: HostProfile,
 ) -> dict[str, Any]:
     """Aggregate a scope's observations over any two coordinates.
@@ -389,6 +393,10 @@ def pivot(
         status: Raw run-status filter, defaulting to ``"completed"`` for the
             same reason as :func:`comparison_sets` — an in-flight run's cells
             are still arriving. ``"all"`` aggregates over every run.
+        predicted_cost: The estimate the caller made before these runs, as
+            :func:`estimate_cost` or :func:`estimate_launch_cost` returned it. Each cost cell at a
+            planned model then carries that model's predicted cost per observation beside the cost
+            it observed. ``None`` shows observed cost alone.
         profile: The host whose vocabulary this reads.
 
     Returns:
@@ -398,8 +406,13 @@ def pivot(
         ValidationFailedError: The pivot cannot be answered honestly — an
             unknown metric, weighting, run status, axis or filter coordinate,
             or a cross-subject pooling that would average measurements derived
-            from different rubrics.
+            from different rubrics; or a ``predicted_cost`` that is not an estimate, or
+            that was handed to a pivot of another metric or with no model axis.
     """
+    try:
+        estimate = None if predicted_cost is None else CostEstimate.model_validate(predicted_cost)
+    except ValidationError as e:
+        raise ValidationFailedError(f"predicted_cost is not a cost estimate: {e}") from e
     metric = normalize_blank(metric, METRIC_COMPOSITE)
     weighting = normalize_blank(weighting, DEFAULT_WEIGHTING)
     filters = {"subject_id": subject_id} if subject_id else None
@@ -437,6 +450,7 @@ def pivot(
             # runs came up short, so the table's caveat and the rows it qualifies can
             # never describe different sets.
             completeness_disclosures=projection.completeness_disclosures,
+            predicted_cost=estimate,
             profile=profile,
         )
     except PivotError as e:

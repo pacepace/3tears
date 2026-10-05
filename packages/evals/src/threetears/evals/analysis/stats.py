@@ -32,7 +32,7 @@ from __future__ import annotations
 import math
 from statistics import NormalDist
 from collections.abc import Sequence
-from typing import Literal, NamedTuple
+from typing import Final, Literal, NamedTuple
 
 # Two-sided p-value below which a composite delta is called significant.
 SIGNIFICANCE_ALPHA = 0.05
@@ -323,6 +323,48 @@ def cohen_kappa(
     return 1 - observed / expected
 
 
+#: The family-wise correction every family of comparisons is adjusted by. Named so a surface can
+#: state the method beside the adjusted figure rather than leaving a reader to guess which one ran.
+MULTIPLE_COMPARISON_CORRECTION: Final = "holm"
+
+
+def holm_adjust(p_values: Sequence[float]) -> list[float]:
+    """Holm-Bonferroni adjusted p-values for one family of comparisons, in the order given.
+
+    Testing ten comparisons at α=0.05 each finds a "significant" one by chance in most families,
+    so a verdict drawn from a family is read off the ADJUSTED p, which controls the probability
+    that any verdict in the family is false at α. Holm's step-down is uniformly more powerful than
+    plain Bonferroni and assumes nothing about how the comparisons depend on each other, which is
+    the honest assumption for several measures read off the same cells.
+
+    The ``i``-th smallest p (1-based) is multiplied by ``m - i + 1``, capped at 1, and made
+    monotone by a running maximum, so an adjusted p is never smaller than one ranked below it.
+    Comparing each adjusted p with α gives exactly Holm's rejection set.
+
+    Args:
+        p_values: The raw two-sided p of every comparison in the family. The family is exactly
+            these: a comparison that ran no test has no p and is not passed, since it is not a
+            hypothesis this family tested.
+
+    Returns:
+        One adjusted p per input, in input order. Empty for an empty family.
+
+    Raises:
+        ValueError: A p is not a probability.
+    """
+    stray = [p for p in p_values if not 0.0 <= p <= 1.0]
+    if stray:
+        raise ValueError(f"p-values must lie in [0, 1]; got {stray}")
+    m = len(p_values)
+    order = sorted(range(m), key=lambda index: p_values[index])
+    adjusted = [0.0] * m
+    running = 0.0
+    for rank, index in enumerate(order):
+        running = max(running, min(1.0, (m - rank) * p_values[index]))
+        adjusted[index] = running
+    return adjusted
+
+
 class SignificanceResult(NamedTuple):
     """A composite comparison's effect size, its verdict, and the p behind it.
 
@@ -565,6 +607,7 @@ def paired_change(
 
 __all__ = [
     "INTERVAL_LEVEL",
+    "MULTIPLE_COMPARISON_CORRECTION",
     "PAIRED_TEST_NAME",
     "SIGNIFICANCE_ALPHA",
     "UNPAIRED_TEST_NAME",
@@ -573,6 +616,7 @@ __all__ = [
     "ci_half_width",
     "cohen_kappa",
     "composite_significance",
+    "holm_adjust",
     "paired_change",
     "standard_error_of_mean",
     "t_critical_two_sided",

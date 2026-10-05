@@ -8,11 +8,10 @@ judgement each reader makes from the number.
 than the registry's; one looser is refused, quoting the registered value. A standard that can be
 lowered by the run being measured against it is not a standard.
 
-**Nothing calls the ratchet yet.** :meth:`BarRegistry.propose` has no action, no route and no
-engine path behind it: the registry accepts per-behavior bars and none are seeded on this host,
-and the caller that computes an incumbent's baseline and asks for a proposal does not exist.
-Said here because a mechanism with no caller reads as a mechanism in use, and the two
-host-side gaps are independent: seeding values does not give this a caller.
+**One operation calls the ratchet.** :func:`~threetears.evals.analysis.bar_proposals.propose_bars`
+measures a baseline campaign's incumbent the way an analysis does and asks :meth:`BarRegistry.propose`
+for a bar on each measure with a better end. It returns the proposals; it registers none, because
+this registry has no mutation API and a bar reaches it only through a host's own registrations.
 
 **A vacuous seed is flagged, never adopted.** :meth:`BarRegistry.propose` computes the incumbent
 configuration's measured baseline and offers it as the bar; what it will not do is register it.

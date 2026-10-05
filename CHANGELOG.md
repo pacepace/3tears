@@ -6,6 +6,46 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: corrected comparisons, bar proposals and predicted cost
+
+- **Multiple comparisons are corrected.** `AnalysisContextBundle.multiple_comparisons: MultipleComparisons` (new):
+  one `ComparisonFamily` per live declared question, holding every contrast tested against the control cell under
+  the same rig, on every reading the question's merit axes name (every axis for an unscoped question; judged
+  dimensions sit on quality; a measure with no better end, and a per-label classifier statistic, are not
+  readings). Each `FamilyComparison` carries the per-case test it ran (`paired` over shared cases, else Welch's),
+  `p_raw`, the Holm-adjusted `p_adjusted`, and a `verdict` (`improved` | `regressed` | `not_separated` |
+  `untested`, with `untested_reason`) read off the adjusted p. The family states `family_size` (the comparisons
+  that carried a p), `n_untested`, `correction="holm"`, `alpha` and a `disclosure` sentence. With no live question
+  or no resolved control, `withheld` says why and there is no family. New exported models: `MultipleComparisons`,
+  `ComparisonFamily`, `FamilyComparison`, `ComparedCell`, `ComparisonVerdict`. Bundle `schema_version` 33 -> 34.
+- **The writer sees the adjusted p only.** `build_user_message` drops every comparison's `p_raw`; the bundle keeps
+  it for audit. The generator prompt's rule 4 names `multiple_comparisons` as the bundle's own comparison: a
+  separation rests on its `verdict`, and a quoted p is `p_adjusted` with its `family_size`. Rule 1's judged-comparison
+  sentence defers to it where a family exists.
+- **`threetears.evals.analysis.stats.holm_adjust(p_values) -> list[float]`** (new) and
+  `MULTIPLE_COMPARISON_CORRECTION`. Refuses a value outside [0, 1] (`ValueError`).
+- **`propose_bars(host, baseline_campaign_id, *, scope_id) -> BaselineBarProposals`** (new, exported from
+  `threetears.evals.analysis`): the first caller of `BarRegistry.propose`. It assembles the baseline campaign's
+  bundle, reads its one cell's mean on every measure the host declares with a better end, and returns the proposals
+  (each flagged `vacuous` with its reason, as `propose` decides) plus `not_proposed` (measure -> why). It registers
+  nothing. Refuses an unknown campaign (`NotFoundError`) and a campaign that measured other than one cell
+  (`ValidationFailedError`): a baseline is one configuration under one rig.
+- **`CostEstimateCell.predicted: PredictedValue | None`** replaces `estimated_cost`, `interval_low` and
+  `interval_high`: each planned cell's prediction is a `PredictedValue` with `method_id="usage-history"`
+  (`COST_PREDICTION_METHOD`, exported), its value the planned cell's total and its band the existing prediction
+  band. `compute_estimate_cost` takes `computed_at` (default now). The total fields are unchanged.
+  `PredictedValue` is now exported from `threetears.evals.analysis`.
+- **The pivot shows predicted cost beside observed cost.** `compute_pivot(..., predicted_cost=CostEstimate)` and the
+  `pivot` lens's `predicted_cost=` (the estimate as `estimate_cost` / `estimate_launch_cost` returned it, made
+  before the run) set each cell's `predicted` to its planned model's cost per observation — the planned total and
+  band divided by the planned observation count, which is the prediction band for the mean of those draws — beside
+  `value`, never in it; a not-run cell at a planned model carries it too. `PivotTable.unplaced_predicted_models`
+  (new) names planned models no level carries. Refused (`PivotError`, `ValidationFailedError` at the lens) on a
+  metric other than `cost_usd`, on a pivot with no `model` axis, and at the lens on something that is not an
+  estimate.
+- Evidence tiers beyond `mechanical` / `directional` remain unbuilt: the comment on `EvidenceTier` now names what
+  each of `calibrated`, `separation` and `incidental` still lacks.
+
 ### 3tears-evals: calibration ratings and judge-versus-human agreement
 
 - **`CalibrationRating` is a standalone document** (`doc_type="calibration_rating"`, in `EVAL_DOC_TYPES`, so the

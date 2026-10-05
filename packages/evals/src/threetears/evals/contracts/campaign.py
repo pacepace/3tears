@@ -118,9 +118,13 @@ _READING_DESCRIPTION = (
 #:   the judge's reliability is measured, which nothing computes yet;
 #: - ``none``: the finding names no reading, so there is nothing for a tier to stand on.
 #:
-#: The stronger judged tiers (separation, incidental, calibrated) are deliberately absent: each needs
-#: a measurement of the judge that no code takes, and a tier nothing can compute is a tier only the
-#: model could have supplied.
+#: The stronger judged tiers (separation, incidental, calibrated) are deliberately absent, and what
+#: each still lacks is named so the gap is not mistaken for an oversight. ``calibrated`` would read the
+#: judge's agreement with people, which the bundle now measures (``judge_agreement``), but the
+#: agreement a judge must reach on a criterion to earn it is a bar nobody has set. ``separation``
+#: compares an arm gap with the judge's own retest noise, a measurement of the judge that no code
+#: takes. ``incidental`` is named and undefined. A tier nothing can compute is a tier only the model
+#: could have supplied.
 EvidenceTier = Literal["mechanical", "directional", "none"]
 
 

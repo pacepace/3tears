@@ -81,11 +81,20 @@ from threetears.evals.analysis.reporting import (
     measurement_window_disclosure,
     project_score_records,
 )
-from threetears.evals.analysis.stats import ci_half_width, standard_error_of_mean, wilson_interval
+from threetears.evals.analysis.stats import (
+    MULTIPLE_COMPARISON_CORRECTION,
+    SIGNIFICANCE_ALPHA,
+    ci_half_width,
+    composite_significance,
+    holm_adjust,
+    standard_error_of_mean,
+    wilson_interval,
+)
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureCollection, MeasureSummary
 from threetears.evals.contracts.campaign import (
     CampaignWindow,
     EvalInsight,
+    ReadingKind,
     VariantIndexEntry,
     derive_window,
 )
@@ -102,6 +111,7 @@ from threetears.evals.contracts.metrics import (
     MeritAxis,
     MetricDescriptor,
     classifier_label_measure,
+    classifier_label_of,
     confusion_of,
     describe_measure,
     describe_phase_timing,
@@ -1121,6 +1131,108 @@ class VerdictOrder(EvalDocumentModel):
     )
 
 
+#: What one comparison in a family came to, read off its ADJUSTED p. ``untested`` = no test could
+#: run (fewer than two cases a side), which is neither a separation nor its absence.
+ComparisonVerdict = Literal["improved", "regressed", "not_separated", "untested"]
+
+
+class ComparedCell(EvalDocumentModel):
+    """One side of a family comparison: a cell, and the per-case values its test read."""
+
+    variant_key: str = Field(min_length=1, description="The arm's variant — half of the cell.")
+    apparatus_class_id: str = Field(min_length=1, description="The rig — the other half of the cell.")
+    n_cases: int = Field(
+        ge=0,
+        description=(
+            "The cases the test read on this side, one per-case mean each: the cases both cells ran when the test "
+            "is paired, every case carrying the reading otherwise."
+        ),
+    )
+    mean: float | None = Field(default=None, description="Mean of those per-case values. None when n_cases is 0.")
+
+
+class FamilyComparison(EvalDocumentModel):
+    """One contrast against the control on one reading, tested and corrected within its family."""
+
+    reading: ReadingKind = Field(description="Whether `name` is a measure or a judged dimension.")
+    name: str = Field(min_length=1, description="The measure or judged dimension compared, as the bundle spells it.")
+    higher_is_better: bool = Field(description="Which way is better on this reading — how `verdict` reads `delta`.")
+    control: ComparedCell = Field(description="The control arm's cell under this rig.")
+    contrast: ComparedCell = Field(description="The contrast arm's cell under the same rig.")
+    delta: float | None = Field(
+        default=None,
+        description="contrast mean minus control mean, in the reading's unit. None when either side is empty.",
+    )
+    test: Literal["paired", "unpaired"] | None = Field(
+        default=None,
+        description=(
+            "`paired` = a paired t-test over the cases both cells ran; `unpaired` = Welch's t-test over each cell's "
+            "per-case values, when they share fewer than two cases. None when neither could run."
+        ),
+    )
+    p_raw: float | None = Field(
+        default=None,
+        description=(
+            "The test's own two-sided p, before correction. Kept for audit; never the figure a verdict rests on, "
+            "and withheld from the analysis writer. None when no p exists."
+        ),
+    )
+    p_adjusted: float | None = Field(
+        default=None,
+        description="The Holm-adjusted p within this comparison's family — the one figure a verdict rests on.",
+    )
+    verdict: ComparisonVerdict = Field(
+        description=(
+            "Read off `p_adjusted` against the family's alpha: improved or regressed when it is below it, in the "
+            "direction `delta` moved on this reading; not_separated otherwise; untested when no test could run."
+        )
+    )
+    untested_reason: str | None = Field(
+        default=None, description="Why no test could run, when `verdict` is untested. None otherwise."
+    )
+
+
+class ComparisonFamily(EvalDocumentModel):
+    """Every comparison one declared question could draw a verdict from, corrected as one family.
+
+    Ten comparisons at α=0.05 find a "difference" by chance more often than not, so the readings a
+    question asks about (each contrast against the control, on every reading on the question's merit
+    axes) are adjusted together, and a verdict stands only on the adjusted p.
+    """
+
+    question_id: str = Field(min_length=1, description="The live declared question this family serves.")
+    merit_axes: list[MeritAxis] = Field(
+        default_factory=list,
+        description="The axes the question names. Empty = an unscoped question, whose family covers every axis.",
+    )
+    correction: Literal["holm"] = Field(
+        default=MULTIPLE_COMPARISON_CORRECTION, description="The family-wise correction applied."
+    )
+    alpha: float = Field(default=SIGNIFICANCE_ALPHA, description="The family-wise error rate the verdicts hold.")
+    family_size: int = Field(
+        ge=0,
+        description="How many comparisons carried a p and were corrected together — the m the adjustment divided by.",
+    )
+    n_untested: int = Field(ge=0, description="Comparisons in the family that could run no test, so carry no p.")
+    comparisons: list[FamilyComparison] = Field(
+        default_factory=list,
+        description="Ordered by reading, name, rig and contrast variant.",
+    )
+    disclosure: str = Field(min_length=1, description="The sentence a writer quotes about this family's correction.")
+
+
+class MultipleComparisons(EvalDocumentModel):
+    """The campaign's comparisons, one corrected family per live declared question."""
+
+    families: list[ComparisonFamily] = Field(
+        default_factory=list, description="One per live declared question, in declaration order."
+    )
+    withheld: str | None = Field(
+        default=None,
+        description="Why there is no family at all — no question declared, or no control to compare against. None when families exist.",
+    )
+
+
 class AnalysisContextBundle(EvalDocumentModel):
     """The closed context bundle a generation prompt runs over.
 
@@ -1159,7 +1271,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=33, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=34, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -1308,6 +1420,14 @@ class AnalysisContextBundle(EvalDocumentModel):
             "weighted kappa — over every resolved member run's results. A dimension absent here is uncalibrated: "
             "nobody rated it, so an absolute claim about it rests on the judge alone. Ratings that could not be "
             "paired with a judge score are listed with why."
+        ),
+    )
+    multiple_comparisons: MultipleComparisons = Field(
+        default_factory=MultipleComparisons,
+        description=(
+            "Each contrast tested against the control on every reading a live question asks about, per rig, with "
+            "Holm correction inside each question's family: the family's size, each comparison's adjusted p and "
+            "the verdict read off it. A separation stands only where its verdict says so."
         ),
     )
     verdict_order: VerdictOrder = Field(
@@ -4552,6 +4672,17 @@ def assemble_context_bundle(
         profile=profile,
     )
     bundle.measure_catalog = _measure_catalog(bundle, profile=profile)
+    # After the catalog, which says each measure's better direction and axis: a family is the readings a
+    # question's axes name, and a reading with no better end has no verdict to correct.
+    bundle.multiple_comparisons = _multiple_comparisons(
+        campaign.declared_design,
+        design,
+        results_by_cell,
+        projection.records,
+        catalog=bundle.measure_catalog,
+        judged_measures=bundle.judged_measures,
+        profile=profile,
+    )
     # The frontier is always assembled without a bar, so its per-subject clearing count is a
     # default rather than a count. Said on the bundle, because a zero with no sentence beside it
     # was quoted as "no arm cleared the bar".
@@ -5067,6 +5198,245 @@ def _verdict_order(adjudications: list[BarAdjudication], design: CampaignDesign 
         unranked_bar_measure_ids=unranked,
         questions=questions,
     )
+
+
+#: Why a bundle carries no family of comparisons, one sentence per cause.
+_NO_QUESTION_TO_CORRECT_FOR = (
+    "This campaign declares no live question, so there is no family of comparisons to correct and no separation "
+    "between arms is tested here."
+)
+_NO_CONTROL_TO_COMPARE_AGAINST = (
+    "No control resolved, so there is no arm for a contrast to be tested against and no separation between arms is "
+    "tested here; every comparison in this campaign is marginal."
+)
+
+
+def _per_case_values(
+    members: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
+) -> dict[tuple[ReadingKind, str], dict[str, float]]:
+    """Every numeric reading of one cell, as one mean per case — the unit a family comparison tests.
+
+    A case is the independent draw (rule: count cases, not attempts), so repeats of one case are
+    averaged before any test sees them. A measure's per-case value is read off the same walk the
+    cell's own collection is (:func:`_measure_collection`, each measure over its own population), so
+    the value tested and the value the cell reports are one computation; a judged dimension's, off the
+    non-faulted results' scores, as :func:`_bar_reading` reads one.
+
+    Args:
+        members: One cell's results, faulted ones included.
+        judged_rows: Projected judged-score rows by result id.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        ``{(reading, name): {test_case_id: per-case mean}}`` for every reading with a numeric value.
+    """
+    by_case: dict[str, list[EvalResult]] = defaultdict(list)
+    for result in members:
+        by_case[result.test_case_id].append(result)
+    values: dict[tuple[ReadingKind, str], dict[str, float]] = defaultdict(dict)
+    for case_id in sorted(by_case):
+        for summary in _measure_collection(by_case[case_id], profile=profile, undeclared="scored").measures:
+            if summary.mean is not None:
+                values[("measure", summary.name)][case_id] = summary.mean
+    scores: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for result in _non_faulted(members):
+        for dimension, record in _judged_values(judged_rows.get(result.id, [])):
+            if record.value is not None:
+                scores[(dimension, result.test_case_id)].append(float(record.value))
+    for (dimension, case_id), case_scores in sorted(scores.items()):
+        values[("judged", dimension)][case_id] = sum(case_scores) / len(case_scores)
+    return values
+
+
+def _family_readings(
+    axes: list[MeritAxis], catalog: dict[str, MetricDescriptor], judged_measures: list[JudgedMeasure]
+) -> dict[tuple[ReadingKind, str], bool]:
+    """The readings a question with these axes could draw a verdict from, each with its better direction.
+
+    A measure qualifies when it has a better end (a reading with none cannot improve or regress) and
+    sits on one of the axes; a per-label classifier statistic does not, because it is computed from a
+    whole cell's confusion counts and has no per-case value to test. A judged dimension sits on the
+    quality axis. An unscoped question (no axes) asks about every axis.
+
+    Args:
+        axes: The question's merit axes; empty for an unscoped question.
+        catalog: The bundle's measure catalog.
+        judged_measures: The bundle's judged measures.
+
+    Returns:
+        ``{(reading, name): higher_is_better}``.
+    """
+    readings: dict[tuple[ReadingKind, str], bool] = {}
+    for name, descriptor in catalog.items():
+        if descriptor.higher_is_better is None or classifier_label_of(name) is not None:
+            continue
+        if not axes or descriptor.merit_axis in axes:
+            readings[("measure", name)] = descriptor.higher_is_better
+    if not axes or "quality" in axes:
+        for measure in judged_measures:
+            readings[("judged", measure.name)] = measure.higher_is_better
+    return readings
+
+
+def _compare(
+    reading: tuple[ReadingKind, str],
+    higher_is_better: bool,
+    control: tuple[_CellKey, dict[str, float]],
+    contrast: tuple[_CellKey, dict[str, float]],
+) -> tuple[FamilyComparison, float | None]:
+    """Test one contrast against the control on one reading, before correction.
+
+    Paired over the cases both cells ran when they share at least two — far more powerful, and the
+    design a fixed case set exists for — else Welch's test over each side's per-case values.
+
+    Returns:
+        The comparison with its adjusted p and verdict still unset, and its raw p (None when the test
+        produced none) for the family's correction.
+    """
+    (control_key, control_values), (contrast_key, contrast_values) = control, contrast
+    shared = sorted(set(control_values) & set(contrast_values))
+    paired = len(shared) >= 2
+    a = [control_values[case] for case in shared] if paired else list(control_values.values())
+    b = [contrast_values[case] for case in shared] if paired else list(contrast_values.values())
+    _, significant, p_raw = composite_significance(a, b, paired=paired)
+    mean_a = sum(a) / len(a) if a else None
+    mean_b = sum(b) / len(b) if b else None
+    untested_reason = None
+    if significant is None:
+        # Named from the branch that refused, since the two causes have different remedies: more cases
+        # for the first, while the second is a gap so regular that no t statistic exists to measure it.
+        if len(a) < 2 or len(b) < 2:
+            untested_reason = "fewer than two cases carry this reading on a side"
+        elif paired:
+            untested_reason = "every shared case moved by the same amount, so the differences have no spread to test"
+        else:
+            untested_reason = "each side's values are constant, so there is no spread to test"
+    comparison = FamilyComparison(
+        reading=reading[0],
+        name=reading[1],
+        higher_is_better=higher_is_better,
+        control=ComparedCell(
+            variant_key=control_key[0], apparatus_class_id=control_key[1], n_cases=len(a), mean=mean_a
+        ),
+        contrast=ComparedCell(
+            variant_key=contrast_key[0], apparatus_class_id=contrast_key[1], n_cases=len(b), mean=mean_b
+        ),
+        delta=None if mean_a is None or mean_b is None else mean_b - mean_a,
+        test=None if significant is None else ("paired" if paired else "unpaired"),
+        p_raw=p_raw,
+        verdict="untested" if significant is None else "not_separated",
+        untested_reason=untested_reason,
+    )
+    return comparison, p_raw
+
+
+def _family_disclosure(family_size: int, n_untested: int, alpha: float) -> str:
+    """The sentence a writer quotes about one family, composed from what the family holds."""
+    if family_size == 0:
+        sentence = "No comparison this question asks about carried a p, so it supports no separation between arms."
+    else:
+        sentence = (
+            f"{family_size} comparison{'s' if family_size != 1 else ''} this question asks about carried a p and "
+            f"{'were' if family_size != 1 else 'was'} corrected together by Holm's method at "
+            f"α={format_number(alpha)}; a separation stands only where the adjusted p is below it."
+        )
+    if n_untested:
+        sentence += f" {n_untested} more could not be tested; each says why."
+    return sentence
+
+
+def _multiple_comparisons(
+    declared: CampaignDesign | None,
+    realized: RealizedDesign,
+    results_by_cell: dict[_CellKey, list[EvalResult]],
+    records: list[ScoreRecord],
+    *,
+    catalog: dict[str, MetricDescriptor],
+    judged_measures: list[JudgedMeasure],
+    profile: HostProfile,
+) -> MultipleComparisons:
+    """Test each contrast against the control, per live question, and correct each question's family.
+
+    A question's family is every comparison it could draw a verdict from: each contrast cell against
+    the control cell under the same rig (a contrast across rigs differs by its instrument too, so it is
+    not this test), on every reading on the question's axes (:func:`_family_readings`). The family is
+    corrected by Holm's method over the comparisons that carried a p, and each verdict is read off its
+    adjusted p, so a family of ten cannot hand the writer a chance "difference" as a finding.
+
+    Args:
+        declared: The campaign's declaration, for its live questions.
+        realized: The derived design, for the control arm.
+        results_by_cell: Each cell's results.
+        records: The assembly's score projection rows, where judged scores live.
+        catalog: The bundle's measure catalog — direction and axis per measure.
+        judged_measures: The bundle's judged measures.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        One family per live question, in declaration order; or none, with the reason, when the campaign
+        declares no live question or no control resolved.
+    """
+    questions = declared.live_questions() if declared is not None else []
+    if not questions:
+        return MultipleComparisons(withheld=_NO_QUESTION_TO_CORRECT_FOR)
+    if realized.control_arm is None:
+        return MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST)
+    control_variant = realized.control_arm.variant_key
+
+    judged_rows: dict[str, list[ScoreRecord]] = {}
+    for record in records:
+        judged_rows.setdefault(record.result_id, []).append(record)
+    values = {key: _per_case_values(members, judged_rows, profile=profile) for key, members in results_by_cell.items()}
+    pairs = [
+        (control_key, contrast_key)
+        for control_key in sorted(values)
+        if control_key[0] == control_variant
+        for contrast_key in sorted(values)
+        if contrast_key[1] == control_key[1] and contrast_key[0] != control_variant
+    ]
+
+    families = []
+    for question in questions:
+        axes = list(dict.fromkeys(question.merit_axes))
+        readings = _family_readings(axes, catalog, judged_measures)
+        tested: list[tuple[FamilyComparison, float | None]] = []
+        for reading in sorted(readings):
+            for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0])):
+                control_values = values[control_key].get(reading, {})
+                contrast_values = values[contrast_key].get(reading, {})
+                if not control_values and not contrast_values:
+                    continue
+                tested.append(
+                    _compare(
+                        reading,
+                        readings[reading],
+                        (control_key, control_values),
+                        (contrast_key, contrast_values),
+                    )
+                )
+        adjusted = iter(holm_adjust([p for _, p in tested if p is not None]))
+        comparisons = []
+        for comparison, p_raw in tested:
+            if p_raw is not None:
+                p_adjusted = next(adjusted)
+                verdict: ComparisonVerdict = "not_separated"
+                if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta:
+                    verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
+                comparison = comparison.model_copy(update={"p_adjusted": p_adjusted, "verdict": verdict})
+            comparisons.append(comparison)
+        family_size = sum(1 for _, p in tested if p is not None)
+        n_untested = sum(1 for comparison in comparisons if comparison.verdict == "untested")
+        families.append(
+            ComparisonFamily(
+                question_id=question.id,
+                merit_axes=axes,
+                family_size=family_size,
+                n_untested=n_untested,
+                comparisons=comparisons,
+                disclosure=_family_disclosure(family_size, n_untested, SIGNIFICANCE_ALPHA),
+            )
+        )
+    return MultipleComparisons(families=families)
 
 
 def _cell_measures(
