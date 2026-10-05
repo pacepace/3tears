@@ -6,8 +6,11 @@ and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, memos 
 charts under :mod:`~threetears.evals.analysis.viz`) and :mod:`~threetears.evals.gen` (generating
 cases), plus three that sit beside the engine rather than inside it: :mod:`~threetears.evals.storage`
 (the in-memory reference store), :mod:`~threetears.evals.testing` (the store conformance kit) and
-:mod:`~threetears.evals.quick` (``run_eval`` and the command line). Runs are launched on demand; there
-is no scheduled-run surface.
+:mod:`~threetears.evals.quick` (``run_eval`` and the command line). Above the engine sit the surfaces an
+agent drives it through: :mod:`~threetears.evals.ops` (typed operations, and one job contract for long
+work), :mod:`~threetears.evals.actions` (the action catalogue every transport mounts) and
+:mod:`~threetears.evals.transports` (each transport behind its own extra — ``fastmcp``). Runs are launched
+on demand; there is no scheduled-run surface.
 
 **Import only from a public root**, and only the names its ``__all__`` declares. The roots are
 :data:`PUBLIC_ROOTS`, which a consumer can read to check its own imports rather than keep a copy;
@@ -37,6 +40,9 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.storage",
     "threetears.evals.testing",
     "threetears.evals.quick",
+    "threetears.evals.ops",
+    "threetears.evals.actions",
+    "threetears.evals.transports.fastmcp",
 )
 
 __all__ = ["PUBLIC_ROOTS"]

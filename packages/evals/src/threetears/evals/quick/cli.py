@@ -39,7 +39,7 @@ from typing import Any
 from threetears.evals.analysis import inspect_campaign_bundle, list_campaigns
 from threetears.evals.contracts import EvalServiceError
 from threetears.evals.contracts.host import EvalHost
-from threetears.evals.quick.summary import summarize_run
+from threetears.evals.ops.summary import summarize_run
 from threetears.evals.run import LaunchHost, list_runs, list_templates, start_run
 
 #: What names the host the commands work in: called once, with no arguments, per invocation.

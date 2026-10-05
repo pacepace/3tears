@@ -57,7 +57,7 @@ from threetears.evals.contracts.host import (
     WorldPlacement,
     default_cell_timeout,
 )
-from threetears.evals.quick.summary import EvalSummary, summarize_run
+from threetears.evals.ops.summary import EvalSummary, summarize_run
 from threetears.evals.run import (
     KindWiring,
     LaunchableKind,

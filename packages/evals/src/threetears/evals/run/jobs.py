@@ -683,6 +683,25 @@ class EvalJobManager:
         task = self._detached.get(job_id)
         return task is not None and not task.done()
 
+    def cancel_task(self, job_id: str) -> bool:
+        """Request cancellation of a :meth:`start_task` task — request-then-converge, as :meth:`cancel_job` is.
+
+        The task's work records its own ending as it unwinds (a generation writes a ``cancelled``
+        attempt), so nothing is written here; a caller confirms the ending by reading that record.
+
+        Args:
+            job_id: The task's id, as :meth:`start_task` returned it.
+
+        Returns:
+            True when cancellation was requested; False when no such task is tracked or it has
+            already ended.
+        """
+        task = self._detached.get(job_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
+
     def active_task_ids(self, key: str) -> list[str]:
         """The ids of everything holding ``key`` now: live :meth:`start_task` tasks, then live :meth:`hold` holders."""
         tasks = [job_id for job_id, held in self._task_keys.items() if held == key and self.is_task_active(job_id)]

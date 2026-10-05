@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from threetears.evals.contracts import EvalRun, EvalStorage, NotFoundError, WorldSeed
-from threetears.evals.contracts.host import HostProfile, TraceSink, WorldPlacement
+from threetears.evals.contracts.host import CompletionClients, HostProfile, TraceSink, WorldPlacement
 from threetears.evals.run import (
     KindWiring,
     LaunchableKind,
@@ -64,6 +64,7 @@ def toyhost_launch_host(
     storage: EvalStorage | None = None,
     trace_sink: TraceSink | None = None,
     settings: Callable[[], LaunchSettings] = lambda: TOYHOST_LAUNCH_SETTINGS,
+    clients: CompletionClients | None = None,
 ) -> tuple[LaunchHost, ScriptedExtractionClient]:
     """The toy host as a launching host: its :class:`~threetears.evals.contracts.host.EvalHost`, plus its launch registry.
 
@@ -72,11 +73,13 @@ def toyhost_launch_host(
         storage: Where documents live; ``None`` is a fresh in-memory store.
         trace_sink: The host's tracing, or ``None``.
         settings: Reads the launch settings; a callable because a host's settings hot-reload.
+        clients: The completion-client factory, for a drive that also analyses what it launched. The
+            extractor itself calls no model.
 
     Returns:
         The host, and the scripted client its extractor calls — so a caller can see what was asked.
     """
-    eval_host = toyhost_host(profile=profile, storage=storage, trace_sink=trace_sink)
+    eval_host = toyhost_host(profile=profile, storage=storage, trace_sink=trace_sink, clients=clients)
     world = eval_host.profile.world
     assert world is not None, "the toy host declares a world"
     client = ScriptedExtractionClient()

@@ -64,6 +64,13 @@ IMPORT_ROOTS_BY_DEPENDENCY: dict[str, tuple[str, ...]] = {
     "vl-convert-python": ("vl_convert",),
 }
 
+#: Each optional extra's import roots, and the one module tree that may name them -- relative to ``src``.
+#: An extra is the dependency of the module it serves and of nothing else: the engine imported
+#: without the extra must still import, so a root named anywhere outside its tree is refused.
+IMPORT_ROOTS_BY_EXTRA: dict[str, tuple[tuple[str, ...], str]] = {
+    "fastmcp": (("fastmcp",), "threetears/evals/transports/fastmcp/"),
+}
+
 #: Packages the portable test support may neither name nor load: the first host, and the web and
 #: telemetry stacks a host wraps the engine in, which a second consumer installs neither of.
 BARRED_FROM_TEST_SUPPORT: tuple[str, ...] = (FIRST_HOST, "fastapi", "opentelemetry")
@@ -95,12 +102,27 @@ def _declared_dependencies() -> list[str]:
     return names
 
 
-def _allowed(module: str) -> bool:
-    """Whether the engine may name ``module``: the stdlib, itself, or a declared dependency's root."""
+def _declared_extras() -> list[str]:
+    """The optional extras ``pyproject.toml`` declares, by name."""
+    manifest = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return list(manifest["project"].get("optional-dependencies", {}))
+
+
+def _allowed(module: str, where: str = "") -> bool:
+    """Whether the engine may name ``module`` from the file at ``where`` (relative to ``src``).
+
+    The stdlib, itself, or a declared dependency's root anywhere; an extra's root only inside the tree
+    that extra serves.
+    """
     if module.split(".")[0] in sys.stdlib_module_names:
         return True
     roots = ("threetears.evals", *(root for roots in IMPORT_ROOTS_BY_DEPENDENCY.values() for root in roots))
-    return any(_matches(module, root) for root in roots)
+    if any(_matches(module, root) for root in roots):
+        return True
+    return any(
+        where.startswith(tree) and any(_matches(module, root) for root in extra_roots)
+        for extra_roots, tree in IMPORT_ROOTS_BY_EXTRA.values()
+    )
 
 
 def named_modules(path: Path, *, root: Path) -> Iterator[tuple[int, str]]:
@@ -172,6 +194,20 @@ def test_the_dependency_map_is_the_manifests():
     assert sorted(IMPORT_ROOTS_BY_DEPENDENCY) == sorted(_declared_dependencies())
 
 
+def test_the_extras_map_is_the_manifests():
+    """The extras the walk admits are exactly the ones the manifest declares, each serving a tree that exists."""
+    assert sorted(IMPORT_ROOTS_BY_EXTRA) == sorted(_declared_extras())
+    for _roots, tree in IMPORT_ROOTS_BY_EXTRA.values():
+        assert (SOURCE_ROOT / tree).is_dir(), f"an extra serves {tree}, which does not exist"
+
+
+def test_an_extra_is_named_only_by_the_tree_it_serves():
+    """Both directions on one import: ``fastmcp`` is admitted in its transport and refused everywhere else."""
+    assert _allowed("fastmcp.tools", "threetears/evals/transports/fastmcp/__init__.py") is True
+    assert _allowed("fastmcp.tools", "threetears/evals/actions/catalogue.py") is False
+    assert _allowed("fastmcp.tools") is False
+
+
 def test_no_engine_module_names_the_first_host():
     """No module under ``threetears/evals`` names any module of the host it was cut from."""
     offenders = [
@@ -194,7 +230,7 @@ def test_every_module_the_engine_names_is_declared():
         f"{path.relative_to(SOURCE_ROOT)}:{line} imports {module}"
         for path in _engine_files()
         for line, module in named_modules(path, root=SOURCE_ROOT)
-        if not _allowed(module)
+        if not _allowed(module, path.relative_to(SOURCE_ROOT).as_posix())
     ]
 
     assert not offenders, (

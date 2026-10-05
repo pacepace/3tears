@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from threetears.evals.quick.cli import DEFAULT_PROG, ENGINE_COMMANDS, HostCommand, HostFactory, build_parser, run_cli
 from threetears.evals.quick.one_call import CALLABLE_KIND, Candidate, Scorer, callable_host, run_eval
-from threetears.evals.quick.summary import EvalSummary, MeasureSummary, summarize_run
+from threetears.evals.ops.summary import EvalSummary, MeasureSummary, summarize_run
 
 __all__ = [
     "CALLABLE_KIND",
