@@ -39,6 +39,7 @@ from threetears.evals.contracts.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     ActorPolicy,
+    CalibrationRating,
     CatalogRubricDim,
     ClientRequestSettings,
     ConversationSpec,
@@ -465,6 +466,22 @@ def make_analysis_attempt(**overrides: Any) -> EvalAnalysisAttempt:
     )
     fields.update(overrides)
     return EvalAnalysisAttempt(**fields)
+
+
+def make_calibration_rating(**overrides: Any) -> CalibrationRating:
+    """Create a ``CalibrationRating``: one person's 4 for ``conversation.tone`` on ``make_eval_result``'s result."""
+    defaults: dict[str, Any] = {
+        "scope_id": "uni-1",
+        "run_id": "run-1",
+        "result_id": "r-1",
+        "rubric_dim": "conversation.tone",
+        "rater": "host",
+        "scale": "ordinal",
+        "score": 4,
+        "reason": "warm and on topic",
+    }
+    defaults.update(overrides)
+    return CalibrationRating(**defaults)
 
 
 def make_insight(**overrides: Any) -> EvalInsight:

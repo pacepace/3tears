@@ -24,6 +24,7 @@ __all__ = ["CEILINGS"]
 CEILINGS: dict[str, dict[str, int]] = {
     "__init__.py": {},
     "analysis/__init__.py": {},
+    "analysis/agreement.py": {},
     "analysis/arms.py": {},
     "analysis/bundle.py": {},
     "analysis/campaigns.py": {},
@@ -136,6 +137,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/lifecycle.py": {},
     "run/metering.py": {},
     "run/offload.py": {},
+    "run/ratings.py": {},
     "run/reads.py": {},
     "run/recheck.py": {},
     "run/rejudge.py": {},

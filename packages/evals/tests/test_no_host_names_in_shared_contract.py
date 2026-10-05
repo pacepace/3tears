@@ -314,6 +314,10 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "run/curation.py",
     "gen/variation_gen.py",
     "run/jobs.py",
+    # A person's score for a judged dimension, written after the run: the write reads the result
+    # and stores a rating, in the engine's own words. Shared contract from the day it existed, and
+    # scanned because the noun that would most plausibly arrive here is a host's name for its people.
+    "run/ratings.py",
     # What a result scored, what a set of results scored together, and whether a run's loop
     # delivered the matrix it promised. It carries `CellSummary` with it — the bounded per-cell
     # record `summarize_completeness` counts. Shared contract from the day it existed rather than

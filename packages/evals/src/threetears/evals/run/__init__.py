@@ -44,6 +44,7 @@ from threetears.evals.run.curation import (
     set_campaign_archived,
     set_run_archived,
 )
+from threetears.evals.run.ratings import RatingStore, rate_result
 from threetears.evals.run.definition_seed import load_seed_corpus, seed_eval_definitions
 from threetears.evals.run.fidelity import FidelityContract, callers_missing_the_constructor, resolve_constructor
 from threetears.evals.run.jobs import (
@@ -171,6 +172,7 @@ __all__ = [
     "LaunchableKind",
     "MeteredCallLedger",
     "MeteredCallTally",
+    "RatingStore",
     "RecheckStore",
     "ReproducibleJudgeInputs",
     "RequestSettingsPolicy",
@@ -225,6 +227,7 @@ __all__ = [
     "metered_cell_tally",
     "no_launcher_for",
     "precondition_failure_text",
+    "rate_result",
     "recheck_goal_states",
     "recheck_result",
     "refuse_stale_presumptions",

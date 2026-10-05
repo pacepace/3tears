@@ -29,6 +29,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from threetears.evals.contracts import (
+    CalibrationRating,
     EvalAnalysis,
     EvalInsight,
     EvalResult,
@@ -281,6 +282,7 @@ class ToyhostStorage:
         self._results_by_run = dict(results_by_run)
         self._insights = list(insights)
         self.analyses = {analysis.id: analysis for analysis in analyses}
+        self._ratings: dict[str, CalibrationRating] = {}
 
     def load_eval_run(self, run_id: str, scope_id: str) -> EvalRun | None:
         """The batch with this id in this scope, or None."""
@@ -303,6 +305,33 @@ class ToyhostStorage:
     def query_eval_results_by_run(self, run_id: str, scope_id: str) -> list[EvalResult]:
         """Every observation of this batch in this scope."""
         return [r for r in self._results_by_run.get(run_id, []) if r.scope_id == scope_id]
+
+    def load_eval_result(self, result_id: str, scope_id: str) -> EvalResult | None:
+        """The observation with this id in this scope, or None — what a calibration rating reads first."""
+        return next(
+            (
+                r
+                for results in self._results_by_run.values()
+                for r in results
+                if r.id == result_id and r.scope_id == scope_id
+            ),
+            None,
+        )
+
+    def save_calibration_rating(self, rating: CalibrationRating) -> None:
+        """Hold a reviewer's rating, replacing that reviewer's earlier rating of the same thing, as the real store does."""
+        self._ratings[rating.id] = rating
+
+    def query_calibration_ratings(self, scope_id: str, *, run_id: str | None = None) -> list[CalibrationRating]:
+        """The ratings in one scope, narrowed by run, oldest first."""
+        return sorted(
+            (
+                rating
+                for rating in self._ratings.values()
+                if rating.scope_id == scope_id and (run_id is None or rating.run_id == run_id)
+            ),
+            key=lambda rating: rating.rated_at,
+        )
 
     def query_insights(
         self, scope_id: str, *, subject_id: str | None = None, source_campaign_id: str | None = None

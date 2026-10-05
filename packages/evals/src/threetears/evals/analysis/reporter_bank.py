@@ -18,8 +18,10 @@ Pure reads of the reporter's case bank, and none calls a model.
   against evidence that no longer says anything about it.
 - **After the run**, :func:`read_calibration` sets each labelled dimension's judge score beside the
   reader's written verdict and says whether they agree under :data:`LABEL_BANDS`, and whether the
-  criterion the verdict was written against still reads as it did. It is a READ: every number comes
-  from stored results, and nothing here re-scores or re-judges.
+  criterion the verdict was written against still reads as it did. The run's calibration ratings —
+  people's scores of its results — are read beside the labels through the same agreement the bundle
+  reads (:func:`~threetears.evals.analysis.agreement.judge_agreement`). It is a READ: every number
+  comes from stored results and ratings, and nothing here re-scores or re-judges.
 
 Generic by construction (extraction target ``3tears-eval-analysis``): it names no subject, product
 or domain, reads a case only through :func:`reporter_case_of`, and reads a result only through the
@@ -34,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from threetears.evals.analysis.agreement import JudgeAgreement, judge_agreement
 from threetears.evals.analysis.reporter_kind import (
     LABEL_BANDS,
     LabelCriterion,
@@ -49,7 +52,7 @@ from threetears.evals.contracts.errors import ValidationFailedError
 
 if TYPE_CHECKING:
     from threetears.evals.analysis.bundle import AnalysisContextBundle
-    from threetears.evals.contracts.models import EvalResult, EvalTestCase, RubricScore
+    from threetears.evals.contracts.models import CalibrationRating, EvalResult, EvalTestCase, RubricScore
 
 
 def case_limits(
@@ -594,6 +597,14 @@ class ReporterCalibration(BaseModel):
             "cannot be read, so the calibration covers fewer cases than the run measured."
         ),
     )
+    rating_agreement: JudgeAgreement = Field(
+        default_factory=JudgeAgreement,
+        description=(
+            "The run's results read against people's calibration ratings of them, per dimension and judge — the "
+            "same read the bundle's `judge_agreement` makes. A label places a memo in a band and a rating gives it "
+            "a score, so the two are read side by side rather than pooled: labels in `cases`, ratings here."
+        ),
+    )
 
 
 def label_agrees(direction: LabelDirection, score: RubricScore) -> bool | None:
@@ -628,6 +639,7 @@ def read_calibration(
     live_criteria: Mapping[str, LabelCriterion] | None,
     judge_model: str | None,
     effective_judges: Mapping[str, str] | None,
+    ratings: Sequence[CalibrationRating],
     missing_case_ids: Sequence[str] = (),
 ) -> ReporterCalibration:
     """Set every labelled dimension's judge score beside its label, per case and per result.
@@ -650,6 +662,8 @@ def read_calibration(
             template is gone — what each label's frozen criterion is compared with.
         judge_model: The run's judge pin, carried through so the read names its judge.
         effective_judges: The run's recorded per-dimension judges, carried through likewise.
+        ratings: Every calibration rating of the run's results, read against ``results`` into
+            ``rating_agreement``.
         missing_case_ids: Cases the run froze that did not load, carried through for disclosure.
 
     Returns:
@@ -725,6 +739,7 @@ def read_calibration(
         effective_judges=None if effective_judges is None else dict(effective_judges),
         cases=read_cases,
         missing_case_ids=list(missing_case_ids),
+        rating_agreement=judge_agreement(ratings, results),
     )
 
 

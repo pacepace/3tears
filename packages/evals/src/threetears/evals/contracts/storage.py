@@ -41,6 +41,7 @@ from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.errors import ConflictError, StorageError
 from threetears.evals.contracts.models import (
     NON_TERMINAL_RUN_STATUSES,
+    CalibrationRating,
     CassetteKey,
     CatalogRubricDim,
     EvalCassette,
@@ -109,6 +110,7 @@ EVAL_DOC_TYPES = (
     "eval_trace",
     "eval_test_case",
     "eval_cassette",
+    "calibration_rating",
 )
 
 
@@ -794,6 +796,44 @@ class EvalStorage:
     def delete_insight(self, insight_id: str, scope_id: str) -> bool:
         """Delete an insight by id within a scope."""
         return self._store.delete(insight_id, scope_id)
+
+    # =========================================================================
+    # CalibrationRating
+    # =========================================================================
+
+    def save_calibration_rating(self, rating: CalibrationRating) -> None:
+        """Persist a rating in the scope it names, replacing that rater's earlier rating of the same thing.
+
+        The replacement is the id's doing, not this method's: a rating's id is derived from its
+        result, dimension and rater, so the upsert lands on the earlier rating's row.
+        """
+        self._save(rating.to_dict())
+
+    def query_calibration_ratings(
+        self, scope_id: str, *, run_id: str | None = None, result_id: str | None = None
+    ) -> list[CalibrationRating]:
+        """Ratings in a scope, oldest first, optionally narrowed by run and by result.
+
+        Unlimited, like every agreement input: a paged read would compute agreement over the first
+        page and report it as the dimension's.
+
+        Args:
+            scope_id: The scope to read.
+            run_id: Optional equality filter on the rated result's run.
+            result_id: Optional equality filter on the rated result.
+
+        Returns:
+            The matching ratings, ordered by when they were rated.
+        """
+        field_eq: dict[str, Any] = {}
+        if run_id is not None:
+            field_eq["run_id"] = run_id
+        if result_id is not None:
+            field_eq["result_id"] = result_id
+        items = self._store.by_doc_type(
+            "calibration_rating", scope_id, order_by="rated_at", descending=False, **field_eq
+        )
+        return self._hydrate_all(CalibrationRating, items)
 
     # =========================================================================
     # EvalTestCase

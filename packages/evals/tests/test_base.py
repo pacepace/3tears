@@ -22,6 +22,7 @@ from threetears.evals.contracts.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import (
     make_analysis,
     make_analysis_attempt,
+    make_calibration_rating,
     make_campaign,
     make_eval_result,
     make_eval_run,
@@ -320,6 +321,7 @@ def _cassette() -> EvalCassette:
 #: stored model added without a row here fails :func:`test_every_stored_model_has_a_sample` rather
 #: than slipping past both refusals.
 _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
+    "CalibrationRating": make_calibration_rating,
     "CatalogRubricDim": make_rubric_dim,
     "EvalAnalysis": make_analysis,
     "EvalAnalysisAttempt": make_analysis_attempt,

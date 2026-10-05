@@ -1380,6 +1380,7 @@ def reporter_calibration(
         live_criteria=None if template is None else {dim.name: LabelCriterion.of(dim) for dim in template.rubric},
         judge_model=run.judge_model,
         effective_judges=run.effective_judges,
+        ratings=storage.query_calibration_ratings(scope_id, run_id=run.id),
     )
 
 
