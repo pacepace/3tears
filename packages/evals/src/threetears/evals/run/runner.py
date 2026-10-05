@@ -54,7 +54,7 @@ import random
 import time
 import uuid
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import (
     AbstractContextManager,
     contextmanager,
@@ -110,6 +110,8 @@ from threetears.evals.contracts.models import (
 )
 from threetears.evals.contracts.scoring import CellSummary
 from threetears.evals.contracts.call_ledger import CallLedger
+from threetears.evals.contracts.world_events import WorldEvent
+from threetears.evals.contracts.world_session import WorldSession
 from threetears.evals.contracts.usage_capture import (
     ExternalRateTable,
     RoleUsageLedger,
@@ -576,8 +578,33 @@ class _CellSink:
     #: cassettes off. Kept here so every exit, a cut-short one included, closes it and holds the
     #: kind's report to what the cell replayed.
     cassettes: CassetteCell | None = None
+    #: The cell's handle on the host's world — ``None`` for a host that declares none. Kept here, and
+    #: built by the engine rather than the kind, so every exit records what fired before it and the
+    #: end state if it was read: the session survives a cancel that destroys the kind's frame.
+    world: WorldSession | None = None
     #: The one reading taken, once :meth:`side` has taken it.
     _read: CandidateOutput | None = None
+
+    @property
+    def world_events(self) -> list[WorldEvent] | None:
+        """What moved the cell's world, or ``None`` when no world was opened for it.
+
+        Returns:
+            The session's events once the kind seeded through it; ``None`` for a host with no world and
+            for a kind that never seeded — nobody opened the world, which is not "nothing moved it".
+        """
+        if self.world is None or not self.world.opened:
+            return None
+        return list(self.world.events)
+
+    @property
+    def end_state(self) -> dict[str, Any] | None:
+        """The world the cell left, once it was read; ``None`` when it never was.
+
+        Returns:
+            The session's one end-state reading, or ``None``.
+        """
+        return self.world.end_state_read if self.world is not None else None
 
     def waiting_on(self, pending: CellPending) -> None:
         """Name what the cell is waiting on from here.
@@ -1031,6 +1058,11 @@ async def run_one_result(
         else None
     )
     sink.cassettes = cell_cassettes
+    # The cell's handle on the host's world, built here rather than by the kind so that what the
+    # kind does to its world — the seed, the triggers, the end state — is on the sink whatever way
+    # the cell ends. ``None`` for a host that declares no world.
+    world_session = WorldSession(host.profile.world) if host.profile.world is not None else None
+    sink.world = world_session
     try:
         # The subject arrives as a PAIR and the split is the point: the engine's snapshot is a
         # key, a label and content hashes, handed over here, while the host's rich object was
@@ -1045,6 +1077,7 @@ async def run_one_result(
             # driving to find them.
             span_window=trace_scopes,
             cassettes=cell_cassettes,
+            world=world_session,
         )
     except CandidatePreparationFailed as failure:
         # A kind that cannot build its candidate records one cleanly excluded cell, under the
@@ -1071,6 +1104,13 @@ async def run_one_result(
     sink.waiting_on("candidate")
     try:
         candidate = await kind.invoke(instance, test_case, sink)
+        if world_session is not None and world_session.opened:
+            # The world the cell LEFT, read back through every attached dimension's ``read`` handle once
+            # ``invoke`` has returned — the reading the kind took to grade, if it took one, since the
+            # session reads once. Here rather than in each kind, so a kind that never thought to read
+            # its world still stores what its candidate left behind, and none can store the seed instead.
+            sink.waiting_on("apparatus")
+            await world_session.end_state()
     except ApparatusError as fault:
         # The rig broke under the candidate — a replay miss, a corrupt recording, a harness fault
         # a kind's tool boundary re-raised as the seam tells it to. That is THIS cell's exclusion,
@@ -1328,6 +1368,7 @@ async def run_one_result(
         async_deliveries=async_deliveries,
         # The kind's own report, stored verbatim: nothing below the dispatch reads inside it.
         kind_payload=candidate.kind_payload,
+        world_events=sink.world_events,
         runner_error=combined_error,
         candidate_error=candidate_error,
         infra_error=infra_error,
@@ -1361,6 +1402,8 @@ async def run_one_result(
             judged_artifact=judged_artifact if judge_evidence is not None else None,
             # What the candidate did, as the kind recorded it — the input a re-check re-grades from.
             call_ledger=candidate.call_ledger,
+            # What the world held when the cell ended — the other input a re-check re-grades from.
+            end_state=sink.end_state,
         ),
     )
 
@@ -1483,6 +1526,9 @@ def _cut_short_cell(
         trace=list(side.output) if side is not None else [],
         judge_evidence=sink.judging.evidence if sink.judging is not None else None,
         judged_artifact=sink.judging.judged_artifact if sink.judging is not None else None,
+        # Read only once ``invoke`` returned, so a cell cut off before that stores none; one cut off
+        # while judged keeps what was read.
+        end_state=sink.end_state,
     )
     return CellOutcome(result, trace)
 
@@ -1704,6 +1750,9 @@ def _degraded_capture_fields(
         "stop_cause": side.stop_cause if side is not None else None,
         "candidate_instance_id": side.candidate_instance_id if side is not None else None,
         "kind_payload": side.kind_payload if side is not None else None,
+        # What fired before the cell ended, from the session the engine owns — so a cut-off cell
+        # keeps it, as it keeps its spend.
+        "world_events": sink.world_events,
         "cost_roles": list(cost_roles),
         "covariates": derive_covariates(
             usage=usage,
@@ -1930,6 +1979,7 @@ def evaluate_goal_state(
     test_case: EvalTestCase,
     ledger: CallLedger,
     end_state: Mapping[str, Any],
+    fired: Collection[str] | None,
     world: WorldRegistry | None,
 ) -> list[GoalStateOutcome]:
     """Run every expression in ``template.goal_state_checks`` and capture outcomes.
@@ -1944,6 +1994,8 @@ def evaluate_goal_state(
         test_case: The case, for its variation parameters.
         ledger: The calls the candidate made that succeeded.
         end_state: The world the cell left behind, keyed by declared dimension name.
+        fired: The triggered dimensions that fired (:attr:`WorldSession.fired`), or ``None`` when no
+            world events were recorded.
         world: The host's world registry (``profile.world``).
 
     Returns:
@@ -1956,6 +2008,7 @@ def evaluate_goal_state(
         template.goal_state_checks,
         ledger=ledger,
         end_state=end_state,
+        fired=fired,
         variation=test_case.variation_params,
         world=world,
     )
@@ -1966,10 +2019,11 @@ def grade_goal_checks(
     *,
     ledger: CallLedger,
     end_state: Mapping[str, Any],
+    fired: Collection[str] | None,
     variation: Mapping[str, Any],
     world: WorldRegistry | None,
 ) -> list[GoalStateOutcome]:
-    """Grade goal checks against a call ledger and an end state: the one evaluation every caller uses.
+    """Grade goal checks against a call ledger, an end state and what fired: the one evaluation every caller uses.
 
     **Callable by every kind.** A kind fills a :class:`~threetears.evals.contracts.call_ledger.CallLedger`
     as its candidate acts, reads its end state, and grades here; :func:`evaluate_goal_state` is the
@@ -1984,6 +2038,10 @@ def grade_goal_checks(
         ledger: The calls the candidate made that succeeded — a cell's, or a control's stated calls.
         end_state: The world to read, keyed by declared dimension name — a cell's end state, or a
             control end state.
+        fired: The triggered dimensions that fired, read by ``fired()`` — a cell's
+            (:attr:`~threetears.evals.contracts.world_session.WorldSession.fired`), or a control's stated
+            set. Required rather than defaulted: ``None`` says no world events were recorded, and a check
+            reading ``fired()`` then raises rather than scoring "nothing fired" for a cell nobody watched.
         variation: The case parameters a check may read as ``variation.*``.
         world: The host's world registry (``profile.world``), so a path reads the dimension the
             authoring gate resolved it to.
@@ -1998,7 +2056,7 @@ def grade_goal_checks(
     for expr in expressions:
         try:
             passed, detail = evaluate_with_detail(
-                expr, end_state=end_state, ledger=ledger, world=world, variation=dict(variation)
+                expr, end_state=end_state, ledger=ledger, world=world, variation=dict(variation), fired=fired
             )
         except Exception as e:  # prawduct:ok-broad-except — DSL evaluation boundary; re-raised as a named rig fault
             log.warning("Goal-state expression failed to evaluate: %r → %s", expr, e)

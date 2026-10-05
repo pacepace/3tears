@@ -10,8 +10,9 @@ at authoring instead.
 **Two controls per check.** Each check is evaluated against:
 
 * **the do-nothing control** — the template's own seed as the end state, named through the host's
-  world registry, with an empty call ledger: the candidate did nothing. Derived, so it needs no data
-  and cannot be authored wrong.
+  world registry, with an empty call ledger and nothing fired: the candidate did nothing. A triggered
+  dimension's seed arms it rather than setting it, so it is left out — its condition never happened.
+  Derived, so it needs no data and cannot be authored wrong.
 * **its named control** — an end state the template's author states in
   :class:`~threetears.evals.contracts.models.GoalCheckControls`: for an ``act`` check, one where the
   behaviour happened; for a ``hold`` check, one where the forbidden thing happened.
@@ -48,10 +49,10 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 from threetears.evals.contracts.call_ledger import CallLedger
-from threetears.evals.contracts.dsl import undefined_action
+from threetears.evals.contracts.dsl import undefined_action, undefined_fired_dimension
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.host.profile import HostProfile
-from threetears.evals.contracts.host.world import WorldRegistry
+from threetears.evals.contracts.host.world import Triggered, WorldRegistry
 from threetears.evals.contracts.host.world_schema import schema_violations
 from threetears.evals.contracts.models import ControlEndState, EvalTemplate, GoalCheckIntent, GoalStateOutcome
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
@@ -136,6 +137,8 @@ class ControlEnd(NamedTuple):
     #: The calls, recorded through :meth:`~threetears.evals.contracts.call_ledger.CallLedger.record`,
     #: the method a kind records its candidate's calls with.
     ledger: CallLedger
+    #: The triggered dimensions that fired — what ``fired()`` reads. The do-nothing control fires nothing.
+    fired: frozenset[str]
 
 
 def _named(world: WorldRegistry | None, namespaces: Mapping[str, Any]) -> dict[str, Any]:
@@ -160,7 +163,10 @@ def _named(world: WorldRegistry | None, namespaces: Mapping[str, Any]) -> dict[s
 
 
 def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None) -> ControlEnd:
-    """The end state of a candidate that did nothing: the template's seed, and no calls.
+    """The end state of a candidate that did nothing: the template's seed, no calls, and nothing fired.
+
+    The seed less its triggered dimensions: seeding one arms it, and with nothing done its condition
+    never happened, so its value is not in the world.
 
     Args:
         template: The template whose seed it is.
@@ -172,11 +178,31 @@ def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None)
     Raises:
         ValueError: The seed states something the registry does not declare.
     """
-    return ControlEnd(end_state=_named(world, template.world_seed.namespaces), ledger=CallLedger())
+    seeded = _named(world, template.world_seed.namespaces)
+    # A triggered dimension's seed ARMS it rather than setting it: a candidate that did nothing never
+    # met the condition, so the value never arrived. Naming it here would grade a check on a triggered
+    # dimension's end state as already satisfied by the seed — exactly the "graded the seed, not the end
+    # state" defect this gate exists to refuse.
+    idle = {name: value for name, value in seeded.items() if not _is_triggered(world, name)}
+    return ControlEnd(end_state=idle, ledger=CallLedger(), fired=frozenset())
+
+
+def _is_triggered(world: WorldRegistry | None, name: str) -> bool:
+    """Whether ``name`` is a dimension that arrives on a condition rather than at t=0.
+
+    Args:
+        world: The host's world registry, or None for a host that declares no world.
+        name: A declared dimension name.
+
+    Returns:
+        Whether its declaration is triggered.
+    """
+    declared = world.get(name) if world is not None else None
+    return declared is not None and isinstance(declared.when, Triggered)
 
 
 def control_end_state(template: EvalTemplate, end_state: ControlEndState, *, world: WorldRegistry | None) -> ControlEnd:
-    """A named control end state: the seed with the stated dimensions replaced, and the stated calls recorded.
+    """A named control end state: the seed with the stated dimensions replaced, the stated calls, and what fired.
 
     Args:
         template: The template whose seed the control is laid over.
@@ -194,7 +220,7 @@ def control_end_state(template: EvalTemplate, end_state: ControlEndState, *, wor
     ledger = CallLedger()
     for call in end_state.calls:
         ledger.record(call.tool, call.action, call.params)
-    return ControlEnd(end_state=named, ledger=ledger)
+    return ControlEnd(end_state=named, ledger=ledger, fired=frozenset(end_state.fired))
 
 
 def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> list[CheckDiscrimination]:
@@ -222,6 +248,7 @@ def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> li
             [entry.check],
             ledger=nothing.ledger,
             end_state=nothing.end_state,
+            fired=nothing.fired,
             variation=end_state.variation,
             world=profile.world,
         )
@@ -230,6 +257,7 @@ def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> li
             [entry.check],
             ledger=stated.ledger,
             end_state=stated.end_state,
+            fired=stated.fired,
             variation=end_state.variation,
             world=profile.world,
         )
@@ -328,8 +356,10 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile) -> list
     """What a control end state states that this host's world or tools could not hold.
 
     A control is evidence only if it is a state a run could leave: a key no dimension declares, a
-    value its dimension's schema refuses, or a call to an action the host does not define would let
-    a check pass or fail its control for a reason no run reproduces. Asked of the host's profile,
+    value its dimension's schema refuses, a fired dimension that is not a triggered one the host
+    declares (:func:`~threetears.evals.contracts.dsl.undefined_fired_dimension`), or a call to an
+    action the host does not define would let a check pass or fail its control for a reason no run
+    reproduces. Asked of the host's profile,
     as the world gate asks of a goal check. A key names its dimension through the host's addressing
     (:meth:`~threetears.evals.contracts.host.world.WorldRegistry.address`), as a seed key does. A host
     that declares no world refuses any world state a control states, since a goal check can only
@@ -372,6 +402,11 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile) -> list
                     )
                 else:
                     defects.extend(schema_violations(dimension.schema, value, at=name))
+    # Held to the rule a goal check's own fired() references are held to, so a control cannot prove a
+    # check over a dimension that can never fire.
+    defects.extend(
+        undefined for name in end_state.fired if (undefined := undefined_fired_dimension(name, world)) is not None
+    )
     for call in end_state.calls:
         if (undefined := undefined_action(call.tool, call.action, profile.tool_actions)) is not None:
             defects.append(undefined)

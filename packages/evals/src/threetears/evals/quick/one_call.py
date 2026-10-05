@@ -43,6 +43,7 @@ from threetears.evals.contracts import (
     MetricDescriptor,
     VariantConfig,
     WorldSeed,
+    WorldSession,
     canonical_digest,
     withhold_failure_detail,
 )
@@ -212,6 +213,7 @@ class CallableKind:
         world_seed: WorldSeed,
         span_window: CellSpanWindow,
         cassettes: CellCassettes | None,
+        world: WorldSession | None,
     ) -> _Prepared:
         """Nothing to build: the candidate is already a callable. Records the arm's model label.
 
@@ -221,6 +223,7 @@ class CallableKind:
             world_seed: The template's seed, which this kind has no world to write.
             span_window: The cell's trace windows, unused.
             cassettes: Always ``None``: the launch declines cassettes for this kind.
+            world: Unread — a callable has no world to seed, so the cell opens none.
 
         Returns:
             The prepared candidate.

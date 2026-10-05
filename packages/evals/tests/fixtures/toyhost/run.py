@@ -81,6 +81,7 @@ from packages.evals.tests.fixtures.toyhost.kind import (
     EMIT_FIELD_ACTION,
     EXTRACTOR_TOOL,
     INVOICE_FIELDS,
+    PAYMENT_HOLD,
     TOY_DOCUMENTS,
     TOY_EXTRACTOR_KIND,
     TOY_SCRIPTS,
@@ -113,6 +114,11 @@ RUN_K = 2
 
 #: The template's one goal check: the extractor emitted every declared field, read off its call ledger.
 EVERY_FIELD_EMITTED = f'call_count("{EXTRACTOR_TOOL}.{EMIT_FIELD_ACTION}") == {len(INVOICE_FIELDS)}'
+
+#: Goal checks over the event trigger the arming template sets up: the hold fired, and the world the cell
+#: LEFT holds what it applied — the one a world read taken at t=0 would get wrong, since the seed only arms it.
+HOLD_FIRED = f'fired("{PAYMENT_HOLD}")'
+HOLD_IN_FORCE = f'state.{PAYMENT_HOLD} == "held"'
 
 #: The question this campaign declares, by id.
 RUN_QUESTION_ID = "q-extractor-model"
@@ -170,6 +176,47 @@ def toyhost_template() -> EvalTemplate:
                 )
             },
         ),
+    )
+
+
+def toyhost_arming_template() -> EvalTemplate:
+    """The toy template with the payment hold armed, and checks on both that it fired and what it left.
+
+    The kind fires the hold at run time once its extraction is posted, through its cell's world session,
+    so every cell records the firing on its world events and leaves the hold in force in its end state.
+    Both new checks carry a control (the posted hold), and each fails when the candidate did nothing —
+    the seed arms the hold and never sets it.
+
+    Returns:
+        The template.
+    """
+    template = toyhost_template()
+    controls = template.goal_check_controls
+    assert controls is not None
+    return template.model_copy(
+        update={
+            "world_seed": template.world_seed.model_copy(
+                update={"namespaces": {**template.world_seed.namespaces, "console": {PAYMENT_HOLD: "held"}}}
+            ),
+            "goal_state_checks": [*template.goal_state_checks, HOLD_FIRED, HOLD_IN_FORCE],
+            "goal_check_controls": controls.model_copy(
+                update={
+                    "checks": [
+                        *controls.checks,
+                        GoalCheckControl(check=HOLD_FIRED, intent="act", control="hold-posted"),
+                        GoalCheckControl(check=HOLD_IN_FORCE, intent="act", control="hold-posted"),
+                    ],
+                    "end_states": {
+                        **controls.end_states,
+                        "hold-posted": ControlEndState(
+                            describes="The extraction was posted and the staged hold took effect.",
+                            world={"console": {PAYMENT_HOLD: "held"}},
+                            fired=[PAYMENT_HOLD],
+                        ),
+                    },
+                }
+            ),
+        }
     )
 
 
@@ -567,6 +614,8 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
 
 __all__ = [
     "EVERY_FIELD_EMITTED",
+    "HOLD_FIRED",
+    "HOLD_IN_FORCE",
     "RETRIEVAL_AXIS",
     "RETRIEVAL_BASE",
     "RETRIEVAL_SWEPT_DEPTH",
@@ -579,6 +628,7 @@ __all__ = [
     "ToyhostArm",
     "ToyhostRunPath",
     "execute_toyhost_run",
+    "toyhost_arming_template",
     "toyhost_retrieval_arms",
     "toyhost_retrieval_campaign",
     "toyhost_run",

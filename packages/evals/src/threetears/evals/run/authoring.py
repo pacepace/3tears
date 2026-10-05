@@ -45,6 +45,7 @@ from threetears.evals.contracts.dsl import (
     call_parameter_matches,
     extract_paths,
     undefined_call_references,
+    undefined_fire_references,
     world_prose_matches,
 )
 from threetears.evals.contracts.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
@@ -246,6 +247,11 @@ def refuse_unsupplied_world(
     is the exception, refused unless the action's schema closes the value, because nothing but
     that schema can say a parameter is not text the model wrote.
 
+    **What fires is asked too.** A goal check's ``fired("<dimension>")`` must name a triggered dimension
+    the host declares, and a seed scheduling ambient perturbation needs a world with a
+    ``perturb_ambient`` handle — each is a template asking for a world event no run of this host could
+    produce, and a check over one scores False on every trial.
+
     Args:
         template: The template being written.
         profile: The host whose world, tools and action schemas the expressions are held to.
@@ -260,13 +266,23 @@ def refuse_unsupplied_world(
             check the language cannot read. The latter is refused here for the reason
             :class:`~threetears.evals.contracts.models.Precondition` refuses its own at parse: an
             expression no run can evaluate is an apparatus failure discovered after the
-            spend, attributed to whatever the run was doing. Also a goal check that
+            spend, attributed to whatever the run was doing. Also a ``fired()`` name that is not a
+            triggered dimension, or ambient perturbation on a world with no handle for it. Also a goal check that
             string-matches a field the host's world marks as model prose: code checks
             structure, never prose, so that text is a rubric dimension's to judge.
     """
     defects: list[str] = []
     prose_matches: list[str] = []
     undefined: list[str] = []
+    unfireable: list[str] = []
+    if (authored is None or "world_seed" in authored) and template.world_seed.ambient_perturbation_turns:
+        world = profile.world
+        if world is None or world.perturb_ambient is None:
+            unfireable.append(
+                "its world_seed schedules ambient perturbation before turn(s) "
+                f"{template.world_seed.ambient_perturbation_turns!r}, and this host's world declares no "
+                "perturb_ambient handle to move undeclared state with"
+            )
     if authored is None or "preconditions" in authored:
         for precondition in template.preconditions:
             for path in precondition.presumed_paths:
@@ -297,6 +313,17 @@ def refuse_unsupplied_world(
                 f"goal check {expression!r}: {reason}"
                 for reason in undefined_call_references(expression, profile.tool_actions, profile.action_parameters)
             )
+            unfireable.extend(
+                f"goal check {expression!r}: {reason}"
+                for reason in undefined_fire_references(expression, profile.world)
+            )
+    if unfireable:
+        raise ValidationFailedError(
+            f"template {template.name!r} names world events this host cannot produce: "
+            + "; ".join(unfireable)
+            + " — a check on a dimension that can never fire scores False on every trial, which reads as the"
+            " candidate's failure; name a triggered dimension the host declares, or drop the schedule"
+        )
     if undefined:
         raise ValidationFailedError(
             f"template {template.name!r} names calls this host does not define: "

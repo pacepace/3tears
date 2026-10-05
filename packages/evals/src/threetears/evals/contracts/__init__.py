@@ -29,6 +29,8 @@ from threetears.evals.contracts.campaign import (
     GenerationProvenance,
 )
 from threetears.evals.contracts.call_ledger import CallLedger, RecordedCall
+from threetears.evals.contracts.world_events import WorldEvent, WorldEventCause, WorldEventKind
+from threetears.evals.contracts.world_session import WorldSession, WorldSessionError
 from threetears.evals.contracts.candidate_kind import (
     CandidateOutput,
     CandidatePreparationFailed,
@@ -443,7 +445,12 @@ __all__ = [
     "VariationCounts",
     "Viz",
     "VizType",
+    "WorldEvent",
+    "WorldEventCause",
+    "WorldEventKind",
     "WorldSeed",
+    "WorldSession",
+    "WorldSessionError",
     "attribution_state",
     "candidate_failure_cause",
     "canonical_digest",

@@ -6,6 +6,78 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: post-cell readback, settle, runtime triggers and ambient perturbation
+
+- **`WorldSession`** (new, `threetears.evals.contracts`): one cell's handle on the host's world. The
+  runner builds one per cell over `profile.world` and hands it to the kind. **Breaking:**
+  `CandidateKind.prepare` takes a new required `world: WorldSession | None` (`None` on a host that
+  declares no world); every kind adds the parameter. A world-bearing kind seeds through it:
+  - `await world.seed(world_seed, *, attached)` runs the seed walk (`check_seed`) and the dimensions'
+    own `seed` handles, then awaits each attached carrier's `settle` handle before the first turn.
+    Seeding a triggered dimension arms it. Returns the `SeedWrite`s; `SeedRefused` propagates for the
+    kind to translate.
+  - `await world.at_turn(n)` before each candidate turn applies the ambient perturbation the seed
+    scheduled for turn `n` (once per turn).
+  - `await world.fire(dimension, *, turn)` makes a triggered dimension's condition happen through the
+    host's `fire` handle; `world.observe(dimension, *, turn)` records a condition that happened in the
+    world on its own account (the candidate's action, a person's ruling). Each is a `WorldEvent`.
+  - `await world.end_state()` reads every dimension of every attached carrier through its `read`
+    handle, ONCE; later calls return the same reading, and nothing may move the world after it.
+  - `opened`, `attached`, `seeded`, `events`, `fired`, `end_state_read`, `registry`.
+- **`WorldSessionError`** (new) — the kind's code asking for what its world or the moment cannot give,
+  so it ends the run rather than excluding a cell. Refused: a second `seed`; an attached carrier no
+  declared dimension names; scheduled ambient perturbation on a world with no `perturb_ambient`
+  handle; firing or observing a dimension that is undeclared, not triggered, or on an unattached
+  carrier; firing one with no fire handle (a `human` trigger never has one — the message says to
+  `observe` it) or one this cell's seed did not arm; any move of a world never seeded, or after its end
+  state was read; an end-state read storage cannot hold as JSON.
+- **Post-cell readback (Gap B).** Once `invoke` returns, the runner reads the cell's end state
+  through its session (the kind's own reading, if it took one) and stores it on the new
+  **`EvalTrace.end_state`**; a readback that raises `ApparatusError` excludes the cell. `None` when no
+  world was opened. A trace carrying only an end state is stored.
+- **`EvalResult.world_events: list[WorldEvent] | None`** (new): what moved the cell's world after it
+  was seeded, recorded from the engine-owned session, so a cell cut off at its deadline or by an
+  apparatus fault keeps what fired before it. `[]` = the world was opened and nothing moved it;
+  `None` = no world was opened.
+- **`WorldEvent`** / **`WorldEventKind`** / **`WorldEventCause`** (new): `kind` (`turn`, `event`,
+  `human`, `ambient`), `dimension`, `condition`, `caused_by` (`rig` | `world`), `armed`, `turn` (≥ 1),
+  `moved` (ambient only: what the rig reported moving, `None` when it reported nothing). Refuses a
+  record whose fields contradict its kind, a rig-caused human firing, and a rig firing of an unarmed
+  dimension.
+- **`WorldRegistry(settle={carrier: handle})`** (new, and on `extend`): a carrier's handle awaited
+  after a cell's seed went through it, called `settle()`. Refused at registration: a carrier no
+  declared dimension names, an unresolvable handle, a handle not callable as `settle()`; `extend`
+  refuses rebinding a carrier's settle handle. `WorldRegistry.settle` reads the table.
+- **`WorldSeed.ambient_perturbation_turns: list[int]`** (new, each ≥ 1, none twice): the candidate
+  turns before which the host's `perturb_ambient` handle moves undeclared state. Frozen at launch onto
+  the new **`EvalRun.resolved_ambient_perturbation_turns`** and hashed into the `seeded_world` context
+  component: **`IDENTITY_VERSION` 21 → 22**, so every stored context key re-derives. Refused at
+  authoring (`refuse_unsupplied_world`) on a host whose world has no `perturb_ambient` handle.
+- **The goal language reads what fired: `fired("<dimension>")`.** `evaluate` / `evaluate_with_detail`
+  take `fired=` (default `None`, where `fired()` raises rather than answering False); `fired()` takes
+  one string literal, refused at parse otherwise. **Breaking:** `grade_goal_checks` and
+  `evaluate_goal_state` take a required `fired=` (`WorldSession.fired`, or `None`). New in
+  `contracts.dsl`: `referenced_fires`, `undefined_fire_references`, `undefined_fired_dimension`,
+  `reads_call_ledger`. A `Precondition` reading `fired()` is refused where it is written (t=0, nothing
+  has fired). The authoring gate refuses a `fired()` name that is not a triggered dimension the host
+  declares.
+- **Controls state what fired.** `ControlEndState.fired: list[str]` (new; the whole set, not an
+  overlay); `ControlEnd` gains `fired`. A control naming a dimension that cannot fire is refused.
+  **Fixed:** the do-nothing control no longer holds a triggered dimension's seeded value — the seed
+  arms it, and with nothing done its condition never happened — so a check on a triggered dimension's
+  end state is no longer graded as satisfied by the seed.
+- **The re-check reads the world half.** `state.*` checks re-grade from the stored end state and
+  `fired()` checks from the stored world events; each outcome whose input was not stored is kept as
+  stored with its reason (a missing ledger is now one such reason rather than skipping the result).
+  **Breaking:** `recheck_goal_states(store, run_id, scope_id, *, world, apply)` and
+  `recheck_result(result, *, ledger, end_state, variation, world)`.
+- **Breaking: `check_seed` drops `skip_namespaces` and `skip_keys`.** They existed for a call ledger
+  kept inside the world; the ledger lives beside it now, nothing called them, and a skipped key was a
+  seed value let through unchecked. State a run writes itself is a dimension with no `seed` handle.
+- The toy host's world gains an event-triggered dimension (`payment_hold`, condition
+  `extraction_posted`); its kind seeds through the session, announces its turn, fires the hold when
+  armed, and grades against the session's end state. The courier host seeds through the session.
+
 ### 3tears-evals: the multi-speaker conversation — speaker rounds, `llm_decided`, session breaks
 
 - **Speaker rounds.** A conversation is a sequence of rounds: one or more simulated actors speak,

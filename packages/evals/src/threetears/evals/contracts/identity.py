@@ -402,7 +402,12 @@ if TYPE_CHECKING:
 #:   ``seeded_world`` component's seed now keyed ``world_seed`` (the engine's one word for the seeded
 #:   world, beside ``WorldRegistry``), so every context key re-derives too. One bump for both, since
 #:   nothing between them was released.
-IDENTITY_VERSION: int = 21
+#: - **v22** — the ``seeded_world`` component composes the turns before which the run's world session
+#:   perturbed undeclared state (``EvalRun.resolved_ambient_perturbation_turns``), under the key
+#:   ``ambient_perturbation_turns``. A run whose template scheduled ambient perturbation faced a world that
+#:   moved under it; one that did not, faced a world that held still, and the two were pooled as one
+#:   condition. Composed for every run (``[]`` for none), so every stored context key re-derives.
+IDENTITY_VERSION: int = 22
 """Version of the key-derivation predicate below.
 
 Bump whenever the hashed inputs of *any* key change — adding a factor, removing
@@ -556,7 +561,8 @@ def compute_context_components(
             the host's names cannot. ``{}`` is a recording — this subject carries nothing outside
             its variant components — and ``None`` is an absence, which drops the component.
         seeded_world: What this run froze before the subject's first turn — the world it
-            seeded, keyed by carrier, and the spec its kind validated. Every entry is part of what the subject faced, so part of the
+            seeded, keyed by carrier, the turns it perturbed before, and the spec its kind validated.
+            Every entry is part of what the subject faced, so part of the
             condition its results describe; a run that froze nothing passes an empty value per
             carrier rather than omitting the argument, because "seeded nothing" is a condition
             and not an absence. That is also why this is its own component rather than riding
@@ -1028,12 +1034,13 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         # content-addressed by the host, so nothing here has to know what a subject is made of.
         subject_id=run.subject_snapshot.subject_id,
         subject_state=run.subject_snapshot.state,
-        # What the run froze before the subject's first turn: the world it seeded, and the spec its
-        # kind validated — part of what the candidate was handed, so two runs whose specs differ
+        # What the run froze before the subject's first turn: the world it seeded, the turns its world
+        # session was told to perturb before, and the spec its kind validated — part of what the candidate was handed, so two runs whose specs differ
         # are not repetitions of one condition. Both are frozen resolved forms, so a spec stating a
         # default and one leaving it out hash alike.
         seeded_world={
             "world_seed": run.resolved_world_seed,
+            "ambient_perturbation_turns": run.resolved_ambient_perturbation_turns,
             "kind_spec": run.kind_spec,
         },
         template_id=run.template_id,

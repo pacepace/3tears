@@ -50,6 +50,7 @@ from threetears.evals.contracts.models import (
     RoleUsage,
 )
 from threetears.evals.contracts.provider import withhold_failure_detail
+from threetears.evals.contracts.world_session import WorldSession
 from threetears.evals.run.metering import MeteredCallLedger
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run, run_one_result
 from threetears.evals.contracts.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
@@ -100,6 +101,7 @@ class _FakeSingleShotKind:
         world_seed: Any,
         span_window: CellSpanWindow,
         cassettes: CellCassettes | None,
+        world: Any,
     ) -> dict[str, Any]:
         """Record ``prepare``'s arguments and hand back an opaque instance.
 
@@ -110,6 +112,7 @@ class _FakeSingleShotKind:
             span_window: This cell's tracing windows. Recorded and deliberately never
                 opened — this kind is the population the harvest's disclosure is about.
             cassettes: This cell's cassettes; ``None`` for every run here, which has them off.
+            world: This cell's world session; ``None`` on a host that declares no world.
 
         Returns:
             The instance, which is just what was handed over.
@@ -119,6 +122,7 @@ class _FakeSingleShotKind:
             "variant_config": variant_config,
             "world_seed": world_seed,
             "span_window": span_window,
+            "world": world,
         }
         return self.prepared
 
@@ -296,8 +300,12 @@ async def test_the_kind_receives_the_engines_half_of_the_subject_and_nothing_of_
     await _run(kind, template, subject_snapshot=snapshot)
 
     assert kind.prepared is not None
-    assert set(kind.prepared) == {"subject_snapshot", "variant_config", "world_seed", "span_window"}
+    assert set(kind.prepared) == {"subject_snapshot", "variant_config", "world_seed", "span_window", "world"}
     assert kind.prepared["subject_snapshot"] is snapshot, "the engine's half reaches the kind unchanged"
+    # The toy host declares a world, so the cell's handle on it is the engine's own session — over the
+    # host's registry, and unopened, because this kind seeds nothing through it.
+    session = kind.prepared["world"]
+    assert isinstance(session, WorldSession) and not session.opened
     assert kind.prepared["variant_config"].candidate_model == "test/model"
     assert kind.prepared["world_seed"] is template.world_seed
     assert kind.invoked_case is not None and kind.invoked_case.template_id == template.id

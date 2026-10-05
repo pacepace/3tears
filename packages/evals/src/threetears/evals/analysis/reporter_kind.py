@@ -879,6 +879,7 @@ class ReporterKind:
         world_seed: Any,
         span_window: CellSpanWindow,
         cassettes: CellCassettes | None,
+        world: Any,
     ) -> PreparedReporter:
         """Bind this cell's model and windows, refusing a cell that would measure another model.
 
@@ -891,6 +892,7 @@ class ReporterKind:
             span_window: This cell's tracing windows, opened in :meth:`invoke`.
             cassettes: Unwired — a reporter calls no tool a cassette could record, so a cassette run
                 of one is refused by the engine rather than run live under a replay.
+            world: Unread — a reporter perceives no world, so it opens none and its cells record none.
 
         Returns:
             The cell's bound model and windows.
@@ -1154,6 +1156,7 @@ class AsRecordedReporterKind:
         world_seed: Any,
         span_window: CellSpanWindow,
         cassettes: CellCassettes | None,
+        world: Any,
     ) -> PreparedReporter:
         """Bind this cell's windows, refusing a cell recorded against a generator model.
 
@@ -1163,6 +1166,7 @@ class AsRecordedReporterKind:
             world_seed: Unread.
             span_window: This cell's tracing windows.
             cassettes: Unwired, as for the generating reporter.
+            world: Unread, as for the generating reporter.
 
         Returns:
             The cell's binding.

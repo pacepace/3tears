@@ -135,6 +135,7 @@ class _JudgedKind:
         world_seed: Any,
         span_window: CellSpanWindow,
         cassettes: CellCassettes | None,
+        world: Any,
     ) -> None:
         """Nothing to build.
 

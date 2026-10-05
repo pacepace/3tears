@@ -17,10 +17,16 @@ and the seed:
 host's adapter and be copied by hand into the reference toy host, so a rule added to one copy —
 schema conformance was the instance — had to be added to the other separately, and a host copied
 from the toy would never have received the next one. A host keeps what is genuinely its own: how a
-seed key addresses a dimension (its registry's ``address``), which namespaces and keys its run writes rather than a
-template (``skip_namespaces`` / ``skip_keys``), and what a refusal costs — the error type, the
-termination, and the wording its operators read. That is why the walk raises one structured
+seed key addresses a dimension (its registry's ``address``), and what a refusal costs — the error
+type, the termination, and the wording its operators read. That is why the walk raises one structured
 :class:`SeedRefused` rather than a host's exception: the host translates it at its call site.
+
+**There is no pass-over.** The walk once took namespaces and keys to skip — state a host's run wrote
+from its own record rather than a template, the instance being a call ledger kept inside the world.
+The ledger now lives beside the world (``CallLedger``), so nothing a run writes shares a namespace with
+what a template seeds, and a skipped key was only ever a seed value the walk let through unchecked.
+State a run writes itself is a dimension with no ``seed`` handle, refused here as ``unseedable`` like
+any other.
 
 **Every write is checked before any is made.** :func:`check_seed` returns the writes and makes
 none, so a refusal leaves the world untouched rather than half-seeded; the caller applies exactly
@@ -147,8 +153,6 @@ def check_seed(
     namespaces: Mapping[str, Any],
     *,
     attached: Collection[str] | None = None,
-    skip_namespaces: Collection[str] = (),
-    skip_keys: Collection[str] = (),
 ) -> tuple[SeedWrite, ...]:
     """Walk a world seed against the registry: every write it would make, checked, or the first refusal.
 
@@ -157,10 +161,6 @@ def check_seed(
         namespaces: Carrier → (seed key → value), as a template's world seed holds them.
         attached: The carriers this subject attaches, or None where no subject exists yet — at
             authoring, the registry's questions are the only ones there are to ask.
-        skip_namespaces: Namespaces the run writes from its own record rather than the template's
-            seed. Another refusal owns a template naming one; this walk passes over them.
-        skip_keys: Keys inside any namespace that nothing seeds — state the host's run writes itself
-            rather than any template.
 
     Returns:
         One :class:`SeedWrite` per seeded value, in the seed's order. Nothing has been written.
@@ -173,13 +173,9 @@ def check_seed(
     """
     writes: list[SeedWrite] = []
     for namespace, seeded in namespaces.items():
-        if namespace in skip_namespaces:
-            continue
         if not isinstance(seeded, Mapping):
             raise SeedRefused("malformed", namespace=namespace)
         for key, value in seeded.items():
-            if key in skip_keys:
-                continue
             name = registry.address(namespace, key)
             declared = registry.get(name)
             if declared is None:

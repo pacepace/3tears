@@ -2,7 +2,7 @@
 
 The seam is two operations, and everything else in the runner is subject-agnostic:
 
-* ``prepare(subject_snapshot, variant_config, world_seed) -> instance``
+* ``prepare(subject_snapshot, variant_config, world_seed, world) -> instance``
 * ``invoke(instance, test_case, sink) -> CandidateOutput``
 
 This module is the engine half of that seam: the protocol, the object a kind hands
@@ -111,6 +111,7 @@ from threetears.evals.contracts.models import (
     RoleUsage,
     WorldSeed,
 )
+from threetears.evals.contracts.world_session import WorldSession
 
 __all__ = [
     "CandidateKind",
@@ -519,6 +520,7 @@ class CandidateKind(Protocol):
         world_seed: WorldSeed,
         span_window: CellSpanWindow,
         cassettes: CellCassettes | None,
+        world: WorldSession | None,
     ) -> Any:
         """Build one candidate, ready to be invoked.
 
@@ -537,6 +539,13 @@ class CandidateKind(Protocol):
                 :class:`~threetears.evals.contracts.cassettes.CassetteSeams` before returning; the
                 engine refuses a cell whose kind does not, since its tools would run live under a
                 replay. The cell's, like ``span_window``: it already names the corpus and the case.
+            world: This cell's handle on the host's world, or ``None`` for a host that declares none. A
+                kind that seeds a world seeds it here (:meth:`~threetears.evals.contracts.world_session.WorldSession.seed`),
+                which settles each attached carrier before the first turn; it fires triggers and announces
+                turns through the same handle in :meth:`invoke`, so keep it on the returned instance. The
+                runner reads the world's end state back through it once ``invoke`` returns and records
+                what fired, so a kind that seeds beside it leaves the cell with neither. The cell's, like
+                ``span_window``.
 
         Returns:
             The kind's own prepared instance, opaque to the engine and handed straight

@@ -56,9 +56,10 @@ from threetears.evals.contracts import (
     JudgeEvidence,
     RoleUsage,
     WorldSeed,
+    WorldSession,
     VariantConfig,
 )
-from threetears.evals.contracts.host import ApparatusError, SeedRefused, SubjectSnapshot, WorldRegistry, check_seed
+from threetears.evals.contracts.host import ApparatusError, SeedRefused, SubjectSnapshot, WorldRegistry
 from threetears.evals.run import GoalCheckUnevaluable, grade_goal_checks
 from packages.evals.tests.fixtures.toyhost.tracing import OP_HOST_GRADE, OP_MODEL_CALL, OP_TURN_ROOT, toy_span
 
@@ -70,6 +71,9 @@ TOY_EXTRACTOR_KIND = "toy-extractor"
 #: The extractor's one action, as its call ledger records it: one call per field it emits.
 EXTRACTOR_TOOL = "extractor"
 EMIT_FIELD_ACTION = "emit_field"
+
+#: The event trigger this kind fires once its extraction is posted, when the case's seed armed it.
+PAYMENT_HOLD = "payment_hold"
 
 #: The measure this kind takes, spelled as the toy host's profile declares it.
 FIELD_ACCURACY = "field_accuracy"
@@ -259,11 +263,11 @@ class ToyExtractorInstance:
     #: rather than on the kind because one kind instance drives every cell of a run — the
     #: property the protocol states and the reason ``span_window`` is an argument at all.
     span_window: CellSpanWindow
+    #: This cell's handle on the host's world: seeded in ``prepare``, moved and read back in ``invoke``.
+    world_session: WorldSession
     #: What this cell's world was seeded to, read back off the world's own read handles at the
     #: end of seeding. The extractor is shown some of it and never the rest.
     world: dict[str, Any] = field(default_factory=dict)
-    #: Which declared dimensions this cell actually set, for the run-time algebra.
-    seeded: tuple[str, ...] = ()
 
 
 class ToyExtractorKind:
@@ -352,12 +356,13 @@ class ToyExtractorKind:
         world_seed: WorldSeed,
         span_window: CellSpanWindow,
         cassettes: CellCassettes | None,
+        world: WorldSession | None,
     ) -> ToyExtractorInstance:
-        """Seed this cell's world through the registry and hand back the prepared extractor.
+        """Seed this cell's world through its world session and hand back the prepared extractor.
 
-        The refusals are the engine's, not this kind's: :func:`~threetears.evals.contracts.host.check_seed`
-        is the one seed walk every host calls — a carrier this kind does not attach, a key no
-        dimension declares, a value under the wrong carrier, a dimension no run can set, and a value
+        The refusals are the engine's, not this kind's: the session runs
+        :func:`~threetears.evals.contracts.host.check_seed`, the one seed walk every host calls — a
+        carrier this kind does not attach, a key no dimension declares, a value under the wrong carrier, a dimension no run can set, and a value
         its dimension's schema refuses. Any of them would leave the grader reading state the
         extractor never received, which is the candidate/judge divergence the seeding step exists to
         prevent. What is this kind's is what a refusal costs here — one excluded cell under
@@ -371,6 +376,8 @@ class ToyExtractorKind:
             world_seed: The world state this scenario presumes, keyed by carrier.
             span_window: This cell's tracing windows, carried out on the instance.
             cassettes: Unwired — the extractor calls no tool, so a cassette run of it is refused.
+            world: This cell's world session, over the same registry the kind was built with. The toy
+                host always declares a world, so it is never ``None`` here.
 
         Returns:
             The prepared extractor.
@@ -381,18 +388,17 @@ class ToyExtractorKind:
                 under ``seed_failed``, which is the arm that sends an operator to the apparatus
                 rather than to the subject factory.
         """
+        assert world is not None and world.registry is self._world, "the cell's world is the one this kind seeds"
         try:
-            writes = check_seed(self._world, world_seed.namespaces, attached=self.CARRIERS)
+            await world.seed(world_seed, attached=self.CARRIERS)
         except SeedRefused as refused:
             raise CandidatePreparationFailed(f"apparatus: {refused}", termination="seed_failed") from refused
-        for write in writes:
-            await self._world.call(write.handle, write.value)
 
         # Read back through the declared READ handles, not off the object the seeds wrote: a
         # seeder wired to nothing is the founding defect, and only a round trip catches it. Every
         # declared dimension, not just the seeded ones — the witnessed one is state this cell
         # observed and did not choose, and that is a fact about the cell.
-        world = {
+        seeded_world = {
             declared.name: await self._world.call(declared.read)
             for declared in self._world.declarations
             if declared.read is not None
@@ -400,8 +406,8 @@ class ToyExtractorKind:
         return ToyExtractorInstance(
             model=variant_config.candidate_model,
             span_window=span_window,
-            world=world,
-            seeded=tuple(sorted(write.name for write in writes)),
+            world_session=world,
+            world=seeded_world,
         )
 
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
@@ -431,6 +437,10 @@ class ToyExtractorKind:
                 # for exactly this, and the cell is excluded rather than scored on a broken case.
                 raise ApparatusError(f"no document {document_id!r} in the toy corpus for test case {test_case.id}")
 
+            # The extractor's one turn is about to be taken: the world session applies whatever ambient
+            # perturbation the case's seed scheduled for it.
+            session = instance.world_session
+            await session.at_turn(1)
             # COLLECTING covers the extraction and nothing else. The grading below is the host's
             # own grader, and time spent in it is not time the candidate spent.
             with scopes.collecting():
@@ -443,6 +453,14 @@ class ToyExtractorKind:
             ledger = CallLedger()
             for name in extraction.fields:
                 ledger.record(EXTRACTOR_TOOL, EMIT_FIELD_ACTION, {"field": name})
+            # Posting the extraction is the event trigger's condition. When the case's seed armed the
+            # hold, the rig makes the condition happen through the host's fire handle, at run time, and
+            # the session records the firing on the cell's world events.
+            if PAYMENT_HOLD in session.seeded:
+                await session.fire(PAYMENT_HOLD, turn=1)
+            # The world the extraction LEFT — read once, through the session, so the runner stores the
+            # same reading this grades against.
+            end_state = await session.end_state()
 
             # Spanned, and OUTSIDE the collection window on purpose: grading is the host's own
             # grader, not the candidate's work, and the port's two extents differ for exactly
@@ -455,14 +473,15 @@ class ToyExtractorKind:
                 accuracy = len(correct) / len(graded)
                 # One entry per cell coordinate, overwritten identically by the second k repeat.
                 self.measures[instance.model, document.document_id] = {FIELD_ACCURACY: accuracy}
-                # The template's goal checks, graded by the engine against the ledger and the world
-                # this cell read back. A check that cannot be evaluated is the rig's fault, not a
+                # The template's goal checks, graded by the engine against the ledger, the world this
+                # cell left and what fired in it. A check that cannot be evaluated is the rig's fault, not a
                 # verdict on the extractor, so it excludes the cell rather than failing it.
                 try:
                     goal_outcomes = grade_goal_checks(
                         self.goal_checks,
                         ledger=ledger,
-                        end_state=instance.world,
+                        end_state=end_state,
+                        fired=session.fired,
                         variation=test_case.variation_params,
                         world=self._world,
                     )
@@ -540,6 +559,7 @@ __all__ = [
     "EXTRACTOR_TOOL",
     "FIELD_ACCURACY",
     "INVOICE_FIELDS",
+    "PAYMENT_HOLD",
     "TOY_DOCUMENTS",
     "TOY_EXTRACTOR_KIND",
     "TOY_SCRIPTS",

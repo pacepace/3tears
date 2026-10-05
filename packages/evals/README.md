@@ -126,6 +126,17 @@ cover only the levers you declare beyond those; a host with none wires no reader
 with one `candidate_model`; a launch naming several models starts one run per model, and runs of
 different kinds are always different variants.
 
+**A world, through the cell's session.** A host whose subject lives in a stateful world declares it
+on the profile (`WorldRegistry`), and each cell's `prepare` is handed a `WorldSession` over it as
+`world` (`None` on a host with no world). The kind seeds through it — the seed walk, the dimensions'
+own `seed` handles, then each attached carrier's `settle` handle before the first turn — announces
+each turn (`at_turn`, which applies any ambient perturbation the template's seed scheduled), and fires
+or observes its triggered dimensions (`fire`, `observe`). Once `invoke` returns, the runner reads every
+attached dimension back through its `read` handle and stores it as the cell's end state; what fired is
+stored on the result as `world_events`. A goal check reads the end state as `state.<dimension>`, the
+calls the kind recorded on its `CallLedger`, and what fired as `fired("<dimension>")`; grade them with
+`grade_goal_checks`, and a stored run re-grades from all three with `recheck_goal_states`.
+
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a
 conversation, the transcript as your kind writes it). The engine places those strings and reads none

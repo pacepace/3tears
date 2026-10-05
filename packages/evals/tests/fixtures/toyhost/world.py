@@ -15,6 +15,10 @@ derives from, because a row with no fixture is a row nobody has run:
   live state behind a service, and one call path has to cover both kinds of host;
 * one ``triggered(turn)`` — armed by a seed and brought into being by a condition the host can
   fire, so the kit can complete arm → fire → read;
+* one ``triggered(event)`` — armed the same way and brought into being by something happening in the
+  pipeline rather than by the clock: a payment hold the seed stages, which takes effect when the
+  extraction is posted. The toy kind fires it at run time through its cell's world session, so a run —
+  not only the kit — exercises a trigger, and the result records the firing;
 * one ``triggered(human)`` — armed the same way and fired only by a person, which is an answer
   about what is representable rather than a failed declaration.
 
@@ -57,6 +61,9 @@ _OPERATOR_CARRIER = "console"
 
 #: Vendor templates whose invoices are born digital — rendered straight to PDF, never printed or scanned.
 _BORN_DIGITAL_TEMPLATES = frozenset({"peppol-einvoice"})
+
+#: The event trigger's condition: the extraction being posted to the payables ledger.
+PAYMENT_HOLD_CONDITION = "extraction_posted"
 
 #: The world every conformance check composes over: a paper template, so a scan has a quality to vary.
 _BASE_WORLD = {"vendor_template": "acme-2019"}
@@ -157,6 +164,12 @@ class ToyWorld:
     armed_corrections: list[str] = field(default_factory=list)
     """What the next ``operator_reviews_extraction`` will apply. Staged, not yet in the world."""
 
+    payment_hold: str = "released"
+    """Whether the invoice's payment is held. Arrives on an event: arming stages it, posting applies it."""
+
+    armed_payment_hold: str = "released"
+    """What the next ``extraction_posted`` will apply. Staged, not yet in the world."""
+
     supervisor_signoff: str = "pending"
     """Only a supervisor moves this off ``pending``, which is why no unattended run can
     instantiate it."""
@@ -194,7 +207,10 @@ class ToyWorld:
                 parts.insert(0, f"language={self.document_language}")
             rendered[_DOCUMENT_SURFACE] = " ".join(parts)
         if _OPERATOR_SURFACE in surfaces:
-            text = f"{self.ingest_backlog} documents queued ahead of this one; {len(self.operator_corrections)} corrections in force"
+            text = (
+                f"{self.ingest_backlog} documents queued ahead of this one; "
+                f"{len(self.operator_corrections)} corrections in force; payment {self.payment_hold}"
+            )
             if self.faults.operator_context_reads_the_processing_shift:
                 text += f"; shift={self.processing_shift}"
             rendered[_OPERATOR_SURFACE] = text
@@ -252,6 +268,10 @@ def toyhost_world(
         """The third awaitable shape: a FIRE handle across a boundary, which a real trigger is."""
         state.operator_corrections = list(state.armed_corrections)
 
+    def fire_extraction_posted() -> None:
+        """The event trigger's fire handle: posting the extraction applies whatever hold was staged."""
+        state.payment_hold = state.armed_payment_hold
+
     def perturb_processing_shift() -> None:
         state.processing_shift = "night" if state.processing_shift == "day" else "day"
 
@@ -281,11 +301,14 @@ def toyhost_world(
         "toy.read_operator_corrections": lambda: list(state.operator_corrections),
         "toy.arm_supervisor_signoff": lambda value: setattr(state, "supervisor_signoff", value),
         "toy.read_supervisor_signoff": lambda: state.supervisor_signoff,
+        "toy.arm_payment_hold": lambda value: setattr(state, "armed_payment_hold", value),
+        "toy.read_payment_hold": lambda: state.payment_hold,
         "toy.holds": holds,
     }
     if optional_capabilities:
         bindings["toy.perturb_ingest_backlog"] = lambda value: setattr(state, "ingest_backlog", value)
         bindings["toy.fire_operator_review"] = fire_operator_review_async
+        bindings["toy.fire_extraction_posted"] = fire_extraction_posted
         bindings["toy.perturb_processing_shift"] = perturb_processing_shift
 
     registry = WorldRegistry(
@@ -375,6 +398,24 @@ def toyhost_world(
                 ),
             ),
             WorldDimension(
+                name="payment_hold",
+                carrier=_OPERATOR_CARRIER,
+                schema={"type": "string", "enum": ["released", "held"]},
+                matters=(
+                    "A scenario probing whether the extractor flags a held payment presumes the hold takes "
+                    "effect when the extraction is posted, as it does in production; one in force from the "
+                    "first turn measures reading a status line instead."
+                ),
+                seed="toy.arm_payment_hold",
+                read="toy.read_payment_hold",
+                perceived_by=(_OPERATOR_SURFACE,),
+                when=Triggered(
+                    kind="event",
+                    condition=PAYMENT_HOLD_CONDITION,
+                    fire="toy.fire_extraction_posted" if optional_capabilities else None,
+                ),
+            ),
+            WorldDimension(
                 name="supervisor_signoff",
                 carrier=_OPERATOR_CARRIER,
                 schema={"type": "string", "enum": ["pending", "approved", "rejected"]},
@@ -399,6 +440,7 @@ def toyhost_world(
 
 
 __all__ = [
+    "PAYMENT_HOLD_CONDITION",
     "TOY_JUDGE_ONLY_EXPRESSION",
     "TOY_RESOLVABLE_EXPRESSIONS",
     "TOY_UNRESOLVABLE_EXPRESSION",

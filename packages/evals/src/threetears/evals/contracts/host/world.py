@@ -123,6 +123,7 @@ _HANDLE_CALL_SHAPES: Mapping[str, tuple[tuple[Any, ...], Mapping[str, Any]]] = {
     "subject_view": ((), {"surfaces": ()}),
     "perturb_ambient": ((), {}),
     "coherence": ((None,), {}),
+    "settle": ((), {}),
 }
 
 #: Bound pairs that can contradict each other within one schema.
@@ -527,6 +528,7 @@ class WorldRegistry(HostAttributed):
         base_world: Mapping[str, Any] | None = None,
         coherence: str | None = None,
         address: Callable[[str, str], str] | None = None,
+        settle: Mapping[str, str] | None = None,
     ) -> None:
         """Validate and store one host's world.
 
@@ -569,6 +571,14 @@ class WorldRegistry(HostAttributed):
                 per call, so the seed walk, a goal check's ``state.<dimension>`` and a control end
                 state all read one answer. Pure and synchronous: the goal language calls it while
                 evaluating.
+            settle: OPTIONAL. Carrier name → HANDLE the engine awaits once a cell's seed has been
+                written through that carrier and before the candidate's first turn. Called
+                ``settle()``. For a carrier whose world does work of its own after a write — an
+                index rebuilt, a queue drained, a scene recomputed — so the subject's first turn
+                meets the world the seed describes rather than one still catching up to it. A
+                capability, not an obligation: a carrier with nothing to settle declares none, and
+                the engine awaits only the carriers a cell attached. Every key must be a carrier some
+                declared dimension names.
 
         Raises:
             WorldRegistrationError: The declaration set is unsound. Every defect is reported at
@@ -582,6 +592,7 @@ class WorldRegistry(HostAttributed):
         self._base_world: dict[str, Any] = dict(base_world or {})
         self._coherence = coherence
         self._address: Callable[[str, str], str] = address or _key_is_the_name
+        self._settle: dict[str, str] = dict(settle or {})
         if defects := self._defects():
             raise WorldRegistrationError("world declaration is unsound: " + "; ".join(defects))
         self._by_name: dict[str, WorldDimension] = {declared.name: declared for declared in self._declarations}
@@ -679,6 +690,7 @@ class WorldRegistry(HostAttributed):
                     "without one it is a capability nothing can ever read"
                 )
         defects.extend(self._base_world_defects())
+        defects.extend(self._settle_defects())
         defects.extend(
             f"binding {handle!r} is not callable — refusing it here for the same reason an unresolvable "
             "handle is refused: left to first use it is a TypeError inside a run, attributed to whatever "
@@ -717,6 +729,32 @@ class WorldRegistry(HostAttributed):
             except UnsupportedSchemaError as gap:
                 violations = [f"its value cannot be checked: {gap}"]
             defects.extend(violations)
+        return defects
+
+    def _settle_defects(self) -> list[str]:
+        """Refuse a settle declaration nothing could ever await.
+
+        Returns:
+            One sentence per entry naming a carrier no declared dimension names, or a handle the binding
+            table cannot resolve or the engine could not call as ``settle()``; empty when every entry is
+            one a cell attaching that carrier would await.
+        """
+        carriers = {declared.carrier for declared in self._declarations}
+        defects: list[str] = []
+        for carrier, handle in self._settle.items():
+            if carrier not in carriers:
+                defects.append(
+                    f"settle names carrier {carrier!r}, which no declared dimension names — no cell could attach "
+                    "it, so its settle handle could never be awaited"
+                )
+            if handle not in self._bindings:
+                defects.append(
+                    f"carrier {carrier!r}'s settle handle {handle!r} is not in this registry's binding table"
+                )
+                continue
+            defects.extend(
+                f"carrier {carrier!r}'s {sentence}" for sentence in self._signature_defects("settle", handle)
+            )
         return defects
 
     def _signature_defects(self, role: str, handle: str) -> list[str]:
@@ -810,6 +848,14 @@ class WorldRegistry(HostAttributed):
     def coherence(self) -> str | None:
         """The handle answering whether this host holds a composed world as stated, or None."""
         return self._coherence
+
+    @property
+    def settle(self) -> Mapping[str, str]:
+        """Carrier name → the handle awaited once a cell's seed has gone through it; a copy.
+
+        Empty for a host none of whose carriers has anything to settle.
+        """
+        return dict(self._settle)
 
     def get(self, name: str) -> WorldDimension | None:
         """The declaration for ``name``, or None when this host never declared it."""
@@ -1038,6 +1084,7 @@ class WorldRegistry(HostAttributed):
         perturb_ambient: str | None = None,
         base_world: Mapping[str, Any] | None = None,
         coherence: str | None = None,
+        settle: Mapping[str, str] | None = None,
     ) -> WorldRegistry:
         """Return a new registry carrying these declarations after this one's.
 
@@ -1070,14 +1117,16 @@ class WorldRegistry(HostAttributed):
                 bases at a different value is refused, for the same reason: every check already
                 proved was proved over the first.
             coherence: The host's coherence handle, under the subject view's rule.
+            settle: Further carriers' settle handles. One naming a carrier this registry already settles
+                through a different handle is refused, for the binding table's reason.
 
         Returns:
             A new validated registry.
 
         Raises:
             WorldRegistrationError: The combined set is unsound, or the addition would displace a
-                binding, the subject view, the ambient-perturbation handle, the coherence handle or a
-                base-world value.
+                binding, the subject view, the ambient-perturbation handle, the coherence handle, a
+                carrier's settle handle or a base-world value.
         """
         added = dict(bindings or {})
         if rebound := sorted(handle for handle, bound in added.items() if self._bindings.get(handle, bound) != bound):
@@ -1098,6 +1147,17 @@ class WorldRegistry(HostAttributed):
                 + ", ".join(repr(name) for name in rebased)
                 + " — every check already proved composed over the first value"
             )
+        added_settle = dict(settle or {})
+        if resettled := sorted(
+            carrier
+            for carrier, handle in added_settle.items()
+            if carrier in self._settle and self._settle[carrier] != handle
+        ):
+            raise WorldRegistrationError(
+                "world declaration is unsound: extending would change the settle handle of "
+                + ", ".join(repr(carrier) for carrier in resettled)
+                + " — composition appends, and a replaced settle handle leaves the first carrier's own work unawaited"
+            )
         for role, adding, held in (
             ("subject_view", subject_view, self._subject_view),
             ("perturb_ambient", perturb_ambient, self._perturb_ambient),
@@ -1115,6 +1175,7 @@ class WorldRegistry(HostAttributed):
             perturb_ambient=self._perturb_ambient if perturb_ambient is None else perturb_ambient,
             base_world={**self._base_world, **added_base},
             coherence=self._coherence if coherence is None else coherence,
+            settle={**self._settle, **added_settle},
             # Inherited, never replaced: every inherited dimension is addressed by it already.
             address=self._address,
         )

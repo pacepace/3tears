@@ -1081,7 +1081,11 @@ class EvalStorage:
         """
         stored = False
         if trace is not None and (
-            trace.trace or trace.otel_trace or trace.judge_evidence is not None or trace.call_ledger is not None
+            trace.trace
+            or trace.otel_trace
+            or trace.judge_evidence is not None
+            or trace.call_ledger is not None
+            or trace.end_state is not None
         ):
             try:
                 self._save(trace.to_dict())
