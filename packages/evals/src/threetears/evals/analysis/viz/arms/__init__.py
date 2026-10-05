@@ -1,14 +1,15 @@
-"""One compiler arm per viz type, and the registry that names them.
+"""One Vega-Lite arm per chart type, and the registry that names them.
 
-An arm turns one validated payload into a :class:`CompiledChart`. It owns its own
-shape and nothing else: the layout arithmetic, the marks, the value axis and the
-label placement all come from :mod:`threetears.evals.analysis.viz.compiler`, which every arm
-imports and no arm imports from a sibling. That is what makes a new type a new
-file rather than a new branch in a shared function.
+An arm draws one decided :class:`~threetears.evals.analysis.viz.intent.ChartIntent` as a Vega-Lite
+spec. It owns its own shape and nothing else: what the chart says — order, units, values, disclosures —
+arrives decided in the intent, and the layout arithmetic, the marks, the value axis and the label
+placement come from :mod:`threetears.evals.analysis.viz.compiler`, which every arm imports and no arm
+imports from a sibling. That is what makes a new type a new file rather than a new branch in a shared
+function.
 
 :data:`ARMS` mirrors :data:`~threetears.evals.analysis.viz.payloads.PAYLOAD_MODELS` key for
 key, and is held to it by test: a type that gains a payload model without gaining
-an arm would parse and then refuse to draw, which is a registration mistake
+an arm would decide its intent and then refuse to draw, which is a registration mistake
 wearing a data error's clothes.
 """
 
@@ -25,13 +26,13 @@ from threetears.evals.analysis.viz.arms.frontier import compile_frontier
 from threetears.evals.analysis.viz.arms.null_result import compile_null_result
 from threetears.evals.analysis.viz.arms.sweep_ranking import compile_sweep_ranking
 from threetears.evals.analysis.viz.arms.timeseries import compile_timeseries
-from threetears.evals.analysis.viz.compiler import CompiledChart
+from threetears.evals.analysis.viz.intent import ChartIntent
 
 #: ``Viz.type`` → the arm that draws it.
 #:
 #: Keyed by the same strings as ``PAYLOAD_MODELS`` so the two registries can be
 #: compared directly rather than related by convention.
-ARMS: dict[str, Callable[[Any], CompiledChart]] = {
+ARMS: dict[str, Callable[[ChartIntent], dict[str, Any]]] = {
     "attribution": compile_attribution,
     "breakdown": compile_breakdown,
     "delta_table": compile_delta_table,

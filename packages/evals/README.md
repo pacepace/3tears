@@ -203,3 +203,27 @@ missing required one, and a document written under any schema version other than
 `EVAL_SCHEMA_VERSION`. There is no migration and no tolerant reader: across a schema change, drop
 the eval documents and regenerate them. Identity keys carry their own `IDENTITY_VERSION`, so keys
 from different predicates never silently pool.
+
+## Reading an analysis: the report
+
+A generated analysis is read through one document. `analysis_report(storage, analysis_id, scope_id)`
+returns a `Report`: an ordered list of blocks — `text` (what the analysis's author wrote, with a role),
+`table` (evidence, arms, decision surface), `chart` and `disclosure` (what code must add) — each linked
+to the findings it belongs to or rests on. Serialize it three ways:
+
+```python
+from threetears.evals.analysis import analysis_report, report_html, report_markdown
+
+report = analysis_report(host.storage, analysis_id, scope_id)
+report.to_canonical_json()   # validated by the published schema, report/schema.json
+report_markdown(report)      # for an agent, or to paste as a memo
+report_html(report)          # a page that reads without a script
+```
+
+A chart block carries the chart's **intent** (`ChartIntent`, from `threetears.evals.analysis.viz`), never
+a charting library's spec: its type from eval's eight, the rows it draws, what each field encodes (identity,
+length, position, interval with what it varies over, level, class, ordinal), its axes with their units and
+zero baselines, its order, the colour *slots* it uses and what it must disclose — plus its values as drawn,
+which the HTML shows as a table. How a chart looks is the host's: a renderer reads the intent and the
+host's theme. The package's Vega-Lite renderer (`draw_intent`, `compile_chart`) is the first; the
+presentation rules are checked on the intent (`check_intent`), so they hold for any renderer.

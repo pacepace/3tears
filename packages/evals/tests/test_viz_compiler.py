@@ -30,14 +30,13 @@ from threetears.evals.analysis.viz.compiler import (
     MarkValue,
     Placement,
     plot_size,
-    strip_common_prefix,
     value_label_layers,
     ValueAxis,
-    display_scale,
-    format_number,
     point_radius,
 )
-from threetears.evals.analysis.viz.models import UNMAPPED_COMPILED_FIELDS, FindingChart
+from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.viz.intent import chart_intent
+from threetears.evals.analysis.viz.quantities import display_scale, strip_common_prefix
 from threetears.evals.analysis.viz.palette import (
     CONTEXT_STYLE,
     SEQUENTIAL_RANGE,
@@ -49,7 +48,7 @@ from threetears.evals.analysis.viz.palette import (
     vega_config,
 )
 from threetears.evals.analysis.viz.payloads import PayloadError
-from threetears.evals.analysis.viz.policy import RANKING_SPEC_NAME, check_spec
+from threetears.evals.analysis.viz.vega_policy import RANKING_SPEC_NAME, check_spec
 from threetears.evals.analysis.viz.render import render_svg
 from threetears.evals.analysis.viz.text_metrics import fits, text_width
 
@@ -303,7 +302,7 @@ class TestCompilerRefusals:
         that have since been migrated, which would have made this pass for the
         wrong reason.
         """
-        with pytest.raises(PayloadError, match="no compiler"):
+        with pytest.raises(PayloadError, match="no chart intent for viz type"):
             compile_chart("scatter", {"series": []})
 
 
@@ -315,7 +314,7 @@ class TestCompilerOutputPassesThePolicyGate:
         fails the gate; the value is that this test fails the day a compiler
         change starts emitting a spec the report standard rejects.
         """
-        from threetears.evals.analysis.viz.policy import check_spec
+        from threetears.evals.analysis.viz.vega_policy import check_spec
 
         assert check_spec(compile_chart("breakdown", PAYLOAD).spec) == []
 
@@ -1654,14 +1653,14 @@ class TestTheCaptionIsTheAuthorsAlone:
         assert not any(self.INSIGHT in line for line in captioned)
 
     @pytest.mark.parametrize("viz_type", sorted(EVERY_TYPE), ids=sorted(EVERY_TYPE))
-    def test_no_arm_writes_the_caption(self, viz_type):
-        """The caption is set in one place. An arm writing into it would be overwritten by
-        `compile_chart` — a disclosure lost with no error — so an arm leaves it empty."""
-        from threetears.evals.analysis.viz.arms import ARMS
+    def test_no_intent_builder_writes_the_caption(self, viz_type):
+        """The caption is set in one place. A builder writing into it would be overwritten by
+        `chart_intent` — a disclosure lost with no error — so a builder leaves it empty."""
+        from threetears.evals.analysis.viz.intents import INTENTS
         from threetears.evals.analysis.viz.payloads import parse_payload
 
         payload = {**EVERY_TYPE[viz_type], "caption": self.INSIGHT}
-        assert ARMS[viz_type](parse_payload(viz_type, payload)).caption == ""
+        assert INTENTS[viz_type](parse_payload(viz_type, payload)).caption == ""
 
     @pytest.mark.parametrize("viz_type", sorted(EVERY_TYPE), ids=sorted(EVERY_TYPE))
     def test_every_disclosure_is_one_non_empty_line(self, viz_type):
@@ -1733,45 +1732,43 @@ class TestTheProseIsNotGated:
         assert compile_chart("null_result", NULL_RESULT).disclosures[-1] == NULL_RESULT["mechanism"]
 
 
-class TestTheWireShapeCarriesTheCompilation:
-    """`FindingChart.from_compiled` is the only place the two shapes are mapped.
+class TestTheCompilationCarriesTheIntent:
+    """A compilation adds a picture and says nothing of its own.
 
-    Being the only place is not the same as being total, and the docstring that
-    claimed it was had no test behind it: `unit` was set on every compile path and
-    mapped to nothing. What is asserted here is the claim itself — every compiled
-    field is either served or named in `UNMAPPED_COMPILED_FIELDS` with its reason,
-    so the next field added to either shape fails this rather than the reader.
+    Every field of a `CompiledChart` but `spec` is the intent's, carried across unchanged — so a
+    caller holding a compilation reads the values table, caption and disclosures the intent decided,
+    and a renderer cannot quietly reword what a chart claims.
     """
 
-    def test_every_compiled_field_is_served_or_named_as_deliberately_dropped(self):
-        compiled_fields = {entry.name for entry in fields(CompiledChart)}
-        wire_fields = set(FindingChart.model_fields)
-        assert compiled_fields - wire_fields == set(UNMAPPED_COMPILED_FIELDS)
-
-    def test_the_exclusions_name_fields_that_exist_and_are_genuinely_absent(self):
-        """An exclusion for a field that is served, or that no longer exists, is a stale decision."""
-        compiled_fields = {entry.name for entry in fields(CompiledChart)}
-        assert set(UNMAPPED_COMPILED_FIELDS) <= compiled_fields
-        assert not set(UNMAPPED_COMPILED_FIELDS) & set(FindingChart.model_fields)
-        assert all(reason.strip() for reason in UNMAPPED_COMPILED_FIELDS.values()), "an exclusion states why"
-
-    @pytest.mark.parametrize(
-        ("viz_type", "payload"),
-        [
-            ("breakdown", PAYLOAD),
-            ("distribution", DISTRIBUTION),
-            ("null_result", NULL_RESULT),
-            ("delta_table", DELTA_TABLE),
-        ],
-    )
-    def test_every_served_field_holds_what_the_compilation_produced(self, viz_type, payload):
-        """The mapping had no test at all; this is the one that would have caught `unit`."""
+    @pytest.mark.parametrize("viz_type", sorted(EVERY_TYPE), ids=sorted(EVERY_TYPE))
+    def test_every_field_but_the_spec_is_the_intents(self, viz_type):
+        payload = {**EVERY_TYPE[viz_type], "caption": "an author's line"}
+        intent = chart_intent(viz_type, payload)
         compiled = compile_chart(viz_type, payload)
-        served = FindingChart.from_compiled("finding-1", compiled)
-        assert served.finding_id == "finding-1"
-        assert served.error == "", "a compiled chart is not a failure"
-        for name in sorted(set(FindingChart.model_fields) - {"finding_id", "error"}):
-            assert getattr(served, name) == getattr(compiled, name), f"{name} did not survive the mapping"
+
+        assert compiled.intent == intent
+        assert compiled.columns == [{"key": column.key, "header": column.header} for column in intent.columns]
+        assert compiled.rows == intent.rows
+        assert (compiled.caption, compiled.disclosures, compiled.title, compiled.unit) == (
+            intent.caption,
+            intent.disclosures,
+            intent.title,
+            intent.unit,
+        )
+        assert compiled.values_as_drawn() == intent.values_as_drawn()
+
+    def test_the_compiled_fields_are_the_intent_the_spec_and_the_intents_projections(self):
+        """A field added to the compilation must be one of the intent's, or the spec — never a second opinion."""
+        assert {entry.name for entry in fields(CompiledChart)} == {
+            "intent",
+            "spec",
+            "columns",
+            "rows",
+            "unit",
+            "caption",
+            "disclosures",
+            "title",
+        }
 
 
 class TestNothingDrawableIsRefusedRatherThanDrawnEmpty:
@@ -2491,10 +2488,10 @@ class TestTheTitleWrapsRatherThanOverrunning:
         assert "fontSize" not in json.dumps(chart.spec["title"])
 
     def test_the_wire_title_stays_one_string(self):
-        """`FindingChart.title` is a string on the contract; only the spec's wraps."""
+        """`ChartIntent.title` is a string on the contract; only the spec's wraps."""
         chart = compile_chart("breakdown", dict(PAYLOAD, measure=_OVERLONG_MEASURE))
         assert chart.title == _OVERLONG_MEASURE
-        assert FindingChart.from_compiled("f-1", chart).title == _OVERLONG_MEASURE
+        assert chart.intent.title == _OVERLONG_MEASURE
 
     @pytest.mark.parametrize("viz_type", sorted(EVERY_TYPE), ids=sorted(EVERY_TYPE))
     def test_every_type_bounds_its_title(self, viz_type):

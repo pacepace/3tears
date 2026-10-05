@@ -24,45 +24,27 @@ both.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any
 
-from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.compiler import (
-    DISPLAY_FIELD,
     VEGA_LITE_SCHEMA,
-    ChartColumn,
-    CompiledChart,
-    _axis_title,
-    _name_font_size,
-    strip_common_prefix,
-    _title_spec,
     ValueAxis,
-    display_scale,
+    _name_font_size,
+    _number,
+    _title_spec,
+    _value_axis,
     point_radius,
 )
+from threetears.evals.analysis.viz.intent import ChartIntent
+from threetears.evals.analysis.viz.intents.frontier import CLASS_FIELD, CLASS_SHAPES, DISPLAY_FIELD
 from threetears.evals.analysis.viz.palette import CONTEXT_STYLE, font_weights, geometry
-from threetears.evals.analysis.viz.payloads import FrontierPayload, FrontierVizPoint
-
-#: The point symbol each contention class draws, and the order a key lists them in.
-#:
-#: Ordered best-to-worst rather than alphabetically, so a legend reads down the
-#: same ranking the chart is about. The symbols are Vega-Lite shape names, which
-#: name geometry and never a colour — the whole reason this channel can carry a
-#: distinction that hue is not allowed to.
-_CLASS_SHAPES: tuple[tuple[str, str], ...] = (
-    ("On frontier", "circle"),
-    ("Dominated", "diamond"),
-    ("Disqualified", "cross"),
-)
 
 #: The classes drawn in the context neutral rather than in the chart's own ink.
 #:
-#: Derived from :data:`_CLASS_SHAPES` rather than listed again, so a fourth class
-#: cannot be added to the shape key and silently draw at full weight. The head of
-#: that tuple is the class a reader is being pointed AT; everything after it is
-#: there for comparison.
-_RECESSIVE_CLASSES: tuple[str, ...] = tuple(name for name, _ in _CLASS_SHAPES[1:])
+#: Derived from the class order rather than listed again, so a fourth class cannot be
+#: added and silently draw at full weight. The head of that order is the class a reader
+#: is being pointed AT; everything after it is there for comparison.
+_RECESSIVE_CLASSES: tuple[str, ...] = tuple(name for name, _ in CLASS_SHAPES[1:])
 
 #: How far a contestant's name sits to the right of its mark's EDGE, in px.
 #:
@@ -88,84 +70,6 @@ _POINT_SIZE = 320
 #: where Vega's bounding-box convention is written down.
 _POINT_RADIUS = point_radius(_POINT_SIZE)
 
-#: The row key holding a point's contention class — what its shape is drawn from.
-_CLASS_FIELD = "status"
-
-#: The class of a contestant that carries no cost, and so is not on the plot at all.
-#:
-#: Deliberately absent from :data:`_CLASS_SHAPES`: it has no symbol because it has
-#: no mark. It exists so the values table can say why a row is not in the picture
-#: rather than filing it under a verdict nothing measured.
-_UNPRICED_CLASS = "Not priced"
-
-
-def _classify(dominated: bool, disqualified: bool, *, priced: bool) -> str:
-    """Which contention class a point belongs to.
-
-    Disqualification outranks domination: a contestant out on a safety bar is out
-    whatever its cost bought, and drawing it as merely dominated would file a
-    two-pillar failure under "lost on price".
-
-    An unpriced contestant is its own class rather than the default one, and that
-    is a correctness rule rather than a label. Domination is a claim about both
-    axes, so a point with no cost cannot be known to be on the frontier OR off it —
-    reporting it as "on frontier" would put a contestant nothing was measured
-    against beside the winner, in the column a reader reads the verdict from.
-
-    Args:
-        dominated: Whether some other point beats it on both axes.
-        disqualified: Whether it failed a two-pillar / safety bar.
-        priced: Whether it carries a production-replicating cost.
-
-    Returns:
-        The class name, as the key and any legend spell it.
-    """
-    if disqualified:
-        return "Disqualified"
-    if dominated:
-        return "Dominated"
-    return "On frontier" if priced else _UNPRICED_CLASS
-
-
-def _joined_names(labels: Sequence[str]) -> str:
-    """Join contestant names so the sentence around them reads as English.
-
-    Args:
-        labels: The names, in the order the payload gave them.
-
-    Returns:
-        The one name, two joined by ``and``, or a comma list with ``and`` before the last.
-    """
-    if len(labels) == 1:
-        return labels[0]
-    return f"{', '.join(labels[:-1])} and {labels[-1]}"
-
-
-def _disqualifications(points: Sequence[FrontierVizPoint]) -> list[tuple[str, list[str]]]:
-    """The disqualified contestants, grouped under the reason they share.
-
-    Grouped rather than stated once per contestant, because the reason is what the sentence
-    spends its words on: a whole class usually fails for one cause, so a per-contestant
-    sentence repeats that cause verbatim as many times as the class is large, and the
-    disclosure grows with the size of the thing it is disclosing. A disclosure nobody finishes
-    reading discloses nothing.
-
-    Reasons are matched exactly and kept in the order they first appear: two wordings of one
-    cause are two groups, which is the honest read of two strings this module cannot know are
-    the same claim.
-
-    Args:
-        points: The payload's contestants.
-
-    Returns:
-        ``(reason, labels)`` for each distinct reason, in first-appearance order.
-    """
-    grouped: dict[str, list[str]] = {}
-    for point in points:
-        if point.disqualified and point.disqualified_reason:
-            grouped.setdefault(point.disqualified_reason.strip(), []).append(point.label)
-    return list(grouped.items())
-
 
 def _by_weight(drawn: list[dict[str, Any]]) -> list[tuple[bool, list[str]]]:
     """Split the drawn points into the weights their marks are painted at.
@@ -184,120 +88,63 @@ def _by_weight(drawn: list[dict[str, Any]]) -> list[tuple[bool, list[str]]]:
     """
     partitions = []
     for recessive in (False, True):
-        classes = [name for name, _ in _CLASS_SHAPES if (name in _RECESSIVE_CLASSES) == recessive]
-        present = [name for name in classes if any(row[_CLASS_FIELD] == name for row in drawn)]
+        classes = [name for name, _ in CLASS_SHAPES if (name in _RECESSIVE_CLASSES) == recessive]
+        present = [name for name in classes if any(row[CLASS_FIELD] == name for row in drawn)]
         if present:
             partitions.append((recessive, present))
     return partitions
 
 
-def compile_frontier(payload: FrontierPayload) -> CompiledChart:
-    """Compile a cost-against-quality trade-off as a point plot.
+def compile_frontier(intent: ChartIntent) -> dict[str, Any]:
+    """Draw a cost-against-quality intent as a point plot.
 
     Args:
-        payload: The validated frontier payload.
+        intent: The frontier's intent.
 
     Returns:
-        The compiled chart.
+        The Vega-Lite spec.
     """
     sizes = geometry()
     width, height = int(sizes["point_width"]), int(sizes["point_height"])
-    cost_title = payload.cost_label or "Cost"
-    quality_title = payload.quality_label or "Quality"
-
-    # A point with no cost has no x to be placed at. It is disclosed in its own line
-    # and kept in the values table rather than dropped, because "we never priced
-    # this one" and "this one was not in the running" are different facts and the
-    # chart must not turn the first into the second. Placing it at zero would be
-    # worse still: an unpriced contestant would draw as the cheapest thing here.
-    placeable = [point for point in payload.points if point.cost is not None]
-    unpriced = [point.label for point in payload.points if point.cost is None]
-
-    # Latency is restated in the largest unit that keeps two significant figures, the
-    # same rule every other quantity in this report obeys — 50 s, never 50300 ms. It
-    # is the only quantity here with a declared unit to restate: cost and quality
-    # carry captions the generator wrote, not units this compiler knows how to ladder.
-    latencies = [point.latency_ms for point in payload.points if point.latency_ms is not None]
-    latency_scale, latency_unit = display_scale(latencies, "ms" if latencies else None)
-
-    display = strip_common_prefix([point.label for point in payload.points])
-    rows: list[dict[str, Any]] = [
-        {
-            "label": point.label,
-            DISPLAY_FIELD: display[point.label],
-            "cost": point.cost,
-            "quality": point.quality,
-            "latency": None if point.latency_ms is None else point.latency_ms * latency_scale,
-            _CLASS_FIELD: _classify(point.dominated, point.disqualified, priced=point.cost is not None),
-        }
-        for point in payload.points
-    ]
-    drawn = [row for row in rows if row["cost"] is not None]
+    cost_title = _value_axis(intent, "cost").quantity
+    quality_title = _value_axis(intent, "quality").quantity
+    drawn = intent.data
+    bars = [reference.value for reference in intent.references if reference.axis == "quality"]
 
     # The bar joins the y values so the rule it draws lands inside the plot. A
     # quality bar above everything measured is the informative case — nothing
     # cleared it — and an axis cropped to the data alone would put that rule off
-    # the top edge, drawing the one chart where the bar matters as one with no bar.
-    qualities = [point.quality for point in placeable]
-    if payload.bar is not None:
-        qualities.append(payload.bar)
-    cost_axis = ValueAxis.position(cost_title, [point.cost for point in placeable if point.cost is not None], width)
-    # The y axis names its own quantity, drawn FLAT above the axis rather than
-    # turned. Leaving it unnamed was the earlier reading of the no-rotated-text
-    # rule and it cost the reader more than it saved: the quantity was recoverable
-    # only from the heading two lines up, so a figure read on its own had one
-    # labelled axis and one bare one.
+    # the top edge.
+    qualities = [_number(row["quality"]) for row in drawn] + bars
+    cost_axis = ValueAxis.position(cost_title, [_number(row["cost"]) for row in drawn], width)
+    # The y axis names its own quantity, drawn FLAT above the axis rather than turned.
     quality_axis = ValueAxis.position(quality_title, qualities, height)
 
-    present = [(name, symbol) for name, symbol in _CLASS_SHAPES if any(row[_CLASS_FIELD] == name for row in drawn)]
+    present = list(intent.shapes.items())
     shape: dict[str, Any] = {
-        "field": _CLASS_FIELD,
+        "field": CLASS_FIELD,
         "type": "nominal",
         "scale": {"domain": [name for name, _ in present], "range": [symbol for _, symbol in present]},
-        # NO legend, ever. Two attempts to make one honest both failed, and the
-        # second failure is the informative one: a shape key's swatches are filled
-        # from the MARK, so a dominated point drawn in the context neutral still
-        # appeared in the key in the primary hue — telling the reader the greying
-        # means nothing. `config.legend.symbolFillColor` does not win that, measured
-        # on a hard reload. A colour ENCODING would fix the swatch and is refused by
-        # the direct-label rule, correctly: a colour legend outside a facet is
-        # precisely what that rule exists to stop.
-        #
-        # Which leaves the rule's own answer. Every mark here is already labelled
-        # in place with its contestant's name, so identity never needed the key; what
-        # the key carried was the SHAPE VOCABULARY, and one sentence says that
-        # without asking the reader to hold a swatch in memory and walk back to it.
+        # NO legend, ever. A shape key's swatches are filled from the MARK, so a
+        # dominated point drawn in the context neutral still appeared in the key in the
+        # primary hue — telling the reader the greying means nothing. A colour ENCODING
+        # would fix the swatch and is refused by the direct-label rule, correctly. Every
+        # mark here is already labelled in place with its contestant's name, and the
+        # shape vocabulary reaches the reader as a disclosure line.
         "legend": None,
     }
 
     # One point layer per weight, each filtered out of the SAME table rather than
     # drawn from a dataset of its own: the shape scale carries an explicit domain,
-    # so Vega-Lite shares it across the layers and the key still lists every class
-    # the figure has — including one whose marks all sit in the recessive layer.
-    #
-    # Two layers rather than one mark with an opacity encoding, and that is the
-    # whole retrofit: an opacity encoding puts the recession's VALUE in the spec,
-    # which decides what "receded" looks like before either theme is known. A style
-    # name defers that to the renderer, and a style is a property of a mark — so the
-    # marks have to be partitioned to carry two of them.
+    # so Vega-Lite shares it across the layers. Two layers rather than one mark with
+    # an opacity encoding: a style name defers what "receded" looks like to the
+    # renderer's theme, and a style is a property of a mark.
     layers: list[dict[str, Any]] = [
         {
-            "transform": [{"filter": {"field": _CLASS_FIELD, "oneOf": list(classes)}}],
-            # `opacity: 1` opts OUT of a renderer default rather than stating an
-            # appearance: Vega-Lite draws a point at 0.7 so overlapping points read
-            # as density, and a frontier's marks are a handful of answers rather
-            # than a cloud — at 0.7 every one of them draws in a blend of the
-            # palette hue and whatever is behind it, which differs per theme. Full
-            # ink is the same instruction in both, which is why it is not the
-            # recession this arm compiles.
-            #
-            # The recession is the STYLE below, and it is load-bearing rather than
-            # decorative: a dominated or disqualified point differs from an eligible
-            # one in shape AND in ink, so the distinction survives a reader who
-            # cannot resolve the shapes at this size. Nothing else carries it — the
-            # encoding here is `x`/`y`/`shape` and a compiled spec may not carry a
-            # colour at all — so deleting the style deletes the channel, and no test
-            # goes red when it does.
+            "transform": [{"filter": {"field": CLASS_FIELD, "oneOf": list(classes)}}],
+            # `opacity: 1` opts OUT of Vega-Lite's 0.7 point default: these are a handful
+            # of answers rather than a cloud. The recession is the STYLE, and it is
+            # load-bearing: a dominated or disqualified point differs in shape AND in ink.
             "mark": {"type": "point", "filled": True, "size": _POINT_SIZE, "tooltip": True, "opacity": 1}
             | ({"style": CONTEXT_STYLE} if recessive else {}),
             "encoding": {
@@ -311,9 +158,7 @@ def compile_frontier(payload: FrontierPayload) -> CompiledChart:
     layers.append(
         {
             # The name beside the mark, which is where identity lives on every chart
-            # this compiler emits. There is no legend that could carry it: a key of
-            # model IDs is the reader holding a position in memory and walking back
-            # to it, which is the thing direct labels exist to spare them.
+            # this compiler emits.
             "mark": {
                 "type": "text",
                 "align": "left",
@@ -331,82 +176,30 @@ def compile_frontier(payload: FrontierPayload) -> CompiledChart:
             },
         }
     )
-    if payload.bar is not None:
+    for bar in bars:
         layers.insert(
             0,
             {
-                # Under the marks: the bar is the standard they are read against, and
-                # a rule drawn over a contestant sitting on it would cut the mark in half.
-                "data": {"values": [{"bar": payload.bar}]},
-                # Context ink, by name. The bar is furniture — the standard the
-                # contestants are judged against, not one of them — so it recedes for
-                # the same reason a zero rule does, and by the same mechanism: the
-                # renderer decides how far, because how far is a property of the
-                # surface. The dash is geometry and stays in the spec.
+                # Under the marks: the bar is the standard they are read against, and a
+                # rule drawn over a contestant sitting on it would cut the mark in half.
+                # Context ink, by name: the bar is furniture, so it recedes for the same
+                # reason a zero rule does. The dash is geometry and stays in the spec.
+                "data": {"values": [{"bar": bar}]},
                 "mark": {"type": "rule", "strokeDash": [4, 4], "style": CONTEXT_STYLE},
                 "encoding": {"y": quality_axis.encoding("bar", upright_title=True)},
             },
         )
 
     # No crop footnote. Both axes are cropped and both say so already, in the only
-    # way a reader of a point plot actually consults: the labelled ticks, which
-    # begin where the axis begins. A dot's value is read off them rather than
-    # compared against another dot's width, so the sentence restates the axis
-    # instead of disclosing anything — and three figures each carrying it is what
-    # teaches a reader to stop reading subtitles (the scope is in the zero-baseline
-    # rule). So this figure passes no
-    # subtitle at all, rather than an empty one it then has to filter back out.
-    spec: dict[str, Any] = {
+    # way a reader of a point plot consults: the labelled ticks.
+    return {
         "$schema": VEGA_LITE_SCHEMA,
-        "title": _title_spec(f"{quality_title} against {cost_title}", width),
+        "title": _title_spec(intent.title, width),
         "data": {"values": drawn},
         "layer": layers,
         "width": width,
         "height": height,
     }
-
-    # What the figure cannot say for itself, one line per idea and never joined onto
-    # the author's caption. The ORDER is the reading order: the key a reader needs to
-    # read the marks at all, then who is out and why, then who is missing, then the
-    # standard the rest are held to.
-    disclosures: list[str] = []
-    # The shape vocabulary, as a line, because the figure draws no key — see the
-    # `legend` comment above. Only where a distinction exists: with one class present
-    # there is nothing to tell apart and the line is furniture.
-    if len(present) > 1:
-        disclosures.append(", ".join(f"{symbol} = {name.lower()}" for name, symbol in present) + ".")
-    # The glyph says a contestant is out; only this says why. A shape the reader
-    # cannot account for is the disclosure half-made — and one line per REASON rather
-    # than per contestant, since the reason is the disclosure and repeating it is how
-    # this text once grew past being read.
-    disclosures.extend(
-        f"{_joined_names(labels)} {'is' if len(labels) == 1 else 'are'} disqualified: {reason}."
-        for reason, labels in _disqualifications(payload.points)
-    )
-    if unpriced:
-        disclosures.append(
-            f"Not drawn — no production-replicating cost was recorded for {_joined_names(unpriced)}; "
-            "the values below carry what was measured."
-        )
-    if payload.bar is not None:
-        disclosures.append(f"The quality bar is {format_number(payload.bar)}.")
-
-    columns: list[ChartColumn] = [
-        {"key": "label", "header": "Contestant"},
-        {"key": "cost", "header": cost_title},
-        {"key": "quality", "header": quality_title},
-    ]
-    if latencies:
-        columns.append({"key": "latency", "header": _axis_title("Latency", latency_unit)})
-    columns.append({"key": _CLASS_FIELD, "header": "Contention"})
-    return CompiledChart(
-        spec=spec,
-        columns=columns,
-        rows=rows,
-        unit="",
-        disclosures=disclosures,
-        title=f"{quality_title} against {cost_title}",
-    )
 
 
 __all__ = [

@@ -2,7 +2,7 @@
 
 Every operation here is one a client of the packages needs to drive the analysis lens: generate
 a campaign's memo and record how the attempt ended, read analyses and their attempts back,
-re-assemble the bundle a generation read, compile a stored analysis's charts and tables, read
+re-assemble the bundle a generation read, read a stored analysis as its report, read
 the insight ledger, and freeze, bank and calibrate the reporter cases that measure the generator
 itself. They are module functions whose dependencies are parameters, so a host calls them
 with its own store and its own bindings; a host's service delegates to them.
@@ -32,7 +32,6 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-from threetears.evals.analysis.arms import arm_table
 from threetears.evals.analysis.bundle import BundleInspection, CampaignReadStore, assemble_context_bundle
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import GenerationTally, build_user_message
@@ -47,11 +46,11 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_of,
     reporter_case_payload,
 )
-from threetears.evals.analysis.surface_table import build_surface_table
+from threetears.evals.analysis.report import Report, build_report
 from threetears.evals.analysis.viz.compiler import compile_chart
-from threetears.evals.analysis.viz.models import FindingChart
-from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS, PayloadError
-from threetears.evals.analysis.viz.policy import SpecPolicyError
+from threetears.evals.analysis.viz.payloads import PayloadError
+from threetears.evals.analysis.viz.policy import IntentPolicyError
+from threetears.evals.analysis.viz.vega_policy import SpecPolicyError
 from threetears.evals.contracts.campaign import EvalAnalysisAttempt
 from threetears.evals.contracts.errors import NotFoundError, ProviderRefusedError, StorageError, ValidationFailedError
 from threetears.evals.contracts.models import EvalTestCase, utc_now_iso
@@ -64,10 +63,8 @@ from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.analysis.arms import ArmTable
     from threetears.evals.analysis.bundle import AnalysisContextBundle
     from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
-    from threetears.evals.analysis.surface_table import SurfaceTable
     from threetears.evals.analysis.viz.compiler import CompiledChart
     from threetears.evals.contracts.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
     from threetears.evals.contracts.models import EvalRun, EvalTemplate
@@ -724,102 +721,31 @@ def inspect_analysis_bundle(
 
 
 # ---------------------------------------------------------------------------
-# Charts and tables — derived on every read, so a stored analysis stays pivotable
+# The report and its charts — derived on every read, so a stored analysis stays pivotable
 # ---------------------------------------------------------------------------
 
 
-def compile_analysis_charts(storage: AnalysisStore, analysis_id: str, scope_id: str) -> list[FindingChart]:
-    """Compile every chartable finding in an analysis to a Vega-Lite spec.
+def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Report:
+    """Read one stored analysis as its report — the one document every surface renders.
 
-    The one place a chart is turned into a spec, so the web report and an
-    exported image are drawing the same thing rather than two renderings that
-    happen to agree.
-
-    A finding whose payload does not compile is SERVED AS A FAILURE rather
-    than raised on or omitted: the compiler and its policy are code and move
-    under a stored chart, and one chart this build refuses must not make the
-    rest of a report unopenable — but omitting it makes a chart that cannot be drawn
-    indistinguishable from a finding that never carried one, which is the
-    empty box this contract exists to replace. The entry names the offending
-    field so the reader can see what is wrong with the stored data.
+    In place of the four reads a surface used to assemble for itself (the analysis, its arm table, its
+    decision-surface table, its compiled charts): one document holds all of it, so a browser and an
+    agent cannot disagree about which arm won, and a chart that cannot be drawn is served as such rather
+    than omitted. Derived on every read and never written back, so a stored analysis stays pivotable.
 
     Args:
         storage: Where the analysis is read.
-        analysis_id: Analysis to compile the charts of.
+        analysis_id: The analysis to report.
         scope_id: The scope it lives in.
 
     Returns:
-        One entry per finding carrying a viz this build has a contract for, in
-        finding order — compiled, or carrying the reason it could not be.
+        The report; serialize it with :func:`~threetears.evals.analysis.report.report_markdown`,
+        :func:`~threetears.evals.analysis.report.report_html` or its own JSON dump.
 
     Raises:
         NotFoundError: No analysis with that id in the scope.
     """
-    analysis = get_analysis(storage, analysis_id, scope_id)
-    charts: list[FindingChart] = []
-    # A finding is identified by its position: the authored document links findings that way.
-    for position, resolution in enumerate(analysis.resolutions):
-        viz = resolution.chart
-        if viz is None or viz.type not in PAYLOAD_MODELS:
-            continue
-        try:
-            compiled = compile_chart(viz.type, viz.payload)
-        except (PayloadError, SpecPolicyError) as exc:
-            log.warning(
-                "eval analysis %s finding %d carries a %s chart that does not compile: %s",
-                analysis_id,
-                position,
-                viz.type,
-                exc,
-            )
-            charts.append(FindingChart.from_failure(str(position), str(exc)))
-            continue
-        charts.append(FindingChart.from_compiled(str(position), compiled))
-    return charts
-
-
-def analysis_arm_table(storage: AnalysisStore, analysis_id: str, scope_id: str) -> ArmTable:
-    """Derive one analysis's arm comparison — the table every report surface shows.
-
-    Here rather than at each surface for the reason chart compilation is here: a browser
-    and an agent disagreeing about which arm won is worse than either being unable to say,
-    and two derivations of one join is how that happens. Nothing is written back — the
-    table is derived on every read, so a stored analysis stays pivotable.
-
-    Args:
-        storage: Where the analysis is read.
-        analysis_id: Analysis to read.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The table, rows ordered winner → ruled out → replaced incumbent → unresolved.
-
-    Raises:
-        NotFoundError: No analysis with that id in the scope.
-    """
-    return arm_table(get_analysis(storage, analysis_id, scope_id))
-
-
-def analysis_surface_table(storage: AnalysisStore, analysis_id: str, scope_id: str) -> SurfaceTable:
-    """Lay out one analysis's decision surface — the table every report surface shows beside the arms.
-
-    Here for the reason :func:`analysis_arm_table` is: the row order, the cost and latency
-    columns, each column's unit and the verdict under each bar were once decided by the page
-    and the agent surface separately, and two layouts of one set of numbers is how a reader
-    switching surfaces meets a different table. Derived on every read; nothing is written back.
-
-    Args:
-        storage: Where the analysis is read.
-        analysis_id: Analysis to read.
-        scope_id: The scope it lives in.
-
-    Returns:
-        The table.
-
-    Raises:
-        NotFoundError: No analysis with that id in the scope.
-    """
-    return build_surface_table(get_analysis(storage, analysis_id, scope_id))
+    return build_report(get_analysis(storage, analysis_id, scope_id))
 
 
 def compile_finding_chart(storage: AnalysisStore, analysis_id: str, scope_id: str, finding_id: str) -> CompiledChart:
@@ -848,7 +774,7 @@ def compile_finding_chart(storage: AnalysisStore, analysis_id: str, scope_id: st
         raise NotFoundError("chart for finding", finding_id)
     try:
         compiled = compile_chart(viz.type, viz.payload)
-    except (PayloadError, SpecPolicyError) as exc:
+    except (PayloadError, IntentPolicyError, SpecPolicyError) as exc:
         # Surfaced rather than swallowed: this caller asked for THIS chart by id,
         # so an empty answer would read as "no chart here" when the truth is that
         # the stored payload cannot be drawn.
@@ -1395,9 +1321,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AnalysisStore",
     "PreparedGeneration",
-    "analysis_arm_table",
-    "analysis_surface_table",
-    "compile_analysis_charts",
+    "analysis_report",
     "compile_finding_chart",
     "describe_insight_id_filters",
     "freeze_reporter_case",

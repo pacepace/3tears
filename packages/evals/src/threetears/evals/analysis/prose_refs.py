@@ -52,7 +52,7 @@ from typing import Literal, get_args
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.numbers import ABSENT, format_number
 from threetears.evals.analysis.references import cell_aliases, cell_of_alias, require_cell, resolve_reading
-from threetears.evals.analysis.viz.compiler import UNSPACED_UNITS, display_scale
+from threetears.evals.analysis.viz.quantities import UNSPACED_UNITS, display_scale
 from threetears.evals.contracts.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.contracts.authored import AuthoredAnalysis
 from threetears.evals.contracts.campaign import ReadingKind

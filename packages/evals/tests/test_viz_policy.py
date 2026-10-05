@@ -16,7 +16,7 @@ import logging
 import pytest
 
 from threetears.evals.analysis.viz.palette import VALUE_ON_FILL_STYLE
-from threetears.evals.analysis.viz.policy import SpecPolicyError, check_spec, enforce_spec
+from threetears.evals.analysis.viz.vega_policy import SpecPolicyError, check_spec, enforce_spec
 
 
 def _bar(**overrides):
@@ -309,13 +309,13 @@ class TestPaletteDiscipline:
         as another — the exact failure the old refusal was reaching for. Drawing the data is
         not the same as pretending the palette was wide enough for it.
         """
-        with caplog.at_level(logging.WARNING, logger="threetears.evals.analysis.viz.policy"):
+        with caplog.at_level(logging.WARNING, logger="threetears.evals.analysis.viz.vega_policy"):
             check_spec(self._coloured([f"c{index}" for index in range(9)]))
         assert any("recycles from slot 1" in record.getMessage() for record in caplog.records)
 
     def test_a_domain_inside_the_palette_is_not_warned_about(self, caplog):
         """The negative half, so the assertion above is known to discriminate."""
-        with caplog.at_level(logging.WARNING, logger="threetears.evals.analysis.viz.policy"):
+        with caplog.at_level(logging.WARNING, logger="threetears.evals.analysis.viz.vega_policy"):
             check_spec(self._coloured(["a", "b", "c", "d", "e"]))
         assert not [record for record in caplog.records if "recycles" in record.getMessage()]
 

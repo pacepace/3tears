@@ -1,21 +1,18 @@
-"""Compile a typed viz payload into a Vega-Lite spec.
+"""Draw a chart intent as a Vega-Lite spec — the first renderer of eval's chart intent.
 
-One compiler, two renderers. The browser embeds the spec it is served; the
-server rasterises the same spec for surfaces that cannot run a browser. Anything
-computed here — a sort order, an axis title, a rounded share — is therefore
-computed once and is identical on both, which is what makes "read the same
-finding over MCP" a check rather than a hope.
+**A renderer, not a decider.** What a chart says — its order, its units, its values as drawn, what
+it must disclose — arrives decided in its :class:`~threetears.evals.analysis.viz.intent.ChartIntent`;
+this module turns that into a Vega-Lite spec and adds nothing a reader is told. One spec, two
+consumers: the browser embeds it and the server rasterises it (:mod:`threetears.evals.analysis.viz.render`)
+for surfaces that cannot run a browser, so layout computed here — label placement, axis domains — is
+identical on both. This half (with its arms, palette, text metrics, rasteriser and spec gate) leaves
+the core for an optional adapter; nothing in the intent half imports it.
 
-**The spec carries no colour.** Every renderer supplies the palette as a
+**The spec carries no colour.** Every consumer supplies the palette as a
 Vega-Lite ``config``: the browser reads it from the CSS custom properties, so it
 cannot drift from the design tokens, and the server reads resolved sRGB hex from
 the generated palette artifact, because its rasteriser cannot parse the OKLCH the
 tokens are authored in. A colour literal compiled into the spec would defeat both.
-
-The compiler also emits the **values as drawn** — a small table, declared as
-columns and rows, built from the same ordered source the spec plots. A surface
-that cannot show a picture can still check the claim, and building both from one
-pass is what stops the two descriptions of one chart from disagreeing.
 
 **Identity never rides on colour here.** Every chart puts its categories on an
 axis instead, which is not a stylistic preference. The palette never refuses to
@@ -41,8 +38,8 @@ drawing one layout rather than each reaching its own conclusion about the same
 string.
 
 **What is here is the machinery every chart shares; what draws one TYPE is not.**
-:func:`compile_chart` is the entry point for callers OUTSIDE this package, and it
-resolves the payload's type through :data:`~threetears.evals.analysis.viz.arms.ARMS` — one
+:func:`draw_intent` is the entry point for an intent and :func:`compile_chart` for a stored payload,
+and both resolve the chart's type through :data:`~threetears.evals.analysis.viz.arms.ARMS` — one
 module per type under :mod:`threetears.evals.analysis.viz.arms`, each importing this one and
 none importing a sibling. So a type's shape is a file rather than a branch, and
 adding one touches nothing another type is drawn by. The value axis, the identity
@@ -60,12 +57,10 @@ of :mod:`threetears.evals.analysis.viz`, not of this file, and an arm reaching f
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field, replace
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any, NamedTuple, TypedDict
 
-# `format_number` lives in the leaf `threetears.evals.analysis.numbers`; the chart arms import it from here.
-from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.viz.palette import (
     VALUE_ON_FILL_STYLE,
     ZERO_RULE_STYLE,
@@ -73,22 +68,15 @@ from threetears.evals.analysis.viz.palette import (
     font_weights,
     geometry,
 )
-from threetears.evals.analysis.viz.payloads import ConfidenceInterval, PayloadError, parse_payload
-from threetears.evals.analysis.viz.policy import enforce_spec
+from threetears.evals.analysis.viz.intent import ChartAxis, ChartIdentity, ChartIntent, chart_intent
+from threetears.evals.analysis.viz.payloads import PayloadError
+from threetears.evals.analysis.viz.quantities import strip_common_prefix
+from threetears.evals.analysis.viz.vega_policy import enforce_spec
 from threetears.evals.analysis.viz.text_metrics import fits, text_width, wrap_text
 
 #: The Vega-Lite schema the specs declare. Pinned rather than tracked: the spec is
 #: the durable artifact, and a stored analysis must draw the same chart next year.
 VEGA_LITE_SCHEMA = "https://vega.github.io/schema/vega-lite/v6.json"
-
-#: Restatement ladder for durations, largest unit first: ``(unit, in terms of, factor)``.
-#:
-#: A quantity is stated in the unit a reader thinks in: it goes
-#: in the largest unit that keeps two significant figures, so 100174 ms is written
-#: 100 s and never both ways in one
-#: report. Applied per CHART rather than per value — a column mixing 900 ms with
-#: 1.2 s is two rulers read as one, which is the same rule's other half.
-_DURATION_LADDER: tuple[tuple[str, str, float], ...] = (("ms", "s", 1000.0),)
 
 #: Opacity for marks that ACCUMULATE — raw sample dots, the overlap band, a bound
 #: whose coverage was never recorded. Low enough that overlapping marks read as
@@ -262,8 +250,8 @@ def _bar_mark(**overrides: Any) -> dict[str, Any]:
     return {"type": "bar", "height": geometry()["bar_height"]} | overrides
 
 
-class ChartColumn(TypedDict):
-    """One column of the values-as-drawn table.
+class CompiledColumn(TypedDict):
+    """One column of the values-as-drawn table, as the compilation hands it on.
 
     ``header`` states the unit where the column has one, because this table is the
     whole of what a surface that cannot draw receives — a bare number in it is the
@@ -276,35 +264,28 @@ class ChartColumn(TypedDict):
 
 @dataclass(frozen=True)
 class CompiledChart:
-    """One finding's chart, in the two forms the surfaces need.
+    """One finding's chart: its intent, and the Vega-Lite spec drawn from it.
+
+    Everything but ``spec`` is the intent's, carried across unchanged so a caller holding a
+    compilation reads the same values table, caption and disclosures the intent decided — the
+    compiler adds a picture and says nothing of its own.
 
     Attributes:
+        intent: What the chart says (:class:`~threetears.evals.analysis.viz.intent.ChartIntent`).
         spec: The Vega-Lite spec, carrying no colour.
         columns: The values-as-drawn table's columns, in display order.
         rows: That table's rows, keyed by column key, in drawn order.
-        unit: The unit the chart's primary quantity is drawn in, after any
-            restatement (a payload in ``ms`` may draw in ``s``). In-process only —
-            it is deliberately not carried on the wire, because it already reaches
-            every reader through the column headers and the axis titles it was used
-            to build. See :data:`~threetears.evals.analysis.viz.models.UNMAPPED_COMPILED_FIELDS`.
-        caption: The payload's own editorial line, exactly as its author wrote it,
-            or ``""`` where it wrote none. Set by :func:`compile_chart` and by
-            nothing else: an arm leaves it empty, because an arm cannot know what
-            the author concluded and the author's one idea is not a string the
-            compiler may extend.
-        disclosures: What THIS compilation has to tell the reader that the author
-            could not — what it truncated, filtered out, restated or refused to
-            place, and any vocabulary the figure needs and does not draw — one idea
-            per line, in reading order, or empty when there is nothing to disclose.
-            Written by the arm. Kept apart from ``caption`` rather than joined onto
-            it: a caption the compiler extends reads as one paragraph in which the
-            author's sentence is merely the first, and a reader cannot tell where
+        unit: The unit the chart's primary quantity is drawn in, after any restatement.
+        caption: The payload's own editorial line, exactly as its author wrote it, or ``""``.
+        disclosures: What the chart has to tell the reader that the author could not, one idea
+            per line, in reading order — kept apart from ``caption`` so a reader can tell where
             the author stopped.
         title: The chart's own title.
     """
 
+    intent: ChartIntent
     spec: dict[str, Any]
-    columns: list[ChartColumn] = field(default_factory=list)
+    columns: list[CompiledColumn] = field(default_factory=list)
     rows: list[dict[str, Any]] = field(default_factory=list)
     unit: str = ""
     caption: str = ""
@@ -318,19 +299,15 @@ class CompiledChart:
             A header line followed by one line per row, columns padded to a common
             width, or an empty list when there is nothing to draw.
         """
-        if not self.rows:
-            return []
-        cells = [[_render_cell(row.get(column["key"])) for column in self.columns] for row in self.rows]
-        widths = [
-            max(len(column["header"]), *(len(row[index]) for row in cells)) for index, column in enumerate(self.columns)
-        ]
-        lines = ["  ".join(column["header"].ljust(widths[index]) for index, column in enumerate(self.columns))]
-        lines.extend("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)).rstrip() for row in cells)
-        return lines
+        return self.intent.values_as_drawn()
 
 
 def compile_chart(viz_type: str, payload: dict[str, Any]) -> CompiledChart:
-    """Compile a finding's viz into a spec plus the numbers it draws.
+    """Compile a finding's viz into a Vega-Lite spec, through the chart's intent.
+
+    The intent is decided first (:func:`~threetears.evals.analysis.viz.intent.chart_intent` — the
+    payload validated, the chart's claims held to the intent policy), then drawn by the type's arm,
+    then the spec is held to this renderer's own gate.
 
     Args:
         viz_type: The ``Viz.type`` discriminator.
@@ -341,88 +318,79 @@ def compile_chart(viz_type: str, payload: dict[str, Any]) -> CompiledChart:
 
     Raises:
         PayloadError: The payload is malformed, or its type has no compiler.
-        SpecPolicyError: The compiled spec breaks a presentation rule. Only the
-            spec is gated: the caption and every disclosure line are served as text
-            and never reach the rasteriser, and what authored text CLAIMS is never
-            checked (prose is judged by the reporter eval, not
-            refused by code). A string in the spec is refused only when it IS an
-            unparseable colour value, never for mentioning one. Callers treat the
-            raise as a data problem.
+        IntentPolicyError: The chart's intent breaks a presentation rule.
+        SpecPolicyError: The compiled spec breaks a rendering rule. Only the spec is gated here:
+            the caption and every disclosure line are served as text and never reach the
+            rasteriser, and what authored text CLAIMS is never checked (prose is judged by the
+            reporter eval, not refused by code). Callers treat the raise as a data problem.
     """
-    # Imported inside the call rather than at module scope, and that is structural:
-    # every arm imports this module's shared machinery, so a top-level import here
-    # would close a cycle. Deferring it leaves the module graph one-way — arms depend
-    # on the kit, never the reverse — and the lookup resolves on first call, by which
-    # point this module is fully initialised, so import ORDER cannot matter either.
-    from threetears.evals.analysis.viz.arms import ARMS
-
-    parsed = parse_payload(viz_type, payload)
-    arm = ARMS.get(viz_type)
-    if parsed is None or arm is None:
-        # `None` (no payload model) and a model with no registered arm land here
-        # alike, and neither is a data problem — the type is simply not drawable
-        # by this build.
-        raise PayloadError(f"no compiler for viz type {viz_type!r}")
-    chart = arm(parsed)
-    # The author's line is carried as written and never extended: what the compiler
-    # has to say travels as `disclosures`, one line per idea, which every surface
-    # renders after the caption and apart from it. The strip is the payload model's
-    # own stance (`str_strip_whitespace`) restated for a caption of no words, which
-    # reads as one nobody wrote.
-    chart = replace(chart, caption=(parsed.caption or "").strip())
-    # Only the spec is gated. The caption and the disclosure lines are served as text
-    # (a `<figcaption>` in the browser, indented lines over MCP) and never reach the
-    # rasteriser, so no rendering rule applies to them — and what they say is the
-    # reporter eval's question, never a check's.
-    enforce_spec(chart.spec)
-    return chart
+    return draw_intent(chart_intent(viz_type, payload))
 
 
-def strip_common_prefix(labels: Sequence[str]) -> dict[str, str]:
-    """Map each label to what it is drawn as, stripping the prefix they all share.
-
-    A ``/``-delimited prefix common to *every* series carries no information
-    **within one chart**: if all three are ``anthropic/`` the word distinguishes
-    nothing, and if they differ nothing is stripped. Per figure rather than from a
-    global alias table, so there are no naming decisions to maintain and no way for
-    a rename in one report to change what another draws. The full identity stays on
-    the row, which is what the tooltip and the values table read.
-
-    Two things are refused rather than allowed to happen quietly. **At least one
-    segment always survives**, so a set like ``anthropic/`` and ``anthropic/claude``
-    cannot strip one label to nothing. And **two labels may never become one** —
-    unreachable as the arithmetic stands, since a suffix collision after a shared
-    prefix means the labels were identical to begin with, but the whole value of
-    stripping over aliasing is that it cannot merge two series, and a property that
-    load-bearing is worth holding by construction rather than by argument.
+def draw_intent(intent: ChartIntent) -> CompiledChart:
+    """Draw a decided chart intent as a Vega-Lite spec — this renderer's one entry point.
 
     Args:
-        labels: Every category the figure draws, in any order.
+        intent: The chart's intent.
 
     Returns:
-        Full label → drawn label, for each distinct label.
+        The compiled chart.
+
+    Raises:
+        SpecPolicyError: The compiled spec breaks a rendering rule.
     """
-    unique = list(dict.fromkeys(labels))
-    segmented = [label.split("/") for label in unique]
-    identity = {label: label for label in unique}
-    # No categories at all is a real input — a comparison whose every row turns out
-    # unplottable still compiles a frame — and it has no shared prefix rather than an
-    # undefined one. Stated here because the arithmetic below takes a `min` over the
-    # segments and would raise on the empty case instead.
-    if not unique or any(len(parts) < 2 for parts in segmented):
-        return identity
+    # Imported inside the call rather than at module scope, and that is structural: every arm
+    # imports this module's shared machinery, so a top-level import here would close a cycle.
+    from threetears.evals.analysis.viz.arms import ARMS
 
-    shared = 0
-    keep_one = min(len(parts) for parts in segmented) - 1
-    while shared < keep_one and len({parts[shared] for parts in segmented}) == 1:
-        shared += 1
-    if not shared:
-        return identity
+    # Every chart type has an arm — `ARMS` is held to the type vocabulary key for key by test — so a type
+    # with none is a registration mistake, not a data problem, and raises as one.
+    spec = ARMS[intent.type](intent)
+    enforce_spec(spec)
+    return CompiledChart(
+        intent=intent,
+        spec=spec,
+        columns=[{"key": column.key, "header": column.header} for column in intent.columns],
+        rows=[dict(row) for row in intent.rows],
+        unit=intent.unit,
+        caption=intent.caption,
+        disclosures=list(intent.disclosures),
+        title=intent.title,
+    )
 
-    stripped = {label: "/".join(parts[shared:]) for label, parts in zip(unique, segmented, strict=True)}
-    if any(not drawn for drawn in stripped.values()) or len(set(stripped.values())) < len(stripped):
-        return identity
-    return stripped
+
+def _identity(intent: ChartIntent) -> ChartIdentity:
+    """The intent's identity, which every arm that draws categories needs.
+
+    Raises:
+        PayloadError: The intent names no identity, so there is nothing to put on the axis.
+    """
+    if intent.identity is None:
+        raise PayloadError(f"a {intent.type} chart intent names no identity to draw its rows by")
+    return intent.identity
+
+
+def _value_axis(intent: ChartIntent, name: str) -> ChartAxis:
+    """One of the intent's axes, by name.
+
+    Raises:
+        PayloadError: The intent declares no such axis.
+    """
+    axis = intent.axis(name)
+    if axis is None:
+        raise PayloadError(f"a {intent.type} chart intent declares no {name!r} axis")
+    return axis
+
+
+def _number(value: Any) -> float:
+    """A data cell the intent placed as a number, as a float.
+
+    Raises:
+        PayloadError: The cell is not a number — the intent and the arm disagree about the field.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise PayloadError(f"expected a number where the chart places a value, got {value!r}")
+    return float(value)
 
 
 def _name_font_size() -> float:
@@ -1375,181 +1343,24 @@ def _label_lift(thickness: float, font_size: float) -> float:
     return thickness / 2 + font_size / 2 if thickness else 0.0
 
 
-def _interval_disclosures(intervals: Iterable[ConfidenceInterval | None]) -> list[str]:
-    """Qualify a chart's intervals: what they cover, and what they vary over.
-
-    Both are needed to read a drawn band, and neither is recoverable from the
-    picture — a wide band is a wide band whether it is a 95% interval over five
-    runs or a 50% one over twelve cases. Two lines rather than one sentence,
-    because they are two facts: a reader checking the coverage level should not
-    have to find it inside a statement about the variability source.
-
-    Args:
-        intervals: The chart's intervals; ``None`` entries (a group with no
-            interval) are ignored.
-
-    Returns:
-        The coverage line then the variability line, each only where it has
-        something to say — empty when there is no interval to qualify.
-    """
-    present = [interval for interval in intervals if interval is not None]
-    return [line for line in (_coverage_caption(present), _variability_caption(present)) if line]
-
-
-def _interval_caption(intervals: Iterable[ConfidenceInterval | None]) -> str:
-    """The interval qualification as one string, for a spec's own ``description``.
-
-    The spec states what its intervals are in its ``description`` because the
-    policy gate reads it there; that slot holds one string, so the lines
-    :func:`_interval_disclosures` returns are space-joined for it.
-
-    Args:
-        intervals: The chart's intervals; ``None`` entries are ignored.
-
-    Returns:
-        The sentences, space-joined, or ``""`` when there is no interval to
-        qualify.
-    """
-    return " ".join(_interval_disclosures(intervals))
-
-
-def _coverage_caption(intervals: Sequence[ConfidenceInterval]) -> str:
-    """Name the coverage a set of intervals was computed at, where they share one.
-
-    A 50% band and a 95% band over the same values are different widths, so an
-    interval drawn without its level lets the reader read coverage as spread. Every
-    interval states its level (:class:`ConfidenceInterval` requires it).
-
-    Args:
-        intervals: The chart's intervals, already filtered of absences.
-
-    Returns:
-        The sentence, or ``""`` when there is no interval to qualify.
-    """
-    if not intervals:
-        return ""
-    stated = sorted({interval.level for interval in intervals})
-    if len(stated) == 1:
-        coverage = _with_unit(stated[0] * 100, "%")
-        return f"Interval is a {coverage} CI." if len(intervals) == 1 else f"Intervals are {coverage} CIs."
-    # Naming one level would extend it to intervals that stated another, and the widths on this
-    # shared axis are then read against each other as if they covered the same thing.
-    joined = "; ".join(_with_unit(level * 100, "%") for level in stated)
-    return f"Widths are not comparable: the intervals are not all the same coverage level ({joined})."
-
-
-def _variability_caption(intervals: Sequence[ConfidenceInterval]) -> str:
-    """State what a set of intervals varies over.
-
-    Uncertainty is drawn from values, never inferred, so every interval has to say what
-    variability it captures — the same [0.77, 0.85] means different things spanning runs of one
-    case and spanning cases within one run, so every interval states its source
-    (:class:`ConfidenceInterval` requires it). Where the arms of one chart disagree
-    about their source it says so rather than picking the first: differing
-    variability is exactly the case where a reader must not assume the arms are
-    comparable.
-
-    Args:
-        intervals: The chart's intervals, already filtered of absences.
-
-    Returns:
-        The sentence, or ``""`` when there is no interval to qualify.
-    """
-    if not intervals:
-        return ""
-    sources = sorted({interval.variability for interval in intervals})
-    if len(sources) == 1:
-        return f"Interval spans {sources[0]}." if len(intervals) == 1 else f"Intervals span {sources[0]}."
-    joined = "; ".join(sources)
-    return f"The intervals span different things ({joined}), so their widths are not comparable."
-
-
-#: Units written against the number with no space (``42%``), where every other unit takes one (``42 ms``).
-#: Public so a figure stated in prose (:mod:`threetears.evals.analysis.prose_refs`) spaces its unit the same way.
-UNSPACED_UNITS: tuple[str, ...] = ("%", "°")
-
-
-def display_scale(values: Sequence[float], unit: str | None) -> tuple[float, str]:
-    """Choose the unit a chart's or a table column's quantity is stated in, and the factor to reach it.
-
-    Public because a table column follows the same rule as a chart axis: the decision surface's
-    served table (``threetears.evals.analysis.surface_table``) chooses each column's unit here, once,
-    for every surface that renders it.
-
-    Args:
-        values: Every value the chart will draw in this unit.
-        unit: The payload's declared unit, or ``None`` when it carried none.
-
-    Returns:
-        ``(factor, unit)`` — multiply each value by the factor and label the axis
-        with the unit. ``(1.0, "")`` when no unit was declared: a quantity whose
-        unit is unknown is drawn as it was given and labelled by its measure's
-        name alone, because restating an unknown unit would be inventing one.
-    """
-    if not unit:
-        return 1.0, ""
-    largest = max((abs(value) for value in values if math.isfinite(value)), default=0.0)
-    for source, target, factor in _DURATION_LADDER:
-        if unit == source and largest >= factor:
-            return 1.0 / factor, target
-    return 1.0, unit
-
-
-def _axis_title(quantity: str, unit: str) -> str:
-    """Name a quantity and, where one is known, the unit it is stated in."""
-    return f"{quantity} ({unit})" if unit else quantity
-
-
-def _render_cell(value: Any) -> str:
-    """Render one values-table cell, honestly — an absent value is never a zero."""
-    if value is None:
-        return "—"
-    if isinstance(value, bool):
-        return "yes" if value else "no"
-    if isinstance(value, int | float):
-        return format_number(value)
-    return str(value)
-
-
-def _with_unit(value: float | None, unit: str) -> str:
-    """Join a number to its unit, spaced the way the unit is actually written.
-
-    ``42 ms`` takes a space and ``42%`` does not; getting it wrong is small but it
-    is the kind of small that makes a generated report read as machine output.
-    """
-    rendered = format_number(value)
-    if not unit or value is None:
-        return rendered
-    return f"{rendered}{unit}" if unit in UNSPACED_UNITS else f"{rendered} {unit}"
-
-
-def _signed_with_unit(value: float | None, unit: str) -> str:
-    """A delta in its own unit, carrying its sign — the direction is half the fact."""
-    if value is None:
-        return "—"
-    return f"{'+' if value > 0 else ''}{_with_unit(value, unit)}"
-
-
 __all__ = [
     "ANCHOR_FIELD",
     "DISPLAY_FIELD",
     "KIND_FIELD",
     "RISE_FIELD",
     "SECONDARY_OPACITY",
-    "UNSPACED_UNITS",
     "VALUE_LABEL_OFFSET",
     "VALUE_TEXT_FIELD",
     "VEGA_LITE_SCHEMA",
-    "ChartColumn",
+    "CompiledColumn",
     "CompiledChart",
     "MarkValue",
     "Placement",
     "ValueAxis",
     "compile_chart",
-    "display_scale",
+    "draw_intent",
     "plot_size",
     "point_radius",
-    "strip_common_prefix",
     "value_label_layers",
     "value_label_mark",
 ]

@@ -1280,7 +1280,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=35, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=36, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -1605,8 +1605,9 @@ class AnalysisContextBundle(EvalDocumentModel):
         description=(
             "The runs placed in time, when they span two or more builds (the host's release label) or, failing that, "
             "two or more days: each position names its runs and carries every cell measured there, computed exactly "
-            "as `cell_measures` is over that position's runs alone. Earliest first. A `timeseries` chart draws one "
-            "reading across these positions; without a time axis no chart can draw time."
+            "as `cell_measures` is over that position's runs alone. Earliest first. A `date` axis states in "
+            "`basis_reason` why it is not builds (naming any runs that recorded no build). A `timeseries` chart "
+            "draws one reading across these positions; without a time axis no chart can draw time."
         ),
     )
     time_axis_withheld: str | None = Field(
@@ -5586,9 +5587,9 @@ def _time_axis(
     measuring = [run for run in runs if results_by_run[run.id]]
     if not measuring:
         return None, "no run produced an observation, so nothing was measured at any time"
-    basis, grouped, single = _time_positions(measuring, results_by_run, profile=profile)
+    basis, grouped, release_why = _time_positions(measuring, results_by_run, profile=profile)
     if len(grouped) < 2:
-        return None, single
+        return None, f"every run started on one day ({grouped[0][0]}) and {release_why}"
     positions = []
     for key, members in grouped:
         member_ids = {run.id for run in members}
@@ -5613,8 +5614,9 @@ def _time_axis(
                 ),
             )
         )
-    release_label = profile.release_label if basis == "release" else None
-    return TimeAxis(basis=basis, release_label=release_label, positions=positions), None
+    if basis == "release":
+        return TimeAxis(basis=basis, release_label=profile.release_label, positions=positions), None
+    return TimeAxis(basis=basis, basis_reason=release_why, positions=positions), None
 
 
 def _time_positions(
@@ -5633,8 +5635,9 @@ def _time_positions(
         profile: The host, whose ``release_label`` names its builds.
 
     Returns:
-        ``(basis, positions, why)``: each position's key and its runs in creation order, and — read only when
-        there is a single position — what every run shared, in the words of the branch that found it.
+        ``(basis, positions, why_not_builds)``: each position's key and its runs in creation order, and — on a
+        ``date`` basis — why the positions are not builds, in the words of the branch that found it, naming
+        the runs that recorded no label where that is the reason. Empty on a ``release`` basis.
 
     Raises:
         RuntimeError: The release label names no registered input — registration refuses that, so the
@@ -5648,13 +5651,13 @@ def _time_positions(
         values = {run.id: declared.read(run, results_by_run[run.id]) for run in runs}
         unrecorded = [run.id for run in runs if values[run.id] is None or not str(values[run.id]).strip()]
         if unrecorded:
-            release_why = f"{len(unrecorded)} of {len(runs)} runs recorded no {profile.release_label}"
+            named = ", ".join(sorted(unrecorded))
+            release_why = f"{len(unrecorded)} of {len(runs)} runs recorded no {profile.release_label} ({named})"
         elif len({str(value) for value in values.values()}) > 1:
             return "release", _group_in_order(runs, lambda run: str(values[run.id])), ""
         else:
             release_why = f"every run recorded one {profile.release_label} ({next(iter(values.values()))})"
-    by_day = _group_in_order(runs, _utc_day)
-    return "date", by_day, f"every run started on one day ({by_day[0][0]}) and {release_why}"
+    return "date", _group_in_order(runs, _utc_day), release_why
 
 
 def _group_in_order(runs: list[EvalRun], key: Callable[[EvalRun], str]) -> list[tuple[str, list[EvalRun]]]:

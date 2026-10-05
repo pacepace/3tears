@@ -108,6 +108,8 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     ((34, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
     # 35/10: the time axis joined the bundle; the apparatus partition is unchanged.
     ((35, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 36/10: a date time axis states why it is not builds; the apparatus partition is unchanged.
+    ((36, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 

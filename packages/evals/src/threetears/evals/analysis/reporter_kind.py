@@ -32,16 +32,13 @@ from __future__ import annotations
 
 import logging
 import re
-import typing
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from threetears.evals.analysis.arms import arm_label, arm_levels, distinguishing_axes
 from threetears.evals.analysis.bundle import AnalysisContextBundle
-from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import GenerationError
 from threetears.evals.analysis.generator import (
     build_user_message,
@@ -51,13 +48,12 @@ from threetears.evals.analysis.generator import (
     user_message_digest,
 )
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.viz_refs import cell_arm_labels
+from threetears.evals.analysis.report.words import CONFIDENCE_WORDS, EVIDENCE_TIER_WORDS, arm_namer, positions
 from threetears.evals.contracts.authored import NO_CHART
 from threetears.evals.contracts.campaign import (
     ConfidenceTier,
     EvalAnalysis,
     EvidenceRow,
-    EvidenceTier,
     FindingResolution,
 )
 from threetears.evals.contracts.candidate_kind import (
@@ -594,80 +590,6 @@ def judge_case_material(case: ReporterCase, *, generated_over: AnalysisContextBu
 # shown ``posture.tier`` or ``cell_ref`` docks readability for vocabulary no reader ever meets.
 
 
-def _literal_values(annotation: Any) -> frozenset[str]:
-    """Every value a ``Literal`` annotation admits, through an optional ``| None``."""
-    if typing.get_origin(annotation) is Literal:
-        return frozenset(typing.get_args(annotation))
-    return frozenset(value for arg in typing.get_args(annotation) for value in _literal_values(arg))
-
-
-def _worded(words: dict[str, str], annotation: Any, what: str) -> dict[str, str]:
-    """Refuse at import a word table that does not cover exactly the values its field admits.
-
-    A value added to the model and not here would otherwise reach the page as its raw token — the
-    very vocabulary this layout exists to keep from the reader.
-    """
-    if set(words) != _literal_values(annotation):
-        raise RuntimeError(
-            f"the memo's words for {what} {sorted(words)} do not match the model's {sorted(_literal_values(annotation))}"
-        )
-    return words
-
-
-#: A confidence tier as a reader says it.
-_CONFIDENCE_WORDS = _worded(
-    {"very_high": "very high", "high": "high", "medium": "medium", "low": "low"}, ConfidenceTier, "a confidence tier"
-)
-
-#: What a verdict stands on, as a reader says it — code's tier, read off the finding's evidence rows.
-_EVIDENCE_TIER_WORDS = _worded(
-    {
-        "mechanical": "checks and measures",
-        "directional": "judged scores, directional until the judge's reliability is measured",
-        "none": "no reading it names",
-    },
-    EvidenceTier,
-    "an evidence tier",
-)
-
-
-def _arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
-    """Name the arm a cell reference points at, as :func:`~threetears.evals.analysis.arms.arm_label` names it.
-
-    With a decision surface, the words are
-    :func:`~threetears.evals.analysis.viz_refs.cell_arm_labels`' — the same call the charts make, so the
-    rig is named exactly where it tells two cells of one arm apart. Without one — a transcribed
-    analysis generated before surfaces — the variant index is all there is to name the arm by, and
-    the labeller is the same one; a reference naming a variant the index does not hold says so in
-    that labeller's own words rather than printing the reference.
-
-    Args:
-        analysis: The analysis whose references to name.
-
-    Returns:
-        A function from a cell reference to its arm's name.
-    """
-    labels = cell_arm_labels(analysis.decision_surface, analysis.variant_index)
-    index = {entry.variant_key: entry for entry in analysis.variant_index}
-    distinguishing = distinguishing_axes(analysis.variant_index)
-
-    def name(ref: str) -> str:
-        if ref in labels:
-            return labels[ref]
-        variant = variant_of_cell_ref(ref)
-        if variant is None:
-            return "a cell this analysis cannot read"
-        entry = index.get(variant)
-        return arm_label(
-            variant,
-            arm_levels(entry, distinguishing),
-            levels_unavailable=entry.levels_unavailable if entry else None,
-            placed=entry is not None,
-        )
-
-    return name
-
-
 def _one_line(text: str) -> str:
     """Text a heading or a bold lead carries, on one line — a newline would end either mid-sentence."""
     return " ".join(text.splitlines())
@@ -680,7 +602,7 @@ def _reading(measure_id: str, reading: str) -> str:
 
 def _confidence(confidence: ConfidenceTier) -> str:
     """A confidence tier in words."""
-    return _CONFIDENCE_WORDS[confidence]
+    return CONFIDENCE_WORDS[confidence]
 
 
 def _evidence_row(row: EvidenceRow, arm: Callable[[str], str]) -> str:
@@ -1010,11 +932,6 @@ class ReporterKind:
 REPLAY_NOTES_HEADING = "# NOTES ON THIS EVIDENCE — not seen by the memo's author"
 
 
-def _positions(positions: list[int]) -> str:
-    """Finding positions as a reader counts them: from one."""
-    return ", ".join(str(position + 1) for position in positions)
-
-
 def render_memo_as_written(analysis: EvalAnalysis) -> str:
     """The memo as authored: the model's words, code's figures, in one canonical layout a reader follows.
 
@@ -1035,7 +952,7 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
         The text the judge reads as the output under review.
     """
     document = analysis.document
-    arm = _arm_namer(analysis)
+    arm = arm_namer(analysis)
     resolutions: list[FindingResolution | None] = (
         list(analysis.resolutions) if analysis.resolutions else [None] * len(document.findings)
     )
@@ -1046,14 +963,14 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
     if document.questions:
         questions = ["## Declared questions", ""]
         for answer in document.questions:
-            rests = f" (rests on finding {_positions(answer.rests_on)})" if answer.rests_on else ""
+            rests = f" (rests on finding {positions(answer.rests_on)})" if answer.rests_on else ""
             questions.append(f"- {answer.question_id} — {answer.resolution}: {_one_line(answer.answer)}{rests}")
         sections.append(questions)
 
     if document.decisions:
         decisions = ["## Decisions", ""]
         for decision in document.decisions:
-            rests = f" Rests on finding {_positions(decision.rests_on)}." if decision.rests_on else ""
+            rests = f" Rests on finding {positions(decision.rests_on)}." if decision.rests_on else ""
             decisions.append(
                 f"- **{_one_line(decision.proposal)}** — {decision.disposition}; "
                 f"confidence {_confidence(decision.confidence)}.{rests}"
@@ -1068,11 +985,11 @@ def render_memo_as_written(analysis: EvalAnalysis) -> str:
             findings += ["", f"### {position + 1}. {_one_line(finding.title)}", ""]
             facts = [f"Confidence: {_confidence(finding.confidence)}."]
             if resolution is not None:
-                facts.append(f"Stands on: {_EVIDENCE_TIER_WORDS[resolution.evidence_tier]}.")
+                facts.append(f"Stands on: {EVIDENCE_TIER_WORDS[resolution.evidence_tier]}.")
             if finding.axes:
                 facts.append(f"About: {', '.join(finding.axes)}.")
             if finding.invalidates:
-                facts.append(f"Invalidates finding {_positions(finding.invalidates)}.")
+                facts.append(f"Invalidates finding {positions(finding.invalidates)}.")
             findings.append(" ".join(facts))
             if finding.body.strip():
                 findings += ["", finding.body.strip()]

@@ -7006,18 +7006,22 @@ class TestSignificanceFormatting:
     def test_the_single_renderer_serves_the_compiled_chart_too(self):
         """The rule had three server-side homes and drifted in two of them.
 
-        Pinned through the ``delta_table`` arm's own read so that reintroducing
+        Pinned through the ``delta_table`` chart's own read so that reintroducing
         a private copy there fails here rather than silently answering
         differently from the compare table about the same row.
         """
         from threetears.evals.analysis.reporting import format_significance
-        from threetears.evals.analysis.viz.arms.delta_table import compile_delta_table
+        from threetears.evals.analysis.viz.compiler import compile_chart
         from threetears.evals.analysis.viz.payloads import DeltaRow, DeltaTablePayload
 
         def effect_reads(row: DeltaRow) -> set[str]:
-            """Every place the compiled chart states the row's effect: its values table and its mark data."""
-            chart = compile_delta_table(DeltaTablePayload(rows=[row]))
-            return {chart.rows[0]["effect"], *(datum["effect"] for datum in chart.spec["data"]["values"])}
+            """Every place the compiled chart states the row's effect: its values table, its intent data and its marks."""
+            chart = compile_chart("delta_table", DeltaTablePayload(rows=[row]).model_dump(mode="json"))
+            return {
+                chart.rows[0]["effect"],
+                *(datum["effect"] for datum in chart.intent.data),
+                *(datum["effect"] for datum in chart.spec["data"]["values"]),
+            }
 
         row = DeltaRow(metric="cost_usd", a=0.011, b=0.019, d_z=1.2, p=0.004, n=24, significant=True, paired=True)
 

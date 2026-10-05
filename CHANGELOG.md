@@ -6,6 +6,70 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the Report document and chart intent
+
+- **An analysis is read through one document.** `Report` (new, `REPORT_VERSION` 1): an ordered list of blocks —
+  `TextBlock` (what the analysis's author wrote, as written, with a `role` and the `facts` code states beside it),
+  `TableBlock` (evidence per finding, the arm table, the decision surface; columns, rows, the stated `order`,
+  `total_rows` for a truncated table), `ChartBlock` (a finding's chart intent, or the `error` saying why a stored chart
+  cannot be drawn) and `DisclosureBlock` (what code must add, by `source`) — each in a `section` (summary, questions,
+  decisions, findings, arms, surface, next, methods) and linked by position to the finding it belongs to (`finding`)
+  and the findings it rests on (`rests_on`). `ReportSource` says what it is a report of. `build_report(analysis)`
+  lays a stored analysis out; `analysis_report(storage, analysis_id, scope_id)` reads one through the service.
+  Refused: a block linked to a finding the report does not hold; a table showing more rows than its `total_rows`, or a
+  row keyed by no column; a chart block carrying both an intent and an error, neither, or an intent of another type; a
+  finding's title, body, caveat or carried-forward claim naming no finding.
+- **Three serializers.** `Report.to_canonical_json()`; `report_markdown(report)` (every chart as its title, the author's
+  caption, its values as drawn as a table and its disclosures); `report_html(report)` — a standalone page with no script,
+  no event handler, no external resource and no URL, every text node escaped (a memo's paragraphs, bullets, bold and code
+  rendered over escaped text), each chart a `<figure>` holding its values table with its intent as JSON in
+  `data-chart-intent` for a host renderer to hydrate.
+- **A published JSON Schema.** `analysis/report/schema.json` (Draft 2020-12, generated from the model in serialization
+  mode and held to it by test), `report_json_schema()`, `published_report_schema()`, `SCHEMA_PATH`. Ships in the wheel.
+- **`analysis_report` replaces the four-read assembly.** `compile_analysis_charts`, `analysis_arm_table` and
+  `analysis_surface_table` are removed, with `FindingChart` and `analysis/viz/models.py` (no shim): the report carries
+  the arm table, the surface table and every chart. `compile_finding_chart` (the per-chart Vega-Lite path) stays until
+  the renderer leaves the core.
+- **Where a caveat goes.** An author's caveat is attached to its finding, as written; the authored `Caveat` carries no
+  magnitude, and placing caveats by materiality would mean reading it out of prose. A measure's materiality threshold
+  already labels the delta it applies to (`immaterial`) where that delta is drawn. The `methods` section holds what no
+  finding or table owns: the time axis's basis and how the analysis was generated.
+- **Chart intent (D7a).** `ChartIntent` (new, `INTENT_VERSION` 1) — what a chart says, never how it looks: its `type`
+  (eval's eight, `ChartType`), `title`, the validated `payload`, the unit restatement (`scale`, `unit`), the marks'
+  `data`, what each field encodes (`ChartEncoding`: `role` from `EncodingRole` — identity, length, position,
+  interval_low/high with `varies_over`, level, class, ordinal, count, label — and its `axis`), the rulers (`ChartAxis`:
+  `quantity`, `unit`, `zero_baseline`, an ordinal axis's stated `order`), `identity` (`ChartIdentity`: field, drawn
+  order, `ordered_by`, `ranked_by`), colour as named slots (`ChartColours`: field, `categorical`/`sequential`, `domain`,
+  `uncoloured`), standards drawn across an axis (`ChartReference`), `shapes`, `direct_labels`, `intervals`, `footnote`,
+  the values as drawn (`columns`, `rows`), `caption` and `disclosures`. `chart_intent(viz_type, payload)` decides one
+  through a builder per type (`analysis/viz/intents/`) and enforces the policy. `VALIDATED_SLOTS` (4) and
+  `SERIES_SLOTS` (8) are now the vocabulary's, in `analysis/viz/payloads.py`; the Vega theme's palette is held to them by test.
+- **The policy rules read the intent.** `analysis/viz/policy.py` is now `check_intent` / `enforce_intent` /
+  `IntentPolicyError`: a length or count starts at zero; every measured field and drawn standard is on a declared axis
+  and an axis with a unit states it; a colour scheme gives each drawn value one slot (a domain past `SERIES_SLOTS` warns,
+  never refuses); an interval end says what it varies over; the field naming the rows is never coloured, and past
+  `VALIDATED_SLOTS` every mark carries its label; a ranking descends on a field it measures; an ordinal position is on an
+  axis stating its order; the values table has columns, keys its rows by them, and has rows when the chart places marks.
+  The Vega-Lite spec gate moved, unchanged, to `analysis/viz/vega_policy.py` (`check_spec`, `enforce_spec`,
+  `SpecPolicyError`, `RANKING_SPEC_NAME`).
+- **The Vega-Lite compiler draws an intent.** Each arm takes a `ChartIntent` and returns a spec; `draw_intent(intent)`
+  is the renderer's entry point and `compile_chart(viz_type, payload)` is `draw_intent(chart_intent(...))`.
+  `CompiledChart` gains `intent` and carries the intent's table, caption and disclosures unchanged; its column type is
+  renamed `CompiledColumn` (`ChartColumn` is now the intent's). Every spec and values table compiles as before. Nothing
+  outside the Vega-Lite half imports it but `service.compile_finding_chart` and the `analysis.viz` root's re-exports
+  (marked `# debt:`), which leave with it.
+- **The generator checks a proposed chart through its intent** (`chart_intent`; `IntentPolicyError` drops it), so a
+  host's own renderer is held to the same gate.
+- `analysis/viz/quantities.py` (new) holds how a quantity is stated: `display_scale`, `UNSPACED_UNITS`, `axis_title`,
+  `with_unit`, `signed_with_unit`, `render_cell`, the interval wording and `strip_common_prefix`, moved out of the
+  compiler. `analysis/report/words.py` (new) holds the confidence, evidence-tier and arm-status words and the arm
+  namer, moved out of `reporter_kind` so the memo as written and the report read alike; `render_memo_as_written` is
+  unchanged.
+- **A date time axis says why it is not builds.** `TimeAxis.basis_reason: str | None` (new): required on a `date`
+  axis — the host labels no build, every run recorded one build, or which runs recorded none (named) — and refused on a
+  `release` axis. `time_axis_withheld` names the unlabelled runs too. The report's methods section states the axis's
+  basis. Bundle `schema_version` 35 -> 36.
+
 ### 3tears-evals: the timeseries chart and the bundle's time axis
 
 - **The bundle places a campaign's runs in time.** `AnalysisContextBundle.time_axis: TimeAxis | None` (new) and
