@@ -17,6 +17,8 @@ is pinned here holds for FastMCP (``test_fastmcp_transport.py``) and any adapter
 
 from __future__ import annotations
 
+from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS
+
 from typing import Any
 
 import pytest
@@ -156,7 +158,7 @@ async def test_a_help_page_carries_the_parameters_and_an_example(tools: dict[str
         {"action": "help", "topic": "run_launch"}, host=ops_fixture().host, caller=CALLER
     )
     assert "- template_id (string, required): A template's id" in outcome.text
-    assert "- k_runs (integer, default 1)" in outcome.text
+    assert f"- k_runs (integer, default {DEFAULT_LAUNCH_K_RUNS})" in outcome.text
     assert "poll each with action='job_poll'" in outcome.text
     assert 'Example: {"action": "run_launch", "template_id": "tmpl-1"' in outcome.text
 

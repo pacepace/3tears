@@ -6,6 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: `run_launch` and `launch_estimate` default to `DEFAULT_LAUNCH_K_RUNS`
+
+- **Behaviour change:** both actions defaulted `k_runs` to 1 while every other launch entrypoint uses
+  `DEFAULT_LAUNCH_K_RUNS` (3). They now read the constant, so an agent's default launch repeats each case as
+  often as any other launch does — and costs that much more; a host's spend cap still bounds it.
+
 ### 3tears-evals: the read lenses are typed and in the action catalogue
 
 - **Breaking: the read lenses return their models, not dicts.** `pivot` returns `PivotTable`, `history` returns

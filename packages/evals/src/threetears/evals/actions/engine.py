@@ -17,7 +17,7 @@ from pydantic import Field
 
 from threetears.evals.actions import render
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller
-from threetears.evals.contracts import EvalRunStatus
+from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, EvalRunStatus
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.ops import (
     AnalysisDeleted,
@@ -176,7 +176,7 @@ class RunLaunchParams(EvalBaseModel):
     template_id: TemplateId
     subject_id: SubjectId
     models: Models = Field(default_factory=list)
-    k_runs: KRuns = 1
+    k_runs: KRuns = DEFAULT_LAUNCH_K_RUNS
     overlays: Overlays = None
     max_cost_usd: MaxCostUsd = None
     judge_model: JudgeModel = None
@@ -281,7 +281,7 @@ class LaunchEstimateParams(EvalBaseModel):
 
     template_id: TemplateId
     models: Models = Field(default_factory=list)
-    k_runs: KRuns = 1
+    k_runs: KRuns = DEFAULT_LAUNCH_K_RUNS
     n_test_cases: CaseCount = None
     subject_filter: SubjectFilter = None
 
