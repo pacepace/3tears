@@ -23,6 +23,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Annotated, Any, Literal, NamedTuple, Self, get_args
 
 from pydantic import (
@@ -566,22 +567,26 @@ class ScaleSpec(NamedTuple):
 
 
 #: The scales, by name. `RubricScale`'s members and this table's keys are asserted equal by the tests.
-SCALES: dict[str, ScaleSpec] = {
-    "ordinal": ScaleSpec(
-        levels=("1", "2", "3", "4", "5"),
-        scores=(1, 5),
-        labels={},
-        fixed_bar=None,
-        reads_as="scored 1-5 against the template's scoring guide",
-    ),
-    "pass_fail": ScaleSpec(
-        levels=("pass", "fail"),
-        scores=(0, 1),
-        labels={v: k for k, v in PASS_FAIL_SCORES.items()},
-        fixed_bar=PASS_FAIL_SCORES["pass"],
-        reads_as="answered pass (1) or fail (0); its mean is the pass rate",
-    ),
-}
+#: Read-only, because it is public (a host renders a dimension's scale from it) and one process-wide
+#: table a host could write into would change every other host's arithmetic in that process.
+SCALES: Mapping[str, ScaleSpec] = MappingProxyType(
+    {
+        "ordinal": ScaleSpec(
+            levels=("1", "2", "3", "4", "5"),
+            scores=(1, 5),
+            labels=MappingProxyType({}),
+            fixed_bar=None,
+            reads_as="scored 1-5 against the template's scoring guide",
+        ),
+        "pass_fail": ScaleSpec(
+            levels=("pass", "fail"),
+            scores=(0, 1),
+            labels=MappingProxyType({v: k for k, v in PASS_FAIL_SCORES.items()}),
+            fixed_bar=PASS_FAIL_SCORES["pass"],
+            reads_as="answered pass (1) or fail (0); its mean is the pass rate",
+        ),
+    }
+)
 
 #: The scoring-guide keys each scale admits (a projection of :data:`SCALES`, kept for its readers).
 SCALE_LEVELS: dict[str, tuple[str, ...]] = {name: spec.levels for name, spec in SCALES.items()}
