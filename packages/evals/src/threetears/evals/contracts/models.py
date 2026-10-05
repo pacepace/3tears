@@ -363,12 +363,12 @@ class Precondition(EvalDocumentModel):
         """
         try:
             parse(value)
-            fires = referenced_fires(value)
+            triggered_dimensions = referenced_fires(value)
         except DSLError as malformed:
             raise ValueError(f"precondition expression does not parse: {malformed}") from malformed
-        if fires:
+        if triggered_dimensions:
             raise ValueError(
-                f"precondition reads fired({fires[0]!r}), and a precondition reads the world at t=0, before any "
+                f"precondition reads fired({triggered_dimensions[0]!r}), and a precondition reads the world at t=0, before any "
                 "trigger could fire — a check on what fired is a goal check"
             )
         return value
