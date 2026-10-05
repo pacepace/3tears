@@ -1729,6 +1729,11 @@ def _tool_pod(
         # authority: the hub verifies the forwarded token names a tool pod, and anonymizes only for
         # an owner the pod's ``declared_agent_data`` grants it write on; any other owner is refused.
         str(Subjects.hub_audit_anonymize()),
+        # platform geography: a pod that registered geo layers reports a reloaded generation of
+        # their shapes. The subject names no layer owner, so this grant buys reach and never
+        # authority: the hub verifies the forwarded token names a tool pod and moves a layer's tile
+        # version only when the pod owns the provider namespace the layer is registered under.
+        str(Subjects.hub_geo_layers_reloaded()),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
         # key (forwarding the invoking agent's identity token; the hub verifies
         # + tenant-scopes). NOT hub_object_commit -- commit is agent-side.
@@ -2001,6 +2006,8 @@ def _hub(
         str(Subjects.hub_memory_namespace_ensure()),
         # person erasure: responds to an agent's request to anonymize the audit rows it published
         str(Subjects.hub_audit_anonymize()),
+        # platform geography: responds to a tool pod reporting reloaded shapes
+        str(Subjects.hub_geo_layers_reloaded()),
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),

@@ -1192,6 +1192,22 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.audit.anonymize", kind="point")
 
     @classmethod
+    def hub_geo_layers_reloaded(cls) -> Subject:
+        """request/reply subject for a tool pod reporting reloaded geography shapes.
+
+        A tool pod that registered platform geography layers (``geo:`` in its
+        ``tables.yaml``) loads a new generation of their shapes and then reports it
+        (``threetears.datasources.geo_reload.report_geo_layers_reloaded``). The pod
+        forwards its hub ``identity_token``; the hub verifies it, checks that the pod
+        owns the provider namespace each layer is registered under, and moves each
+        layer's tile version to the reported generation, so clients fetch new tiles.
+
+        :return: subject ``{ns}.hub.geo.layers.reloaded``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.geo.layers.reloaded", kind="point")
+
+    @classmethod
     def hub_channel_engagement_default_resolve(cls) -> Subject:
         """request/reply subject for resolving a channel's default engagement.
 

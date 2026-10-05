@@ -26,6 +26,13 @@ packages (bumped in lock-step).
   of it, the declaring tables lack, with `GeoLayerConfig.columns_read` listing every column a layer
   reads (feature id, geometry, version, bounding box, and its bands' attributes, rank and rollup).
   The one copy the SDK and the Hub both run for a tool pod's `geo:` block.
+- **Added, `threetears.datasources.geo_reload`:** the contract a tool pod uses to report that it
+  has written a new generation of its geography layers' shapes: `report_geo_layers_reloaded`, its
+  request and reply models, and the hub's obligations. The hub moves each layer's tile version to
+  the reported generation, forward only (a generation below the version is refused
+  `GENERATION_BEHIND` with the version in the reply). New subject
+  `Subjects.hub_geo_layers_reloaded` (`{ns}.hub.geo.layers.reloaded`), granted to tool pods to
+  publish and to the hub to answer.
 - **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as
   its docstring asked once a second use appeared: a tool pod's platform geography layers are read
   for tiles through Hub's pool, scoped to the pod's `ns_<hex>` schema, with no datasource row. The
