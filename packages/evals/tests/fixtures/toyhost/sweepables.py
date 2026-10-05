@@ -101,7 +101,7 @@ TOYHOST_SWEEPABLES: tuple[Sweepable, ...] = (
     # assertion: "who graded the work" is a role every product has, and a model is only one
     # answer to it. The core's ``judge_model`` holds a model id and its documented
     # ``None`` means the judge is UNRECOVERABLE, so there is nothing legal a code grader could put
-    # there — it declares that dimension inapplicable and names its grader here instead.
+    # there — its kind contract leaves that dimension unseated and names its grader here instead.
     #
     # ``indeterminate_when_blank`` because an observation that never recorded a grader version did
     # not grade with version "" — the absence is an absence, and two such observations did not

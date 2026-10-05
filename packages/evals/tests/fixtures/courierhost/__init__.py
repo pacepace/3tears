@@ -66,10 +66,10 @@ from threetears.evals.contracts import (
 )
 from threetears.evals.contracts.host import (
     SHARED_CORE,
-    Coverage,
     EvalHost,
     HostProfile,
     IntervalScale,
+    KindContract,
     MeasureRegistry,
     SeedRefused,
     SubjectSnapshot,
@@ -91,6 +91,7 @@ from threetears.evals.run import (
     execute_run,
     launch_run,
 )
+from threetears.evals.quick import CALLABLE_KIND
 from threetears.evals.storage import InMemoryDocumentStore
 
 COURIER_ID = "courier"
@@ -221,17 +222,11 @@ def courier_levers(run: EvalRun) -> dict[str, SweepableValue]:
     return {"search_depth": SweepableValue.of(depth, scale=IntervalScale(value=float(depth), unit=None))}
 
 
-#: Nothing here is graded by a model or talks to a simulated user, and the courier says so.
-_NO_JUDGE_OR_SIMULATOR = {
-    name: Coverage("inapplicable", "routes are graded against the depot's delivery log; no model or user is involved")
-    for name in (
-        "judge_model",
-        "judge_dim_divergence",
-        "judge_request_settings",
-        "simulator_model",
-        "simulator_request_settings",
-    )
-}
+#: The seats the planner fills: the traffic feed it plans against, and its spend ceiling. Nothing here is
+#: graded by a model or talks to a simulated user, so the judge and simulator seats are not filled. Its
+#: store also receives ``run_eval`` runs, which read the same feed and run uncapped.
+COURIER_CONTRACT = KindContract(COURIER_KIND, seats=frozenset({"traffic_feed", "max_cost_usd"}))
+CALLABLE_CONTRACT = KindContract(CALLABLE_KIND, seats=frozenset({"traffic_feed"}))
 
 
 def courier_profile() -> HostProfile:
@@ -242,7 +237,7 @@ def courier_profile() -> HostProfile:
         measures=MeasureRegistry(COURIER_MEASURES),
         world=courier_world(),
         variant_levers=courier_levers,
-        apparatus_applicability=_NO_JUDGE_OR_SIMULATOR,
+        kinds=(COURIER_CONTRACT, CALLABLE_CONTRACT),
     )
 
 

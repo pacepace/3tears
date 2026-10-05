@@ -47,7 +47,6 @@ from threetears.evals.contracts.covariates import (
 )
 from threetears.evals.contracts.host.values import Scale, SweepableValue
 from threetears.evals.contracts.metrics import (
-    CODE_GRADED_FAMILIES,
     DERIVED_PER_RESULT_MEASURES,
     METRIC_DESCRIPTORS,
     MeritAxis,
@@ -55,6 +54,7 @@ from threetears.evals.contracts.metrics import (
     describe_goal_check_rate,
     describe_rubric_dim,
     goal_check_of,
+    is_code_graded,
     list_metrics,
 )
 from threetears.evals.contracts.models import (
@@ -705,7 +705,7 @@ def resolve_bar_name(
     Resolution order, most specific first, so a name two kinds share is read one way everywhere:
 
     1. A described measure a result can carry (:func:`_per_result_measure_names`). Admitted when it
-       is code-graded (:data:`~threetears.evals.contracts.metrics.CODE_GRADED_FAMILIES`), numeric and declares
+       is code-graded (:func:`~threetears.evals.contracts.metrics.is_code_graded`), numeric and declares
        a better end. A non-numeric one (categorical, boolean) is refused as ``not_numeric`` and a
        directionless one as ``no_better_end``.
     2. A judged dimension — one of ``rubric_dimensions``, or a reserved dual-score axis, which every
@@ -736,7 +736,7 @@ def resolve_bar_name(
     described = {descriptor.name: descriptor for descriptor in list_metrics(measures)}
     carried = _per_result_measure_names(measures)
     descriptor = described.get(name)
-    if descriptor is not None and name in carried and descriptor.family in CODE_GRADED_FAMILIES:
+    if descriptor is not None and name in carried and is_code_graded(descriptor, measures):
         if descriptor.data_type != "numeric":
             return UnreadableBarName(
                 name, "not_numeric", f"{name} is {descriptor.data_type}, so a threshold has nothing to compare against"

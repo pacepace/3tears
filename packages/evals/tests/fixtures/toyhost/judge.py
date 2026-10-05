@@ -1,7 +1,7 @@
 """The toy host's judged variant — a rubric, a scripted judge, and the engine's own judge service.
 
 The standard toy template declares no rubric: its grader is a comparison rule, and the profile
-says so by declaring every judge apparatus dimension inapplicable. A second consumer grading with a
+says so by seating none of the core's model-judge apparatus on the extractor's kind contract. A second consumer grading with a
 hand-written rubric today reaches for a model grader early, so this is the other shape: the same
 extractor, the same invoices, and one rubric dimension scored by the engine's
 :class:`~threetears.evals.run.judge_service.JudgeService` against the evidence the kind renders.

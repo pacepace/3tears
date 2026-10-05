@@ -57,6 +57,7 @@ INDEX = [
 
 def _summary(name: str, mean: float, *, scope: str = "end_to_end") -> MeasureSummary:
     return MeasureSummary(
+        population="scored",
         name=name,
         attribution_scope=scope,
         higher_is_better=False,

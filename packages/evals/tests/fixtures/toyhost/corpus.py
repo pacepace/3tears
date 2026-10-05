@@ -128,9 +128,9 @@ _TOYHOST_ID_NAMESPACE = uuid.UUID("6f3a1c9e-2b74-4d51-9a0e-5c8f7b12d430")
 
 #: The spend ceiling in force for every toy-host batch, in USD.
 #:
-#: Recorded rather than declared inapplicable, and the distinction is the point. The extractor calls
+#: Recorded and seated rather than left out of the kind's seats, and the distinction is the point. The extractor calls
 #: a model, so it plausibly HAS a ceiling — a blank here was a real fixture gap, and a real gap
-#: declared away on the profile would be a detector switched off rather than a fact recorded. The
+#: left unseated would be a detector switched off rather than a fact recorded. The
 #: same value on every batch, so the dimension reads as observed-and-agreeing: `reviewer_pool`
 #: already carries the fixture's differing-apparatus case, and a second one would not add a shape.
 TOYHOST_COST_CEILING_USD = 4.0
@@ -180,7 +180,7 @@ def toyhost_observation(**toyhost_values: Any) -> EvalRun:
         rubric_scales={},
         # An ENGINE field, on the terms the shared core declares it: every LLM product has a spend
         # ceiling, and this host's blank was a gap rather than a state. See
-        # ``TOYHOST_COST_CEILING_USD`` for why it is recorded and not declared inapplicable.
+        # ``TOYHOST_COST_CEILING_USD`` for why it is recorded and seated.
         max_cost_usd=TOYHOST_COST_CEILING_USD,
         # The toy host's own vocabulary lives in the engine-owned opaque slot.
         # ``grader_version`` first, so a caller that names it wins: the default is what makes

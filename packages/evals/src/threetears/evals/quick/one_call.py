@@ -48,9 +48,9 @@ from threetears.evals.contracts import (
 )
 from threetears.evals.contracts.host import (
     SHARED_CORE,
-    Coverage,
     EvalHost,
     HostProfile,
+    KindContract,
     MeasureRegistry,
     SubjectSnapshot,
     WorldPlacement,
@@ -85,19 +85,11 @@ CALLABLE_HOST_ID = "run_eval"
 #: Where a case rides on its stored test case: verbatim, for the candidate to be handed back.
 _CASE_KEY = "case"
 
-#: Nothing in a ``run_eval`` run is graded by a model or talks to a simulated user, and the host
-#: says so: without this, each blank apparatus dimension would read as an unrecoverable judge or
-#: simulator and confound every comparison of two such runs.
-_NO_JUDGE_OR_SIMULATOR = {
-    name: Coverage("inapplicable", "run_eval grades with the caller's scorer functions; no model or user is involved")
-    for name in (
-        "judge_model",
-        "judge_dim_divergence",
-        "judge_request_settings",
-        "simulator_model",
-        "simulator_request_settings",
-    )
-}
+#: The callable kind's contract: no overlays, no spec, and no rig seat — nothing in a ``run_eval`` run is
+#: graded by a model or talks to a simulated user. Without the empty seats each blank judge and simulator
+#: dimension would read as an unrecoverable judge or simulator and confound every comparison of two such
+#: runs. A host whose store receives ``run_eval`` runs declares the callable kind's seats on its own profile.
+CALLABLE_KIND_CONTRACT = KindContract(CALLABLE_KIND, seats=frozenset())
 
 
 def _launch_settings() -> LaunchSettings:
@@ -165,7 +157,7 @@ def callable_host(scorers: Sequence[Scorer]) -> EvalHost:
             host_id=CALLABLE_HOST_ID,
             host_sweepables=SHARED_CORE,
             measures=MeasureRegistry(scorer_measure(scorer) for scorer in scorers),
-            apparatus_applicability=_NO_JUDGE_OR_SIMULATOR,
+            kinds=(CALLABLE_KIND_CONTRACT,),
         ),
         storage=EvalStorage(InMemoryDocumentStore()),
         failure_describer=withhold_failure_detail,
@@ -245,7 +237,7 @@ class CallableKind:
         except Exception as raised:
             return CandidateOutput(candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"])
         trace = [_as_stored(answer)]
-        measures: dict[str, float] = {}
+        measures: dict[str, bool | float | str] = {}
         for scorer in self._scorers:
             name = _scorer_name(scorer)
             try:
@@ -440,4 +432,13 @@ async def run_eval(
     return summarize_run(host, run.id, scope_id)
 
 
-__all__ = ["CALLABLE_HOST_ID", "CALLABLE_KIND", "CallableKind", "Candidate", "Scorer", "callable_host", "run_eval"]
+__all__ = [
+    "CALLABLE_HOST_ID",
+    "CALLABLE_KIND",
+    "CALLABLE_KIND_CONTRACT",
+    "CallableKind",
+    "Candidate",
+    "Scorer",
+    "callable_host",
+    "run_eval",
+]

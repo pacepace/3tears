@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -350,7 +349,7 @@ def test_a_recorded_lever_map_with_no_identity_version_is_refused() -> None:
 
 #: A host that HAS a judge and a simulated user: the toy host with its inapplicability declarations
 #: cleared, so a blank judge is not declared away by the host.
-_JUDGE_CAPABLE = replace(toyhost_profile(), apparatus_applicability={})
+_JUDGE_CAPABLE = toyhost_profile(every_seat=True)
 
 
 def test_an_unjudged_run_composes_its_roles_without_a_judge() -> None:

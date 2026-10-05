@@ -64,8 +64,21 @@ class ExtractorSpec(BaseModel):
 
 #: The toy extractor's contract. ``prefix`` names its levers ``extractor.<field>`` rather than after
 #: the kind's own hyphenated name — a dotted, readable name is also what a pivot reads as an axis.
+#:
+#: **Its seats are the rig it has, and nothing else.** The extractor is graded against an adjudicated key by
+#: a comparison rule (``grader_version``), which pool of humans adjudicated the key is ``reviewer_pool`` (the
+#: host's ``adjudicator`` role), its pages are read by an OCR engine (``ocr_engine_version``), and it calls a
+#: model under a spend ceiling (``max_cost_usd``). Its layout dimension is scored by that reviewer pool, with
+#: no versioned judge configuration, and the core records that as a level (``judge_config_ids``), so it is
+#: seated too. It is scored by no model and talks to nobody, so the core's model-judge axes and simulator axes
+#: are not blanks on its runs but things they do not have — and so is any dimension added to the rig later,
+#: until this contract claims it.
 TOY_EXTRACTOR_CONTRACT = KindContract(
-    TOY_EXTRACTOR_KIND, overlays=ExtractorOverlays, spec=ExtractorSpec, prefix="extractor"
+    TOY_EXTRACTOR_KIND,
+    overlays=ExtractorOverlays,
+    spec=ExtractorSpec,
+    prefix="extractor",
+    seats=frozenset({"grader_version", "judge_config_ids", "adjudicator", "ocr_engine_version", "max_cost_usd"}),
 )
 
 

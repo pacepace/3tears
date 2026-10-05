@@ -263,7 +263,7 @@ if TYPE_CHECKING:
 #:   ``derive_context_identity`` now drops a roles input the host DECLARED it
 #:   does not have, so the pre-image can be a proper subset or empty — which is a change in how a
 #:   component is composed, and the rule above would ordinarily bump for it. It does not, because a
-#:   host that declares no inapplicability omits nothing: the pre-image is the same four keys in the
+#:   host whose kinds declare no seats omits nothing: the pre-image is the same four keys in the
 #:   same shape, every key the first host had stored still derives to itself, and only a declaring
 #:   host's keys move — of which none has stored data. Pinned by
 #:   ``test_the_roles_pre_image_is_unchanged_for_a_host_that_declares_no_inapplicability``, so the
@@ -616,7 +616,8 @@ def compute_context_components(
             that placed it differently are not repetitions of one condition. ``{}`` is a value
             here, not an absence: it records that this host's world held nothing this run could
             place. ``None`` is the absence — a run whose writer placed nothing — and drops the component.
-        omitted_roles: The declared apparatus dimensions this host does not HAVE, by
+        omitted_roles: The declared apparatus dimensions this run does not HAVE — pinned to a rig seat
+            its kind does not fill — by
             :meth:`~threetears.evals.contracts.host.profile.HostProfile.omits_apparatus` over what the run
             recorded. Their inputs leave the roles pre-image entirely rather than hashing as
             ``None``, because a host that grades with code has no judge pin — it did not fail to
@@ -763,16 +764,16 @@ def _roles_payload(
 #: Per-dim attribution is divergence FROM a judge pin and a config set is the configuration OF one,
 #: so a host with no judge model has neither — they are facts about a judge that does not exist.
 #: Without this they read as absences the host failed to fill, and a code-grading host could never
-#: compose a roles component however many dimensions it declared inapplicable: ``judge_config_ids``
+#: compose a roles component however few seats its kinds filled: ``judge_config_ids``
 #: alone kept the predicate False on every run. **Propagation still loses to the data** — a
 #: dependent the run actually recorded stays in the pre-image, on the same rule
 #: ``omits_apparatus`` applies to a declaration the runs refute.
 #:
 #: **It is not a second applicability map.** Nothing here can declare anything inapplicable; it
-#: only propagates an omission the HOST declared and the runs did not refute, which is why it names
+#: only propagates an omission the run's kind declared (by the seats it fills) and the run did not refute, which is why it names
 #: dependencies rather than dimensions. ``judge_config_ids`` is also the case that cannot be
 #: recovered any other way: its declared reader answers the OBSERVED set, which for a host with no
-#: judge legitimately records ``NO_JUDGE_CONFIGS`` — so declaring it inapplicable would be a claim
+#: judge legitimately records ``NO_JUDGE_CONFIGS`` — so leaving it unseated would be a claim
 #: that host's own data refutes, logged as a contradiction on every call.
 _ROLE_INPUT_DEPENDENCIES: Mapping[str, str] = {
     "judge_dim_divergence": "judge_model",
@@ -961,7 +962,7 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
     # fixed", and a digest over a partial set answers a question nobody asked while looking like
     # the whole answer. A `judge_model` of None is never an absence: the runner refuses to execute
     # a judged run that names no judge, so a run naming none was not judged, and its judge inputs
-    # leave the pre-image the way a host's declared inapplicability takes them out — see the
+    # leave the pre-image the way a kind's unfilled seats take them out — see the
     # membership block below.
     #
     # ``recorded`` attribution only. A run carrying DERIVED effective_judges is one whose
@@ -981,24 +982,26 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
     hashable_judges = run.hashable_effective_judges
     # ALL the roles inputs THIS HOST HAS, or none. The set used to be the four core names
     # unconditionally, which made the predicate permanently False for a host that grades with
-    # code: it declared `judge_model` and `simulator_model` inapplicable, could never record one,
+    # code: its kind seats neither `judge_model` nor `simulator_model`, could never record one,
     # and so every comparison carried `context_incomplete` — glossed "at least one run never
     # recorded a pinned role model". That is a false sentence about a host that never had the
     # role, and all three surfaces hang off this one predicate.
     #
     # The DECLARATION decides membership and the VALUE still decides the claim: `omits_apparatus`
-    # takes what this run recorded, so a host that declared a role inapplicable and then recorded
+    # takes what this run recorded, so a kind that left a seat unfilled and then recorded
     # one is refuted by its own data and the input stays required.
     role_inputs: tuple[tuple[str, Any], ...] = (
         ("simulator_model", run.simulator_model),
         ("judge_model", run.judge_model),
         # The attribution map is the value of `judge_dim_divergence` — that declaration's reader
-        # is what reads `hashable_effective_judges`, so a host declaring it inapplicable is
+        # is what reads `hashable_effective_judges`, so a kind leaving it unseated is
         # declaring this input away.
         ("judge_dim_divergence", hashable_judges),
         ("judge_config_ids", run.judge_config_ids),
     )
-    declared_omitted = {name for name, value in role_inputs if profile.omits_apparatus(name, value)}
+    declared_omitted = {
+        name for name, value in role_inputs if profile.omits_apparatus(name, [(run.candidate_kind, value)])
+    }
     # An unjudged run has no judge, whatever its host declares: the runner refuses to execute a
     # judged run that names none (``execute_run``), so this blank is a recorded fact about the run
     # rather than a gap, and the judge's dependents follow it out exactly as they follow a declaration.

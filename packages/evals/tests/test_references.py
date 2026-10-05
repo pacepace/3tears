@@ -40,6 +40,7 @@ def _surface(*, n_independent: int = 4) -> DecisionSurface:
         measures=MeasureCollection(
             measures=[
                 MeasureSummary(
+                    population="scored",
                     name="total_ms",
                     attribution_scope="end_to_end",
                     higher_is_better=False,
@@ -53,12 +54,20 @@ def _surface(*, n_independent: int = 4) -> DecisionSurface:
                     ci_high=1359.1,
                 ),
                 MeasureSummary(
+                    population="scored",
                     name="stop_reason",
                     attribution_scope="end_to_end",
                     n=4,
                     categories={"end_turn": 3, "max_tokens": 1},
                 ),
-                MeasureSummary(name="meanless", attribution_scope="end_to_end", higher_is_better=True, n=1, p50=3.0),
+                MeasureSummary(
+                    population="scored",
+                    name="meanless",
+                    attribution_scope="end_to_end",
+                    higher_is_better=True,
+                    n=1,
+                    p50=3.0,
+                ),
             ]
         ),
         judged=[JudgedReading(dimension="reply.grounding", mean=4.0, sem=0.25, n=4, n_independent=4)],

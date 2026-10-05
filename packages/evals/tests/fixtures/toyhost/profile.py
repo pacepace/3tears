@@ -10,8 +10,10 @@ engine-owned and closed: a second product's measures land on the same four witho
 
 from __future__ import annotations
 
-from threetears.evals.contracts import MetricDescriptor
-from threetears.evals.contracts.host import Bar, BarRegistry, Coverage, HostProfile, MeasureRegistry, StyleProfile
+from dataclasses import replace
+
+from threetears.evals.contracts import MeasureFamily, MetricDescriptor
+from threetears.evals.contracts.host import Bar, BarRegistry, HostProfile, MeasureRegistry, StyleProfile
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.sweepables import (
     TOYHOST_SWEEPABLE_REGISTRY,
@@ -23,11 +25,20 @@ from packages.evals.tests.fixtures.toyhost.world import toyhost_world
 #: Opaque to the engine, which never branches on it.
 TOYHOST_ID = "toyhost"
 
+#: The toy host's own measure family. Field accuracy is graded by code — a comparison rule against an
+#: adjudicated key — but it is not "measured the same way everywhere", which is what the engine's
+#: ``mechanical`` family says, so the host names the kind of number it is: an extraction grade.
+TOYHOST_EXTRACTION_FAMILY = MeasureFamily(
+    name="extraction_grade",
+    graded_by="code",
+    description="How an extraction compares with the adjudicated key, by the host's comparison rule.",
+)
+
 TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
     MetricDescriptor(
         name="field_accuracy",
         data_type="numeric",
-        family="mechanical",
+        family=TOYHOST_EXTRACTION_FAMILY.name,
         transferability_class="mechanical",
         attribution_scope="end_to_end",
         description="Share of invoice fields extracted exactly right, against the adjudicated key.",
@@ -140,54 +151,12 @@ TOYHOST_STYLE = StyleProfile(
 TOYHOST_CAVEAT_KINDS: frozenset[str] = frozenset({"adjudication_scope"})
 
 
-#: What this host does not have, in its own words — the invoice extractor grades with code and talks
-#: to nobody.
-#:
-#: Five of the shared core's seven apparatus dimensions are not absences here, they are states this
-#: host genuinely occupies. It DOES have a grader: `field_accuracy` is scored against an adjudicated
-#: key, and `reviewer_pool` records which pool of humans adjudicated it. What it does not have is a
-#: MODEL grader, and the core's `judge_model` holds a model id whose blank is documented to mean the
-#: judge is unrecoverable — so there is nothing legal for this host to put there, and reading its
-#: blank as an absence fabricated a confound in every bundle.
-#:
-#: `judge_config_ids` is deliberately NOT here either, and for a different reason from
-#: `max_cost_usd`'s: its READER already answers correctly. `_judge_config_ids` returns the
-#: `NO_JUDGE_CONFIGS` sentinel for results that were read and carried none, which is a recorded
-#: level rather than an absence — it is the one core judge axis that never needed this map, and the
-#: issue that produced this map names it as the control. Declaring it inapplicable would replace a
-#: working observation with a claim.
-#:
-#: `max_cost_usd` is deliberately NOT here. The extractor calls a model, so it plausibly has a spend
-#: ceiling; that one is a real fixture gap and is recorded by the observations instead. Declaring a
-#: real gap inapplicable is how a detector gets quietly switched off — the same failure as reading a
-#: recorded level as an absence, arriving from the other side.
-TOYHOST_INAPPLICABLE_APPARATUS: dict[str, Coverage] = {
-    "judge_model": Coverage(
-        "inapplicable",
-        "nothing this host produces is scored by a model — field accuracy is computed against an "
-        "adjudicated key, and which pool adjudicated it is recorded as `reviewer_pool`",
-    ),
-    "judge_dim_divergence": Coverage(
-        "inapplicable",
-        "there is no judge pin to diverge from: the grader is a comparison rule, applied to every field the same way",
-    ),
-    "judge_request_settings": Coverage(
-        "inapplicable",
-        "no model grades anything here, so no judge request is ever sent with a cap or a reasoning budget",
-    ),
-    "simulator_model": Coverage(
-        "inapplicable",
-        "the subject reads a batch of scanned invoices; no conversation happens, so nobody plays the other side of one",
-    ),
-    "simulator_request_settings": Coverage(
-        "inapplicable",
-        "nobody plays the other side of a conversation here, so no simulated-user request is ever sent",
-    ),
-}
-
-
 def toyhost_profile(
-    *, with_world: bool = True, optional_capabilities: bool = True, tunable_retrieval: bool = False
+    *,
+    with_world: bool = True,
+    optional_capabilities: bool = True,
+    tunable_retrieval: bool = False,
+    every_seat: bool = False,
 ) -> HostProfile:
     """The toy host's profile.
 
@@ -206,6 +175,10 @@ def toyhost_profile(
         tunable_retrieval: When True, register retrieval tuning — an open family and the resolved
             configuration it is merged into (see ``packages.evals.tests.fixtures.toyhost.sweepables``). Off by
             default, so a suite that never sweeps retrieval carries no coordinate for it.
+        every_seat: When True, the extractor kind declares no seats and is held to every one — the shape a
+            suite exercising the judged variant (``packages.evals.tests.fixtures.toyhost.judge``) needs, whose
+            rubric a model scores. Off by default: the standard extractor is graded by a comparison rule and
+            fills no seat.
 
     Returns:
         A profile the engine cannot distinguish from any other host's except by its contents.
@@ -214,19 +187,19 @@ def toyhost_profile(
     return HostProfile(
         host_id=TOYHOST_ID,
         host_sweepables=TOYHOST_TUNABLE_SWEEPABLE_REGISTRY if tunable_retrieval else TOYHOST_SWEEPABLE_REGISTRY,
-        measures=MeasureRegistry(TOYHOST_MEASURES),
+        measures=MeasureRegistry(TOYHOST_MEASURES, families=(TOYHOST_EXTRACTION_FAMILY,)),
         bars=BarRegistry(TOYHOST_BARS),
         style=TOYHOST_STYLE,
         caveat_kinds=TOYHOST_CAVEAT_KINDS,
-        apparatus_applicability=TOYHOST_INAPPLICABLE_APPARATUS,
         world=world if with_world else None,
         variant_levers=tunable_variant_levers if tunable_retrieval else variant_levers,
-        kinds=(TOY_EXTRACTOR_CONTRACT,),
+        kinds=(replace(TOY_EXTRACTOR_CONTRACT, seats=None) if every_seat else TOY_EXTRACTOR_CONTRACT,),
     )
 
 
 __all__ = [
     "TOYHOST_BARS",
+    "TOYHOST_EXTRACTION_FAMILY",
     "TOYHOST_CAVEAT_KINDS",
     "TOYHOST_ID",
     "TOYHOST_MEASURES",

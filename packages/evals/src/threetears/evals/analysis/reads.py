@@ -1417,7 +1417,7 @@ def bisect_runs(
         # judge model for a subject nothing scored with a model. BOTH values go in: one arm
         # recording a level refutes the declaration, and omitting on the strength of the arm
         # that agreed would drop the very difference this surface exists to name.
-        if profile.omits_apparatus(field_name, value_a, value_b):
+        if profile.omits_apparatus(field_name, [(run_a.candidate_kind, value_a), (run_b.candidate_kind, value_b)]):
             continue
         details[field_name] = {"a": value_a, "b": value_b}
         if sweepables.is_indeterminate(field_name, value_a, value_b):

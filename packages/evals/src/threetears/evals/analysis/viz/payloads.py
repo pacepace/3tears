@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from threetears.evals.analysis.viz.palette import validated_slots
 from threetears.evals.contracts.prose import ModelProse
+from threetears.evals.contracts.metrics import Materiality
 
 #: How far a breakdown's parts may miss the `total` they claim to make up, as a
 #: fraction of the larger quantity involved.
@@ -452,6 +453,14 @@ class DeltaRow(BaseModel):
         default=None, description="The unit `a`/`b`/`delta` are in. None when the quantity is unitless."
     )
     delta: float | None = Field(default=None, description="B − A, for a numeric metric.")
+    materiality: Materiality = Field(
+        default="material",
+        description=(
+            "`immaterial` when the delta is below the measure's declared materiality threshold — too small to act "
+            "on. Unstated reads as `material` on every surface, the weaker claim: a row that says nothing about "
+            "its threshold must not be read as one too small to matter."
+        ),
+    )
     d_z: float | None = Field(
         default=None,
         description="The effect size the comparison reported. `paired` says WHICH one it is — Cohen's d_z or Cohen's d — never this field's name, which is historical.",

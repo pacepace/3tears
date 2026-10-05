@@ -63,7 +63,12 @@ def _surface() -> DecisionSurface:
                 measures=MeasureCollection(
                     measures=[
                         MeasureSummary(
-                            name="extract_ms", attribution_scope="end_to_end", n=4, n_independent=4, mean=900.0
+                            population="scored",
+                            name="extract_ms",
+                            attribution_scope="end_to_end",
+                            n=4,
+                            n_independent=4,
+                            mean=900.0,
                         )
                     ]
                 ),

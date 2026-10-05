@@ -1069,18 +1069,23 @@ def _judge_config_ids(_run: EvalRun, results: Sequence[EvalResult]) -> list[str]
 
     Args:
         _run: Unused — see above.
-        results: The run's results. An EMPTY sequence is the one absence this reader has: the
+        results: The run's results. An EMPTY sequence is one absence this reader has: the
             caller either holds no results or was handed none, and neither says anything about
-            what judged the run.
+            what judged the run. Results of which none was SCORED are the other: nothing judged
+            them, so nothing says which configuration would have.
 
     Returns:
         Sorted config ids when any result carried one; :data:`NO_JUDGE_CONFIGS` when results were
-        read and none did; ``[]`` when no results were supplied at all.
+        scored and none carried a config; ``[]`` when no results were supplied, or none was scored.
+        The second blank is what lets a kind that fills no ``judge`` seat omit this dimension: a
+        sentinel there would be a recorded level contradicting the seat declaration on every run.
     """
     if not results:
         return []
     observed = sorted({config_id for result in results for config_id in result.judge_config_ids.values()})
-    return observed or NO_JUDGE_CONFIGS
+    if observed:
+        return observed
+    return NO_JUDGE_CONFIGS if any(served_models_by_score(result) for result in results) else []
 
 
 def served_models_by_score(result: EvalResult) -> list[str | None]:

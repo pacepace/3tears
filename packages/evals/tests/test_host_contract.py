@@ -32,7 +32,7 @@ import pytest
 from threetears.evals.contracts.host import style as style_module
 from threetears.evals.contracts.host.bars import Bar, BarRegistrationError, BarRegistry
 from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.host.profile import HostProfile
+from threetears.evals.contracts.host.profile import HostProfile, ProfileRegistrationError
 from threetears.evals.contracts.host.style import StyleError, StyleProfile, ToneRegister
 from threetears.evals.contracts.host.sweepables import (
     CANDIDATE_KIND_LEVER,
@@ -957,7 +957,8 @@ def test_a_lever_that_declares_why_it_carries_no_coordinate_may_be_omitted():
                 if declaration.role == "lever"
                 else declaration
                 for declaration in toyhost_profile().host_sweepables.declarations
-            ]
+            ],
+            roles=toyhost_profile().host_sweepables.roles,
         ),
         variant_levers=lambda _run: {"chunk_tokens": _A_LEVEL},
     )
@@ -1153,3 +1154,24 @@ def test_a_second_host_drops_the_attribution_and_says_so_once(caplog) -> None:
     assert _refusal_prefix(registry) == "", "two profiles bound it and its refusals still name one of them"
     announcements = [r for r in caplog.records if "more than one host profile" in r.message]
     assert len(announcements) == 1, f"the drop was announced {len(announcements)} times, not once"
+
+
+# --- observed_model_levers names levers this host declares ------------------------------------------
+
+
+def test_an_observed_model_lever_naming_no_declared_lever_is_refused() -> None:
+    """A misspelled key would recover nothing and leave the lever it meant reading unknown, with no error."""
+    with pytest.raises(ProfileRegistrationError, match="observed_model_levers for chunk_tokenz, which name no lever"):
+        replace(toyhost_profile(), observed_model_levers={"chunk_tokenz": "inner_agent"})
+
+
+def test_an_observed_model_lever_naming_apparatus_is_refused() -> None:
+    """Only a lever has an inherited value a role recovers; the rig is not a knob a launch inherits."""
+    with pytest.raises(ProfileRegistrationError, match="ocr_engine_version"):
+        replace(toyhost_profile(), observed_model_levers={"ocr_engine_version": "inner_agent"})
+
+
+def test_an_observed_model_lever_naming_a_fixed_lever_or_an_owned_member_is_admitted() -> None:
+    assert replace(toyhost_profile(), observed_model_levers={"chunk_tokens": "inner_agent"}).observed_model_levers
+    tunable = toyhost_profile(tunable_retrieval=True)
+    assert replace(tunable, observed_model_levers={"retrieval.rerank_depth": "reranker"}).observed_model_levers

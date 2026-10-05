@@ -31,7 +31,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from threetears.evals.contracts.analysis_measures import BarAdjudication, MeasureCollection
-from threetears.evals.contracts.metrics import MeritAxis
+from threetears.evals.contracts.metrics import MeasurePopulation, MeritAxis
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.models import DimName
 
@@ -75,6 +75,21 @@ class MeasureFacts(EvalDocumentModel):
     )
     higher_is_better: bool | None = Field(
         default=None, description="Which end is better. None for a categorical measure."
+    )
+    materiality_threshold: float | None = Field(
+        default=None,
+        ge=0.0,
+        description=(
+            "The magnitude, in the measure's unit, below which a difference between two cells is labelled "
+            "immaterial. None when the host declared none, and every difference is then material."
+        ),
+    )
+    population: MeasurePopulation | None = Field(
+        default=None,
+        description=(
+            "The population the measure declares, when it declares one; every cell's summary states the population "
+            "it was actually computed over."
+        ),
     )
 
 
