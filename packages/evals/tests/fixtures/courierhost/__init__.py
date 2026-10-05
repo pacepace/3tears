@@ -341,9 +341,43 @@ def courier_template() -> EvalTemplate:
 def courier_cases() -> list[EvalTestCase]:
     """Three rounds of that scenario, of four, six and eight stops."""
     return [
-        EvalTestCase(scope_id=COURIER_SCOPE, template_id=COURIER_TEMPLATE_ID, variation_params={"stops": str(stops)})
+        EvalTestCase(
+            # Named by what the case IS, so a rebuild is the same three cases and a run naming them
+            # derives the same identity every time.
+            id=f"{COURIER_TEMPLATE_ID}:stops-{stops}",
+            scope_id=COURIER_SCOPE,
+            template_id=COURIER_TEMPLATE_ID,
+            variation_params={"stops": str(stops)},
+        )
         for stops in (4, 6, 8)
     ]
+
+
+def courier_run(model: str, *, cases: Sequence[EvalTestCase], world: WorldRegistry) -> EvalRun:
+    """One arm of the bake-off: one planner model over every case, before it executes.
+
+    Args:
+        model: The planner model the arm binds.
+        cases: The cases the arm runs.
+        world: The world the placements are computed against — the one the kind seeds through.
+
+    Returns:
+        The run, pending.
+    """
+    return EvalRun(
+        scope_id=COURIER_SCOPE,
+        template_id=COURIER_TEMPLATE_ID,
+        candidate_kind=COURIER_KIND,
+        subject_snapshot=COURIER_SUBJECT,
+        candidate_model=model,
+        k_runs=2,
+        test_case_ids=[case.id for case in cases],
+        # The pro arm ran on the newer traffic feed: a confound the bundle has to name, which is
+        # also what puts the courier's apparatus vocabulary in front of a reader.
+        host_payload={_PAYLOAD: {"search_depth": 3, "traffic_feed": FEEDS[model]}},
+        world_placements=world.place(seeded=("road_closures",), carriers=RoutePlannerKind.CARRIERS),
+        rubric_scales={},
+    )
 
 
 async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
@@ -364,20 +398,7 @@ async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
     subject = COURIER_SUBJECT
     runs = []
     for model in COURIER_MODELS:
-        run = EvalRun(
-            scope_id=COURIER_SCOPE,
-            template_id=template.id,
-            candidate_kind=COURIER_KIND,
-            subject_snapshot=subject,
-            candidate_model=model,
-            k_runs=2,
-            test_case_ids=[case.id for case in cases],
-            # The pro arm ran on the newer traffic feed: a confound the bundle has to name, which is
-            # also what puts the courier's apparatus vocabulary in front of a reader.
-            host_payload={_PAYLOAD: {"search_depth": 3, "traffic_feed": FEEDS[model]}},
-            world_placements=world.place(seeded=("road_closures",), carriers=RoutePlannerKind.CARRIERS),
-            rubric_scales={},
-        )
+        run = courier_run(model, cases=cases, world=world)
         host.storage.save_eval_run(run)
         await execute_run(
             host,
@@ -487,6 +508,7 @@ __all__ = [
     "courier_cases",
     "courier_host",
     "courier_launch_host",
+    "courier_run",
     "courier_template",
     "courier_profile",
     "courier_world",
