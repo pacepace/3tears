@@ -178,6 +178,8 @@ EVAL_ROOT = _REPO_ROOT / "threetears" / "evals"
 #: verbatim. Paths are relative to ``threetears/evals/``. ``analysis`` is a whole tree, so a file
 #: added to it is covered the day it lands rather than the day someone remembers.
 _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
+    # `python -m threetears.evals`: hands over to the command line in `quick`, a whole shared tree.
+    "__main__.py",
     # The stored analysis shapes, which are contracts rather than analysis (the stored campaign,
     # analysis and insight models, the campaign declaration, the decision surface, the authored
     # document shape, and the analysis measures). `contracts/` is split, so each is listed.
@@ -425,7 +427,8 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #:
 #: ``storage`` and ``testing`` are whole trees from birth: the adapters the engine ships behind the
 #: store port (the in-memory reference store) and the conformance kits any host runs against its own
-#: adapter. Each exists to serve every host, so a host noun in either would be a leak.
+#: adapter. Each exists to serve every host, so a host noun in either would be a leak. ``quick``, the
+#: batteries (``run_eval`` and the command line), is whole from birth on the same terms.
 #:
 #: A host's adapter tree never belongs here. Its whole purpose is host coupling — it names its
 #: host's concepts on purpose, and an extraction deletes it rather than porting it. Scanning it
@@ -437,6 +440,7 @@ _SHARED_CONTRACT_TREES: tuple[str, ...] = (
     "gen/prompts",
     "storage",
     "testing",
+    "quick",
 )
 
 _HOST_NOUN_RE = re.compile(rf"^(?:{'|'.join(HOST_NOUNS)})s?$", re.IGNORECASE)

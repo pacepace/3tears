@@ -1036,3 +1036,44 @@ class TestShutdownSaysWhatItCouldNotSettle:
         assert unsettled == ["run-slow"]
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert any("eval.shutdown gave up on 1 job(s)" in m and "run-slow" in m for m in warnings), warnings
+
+
+async def test_wait_for_returns_once_every_named_job_has_written_its_terminal_status() -> None:
+    """``wait_for`` is the awaitable a launcher holds: it returns after the jobs end, not before."""
+    store = InMemoryRunStore()
+    manager = EvalJobManager(store, job_timeout_factory=default_job_timeout)
+    release = asyncio.Event()
+    first, second = make_eval_run(), make_eval_run()
+
+    async def work(progress: Any) -> None:
+        await release.wait()
+
+    await manager.start_group([(first, work, None), (second, work, None)])
+    waiting = asyncio.create_task(manager.wait_for([first.id, second.id]))
+    await asyncio.sleep(0.01)
+    assert not waiting.done(), "wait_for returned while both jobs were still parked"
+    release.set()
+    await asyncio.wait_for(waiting, timeout=5.0)
+    assert store.runs[first.id].status == "completed"
+    assert store.runs[second.id].status == "completed"
+
+
+async def test_wait_for_a_job_it_is_not_running_returns_at_once() -> None:
+    """An ended job is popped from the manager, so a wait on it — or on an id it never ran — returns."""
+    manager = EvalJobManager(InMemoryRunStore(), job_timeout_factory=default_job_timeout)
+    await asyncio.wait_for(manager.wait_for(["never-started"]), timeout=1.0)
+
+
+async def test_cancelling_the_waiter_leaves_the_job_running() -> None:
+    """Waiting is not owning: the waiter's cancel does not reach the job it was waiting on."""
+    manager = EvalJobManager(InMemoryRunStore(), job_timeout_factory=default_job_timeout)
+    work, started = blocked_work()
+    run = make_eval_run()
+    await manager.start_group([(run, work, None)])
+    await started.wait()
+    waiting = asyncio.create_task(manager.wait_for([run.id]))
+    await asyncio.sleep(0)
+    waiting.cancel()
+    await cancelled(waiting)
+    assert manager.is_active(run.id), "cancelling the waiter cancelled the job"
+    await manager.shutdown()

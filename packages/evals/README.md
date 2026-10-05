@@ -17,6 +17,7 @@ first release that says otherwise.
 | `threetears.evals.analysis` | the analysis bundle, report generation and charts |
 | `threetears.evals.storage` | the storage adapters the engine ships: the in-memory reference store |
 | `threetears.evals.testing` | conformance kits an app runs in its own test suite: the store kit |
+| `threetears.evals.quick` | the batteries: `run_eval` in one call, and the `python -m threetears.evals` command line |
 
 Import from those roots and from `threetears.evals.contracts.host`, never from a module below
 them. Every engine type a public signature hands you — a protocol you implement, a value you
@@ -24,10 +25,44 @@ receive, an exception you catch, a literal you annotate with — is exported fro
 
 Two example hosts live in this repository (not in the wheel), written as reference code that
 imports nothing but the public roots and itself. `tests/fixtures/courierhost/` is the least a
-product writes, in one module; `tests/fixtures/toyhost/` exercises every shape of the host contract,
+product writes when it builds its own host, in one module; `tests/fixtures/toyhost/` exercises every shape of the host contract,
 with a map of which file holds which step. Both run on `InMemoryDocumentStore`
 (`threetears.evals.storage`), the engine's in-memory reference `DocumentStore`: scoped, with
 conditional writes, and the shape to compare your own adapter against.
+
+## Rung zero: one call
+
+A function to test, cases to test it on, and code that grades an answer are enough:
+
+```python
+from threetears.evals.quick import run_eval
+
+async def classify(case: dict) -> str: ...
+
+def correct(case: dict, label: str) -> bool:
+    return label == case["expected"]
+
+summary = await run_eval(cases, classify, [correct], scope_id="dev", k=2)
+print(summary.render())
+```
+
+`run_eval` builds the rest — a kind over the function, a host with one measure per scorer, the
+in-memory store — launches one run through the engine's own launch path, and returns its
+`EvalSummary`. A candidate that raises fails its cell; a scorer that raises excludes it. Pass
+`host=callable_host(scorers)` (or your own host, declaring a measure per scorer) to keep the store
+and compare several candidates' runs. `examples/rung_zero.py` is the whole thing in one file.
+
+**The command line** works in a host you name as `module:factory` — a zero-argument callable
+returning an `EvalHost`, or a `LaunchHost` for `run`:
+
+```
+python -m threetears.evals run    --host myapp.evals:build_host --scope dev --template T --subject S --model M
+python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
+python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev
+```
+
+Mount the same commands under your own CLI with `run_cli(argv, host_factory=build_host, prog="myapp
+evals")`; your users then never name the host.
 
 ## Adopting it: the host, the scope and the kind
 

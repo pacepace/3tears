@@ -26,11 +26,13 @@ What a product supplies, in the order it is written below:
 
 Everything else — the trial loop, the stored documents, the bundle — is the engine's.
 
-**It drives the runner directly** (:func:`~threetears.evals.run.execute_run`), the low-level path: one
-assembled run's matrix, with the run built and its status set by the caller. A product serving
-launches adopts the engine through :func:`~threetears.evals.run.start_run`, which the toy host's
-``launch.py`` wires; it starts each run as a job, and the engine has no awaitable for a launched run's
-completion yet, so a script that must wait for its results — this one — drives the runner instead.
+**It is driven two ways.** :func:`run_courier_campaign` drives the runner directly
+(:func:`~threetears.evals.run.execute_run`), the low-level path: one assembled run's matrix, with the
+run built and its status set by the caller. :func:`courier_launch_host` is the way a product serving
+launches adopts the engine: a :class:`~threetears.evals.run.LaunchHost` whose one kind's launcher
+:func:`~threetears.evals.run.start_run` dispatches to, which the engine's command line drives
+(``python -m threetears.evals run --host packages.evals.tests.fixtures.courierhost:courier_launch_host``)
+and waits on through the job manager's ``wait_for``.
 """
 
 from __future__ import annotations
@@ -54,6 +56,8 @@ from threetears.evals.contracts import (
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
+    NotFoundError,
+    ValidationFailedError,
     MetricDescriptor,
     RoleUsage,
     WorldSeed,
@@ -76,7 +80,17 @@ from threetears.evals.contracts.host import (
     check_seed,
     default_cell_timeout,
 )
-from threetears.evals.run import RunnerOptions, execute_run
+from threetears.evals.run import (
+    KindWiring,
+    LaunchableKind,
+    LaunchHost,
+    LaunchRequest,
+    LaunchSettings,
+    RunnerOptions,
+    default_job_timeout,
+    execute_run,
+    launch_run,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 
 COURIER_ID = "courier"
@@ -196,7 +210,13 @@ def courier_world() -> WorldRegistry:
 
 
 def courier_levers(run: EvalRun) -> dict[str, SweepableValue]:
-    """A run's level of the courier's own lever, its search depth; the engine resolves the planner model."""
+    """A run's level of the courier's own lever, its search depth; the engine resolves the planner model.
+
+    A run of another kind in the courier's store — one ``run_eval`` launched over a plain function,
+    say — has no search depth, and sits at a level of its own rather than at a number it never had.
+    """
+    if run.candidate_kind != COURIER_KIND:
+        return {"search_depth": SweepableValue.of(None, display=f"(not a {COURIER_KIND} run)")}
     depth = (run.host_payload or {}).get(_PAYLOAD, {}).get("search_depth")
     return {"search_depth": SweepableValue.of(depth, scale=IntervalScale(value=float(depth), unit=None))}
 
@@ -304,6 +324,32 @@ COURIER_MODELS: tuple[str, ...] = ("planner-lite", "planner-pro")
 #: Which traffic feed each arm's travel times came from.
 FEEDS: dict[str, str] = {"planner-lite": "feed-v2", "planner-pro": "feed-v3"}
 
+#: The round-planning template's id: fixed, so a command line can name it.
+COURIER_TEMPLATE_ID = "plan-delivery-round"
+
+#: The one planner configuration the courier deploys, and so the one subject a launch may name.
+COURIER_SUBJECT = SubjectSnapshot(subject_id="depot-north-planner", subject_label="North depot planner", state={})
+
+
+def courier_template() -> EvalTemplate:
+    """The courier's one scenario: plan a round around two closed roads."""
+    return EvalTemplate(
+        id=COURIER_TEMPLATE_ID,
+        scope_id=COURIER_SCOPE,
+        name="Plan a delivery round",
+        intent="Order a round's stops so every one is reached inside its window, around closed roads.",
+        candidate_kind=COURIER_KIND,
+        world_seed=WorldSeed(namespaces={"dispatch": {"road_closures": 2}}),
+    )
+
+
+def courier_cases() -> list[EvalTestCase]:
+    """Three rounds of that scenario, of four, six and eight stops."""
+    return [
+        EvalTestCase(scope_id=COURIER_SCOPE, template_id=COURIER_TEMPLATE_ID, variation_params={"stops": str(stops)})
+        for stops in (4, 6, 8)
+    ]
+
 
 async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
     """Run one round set per planner model and file them as a campaign, all in the host's storage.
@@ -317,19 +363,10 @@ async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
     world = host.profile.world
     assert world is not None
     kind = RoutePlannerKind(world)
-    template = EvalTemplate(
-        scope_id=COURIER_SCOPE,
-        name="Plan a delivery round",
-        intent="Order a round's stops so every one is reached inside its window, around closed roads.",
-        candidate_kind=COURIER_KIND,
-        world_seed=WorldSeed(namespaces={"dispatch": {"road_closures": 2}}),
-    )
-    cases = [
-        EvalTestCase(scope_id=COURIER_SCOPE, template_id=template.id, variation_params={"stops": str(stops)})
-        for stops in (4, 6, 8)
-    ]
+    template = courier_template()
+    cases = courier_cases()
     host.storage.save_template(template)
-    subject = SubjectSnapshot(subject_id="depot-north-planner", subject_label="North depot planner", state={})
+    subject = COURIER_SUBJECT
     runs = []
     for model in COURIER_MODELS:
         run = EvalRun(
@@ -371,6 +408,75 @@ async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
     return campaign
 
 
+# --- 7. launching, as a product serving launches does --------------------------------------------
+
+#: The courier's launch settings: generous, and its spend is scripted, so no ceiling is enforced.
+COURIER_LAUNCH_SETTINGS = LaunchSettings(
+    max_launch_arms=len(COURIER_MODELS),
+    max_admitted_runs=len(COURIER_MODELS),
+    judge_concurrency=1,
+    enforcement_enabled=False,
+    max_cost_usd=1.0,
+    max_metered_calls=1,
+)
+
+
+def courier_launch_host() -> LaunchHost:
+    """The courier as a launching host, with its scenario already authored in its store.
+
+    A zero-argument factory, which is the shape the engine's command line names a host by. Its launcher
+    captures the one subject the courier deploys, freezes the scenario's three rounds, and records
+    each arm's search depth and traffic feed on the run.
+
+    Returns:
+        The launching host.
+    """
+    eval_host = courier_host()
+    world = eval_host.profile.world
+    assert world is not None
+    kind = RoutePlannerKind(world)
+    eval_host.storage.save_template(courier_template())
+
+    async def launch(request: LaunchRequest) -> EvalRun:
+        if request.subject_id != COURIER_SUBJECT.subject_id:
+            raise NotFoundError("subject", request.subject_id)
+        cases = courier_cases()
+        for case in cases:
+            eval_host.storage.save_test_case(case)
+        feed = FEEDS.get(request.candidate_model or "")
+        if feed is None:
+            raise ValidationFailedError(
+                f"the courier plans with {', '.join(COURIER_MODELS)}; {request.candidate_model!r} is none of them"
+            )
+        payload = {"search_depth": 3, "traffic_feed": feed}
+        return await launch_run(
+            launch_host,
+            request,
+            KindWiring(
+                kind_factory=lambda _cell: kind,
+                subject=COURIER_SUBJECT,
+                test_cases=cases,
+                payload={_PAYLOAD: payload},
+            ),
+        )
+
+    launch_host = LaunchHost(
+        eval_host=eval_host,
+        kinds={
+            COURIER_KIND: LaunchableKind(
+                launch=launch,
+                unhonoured_launch_arguments=frozenset(
+                    {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
+                ),
+            )
+        },
+        settings=lambda: COURIER_LAUNCH_SETTINGS,
+        job_timeout_factory=default_job_timeout,
+        world_placements=lambda _run: world.place(seeded=("road_closures",), carriers=RoutePlannerKind.CARRIERS),
+    )
+    return launch_host
+
+
 __all__ = [
     "COURIER_ID",
     "COURIER_KIND",
@@ -381,7 +487,12 @@ __all__ = [
     "FIELD_ACCURACY",
     "ON_TIME_RATE",
     "RoutePlannerKind",
+    "COURIER_SUBJECT",
+    "COURIER_TEMPLATE_ID",
+    "courier_cases",
     "courier_host",
+    "courier_launch_host",
+    "courier_template",
     "courier_profile",
     "courier_world",
     "run_courier_campaign",
