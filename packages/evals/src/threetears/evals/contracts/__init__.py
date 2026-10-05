@@ -41,7 +41,13 @@ from threetears.evals.contracts.candidate_kind import (
 )
 from threetears.evals.contracts.cassettes import ActionSeam, CassetteSeams, CellCassettes, DeliverySeam
 from threetears.evals.contracts.covariates import fold_phase_timings
-from threetears.evals.contracts.declaration import CampaignDesign
+from threetears.evals.contracts.declaration import (
+    BarName,
+    CampaignDesign,
+    UnreadableBarName,
+    refuse_an_undeclarable_design,
+    resolve_bar_name,
+)
 from threetears.evals.contracts.dsl import (
     DSLError,
     extract_paths,
@@ -217,7 +223,14 @@ from threetears.evals.contracts.cassettes import (
     ReplayedDelivery,
     ToolWrap,
 )
-from threetears.evals.contracts.declaration import BarOverride, ControlDeclaration, Question, SweptAxis
+from threetears.evals.contracts.declaration import (
+    BarNameKind,
+    BarNameRefusal,
+    BarOverride,
+    ControlDeclaration,
+    Question,
+    SweptAxis,
+)
 from threetears.evals.contracts.dsl import ExtractedPaths
 from threetears.evals.contracts.identity import DerivedContextIdentity, DerivedVariantIdentity, LeverCoordinateError
 from threetears.evals.contracts.judge_attribution import JudgeAttributionState
@@ -297,6 +310,13 @@ __all__ = [
     "AttributionScope",
     "AuthoredAnalysis",
     "BarAdjudication",
+    # What a bar name resolves to, and why one cannot carry a verdict: the structured answer an
+    # adopter's own authoring surface shows before a design is submitted, and what it checks its
+    # registered bars against — registration checks only that a bar's measure is declared and its
+    # direction agrees, not that any result can carry it.
+    "BarName",
+    "BarNameKind",
+    "BarNameRefusal",
     "BarOverride",
     "BarVerdict",
     "BatteryRef",
@@ -469,6 +489,7 @@ __all__ = [
     "ToolWrap",
     "TransferabilityClass",
     "UnknownCandidateKind",
+    "UnreadableBarName",
     "UsageRole",
     "ValidationFailedError",
     "VariantConfig",
@@ -503,6 +524,11 @@ __all__ = [
     "production_replicating_cost",
     "program_cost",
     "referenced_actions",
+    # The authoring gate itself, for an adopter whose designs are authored outside the engine's
+    # campaign write path (as code or config, checked at its own boot or authoring time): the only
+    # other route to it is a campaign write, which needs a stored campaign.
+    "refuse_an_undeclarable_design",
+    "resolve_bar_name",
     "resolve_context_identity",
     "resolve_result_condition",
     "resolve_result_usage",
