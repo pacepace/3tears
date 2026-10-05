@@ -17,6 +17,10 @@ then never name the host::
   (:func:`~threetears.evals.analysis.inspect_campaign_bundle`): what a generation would read, assembled
   without calling any model.
 
+A product mounting the commands may add its own beside them — ``run_cli(..., commands=[HostCommand(...)])``
+— each parsed like the engine's (``--scope``, and ``--host`` when the host is named on the command line)
+and handed the host the factory built. A name the engine already uses is refused.
+
 A refusal — a host that cannot be loaded, a template or campaign that is not there, a launch the
 engine refuses — prints its reason to stderr and exits 2, which is also argparse's code for a
 malformed command line.
@@ -28,7 +32,9 @@ import argparse
 import asyncio
 import importlib
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Coroutine, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 from threetears.evals.analysis import inspect_campaign_bundle, list_campaigns
 from threetears.evals.contracts import EvalServiceError
@@ -38,6 +44,56 @@ from threetears.evals.run import LaunchHost, list_runs, list_templates, start_ru
 
 #: What names the host the commands work in: called once, with no arguments, per invocation.
 HostFactory = Callable[[], EvalHost | LaunchHost]
+
+#: The commands the engine itself carries; a host command may take none of these names.
+ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report")
+
+
+@dataclass(frozen=True, kw_only=True)
+class HostCommand:
+    """A subcommand a host adds beside the engine's own, mounted by :func:`run_cli` under the same program.
+
+    It is parsed like the engine's commands — with ``--scope`` always, and ``--host`` when the command
+    line names the host rather than a product mounting it with its own factory — and its handler is
+    handed the very host object the factory built for this invocation, with the parsed namespace.
+
+    Attributes:
+        name: The subcommand's name. None of :data:`ENGINE_COMMANDS`, and unique among the host's.
+        help: One line, shown in the program's usage and as the command's description.
+        configure: Adds the command's own arguments to its parser; ``--scope`` (and ``--host``) are
+            already there.
+        handler: Carries the command out and returns its exit code. It may be a coroutine function,
+            which the command line runs to completion. A refusal it raises as
+            :class:`~threetears.evals.contracts.EvalServiceError` is printed to stderr and exits 2, as
+            the engine's commands' refusals are.
+    """
+
+    name: str
+    help: str
+    configure: Callable[[argparse.ArgumentParser], None]
+    handler: Callable[[EvalHost | LaunchHost, argparse.Namespace], int | Coroutine[Any, Any, int]]
+
+
+def _refuse_colliding_commands(commands: Sequence[HostCommand]) -> None:
+    """Refuse host commands whose names would shadow an engine command or each other.
+
+    Args:
+        commands: The host's commands.
+
+    Raises:
+        ValueError: A name is an engine command's, or two host commands share one.
+    """
+    seen: set[str] = set()
+    for host_command in commands:
+        if host_command.name in ENGINE_COMMANDS:
+            raise ValueError(
+                f"host command {host_command.name!r} collides with the engine's own {host_command.name!r}; "
+                f"a host command takes a name none of {', '.join(ENGINE_COMMANDS)} has"
+            )
+        if host_command.name in seen:
+            raise ValueError(f"two host commands are both named {host_command.name!r}")
+        seen.add(host_command.name)
+
 
 #: The program name the command line prints when it is run as ``python -m threetears.evals``.
 DEFAULT_PROG = "python -m threetears.evals"
@@ -86,22 +142,30 @@ def _load_host_factory(spec: str) -> HostFactory:
     return factory  # type: ignore[no-any-return]
 
 
-def build_parser(prog: str = DEFAULT_PROG, *, takes_host: bool = True) -> argparse.ArgumentParser:
+def build_parser(
+    prog: str = DEFAULT_PROG, *, takes_host: bool = True, commands: Sequence[HostCommand] = ()
+) -> argparse.ArgumentParser:
     """The command line's parser.
 
     Args:
         prog: The program name usage lines print.
         takes_host: Whether each command takes ``--host``. A product that mounts the commands with its
             own host factory passes ``False``, and the option does not exist.
+        commands: The host's own subcommands, added after the engine's.
 
     Returns:
         The parser; ``command`` on the parsed namespace names the subcommand.
+
+    Raises:
+        ValueError: A host command's name is an engine command's, or two host commands share one.
     """
+    _refuse_colliding_commands(commands)
+    names = [*ENGINE_COMMANDS, *(host_command.name for host_command in commands)]
     parser = argparse.ArgumentParser(prog=prog, description="Run, list and report evals.")
-    commands = parser.add_subparsers(dest="command", required=True, metavar="{run,ls,report}")
+    subparsers = parser.add_subparsers(dest="command", required=True, metavar="{" + ",".join(names) + "}")
 
     def command(name: str, help_text: str) -> argparse.ArgumentParser:
-        sub = commands.add_parser(name, help=help_text, description=help_text)
+        sub = subparsers.add_parser(name, help=help_text, description=help_text)
         if takes_host:
             sub.add_argument("--host", required=True, metavar="MODULE:FACTORY", help="the host to work in")
         sub.add_argument("--scope", required=True, help="the scope to read and write in")
@@ -115,11 +179,17 @@ def build_parser(prog: str = DEFAULT_PROG, *, takes_host: bool = True) -> argpar
     command("ls", "List the scope's templates, runs and campaigns.")
     report = command("report", "Print a campaign's analysis bundle as JSON, without calling a model.")
     report.add_argument("campaign", help="the campaign, by id")
+    for host_command in commands:
+        host_command.configure(command(host_command.name, host_command.help))
     return parser
 
 
 def run_cli(
-    argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = DEFAULT_PROG
+    argv: Sequence[str] | None = None,
+    *,
+    host_factory: HostFactory | None = None,
+    prog: str = DEFAULT_PROG,
+    commands: Sequence[HostCommand] = (),
 ) -> int:
     """Parse ``argv`` and carry out the command, printing to stdout and refusals to stderr.
 
@@ -128,11 +198,20 @@ def run_cli(
         host_factory: The host to work in, for a product mounting these commands; ``None`` takes it
             from ``--host``.
         prog: The program name usage lines print.
+        commands: The host's own subcommands, mounted beside ``run``, ``ls`` and ``report``; each
+            one's handler is handed the host the factory built.
 
     Returns:
-        The exit code: 0, 1 when a launched run did not complete, 2 when the command was refused.
+        The exit code: 0, 1 when a launched run did not complete, 2 when the command was refused, or
+        whatever a host command's handler returned.
+
+    Raises:
+        ValueError: A host command's name is an engine command's, or two host commands share one —
+            refused before ``argv`` is parsed, since it is the mounting product's code and not the
+            user's command line.
     """
-    args = build_parser(prog, takes_host=host_factory is None).parse_args(argv)
+    args = build_parser(prog, takes_host=host_factory is None, commands=commands).parse_args(argv)
+    handlers = {host_command.name: host_command.handler for host_command in commands}
     try:
         factory = host_factory if host_factory is not None else _load_host_factory(args.host)
         host = factory()
@@ -145,6 +224,9 @@ def run_cli(
                     "it can launch; this one returned an EvalHost, which ls and report can read but nothing can launch"
                 )
             return asyncio.run(_launch(host, args))
+        if (handler := handlers.get(args.command)) is not None:
+            outcome = handler(host, args)
+            return asyncio.run(outcome) if isinstance(outcome, Coroutine) else outcome
         eval_host = host.eval_host if isinstance(host, LaunchHost) else host
         if args.command == "ls":
             _list(eval_host, args.scope)
@@ -189,4 +271,4 @@ def _list(host: EvalHost, scope_id: str) -> None:
         _say(f"  {campaign.id}  {campaign.name}  {len(campaign.run_ids)} run(s)")
 
 
-__all__ = ["DEFAULT_PROG", "HostFactory", "build_parser", "run_cli"]
+__all__ = ["DEFAULT_PROG", "ENGINE_COMMANDS", "HostCommand", "HostFactory", "build_parser", "run_cli"]

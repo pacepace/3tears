@@ -1352,7 +1352,17 @@ class EvalTestCase(EvalDocumentModel):
     scope_id: str = Field(min_length=1)
 
     # Lineage
-    template_id: str = Field(min_length=1)
+    template_id: str | None = Field(
+        min_length=1,
+        description=(
+            "The template this case was generated from, or None for a WITNESSED case — the stimulus of a session "
+            "a host observed rather than one a template set, recorded through `record_witnessed_cell` under a "
+            "witnessed run (whose own `template_id` is None for the same reason). Required with no default, so "
+            "every writer states which it is: a None is a case no template produced, never a template id "
+            "forgotten. A launch refuses a case whose template is not the one it runs, so a witnessed case "
+            "can never be launched."
+        ),
+    )
 
     # Variation — frozen at generation
     variation_params: dict[str, str] = Field(default_factory=dict)
@@ -2954,12 +2964,18 @@ class ConversationStopCause(StrEnum):
     inside a cell that ran stopped taking turns. A conversation that stopped on a rig fault still
     has ``termination == "completed"``, because the cell ran to its end and recorded the fault.
 
-    Two members end a conversation on its own terms, and they are the only ones:
+    Three members end a conversation on its own terms, and they are the only ones:
 
-      ``max_turns``        the template's turn budget was spent.
-      ``user_done``        every simulated actor said, in its structured reply, that it had nothing
-                           more to say. Each one leaves when it says so, and a closing reply is
-                           never delivered to the candidate.
+      ``max_turns``           the template's turn budget was spent.
+      ``user_done``           every simulated actor said, in its structured reply, that it had nothing
+                              more to say. Each one leaves when it says so, and a closing reply is
+                              never delivered to the candidate.
+      ``participants_ended``  the session's REAL participants ended it — a witnessed session, which a
+                              host observed rather than an engine ran, stopped because the people in
+                              it stopped. Its own member rather than ``user_done``, which says a
+                              simulator decided, and a witnessed session has no simulator; only
+                              :func:`~threetears.evals.run.record_witnessed_cell` records a cell
+                              that has no simulator, and it refuses the simulator's two causes.
 
     Three name a rig fault, and each also puts an infra error on the result, which excludes it:
 
@@ -2976,6 +2992,7 @@ class ConversationStopCause(StrEnum):
 
     MAX_TURNS = "max_turns"
     USER_DONE = "user_done"
+    PARTICIPANTS_ENDED = "participants_ended"
     SIMULATOR_ERROR = "simulator_error"
     APPARATUS_ERROR = "apparatus_error"
     CANDIDATE_ERROR = "candidate_error"
@@ -3490,7 +3507,8 @@ class EvalResult(EvalDocumentModel):
         default=None,
         description=(
             "Why this trial's conversation stopped taking turns: the turn budget spent, the simulated "
-            "user declaring itself done in its structured reply, or a rig "
+            "user declaring itself done in its structured reply, a witnessed session's real participants "
+            "ending it, or a rig "
             "fault (simulator, apparatus, candidate) — see ConversationStopCause. Present on every "
             "conversation trial whose turn loop ran. None when there was no conversation to stop: a "
             "candidate kind that does not converse (a classifier, a document generator), a cell "

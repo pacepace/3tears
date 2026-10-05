@@ -107,6 +107,7 @@ from threetears.evals.contracts.models import (
     RubricScore,
     eval_trace_doc_id,
     scored_dim_ids,
+    utc_now_iso,
 )
 from threetears.evals.contracts.scoring import CellSummary
 from threetears.evals.contracts.call_ledger import CallLedger
@@ -1129,18 +1130,8 @@ async def run_one_result(
     sink.adopt(candidate)
     if cell_cassettes is not None:
         cell_cassettes.hold(candidate.async_deliveries, complete=True)
-    # Held to the declaration before anything below reads the output. A judge reads nothing but
-    # the evidence the kind renders — the engine has no transcript or subject renderer to fall
-    # back on — so a judged kind owes it for every output it produced, and an unjudged kind
-    # rendering some is contradicting its own declaration. An EMPTY output owes none whatever the
-    # kind: it is a cell that produced nothing, and nothing is judged.
-    has_evidence = candidate.judge_evidence is not None
-    if judged_artifact is JudgedArtifact.UNJUDGED:
-        contradicts = has_evidence
-    else:
-        contradicts = bool(candidate.output) and not has_evidence
-    if contradicts:
-        raise CandidateKindDefect(candidate_kind_name, declared=judged_artifact, has_evidence=has_evidence)
+    # Held to the declaration before anything below reads the output — see :func:`hold_to_declaration`.
+    hold_to_declaration(candidate_kind_name, judged_artifact, candidate)
     metered_cell = metered_cell_tally(options.metered_calls, metered_baseline)
 
     # 3. Below the dispatch: ``output`` + ``mechanical_facts`` + telemetry, and nothing
@@ -1149,29 +1140,15 @@ async def run_one_result(
     telemetry = candidate.telemetry
     trace = candidate.output
     goal_outcomes = candidate.mechanical_facts
-    phase_timings = telemetry.phase_timings
-    async_deliveries = candidate.async_deliveries
-    # The candidate side's rows: the kind's own, and what its background work spent.
-    candidate_usage = _candidate_side_usage(telemetry.usage, async_deliveries, rate_table=options.external_rates)
-    async_wait_ms = telemetry.async_wait_ms
-    concurrent_eval_jobs = _busier_conditions_sample(concurrent_eval_jobs, telemetry.concurrent_eval_jobs)
-    # Asked of the ledger ``adopt`` built from what the kind reported — the same one the
-    # deadline arm reads — rather than joined inline: "candidate details first, then infra" is
-    # the order an operator reads ``runner_error`` in, and it is one convention in one place.
-    candidate_error = sink.errors.candidate_error
-    infra_error = sink.errors.infra_error
-    combined_error = sink.errors.combined
+    # Refused HERE, before the judge phase is paid for, though the rows are folded only when the
+    # cell is assembled: a kind double-reporting its background work's spend is its own code, so
+    # every cell would do it, and judging the cell first would spend on a record that cannot be built.
+    refuse_inner_agent_usage(telemetry.usage)
 
-    otel_spans: list[dict[str, Any]] = []
-    latency: LatencyMetrics | None = None
-    # Span-derived latency buckets, read off the trace sink's record and held here so the
-    # judge phase — which runs after that record is closed — can be timed onto the same
-    # LatencyMetrics. Keyed by this module, from the record's named fields, rather than
-    # splatting whatever mapping a sink chose to return: LatencyMetrics ignores unknown
-    # keys with no log, so one host misspelling a bucket would store a measured cell as
-    # unmeasured. Stays as initialised for a cell that wired no sink, and for one whose
-    # kind opened no collection window.
-    spans_ms: dict[str, float | None] = {}
+    # The trace sink's record of the candidate's own work, handed to the assembly whole: it reads
+    # the spans and the three named latency buckets off it. ``None`` for a cell that wired no sink,
+    # and for one whose kind opened no collection window.
+    spans: CellTrace | None = None
     # Branching on whether a window CLOSED, not on what it yielded. ``collected is None``
     # would also be what a sink yielding None produces, and recording that as "nobody was
     # watching" would file a broken sink under the one state the design says must stay
@@ -1184,13 +1161,8 @@ async def run_one_result(
                 f"trace sink {type(host.trace_sink).__name__} closed a collection window having yielded "
                 "None from cell_spans rather than a CellTrace"
             )
-        otel_spans = collected.spans
-        spans_ms = {
-            "total_ms": collected.total_ms,
-            "llm_ms": collected.llm_ms,
-            "tool_ms": collected.tool_ms,
-        }
-        if spans_ms["total_ms"] is None and host.trace_sink is not None:
+        spans = collected
+        if collected.total_ms is None and host.trace_sink is not None:
             # The window opened, closed, and nothing the total is summed from landed in it.
             # The cell still leaves the cost-vs-latency comparison, so it is still disclosed —
             # separately, because the repair is the opposite one. "Opened no window" is fixed
@@ -1237,17 +1209,7 @@ async def run_one_result(
     # rubric scores only when the template declares dimensions. Judging needs a
     # judge service and a non-empty transcript; factory / immediate-error slots
     # (no trace) skip it and leave the scores None.
-    # The record of an unjudged cell: every score absent, nothing failed.
-    judged = _JudgeRecord(
-        transcript_score=None,
-        outcome_score=None,
-        rubric_scores=[],
-        judge_reasoning="",
-        judge_config_ids={},
-        judge_error=None,
-        judge_cannot_tell={},
-        usage=[],
-    )
+    judged = _unjudged_record()
     # Timed off a monotonic clock, not harvested: the judge emits no spans (llm.call
     # spans come from the candidate's own call path alone), and it runs after the harvest
     # closes, so it sits outside every turn-root span the total sums. None until the
@@ -1293,7 +1255,193 @@ async def run_one_result(
             # a run that never had a judge at all — judge_error is what says it failed.
             judge_ms = (time.monotonic() - judge_started) * 1000.0
 
-    # Built here rather than inside the harvest because not every source is a span: the
+    # Second (and final) conditions sample — see sample_concurrent_eval_jobs. Taken after
+    # the judging that closes the cell, so the whole window is covered. The assembly folds
+    # in the busiest count the kind itself observed.
+    concurrent_eval_jobs = sample_concurrent_eval_jobs(options, concurrent_eval_jobs)
+
+    # 5. Build the EvalResult and its trace — through the one assembly every completed cell takes,
+    # the host-observed ones (:func:`~threetears.evals.run.witnessed.record_witnessed_cell`) included. The ids are this cell's own,
+    # minted here, which is the one thing a host recording a cell after the fact supplies instead.
+    return assemble_completed_cell(
+        scope_id=scope_id,
+        eval_run_id=eval_run_id,
+        test_case_id=test_case.id,
+        model=model,
+        candidate_kind=candidate_kind_name,
+        k_iteration=k_iteration,
+        subject_id=real_subject_id,
+        variant=variant,
+        judge_model=judge_model,
+        output=candidate,
+        judged_artifact=judged_artifact,
+        rate_table=options.external_rates,
+        result_id=str(uuid.uuid7()),
+        scored_at=utc_now_iso(),
+        judged=judged,
+        judge_ms=judge_ms,
+        spans=spans,
+        concurrent_eval_jobs=concurrent_eval_jobs,
+        metered_cell=metered_cell,
+        world_events=sink.world_events,
+        end_state=sink.end_state,
+    )
+
+
+def hold_to_declaration(kind_name: str, judged_artifact: JudgedArtifact, output: CandidateOutput) -> None:
+    """Refuse output that contradicts the kind's own declaration of what a judge reads.
+
+    A judge reads nothing but the evidence the kind renders — the engine has no transcript or
+    subject renderer to fall back on — so a judged kind owes it for every output it produced, and an
+    unjudged kind rendering some is contradicting its own declaration. An EMPTY output owes none
+    whatever the kind: it is a cell that produced nothing, and nothing is judged.
+
+    One check for both callers that record a completed cell: the runner, before its judge phase
+    reads the output, and :func:`~threetears.evals.run.witnessed.record_witnessed_cell`, whose host declares the same thing for the
+    kind that produced what it observed.
+
+    Args:
+        kind_name: The kind, for the refusal's message.
+        judged_artifact: What the kind declares a judge reads.
+        output: What the kind produced.
+
+    Raises:
+        CandidateKindDefect: The output contradicts the declaration.
+    """
+    has_evidence = output.judge_evidence is not None
+    if judged_artifact is JudgedArtifact.UNJUDGED:
+        contradicts = has_evidence
+    else:
+        contradicts = bool(output.output) and not has_evidence
+    if contradicts:
+        raise CandidateKindDefect(kind_name, declared=judged_artifact, has_evidence=has_evidence)
+
+
+def refuse_inner_agent_usage(usage: Sequence[RoleUsage]) -> None:
+    """Refuse a kind's telemetry that reports its background work's spend a second time.
+
+    Background work reports its spend on its :class:`~threetears.evals.contracts.models.AsyncDelivery`,
+    which the engine folds (:func:`_candidate_side_usage`); a kind reporting ``inner_agent`` rows of
+    its own would be counted beside it. Its own function so the runner can refuse before its judge
+    phase pays for anything, while the fold itself happens once, when the cell is assembled.
+
+    Args:
+        usage: The rows the kind reported on its telemetry.
+
+    Raises:
+        ValueError: The kind reported ``inner_agent`` rows on its telemetry.
+    """
+    if any(row.role == "inner_agent" for row in usage):
+        raise ValueError(
+            "a candidate kind reported inner_agent usage on its telemetry; background work reports its spend on "
+            "its AsyncDelivery entry (cost_usd, tokens, llm_calls, external_spend), which the runner folds — "
+            "reporting it on the telemetry too would count it twice"
+        )
+
+
+def _unjudged_record() -> _JudgeRecord:
+    """The record of a cell nothing judged: every score absent, nothing failed.
+
+    A function rather than a constant so no two cells share its lists.
+
+    Returns:
+        The record.
+    """
+    return _JudgeRecord(
+        transcript_score=None,
+        outcome_score=None,
+        rubric_scores=[],
+        judge_reasoning="",
+        judge_config_ids={},
+        judge_error=None,
+        judge_cannot_tell={},
+        usage=[],
+    )
+
+
+def assemble_completed_cell(
+    *,
+    scope_id: str,
+    eval_run_id: str,
+    test_case_id: str,
+    model: str,
+    candidate_kind: str,
+    k_iteration: int,
+    subject_id: str,
+    variant: DerivedVariantIdentity,
+    judge_model: str | None,
+    output: CandidateOutput,
+    judged_artifact: JudgedArtifact,
+    rate_table: ExternalRateTable | None,
+    result_id: str,
+    scored_at: str,
+    judged: _JudgeRecord | None,
+    judge_ms: float | None,
+    spans: CellTrace | None,
+    concurrent_eval_jobs: int | None,
+    metered_cell: MeteredCallTally | None,
+    world_events: list[WorldEvent] | None,
+    end_state: dict[str, Any] | None,
+) -> CellOutcome:
+    """Build one completed cell's :class:`EvalResult` and :class:`EvalTrace` from what its candidate produced.
+
+    **The one assembly path a completed cell takes**, whoever ran it: :func:`run_one_result` calls it
+    once its judge phase is over, and :func:`~threetears.evals.run.witnessed.record_witnessed_cell` calls it for a cell a host observed
+    rather than ran. Everything derived from the output — the candidate side's usage rows with its
+    background work folded in, the error taxonomy, the blended cost, the covariates, the latency record,
+    the trace document's id — is derived here and nowhere else, so a host-recorded cell and a run's cell
+    over the same output are the same record. Pure: it persists nothing, and mints nothing — the ids and
+    the timestamp are the caller's.
+
+    Args:
+        scope_id: The run's partition.
+        eval_run_id: The run.
+        test_case_id: The case.
+        model: The candidate model.
+        candidate_kind: The kind that produced the output.
+        k_iteration: The repeat.
+        subject_id: The run's subject key.
+        variant: The run's resolved contestant identity.
+        judge_model: The judge the run records, or ``None``.
+        output: What the candidate produced.
+        judged_artifact: What the kind declares a judge reads, kept on the trace beside the evidence.
+        rate_table: The run's rate table, which prices external calls.
+        result_id: The result's id; the trace's id is derived from it.
+        scored_at: When the result was recorded.
+        judged: What the judge phase left, or ``None`` for a cell nothing judged.
+        judge_ms: The judge phase's wall clock, or ``None`` when it did not run.
+        spans: The trace sink's record of the candidate's own work, or ``None`` when nothing was collected.
+        concurrent_eval_jobs: The busiest count of concurrent eval jobs the caller sampled; the kind's
+            own is folded in here.
+        metered_cell: The cell's slice of the run's metered-call ledger, or ``None`` when nothing counted.
+        world_events: What moved the cell's world, or ``None`` when no world was opened.
+        end_state: The world the cell left, or ``None`` when it was never read.
+
+    Returns:
+        The cell.
+    """
+    if judged is None:
+        judged = _unjudged_record()
+    telemetry = output.telemetry
+    trace = output.output
+    async_deliveries = output.async_deliveries
+    # The candidate side's rows: the kind's own, and what its background work spent.
+    candidate_usage = _candidate_side_usage(telemetry.usage, async_deliveries, rate_table=rate_table)
+    concurrent_eval_jobs = _busier_conditions_sample(concurrent_eval_jobs, telemetry.concurrent_eval_jobs)
+    # The ledger the kind's report amounts to — the same one the runner's sink built on ``adopt``, and
+    # the same convention: "candidate details first, then infra" is the order an operator reads
+    # ``runner_error`` in, and it is one convention in one place.
+    errors = ErrorLedger.of(output)
+
+    # Span-derived latency buckets, read off the trace sink's record by this module, from the
+    # record's named fields, rather than splatting whatever mapping a sink chose to return:
+    # LatencyMetrics ignores unknown keys with no log, so one host misspelling a bucket would store
+    # a measured cell as unmeasured.
+    otel_spans: list[dict[str, Any]] = spans.spans if spans is not None else []
+    spans_ms: dict[str, float | None] = (
+        {"total_ms": spans.total_ms, "llm_ms": spans.llm_ms, "tool_ms": spans.tool_ms} if spans is not None else {}
+    )
+    # Built here rather than from the harvest alone because not every source is a span: the
     # drain wait falls between spans and the judge phase runs after them, so a cell whose
     # spans never arrived can still have measured both. Any one measured COMPONENT is
     # enough — discarding a real measurement for want of a span would defeat the point of
@@ -1306,15 +1454,15 @@ async def run_one_result(
     # unmeasured — a record asserting a measurement happened, on which the documented
     # reading of `latency is None` ("this cell timed nothing whatever") would be a
     # one-way claim rather than the contract callers are told to check.
+    latency: LatencyMetrics | None = None
     measured = {name: value for name, value in spans_ms.items() if value is not None}
-    if measured or async_wait_ms is not None or judge_ms is not None:
-        latency = LatencyMetrics(**spans_ms, async_wait_ms=async_wait_ms, judge_ms=judge_ms)
+    if measured or telemetry.async_wait_ms is not None or judge_ms is not None:
+        latency = LatencyMetrics(**spans_ms, async_wait_ms=telemetry.async_wait_ms, judge_ms=judge_ms)
 
-    # 5. Build the EvalResult. ``usage`` is a list on EVERY exit of a running cell —
-    # never None, which means no observation was made at all. It holds a row per
-    # (role, model, provider, unit) actually observed. An external row reports call volume,
-    # plus the provider's own units and dollars when the run resolved a rate for them;
-    # `cost_usd` below stays the authoritative blended spend either way.
+    # ``usage`` is a list on EVERY exit of a running cell — never None, which means no observation
+    # was made at all. It holds a row per (role, model, provider, unit) actually observed. An external
+    # row reports call volume, plus the provider's own units and dollars when the run resolved a rate
+    # for them; `cost_usd` below stays the authoritative blended spend either way.
     #
     # The candidate's own rows came back on its telemetry, already folded across its roles
     # and its metered third-party calls — that arithmetic belongs where the ledgers are.
@@ -1322,36 +1470,34 @@ async def run_one_result(
     usage: list[RoleUsage] = [*candidate_usage, *judged.usage]
     # The total is derived from the rows, never reported beside them: one statement of the spend,
     # and an unpriced call in it makes the total unknown rather than quietly smaller.
-    cost_roles = blended_cost_roles(options.external_rates)
-    # Second (and final) conditions sample — see sample_concurrent_eval_jobs. Taken after
-    # the judging that closes the cell, so the whole window is covered.
-    concurrent_eval_jobs = sample_concurrent_eval_jobs(options, concurrent_eval_jobs)
+    cost_roles = blended_cost_roles(rate_table)
     _warn_on_unreported_async_spend(async_deliveries, eval_run_id=eval_run_id)
     result = EvalResult(
+        id=result_id,
         scope_id=scope_id,
         eval_run_id=eval_run_id,
-        test_case_id=test_case.id,
+        test_case_id=test_case_id,
         model=model,
         # Stamped from the dispatch's single read rather than from the template: a template is
         # store-mastered, so a reader following this cell back to one would get whatever the
         # kind field says TODAY.
-        candidate_kind=candidate_kind_name,
+        candidate_kind=candidate_kind,
         # The host's own mechanical grade, carried verbatim and interpreted nowhere here: the
         # measure registry is what knows a name's population, range and merit axis, and the
         # analysis bundle reads these through it. ``{}`` from a kind that graded nothing is
         # "measured none", which the bundle treats as the empty set and not as a gap.
-        host_measures=candidate.host_measures,
+        host_measures=output.host_measures,
         k_iteration=k_iteration,
-        candidate_instance_id=candidate.candidate_instance_id,
-        subject_id=real_subject_id,
-        goal_state_outcomes=goal_outcomes,
+        candidate_instance_id=output.candidate_instance_id,
+        subject_id=subject_id,
+        goal_state_outcomes=output.mechanical_facts,
         rubric_scores=judged.rubric_scores,
         transcript_score=judged.transcript_score,
         outcome_score=judged.outcome_score,
         judge_config_ids=judged.judge_config_ids,
         judge_reasoning=judged.judge_reasoning,
         judge_model=judge_model,
-        cost_usd=cell_cost(usage, async_deliveries=async_deliveries, rate_table=options.external_rates),
+        cost_usd=cell_cost(usage, async_deliveries=async_deliveries, rate_table=rate_table),
         cost_roles=list(cost_roles),
         usage=usage,
         # The cell-level half of the ceiling's disclosure. Zero and None say different
@@ -1367,14 +1513,14 @@ async def run_one_result(
             truncated_rounds=count_truncated_rounds(trace),
             turns_ended_by_budget=telemetry.turns_ended_by_budget,
         ),
-        phase_timings=phase_timings,
+        phase_timings=telemetry.phase_timings,
         async_deliveries=async_deliveries,
         # The kind's own report, stored verbatim: nothing below the dispatch reads inside it.
-        kind_payload=candidate.kind_payload,
-        world_events=sink.world_events,
-        runner_error=combined_error,
-        candidate_error=candidate_error,
-        infra_error=infra_error,
+        kind_payload=output.kind_payload,
+        world_events=world_events,
+        runner_error=errors.combined,
+        candidate_error=errors.candidate_error,
+        infra_error=errors.infra_error,
         judge_error=judged.judge_error,
         judge_cannot_tell=judged.judge_cannot_tell,
         variant_key=variant.variant_key,
@@ -1383,12 +1529,14 @@ async def run_one_result(
         # exits that lost something, because the point of the field is that "nothing was
         # cancelled" is an answer rather than the absence of one. It says nothing about whether
         # the cell ERRORED: a candidate whose LLM
-        # failed still completed, and the error taxonomy below is what carries that.
+        # failed still completed, and the error taxonomy above is what carries that.
         termination="completed",
         # Why the conversation inside it stopped, as the kind reported it — a separate fact
         # from termination, and None from a kind that does not converse.
-        stop_cause=candidate.stop_cause,
+        stop_cause=output.stop_cause,
+        scored_at=scored_at,
     )
+    judge_evidence = output.judge_evidence
     return CellOutcome(
         result,
         EvalTrace(
@@ -1404,9 +1552,9 @@ async def run_one_result(
             judge_evidence=judge_evidence,
             judged_artifact=judged_artifact if judge_evidence is not None else None,
             # What the candidate did, as the kind recorded it — the input a re-check re-grades from.
-            call_ledger=candidate.call_ledger,
+            call_ledger=output.call_ledger,
             # What the world held when the cell ended — the other input a re-check re-grades from.
-            end_state=sink.end_state,
+            end_state=end_state,
         ),
     )
 
@@ -1801,12 +1949,7 @@ def _candidate_side_usage(
     Raises:
         ValueError: The kind reported ``inner_agent`` rows on its telemetry.
     """
-    if any(row.role == "inner_agent" for row in usage):
-        raise ValueError(
-            "a candidate kind reported inner_agent usage on its telemetry; background work reports its spend on "
-            "its AsyncDelivery entry (cost_usd, tokens, llm_calls, external_spend), which the runner folds — "
-            "reporting it on the telemetry too would count it twice"
-        )
+    refuse_inner_agent_usage(usage)
     return [*usage, *async_delivery_usage(async_deliveries, rate_table=rate_table)]
 
 

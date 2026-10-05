@@ -396,12 +396,17 @@ def frozen_case_receipt(test_case: EvalTestCase) -> FrozenReporterCase:
         Its receipt.
 
     Raises:
-        ValueError: ``test_case`` carries no reporter case. A freeze stores and returns only
-            cases it can read back, so this is a defect in the caller rather than an input error.
+        ValueError: ``test_case`` carries no reporter case, or carries one under no template. A freeze
+            stores and returns only cases it can read back, under the template it froze against, so
+            this is a defect in the caller rather than an input error.
     """
     case = reporter_case_of(test_case)
     if case is None:
         raise ValueError(f"test case {test_case.id!r} carries no reporter case")
+    if test_case.template_id is None:
+        # A freeze stores every case under the template it freezes against; a template-less case is a
+        # witnessed one, which no freeze writes.
+        raise ValueError(f"test case {test_case.id!r} carries a reporter case but names no template")
     return FrozenReporterCase(
         test_case_id=test_case.id,
         template_id=test_case.template_id,
