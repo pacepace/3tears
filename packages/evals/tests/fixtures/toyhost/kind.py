@@ -79,6 +79,9 @@ PAYMENT_HOLD = "payment_hold"
 #: The measure this kind takes, spelled as the toy host's profile declares it.
 FIELD_ACCURACY = "field_accuracy"
 
+#: The host's signed diagnostic: fields emitted minus fields graded. Declared in ``profile.py``.
+FIELD_COUNT_ERROR = "field_count_error"
+
 #: Which case a cell ran, as the stimulus names it. A test case's ``variation_params`` is the
 #: only per-case channel the engine has — there is no per-case host payload — so the document is
 #: named here and the batch's own settings ride on the run's ``host_payload``.
@@ -531,7 +534,11 @@ class ToyExtractorKind:
             # The mechanical grade, across the seam in the open: a registered measure name and
             # a float are engine vocabulary, so this needs no opaque carrier and gets none. The
             # engine lands it on ``EvalResult.host_measures`` and interprets nothing.
-            host_measures={FIELD_ACCURACY: accuracy, "fields_correct": float(len(correct))},
+            host_measures={
+                FIELD_ACCURACY: accuracy,
+                "fields_correct": float(len(correct)),
+                FIELD_COUNT_ERROR: float(len(extraction.fields) - len(graded)),
+            },
             # Which fields were wrong is this kind's fact, not a measure: the engine has no word for
             # an invoice field, so it travels opaque, stored verbatim on the result for a reader of
             # this host to unpack. The count beside it is the measure; the names are the payload.

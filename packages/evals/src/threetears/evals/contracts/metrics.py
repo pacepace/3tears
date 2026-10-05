@@ -94,7 +94,7 @@ import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from threetears.evals.contracts.base import EvalBaseModel
 
@@ -136,7 +136,6 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "is_code_graded",
     "materiality",
     "DERIVED_PER_RESULT_MEASURES",
-    "DIAGNOSTIC_MEASURES",
     # The measure vocabulary is published, not internal: surfaces that carry a measure's
     # metadata onward (the analysis context bundle types these fields off the registry
     # rather than restating them as bare strings) need the aliases, not just the model.
@@ -340,6 +339,26 @@ class MetricDescriptor(EvalBaseModel):
             "earned by declaring the whole, never by matching units."
         ),
     )
+    diagnostic: bool = Field(
+        default=False,
+        description=(
+            "True for a measure reported so a reader can EXPLAIN a movement — the conditions a measurement was "
+            "taken under, or a signed error with no better end — and never ranked on or held to a bar. A "
+            "directionless numeric measure reaches the analysis surfaces only when it says this: one that does "
+            "not is a raw count, and a raw count stays out. Requires `higher_is_better` to be None, since a "
+            "direction is exactly what would let a ranking read the diagnostic as a merit."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _a_diagnostic_has_no_better_end(self) -> MetricDescriptor:
+        """Refuse a diagnostic that declares a better end, which would let a ranking read it as a merit."""
+        if self.diagnostic and self.higher_is_better is not None:
+            raise ValueError(
+                f"{self.name} is declared a diagnostic and higher_is_better={self.higher_is_better}: a diagnostic "
+                "explains a movement and has no better end, so either drop the direction or drop `diagnostic`"
+            )
+        return self
 
 
 def strictest_class(*classes: TransferabilityClass) -> TransferabilityClass:
@@ -703,8 +722,10 @@ _SEED: tuple[MetricDescriptor, ...] = (
         attribution_scope="subsystem",
         # No better end, deliberately: a faster provider hour is not a better arm, and a direction
         # here is what would let a superlative or a ranking read provider drift as a lever's merit —
-        # the misreading this measure exists to expose. It is a DIAGNOSTIC; see DIAGNOSTIC_MEASURES.
+        # the misreading this measure exists to expose. It is a DIAGNOSTIC, declared on the
+        # descriptor exactly as a host declares one of its own.
         higher_is_better=None,
+        diagnostic=True,
         unit="tokens/s",
         formula="sum of completion_tokens over the candidate role's rows / (llm_ms / 1000)",
         description=(
@@ -1658,18 +1679,6 @@ def materiality(threshold: float | None, delta: float) -> Materiality:
     """
     return "immaterial" if threshold is not None and abs(delta) < threshold else "material"
 
-
-#: Measures reported so a reader can EXPLAIN a movement, and never ranked or held to a bar.
-#:
-#: A diagnostic has no better end — it describes the conditions a measurement was taken under,
-#: not the merit of what was measured — so its descriptor declares ``higher_is_better=None``. That
-#: is also how a raw count is declared, and raw counts are kept off every analysis surface on
-#: purpose (a per-role token count pooled across roles is a distribution of nothing). Membership
-#: here is what separates the two: a directionless measure named in this set is carried on the
-#: bundle's measure surfaces, where a reader and the divergence lens can see it; one not named is
-#: a raw count and stays out. Named rather than inferred, because nothing on a descriptor tells a
-#: diagnostic from a count, and a guess that admitted counts would reopen the pooling defect.
-DIAGNOSTIC_MEASURES: frozenset[str] = frozenset({"candidate_output_tokens_per_s"})
 
 #: Described measures a result IMPLIES rather than carries — computed from its own fields each time
 #: it is read, and never stored. The analysis bundle's measure walk yields exactly these on top of

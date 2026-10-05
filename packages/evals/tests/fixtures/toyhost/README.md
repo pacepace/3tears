@@ -9,7 +9,7 @@ and nothing else.
 
 | Step | File | What it holds |
 |---|---|---|
-| Measures, bars, style | `profile.py` | The five measures, two bars in opposite directions, a style, a caveat kind the engine does not own, and the measure family the host declares (`extraction_grade`) — assembled into the `HostProfile` |
+| Measures, bars, style | `profile.py` | The six measures (one a declared diagnostic), two bars in opposite directions, a style, a caveat kind the engine does not own, and the measure family the host declares (`extraction_grade`) — assembled into the `HostProfile` |
 | Kind contract | `contract.py` | The extractor's overlays, its spec, and its rig seats — the apparatus its runs have |
 | Levers and apparatus | `sweepables.py` | The declared inputs and the two pinned roles, extending the engine's `SHARED_CORE` |
 | How one run resolves its levers | `variant.py` | The host's `VariantLeverReader`; the engine resolves the model, the kind and the kind contract's levers itself |
@@ -54,8 +54,9 @@ runner's own output, cell by cell.
   by the engine's `JudgeService` through a scripted judge that grades what it was shown. The
   extractor's seats leave the model-judge axes out, which is not true of this variant: a suite
   driving it builds the profile with `every_seat=True`.
-- **Measures in four value shapes** — a bounded ratio, two unbounded quantities in opposite
-  better-directions, and an unbounded count — across **all four merit axes**.
+- **Measures in five value shapes** — a bounded ratio, two unbounded quantities in opposite
+  better-directions, an unbounded count, and a signed diagnostic with no better end that the host
+  declares as one (`field_count_error`) — across **all four merit axes**.
 - **Two bars in opposite directions**, so the ratchet's lower-is-better branch runs.
 - **One world dimension in every registrable quadrant**, including `witnessed`.
 - **A caveat kind the engine does not own** (`adjudication_scope`).

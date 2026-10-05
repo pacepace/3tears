@@ -298,13 +298,16 @@ def test_a_second_products_measures_land_on_all_four_engine_owned_merit_axes():
     dollars per document, p95 latency, and how often the pipeline gave up.
 
     Generic axis, host-declared assignment — the same split the sweepables registry draws one
-    level up.
+    level up. A declared diagnostic serves no axis and contributes to no verdict, so it is the one
+    measure allowed to name none — and only a diagnostic may.
     """
     toy = toyhost_profile()
 
     declared = {toy.measures.merit_axis(name) for name in toy.measures.names}
+    axisless = {name for name in toy.measures.names if toy.measures.merit_axis(name) is None}
 
-    assert declared == {"quality", "cost", "latency", "reliability"}
+    assert declared - {None} == {"quality", "cost", "latency", "reliability"}
+    assert axisless == {name for name in toy.measures.names if toy.measures.get(name).diagnostic}  # type: ignore[union-attr]
 
 
 def test_a_bar_reads_its_measures_better_direction_rather_than_assuming_higher_is_better():

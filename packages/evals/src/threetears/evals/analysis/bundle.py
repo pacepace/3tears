@@ -96,7 +96,6 @@ from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_variant_identity
 from threetears.evals.contracts.metrics import (
     CONFUSION_CELL_MEASURE,
-    DIAGNOSTIC_MEASURES,
     AttributionScope,
     ClassifierStatistic,
     MeasurePopulation,
@@ -1786,10 +1785,14 @@ def _is_reportable(descriptor: MetricDescriptor, measures: MeasureRegistry) -> b
       ``higher_is_better is None`` marks a raw count with no better end — per-role token
       counts, call counts. Nothing can be ranked on one, and pooling a per-role count
       across the candidate, judge and simulator rows produces a distribution of nothing in
-      particular. A measure named in :data:`~threetears.evals.contracts.metrics.DIAGNOSTIC_MEASURES` is
-      the one exception, and a named one: it has no better end either, but it describes the
-      conditions of a measurement (the candidate provider's output rate) and a reader needs it
-      beside the measures it explains. It is carried here so the run summaries, the catalog
+      particular. A measure whose descriptor declares
+      :attr:`~threetears.evals.contracts.metrics.MetricDescriptor.diagnostic` is the one exception,
+      and a declared one — the engine's own (the candidate provider's output rate) and a host's
+      (a signed error against what was asked) alike, through this one predicate: it has no better
+      end either, but it explains a movement and a reader needs it beside the measures it
+      explains. Declared rather than inferred, because nothing else on a descriptor tells a
+      diagnostic from a count, and a guess that admitted counts would reopen the pooling defect.
+      It is carried here so the run summaries, the catalog
       and the divergence lens see it; its missing direction is what keeps every direction-
       reading surface — a superlative, a bar — from treating it as a merit. Categorical
       measures are kept without a direction: they carry the *how did it conclude* signal
@@ -1803,7 +1806,7 @@ def _is_reportable(descriptor: MetricDescriptor, measures: MeasureRegistry) -> b
         return True
     if descriptor.data_type != "numeric":
         return False
-    return descriptor.higher_is_better is not None or descriptor.name in DIAGNOSTIC_MEASURES
+    return descriptor.higher_is_better is not None or descriptor.diagnostic
 
 
 def _value_fits(descriptor: MetricDescriptor, value: float | str) -> bool:

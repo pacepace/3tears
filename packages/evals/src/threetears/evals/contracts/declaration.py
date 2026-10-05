@@ -742,10 +742,12 @@ def resolve_bar_name(
                 name, "not_numeric", f"{name} is {descriptor.data_type}, so a threshold has nothing to compare against"
             )
         if descriptor.higher_is_better is None:
+            # Says which of the two directionless shapes it is, off the descriptor's own declaration.
+            what = "a diagnostic" if descriptor.diagnostic else "a raw count"
             return UnreadableBarName(
                 name,
                 "no_better_end",
-                f"{name} declares no better end — a raw count or a diagnostic — so clearing a threshold on it means nothing",
+                f"{name} declares no better end — {what} — so clearing a threshold on it means nothing",
             )
         return BarName(name, "measure", descriptor)
     if name in RESERVED_DIM_IDS or name in rubric_dimensions:
