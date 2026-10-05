@@ -529,6 +529,7 @@ class WorldRegistry(HostAttributed):
         coherence: str | None = None,
         address: Callable[[str, str], str] | None = None,
         settle: Mapping[str, str] | None = None,
+        binds_per_cell: bool = False,
     ) -> None:
         """Validate and store one host's world.
 
@@ -579,6 +580,14 @@ class WorldRegistry(HostAttributed):
                 capability, not an obligation: a carrier with nothing to settle declares none, and
                 the engine awaits only the carriers a cell attached. Every key must be a carrier some
                 declared dimension names.
+            binds_per_cell: Whether every cell must bind its OWN world before it seeds. False — the
+                default — says this table's handles are safe for every cell to share: they are
+                stateless, or open per-cell state themselves, and an unbound cell session calls them
+                as they are. True says the table is the world the conformance kit proves and nothing
+                more: a host whose world is real per-cell state (a fresh game world over its own store)
+                declares it, each cell's kind supplies that cell's table through
+                :meth:`~threetears.evals.contracts.world_session.WorldSession.bind`, and a cell session
+                that seeds without binding is refused rather than writing into the shared one.
 
         Raises:
             WorldRegistrationError: The declaration set is unsound. Every defect is reported at
@@ -593,6 +602,7 @@ class WorldRegistry(HostAttributed):
         self._coherence = coherence
         self._address: Callable[[str, str], str] = address or _key_is_the_name
         self._settle: dict[str, str] = dict(settle or {})
+        self._binds_per_cell = binds_per_cell
         if defects := self._defects():
             raise WorldRegistrationError("world declaration is unsound: " + "; ".join(defects))
         self._by_name: dict[str, WorldDimension] = {declared.name: declared for declared in self._declarations}
@@ -857,6 +867,68 @@ class WorldRegistry(HostAttributed):
         """
         return dict(self._settle)
 
+    @property
+    def binds_per_cell(self) -> bool:
+        """Whether every cell must bind its own world before seeding — see the constructor's ``binds_per_cell``."""
+        return self._binds_per_cell
+
+    def with_bindings(self, bindings: Mapping[str, Callable[..., Any]]) -> WorldRegistry:
+        """This world's declaration over a different resolution table — one cell's own world.
+
+        Everything but the table is carried over unchanged: the dimensions, the subject-view, ambient,
+        coherence and settle handles, the base world, the addressing, ``binds_per_cell`` and the host
+        attribution. So whatever reads the declaration — preconditions, goal checks, the bundle,
+        coverage, authoring — reads the same answer off either registry, and only where a call LANDS
+        differs.
+
+        The table must bind exactly the handles this one binds. A missing handle would be a dimension
+        some cell cannot seed or read; an extra one is a handle no declaration names, which nothing
+        here would call and which therefore says the caller and the declaration disagree about what
+        this world is. Every supplied callable then goes through the constructor's own checks — callable,
+        and callable in the shape its role is called in — so a cell's table is held to exactly the rules
+        the profile's was, by the same code.
+
+        Args:
+            bindings: The cell's table — ``{handle: callable}``, one per handle this registry binds.
+
+        Returns:
+            A new validated registry; this one is not changed.
+
+        Raises:
+            WorldRegistrationError: The handle set differs from this registry's, or a callable is not
+                one the engine could call in its role.
+        """
+        supplied = dict(bindings)
+        missing = sorted(set(self._bindings) - set(supplied))
+        extra = sorted(set(supplied) - set(self._bindings))
+        if missing or extra:
+            raise WorldRegistrationError(
+                f"{self._host}a cell's bindings must resolve exactly the handles this world declares"
+                + (f"; missing {', '.join(map(repr, missing))}" if missing else "")
+                + (f"; not declared {', '.join(map(repr, extra))}" if extra else "")
+            )
+        try:
+            bound = WorldRegistry(
+                self._declarations,
+                bindings=supplied,
+                subject_view=self._subject_view,
+                perturb_ambient=self._perturb_ambient,
+                base_world=self._base_world,
+                coherence=self._coherence,
+                address=self._address,
+                settle=self._settle,
+                binds_per_cell=self._binds_per_cell,
+            )
+        except WorldRegistrationError as unsound:
+            raise WorldRegistrationError(
+                f"{self._host}a cell's bindings do not satisfy this world's declaration: {unsound}"
+            ) from unsound
+        # Attribution follows the declaration. Only a single host is carried: a registry bound by two
+        # profiles already names neither, and re-binding both would re-announce that once per cell.
+        if self._host:
+            bound.bind_host(next(iter(self._host_ids)))
+        return bound
+
     def get(self, name: str) -> WorldDimension | None:
         """The declaration for ``name``, or None when this host never declared it."""
         return self._by_name.get(name)
@@ -1085,6 +1157,7 @@ class WorldRegistry(HostAttributed):
         base_world: Mapping[str, Any] | None = None,
         coherence: str | None = None,
         settle: Mapping[str, str] | None = None,
+        binds_per_cell: bool = False,
     ) -> WorldRegistry:
         """Return a new registry carrying these declarations after this one's.
 
@@ -1119,6 +1192,9 @@ class WorldRegistry(HostAttributed):
             coherence: The host's coherence handle, under the subject view's rule.
             settle: Further carriers' settle handles. One naming a carrier this registry already settles
                 through a different handle is refused, for the binding table's reason.
+            binds_per_cell: True makes the extended world bind per cell. Never turned OFF by extending:
+                a world this registry already binds per cell stays so, because the handles it inherits
+                are still the conformance kit's, not every cell's.
 
         Returns:
             A new validated registry.
@@ -1178,6 +1254,7 @@ class WorldRegistry(HostAttributed):
             settle={**self._settle, **added_settle},
             # Inherited, never replaced: every inherited dimension is addressed by it already.
             address=self._address,
+            binds_per_cell=self._binds_per_cell or binds_per_cell,
         )
 
     @property

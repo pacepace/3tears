@@ -1060,7 +1060,10 @@ async def run_one_result(
     sink.cassettes = cell_cassettes
     # The cell's handle on the host's world, built here rather than by the kind so that what the
     # kind does to its world — the seed, the triggers, the end state — is on the sink whatever way
-    # the cell ends. ``None`` for a host that declares no world.
+    # the cell ends. ``None`` for a host that declares no world. Built over the profile's registry, which
+    # is the declaration; a host whose world is per-cell state binds this cell's own table on it
+    # (``WorldSession.bind``) from ``prepare``, so no two cells — of this run or a concurrent one — share
+    # a path to one world, and a host declaring ``binds_per_cell`` that forgets is refused at seed.
     world_session = WorldSession(host.profile.world) if host.profile.world is not None else None
     sink.world = world_session
     try:
