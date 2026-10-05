@@ -32,6 +32,7 @@ from threetears.evals.run.authoring import (
     update_template,
     validated_kind_spec,
 )
+from threetears.evals.run.conversation import drive_conversation
 from threetears.evals.run.curation import (
     delete_analysis,
     delete_insight,
@@ -99,8 +100,10 @@ from threetears.evals.run.runner import (
     sample_concurrent_eval_jobs,
 )
 from threetears.evals.run.simulator import (
+    SCHEDULER_CALL_ATTEMPTS,
     SIMULATOR_REQUEST_SETTINGS,
     CandidateTurn,
+    SimulatorCall,
     SimulatorReplyInvalid,
     SimulatorTurn,
     TurnDriver,
@@ -120,6 +123,7 @@ __all__ = [
     "JUDGE_MAX_TOKENS",
     "JUDGE_REQUEST_SETTINGS",
     "RUBRIC_DIM_SERVER_FIELDS",
+    "SCHEDULER_CALL_ATTEMPTS",
     "SIMULATOR_REQUEST_SETTINGS",
     "TEMPLATE_SERVER_FIELDS",
     "AbandonedRunSweepReport",
@@ -162,6 +166,7 @@ __all__ = [
     "RunnerOptions",
     "SeedCorpus",
     "SeedOutcome",
+    "SimulatorCall",
     "SimulatorReplyInvalid",
     "SimulatorTurn",
     "TemplatePreflight",
@@ -181,6 +186,7 @@ __all__ = [
     "delete_result",
     "delete_rubric_dim",
     "delete_run",
+    "drive_conversation",
     "evaluate_goal_state",
     "execute_run",
     "fold_metered_cell",

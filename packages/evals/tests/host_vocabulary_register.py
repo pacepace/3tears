@@ -123,6 +123,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/cassette_proxy.py": {},
     "run/ceilings.py": {"presence": 2},
     "run/check_controls.py": {},
+    "run/conversation.py": {},
     "run/curation.py": {},
     "run/definition_seed.py": {},
     "run/fidelity.py": {},

@@ -361,6 +361,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "run/judge_service.py",
     "run/simulator.py",
     "contracts/world_state.py",
+    # The speaker-round loop over the simulator above: it hands a kind's own delivery and candidate
+    # callables the turns, and a host noun here would be one host's table written into every kind's loop.
+    "run/conversation.py",
     # Moved off _HOST_COUPLED_MODULES when a launch's overlays became one map the kind's own model
     # validates: the launch names no overlay of any host's, so a host noun arriving
     # here would be one host's knob written into every host's launch signature.

@@ -7,10 +7,12 @@ import json
 import pytest
 
 from threetears.evals.contracts.models import ActorPolicy, ConversationSpec, ConversationStopCause
+from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
     CandidateTurn,
     SimulatorReplyInvalid,
+    SimulatorTurn,
     TurnDriver,
 )
 
@@ -57,9 +59,17 @@ class _Response:
 
 
 def _conversation(actors: list[ActorPolicy], **overrides) -> ConversationSpec:
-    kwargs = dict(actors=actors, max_turns=5)
+    """A round-robin conversation whose rounds hold up to five utterances, so a test can take several in a row."""
+    kwargs = dict(actors=actors, max_turns=5, max_speakers_per_round=5)
     kwargs.update(overrides)
     return ConversationSpec(**kwargs)
+
+
+async def _speak(driver: TurnDriver, llm) -> SimulatorTurn:
+    """The next utterance of the current round: the scheduler's pick, then that actor's call."""
+    actor = await driver.next_speaker(llm)
+    assert actor is not None, "the round has room for another speaker"
+    return await driver.next_user_turn(llm, actor)
 
 
 def _actor(actor_id: str, **overrides) -> ActorPolicy:
@@ -126,8 +136,9 @@ def test_a_templated_opener_cannot_reach_an_llm_at_all():
     import inspect
 
     assert "llm" not in inspect.signature(TurnDriver.initial_utterance).parameters
-    # The only entry point that takes one is the follow-up turn.
+    # The entry points that take one are the follow-up turn and the scheduler's pick.
     assert "llm" in inspect.signature(TurnDriver.next_user_turn).parameters
+    assert "llm" in inspect.signature(TurnDriver.next_speaker).parameters
 
 
 def test_max_turns_one_stops_before_any_follow_up_is_requested():
@@ -197,10 +208,10 @@ async def test_round_robin_with_three_actors_cycles_in_order():
     driver = TurnDriver(conversation=conversation, variation={})
     llm = _RecordingLLM(["from a", "from b", "from c", "from a again"])
 
-    turn1 = await driver.next_user_turn(llm)
-    turn2 = await driver.next_user_turn(llm)
-    turn3 = await driver.next_user_turn(llm)
-    turn4 = await driver.next_user_turn(llm)
+    turn1 = await _speak(driver, llm)
+    turn2 = await _speak(driver, llm)
+    turn3 = await _speak(driver, llm)
+    turn4 = await _speak(driver, llm)
 
     assert [t.actor_id for t in (turn1, turn2, turn3, turn4)] == ["a", "b", "c", "a"]
 
@@ -213,7 +224,7 @@ async def test_initial_utterance_advances_scheduler_past_first_actor():
     initial = driver.initial_utterance()
     assert initial is not None and initial.actor_id == "a"
     llm = _RecordingLLM(["from b"])
-    turn = await driver.next_user_turn(llm)
+    turn = await _speak(driver, llm)
     assert turn.actor_id == "b"
 
 
@@ -228,9 +239,9 @@ async def test_transcript_captures_both_sides_in_order():
     driver = TurnDriver(conversation=conversation, variation={})
     llm = _RecordingLLM(["First shopper turn", "Second shopper turn"])
 
-    await driver.next_user_turn(llm)
+    await _speak(driver, llm)
     driver.record_candidate_turn(CandidateTurn(content="Candidate response 1"))
-    await driver.next_user_turn(llm)
+    await _speak(driver, llm)
     driver.record_candidate_turn(CandidateTurn(content="Candidate response 2"))
 
     assert driver.transcript == [
@@ -310,7 +321,7 @@ def test_stop_is_idempotent():
 
 async def test_every_user_turn_sends_the_strict_reply_schema():
     llm = _RecordingLLM(["hi"])
-    await TurnDriver(conversation=_conversation([_actor("a")]), variation={}).next_user_turn(llm)
+    await _speak(TurnDriver(conversation=_conversation([_actor("a")]), variation={}), llm)
 
     assert llm.response_formats == [SIMULATED_USER_RESPONSE_FORMAT]
     schema = SIMULATED_USER_RESPONSE_FORMAT["json_schema"]["schema"]
@@ -321,7 +332,7 @@ async def test_every_user_turn_sends_the_strict_reply_schema():
 
 async def test_a_user_that_says_it_is_done_stops_the_conversation():
     driver = TurnDriver(conversation=_conversation([_actor("a")], max_turns=5), variation={})
-    turn = await driver.next_user_turn(_RecordingLLM([_Raw(_reply("thanks, bye", done=True))]))
+    turn = await _speak(driver, _RecordingLLM([_Raw(_reply("thanks, bye", done=True))]))
 
     assert turn.done is True
     assert driver.should_continue() is False
@@ -332,7 +343,7 @@ async def test_a_user_that_says_it_is_done_stops_the_conversation():
 
 async def test_a_user_that_is_not_done_keeps_the_conversation_going():
     driver = TurnDriver(conversation=_conversation([_actor("a")], max_turns=5), variation={})
-    turn = await driver.next_user_turn(_RecordingLLM([_Raw(_reply("and another thing", done=False))]))
+    turn = await _speak(driver, _RecordingLLM([_Raw(_reply("and another thing", done=False))]))
 
     assert turn.done is False
     assert turn.content == "and another thing"
@@ -366,75 +377,15 @@ async def test_a_reply_that_breaks_the_schema_is_refused_with_its_spend(raw):
         async def generate(self, *, system, user, response_format=None):
             return _Billed()
 
-    with pytest.raises(SimulatorReplyInvalid) as caught:
-        await driver.next_user_turn(_LLM())
-    assert caught.value.usage.input_tokens == 9
-    assert caught.value.usage.cost_usd == 0.001
+    with pytest.raises(SimulatorReplyInvalid):
+        await _speak(driver, _LLM())
+    # The malformed reply was billed, so its call is on the driver's record before the refusal.
+    [call] = driver.calls
+    assert (call.purpose, call.actor_id) == ("utterance", "a")
+    assert call.usage.input_tokens == 9
+    assert call.usage.cost_usd == 0.001
     assert driver.transcript == []
     assert driver.stop_cause is None
-
-
-# =============================================================================
-# Session breaks
-# =============================================================================
-
-
-async def test_session_break_propagates_to_next_user_turn_only():
-    actors = [_actor("a")]
-    conversation = _conversation(actors)
-    driver = TurnDriver(conversation=conversation, variation={})
-    llm = _RecordingLLM(["after break", "regular turn"])
-
-    driver.mark_session_break()
-    turn1 = await driver.next_user_turn(llm)
-    assert turn1.session_break is True
-
-    turn2 = await driver.next_user_turn(llm)
-    assert turn2.session_break is False  # break is consumed
-
-
-async def test_session_break_rides_initial_llm_utterance_when_no_template():
-    """When the first actor has no initial_utterance_template, a pre-set
-    session_break flag rides the *first* LLM-driven utterance.
-
-    Pins the contract that ``mark_session_break()`` is decoupled from
-    whichever path produces the first user turn — templated or LLM-driven.
-    """
-    actors = [_actor("shopper")]  # no initial_utterance_template
-    conversation = _conversation(actors)
-    driver = TurnDriver(conversation=conversation, variation={})
-    llm = _RecordingLLM(["first LLM-driven utterance"])
-
-    driver.mark_session_break()
-    assert driver.initial_utterance() is None  # confirms no template path
-    turn = await driver.next_user_turn(llm)
-    assert turn.session_break is True
-
-
-async def test_simulator_transcript_spans_session_break():
-    """Per the design, the simulator preserves its full transcript across
-    breaks — only the *candidate's* visible history is cleared by the
-    runner (which receives the flag and acts on it). The simulator's
-    actor LLM calls still see the full transcript so they remain coherent
-    about whatever happened before the break.
-    """
-    actors = [_actor("a")]
-    conversation = _conversation(actors)
-    driver = TurnDriver(conversation=conversation, variation={})
-    llm = _RecordingLLM(["pre-break turn", "post-break turn"])
-
-    await driver.next_user_turn(llm)
-    driver.record_candidate_turn(CandidateTurn(content="Candidate pre-break"))
-    driver.mark_session_break()
-    post_turn = await driver.next_user_turn(llm)
-
-    # The transcript carries all four utterances.
-    assert len(driver.transcript) == 3
-    assert driver.transcript[0] == ("a", "pre-break turn")
-    assert driver.transcript[1] == ("__candidate__", "Candidate pre-break")
-    assert driver.transcript[2] == ("a", "post-break turn")
-    # The flag rode the post-break turn alone.
-    assert post_turn.session_break is True
 
 
 # =============================================================================
@@ -448,7 +399,7 @@ async def test_system_prompt_carries_the_actor_policy_and_variation():
     driver = TurnDriver(conversation=conversation, variation={"tone": "casual", "category": "kitchen"})
     llm = _RecordingLLM(["ok"])
 
-    await driver.next_user_turn(llm)
+    await _speak(driver, llm)
 
     system, _user = llm.calls[0]
     assert "You are casual and curious." in system
@@ -465,11 +416,11 @@ async def test_user_prompt_carries_intent_and_transcript():
     driver = TurnDriver(conversation=conversation, variation={})
     llm = _RecordingLLM(["initial"])
 
-    await driver.next_user_turn(llm)
+    await _speak(driver, llm)
     driver.record_candidate_turn(CandidateTurn(content="Sure thing!"))
     llm.responses.append("ok then")
 
-    await driver.next_user_turn(llm)
+    await _speak(driver, llm)
 
     _system, user = llm.calls[1]
     assert "Get them to add the Blue Kettle." in user
@@ -485,12 +436,12 @@ async def test_multi_actor_transcript_labels_other_actors():
     driver = TurnDriver(conversation=conversation, variation={})
     llm = _RecordingLLM(["alice speaks", "bob speaks"])
 
-    await driver.next_user_turn(llm)  # alice
-    await driver.next_user_turn(llm)  # bob
+    await _speak(driver, llm)  # alice
+    await _speak(driver, llm)  # bob
 
     # When the third turn renders (alice's turn again), Bob's prior turn shows as "Actor (bob)"
     llm.responses.append("alice replies to bob")
-    await driver.next_user_turn(llm)
+    await _speak(driver, llm)
     _system, user = llm.calls[2]
     assert "You (alice): alice speaks" in user
     assert "Actor (bob): bob speaks" in user
@@ -563,49 +514,70 @@ def _usage_driver() -> TurnDriver:
     )
 
 
-async def test_llm_turn_carries_the_calls_usage():
-    turn = await _usage_driver().next_user_turn(_UsageLLM(_UsageResponse()))
+async def _usage_of(llm) -> CallUsage:
+    """The usage the driver recorded for one LLM-driven turn."""
+    driver = _usage_driver()
+    await _speak(driver, llm)
+    [call] = driver.calls
+    assert (call.purpose, call.actor_id, call.round_index) == ("utterance", "a", 0)
+    return call.usage
 
-    assert turn.usage is not None
-    assert turn.usage.model == "sim-model"
-    assert turn.usage.input_tokens == 12
-    assert turn.usage.output_tokens == 34
-    assert turn.usage.cost_usd == 0.004
-    assert turn.usage.price_source == "rate_card", "where the dollars came from is the client's to say"
+
+async def test_llm_turn_carries_the_calls_usage():
+    usage = await _usage_of(_UsageLLM(_UsageResponse()))
+
+    assert usage.model == "sim-model"
+    assert usage.input_tokens == 12
+    assert usage.output_tokens == 34
+    assert usage.cost_usd == 0.004
+    assert usage.price_source == "rate_card", "where the dollars came from is the client's to say"
 
 
 async def test_llm_turn_reasoning_unreported_stays_none():
-    turn = await _usage_driver().next_user_turn(_UsageLLM(_UsageResponse(reasoning=None)))
-    assert turn.usage is not None
-    assert turn.usage.reasoning_tokens is None
+    assert (await _usage_of(_UsageLLM(_UsageResponse(reasoning=None)))).reasoning_tokens is None
 
 
 async def test_llm_turn_reasoning_zero_is_kept():
-    turn = await _usage_driver().next_user_turn(_UsageLLM(_UsageResponse(reasoning=0)))
-    assert turn.usage is not None
-    assert turn.usage.reasoning_tokens == 0
+    assert (await _usage_of(_UsageLLM(_UsageResponse(reasoning=0)))).reasoning_tokens == 0
 
 
 async def test_llm_turn_from_a_client_reporting_nothing_reads_as_unobserved():
     """A minimal client (content only) reports no spend — not a spend of zero dollars."""
-    turn = await _usage_driver().next_user_turn(_RecordingLLM(["hi"]))
+    usage = await _usage_of(_RecordingLLM(["hi"]))
 
-    assert turn.usage is not None
-    assert turn.usage.model is None
+    assert usage.model is None
     # Never measured is absent, not a measured zero.
-    assert turn.usage.input_tokens is None
-    assert turn.usage.output_tokens is None
-    assert turn.usage.cost_usd is None
-    assert turn.usage.price_source is None
+    assert usage.input_tokens is None
+    assert usage.output_tokens is None
+    assert usage.cost_usd is None
+    assert usage.price_source is None
 
 
-def test_scripted_initial_utterance_has_no_usage():
+def test_scripted_initial_utterance_records_no_call():
     """A templated opener runs no LLM at all — distinct from an LLM call that reported nothing."""
     driver = TurnDriver(
         conversation=_conversation([ActorPolicy(id="a", policy="p", intent="i", initial_utterance_template="Hello")]),
         variation={},
     )
-    turn = driver.initial_utterance()
+    assert driver.initial_utterance() is not None
+    assert driver.calls == []
 
-    assert turn is not None
-    assert turn.usage is None
+
+async def test_fold_usage_lands_every_call_on_the_simulator_ledger():
+    driver = _usage_driver()
+    await _speak(driver, _UsageLLM(_UsageResponse()))
+    await _speak(driver, _UsageLLM(_UsageResponse()))
+    ledger = RoleUsageLedger(role="simulator")
+
+    driver.fold_usage(ledger)
+
+    [row] = ledger.rows()
+    assert row.call_count == 2
+    assert row.cost_usd == pytest.approx(0.008)
+
+
+@pytest.mark.parametrize("role", ["candidate", "judge"])
+def test_fold_usage_refuses_another_roles_ledger(role):
+    """Simulator spend is the program's cost; landing it on the candidate's row would misstate what it costs."""
+    with pytest.raises(ValueError, match="simulator ledger"):
+        _usage_driver().fold_usage(RoleUsageLedger(role=role))

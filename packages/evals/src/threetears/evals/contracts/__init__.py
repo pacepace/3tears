@@ -69,10 +69,12 @@ from threetears.evals.contracts.metrics import (
     list_metrics,
 )
 from threetears.evals.contracts.models import (
+    CANDIDATE_SPEAKER,
     DEFAULT_LAUNCH_K_RUNS,
     NON_TERMINAL_RUN_STATUSES,
     OUTCOME_DIM_ID,
     RESERVED_DIM_IDS,
+    ROUND_DONE,
     TRANSCRIPT_DIM_ID,
     ActorPolicy,
     AsyncDelivery,
@@ -252,6 +254,7 @@ from threetears.evals.contracts.cassettes import ToolLike
 
 __all__ = [
     "CONFIDENCE_TIERS",
+    "CANDIDATE_SPEAKER",
     "DEFAULT_LAUNCH_K_RUNS",
     "EVAL_DOC_TYPES",
     "EVAL_SCHEMA_VERSION",
@@ -266,6 +269,7 @@ __all__ = [
     "PROSE_SCHEMA_KEY",
     "PROVIDER_REQUEST_ATTEMPTS",
     "RESERVED_DIM_IDS",
+    "ROUND_DONE",
     "TRANSCRIPT_DIM_ID",
     "ActionSeam",
     "ActorPolicy",
