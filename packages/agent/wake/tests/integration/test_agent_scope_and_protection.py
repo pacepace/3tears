@@ -576,9 +576,7 @@ class TestPermitAndLimits:
 class TestAQuietCheck:
     """A consumer's check that found nothing: recorded as ``checked_quiet``, never counted as a fire."""
 
-    async def test_a_quiet_check_is_written_as_checked_quiet_and_starts_nothing(
-        self, pg_schema: tuple[str, str]
-    ) -> None:
+    async def test_a_quiet_check_from_the_handler_is_written_as_checked_quiet(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
         pool = await _apply_schema(url, schema)
         try:
@@ -634,6 +632,8 @@ class TestAQuietCheck:
                     execution_mode="spawn",
                 )
                 await fires.finalize_success(conv, fire_id, status="checked_quiet")
+            written = await pool.fetch("SELECT status FROM wake_fires WHERE schedule_id = $1", sid)
+            assert [r["status"] for r in written] == ["checked_quiet"] * 3, "the quiet rows are really there"
 
             async def one_a_day(_trigger: WakeTrigger) -> FireLimits | None:
                 return FireLimits(per_wake=1, per_agent=1)
@@ -656,6 +656,87 @@ class TestAQuietCheck:
                 permit=one_a_day,
             )
             assert result.status == "fired", "three quiet checks spent nothing of a one-a-day limit"
+        finally:
+            await pool.close()
+
+
+class TestAQuietCheckBeforeTheFire:
+    """A consumer whose check must start nothing runs it in the dispatch callback, before ``dispatch_wake``."""
+
+    async def test_the_callback_returns_checked_quiet_and_no_conversation_is_started(
+        self, pg_schema: tuple[str, str]
+    ) -> None:
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _conv, sid = await _seed_schedule(
+                pool, agent_id=_new_uuid(), next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
+            )
+
+            async def dispatch(trigger: WakeTrigger, fire_id: UUID, pool_: object) -> WakeDispatchResult:
+                # the check found nothing: the fire ends here, before dispatch_wake could start a conversation
+                return WakeDispatchResult(status="checked_quiet", output_text="nothing new", latency_ms=1)
+
+            await wake_tick_job(pool, None, dispatch, **_tick_collections(pool))
+            row = await pool.fetchrow(
+                "SELECT status, started_conversation_id, output_text FROM wake_fires WHERE schedule_id = $1", sid
+            )
+            assert dict(row) == {
+                "status": "checked_quiet",
+                "started_conversation_id": None,
+                "output_text": "nothing new",
+            }
+        finally:
+            await pool.close()
+
+
+class TestContextFromSkipsQuietChecks:
+    async def test_a_downstream_wake_reads_the_last_real_fire_past_later_quiet_checks(
+        self, pg_schema: tuple[str, str]
+    ) -> None:
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _schedules, fires = _collections(pool)
+            agent = _new_uuid()
+            up_conv, upstream = await _seed_schedule(pool, agent_id=agent)
+            down_conv, downstream = await _seed_schedule(pool, agent_id=agent)
+            for minutes_ago, status, text in (
+                (10, "fired", "found three new messages"),
+                (5, "checked_quiet", "nothing new"),
+            ):
+                fire_id = _new_uuid()
+                await fires.create_dispatching(
+                    fire_id=fire_id,
+                    schedule_id=upstream,
+                    webhook_subscription_id=None,
+                    conversation_id=up_conv,
+                    scheduled_fire_at=None,
+                    actual_fired_at=datetime.now(UTC) - timedelta(minutes=minutes_ago),
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                )
+                await fires.finalize_success(up_conv, fire_id, status=status, output_text=text)
+
+            handler = _RecordingHandler()
+            await dispatch_wake(
+                WakeTrigger(
+                    schedule_id=downstream,
+                    user_id=_new_uuid(),
+                    agent_id=agent,
+                    conversation_id=down_conv,
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                    schedule_type="interval",
+                    fired_at=datetime.now(UTC),
+                    context_from_schedule_id=upstream,
+                ),
+                _new_uuid(),
+                pool,
+                handler=handler,
+            )
+            blocks = handler.prepared[0].context_blocks
+            assert len(blocks) == 1 and "found three new messages" in str(blocks[0])
         finally:
             await pool.close()
 

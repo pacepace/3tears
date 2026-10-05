@@ -1149,6 +1149,8 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         self,
         conversation_id: UUID,
         schedule_id: UUID,
+        *,
+        statuses: tuple[str, ...] | None = None,
     ) -> WakeFireEntity | None:
         """Return the most recent fire for a schedule, or ``None``.
 
@@ -1160,6 +1162,8 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         :ptype conversation_id: UUID
         :param schedule_id: schedule whose latest fire to read
         :ptype schedule_id: UUID
+        :param statuses: only fires that ended in one of these; ``None`` reads the latest whatever it was
+        :ptype statuses: tuple[str, ...] | None
         :return: latest fire entity or ``None``
         :rtype: WakeFireEntity | None
         """
@@ -1167,14 +1171,25 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             return None
         # cache-bypass: lookup by (conv_id, schedule_id) is not pk-
         # addressable for the row cache (the pk is (conv_id, fire_id)).
-        row = await self.l3_pool.fetchrow(
-            f"SELECT {_FIRE_SELECT_COLUMNS} "
-            "FROM wake_fires "
-            "WHERE conversation_id = $1 AND schedule_id = $2 "
-            "ORDER BY actual_fired_at DESC LIMIT 1",
-            conversation_id,
-            schedule_id,
-        )
+        if statuses is None:
+            row = await self.l3_pool.fetchrow(
+                f"SELECT {_FIRE_SELECT_COLUMNS} "
+                "FROM wake_fires "
+                "WHERE conversation_id = $1 AND schedule_id = $2 "
+                "ORDER BY actual_fired_at DESC LIMIT 1",
+                conversation_id,
+                schedule_id,
+            )
+        else:
+            row = await self.l3_pool.fetchrow(
+                f"SELECT {_FIRE_SELECT_COLUMNS} "
+                "FROM wake_fires "
+                "WHERE conversation_id = $1 AND schedule_id = $2 AND status = ANY($3::text[]) "
+                "ORDER BY actual_fired_at DESC LIMIT 1",
+                conversation_id,
+                schedule_id,
+                list(statuses),
+            )
         if row is None:
             return None
         return self.entity_class(dict(row), is_new=False, collection=self)
@@ -1327,7 +1342,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         :param fire_id: target fire row
         :ptype fire_id: UUID
         :param status: terminal status -- one of ``'fired'``,
-            ``'fired_silent'``, ``'yielded'``, or a ``'skipped_*'``
+            ``'fired_silent'``, ``'yielded'``, ``'checked_quiet'``, or a ``'skipped_*'``
         :ptype status: str
         :param output_text: captured assistant output text
         :ptype output_text: str | None

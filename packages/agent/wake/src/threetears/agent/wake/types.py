@@ -112,9 +112,12 @@ MissedFirePolicy = Literal["coalesce", "catch_up"]
 # - ``'skipped_life_off'`` -- the consumer's :class:`FirePermit` answered
 #   "not now" (v007). Not a failure: the wake is fine, its agent is not
 #   taking fires at the moment.
-# - ``'checked_quiet'`` -- the consumer's handler ran a check before any
-#   turn and it found nothing (v008). No turn ran; not counted by the fire
-#   limits, not a failure, not a ``context_from`` source.
+# - ``'checked_quiet'`` -- the consumer ran a check before the fire and it
+#   found nothing (v008). No turn ran; not counted by the fire limits, not a
+#   failure, not a ``context_from`` source. A check that must start nothing
+#   runs in the tick's dispatch callback and returns this status without
+#   calling :func:`dispatch_wake`, which starts the fire's conversation (with
+#   a ``start_conversation`` hook) before its handler runs.
 # - ``'failed'`` -- exception raised during dispatch / handler.
 FireStatus = Literal[
     "dispatching",
@@ -434,9 +437,11 @@ class HandlerCallbackResult:
     - ``'skipped_busy'`` -- the handler declined because the conv was
       busy on a parallel turn. Rare; most busy detection lives in the
       platform's per-conv lock acquire upstream.
-    - ``'checked_quiet'`` -- the handler ran a check before any turn and
-      it found nothing to wake the agent for. No turn ran, and the fire
-      limits do not count it.
+    - ``'checked_quiet'`` -- a check found nothing to wake the agent for,
+      and no turn ran; the fire limits do not count it. Returned from a
+      handler, any conversation a ``start_conversation`` hook started is
+      already there: a check that must start nothing runs in the tick's
+      dispatch callback instead, before :func:`dispatch_wake`.
 
     The platform inspects :attr:`assistant_message_content` for the
     ``[SILENT]`` prefix and records ``display_suppressed`` on the fire

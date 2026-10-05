@@ -485,9 +485,12 @@ async def _resolve_context_from(
     upstream_schedule = await schedules.find_for_agent(trigger.agent_id, upstream_id)
     upstream_fire = None
     if upstream_schedule is not None:
+        # the latest fire that delivered something: a check's quiet runs and a
+        # skipped fire would otherwise hide the last real one
         upstream_fire = await fires.latest_for_schedule(
             conversation_id=upstream_schedule.conversation_id,
             schedule_id=upstream_id,
+            statuses=("fired", "fired_silent"),
         )
     if upstream_fire is None or upstream_fire.status not in {"fired", "fired_silent"}:
         log_upstream_id = str(upstream_id)  # convert at border: context_from no-fire log extra_data field

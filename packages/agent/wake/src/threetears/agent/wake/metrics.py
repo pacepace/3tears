@@ -106,8 +106,8 @@ WAKE_PROMETHEUS_NAMES: Final[tuple[str, ...]] = (
 
 
 # Locked bounded-label sets. Each label value's enum is documented at
-# the emit site. Cardinality budget per OBS-02 (fires_total) = 9 statuses
-# x 7 schedule_types x 2 modes = 126 series. Acceptable.
+# the emit site. Cardinality budget per OBS-02 (fires_total) = 11 statuses
+# x 7 schedule_types x 2 modes = 154 series. Acceptable.
 _LABELS_FIRES: Final[tuple[str, ...]] = ("status", "schedule_type", "execution_mode")
 _LABELS_FAILURES: Final[tuple[str, ...]] = ("reason",)
 _LABELS_RATE_LIMIT: Final[tuple[str, ...]] = ("scope",)
