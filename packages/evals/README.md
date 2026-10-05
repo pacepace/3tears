@@ -93,6 +93,16 @@ The launcher captures the subject the request names, freezes the cases, builds i
 engine stamps everything the request and the template already say — scope, model, repeats, cassette
 mode, overlays, spec, world seed, tool bound, ceilings — and refuses a wiring that contradicts them.
 
+**Generating cases at launch.** A launch with `n_variations` > 0 asks for that many new cases from the
+template's variation axes, generated once for every arm: call `generate_variations` inside
+`request.launch_group.resolve_once(...)` and hand its counts on as `KindWiring(variation_counts=...)`. An
+`llm` axis is written by the model the launch names as `variation_model` — required then, refused when
+nothing would call it — which the launcher asks of the host's client factory in the `variation` role
+(`clients("variation", request.variation_model)`), never the simulator's. The run records the model the
+client resolved to on `variation_counts.variation_model`; it enters no identity, because the cases it
+wrote are already hashed through `test_case_ids`. Generation runs before any run exists, so its calls
+are **outside every run's cost cap and metered-call ceiling**, and `launch_estimate` does not price them.
+
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the
 engine never interprets it, defaults it or branches on it: it is your tenant, project or
 environment, whatever you partition by. All of it goes through one `DocumentStore` you implement,

@@ -436,6 +436,16 @@ class LaunchRequest:
         k_runs: Repeats per case.
         scope_id: The scope the template was read in, which the launch's runs live in.
         n_variations: New cases to generate.
+        variation_model: The model that writes the template's ``llm`` variation axes' values when the
+            launch generates (``n_variations`` > 0), as the caller named it. The dispatch has already
+            made it present exactly when the template has an ``llm`` axis and the launch generates, so
+            ``None`` means no model writes this launch's cases. A launcher builds the writer through its
+            host's client factory in the ``variation`` role (never the simulator's — a kind with no
+            simulated user still generates) and hands it to
+            :func:`~threetears.evals.gen.generate_variations`, whose counts record the model it resolved
+            to and which :func:`launch_run` checks against this pin. Generation runs before the run
+            exists, once per launch for every arm (:meth:`LaunchGroup.resolve_once`), so its calls are
+            outside every run's cost cap and metered-call ceiling.
         judge_model: The run-level judge pin, unresolved.
         judge_config_ids: The per-dim judge-configuration selection.
         simulator_model: The simulator pin, unresolved.
@@ -460,6 +470,7 @@ class LaunchRequest:
     k_runs: int
     scope_id: str
     n_variations: int
+    variation_model: str | None
     judge_model: str | None
     judge_config_ids: dict[str, str] | None
     simulator_model: str | None
@@ -623,8 +634,10 @@ class KindWiring:
         simulator_model: The model that drives the simulated user, resolved, for a kind that runs
             one; ``None`` for a kind with none.
         payload: The host's opaque payload for the run, stored as its ``host_payload`` and never read.
-        variation_counts: How many cases generation was asked for and froze, for a launch that
-            generated; ``None`` for one that reused stored cases.
+        variation_counts: How many cases generation was asked for and froze, and the model that wrote
+            the ``llm`` axes' values, for a launch that generated — the counts
+            :func:`~threetears.evals.gen.generate_variations` returned; ``None`` for one that reused
+            stored cases.
         turn_budget_s: The per-turn budget the kind runs its candidate's turns under, or ``None``.
         cell_timeout_s: A per-cell ceiling for a kind whose work legitimately outlasts the default,
             or ``None`` for the default.
@@ -703,11 +716,70 @@ def _unhonoured_launch_arguments(
     return {name: value for name, value in supplied.items() if value and name in unhonoured}
 
 
+def _llm_axes(template: EvalTemplate) -> list[str]:
+    """The template's variation axes whose values a model writes, by name.
+
+    Args:
+        template: The template.
+
+    Returns:
+        The names of its ``llm``-generated axes, in declaration order; empty when none is.
+    """
+    return [axis.name for axis in template.variation_axes if axis.generator == "llm"]
+
+
+def _refuse_a_variation_model_the_launch_cannot_use(
+    template: EvalTemplate, *, n_variations: int, variation_model: str | None
+) -> None:
+    """Refuse a generation that needs a model and names none, and a model nothing would call.
+
+    A template's ``llm`` axes are written by a model, so a launch that generates for one must say
+    which: no other launch argument names it, and borrowing the simulator's would record a
+    simulated user on a kind that has none. A model named for a launch that generates nothing, or
+    for a template with no ``llm`` axis, would be recorded as the writer of cases it never wrote —
+    the same unhonoured argument :attr:`LaunchableKind.unhonoured_launch_arguments` refuses.
+    Read from the arguments and the template alone, so it is refused before any arm is prepared
+    and before a single generation call is paid for.
+
+    Args:
+        template: The loaded template.
+        n_variations: New cases the launch asked to generate, already checked non-negative.
+        variation_model: The model the launch named to write the ``llm`` axes' values, or ``None``.
+
+    Raises:
+        ValidationFailedError: The launch generates for a template with an ``llm`` axis and names
+            no variation model, or names one while generating nothing or for a template with no
+            ``llm`` axis.
+    """
+    llm_axes = _llm_axes(template)
+    if variation_model is None:
+        if n_variations > 0 and llm_axes:
+            raise ValidationFailedError(
+                f"template {template.id!r} has its {', '.join(repr(name) for name in llm_axes)} axis values written "
+                f"by a model, and this launch asks for {n_variations} generated case(s) without naming one: pass "
+                "variation_model=<the model that writes them>. It is its own role (the host's 'variation' client, "
+                "never the simulator's), and the runs record it beside their generation counts"
+            )
+        return
+    if n_variations == 0:
+        raise ValidationFailedError(
+            f"variation_model={variation_model!r} names the model that writes generated cases, and this launch "
+            "generates none (n_variations=0); launch it without variation_model, or ask for n_variations"
+        )
+    if not llm_axes:
+        raise ValidationFailedError(
+            f"variation_model={variation_model!r} names the model that writes a template's llm-generated axis "
+            f"values, and template {template.id!r} has no llm axis, so no model writes its cases; launch it "
+            "without variation_model"
+        )
+
+
 def _launchable(
     host: LaunchHost,
     template: EvalTemplate,
     *,
     n_variations: int,
+    variation_model: str | None,
     judge_model: str | None,
     judge_config_ids: dict[str, str] | None,
     simulator_model: str | None,
@@ -723,6 +795,7 @@ def _launchable(
         host: The host, whose launch registry and profile declare the kind.
         template: The loaded template.
         n_variations: New cases the launch asked to generate.
+        variation_model: The model the launch named to write the template's ``llm`` axes' values.
         judge_model: The launch's judge pin.
         judge_config_ids: The launch's per-dim judge-configuration selection.
         simulator_model: The launch's simulator pin.
@@ -735,8 +808,14 @@ def _launchable(
 
     Raises:
         ValidationFailedError: The template names a kind with no launcher, the launch supplies an
-            argument the kind cannot honour, or the kind's models refuse the overlays or the spec.
+            argument the kind cannot honour, a negative ``n_variations``, a variation model the
+            generation needs and the launch does not name or one nothing would call, or the kind's
+            models refuse the overlays or the spec.
     """
+    if n_variations < 0:
+        # Every surface reaches here; one without a wire-level bound would otherwise read a negative as
+        # "generate nothing" and run the stored cases while the caller believed it asked for new ones.
+        raise ValidationFailedError(f"n_variations must be 0 (reuse the stored cases) or more; got {n_variations}")
     candidate_kind = template.candidate_kind
     launchable = host.kinds.get(candidate_kind)
     if launchable is None:
@@ -756,6 +835,9 @@ def _launchable(
             + ", ".join(f"{name}={value!r}" for name, value in unusable.items())
             + "; launch it without them"
         )
+    _refuse_a_variation_model_the_launch_cannot_use(
+        template, n_variations=n_variations, variation_model=variation_model
+    )
     # What the launch may turn, and what the template states for its kind, are the kind's models'
     # answers, made here — before any arm is prepared, so a refusal leaves nothing built and no run
     # created. The spec was validated when the template was authored; it is validated again because
@@ -790,6 +872,7 @@ async def _dispatch(
     *,
     models: list[str],
     n_variations: int,
+    variation_model: str | None,
     judge_model: str | None,
     judge_config_ids: dict[str, str] | None,
     simulator_model: str | None,
@@ -805,6 +888,7 @@ async def _dispatch(
         scope_id: The scope the template is read in.
         models: The launch's candidate models.
         n_variations: New cases the launch asked to generate.
+        variation_model: The model the launch named to write the template's ``llm`` axes' values.
         judge_model: The launch's judge pin.
         judge_config_ids: The launch's per-dim judge-configuration selection.
         simulator_model: The launch's simulator pin.
@@ -820,8 +904,9 @@ async def _dispatch(
         NotFoundError: The template is not found.
         ValidationFailedError: The template names a kind with no launcher, the launch supplies an
             argument the kind cannot honour, an overlay the kind's model refuses, a template kind spec
-            the kind's spec model refuses, a negative ``n_variations``, a model named twice, or a replay
-            corpus that is not a capture of this template in this scope.
+            the kind's spec model refuses, a negative ``n_variations``, a variation model the generation
+            needs and the launch does not name or one nothing would call, a model named twice, or a
+            replay corpus that is not a capture of this template in this scope.
     """
     eval_host = host.eval_host
     template = await run_blocking(eval_host.blocking_executor, eval_host.storage.load_template, template_id, scope_id)
@@ -853,6 +938,7 @@ async def _dispatch(
         host,
         template,
         n_variations=n_variations,
+        variation_model=variation_model,
         judge_model=judge_model,
         judge_config_ids=judge_config_ids,
         simulator_model=simulator_model,
@@ -864,10 +950,6 @@ async def _dispatch(
             eval_host.blocking_executor, eval_host.storage.load_eval_run, cassette_corpus_id, scope_id
         )
         _refuse_a_corpus_that_cannot_serve(corpus_run, cassette_corpus_id, template=template, scope_id=scope_id)
-    if n_variations < 0:
-        # Every surface reaches here; one without a wire-level bound would otherwise read a negative as
-        # "generate nothing" and run the stored cases while the caller believed it asked for new ones.
-        raise ValidationFailedError(f"n_variations must be 0 (reuse the stored cases) or more; got {n_variations}")
     if repeated := sorted({model for model in models if models.count(model) > 1}):
         raise ValidationFailedError(
             f"{', '.join(repr(model) for model in repeated)} named more than once; each model is one arm, so "
@@ -886,6 +968,7 @@ async def start_run(
     models: list[str],
     k_runs: int = DEFAULT_LAUNCH_K_RUNS,
     n_variations: int = 0,
+    variation_model: str | None = None,
     judge_model: str | None = None,
     judge_config_ids: dict[str, str] | None = None,
     simulator_model: str | None = None,
@@ -921,6 +1004,11 @@ async def start_run(
             runs one arm on that default when this is empty, and a kind with none refuses it.
         k_runs: Repeats per case for ``pass^k``.
         n_variations: New test cases to generate (0 = reuse existing).
+        variation_model: The model that writes the template's ``llm`` variation axes' values —
+            required when ``n_variations`` > 0 and the template has an ``llm`` axis, and refused
+            otherwise. Asked of the host in the ``variation`` role and recorded on each run's
+            ``variation_counts``. Its calls run before any run starts, once for every arm, and are
+            outside every run's cost cap and metered-call ceiling.
         judge_model: The judge pin, unresolved.
         judge_config_ids: Optional per-dim judge-configuration selection, ``{dim_id: config_id}``.
         simulator_model: The simulator pin, unresolved.
@@ -948,7 +1036,8 @@ async def start_run(
         AdmissionRefusedError: The runs would pass the host's admission ceiling — raised before the
             template is read, so the refused launch prepared nothing.
         ValidationFailedError: A model named twice, more runs than one launch may start, a negative
-            ``n_variations``, a ``k_runs`` outside the run's bounds, a non-positive ``max_cost_usd``
+            ``n_variations``, a variation model the generation needs and the launch does not name or one
+            nothing would call, a ``k_runs`` outside the run's bounds, a non-positive ``max_cost_usd``
             or ``max_metered_calls``, a ``cassette_mode`` that is not a mode, a replay naming no corpus
             or a corpus that is no capture of this template in this scope, a template naming a
             kind with no launcher, a launch argument that kind cannot honour, an overlay the kind's
@@ -982,6 +1071,7 @@ async def start_run(
         scope_id,
         models=models,
         n_variations=n_variations,
+        variation_model=variation_model,
         judge_model=judge_model,
         judge_config_ids=judge_config_ids,
         simulator_model=simulator_model,
@@ -1015,6 +1105,7 @@ async def start_run(
                         k_runs=k_runs,
                         scope_id=scope_id,
                         n_variations=n_variations,
+                        variation_model=variation_model,
                         judge_model=judge_model,
                         judge_config_ids=judge_config_ids,
                         simulator_model=simulator_model,
@@ -1207,6 +1298,13 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
             f"{counts.requested if counts is not None else 'no generation'}; a launch that generates records what it "
             "asked for, and one that reuses stored cases records none"
         )
+    if counts is not None and counts.variation_model != request.variation_model:
+        raise ValueError(
+            f"the launch named variation model {request.variation_model!r} and kind {kind!r}'s launcher's generation "
+            f"recorded {counts.variation_model!r} as the model that wrote its cases; build the writer in the "
+            "'variation' role from the request's variation_model and hand it to generate_variations, whose counts "
+            "name the model it called"
+        )
     return candidate_model
 
 
@@ -1251,7 +1349,8 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             the assembled run does not validate.
         ValueError: The wiring contradicts the request — a subject other than the one named, a case
             in another scope or of another template, a model other than the one the request pinned,
-            or a generation count other than the one it asked for. A launcher defect, never a
+            a generation count other than the one it asked for, or a generation written by a model
+            other than the request's variation model. A launcher defect, never a
             caller's; nothing is built.
     """
     template = request.template
@@ -1560,6 +1659,7 @@ async def start_universal_battery(
     models: list[str],
     k_runs: int = DEFAULT_LAUNCH_K_RUNS,
     n_variations: int = 0,
+    variation_model: str | None = None,
     judge_model: str | None = None,
     simulator_model: str | None = None,
     cassette_mode: str | None = "off",
@@ -1589,6 +1689,11 @@ async def start_universal_battery(
         models: Candidate models, one arm and one run each, per template.
         k_runs: Repeats per ``(test_case, model)`` for ``pass^k``.
         n_variations: New test cases to generate per run (0 = reuse existing).
+        variation_model: The model that writes the ``llm`` variation axes' values, handed to each
+            template's launch that has such an axis and to no other — a battery's templates differ, and
+            one without an ``llm`` axis has no cases a model writes. Required when the battery generates
+            and any of its templates has an ``llm`` axis; refused when it generates nothing or none of
+            its templates has one.
         judge_model: Model for the rubric judge (role default if ``None``).
         simulator_model: Model driving the simulated user (role default if ``None``).
         cassette_mode: ``'off'`` (default, and what blank spells), ``'capture'`` or ``'replay'``,
@@ -1655,6 +1760,17 @@ async def start_universal_battery(
                     )
                 )
             )
+        # A variation model reaches only the templates with an llm axis, so per template it is honoured
+        # or absent — and one no template could use is refused here, since no template's launch would.
+        if variation_model is not None and templates and not any(_llm_axes(t) for t in templates):
+            raise ValidationFailedError(
+                _battery_refusal(
+                    ValueError(
+                        f"variation_model={variation_model!r} names the model that writes llm-generated axis values, "
+                        "and none of the battery's templates has an llm axis; launch it without variation_model"
+                    )
+                )
+            )
         # The refusals the dispatch itself makes, per template — a kind with no launcher, a battery
         # argument the kind cannot honour, a stored spec its model now refuses — through the same
         # function the dispatch calls, so a battery cannot launch its first templates and then be
@@ -1665,6 +1781,7 @@ async def start_universal_battery(
                     host,
                     universal_template,
                     n_variations=n_variations,
+                    variation_model=variation_model if _llm_axes(universal_template) else None,
                     judge_model=judge_model,
                     judge_config_ids=None,
                     simulator_model=simulator_model,
@@ -1695,6 +1812,7 @@ async def start_universal_battery(
                 models=models,
                 k_runs=k_runs,
                 n_variations=n_variations,
+                variation_model=variation_model if _llm_axes(template) else None,
                 judge_model=judge_model,
                 simulator_model=simulator_model,
                 cassette_mode=cassette_mode,

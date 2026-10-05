@@ -12,6 +12,10 @@ Three axis generator types:
   ``n_variations`` or the list size, whichever is smaller).
 * **llm** — LLM-driven; asks the supplied client for novel values,
   deduplicated against the test cases already persisted for this template.
+  The counts record which model wrote them (``VariationCounts.variation_model``),
+  read off the client. A launch asks its host for that client in the
+  ``variation`` role, before any run starts: those calls are outside every
+  run's cost cap and metered-call ceiling.
 
 Cross-axis combination is the Cartesian product, truncated (or sampled
 without replacement) to ``n_variations``. Existing test cases are reused
@@ -39,7 +43,7 @@ from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.storage import EvalStorage
-    from threetears.evals.contracts.provider import SimulatorLLM
+    from threetears.evals.contracts.provider import SimulatorLLM, VariationLLM
 
 log = get_logger(__name__)
 
@@ -100,7 +104,7 @@ async def generate_variations(
     *,
     storage: EvalTestCaseStore,
     scope_id: str,
-    llm: SimulatorLLM | None = None,
+    llm: VariationLLM | None = None,
     rng: random.Random | None = None,
     preview: bool = False,
 ) -> GeneratedVariations:
@@ -117,8 +121,11 @@ async def generate_variations(
             smaller (axis exhaustion) but never larger.
         storage: Storage for dedup-lookup and persistence.
         scope_id: Scope partition key for the test cases.
-        llm: Optional :class:`SimulatorLLM` for ``llm`` axes. Required
-            when any axis declares ``generator='llm'``.
+        llm: The client that writes the values of the template's ``llm``
+            axes, naming the model it calls (:class:`VariationLLM` — a host's
+            client for the ``variation`` role). Required exactly when an axis
+            declares ``generator='llm'``, and refused otherwise: a client
+            nothing calls would be recorded as the model that wrote the cases.
         rng: Optional :class:`random.Random` for deterministic sampling.
             Defaults to a fresh ``random.Random()``.
         preview: When True, returns generated variations *without*
@@ -129,11 +136,14 @@ async def generate_variations(
         The :class:`EvalTestCase` documents — persisted (or simulated when
         ``preview=True``) in the order generated, existing test cases with
         matching ``variation_params`` reused — and the requested / kept /
-        reused counts, so a run holding fewer cases than it asked for says so.
+        reused counts, so a run holding fewer cases than it asked for says so,
+        with the model that wrote the ``llm`` axes' values (``None`` when
+        no axis is ``llm``).
 
     Raises:
         ValueError: When an axis declares ``llm`` generator but no
-            ``llm`` client was supplied, or when ``n_variations`` is
+            ``llm`` client was supplied, an ``llm`` client was supplied for a
+            template with no ``llm`` axis, or ``n_variations`` is
             non-positive.
         ValidationFailedError: When an axis yields no values. The launch used
             to fall back to the template's stored cases here, which froze a case
@@ -141,6 +151,12 @@ async def generate_variations(
     """
     if n_variations <= 0:
         raise ValueError(f"n_variations must be positive; got {n_variations}.")
+    writes_with_a_model = any(axis.generator == "llm" for axis in template.variation_axes)
+    if llm is not None and not writes_with_a_model:
+        raise ValueError(
+            f"template {template.id!r} has no llm-generated axis, so nothing would call the llm client supplied; "
+            "it would be recorded as the model that wrote cases it never wrote — pass llm=None"
+        )
     rng = rng or random.Random()
 
     # Load existing test cases for dedup unless previewing.
@@ -189,7 +205,15 @@ async def generate_variations(
             storage.save_test_case(tc)
         seen_by_params[key] = tc
         out.append(tc)
-    return GeneratedVariations(out, VariationCounts(requested=n_variations, kept=len(out), reused=reused))
+    return GeneratedVariations(
+        out,
+        VariationCounts(
+            requested=n_variations,
+            kept=len(out),
+            reused=reused,
+            variation_model=llm.model_name if llm is not None else None,
+        ),
+    )
 
 
 # =============================================================================

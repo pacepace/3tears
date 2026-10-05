@@ -33,7 +33,7 @@ class _FakeStorage:
         self.test_cases.append(test_case)
 
 
-# parity-with: threetears.evals.contracts.provider.SimulatorLLM
+# parity-with: threetears.evals.contracts.provider.VariationLLM
 class _FakeLLM:
     """Returns a sequence of canned responses; records each call's args.
 
@@ -41,6 +41,8 @@ class _FakeLLM:
     (the axis generator routes through json_object mode); the value is
     recorded so a test can assert the caller opted in.
     """
+
+    model_name = "writer-model"
 
     def __init__(self, responses: list[str]):
         self._responses = list(responses)
@@ -447,3 +449,26 @@ async def test_a_full_generation_is_not_short_and_counts_what_it_reused():
     counts = (await generate_variations(template, 2, storage=storage, scope_id="u")).counts
     assert (counts.requested, counts.kept, counts.reused) == (2, 2, 2)
     assert not counts.short
+
+
+async def test_the_counts_name_the_model_that_wrote_the_llm_axis():
+    """Read off the client that made the calls, so the run cannot record a writer other than the one called."""
+    template = _template(VariationAxis(name="x", generator="llm"))
+    counts = (
+        await generate_variations(
+            template, 1, storage=_FakeStorage(), scope_id="u", llm=_FakeLLM(['{"values": ["a"]}'])
+        )
+    ).counts
+    assert counts.variation_model == "writer-model"
+
+
+async def test_the_counts_name_no_writer_when_no_axis_is_llm():
+    template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
+    counts = (await generate_variations(template, 1, storage=_FakeStorage(), scope_id="u")).counts
+    assert counts.variation_model is None
+
+
+async def test_a_client_for_a_template_no_model_writes_is_refused():
+    template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
+    with pytest.raises(ValueError, match="no llm-generated axis"):
+        await generate_variations(template, 1, storage=_FakeStorage(), scope_id="u", llm=_FakeLLM([]))

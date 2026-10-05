@@ -83,6 +83,16 @@ MaxCostUsd = Annotated[
 ]
 JudgeModel = Annotated[str | None, Field(description="The judge model, where the kind is model-judged.")]
 SimulatorModel = Annotated[str | None, Field(description="The simulated user's model, where the kind has one.")]
+NVariations = Annotated[
+    int, Field(ge=0, description="New cases to generate from the template's variation axes; 0 runs its stored cases.")
+]
+VariationModel = Annotated[
+    str | None,
+    Field(
+        description="The model that writes the template's llm variation axes' values; required when n_variations "
+        "generates for such an axis, refused otherwise."
+    ),
+]
 RunStatus = Annotated[EvalRunStatus | None, Field(description="List only runs with this stored status.")]
 IncludeArchived = Annotated[bool, Field(description="List archived records too; they are left out by default.")]
 Archived = Annotated[bool, Field(description="The state to set: true retires the record, false restores it.")]
@@ -177,6 +187,8 @@ class RunLaunchParams(EvalBaseModel):
     subject_id: SubjectId
     models: Models = Field(default_factory=list)
     k_runs: KRuns = DEFAULT_LAUNCH_K_RUNS
+    n_variations: NVariations = 0
+    variation_model: VariationModel = None
     overlays: Overlays = None
     max_cost_usd: MaxCostUsd = None
     judge_model: JudgeModel = None
@@ -282,6 +294,7 @@ class LaunchEstimateParams(EvalBaseModel):
     template_id: TemplateId
     models: Models = Field(default_factory=list)
     k_runs: KRuns = DEFAULT_LAUNCH_K_RUNS
+    n_variations: NVariations = 0
     n_test_cases: CaseCount = None
     subject_filter: SubjectFilter = None
 
@@ -452,6 +465,7 @@ async def _launch_estimate(host: OpsHost, caller: Caller, params: LaunchEstimate
         template_id=params.template_id,
         models=params.models,
         k_runs=params.k_runs,
+        n_variations=params.n_variations,
         n_test_cases=params.n_test_cases,
         subject_id=params.subject_filter,
     )
@@ -539,7 +553,10 @@ def engine_actions() -> tuple[Action, ...]:
             long_running=True,
             detail=(
                 "Every run spends against its cost cap (the host's, or max_cost_usd when lower). A launch the "
-                "process cannot admit, or the template's kind cannot honour, is refused before anything starts."
+                "process cannot admit, or the template's kind cannot honour, is refused before anything starts. "
+                "n_variations generates that many new cases first, shared by every arm; a template's llm axis is "
+                "written by variation_model, whose calls run before the runs start and are outside every run's "
+                "cost cap."
             ),
         ),
         Action(
@@ -554,7 +571,8 @@ def engine_actions() -> tuple[Action, ...]:
             example={"template_id": "tmpl-1", "models": ["model-a", "model-b"], "k_runs": 3},
             detail=(
                 "Takes run_launch's own arguments: the template's cases, k_runs repeats, one arm per model — named, since "
-                "the default an empty run_launch runs has no name to look its history up by. Each "
+                "the default an empty run_launch runs has no name to look its history up by — and n_variations, "
+                "priced as that many cases (an upper bound); the generation calls themselves are not priced. Each "
                 "model is priced from its own history at the live cassette mode, with a prediction band once three "
                 "or more priced observations back it; a model with no history is named and left out of the total. "
                 "Pass the structured result to scope_pivot as predicted_cost after the runs land, to set each "

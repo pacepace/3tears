@@ -236,6 +236,8 @@ class SimulatorLLM(Protocol):
     ``reasoning_tokens``, ``cost_usd``, ``price_source``), and an attribute it lacks reads as
     unreported, never zero.
 
+    The variation generator types against :class:`VariationLLM`, this port with the model it calls.
+
     Declared in contracts rather than beside the simulator because two packages call it: the run
     package's simulator and the gen package's variation generator. The dependency matrix lets gen
     reach contracts and never run, so a port both sides type against has to live here.
@@ -244,6 +246,21 @@ class SimulatorLLM(Protocol):
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, Any] | None = None
     ) -> Any: ...  # pragma: no cover — protocol
+
+
+class VariationLLM(SimulatorLLM, Protocol):
+    """The client the variation generator writes an ``llm`` axis's values with, naming the model it calls.
+
+    :class:`SimulatorLLM`'s one call, plus the model the client resolved to: the generated cases
+    are the run's stimulus, so the run records which model wrote them
+    (:attr:`~threetears.evals.contracts.models.VariationCounts.variation_model`), read off the client
+    that made the calls rather than restated by whoever built it. A host's
+    :class:`BoundCompletionClient` for the ``variation`` role
+    (:data:`~threetears.evals.contracts.host.eval_host.CompletionRole`) satisfies it.
+    """
+
+    #: The model this client calls, as the host resolved it.
+    model_name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -696,6 +713,7 @@ __all__ = [
     "ProviderFailureDescriber",
     "SimulatorLLM",
     "StopReason",
+    "VariationLLM",
     "describe_failure",
     "describe_incomplete_completion",
     "extract_json",

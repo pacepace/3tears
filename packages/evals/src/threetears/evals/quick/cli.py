@@ -14,7 +14,9 @@ then never name the host::
 - ``run`` launches through :func:`~threetears.evals.run.start_run`, waits for the runs' jobs, and
   prints each run's summary. It exits 0 when every run completed and 1 when any did not.
   ``--max-cost-usd`` caps each run in place of the host's default, as ``run_launch``'s ``max_cost_usd``
-  does — the way to launch under a cap the host's inherited one would refuse.
+  does — the way to launch under a cap the host's inherited one would refuse. ``--n-variations`` and
+  ``--variation-model`` generate the cases first, as ``run_launch``'s ``n_variations`` and
+  ``variation_model`` do; the generation calls run before the runs and are outside their cost cap.
 - ``ls`` prints the scope's templates, runs and campaigns.
 - ``report`` prints the campaign's report (:func:`~threetears.evals.ops.report_read`, the same read the
   ``report_read`` action makes): its newest analysis that is not archived, else a code-only report of its
@@ -193,6 +195,19 @@ def build_parser(
         metavar="DOLLARS",
         help="a per-run cost cap in dollars, in place of the host default (as run_launch's max_cost_usd)",
     )
+    run.add_argument(
+        "--n-variations",
+        type=int,
+        default=0,
+        metavar="N",
+        help="generate N new cases from the template's variation axes first (as run_launch's n_variations)",
+    )
+    run.add_argument(
+        "--variation-model",
+        default=None,
+        metavar="MODEL",
+        help="the model that writes the template's llm axes' values when generating (as run_launch's variation_model)",
+    )
     command("ls", "List the scope's templates, runs and campaigns.")
     report = command(
         "report", "Print a campaign's report — its analysis, else its evidence alone — without calling a model."
@@ -278,6 +293,8 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
         k_runs=args.k,
         scope_id=args.scope,
         max_cost_usd=args.max_cost_usd,
+        n_variations=args.n_variations,
+        variation_model=args.variation_model,
     )
     try:
         await host.job_manager.wait_for([run.id for run in runs])

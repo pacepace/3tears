@@ -66,6 +66,8 @@ class LaunchArguments(EvalBaseModel):
     subject_id: str
     models: list[str] = Field(default_factory=list)
     k_runs: int = 1
+    n_variations: int = 0
+    variation_model: str | None = None
     overlays: dict[str, Any] | None = None
     max_cost_usd: float | None = None
     judge_model: str | None = None
@@ -176,6 +178,8 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
         subject_id=arguments.subject_id,
         models=list(arguments.models),
         k_runs=arguments.k_runs,
+        n_variations=arguments.n_variations,
+        variation_model=arguments.variation_model,
         overlays=arguments.overlays,
         max_cost_usd=arguments.max_cost_usd,
         judge_model=arguments.judge_model,
