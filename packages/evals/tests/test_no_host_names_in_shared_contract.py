@@ -387,6 +387,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # background-work record and payload without naming either, so a host noun arriving here would
     # be one host's tool read by every host's run loop.
     "run/runner.py",
+    # The runner's completed-cell assembly, called for a cell a host witnessed rather than ran. Born
+    # host-neutral: a host noun here would be one host's session shape written into every host's capture.
+    "run/witnessed.py",
     "contracts/covariates.py",
     # The per-role usage ledger. Moved off _HOST_COUPLED_MODULES when its rows stopped defaulting
     # their price source to the first host's provider: a completion client says

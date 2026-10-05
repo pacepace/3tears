@@ -118,6 +118,7 @@ from threetears.evals.run.simulator import (
     SimulatorTurn,
     TurnDriver,
 )
+from threetears.evals.run.witnessed import record_witnessed_cell
 from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, CapBreach
 from threetears.evals.run.curation import CurationStore
 from threetears.evals.run.definition_seed import SeedCorpus, SeedOutcome
@@ -227,6 +228,7 @@ __all__ = [
     "precondition_failure_text",
     "recheck_goal_states",
     "recheck_result",
+    "record_witnessed_cell",
     "refuse_stale_presumptions",
     "rejudge_result",
     "reproducible_judge_inputs",

@@ -23,6 +23,7 @@ from threetears.evals.analysis.reporter_bank import (
     read_calibration,
     reporter_case_bank,
 )
+from threetears.evals.analysis.reporter_curation import set_reporter_case_archived
 from threetears.evals.analysis.reporter_kind import (
     LABEL_BANDS,
     REPORTER_CASE_KEY,
@@ -32,9 +33,10 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_payload,
 )
 from threetears.evals.analysis.generator import user_message_digest
+from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.identity import IDENTITY_VERSION
 from threetears.evals.contracts.models import EvalResult, EvalTestCase, RubricScore
-from packages.evals.tests.factories import result_capture_defaults
+from packages.evals.tests.factories import memory_storage, result_capture_defaults
 
 
 TEMPLATE = "tpl-summary-review"
@@ -413,3 +415,26 @@ class TestARetiredCase:
         )
         assert [(c.archived, c.archived_reason) for c in read.cases] == [(False, None), (True, None), (False, None)]
         assert [c.writer_message_check for c in read.cases] == ["differs", "verified", None]
+
+
+# --- a case under no template (a witnessed one) is never a reporter case ------------------------
+
+
+def test_a_reporter_case_naming_no_template_has_no_receipt() -> None:
+    case = EvalTestCase(id="c-orphan", scope_id=SCOPE, template_id=None, host_payload=reporter_case_payload(_case()))
+    with pytest.raises(ValueError, match="carries a reporter case but names no template"):
+        frozen_case_receipt(case)
+
+
+def test_a_reporter_case_naming_no_template_cannot_be_restored() -> None:
+    storage, _ = memory_storage()
+    case = EvalTestCase(
+        id="c-orphan",
+        scope_id=SCOPE,
+        template_id=None,
+        host_payload=reporter_case_payload(_case()),
+        archived=True,
+    )
+    storage.save_test_case(case)
+    with pytest.raises(ValidationFailedError, match="names no template"):
+        set_reporter_case_archived(storage, "c-orphan", SCOPE, archived=False)

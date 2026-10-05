@@ -156,6 +156,7 @@ from threetears.evals.contracts.result_condition import (
 from threetears.evals.contracts.scoring import (
     CellSummary,
     percentile,
+    summarize_completeness,
 )
 from threetears.evals.contracts.spend import ExternalRateTable
 from threetears.evals.contracts.storage import (
@@ -538,6 +539,7 @@ __all__ = [
     "resolve_result_usage",
     "resolve_variant_identity",
     "save_document",
+    "summarize_completeness",
     "utc_now_iso",
     "withhold_failure_detail",
 ]

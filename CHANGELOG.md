@@ -6,6 +6,36 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: recording a witnessed cell, and host-defined CLI subcommands
+
+- **`record_witnessed_cell(host, run, test_case, output, *, k_iteration, result_id, scored_at, judged_artifact,
+  external_rates=None, spans=None, world_events=None, end_state=None) -> tuple[EvalResult, EvalTrace]`** (new,
+  exported from `threetears.evals.run`). Builds a cell a host observed — a session it witnessed, not one the
+  engine ran — through the same assembly every completed cell of a run takes
+  (`threetears.evals.run.runner.assemble_completed_cell`, which the runner now calls in place of its inline copy):
+  async-delivery spend folded into the usage rows, the candidate/infra error ledger, the blended cost, the
+  covariates, the latency record and the trace id. The result id and timestamp are the caller's, so a
+  re-capture under the same id is the same record. Persists nothing; the host saves the pair. Unjudged.
+  Refuses (`ValueError`) a run that is not `witnessed`, a run naming a judge model, a case outside
+  `run.test_case_ids` or in another scope or under another template, a `k_iteration` outside
+  `1..run.k_runs`, and the simulator's stop causes (`user_done`, `simulator_error`); refuses output
+  contradicting `judged_artifact` (`CandidateKindDefect`). The runner mints its ids (uuid7, now) and passes
+  them in; its records are unchanged.
+- **`EvalTestCase.template_id: str | None`** — still required, now nullable: `None` is a witnessed case, the
+  stimulus of a session no template set (as `EvalRun.template_id=None` already meant for a run). A launch
+  refuses such a case, as it refuses any case not under its template. A reporter case naming no template has
+  no freeze receipt and cannot be restored (`frozen_case_receipt`, `set_reporter_case_archived` refuse it).
+- **`ConversationStopCause.PARTICIPANTS_ENDED`** (`"participants_ended"`, new member): a witnessed session its
+  real participants ended. No identity key reads a stop cause.
+- **`summarize_completeness`** is now exported from `threetears.evals.contracts`, so a host that writes a
+  witnessed run stamps its terminal `completeness` the way the job manager stamps a commissioned run's.
+- **`HostCommand(name, help, configure, handler)`** and **`ENGINE_COMMANDS`** (new, exported from
+  `threetears.evals.quick`); `run_cli(..., commands=[...])` and `build_parser(..., commands=[...])` take a
+  host's own subcommands, parsed like the engine's (`--scope`, and `--host` when the host is named on the
+  command line). The handler is handed the host the factory built and the parsed namespace, returns the exit
+  code, and may be a coroutine function. A name an engine command already has, or two host commands
+  sharing one, is refused (`ValueError`) before parsing.
+
 ### 3tears-evals: witnessed provenance and the design readers
 
 - **`EvalRun.apparatus_provenance: ApparatusProvenance`** (new, **required**, no default;

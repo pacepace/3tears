@@ -142,6 +142,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/run_document.py": {},
     "run/runner.py": {},
     "run/simulator.py": {},
+    "run/witnessed.py": {},
     "__main__.py": {},
     "quick/__init__.py": {},
     "quick/cli.py": {},
