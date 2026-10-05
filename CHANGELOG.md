@@ -19,6 +19,12 @@ spend an agent's whole budget.
   not counted by the fire limits, not a failure, and not a `context_from` source.
 - **Migration `agent_wake` v008** widens `wake_fires_status_check` to accept it (drop and re-add,
   idempotent).
+- **Changed, `context_from`:** a downstream wake reads its upstream's latest fire that delivered
+  (`fired` or `fired_silent`), not its latest fire of any status, so a check's quiet runs no longer
+  hide its last find. `WakeFireCollection.latest_for_schedule` gains `statuses=`.
+- A check that must start no conversation runs in the tick's dispatch callback and returns
+  `checked_quiet` without calling `dispatch_wake`, which starts a fire's conversation before its
+  handler runs.
 
 ## v0.65.0 -- 2026-10-05
 
