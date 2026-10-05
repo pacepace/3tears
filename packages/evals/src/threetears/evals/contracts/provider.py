@@ -221,14 +221,18 @@ class BoundCompletionClient(CompletionClient, Protocol):
 
 
 class SimulatorLLM(Protocol):
-    """The one-shot text-generation port the simulated user and the variation generator call.
+    """The one-shot text-generation port the simulator role and the variation generator call.
 
     Narrower than :class:`CompletionClient`: one async ``generate(*, system, user)`` returning an
     object with a ``content`` attribute, and an optional ``response_format`` provider directive.
-    The simulated user sends its reply schema there; the variation generator's ``llm`` axis passes
-    ``{"type": "json_object"}`` to force JSON mode. A host's full chat client is
-    compatible -- its tool calls and conversation state are simply not needed for one utterance
-    per simulated turn.
+    Its callers on the simulator role are a simulated actor, which sends its reply schema there, and
+    the ``llm_decided`` turn scheduler, which sends a schema whose one field is an ``enum`` of the
+    answers legal at that pick; the variation generator's ``llm`` axis passes
+    ``{"type": "json_object"}`` to force JSON mode. A host's full chat client is compatible -- its
+    tool calls and conversation state are simply not needed for one utterance or one pick. Usage is
+    read off the returned object by attribute (``model``, ``input_tokens``, ``output_tokens``,
+    ``reasoning_tokens``, ``cost_usd``, ``price_source``), and an attribute it lacks reads as
+    unreported, never zero.
 
     Declared in contracts rather than beside the simulator because two packages call it: the run
     package's simulator and the gen package's variation generator. The dependency matrix lets gen

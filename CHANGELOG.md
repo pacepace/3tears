@@ -6,6 +6,43 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the multi-speaker conversation — speaker rounds, `llm_decided`, session breaks
+
+- **Speaker rounds.** A conversation is a sequence of rounds: one or more simulated actors speak,
+  then the candidate answers the round once. `ConversationSpec.max_speakers_per_round` (new,
+  default 1, at most 20) bounds a round; `max_turns` still counts the candidate's answers.
+- **`turn_scheduler="llm_decided"` is built.** A simulator-role call picks the next actor, or
+  `ROUND_DONE` once the round holds an utterance, through a strict structured reply whose `next`
+  field is an `enum` of exactly the legal answers (`next_speaker_response_format`). A refused reply
+  gets one repair call naming what was wrong (`SCHEDULER_CALL_ATTEMPTS = 2`); a second refusal is a
+  `SimulatorReplyInvalid`. When only one answer is legal no call is made. The round-robin fallback
+  and its warning are deleted. `round_robin` fills each round with the next actors in list order.
+- **Session breaks from `ConversationSpec.sessions`** (new, default 1, at most `max_turns`): the
+  candidate turns are spread over that many sessions, and after the turn closing a session the driver
+  marks the break itself; the next DELIVERED utterance carries `session_break=True`.
+  `SimulatorTurn` gains `session_index` and `round_index`. **Breaking:**
+  `TurnDriver.mark_session_break` is gone (now private), so the breaks a run holds are the ones its
+  template declared.
+- **An actor saying `done` leaves the conversation** rather than ending it: the schedulers stop
+  offering it, its reply is not delivered, and the conversation stops `user_done` when the last actor
+  leaves. A round whose every call ended in a departure starts over rather than going unanswered.
+- **`drive_conversation(driver, candidate_turn, post_user_turn, *, llm) -> ConversationStopCause`**
+  (new, `threetears.evals.run`): the loop a conversing kind calls. `post_user_turn(turn)` delivers
+  each utterance; `candidate_turn(round_turns)` answers a round. An exception from the simulator,
+  the delivery or the candidate stops the driver `simulator_error` / `apparatus_error` /
+  `candidate_error` and propagates unchanged. Refuses (`ValueError`) a driver that has already run.
+- **Every simulator-role call is one `SimulatorCall`** (new; `purpose` `utterance` or `schedule`,
+  `actor_id`, `round_index`, `usage`) in `TurnDriver.calls`, recorded before the reply is validated
+  and attributed to the actor it produced or chose. `TurnDriver.fold_usage(ledger)` folds them into
+  the cell's simulator ledger and refuses another role's. **Breaking:** that list is the one record
+  of the simulator's spend: `SimulatorTurn.usage` and `SimulatorReplyInvalid.usage` are removed.
+- **`TurnDriver` API (breaking):** `next_speaker(llm) -> ActorPolicy | None` names who speaks next
+  (`None` = the round is done) and `next_user_turn(llm, actor)` takes that actor. Refuses
+  (`ValueError`): `next_speaker` after the conversation stopped, `next_user_turn` for an actor not in
+  the conversation or one that has left, and `initial_utterance` after a turn was taken.
+- **`ConversationSpec` refuses** two actors with one id, and an actor id of `ROUND_DONE` or
+  `CANDIDATE_SPEAKER` (both new constants in `threetears.evals.contracts`).
+
 ### 3tears-evals ships its type marker
 
 - `py.typed` is now in the package, so an adopter's strict type checker reads `threetears.evals` annotations

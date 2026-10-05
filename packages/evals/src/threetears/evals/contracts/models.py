@@ -157,29 +157,98 @@ class ActorPolicy(EvalDocumentModel):
     )
 
 
+#: The scheduler's answer that the current speaker round is over and the candidate answers next. An
+#: ``llm_decided`` scheduler chooses between it and the actors' ids, so no actor may carry it as an id.
+ROUND_DONE = "round_done"
+
+#: The speaker label the candidate's own turns carry in a simulated transcript. Reserved for the same
+#: reason as :data:`ROUND_DONE`: an actor named for it would read as the candidate to every other actor.
+CANDIDATE_SPEAKER = "__candidate__"
+
+
 class ConversationSpec(EvalDocumentModel):
     """The simulated side of a conversing candidate: who talks to it, in what order, for how long.
 
-    One optional block on :class:`EvalTemplate` rather than three loose fields, because the three
-    mean something only together and only to a kind whose candidate converses. A template for a
-    document or a classifier carries none, which says so; a conversing kind reads it and drives the
-    engine's :class:`~threetears.evals.run.simulator.TurnDriver` over it.
+    One optional block on :class:`EvalTemplate` rather than loose fields, because they mean something
+    only together and only to a kind whose candidate converses. A template for a document or a
+    classifier carries none, which says so; a conversing kind reads it and drives the engine's
+    :class:`~threetears.evals.run.simulator.TurnDriver` over it, through
+    :func:`~threetears.evals.run.conversation.drive_conversation`.
+
+    **A conversation is a sequence of speaker rounds.** In each round one or more actors speak, then
+    the candidate answers the round once. ``max_turns`` counts the candidate's answers, so it counts
+    rounds that were answered. ``max_speakers_per_round`` bounds how many simulated utterances a round
+    may hold; ``turn_scheduler`` decides who fills them.
+
+    **Sessions split the conversation.** ``sessions`` is how many sittings the ``max_turns`` answers
+    are spread over, as evenly as integer division allows. Between two sessions the driver marks a
+    break on the next utterance it delivers, and the kind decides what a break means for its candidate
+    (a fresh conversation history, a new game session) while its world persists.
     """
 
     actors: list[ActorPolicy] = Field(
         min_length=1,
         description=(
-            "The simulated actors, in round-robin order. At least one: a conversation with nobody on the other "
-            "side is not a conversation, and a template with nothing to simulate declares no block at all."
+            "The simulated actors. Their order is the round-robin order, and the first actor's "
+            "initial_utterance_template, when set, opens the conversation under either scheduler. At least "
+            "one: a conversation with nobody on the other side is not a conversation, and a template with "
+            "nothing to simulate declares no block at all. Ids are unique, and neither 'round_done' nor "
+            "'__candidate__', which the scheduler and the transcript reserve."
         ),
     )
     turn_scheduler: Literal["round_robin", "llm_decided"] = Field(
         default="round_robin",
-        description="Who speaks next. Only round_robin is built; llm_decided is the slot for a scheduler to come.",
+        description=(
+            "Who speaks next within a round. round_robin: the next actor in list order, until the round "
+            "holds max_speakers_per_round utterances. llm_decided: a simulator-role model call chooses the "
+            "next actor, or that the round is done once it holds at least one utterance."
+        ),
+    )
+    max_speakers_per_round: int = Field(
+        default=1,
+        ge=1,
+        le=20,
+        description=(
+            "The most simulated utterances one round may hold before the candidate answers. An actor may "
+            "speak more than once in a round under llm_decided. 1 keeps the one-utterance, one-answer shape."
+        ),
     )
     max_turns: int = Field(
         default=10, ge=1, le=100, description="The candidate turns after which the conversation stops."
     )
+    sessions: int = Field(
+        default=1,
+        ge=1,
+        le=100,
+        description=(
+            "How many sittings the conversation's candidate turns are spread over; each boundary is a "
+            "session break the driver marks. At most max_turns, since a session holds at least one turn."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _actors_and_sessions_are_addressable(self) -> ConversationSpec:
+        """Refuse a block a driver could not run as written.
+
+        Returns:
+            The block, unchanged.
+
+        Raises:
+            ValueError: Two actors share an id, an actor's id is one the scheduler or the transcript
+                reserves, or ``sessions`` exceeds ``max_turns`` and so names a session with no turn in it.
+        """
+        seen: set[str] = set()
+        for actor in self.actors:
+            if actor.id in (ROUND_DONE, CANDIDATE_SPEAKER):
+                raise ValueError(f"actor id {actor.id!r} is reserved; choose another id")
+            if actor.id in seen:
+                raise ValueError(f"actor id {actor.id!r} appears twice; a scheduler could not tell the two apart")
+            seen.add(actor.id)
+        if self.sessions > self.max_turns:
+            raise ValueError(
+                f"sessions={self.sessions} exceeds max_turns={self.max_turns}; every session holds at least one turn"
+            )
+        return self
 
 
 class WorldSeed(EvalDocumentModel):
@@ -2711,8 +2780,9 @@ class ConversationStopCause(StrEnum):
     Two members end a conversation on its own terms, and they are the only ones:
 
       ``max_turns``        the template's turn budget was spent.
-      ``user_done``        the simulated user said, in its structured reply, that it had nothing
-                           more to say. Its closing reply is not delivered to the candidate.
+      ``user_done``        every simulated actor said, in its structured reply, that it had nothing
+                           more to say. Each one leaves when it says so, and a closing reply is
+                           never delivered to the candidate.
 
     Three name a rig fault, and each also puts an infra error on the result, which excludes it:
 
@@ -3471,9 +3541,11 @@ class EvalCassette(EvalDocumentModel):
 
 
 __all__ = [
+    "CANDIDATE_SPEAKER",
     "EVAL_SCHEMA_VERSION",
     "NON_TERMINAL_RUN_STATUSES",
     "OUTCOME_DIM_ID",
+    "ROUND_DONE",
     "TERMINAL_RUN_STATUSES",
     "TRANSCRIPT_DIM_ID",
     "ActorPolicy",
