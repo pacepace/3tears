@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import json
 import math
 import random
@@ -162,6 +163,38 @@ class _OwnedBucket(NamedTuple):
     drop_file_storage: bool
 
 
+@dataclasses.dataclass(slots=True)
+class _KvRefill:
+    """a remembered KV declaration's refill: the declarer's hook, and whether its bucket is owed it.
+
+    The bucket is owed a refill each time THIS client created its stream again, empty, after the
+    declaration -- a restoration round that found it absent, or a self-heal re-open that created it.
+    ``marks`` counts those creations and ``settled`` is the count a refill that RETURNED had seen
+    when it started, so a refill running while the bucket is created yet again settles only the
+    debt it saw start, and the newer one stays owed. Nothing else clears it: a hook that raises, or
+    a refill cancelled mid-way, leaves it owed.
+
+    :ivar full_name: the fully-qualified bucket name, the key of the client's handle cache
+    :ivar on_restored: the declarer's refill, handed the live handle
+    :ivar marks: how many times the bucket was created again, empty, since the declaration
+    :ivar settled: the ``marks`` a refill that returned had seen when it started
+    """
+
+    full_name: str
+    on_restored: KvRestoredHook
+    marks: int = 0
+    settled: int = 0
+
+    @property
+    def owed(self) -> bool:
+        """whether the bucket was created again since the last refill that returned started.
+
+        :return: True while a refill is owed
+        :rtype: bool
+        """
+        return self.marks != self.settled
+
+
 # JetStream API error code for "stream name already in use with a different configuration". The
 # server answers it only when it looked at the create and found a live stream of that name carrying
 # something else: on a re-declaration after a reconnect that is a stream that SURVIVED (or that
@@ -190,7 +223,7 @@ if TYPE_CHECKING:
     from nats.aio.client import Server as _NatsServer
     from nats.aio.msg import Msg as _NatsMsg
 
-    from threetears.nats.kv import KvTimings, NatsKvBucket
+    from threetears.nats.kv import KvRestoredHook, KvTimings, NatsKvBucket
     from threetears.nats.transport import RawMessageCallback
 
 
@@ -1823,6 +1856,27 @@ def _storage_name(config: _NatsStreamConfig) -> str:
     return "file" if storage == "file" else "memory"
 
 
+async def _stream_exists(js: Any, stream: str) -> bool:
+    """whether the server holds ``stream`` right now, as its ``STREAM.INFO`` answers.
+
+    :param js: a JetStream context on the current connection
+    :ptype js: Any
+    :param stream: the stream name
+    :ptype stream: str
+    :return: ``False`` only when the server ANSWERED that the stream does not exist
+    :rtype: bool
+    :raises Exception: any other failure of the lookup -- a deadline, a refusal -- which says
+        nothing about whether the stream exists; the restoration round logs it and retries
+    """
+    exists = True
+    try:
+        await js.stream_info(stream)
+    except _NatsJsNotFoundError:
+        # NOSILENT: the answer itself -- the server said the stream is absent
+        exists = False
+    return exists
+
+
 async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SECONDS) -> None:
     """prove the server has processed everything this connection sent before now, within ``timeout``.
 
@@ -2847,6 +2901,8 @@ class NatsClient:
         "_kv_timings",
         "_declarations",
         "_owned_buckets",
+        "_kv_refills",
+        "_refilling",
         "_pull_consumers",
         "_restoration",
     )
@@ -2898,6 +2954,13 @@ class NatsClient:
         # configuration reconciles it, as the declaration did, rather than leaving it as it is
         # (:meth:`_redeclare_stream`).
         self._owned_buckets: dict[str, _OwnedBucket] = {}
+        # the backing stream name -> the refill of every remembered KV declaration given an
+        # ``on_restored`` (``ensure_kv_bucket``). a bucket created again comes back EMPTY, and its
+        # entries are the declarer's to write back; this is how the declarer learns it is owed that.
+        self._kv_refills: dict[str, _KvRefill] = {}
+        # the task running owed refills until none is owed (:meth:`_refill_until_complete`), held so
+        # it is not collected mid-flight and so shutdown and abandon stop it.
+        self._refilling: asyncio.Task[None] | None = None
         # the restoration a reconnect started (:meth:`_restore_after_reconnect`), held so it is not
         # collected mid-flight and so a later reconnect, :meth:`shutdown` and :meth:`abandon` stop it.
         self._restoration: asyncio.Task[None] | None = None
@@ -3266,6 +3329,11 @@ class NatsClient:
                     extra={"extra_data": {"stream": name, "client_name": self._client_name, "error": str(exc)}},
                 )
                 failures.append(f"stream {name}")
+        if any(refill.owed for refill in self._kv_refills.values()):
+            # after the streams, so a refill writes into a bucket this round already put back; a
+            # refill still owed from an earlier round -- one that raised, or was cancelled -- is
+            # taken up here too.
+            self._start_refills()
         self._push_consumers = [consumer for consumer in self._push_consumers if not consumer.is_closed]
         self._pull_consumers = [consumer for consumer in self._pull_consumers if not consumer.is_stopped]
         durables: list[JetStreamPushConsumer | JetStreamPullConsumer] = [*self._push_consumers, *self._pull_consumers]
@@ -3314,6 +3382,13 @@ class NatsClient:
         that permission is refused by the reconcile and left untouched: that refusal is final, so it
         is logged at ERROR naming the fix and not retried, as no later round would answer differently.
 
+        A KV declaration given an ``on_restored`` refill is first looked up (one ``STREAM.INFO``),
+        because the create cannot say whether it created the stream or found it identical and
+        live. One the server answers is absent is marked owed its refill BEFORE the create, so a
+        round cancelled between the two still leaves the debt recorded; an owner's reconcile that
+        deleted and recreated the bucket owes it too. The refill itself runs once the round's
+        streams are done (:meth:`_restore_once`).
+
         :param js: a JetStream context on the current connection
         :ptype js: Any
         :param config: the config the stream was declared with
@@ -3326,19 +3401,22 @@ class NatsClient:
         from threetears.nats.kv import reconcile_kv_stream
 
         outcome = "re-declared after a NATS reconnect (created if a restart had wiped it)"
+        stream = config.name or ""
+        if stream in self._kv_refills and not await _stream_exists(js, stream):
+            self._note_refill_owed(stream, start=False)
         try:
             await js.add_stream(dataclasses.replace(config))
         except Exception as exc:
             if getattr(exc, "err_code", None) != _JS_ERR_STREAM_NAME_IN_USE:
                 raise
-            owned = self._owned_buckets.get(config.name or "")
+            owned = self._owned_buckets.get(stream)
             if owned is None:
                 outcome = (
                     "live with a configuration other than the one declared here after a NATS reconnect; left as it is"
                 )
             else:
                 try:
-                    await reconcile_kv_stream(
+                    recreated = await reconcile_kv_stream(
                         js=js,
                         full_name=owned.full_name,
                         config=config,
@@ -3353,6 +3431,8 @@ class NatsClient:
                         extra={"extra_data": {"stream": config.name, "client_name": self._client_name}},
                     )
                     return
+                if recreated:
+                    self._note_refill_owed(stream, start=False)
                 outcome = (
                     "live with a configuration other than the one declared here after a NATS reconnect; its "
                     "declarer owns it, so it was reconciled to the declaration"
@@ -3364,6 +3444,134 @@ class NatsClient:
             outcome,
             extra={"extra_data": {"stream": config.name, "client_name": self._client_name}},
         )
+
+    def _note_refill_owed(self, stream: str, *, start: bool = True) -> None:
+        """record that this client created a declared bucket's stream again, empty, so its refill is owed.
+
+        Reached from the two places this client creates a declared bucket after its declaration: a
+        restoration round that found the stream absent (:meth:`_redeclare_stream`), and a self-heal
+        re-open of the bucket's handle that created it (``NatsKvBucket``'s ``on_recreated``, which
+        :meth:`ensure_kv_bucket` binds to this). A bucket whose declaration gave no refill owes
+        nothing.
+
+        :param stream: the bucket's backing stream name
+        :ptype stream: str
+        :param start: start running owed refills now; a restoration round passes ``False`` and
+            starts them once all its streams are back
+        :ptype start: bool
+        :return: nothing
+        :rtype: None
+        """
+        refill = self._kv_refills.get(stream)
+        if refill is None:
+            return
+        refill.marks += 1
+        log.warning(
+            "KV bucket %s was created again, empty, after its declaration; its declarer's refill is owed",
+            refill.full_name,
+            extra={"extra_data": {"bucket": refill.full_name, "client_name": self._client_name}},
+        )
+        if start:
+            self._start_refills()
+
+    def _start_refills(self) -> None:
+        """run every owed refill in the background, unless that is already happening.
+
+        One task runs them all, one after another, so a declarer's refill never runs twice at once.
+        It is never started on a client that stopped serving.
+
+        :return: nothing
+        :rtype: None
+        """
+        running = self._refilling
+        if running is not None and not running.done():
+            return
+        if not self._lifecycle.is_live:
+            return
+        self._refilling = asyncio.create_task(self._refill_until_complete(), name=f"nats-kv-refill:{self._client_name}")
+
+    async def _refill_until_complete(self) -> None:
+        """run refill rounds, with capped exponential backoff, until none is owed.
+
+        It never gives up on its own, as the restoration does not: a bucket left empty answers
+        every reader as though nothing was ever written. Each failed refill was logged at ERROR by
+        its round. Only :meth:`shutdown` or :meth:`abandon` ends it early, leaving what it had not
+        refilled owed.
+
+        :return: nothing
+        :rtype: None
+        """
+        rounds = await retry_until_done(
+            self._refill_round,
+            first_delay=_RESTORE_RETRY_FIRST_DELAY_SECONDS,
+            max_delay=_RESTORE_RETRY_MAX_DELAY_SECONDS,
+        )
+        log.info(
+            "every KV bucket this client created again has been refilled by its declarer",
+            extra={"extra_data": {"client_name": self._client_name, "rounds": rounds}},
+        )
+
+    async def _refill_round(self) -> bool:
+        """one refill round: run each owed declarer's refill with the bucket's live handle.
+
+        A refill settles only the debt it saw when it started, and only by returning. One that
+        raises is logged at ERROR naming the bucket and stays owed for the next round; a
+        cancellation propagates and leaves it owed.
+
+        :return: ``True`` when no refill is owed any more
+        :rtype: bool
+        """
+        for refill in list(self._kv_refills.values()):
+            if not refill.owed:
+                continue
+            bucket = self._buckets.get(refill.full_name)
+            if bucket is None:
+                log.error(
+                    "KV bucket %s is owed its declarer's refill, but this client holds no handle on it",
+                    refill.full_name,
+                    extra={"extra_data": {"bucket": refill.full_name, "client_name": self._client_name}},
+                )
+                continue
+            seen = refill.marks
+            try:
+                await refill.on_restored(bucket)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a declarer's hook; logged at ERROR, left owed and retried by the next round
+                log.error(
+                    "refilling KV bucket %s after it was created again, empty, failed: %s: %s -- it "
+                    "answers as though its entries were never written until a refill lands; retrying",
+                    refill.full_name,
+                    type(exc).__name__,
+                    exc,
+                    extra={
+                        "extra_data": {"bucket": refill.full_name, "client_name": self._client_name, "error": str(exc)}
+                    },
+                )
+                continue
+            refill.settled = seen
+            log.info(
+                "KV bucket %s refilled by its declarer after it was created again",
+                refill.full_name,
+                extra={"extra_data": {"bucket": refill.full_name, "client_name": self._client_name}},
+            )
+        return not any(refill.owed for refill in self._kv_refills.values())
+
+    async def _stop_refilling(self) -> None:
+        """cancel the refill task, if one runs, and wait for it to end; what it had not refilled stays owed.
+
+        :return: nothing
+        :rtype: None
+        """
+        task = self._refilling
+        self._refilling = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                # NOSILENT: this IS the cancellation requested on the line above
+                pass
 
     async def _restore_durable(self, consumer: JetStreamPushConsumer | JetStreamPullConsumer) -> None:
         """bind a durable consumer again when the server no longer has it.
@@ -4199,6 +4407,10 @@ class NatsClient:
         self._restoration = None
         if restoration is not None and restoration is not asyncio.current_task():
             restoration.cancel()
+        refilling = self._refilling
+        self._refilling = None
+        if refilling is not None and refilling is not asyncio.current_task():
+            refilling.cancel()
         for connection in connections:
             await _close_quietly(connection)
 
@@ -4307,6 +4519,7 @@ class NatsClient:
         await self._stop_renewal()
         await self._stop_successor_move()
         await self._stop_restoration()
+        await self._stop_refilling()
         await self._close_replaced_connections()
         if self._raw.is_closed:
             return
@@ -5282,6 +5495,8 @@ class NatsClient:
         create_if_missing: bool = True,
         owns_bucket: bool = False,
         drop_file_storage: bool = False,
+        prefix_namespace: bool = True,
+        on_restored: KvRestoredHook | None = None,
     ) -> NatsKvBucket:
         """DECLARE a KV bucket's configuration, reconciling a live one.
 
@@ -5309,8 +5524,26 @@ class NatsClient:
         always; file storage when the restart lost its volume, as it can on
         Kubernetes) is back for its binders whether or not anything in this
         process uses it. a declarer needs no reconnect hook of its own for that.
-        only the bucket comes back, empty: its entries are the declarer's to
-        write again. a bind-only open is never remembered: only the declarer may
+
+        **the bucket comes back empty, and ``on_restored`` is how it is filled
+        again.** its entries are the declarer's to write, and only the declarer
+        knows them -- a bucket that is the persisted copy of an in-memory
+        structure must be written back from memory, or every reader of it sees
+        nothing. a declaration given ``on_restored`` is OWED a refill each time
+        this client creates its stream again after the declaration: a
+        restoration after a reconnect that found it absent, or a self-heal
+        re-open of the handle that created it -- the path no reconnect runs, as
+        a put after a wipe, or the first operation after a move to a successor
+        connection. the refill runs in the background with the live handle,
+        one at a time, and the debt is settled only when it RETURNS: one that
+        raises is logged at ERROR naming the bucket and retried with backoff,
+        and one cancelled (by :meth:`shutdown`) stays owed. a stream that
+        survived owes nothing. the declaration itself never owes one: a caller
+        that created its bucket here holds the handle and fills it.
+        :class:`threetears.nats.PersistedCopyBucket` is the owner
+        built on this for a bucket that mirrors memory.
+
+        a bind-only open is never remembered: only the declarer may
         create the bucket. neither is a :meth:`kv_bucket` open, which declares
         nothing -- remembering one would let a process that is not the bucket's
         declarer create it after a restart with a config (``allow_direct`` unset,
@@ -5362,7 +5595,8 @@ class NatsClient:
         long as it lives. :meth:`kv_bucket` never owns a bucket; it declares
         nothing.
 
-        :param name: bucket name suffix (will be prefixed by namespace)
+        :param name: bucket name suffix (prefixed by namespace), or the exact bucket name with
+            ``prefix_namespace=False``
         :ptype name: str
         :param ttl: optional time-to-live for entries; ``None`` for no expiry
         :ptype ttl: timedelta | None
@@ -5388,10 +5622,24 @@ class NatsClient:
             without it such a bucket is refused and left untouched. only with
             ``owns_bucket=True``
         :ptype drop_file_storage: bool
+        :param prefix_namespace: ``True`` (the default) names the bucket
+            ``{namespace}-{name}``; ``False`` uses ``name`` verbatim, for a bucket
+            whose bare name is what every deployment's grants already carry. the
+            client's handle cache is keyed on the resulting full name, and the
+            remembered declaration on its stream ``KV_{full name}``, either way
+        :ptype prefix_namespace: bool
+        :param on_restored: the declarer's refill, run with the live handle each
+            time this client creates the bucket's stream again, empty, after this
+            declaration, until it returns (above). remembered with the
+            declaration; a re-declaration without it gives it up. only with
+            ``create_if_missing=True``
+        :ptype on_restored: KvRestoredHook | None
         :return: ready KV bucket handle, also installed in the client's cache
         :rtype: NatsKvBucket
         :raises ValueError: if ``owns_bucket=True`` with ``create_if_missing=False``
-            or ``storage="file"``, or ``drop_file_storage=True`` without ``owns_bucket``
+            or ``storage="file"``, or ``drop_file_storage=True`` without ``owns_bucket``,
+            or ``on_restored`` with ``create_if_missing=False`` -- a binder never
+            creates the bucket, so the refill could never run
         :raises KvBucketNotFoundError: if the bucket does not exist and this call could not create it --
             a bind (``create_if_missing=False``) once the wait for its declarer is spent, or a
             declaration whose create was not answered (a ``KvError``)
@@ -5404,7 +5652,22 @@ class NatsClient:
         from nats.js.api import StorageType  # noqa: PLC0415
         from threetears.nats.kv import DEFAULT_KV_TIMINGS, NatsKvBucket, build_kv_stream_config
 
-        full_name = f"{self._namespace}-{name}"
+        full_name = f"{self._namespace}-{name}" if prefix_namespace else name
+        if on_restored is not None and not create_if_missing:
+            raise ValueError(
+                f"KV bucket {full_name!r}: on_restored needs create_if_missing=True -- a bind-only open never "
+                f"creates the bucket, so a refill could never be owed"
+            )
+        # the backing-stream config a declaration remembers, built before the open so the handle can be
+        # told which remembered declaration its self-heal re-opens belong to.
+        declared = build_kv_stream_config(
+            bucket=full_name,
+            ttl_seconds=int(ttl.total_seconds()) if ttl is not None else 0,
+            history=history,
+            storage_type=StorageType.FILE if storage == "file" else StorageType.MEMORY,
+            direct=direct,
+        )
+        stream = declared.name or full_name
         async with self._kv_locks.setdefault(full_name, asyncio.Lock()):
             bucket = await NatsKvBucket.open(
                 client=self,
@@ -5417,6 +5680,7 @@ class NatsClient:
                 timings=self._kv_timings if self._kv_timings is not None else DEFAULT_KV_TIMINGS,
                 owns_bucket=owns_bucket,
                 drop_file_storage=drop_file_storage,
+                on_recreated=functools.partial(self._note_refill_owed, stream) if create_if_missing else None,
             )
             self._buckets[full_name] = bucket
         if create_if_missing:
@@ -5424,14 +5688,6 @@ class NatsClient:
             # when the restart lost its volume), and a process that only binds it waits for its
             # declarer -- so the declarer puts it back after every reconnect (:meth:`_restore_once`),
             # with the same backing-stream config created here.
-            declared = build_kv_stream_config(
-                bucket=full_name,
-                ttl_seconds=int(ttl.total_seconds()) if ttl is not None else 0,
-                history=history,
-                storage_type=StorageType.FILE if storage == "file" else StorageType.MEMORY,
-                direct=direct,
-            )
-            stream = declared.name or full_name
             self._declarations[stream] = declared
             # the LATEST declaration is the one remembered, its ownership of the bucket included:
             # a re-declaration without it gives the ownership up.
@@ -5439,6 +5695,15 @@ class NatsClient:
                 self._owned_buckets[stream] = _OwnedBucket(full_name=full_name, drop_file_storage=drop_file_storage)
             else:
                 self._owned_buckets.pop(stream, None)
+            # and its refill: a re-declaration without one gives it up, and one that keeps it keeps
+            # whatever refill is still owed.
+            refill = self._kv_refills.get(stream)
+            if on_restored is None:
+                self._kv_refills.pop(stream, None)
+            elif refill is None:
+                self._kv_refills[stream] = _KvRefill(full_name=full_name, on_restored=on_restored)
+            else:
+                refill.on_restored = on_restored
         return bucket
 
     async def ensure_jetstream_stream(
