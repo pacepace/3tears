@@ -179,8 +179,13 @@ class DuckDBBackend:
         # column for. An unregistered table (no schema) writes every key named.
         columns = bulk_columns(rows, schema)
         # DuckDB refuses to touch one key twice in a statement; one by one, the last
-        # write of a key is the one that stays, so the batch keeps only that.
-        latest = list({tuple(row[c] for c in pk_cols): row for row in rows}.values())
+        # write of a key is the one that stays, so the batch keeps only that. keys are
+        # compared as stored, so a UUID and its text are the same key, as they are in L1.
+        latest = list(
+            {
+                tuple(self.serialize_value(row[c], schema.get(c, "VARCHAR")) for c in pk_cols): row for row in rows
+            }.values()
+        )
         if latest:
             lists = [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in latest] for c in columns]
             # values are already serialized to each column's storage form, so the insert's own
@@ -196,7 +201,9 @@ class DuckDBBackend:
 
         DuckDB reads Parquet natively, so this is the fast path for an analytic
         table filled from a file: the file's columns that the table declares are
-        loaded and the rest are ignored; table columns the file lacks stay null.
+        loaded and the rest are ignored; table columns the file lacks stay null. A file
+        repeating a key is refused by DuckDB (one statement cannot write a key twice),
+        unlike ``upsert_many``, which keeps a batch's last row per key.
 
         :param table: the destination table
         :ptype table: str

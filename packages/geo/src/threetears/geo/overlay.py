@@ -19,6 +19,7 @@ a county, which is the scale these thresholds work at.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
@@ -210,8 +211,7 @@ def cut(
         "cut a layer by another",
         extra={"extra_data": {"pieces": len(pieces), "slivers_dropped": slivers, "without_pieces": len(without)}},
     )
-    ids = [piece.feature_id for piece in pieces]
-    repeated = sorted({i for i in ids if ids.count(i) > 1})
+    repeated = sorted(i for i, n in Counter(piece.feature_id for piece in pieces).items() if n > 1)
     if repeated:
         raise LayerOverlayError(f"two pieces would share the id {repeated[0]!r}; the ids or the separator collide")
     if without:

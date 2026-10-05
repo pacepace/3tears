@@ -349,6 +349,13 @@ class TestBulkWriteEdges:
         got = backend.select_by_id("test_entities", row["id"])
         assert got is not None and got["name"] == "last"
 
+    def test_a_key_given_as_a_uuid_and_as_text_is_one_key(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        as_text, as_uuid = {**row, "name": "text"}, {**row, "id": uuid.UUID(row["id"]), "name": "uuid"}
+        backend.upsert_many("test_entities", [as_text, as_uuid])
+        got = backend.select_by_id("test_entities", row["id"])
+        assert got is not None and got["name"] == "uuid"
+
     def test_column_types_are_the_tables_own_columns(self, backend: L1Backend) -> None:
         # the backend's own cache-stamp column is not one of the table's
         assert set(backend.column_types("test_entities")) == {"id", "name", "age", "active", "data", "created_at"}
