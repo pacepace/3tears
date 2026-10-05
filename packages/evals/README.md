@@ -152,7 +152,8 @@ the turn limit. A document or classifier template carries none.
 **Background work, payloads and spend.** Work a candidate hands off and gets back turns later is
 recorded as `async_deliveries`, one `AsyncDelivery` each: who asked, when it was acknowledged and
 delivered, on what model, whether a harness supplied it, and what it spent — its tokens, model calls,
-`cost_usd` with its own `price_source`, and any paid non-LLM calls (`external_spend`). The engine folds
+`cost_usd` with its own `price_source`, and any paid non-LLM calls (`external_spend`) — their calls, the
+provider's own units, and `money` where the provider itself billed a figure. The engine folds
 that spend into the result's `inner_agent` and `external` usage, for work still in flight when the
 cell ended as well as work that delivered; a substituted entry reports no spend. Anything else your
 kind wants kept with a result goes in `kind_payload`, which the engine stores and never reads;
@@ -161,8 +162,8 @@ own `price_source`; the engine stores what it is told and never assumes a provid
 its own calls' spend only as usage rows (`CandidateTelemetry.usage`), each call's dollars as your
 client priced them; the engine derives a result's `cost_usd` from those rows and its background work's.
 **Unpriced is a state, never zero**: a call your client could not price (a local model, say), or
-background work's paid calls a run with declared rates has no rate for, leaves the result's `cost_usd`
-as `None`. Every cost aggregate leaves such a result out of its dollars and counts it beside them
+background work's paid calls that report no `money` and that a run with declared rates has no rate
+for, leaves the result's `cost_usd` as `None`. A reported `money` wins over the run's rate. Every cost aggregate leaves such a result out of its dollars and counts it beside them
 (`n_cost_usd`, `n_unpriced`), and a capped run stops on its first unpriced result, because a cap cannot
 enforce a ceiling on spend it cannot count. An uncapped run carries on and counts them.
 
@@ -174,7 +175,11 @@ cassettes off) already bound to the corpus, template and case, so one kind insta
 cell. Your kind calls `cassettes.wire(seams)` once with its candidate's `CassetteSeams`: an
 `ActionSeam` for the synchronous tools to wrap, and a `DeliverySeam` for each asynchronous tool, keyed
 by that tool's name. A wrapped tool is a `ToolLike`: a `name`, `can_dispatch(action)` and an async
-`act(action, parameters)`; a tool that is a plain function is adapted to that shape. A delivery seam reports each piece of background work where it starts
+`act(action, parameters)`; a tool that is a plain function is adapted to that shape. A candidate whose
+turn loop calls its tools as plain blocking calls declares a `SyncActionSeam` instead (`arm_sync_tools`),
+its tools are `SyncToolLike` (`act_sync(action, parameters)`), and it calls the wrapped tools'
+`act_sync`. Both seams record and replay through one implementation, so a corpus captured on either
+replays on either. A delivery seam reports each piece of background work where it starts
 (`recorder.started(request)`) and settles the ticket where it ends; under replay it takes
 `replay.next(request)` instead of starting live work, and reports what it was served with
 `substituted=True`. Every recording is keyed by what was asked and by which time it was asked, so a

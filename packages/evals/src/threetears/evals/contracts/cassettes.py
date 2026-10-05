@@ -16,7 +16,10 @@ Two seams, because ``act()`` is not where every tool answers
 ------------------------------------------------------------
 
 A synchronous tool returns its result from ``act()``, so wrapping ``act()`` records and replays
-everything about the call (:class:`ActionSeam`). An **asynchronous** one does not: its ``act()``
+everything about the call (:class:`ActionSeam`). A host whose tools run as plain blocking calls inside
+its own turn loop declares :class:`SyncActionSeam` instead, and its tools are driven through
+``act_sync()``; the two action seams record and replay through one implementation, so a recording made
+on either path replays on either. An **asynchronous** one does not: its ``act()``
 returns an acknowledgement, the real work runs elsewhere, and the result reaches the candidate later.
 Recording ``act()`` there would record the acknowledgement, so the kind reports the work itself
 (:class:`DeliverySeam`): capture hands it a :class:`DeliveryRecorder`, replay a :class:`DeliveryReplay`.
@@ -64,6 +67,9 @@ __all__ = [
     "DeliveryTicket",
     "Recordable",
     "ReplayedDelivery",
+    "SyncActionSeam",
+    "SyncToolLike",
+    "SyncToolWrap",
     "ToolLike",
     "ToolWrap",
 ]
@@ -203,6 +209,34 @@ class ToolLike(Protocol):
 ToolWrap = Callable[[Mapping[str, ToolLike]], dict[str, ToolLike]]
 
 
+@runtime_checkable
+class SyncToolLike(Protocol):
+    """The three members the cassette layer calls on a tool that answers as a plain blocking call.
+
+    :class:`ToolLike` with ``act_sync`` in place of the awaitable ``act``: for a host whose tools run
+    synchronously inside its own turn loop, where there is no event loop to await on. The method has
+    its own name rather than a synchronous ``act`` because a runtime check cannot tell a coroutine
+    function from a plain one by name alone, and a proxy answering both must never confuse them.
+    """
+
+    @property
+    def name(self) -> str:
+        """The tool's own name — also the ``tool`` component of a cassette key."""
+        ...  # pragma: no cover — protocol
+
+    def can_dispatch(self, action: str) -> bool:
+        """Whether ``action`` is a name this tool is known to dispatch (see :meth:`ToolLike.can_dispatch`)."""
+        ...  # pragma: no cover — protocol
+
+    def act_sync(self, action: str, parameters: dict[str, Any]) -> Recordable:
+        """Perform one action, blocking, and return its result — what capture records and replay serves."""
+        ...  # pragma: no cover — protocol
+
+
+#: What the synchronous action seam is handed: :data:`ToolWrap` over :class:`SyncToolLike` tools.
+SyncToolWrap = Callable[[Mapping[str, SyncToolLike]], dict[str, SyncToolLike]]
+
+
 # =============================================================================
 # The delivery seam's engine objects, as the kind sees them
 # =============================================================================
@@ -328,6 +362,33 @@ class ActionSeam(Protocol):
 
 
 @runtime_checkable
+class SyncActionSeam(Protocol):
+    """A kind's synchronous tools whose calls block rather than await, as the cassette lane records and replays them.
+
+    :class:`ActionSeam` for a candidate driving its tools through :meth:`SyncToolLike.act_sync`. The
+    rules are the action seam's, enforced by the same code: the same keys and occurrences, the same
+    misses, exhaustion and corruption, the same refusal of an unwrapped declared tool. A seam declares
+    one of the two, never both: the cell would not know which wrap the candidate calls through.
+    """
+
+    @property
+    def recorded_tools(self) -> Mapping[str, type[Recordable]]:
+        """The tools to record and replay, each mapped to the type its ``act_sync()`` returns. Never empty."""
+        ...  # pragma: no cover — protocol
+
+    def arm_sync_tools(self, wrap: SyncToolWrap) -> None:
+        """Replace the candidate's tools with ``wrap(tools)``, for the rest of the cell.
+
+        Call ``wrap`` exactly once, with every tool the candidate can call; each recorded tool comes
+        back as a proxy whose ``act_sync`` captures or replays.
+
+        Args:
+            wrap: Maps the current tools to the ones the candidate must use from now on.
+        """
+        ...  # pragma: no cover — protocol
+
+
+@runtime_checkable
 class DeliverySeam(Protocol):
     """One asynchronous tool of a kind, as the cassette lane records and replays its background work."""
 
@@ -367,8 +428,8 @@ class CassetteSeams(Protocol):
     """
 
     @property
-    def action_seam(self) -> ActionSeam | None:
-        """The synchronous tools to record, or ``None`` for a candidate with none."""
+    def action_seam(self) -> ActionSeam | SyncActionSeam | None:
+        """The synchronous tools to record — awaited (:class:`ActionSeam`) or blocking (:class:`SyncActionSeam`) — or ``None``."""
         ...  # pragma: no cover — protocol
 
     @property
@@ -406,10 +467,12 @@ class CellCassettes(Protocol):
             seams: The candidate's seams.
 
         Raises:
-            TypeError: ``seams`` is not a :class:`CassetteSeams`.
+            TypeError: ``seams`` is not a :class:`CassetteSeams`, or its action seam is neither an
+                :class:`ActionSeam` nor a :class:`SyncActionSeam`.
             ValueError: This cell was already wired; ``seams`` declares no seam at all; its action
-                seam names no tool; a tool is declared on both seams; or the action seam did not
-                apply the wrap exactly once over every tool it declared.
+                seam is both an :class:`ActionSeam` and a :class:`SyncActionSeam`, or names no tool;
+                a tool is declared on both seams; or the action seam did not apply the wrap exactly
+                once over every tool it declared.
             CassetteCorrupt: A capture could not clear the case's previous recording.
         """
         ...  # pragma: no cover — protocol

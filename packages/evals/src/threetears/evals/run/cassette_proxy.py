@@ -17,7 +17,10 @@ kind calls :meth:`CassetteCell.wire` with the
 them; the vocabulary a kind implements is :mod:`threetears.evals.contracts.cassettes`.
 
 * **Action seam** — each declared synchronous tool is swapped for a :class:`CassetteProxy`, which
-  wraps ``act()``.
+  wraps ``act()`` — or ``act_sync()``, for a kind whose tools block inside its own turn loop
+  (:class:`~threetears.evals.contracts.cassettes.SyncActionSeam`). Both entry points take one
+  record-and-replay implementation on the cell, so the two paths key, capture, replay and fail
+  identically, and a recording made on either replays on either.
 * **Delivery seam** — capture hands the kind a recorder it calls where background work STARTS and
   where it ends; replay hands it a replay it calls where it would have started live work.
 
@@ -74,6 +77,8 @@ from threetears.evals.contracts.cassettes import (
     DeliveryTicket,
     Recordable,
     ReplayedDelivery,
+    SyncActionSeam,
+    SyncToolLike,
     ToolLike,
 )
 from threetears.evals.contracts.errors import StorageError
@@ -126,6 +131,28 @@ def _rebuild[R: Recordable](payload_type: type[R], recorded: dict[str, Any], *, 
             f"Cassette recording {key.doc_id!r} does not rebuild as {payload_type.__name__}: {exc}. "
             "The corpus predates a change to that type; re-capture the template."
         ) from exc
+
+
+def _blocks(seam: object) -> bool:
+    """Whether an action seam drives its tools by blocking calls — the one decision the two flavours differ in.
+
+    Raises:
+        ValueError: The seam is both an ``ActionSeam`` and a ``SyncActionSeam``.
+        TypeError: It is neither.
+    """
+    awaited = isinstance(seam, ActionSeam)
+    blocking = isinstance(seam, SyncActionSeam)
+    if awaited and blocking:
+        raise ValueError(
+            f"{type(seam).__name__} is both an ActionSeam (arm_tools) and a SyncActionSeam (arm_sync_tools); a cell "
+            "wires one, so declare the one whose entry point the candidate calls — act or act_sync."
+        )
+    if not awaited and not blocking:
+        raise TypeError(
+            f"{type(seam).__name__} is neither an ActionSeam nor a SyncActionSeam: an action seam declares "
+            "recorded_tools and arms them through arm_tools or arm_sync_tools."
+        )
+    return blocking
 
 
 class ReplayReportDefect(ValueError):
@@ -287,6 +314,7 @@ class CassetteCell:
                 "or replayed, so a replay run would go live. Supply an action seam, a delivery seam, or launch "
                 "with cassette_mode='off'."
             )
+        blocking = _blocks(action) if action is not None else False
         recorded: dict[str, type[Recordable]] = {}
         if action is not None:
             recorded = dict(action.recorded_tools)
@@ -316,7 +344,7 @@ class CassetteCell:
                 ) from exc
         self._wired = True
         if action is not None:
-            self._wire_action_seam(action, recorded)
+            self._wire_action_seam(action, recorded, blocking=blocking)
         for tool, seam in deliveries.items():
             if self._mode == "capture":
                 seam.arm_capture(_Recorder(partial(self._start, tool)))
@@ -325,23 +353,34 @@ class CassetteCell:
         if self._mode == "replay":
             self._replayed_tools = frozenset(deliveries)
 
-    def _wire_action_seam(self, seam: ActionSeam, recorded: Mapping[str, type[Recordable]]) -> None:
-        """Have the action seam swap each recorded tool for a cassette proxy, and hold it to doing so."""
+    def _wire_action_seam(
+        self, seam: ActionSeam | SyncActionSeam, recorded: Mapping[str, type[Recordable]], *, blocking: bool
+    ) -> None:
+        """Have the action seam swap each recorded tool for a cassette proxy, and hold it to doing so.
+
+        One wrap serves both action seams; ``blocking`` only chooses which of the proxy's entry points
+        is bound, and which arming method the seam is called through.
+        """
         applied: list[frozenset[str]] = []
 
-        def wrap(tools: Mapping[str, ToolLike]) -> dict[str, ToolLike]:
+        def proxy(tool: Any, result_type: type[Recordable]) -> CassetteProxy:
+            if blocking:
+                return CassetteProxy(tool, act_sync=partial(self._act_sync, tool, result_type))
+            return CassetteProxy(tool, act=partial(self._act, tool, result_type))
+
+        def wrap(tools: Mapping[str, Any]) -> dict[str, Any]:
             if missing := sorted(recorded.keys() - tools.keys()):
                 raise ValueError(
                     f"the action seam declares {', '.join(repr(name) for name in missing)} as recorded, but the "
                     f"candidate's tools are {sorted(tools)}; an unwrapped tool would run live under replay."
                 )
             applied.append(frozenset(tools))
-            return {
-                name: CassetteProxy(tool, act=partial(self._act, tool, recorded[name])) if name in recorded else tool
-                for name, tool in tools.items()
-            }
+            return {name: proxy(tool, recorded[name]) if name in recorded else tool for name, tool in tools.items()}
 
-        seam.arm_tools(wrap)
+        if isinstance(seam, SyncActionSeam):
+            seam.arm_sync_tools(wrap)
+        else:
+            seam.arm_tools(wrap)
         if len(applied) != 1:
             raise ValueError(
                 f"the action seam applied the cassette wrap {len(applied)} times; it must apply it exactly once, "
@@ -353,12 +392,54 @@ class CassetteCell:
     async def _act(
         self, tool: ToolLike, result_type: type[Recordable], action: str, parameters: dict[str, Any]
     ) -> Recordable:
-        """Capture or replay one synchronous call — a :class:`CassetteProxy`'s ``act``."""
-        key = self._next_key(tool.name, action, parameters)
+        """Capture or replay one awaited call — a :class:`CassetteProxy`'s ``act``.
+
+        One of the action seam's two entry points; every rule is in :meth:`_open_action` and
+        :meth:`_record_action`, so the only thing this owns is how the live tool is called.
+        """
+        if not tool.can_dispatch(action):
+            return await tool.act(action, parameters)
+        key, replayed = self._open_action(tool.name, result_type, action, parameters)
+        if replayed is not None:
+            return replayed
+        return self._record_action(key, await tool.act(action, parameters))
+
+    def _act_sync(
+        self, tool: SyncToolLike, result_type: type[Recordable], action: str, parameters: dict[str, Any]
+    ) -> Recordable:
+        """Capture or replay one blocking call — a :class:`CassetteProxy`'s ``act_sync``.
+
+        The other entry point: :meth:`_act` with the live tool called without awaiting.
+        """
+        if not tool.can_dispatch(action):
+            return tool.act_sync(action, parameters)
+        key, replayed = self._open_action(tool.name, result_type, action, parameters)
+        if replayed is not None:
+            return replayed
+        return self._record_action(key, tool.act_sync(action, parameters))
+
+    def _open_action(
+        self, tool: str, result_type: type[Recordable], action: str, parameters: dict[str, Any]
+    ) -> tuple[CassetteKey, Recordable | None]:
+        """Key one recordable call and, in replay, serve it — the half of an action that is not the live call.
+
+        Returns:
+            The call's key, and the recording rebuilt as ``result_type`` in replay or ``None`` in
+            capture, where the caller runs the tool live and hands the result to :meth:`_record_action`.
+
+        Raises:
+            CassetteMiss: Replay, and the corpus never recorded this call.
+            CassetteExhausted: Replay, and it recorded this call fewer times than it is now made.
+            CassetteCorrupt: Replay, and the recording could not be read back or rebuilt.
+        """
+        key = self._next_key(tool, action, parameters)
         if self._mode == "replay":
             recorded = self._read(key, seam="action")
-            return _rebuild(result_type, recorded.response or {}, key=key)
-        result = await tool.act(action, parameters)
+            return key, _rebuild(result_type, recorded.response or {}, key=key)
+        return key, None
+
+    def _record_action(self, key: CassetteKey, result: Recordable) -> Recordable:
+        """Record a captured call's live result under its key, and hand the result on unchanged."""
         self._write(
             EvalCassette.build(
                 key,
@@ -489,23 +570,46 @@ class CassetteCell:
 class CassetteProxy:
     """A recorded synchronous tool, as the candidate sees it once its cell is wired.
 
-    Composition and ``__getattr__`` delegation: every attribute except the three
-    :class:`~threetears.evals.contracts.cassettes.ToolLike` members passes through to the wrapped
+    Composition and ``__getattr__`` delegation: every attribute except the
+    :class:`~threetears.evals.contracts.cassettes.ToolLike` and
+    :class:`~threetears.evals.contracts.cassettes.SyncToolLike` members passes through to the wrapped
     tool, so the candidate's own tool machinery interacts with the proxy exactly as with the tool.
-    ``act`` goes to the cell: in capture the tool runs live and its result is recorded under the
+    A call goes to the cell: in capture the tool runs live and its result is recorded under the
     call's key and occurrence (a failed result too — a failure pattern is itself replayable signal);
     in replay the recording of this call's occurrence is served and the tool is never called.
+
+    **One entry point is bound, by the seam that wired it.** ``act`` for an
+    :class:`~threetears.evals.contracts.cassettes.ActionSeam`, ``act_sync`` for a
+    :class:`~threetears.evals.contracts.cassettes.SyncActionSeam`. Both are defined here, so the other
+    one can never fall through ``__getattr__`` to the wrapped tool's live method; calling it is refused
+    before anything is keyed.
     """
 
-    def __init__(self, wrapped: ToolLike, *, act: Callable[[str, dict[str, Any]], Awaitable[Recordable]]) -> None:
+    def __init__(
+        self,
+        wrapped: ToolLike | SyncToolLike,
+        *,
+        act: Callable[[str, dict[str, Any]], Awaitable[Recordable]] | None = None,
+        act_sync: Callable[[str, dict[str, Any]], Recordable] | None = None,
+    ) -> None:
         """Wrap one tool for one cell.
 
         Args:
             wrapped: The tool.
-            act: The cell's capture-or-replay of one call to it.
+            act: The cell's capture-or-replay of one awaited call to it.
+            act_sync: The cell's capture-or-replay of one blocking call to it.
+
+        Raises:
+            ValueError: Not exactly one of ``act`` and ``act_sync`` was given.
         """
+        if (act is None) == (act_sync is None):
+            raise ValueError(
+                "a CassetteProxy is bound to exactly one entry point — act for an ActionSeam, act_sync for a "
+                "SyncActionSeam"
+            )
         self._wrapped = wrapped
         self._act = act
+        self._act_sync = act_sync
 
     @property
     def name(self) -> str:
@@ -525,7 +629,7 @@ class CassetteProxy:
         return getattr(self._wrapped, item)
 
     async def act(self, action: str, parameters: dict[str, Any]) -> Recordable:
-        """Capture or replay this call through the cell's corpus.
+        """Capture or replay this awaited call through the cell's corpus.
 
         **An action the wrapped tool cannot dispatch never reaches the corpus.** It is not a
         recordable event: a model inventing an action name is ordinary candidate behaviour, and the
@@ -533,13 +637,30 @@ class CassetteProxy:
         gives.
 
         Raises:
+            TypeError: The tool was wired on a synchronous action seam; call :meth:`act_sync`.
             CassetteMiss: Replay, and the corpus never recorded this call.
             CassetteExhausted: Replay, and the corpus recorded this call fewer times than it is now made.
             CassetteCorrupt: Replay, and the recording could not be read back.
         """
-        if not self._wrapped.can_dispatch(action):
-            return await self._wrapped.act(action, parameters)
+        if self._act is None:
+            raise TypeError(f"{self.name!r} was wired on a SyncActionSeam; its calls go through act_sync")
         return await self._act(action, parameters)
+
+    def act_sync(self, action: str, parameters: dict[str, Any]) -> Recordable:
+        """Capture or replay this blocking call through the cell's corpus — :meth:`act`'s twin, unawaited.
+
+        The same rules, through the same code: an undispatchable action gets the tool's own answer and
+        never reaches the corpus, and a replay serves the recording of this call's occurrence or raises.
+
+        Raises:
+            TypeError: The tool was wired on an awaited action seam; call :meth:`act`.
+            CassetteMiss: Replay, and the corpus never recorded this call.
+            CassetteExhausted: Replay, and the corpus recorded this call fewer times than it is now made.
+            CassetteCorrupt: Replay, and the recording could not be read back.
+        """
+        if self._act_sync is None:
+            raise TypeError(f"{self.name!r} was wired on an ActionSeam; its calls go through act")
+        return self._act_sync(action, parameters)
 
 
 class _Ticket:

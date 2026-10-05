@@ -39,7 +39,7 @@ from threetears.evals.contracts.candidate_kind import (
     CellSpanWindow,
     VariantConfig,
 )
-from threetears.evals.contracts.cassettes import ActionSeam, CassetteSeams, CellCassettes, DeliverySeam
+from threetears.evals.contracts.cassettes import ActionSeam, CassetteSeams, CellCassettes, DeliverySeam, SyncActionSeam
 from threetears.evals.contracts.covariates import fold_phase_timings
 from threetears.evals.contracts.declaration import (
     BarName,
@@ -221,6 +221,7 @@ from threetears.evals.contracts.cassettes import (
     DeliveryTicket,
     Recordable,
     ReplayedDelivery,
+    SyncToolWrap,
     ToolWrap,
 )
 from threetears.evals.contracts.declaration import (
@@ -279,7 +280,7 @@ from threetears.evals.contracts.surface import (
     MeasureFacts,
 )
 from threetears.evals.contracts.usage_capture import CallUsage
-from threetears.evals.contracts.cassettes import ToolLike
+from threetears.evals.contracts.cassettes import SyncToolLike, ToolLike
 
 
 __all__ = [
@@ -485,6 +486,9 @@ __all__ = [
     "StorageError",
     "StoreConflict",
     "SweptAxis",
+    "SyncActionSeam",
+    "SyncToolLike",
+    "SyncToolWrap",
     "ToolLike",
     "ToolWrap",
     "TransferabilityClass",
