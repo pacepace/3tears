@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: a replay guard owns its nonce bucket, on memory
+
+- **Changed, `threetears.core.coordination.ReplayGuard`:** a guard that declares its bucket
+  (`create_if_missing=True`, the default) declares it through `ensure_kv_bucket` as its owner, on
+  memory storage, with `drop_file_storage=True`. A nonce bucket left live on file storage (opened
+  before it was declared, or by hand) is recreated on memory, empty, where before the guard bound it
+  as it was and NATS logged the storage mismatch at every boot. Emptying it reopens no replay: the
+  recreate's creation time refuses anything issued before it, the same rule that makes a broker
+  wipe safe. A bind-only guard (`create_if_missing=False`) still only binds and never recreates.
+  **Breaking for a client double with `kv_bucket` alone:** a declaring guard now refuses, at
+  construction with a `TypeError`, a client without `ensure_kv_bucket`; `NatsClient` and
+  `threetears.core.testing.FakeNatsClient` have it.
+
 ### NATS: one write-health watch for a persisted copy
 
 - **Added, `threetears.nats.CopyWriteHealth` and `WRITE_FAILURE_THRESHOLD`:** whether writes to a

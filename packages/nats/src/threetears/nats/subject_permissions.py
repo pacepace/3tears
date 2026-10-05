@@ -1915,7 +1915,8 @@ def _registry(
             # constructed at ``threetears.registry.server`` as
             # ``ReplayGuard(nc, bucket_name="pop_nonces", ...)`` -- a live call site in this
             # repository, not the usage example in ``ReplayGuard``'s own docstring -- and
-            # ``ReplayGuard`` opens through ``kv_bucket``, so this one carries the prefix.
+            # ``ReplayGuard`` declares it through ``ensure_kv_bucket`` as its owner (which may
+            # recreate it, and FULL carries that), namespace-prefixed, so this one carries the prefix.
             JsResource.kv(f"{ns}-pop_nonces", scope=None, writable=True),
             # ADDED here, and it is a DATA-LOSS fix rather than a cache one. ``registry/server.py``
             # calls ``collection_registry.configure(l2_client=nc)`` and then builds a
