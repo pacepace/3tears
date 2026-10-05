@@ -20,7 +20,7 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TextBlock,
 )
-from threetears.evals.analysis.report.model import finding_number
+from threetears.evals.analysis.report.model import finding_number, report_byline, report_title
 from threetears.evals.analysis.report.words import positions
 from threetears.evals.analysis.viz.intent import Cell
 from threetears.evals.analysis.viz.quantities import render_cell
@@ -35,13 +35,7 @@ def report_markdown(report: Report) -> str:
     Returns:
         The Markdown text, ending in a newline.
     """
-    source = report.source
-    lines = [
-        f"# {_one_line(report.headline) or '(blank headline)'}",
-        "",
-        f"_Analysis {source.analysis_id} of campaign {source.campaign_id} — {source.behavior}; generated "
-        f"{source.generated_at} by {source.generator_model}._",
-    ]
+    lines = [f"# {_one_line(report_title(report))}", "", f"_{_one_line(report_byline(report))}_"]
     for section, title in SECTION_TITLES.items():
         blocks = [block for block in report.blocks if block.section == section]
         if not blocks:

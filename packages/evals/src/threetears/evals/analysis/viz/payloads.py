@@ -26,20 +26,10 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from threetears.evals.contracts.host.style import SERIES_SLOTS, VALIDATED_SLOTS
 from threetears.evals.contracts.prose import ModelProse
 from threetears.evals.contracts.metrics import Materiality
 
-#: How many categorical colour slots a chart may assign with validated separation.
-#:
-#: Part of eval's chart vocabulary, not of any palette: a chart intent names colour SLOTS, never colours,
-#: and a renderer's theme supplies the hues. Slots 1-4 are the ones a theme must separate for colourblind
-#: readers and against its surface; 5-8 are a derived second tier that need not; past
-#: :data:`SERIES_SLOTS` a renderer recycles from slot 1. A theme is held to these two numbers by its
-#: renderer's conformance test, so the core decides what a slot promises and the theme keeps the promise.
-VALIDATED_SLOTS = 4
-
-#: How many categorical colour slots a theme supplies before it recycles — the width of the vocabulary.
-SERIES_SLOTS = 8
 
 #: How far a breakdown's parts may miss the `total` they claim to make up, as a
 #: fraction of the larger quantity involved.

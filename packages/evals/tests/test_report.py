@@ -26,6 +26,9 @@ import jsonschema
 import pytest
 
 from threetears.evals.analysis import (
+    set_campaign_control,
+    NO_ANALYSIS,
+    REPORT_VERSION,
     ChartBlock,
     DisclosureBlock,
     Report,
@@ -34,6 +37,7 @@ from threetears.evals.analysis import (
     TextBlock,
     analysis_report,
     build_report,
+    campaign_report,
     finding_chart_intent,
     published_report_schema,
     report_html,
@@ -44,7 +48,8 @@ from threetears.evals.analysis.report import SCHEMA_PATH
 from threetears.evals.contracts.campaign import EvalAnalysis, Viz
 from threetears.evals.contracts.errors import NotFoundError
 from threetears.evals.contracts.host import EvalHost
-from packages.evals.tests.report_support import minimal_report, toy_report
+from threetears.evals.run import set_analysis_archived
+from packages.evals.tests.report_support import minimal_report, toy_campaign_host, toy_report
 
 
 @pytest.fixture
@@ -355,3 +360,183 @@ class TestTheReportsRefusals:
 
     def test_a_summary_belongs_to_no_finding(self) -> None:
         assert TextBlock(section="summary", role="summary", body="t").finding is None
+
+
+# =============================================================================
+# The basis: a report of an analysis, or of the evidence alone — and the shape refuses a mix
+# =============================================================================
+
+
+def _code_only(**update: Any) -> Report:
+    """A code-only report that passes, with ``update`` applied over its fields."""
+    fields: dict[str, Any] = {
+        "basis": "code_only",
+        "headline": "",
+        "finding_count": 0,
+        "source": {
+            "campaign_id": "c",
+            "scope_id": "s",
+            "subject_id": "x",
+            "subject_kind": "",
+            "behavior": "b",
+            "generated_at": "2026-10-05T00:00:00+00:00",
+            "bundle_fingerprint": "f",
+        },
+        "blocks": [{"kind": "disclosure", "section": "summary", "source": "generation", "text": "no analysis"}],
+    }
+    return Report.model_validate(fields | update)
+
+
+class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
+    def test_the_code_only_fixture_passes(self) -> None:
+        assert _code_only().basis == "code_only"
+
+    @pytest.mark.parametrize("missing", ["analysis_id", "generator_model"])
+    def test_an_analysis_report_names_its_analysis_and_its_writer(self, missing: str) -> None:
+        source = minimal_report().source.model_dump() | {missing: None}
+        with pytest.raises(ValueError, match="an analysis report names its analysis_id and generator_model"):
+            minimal_report(source=source)
+
+    @pytest.mark.parametrize("named", [{"analysis_id": "a"}, {"generator_model": "m"}])
+    def test_a_code_only_report_names_no_analysis(self, named: dict[str, str]) -> None:
+        source = _code_only().source.model_dump() | named
+        with pytest.raises(ValueError, match="a code-only report renders no analysis"):
+            _code_only(source=source)
+
+    def test_a_code_only_report_carries_no_headline(self) -> None:
+        with pytest.raises(ValueError, match="carries no headline"):
+            _code_only(headline="the wide chunk is slower")
+
+    def test_a_code_only_report_counts_no_findings(self) -> None:
+        with pytest.raises(ValueError, match="has no findings, and this one counts 1"):
+            _code_only(finding_count=1)
+
+    def test_a_code_only_report_holds_no_authors_words(self) -> None:
+        blocks = [{"kind": "text", "section": "summary", "role": "summary", "body": "words"}]
+        with pytest.raises(ValueError, match=r"blocks \[0\] are text blocks"):
+            _code_only(blocks=blocks)
+
+    def test_the_schema_holds_the_version(self) -> None:
+        document = json.loads(_code_only().to_canonical_json())
+        assert document["report_version"] == REPORT_VERSION == 2
+        document["report_version"] = 1
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(published_report_schema()).validate(document)
+
+
+# =============================================================================
+# The code-only report: the toy campaign, with no analysis generated
+# =============================================================================
+
+
+@pytest.fixture
+def code_only() -> tuple[EvalHost, Report]:
+    host, campaign = toy_campaign_host()
+    return host, campaign_report(host, campaign.id, campaign.scope_id)
+
+
+class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
+    def test_it_is_code_only_and_says_so_first(self, code_only: tuple[EvalHost, Report]) -> None:
+        _, report = code_only
+        assert report.basis == "code_only" and report.headline == "" and report.finding_count == 0
+        first = report.blocks[0]
+        assert isinstance(first, DisclosureBlock) and (first.section, first.source, first.text) == (
+            "summary",
+            "generation",
+            NO_ANALYSIS,
+        )
+
+    def test_it_holds_no_authors_words(self, code_only: tuple[EvalHost, Report]) -> None:
+        _, report = code_only
+        assert not [block for block in report.blocks if isinstance(block, TextBlock)]
+
+    def test_it_lays_out_the_arms_and_the_surface_through_the_analysis_reports_builders(
+        self, code_only: tuple[EvalHost, Report]
+    ) -> None:
+        """Every arm is unresolved — a verdict is a decision's, and nothing decided — and the control is marked."""
+        _, report = code_only
+        tables = {block.name: block for block in report.blocks if isinstance(block, TableBlock)}
+        assert {"arms", "surface"} <= set(tables)
+        arms = tables["arms"]
+        assert arms.rows and {row["status"] for row in arms.rows} == {"unresolved"}
+        assert not any(row["findings"] for row in arms.rows)
+        assert tables["surface"].rows
+
+    def test_it_draws_a_distribution_per_measure_the_surface_can_draw(self, code_only: tuple[EvalHost, Report]) -> None:
+        host, report = code_only
+        charts = [block for block in report.blocks if isinstance(block, ChartBlock)]
+        assert charts and all(chart.viz_type == "distribution" and chart.finding is None for chart in charts)
+        assert all(chart.intent is not None for chart in charts)
+        drawn_or_disclosed = {chart.intent.title for chart in charts if chart.intent is not None} | {
+            block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.source == "chart"
+        }
+        assert any(text.startswith("total_ms") for text in drawn_or_disclosed), drawn_or_disclosed
+        titles = [chart.intent.title for chart in charts if chart.intent is not None]
+        assert len(set(titles)) == len(titles), titles
+
+    def test_it_ends_on_how_it_was_computed(self, code_only: tuple[EvalHost, Report]) -> None:
+        _, report = code_only
+        last = report.blocks[-1]
+        assert isinstance(last, DisclosureBlock) and last.source == "generation"
+        assert report.source.bundle_fingerprint in last.text and "No model was called" in last.text
+
+    def test_it_serializes_three_ways_and_the_schema_validates_it(self, code_only: tuple[EvalHost, Report]) -> None:
+        _, report = code_only
+        document = json.loads(report.to_canonical_json())
+        jsonschema.Draft202012Validator(published_report_schema()).validate(document)
+        assert Report.model_validate(document) == report
+
+        markdown = report_markdown(report)
+        assert markdown.startswith(f"# Campaign {report.source.campaign_id}: its evidence, with no analysis\n")
+        assert "No analysis was generated." in markdown and "(blank headline)" not in markdown
+        page = report_html(report)
+        assert 'data-basis="code_only"' in page and 'data-chart-type="distribution"' in page
+
+
+# =============================================================================
+# The resolver: the campaign's newest unarchived analysis, else its evidence
+# =============================================================================
+
+
+async def test_a_campaign_with_an_analysis_is_reported_through_it(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
+    host, analysis, report = toy
+    assert campaign_report(host, analysis.campaign_id, analysis.scope_id) == report
+    assert report.basis == "analysis" and report.source.analysis_id == analysis.id
+
+
+async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
+    """An archive says the analysis was wrong, so the campaign falls back to its evidence — stated, not silent."""
+    host, analysis, _ = toy
+    set_analysis_archived(host.storage, analysis.id, analysis.scope_id, archived=True, reason="shown false")
+
+    report = campaign_report(host, analysis.campaign_id, analysis.scope_id)
+    assert report.basis == "code_only" and report.source.analysis_id is None
+    # The archived analysis is still readable by its id.
+    assert analysis_report(host.storage, analysis.id, analysis.scope_id).source.analysis_id == analysis.id
+
+
+def test_the_resolver_refuses_a_campaign_the_scope_does_not_hold() -> None:
+    host, campaign = toy_campaign_host()
+    with pytest.raises(NotFoundError):
+        campaign_report(host, "nope", campaign.scope_id)
+
+
+def test_a_code_only_report_states_the_contrasts_code_tested_against_the_control() -> None:
+    """With a control declared, the bundle's Holm-corrected contrasts are a table, each family's correction disclosed."""
+    host, campaign = toy_campaign_host()
+    set_campaign_control(
+        host.storage, campaign.id, campaign.scope_id, campaign.run_ids[0], set_by="t", profile=host.profile
+    )
+
+    report = campaign_report(host, campaign.id, campaign.scope_id)
+    (comparisons,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
+    assert comparisons.rows and {row["question"] for row in comparisons.rows} == {"q-chunk-width"}
+    by_reading = {row["reading"]: row["verdict"] for row in comparisons.rows}
+    assert by_reading["field_accuracy"] == "improved on the control"
+    assert by_reading["total_ms"] == "regressed from the control"
+    assert any(
+        isinstance(block, DisclosureBlock) and block.source == "comparisons" and "Holm" in block.text
+        for block in report.blocks
+    )
+    (arms,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "arms"]
+    assert sum(str(row["arm"]).endswith("(control)") for row in arms.rows) == 1

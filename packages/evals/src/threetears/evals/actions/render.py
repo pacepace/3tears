@@ -211,8 +211,8 @@ def render_job_status(status: JobStatus) -> str:
         lines.append("progress: " + json.dumps(status.progress, sort_keys=True))
     if status.detail:
         lines.append(f"detail: {status.detail}")
-    if status.state == "completed" and status.analysis_id:
-        lines.append(f"Read it with action='report_read', analysis_id='{status.analysis_id}'.")
+    if status.state == "completed" and status.analysis_id and status.campaign_id:
+        lines.append(f"Read it with action='report_read', campaign_id='{status.campaign_id}'.")
     elif status.done and status.run_id:
         lines.append(f"Read it with action='run_get', run_id='{status.run_id}'.")
     return "\n".join(lines)
@@ -243,7 +243,7 @@ def render_analyses(listing: AnalysisListing) -> str:
 
 
 def render_report(document: ReportDocument) -> str:
-    """The report itself, in the form asked for."""
+    """The report itself, in the form asked for — which already says whether it is an analysis or code-only."""
     return document.body
 
 

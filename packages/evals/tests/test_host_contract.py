@@ -25,7 +25,7 @@ from __future__ import annotations
 import ast
 from dataclasses import replace
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 
 import pytest
 
@@ -33,7 +33,7 @@ from threetears.evals.contracts.host import style as style_module
 from threetears.evals.contracts.host.bars import Bar, BarRegistrationError, BarRegistry
 from threetears.evals.contracts.host.measures import MeasureRegistry
 from threetears.evals.contracts.host.profile import HostProfile, ProfileRegistrationError
-from threetears.evals.contracts.host.style import StyleError, StyleProfile, ToneRegister
+from threetears.evals.contracts.host.style import ChartPalette, StyleError, StyleProfile, ToneRegister
 from threetears.evals.contracts.host.sweepables import (
     CANDIDATE_KIND_LEVER,
     CANDIDATE_MODEL_LEVER,
@@ -50,7 +50,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     UNRECORDED_APPARATUS,
     toyhost_observation,
 )
-from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_ID, toyhost_profile
+from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_ID, TOYHOST_PALETTE, toyhost_profile
 
 
 #: One arbitrary lever level, for the tests that care which NAMES a map carries rather than what
@@ -374,8 +374,8 @@ def test_the_only_style_text_reaching_a_prompt_is_an_engine_owned_fragment():
     # A fragment that folded in anything the toy host wrote (its locale, its palette) would match none.
     owned = {style_module.prompt_fragment(StyleProfile(tone_register=register)) for register in get_args(ToneRegister)}
     assert fragment in owned
-    # Walks whatever the host actually supplied, at any depth of vega_config — rather than the
-    # three colours a hand-written assertion happens to know about.
+    # Walks whatever the host actually supplied — its locale and every colour of its palette — rather
+    # than the few values a hand-written assertion happens to know about.
     style_module.assert_no_style_text(fragment, toy.style)
 
 
@@ -698,22 +698,58 @@ def test_a_locale_that_is_a_sentence_is_refused():
     assert StyleProfile(locale="zh-Hant-TW").locale == "zh-Hant-TW"
 
 
-def test_the_purity_check_walks_arbitrary_host_config_rather_than_known_fields():
-    """`vega_config` is an arbitrary nested dict, so the check must walk it, not enumerate it.
-
-    This is the half that could not be typed. A host can nest a string at any depth of a
-    Vega-Lite theme, and constraining that shape here would fork the Vega schema — so the promise
-    is kept by proving the value is absent from the prompt rather than by forbidding the value.
-    """
-    style = replace(
-        toyhost_profile().style,
-        vega_config={"title": {"subtitle": ["deeply nested host words"]}},
-    )
+def test_the_purity_check_walks_every_colour_the_host_declared():
+    """The check walks the palette the host wrote, every slot and role, not a known few fields."""
+    style = toyhost_profile().style
+    assert style.chart_palette is not None
+    deep = style.chart_palette.on_fill
 
     style_module.assert_no_style_text("an engine-owned sentence", style)
 
-    with pytest.raises(StyleError, match="deeply nested host words"):
-        style_module.assert_no_style_text("a prompt containing deeply nested host words", style)
+    with pytest.raises(StyleError, match=deep):
+        style_module.assert_no_style_text(f"a prompt that quotes {deep}", style)
+
+
+def _palette(**update: Any) -> ChartPalette:
+    """The toy host's palette with ``update`` applied — one change at a time, so each refusal is its own."""
+    return replace(TOYHOST_PALETTE, **update)
+
+
+class TestAChartPaletteIsRefusedWhenARendererCouldNotDrawWithIt:
+    """``ChartPalette`` is renderer-neutral and checked where it is built: every refusal fires."""
+
+    def test_the_toy_palette_is_accepted(self) -> None:
+        assert _palette().series == TOYHOST_PALETTE.series
+
+    def test_too_few_series_slots(self) -> None:
+        with pytest.raises(StyleError, match="exactly the 8 slots"):
+            _palette(series=TOYHOST_PALETTE.series[:3])
+
+    def test_too_many_series_slots(self) -> None:
+        with pytest.raises(StyleError, match="exactly the 8 slots"):
+            _palette(series=(*TOYHOST_PALETTE.series, "#000000"))
+
+    def test_a_ramp_of_one_stop(self) -> None:
+        with pytest.raises(StyleError, match="at least two"):
+            _palette(sequential=("#ffffff",))
+
+    @pytest.mark.parametrize("colour", ["oklch(0.70 0.22 295)", "red", "#fff", "#12345g", " #123456"])
+    def test_a_series_colour_that_is_not_resolved_hex(self, colour: str) -> None:
+        with pytest.raises(StyleError, match=r"chart_palette\.series\[2\]"):
+            _palette(series=(*TOYHOST_PALETTE.series[:2], colour, *TOYHOST_PALETTE.series[3:]))
+
+    def test_a_ramp_stop_that_is_not_resolved_hex(self) -> None:
+        with pytest.raises(StyleError, match=r"chart_palette\.sequential\[1\]"):
+            _palette(sequential=("#ffffff", "oklch(0.5 0.1 200)"))
+
+    @pytest.mark.parametrize("role", ["background", "ink", "muted", "grid", "rule", "context", "on_fill"])
+    def test_a_role_that_is_not_resolved_hex(self, role: str) -> None:
+        with pytest.raises(StyleError, match=rf"chart_palette\.{role}\b"):
+            _palette(**{role: "transparent"})
+
+    def test_a_style_declaring_no_palette_is_the_default(self) -> None:
+        """No palette is a stated choice — the renderer's packaged one — and the default profile makes it."""
+        assert StyleProfile().chart_palette is None
 
 
 #: Kinds shipped INSIDE the package whose case payload is a schema they define themselves, keyed

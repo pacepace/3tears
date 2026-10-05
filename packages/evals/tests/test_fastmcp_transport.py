@@ -73,9 +73,10 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
         assert analysis_status["state"] == "completed"
 
         report, document, is_error = await _text(
-            client, "evals", {"action": "report_read", "analysis_id": analysis_status["analysis_id"]}
+            client, "evals", {"action": "report_read", "campaign_id": fixture.campaign.id}
         )
         assert not is_error and document is not None and document["format"] == "markdown"
+        assert (document["basis"], document["analysis_id"]) == ("analysis", analysis_status["analysis_id"])
         assert report.startswith("# the wider chunk costs half again as much wall-clock per document.")
 
 

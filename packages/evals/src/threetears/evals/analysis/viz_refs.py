@@ -340,6 +340,9 @@ def _distribution(ref: DistributionRef, surface: DecisionSurface, labels: dict[s
             {"label": labels[reading.cell_ref], "ci": _interval(reading), "n": reading.n} for reading in readings
         ],
         "unit": readings[0].unit,
+        # The value axis is the reading drawn, named — without it every distribution titles itself
+        # "Distribution", and two on one page cannot be told apart.
+        "x_label": f"{ref.measure_id} (judged)" if ref.reading == "judged" else ref.measure_id,
     }
 
 

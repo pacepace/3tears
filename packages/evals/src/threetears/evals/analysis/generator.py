@@ -75,8 +75,7 @@ from threetears.evals.analysis.bundle import (
     AnalysisContextBundle,
     LeverCoverageInput,
     RunSummary,
-    cell_dimension_facts,
-    cell_measure_facts,
+    bundle_decision_surface,
 )
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
@@ -423,7 +422,7 @@ async def generate_analysis(
         # since a writer handed a digest pair can copy it, and that copy is refused too. The stored
         # analysis keeps the surface its aliases were minted from, so its copy stays readable.
         refusal_text = str(refused)
-        writer_refusal = in_writer_terms(refusal_text, _decision_surface(bundle))
+        writer_refusal = in_writer_terms(refusal_text, bundle_decision_surface(bundle))
         tally.refusals.append(refusal_text)
         log.warning(
             "eval.analysis output refused for campaign=%s — attempting ONE repair round-trip "
@@ -774,7 +773,7 @@ def _assemble_and_validate(
     except (ValidationError, OffVocabulary) as refused:
         raise SoundnessRefusal(f"generator output does not match the analysis contract: {refused}") from refused
     _reject_mismatched_question_answers(document, bundle)
-    return _resolved_analysis(document, bundle, generation, _decision_surface(bundle), measures=profile.measures)
+    return _resolved_analysis(document, bundle, generation, bundle_decision_surface(bundle), measures=profile.measures)
 
 
 def _resolved_analysis(
@@ -1241,30 +1240,6 @@ def _parse_payload(result: CompletionResult) -> dict[str, Any]:
         return extract_json(result.content or "")
     except ValueError as e:
         raise SoundnessRefusal(f"generator output was not valid JSON: {e}") from e
-
-
-def _decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
-    """Freeze the bundle's per-cell facts into the surface the analysis resolves against and stores.
-
-    Copied, never recomputed: each per-cell number is the one assembly computed over the evidence
-    this analysis was generated from. The control is the declaration's own variant key — the same
-    value ``design_snapshot`` carries and the arm table marks as the control — so the two surfaces
-    cannot name different arms.
-
-    Args:
-        bundle: The evidence set.
-
-    Returns:
-        The decision surface.
-    """
-    return DecisionSurface(
-        control_variant_key=bundle.declared_design.control if bundle.declared_design else None,
-        cells=bundle.cell_measures,
-        bars=bundle.bar_adjudications,
-        measures=cell_measure_facts(bundle),
-        dimensions=cell_dimension_facts(bundle),
-        time_axis=bundle.time_axis,
-    )
 
 
 def _resolve(surface: DecisionSurface, ref: str, reading: ReadingRef, *, where: str) -> ResolvedReading:

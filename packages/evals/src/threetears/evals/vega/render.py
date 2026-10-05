@@ -70,7 +70,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.vega.palette import Theme, vega_config
+from threetears.evals.contracts.host import ChartPalette
+from threetears.evals.vega.palette import vega_config
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -184,7 +185,7 @@ def _prepare_fonts(font_dir: Path | None) -> None:
 def render_png(
     spec: dict[str, Any],
     *,
-    theme: Theme = "dark",
+    palette: ChartPalette,
     scale: int = DEFAULT_SCALE,
     font_dir: Path | None = None,
 ) -> bytes:
@@ -192,7 +193,7 @@ def render_png(
 
     Args:
         spec: The colourless Vega-Lite spec.
-        theme: Which palette to draw it in.
+        palette: The colours to draw it in — a host's, or ``packaged_palette(theme)``.
         scale: Device-pixel multiplier.
         font_dir: Directory of font files to register before drawing, per
             :func:`register_fonts`. ``None`` registers nothing and draws in
@@ -205,15 +206,15 @@ def render_png(
     import vl_convert as vlc
 
     _prepare_fonts(font_dir)
-    return vlc.vegalite_to_png(json.dumps(spec), config=vega_config(theme), scale=scale)
+    return vlc.vegalite_to_png(json.dumps(spec), config=vega_config(palette), scale=scale)
 
 
-def render_svg(spec: dict[str, Any], *, theme: Theme = "dark", font_dir: Path | None = None) -> str:
+def render_svg(spec: dict[str, Any], *, palette: ChartPalette, font_dir: Path | None = None) -> str:
     """Render a compiled spec to SVG.
 
     Args:
         spec: The colourless Vega-Lite spec.
-        theme: Which palette to draw it in.
+        palette: The colours to draw it in — a host's, or ``packaged_palette(theme)``.
         font_dir: Directory of font files to register before drawing, per
             :func:`register_fonts`. ``None`` registers nothing and draws in
             whatever the host's font database resolves — permitted, and warned
@@ -225,7 +226,7 @@ def render_svg(spec: dict[str, Any], *, theme: Theme = "dark", font_dir: Path | 
     import vl_convert as vlc
 
     _prepare_fonts(font_dir)
-    return vlc.vegalite_to_svg(json.dumps(spec), config=vega_config(theme))
+    return vlc.vegalite_to_svg(json.dumps(spec), config=vega_config(palette))
 
 
 __all__ = [

@@ -10,14 +10,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
+import jsonschema
 import pytest
 
+from threetears.evals.analysis import NO_ANALYSIS, published_report_schema
 from threetears.evals.contracts import CandidateOutput, EvalRun, EvalTestCase, JudgedArtifact
+from threetears.evals.ops import report_read
 from threetears.evals.quick import callable_host, run_cli, run_eval
 from threetears.evals.run import KindWiring, LaunchableKind, LaunchHost, LaunchRequest, default_job_timeout, launch_run
 from packages.evals.tests.fixtures.courierhost import (
@@ -81,13 +86,88 @@ def test_ls_over_an_empty_store_says_so(capsys: pytest.CaptureFixture[str]) -> N
     assert capsys.readouterr().out.splitlines() == ["templates (0)", "runs (0)", "campaigns (0)"]
 
 
-def test_report_prints_the_campaigns_bundle_as_json(capsys: pytest.CaptureFixture[str]) -> None:
+def test_bundle_prints_the_campaigns_bundle_as_json(capsys: pytest.CaptureFixture[str]) -> None:
+    """The bundle inspection ``report`` used to print, under its own name."""
     host = courier_host()
     campaign = asyncio.run(run_courier_campaign(host))
-    assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
+    assert run_cli(["bundle", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["campaign_id"] == report["bundle"]["campaign_id"] == campaign.id
     assert sorted(report["bundle"]["run_ids"]) == sorted(campaign.run_ids)
+
+
+def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: pytest.CaptureFixture[str]) -> None:
+    """No analysis, no keyless analyst: the report is the evidence as code computed it, and says so first."""
+    host = courier_host()
+    campaign = asyncio.run(run_courier_campaign(host))
+    assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
+    out = capsys.readouterr().out
+    assert out.startswith(f"# Campaign {campaign.id}: its evidence, with no analysis\n")
+    assert "No analysis was generated." in out.splitlines()[2]
+    assert f"> {NO_ANALYSIS}" in out
+    assert "## Arms" in out and "## Decision surface" in out
+
+
+def test_report_is_the_report_read_actions_report(capsys: pytest.CaptureFixture[str]) -> None:
+    """One resolver, both callers: the command line prints exactly the body the action returns."""
+    host = courier_host()
+    campaign = asyncio.run(run_courier_campaign(host))
+    for form in ("markdown", "html", "json"):
+        assert (
+            run_cli(["report", campaign.id, "--scope", COURIER_SCOPE, "--format", form], host_factory=lambda: host) == 0
+        )
+        body = report_read(host, campaign.id, COURIER_SCOPE, format=form).body
+        printed = body + "\n" if form == "json" else body
+        assert _without_assembly_time(capsys.readouterr().out) == _without_assembly_time(printed)
+
+
+def _without_assembly_time(text: str) -> str:
+    """A code-only report states when it was assembled; two reads a moment apart differ there and only there."""
+    return re.sub(r"\d{4}-\d{2}-\d{2}T[0-9:.+]+(Z|[+-]\d{2}:\d{2})?", "<at>", text)
+
+
+def test_report_as_json_is_a_code_only_report_the_published_schema_validates(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    host = courier_host()
+    campaign = asyncio.run(run_courier_campaign(host))
+    assert (
+        run_cli(["report", campaign.id, "--scope", COURIER_SCOPE, "--format", "json"], host_factory=lambda: host) == 0
+    )
+    document = json.loads(capsys.readouterr().out)
+
+    jsonschema.Draft202012Validator(published_report_schema()).validate(document)
+    assert (document["basis"], document["source"]["analysis_id"], document["source"]["generator_model"]) == (
+        "code_only",
+        None,
+        None,
+    )
+
+
+def test_report_writes_html_to_out(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    host = courier_host()
+    campaign = asyncio.run(run_courier_campaign(host))
+    out = tmp_path / "report.html"
+    args = ["report", campaign.id, "--scope", COURIER_SCOPE, "--format", "html", "--out", str(out)]
+    assert run_cli(args, host_factory=lambda: host) == 0
+
+    page = out.read_text(encoding="utf-8")
+    assert page.startswith("<!doctype html>") and 'data-basis="code_only"' in page and "<script" not in page.lower()
+    assert capsys.readouterr().out == f"wrote the code-only report of campaign {campaign.id} (html) to {out}\n"
+
+
+def test_report_refuses_an_out_it_cannot_write(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    host = courier_host()
+    campaign = asyncio.run(run_courier_campaign(host))
+    args = ["report", campaign.id, "--scope", COURIER_SCOPE, "--out", str(tmp_path)]
+    assert run_cli(args, host_factory=lambda: host) == 2
+    assert f"--out {tmp_path}: cannot write the report there" in capsys.readouterr().err
+
+
+def test_report_refuses_a_format_it_does_not_serialize() -> None:
+    with pytest.raises(SystemExit) as exited:
+        run_cli(["report", "c", "--scope", COURIER_SCOPE, "--format", "pdf"], host_factory=courier_host)
+    assert exited.value.code == 2
 
 
 def test_a_mounted_cli_takes_no_host_option(capsys: pytest.CaptureFixture[str]) -> None:
@@ -182,8 +262,11 @@ def test_run_relays_the_launchers_own_refusal(capsys: pytest.CaptureFixture[str]
     assert err.startswith("app evals run: ") and "'planner-max' is none of them" in err
 
 
-def test_report_refuses_a_campaign_the_scope_does_not_hold(capsys: pytest.CaptureFixture[str]) -> None:
-    assert run_cli(["report", "nope", "--scope", COURIER_SCOPE], host_factory=courier_host) == 2
+@pytest.mark.parametrize("command", ["report", "bundle"])
+def test_report_and_bundle_refuse_a_campaign_the_scope_does_not_hold(
+    command: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run_cli([command, "nope", "--scope", COURIER_SCOPE], host_factory=courier_host) == 2
     assert "nope" in capsys.readouterr().err
 
 

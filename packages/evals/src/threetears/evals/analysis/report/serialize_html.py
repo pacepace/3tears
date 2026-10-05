@@ -30,6 +30,8 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TextBlock,
     finding_number,
+    report_byline,
+    report_title,
 )
 from threetears.evals.analysis.report.words import positions
 from threetears.evals.analysis.viz.intent import Cell
@@ -71,8 +73,7 @@ def report_html(report: Report) -> str:
     Returns:
         The page.
     """
-    source = report.source
-    title = report.headline.strip() or "(blank headline)"
+    title = report_title(report)
     parts = [
         "<!doctype html>",
         '<html lang="en">',
@@ -83,12 +84,9 @@ def report_html(report: Report) -> str:
         f"<style>{_STYLE}</style>",
         "</head>",
         "<body>",
-        "<article>",
+        f'<article data-basis="{report.basis}">',
         f"<h1>{_inline(_one_line(title))}</h1>",
-        (
-            f'<p class="source">Analysis {_escape(source.analysis_id)} of campaign {_escape(source.campaign_id)} — '
-            f"{_escape(source.behavior)}; generated {_escape(source.generated_at)} by {_escape(source.generator_model)}.</p>"
-        ),
+        f'<p class="source">{_escape(_one_line(report_byline(report)))}</p>',
     ]
     for section, heading in SECTION_TITLES.items():
         blocks = [block for block in report.blocks if block.section == section]

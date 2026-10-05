@@ -61,8 +61,12 @@ returning an `EvalHost`, or a `LaunchHost` for `run`:
 ```
 python -m threetears.evals run    --host myapp.evals:build_host --scope dev --template T --subject S --model M
 python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
-python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev
+python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out PATH]
+python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
 ```
+
+`report` prints the campaign's report (below) — its analysis, or, when it has none, a code-only report of
+its evidence; `bundle` prints the analysis bundle a generation would read, as JSON. Neither calls a model.
 
 Mount the same commands under your own CLI with `run_cli(argv, host_factory=build_host, prog="myapp
 evals")`; your users then never name the host.
@@ -223,12 +227,23 @@ report_markdown(report)      # for an agent, or to paste as a memo
 report_html(report)          # a page that reads without a script
 ```
 
+**The campaign's report** is `campaign_report(host, campaign_id, scope_id)` — the one answer the CLI's
+`report` and the `report_read` action both give: the campaign's newest analysis that is not archived, or,
+when it has none, a **code-only report** of its evidence (`build_code_only_report`). That one has
+`basis="code_only"` and no author's words — no headline, no findings, no text block, which the schema
+refuses — and holds the arm table (every arm unresolved, since nothing decided), the decision surface,
+the contrasts the evidence tested against the control, a distribution chart per measure and judged
+dimension, and every disclosure the evidence carries, opening with a statement that no analysis was
+generated and what one would add. `Report.basis` says which a report is; `REPORT_VERSION` is 2.
+
 A chart block carries the chart's **intent** (`ChartIntent`, from `threetears.evals.analysis.viz`), never
 a charting library's spec: its type from eval's eight, the rows it draws, what each field encodes (identity,
 length, position, interval with what it varies over, level, class, ordinal), its axes with their units and
 zero baselines, its order, the colour *slots* it uses and what it must disclose — plus its values as drawn,
 which the HTML shows as a table. How a chart looks is the host's: a renderer reads the intent and the
-host's theme. The presentation rules are checked on the intent (`check_intent`), so they hold for any
+host's palette — `StyleProfile.chart_palette`, a renderer-neutral `ChartPalette` (the eight numbered series
+slots, slots 1-4 validated; a sequential ramp; background, ink, muted, grid, rule, context and on-fill),
+every colour resolved `#rrggbb`. The presentation rules are checked on the intent (`check_intent`), so they hold for any
 renderer, and the core ships no charting library.
 
 ### Drawing charts: the Vega-Lite adapter
@@ -246,7 +261,8 @@ from pathlib import Path
 from threetears.evals.analysis import finding_chart_intent
 from threetears.evals.vega import VegaRenderer
 
-renderer = VegaRenderer(theme="dark", font_dir=Path("/srv/fonts"))  # the host's theme, bound once
+# The host's declared palette, bound once; a host declaring none draws in the packaged "dark" palette.
+renderer = VegaRenderer.for_style(host.profile.style, theme="dark", font_dir=Path("/srv/fonts"))
 intent = finding_chart_intent(host.storage, analysis_id, scope_id, "0")  # or a chart block's `intent`
 chart = renderer.draw(intent)   # a colourless Vega-Lite spec, chart.spec, for a browser to embed...
 renderer.config()               # ...with this config beside it

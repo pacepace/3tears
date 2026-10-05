@@ -27,8 +27,10 @@ from typing import Literal
 from pydantic import Field, computed_field
 
 from threetears.evals.analysis.cells import variant_of_cell_ref
+from threetears.evals.contracts.authored import Decision
 from threetears.evals.contracts.campaign import (
     EvalAnalysis,
+    FindingResolution,
     VariantIndexEntry,
 )
 from threetears.evals.contracts.host.values import SweepableValue
@@ -422,7 +424,7 @@ def cell_label(
 
 
 def _status_and_why(
-    analysis: EvalAnalysis, variant_key: str, *, is_control: bool, a_winner_exists: bool
+    decisions: Sequence[Decision], variant_key: str, *, is_control: bool, a_winner_exists: bool
 ) -> tuple[ArmStatus, list[str]]:
     """Where one arm stands, read off the decisions that name its cells.
 
@@ -434,7 +436,6 @@ def _status_and_why(
         ``(status, finding_ids)`` — where the arm stands, and the positions of the findings the
         deciding decision rests on.
     """
-    decisions = analysis.document.decisions
     rulings: tuple[tuple[str, ArmStatus], ...] = (("adopted", "winner"), ("rejected", "ruled_out"))
     for disposition, status in rulings:
         for decision in decisions:
@@ -447,7 +448,9 @@ def _status_and_why(
     return "unresolved", []
 
 
-def _measurements(analysis: EvalAnalysis, arms: list[str]) -> tuple[dict[str, list[ArmMeasurement]], list[str]]:
+def _measurements(
+    resolutions: Sequence[FindingResolution], arms: list[str]
+) -> tuple[dict[str, list[ArmMeasurement]], list[str]]:
     """Place every resolved evidence row onto the arm its cell belongs to.
 
     Returns:
@@ -456,7 +459,7 @@ def _measurements(analysis: EvalAnalysis, arms: list[str]) -> tuple[dict[str, li
     """
     placed: dict[str, list[ArmMeasurement]] = {key: [] for key in arms}
     unplaced: set[str] = set()
-    for position, resolution in enumerate(analysis.resolutions):
+    for position, resolution in enumerate(resolutions):
         for row in resolution.evidence:
             measurement = ArmMeasurement(
                 measure_id=row.measure_id, value=row.value, n=row.n, dispersion=row.dispersion, finding_id=str(position)
@@ -469,16 +472,9 @@ def _measurements(analysis: EvalAnalysis, arms: list[str]) -> tuple[dict[str, li
     return placed, sorted(unplaced)
 
 
-def _unplaced_decision_cells(analysis: EvalAnalysis, arms: list[str]) -> list[str]:
+def _unplaced_decision_cells(decisions: Sequence[Decision], arms: list[str]) -> list[str]:
     """Every cell a decision names whose arm has no row in this table — a verdict with nowhere to land."""
-    return sorted(
-        {
-            cell
-            for decision in analysis.document.decisions
-            for cell in decision.cells
-            if variant_of_cell_ref(cell) not in arms
-        }
-    )
+    return sorted({cell for decision in decisions for cell in decision.cells if variant_of_cell_ref(cell) not in arms})
 
 
 def arm_table(analysis: EvalAnalysis) -> ArmTable:
@@ -488,26 +484,61 @@ def arm_table(analysis: EvalAnalysis) -> ArmTable:
         analysis: The analysis to read. Nothing is written back to it.
 
     Returns:
-        The table. Every arm the analysis's variant index holds gets a row, plus the declared
-        control when the index does not hold it — an incumbent whose levels are unavailable is
-        still an incumbent, and dropping its row is what the shape was chosen to prevent.
+        The table, as :func:`arm_table_of` derives it from the analysis's frozen variant index, its
+        declared control, and its decisions and resolutions.
     """
-    index = {entry.variant_key: entry for entry in analysis.variant_index}
-    control = analysis.design_snapshot.control if analysis.design_snapshot else None
-    keys = sorted(index) + ([control] if control and control not in index else [])
-    distinguishing = distinguishing_axes(analysis.variant_index)
+    return arm_table_of(
+        analysis.variant_index,
+        control=analysis.design_snapshot.control if analysis.design_snapshot else None,
+        decisions=analysis.document.decisions,
+        resolutions=analysis.resolutions,
+        source=f"eval.analysis {analysis.id}",
+    )
 
-    placed, unplaced = _measurements(analysis, keys)
+
+def arm_table_of(
+    variant_index: Sequence[VariantIndexEntry],
+    *,
+    control: str | None,
+    decisions: Sequence[Decision],
+    resolutions: Sequence[FindingResolution],
+    source: str,
+) -> ArmTable:
+    """Derive the arm comparison from its inputs — a stored analysis's, or a campaign's evidence alone.
+
+    With no decisions every arm is ``unresolved`` (a verdict is a decision's to give), and with no
+    resolutions no arm carries a measurement: that is what the table says about a campaign nothing has
+    analysed, and it is the truth rather than a gap.
+
+    Args:
+        variant_index: One entry per keyed variant.
+        control: The declared control's variant key, or None.
+        decisions: The decisions whose cells place a verdict on an arm.
+        resolutions: The findings' resolved evidence, in finding order.
+        source: What the table is of, named in the log line when a coordinate cannot be placed.
+
+    Returns:
+        The table. Every arm the variant index holds gets a row, plus the declared control when the
+        index does not hold it — an incumbent whose levels are unavailable is still an incumbent, and
+        dropping its row is what the shape was chosen to prevent.
+    """
+    index = {entry.variant_key: entry for entry in variant_index}
+    keys = sorted(index) + ([control] if control and control not in index else [])
+    distinguishing = distinguishing_axes(variant_index)
+
+    placed, unplaced = _measurements(resolutions, keys)
     # Answered over the whole set before any row is built: "was this incumbent replaced" asks
     # whether ANY arm won, which no single row can see.
     a_winner_exists = any(
-        _status_and_why(analysis, key, is_control=False, a_winner_exists=False)[0] == "winner" for key in keys
+        _status_and_why(decisions, key, is_control=False, a_winner_exists=False)[0] == "winner" for key in keys
     )
 
     rows = []
     for key in keys:
         entry = index.get(key)
-        status, finding_ids = _status_and_why(analysis, key, is_control=key == control, a_winner_exists=a_winner_exists)
+        status, finding_ids = _status_and_why(
+            decisions, key, is_control=key == control, a_winner_exists=a_winner_exists
+        )
         rows.append(
             ArmRow(
                 variant_key=key,
@@ -522,13 +553,13 @@ def arm_table(analysis: EvalAnalysis) -> ArmTable:
     # Sorted on the RENDERED level rather than the key, so a reader scanning a status band meets
     # the arms in the order the report names them; the key breaks ties.
     rows.sort(key=lambda row: (_STATUS_ORDER[row.status], [level.display for level in row.levels], row.variant_key))
-    stranded = _unplaced_decision_cells(analysis, keys)
+    stranded = _unplaced_decision_cells(decisions, keys)
     if unplaced or stranded:
         # A cell that resolves to no arm renders as a neutral "no verdict" — the state an operator
         # is least able to distinguish from a real one — so it is logged as well as disclosed.
         log.warning(
-            "eval.analysis %s: arm table could not place %d evidence cell(s) %s and %d decision cell(s) %s",
-            analysis.id,
+            "%s: arm table could not place %d evidence cell(s) %s and %d decision cell(s) %s",
+            source,
             len(unplaced),
             unplaced,
             len(stranded),
@@ -548,6 +579,7 @@ __all__ = [
     "arm_levels",
     "arm_levers",
     "arm_table",
+    "arm_table_of",
     "cell_label",
     "distinguishing_axes",
     "multi_rig_variants",

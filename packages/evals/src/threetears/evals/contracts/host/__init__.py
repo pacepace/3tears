@@ -43,7 +43,14 @@ from threetears.evals.contracts.host.kinds import Interval, KindContract, KindCo
 from threetears.evals.contracts.host.measures import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.contracts.host.profile import Coverage, HostProfile
 from threetears.evals.contracts.host.spend import ExternalSpend
-from threetears.evals.contracts.host.style import StyleProfile
+from threetears.evals.contracts.host.style import (
+    SERIES_SLOTS,
+    VALIDATED_SLOTS,
+    ChartPalette,
+    StyleError,
+    StyleProfile,
+    require_resolved_colour,
+)
 from threetears.evals.contracts.host.subject import SubjectSnapshot
 from threetears.evals.contracts.host.timeouts import CellTimeoutFactory, EvalCellTimeout, default_cell_timeout
 from threetears.evals.contracts.host.sweepables import (
@@ -106,7 +113,9 @@ from threetears.evals.contracts.schema_nesting import NestedSchema
 __all__ = [
     "CANDIDATE_KIND_LEVER",
     "CANDIDATE_MODEL_LEVER",
+    "SERIES_SLOTS",
     "SHARED_CORE",
+    "VALIDATED_SLOTS",
     "ActionParameterReader",
     "ApparatusError",
     "Bar",
@@ -116,6 +125,7 @@ __all__ = [
     "CellIdentity",
     "CellTimeoutFactory",
     "CellTrace",
+    "ChartPalette",
     "CheckName",
     "Comparability",
     "CompletionClients",
@@ -151,6 +161,7 @@ __all__ = [
     "SeedRefusalKind",
     "SeedRefused",
     "SeedWrite",
+    "StyleError",
     "StyleProfile",
     "SubjectSnapshot",
     "Sweepable",
@@ -180,6 +191,7 @@ __all__ = [
     "nested_schemas",
     "obligation_rows",
     "obligations",
+    "require_resolved_colour",
     "schema_violations",
     "served_models_by_score",
 ]

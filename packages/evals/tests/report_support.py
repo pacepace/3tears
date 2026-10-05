@@ -15,7 +15,7 @@ from threetears.evals.analysis import (
     prepare_analysis_generation,
     run_analysis_generation,
 )
-from threetears.evals.contracts.campaign import EvalAnalysis
+from threetears.evals.contracts.campaign import EvalAnalysis, EvalCampaign
 from threetears.evals.contracts.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -23,6 +23,7 @@ from packages.evals.tests.toyhost_memo import PROMPT, PROMPT_ID, FixturedClient,
 
 __all__ = [
     "minimal_report",
+    "toy_campaign_host",
     "toy_report",
 ]
 
@@ -41,6 +42,18 @@ def _with_a_chart(bundle: Any) -> dict[str, Any]:
     return payload
 
 
+def toy_campaign_host(clients: Any = None) -> tuple[EvalHost, EvalCampaign]:
+    """The toy host holding its corpus campaign — runs, results and the campaign — and no analysis of it."""
+    host = toyhost_host(clients=clients) if clients is not None else toyhost_host()
+    campaign, corpus = toyhost_campaign()
+    for run in corpus.load_eval_runs(campaign.run_ids, campaign.scope_id):
+        host.storage.save_eval_run(run)
+        for result in corpus.query_eval_results_by_run(run.id, campaign.scope_id):
+            host.storage.save_eval_result(result)
+    host.storage.save_campaign(campaign)
+    return host, campaign
+
+
 async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
     """The toy campaign generated through the host and read back as its report."""
     built: list[FixturedClient] = []
@@ -50,13 +63,7 @@ async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
         built.append(client)
         return client
 
-    host = toyhost_host(clients=clients)
-    campaign, corpus = toyhost_campaign()
-    for run in corpus.load_eval_runs(campaign.run_ids, campaign.scope_id):
-        host.storage.save_eval_run(run)
-        for result in corpus.query_eval_results_by_run(run.id, campaign.scope_id):
-            host.storage.save_eval_result(result)
-    host.storage.save_campaign(campaign)
+    host, campaign = toy_campaign_host(clients)
 
     async def prompt() -> str:
         return PROMPT
@@ -72,6 +79,7 @@ async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
 def minimal_report(**update: Any) -> Report:
     """A one-finding report that passes, with ``update`` applied over its fields."""
     fields: dict[str, Any] = {
+        "basis": "analysis",
         "headline": "h",
         "finding_count": 1,
         "source": {

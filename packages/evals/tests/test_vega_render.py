@@ -35,7 +35,15 @@ import pytest
 
 from threetears.evals.vega import compile_chart
 from threetears.evals.vega.compiler import point_radius
-from threetears.evals.vega.palette import geometry, load_palette, series_slots, vega_config
+from threetears.evals.vega.palette import (
+    PaletteError,
+    check_palette_artifact,
+    geometry,
+    load_palette,
+    packaged_palette,
+    series_slots,
+    vega_config,
+)
 from threetears.evals.analysis.viz.payloads import PAYLOAD_MODELS
 from threetears.evals.vega.render import render_png, render_svg
 
@@ -591,12 +599,12 @@ class TestPaletteArtifact:
         """
         palette = load_palette()
         for theme in ("light", "dark"):
-            assert vega_config(theme)["range"]["category"] == palette[theme]["chart"]
+            assert vega_config(packaged_palette(theme))["range"]["category"] == palette[theme]["chart"]
             # Against the artifact's own counted width, not against a literal 8. A
             # literal here was the last independently-pinned copy of the palette width:
             # widening the palette would have failed this test as a regression rather
             # than passing it as the change it is.
-            assert len(vega_config(theme)["range"]["category"]) == series_slots()
+            assert len(vega_config(packaged_palette(theme))["range"]["category"]) == series_slots()
 
     def test_a_value_drawn_on_a_mark_clears_the_contrast_bar_in_both_themes(self):
         """The knockout ink, measured rather than eyeballed.
@@ -612,7 +620,7 @@ class TestPaletteArtifact:
         bar it was granted an exception to clear.
         """
         for theme in ("light", "dark"):
-            config = vega_config(theme)
+            config = vega_config(packaged_palette(theme))
             fill = config["bar"]["color"]
             knockout = config["style"]["chart-value-on-fill"]["color"]
             ratio = _contrast_ratio(knockout, fill)
@@ -626,7 +634,7 @@ class TestPaletteArtifact:
         A failure here is that news, not a regression.
         """
         for theme in ("light", "dark"):
-            config = vega_config(theme)
+            config = vega_config(packaged_palette(theme))
             ratio = _contrast_ratio(config["text"]["color"], config["bar"]["color"])
             assert ratio < 4.5, (
                 f"{theme}: chart ink now clears {ratio:.2f}:1 over the mark fill — the on-fill knockout "
@@ -662,7 +670,7 @@ class TestPaletteArtifact:
         for role, weight in palette["font_weight"].items():
             assert weight >= 500 or role == "footnote", f"{role} is below the weight floor"
         for theme in ("light", "dark"):
-            config = vega_config(theme)
+            config = vega_config(packaged_palette(theme))
             assert config["axis"]["labelFontSize"] == palette["font_size"]["tick"]
             assert config["axis"]["labelFontWeight"] == palette["font_weight"]["tick"]
             assert config["axis"]["labelColor"] == palette[theme]["ink"]
@@ -671,13 +679,13 @@ class TestPaletteArtifact:
 class TestSvgRender:
     def test_the_series_colour_reaches_the_svg_as_hex(self, spec):
         for theme in ("light", "dark"):
-            svg = render_svg(spec, theme=theme)
+            svg = render_svg(spec, palette=packaged_palette(theme))
             assert load_palette()[theme]["chart"][0] in svg
 
     def test_no_unparseable_colour_notation_reaches_the_svg(self, spec):
         """The `fill` attribute is exactly where an OKLCH string would survive to."""
         for theme in ("light", "dark"):
-            assert "oklch" not in render_svg(spec, theme=theme).lower()
+            assert "oklch" not in render_svg(spec, palette=packaged_palette(theme)).lower()
 
     def test_the_configured_family_reaches_the_svg_as_font_family(self, spec):
         """That the theme's `font` key is honoured — NOT that the brand face drew the text.
@@ -688,10 +696,12 @@ class TestSvgRender:
         fallback `render.py` warns about. It is still worth pinning: it is what
         fails if the `font` key stops reaching text marks at all.
         """
-        assert f'font-family="{vega_config("dark")["font"]}"' in render_svg(spec, theme="dark")
+        assert f'font-family="{vega_config(packaged_palette("dark"))["font"]}"' in render_svg(
+            spec, palette=packaged_palette("dark")
+        )
 
     def test_the_drawn_labels_are_the_compiled_labels(self, spec):
-        svg = render_svg(spec, theme="dark")
+        svg = render_svg(spec, palette=packaged_palette("dark"))
         for part in PAYLOAD["parts"]:
             assert part["label"] in svg
 
@@ -720,7 +730,7 @@ class TestSvgRender:
             if isinstance(node.get("mark"), dict) and node["mark"].get("type") == "point" and "size" in node["mark"]
         }
         reserved = point_radius(size)
-        svg = render_svg(spec, theme="dark")
+        svg = render_svg(spec, palette=packaged_palette("dark"))
         drawn = re.search(
             r'aria-roledescription="point"[^>]*transform="translate\(([\d.]+),[\d.]+\)" d="M([\d.]+),0A', svg
         )
@@ -814,7 +824,7 @@ class TestADumbbellsValueIsNotStruckThroughByItsOwnMark:
         Returns:
             ``(ink, hue)``, each mapping a column to the set of rows it is drawn in.
         """
-        png = render_png(compile_chart(viz_type, payload).spec, theme=theme, scale=1)
+        png = render_png(compile_chart(viz_type, payload).spec, palette=packaged_palette(theme), scale=1)
         mode = load_palette()[theme]
         value_ink, series_hue = _hex_to_rgb(mode["ink"]), _hex_to_rgb(mode["chart"][0])
         ink: dict[int, set[int]] = defaultdict(set)
@@ -841,7 +851,7 @@ class TestADumbbellsValueIsNotStruckThroughByItsOwnMark:
         cap-height guess, which errs the only safe way — the numerals draw shorter than
         their line box, so a band that passes this measured wide passes drawn.
         """
-        svg = render_svg(compile_chart("delta_table", self.MANY_ROWS).spec, theme="dark")
+        svg = render_svg(compile_chart("delta_table", self.MANY_ROWS).spec, palette=packaged_palette("dark"))
         connectors = {
             match["row"]: float(match["top"]) + float(match["height"]) / 2
             for match in re.finditer(
@@ -882,7 +892,7 @@ class TestPngPixels:
         drawn".
         """
         for theme in ("light", "dark"):
-            colours = dominant_colours(render_png(spec, theme=theme, scale=1))
+            colours = dominant_colours(render_png(spec, palette=packaged_palette(theme), scale=1))
             expected = _hex_to_rgb(load_palette()[theme]["chart"][0])
             drawn = {rgb: count for rgb, count in colours}
             assert expected in drawn, f"{theme}: expected bars in {expected}, got {colours}"
@@ -890,14 +900,14 @@ class TestPngPixels:
 
     def test_the_chart_is_not_drawn_black(self, spec):
         """The exact signature of an unconverted palette: every series pure black."""
-        colours = dominant_colours(render_png(spec, theme="dark", scale=1))
+        colours = dominant_colours(render_png(spec, palette=packaged_palette("dark"), scale=1))
         drawn = {rgb: count for rgb, count in colours}
         assert drawn.get((0, 0, 0), 0) < 1000, f"chart drew a large black region — palette did not resolve: {colours}"
 
     def test_the_background_is_the_validated_chart_surface(self, spec):
         """Contrast was measured against this surface; drawing on another invalidates it."""
         for theme in ("light", "dark"):
-            colours = dominant_colours(render_png(spec, theme=theme, scale=1))
+            colours = dominant_colours(render_png(spec, palette=packaged_palette(theme), scale=1))
             assert colours[0][0] == _hex_to_rgb(load_palette()[theme]["surface"])
 
     def test_every_compiled_type_is_drawn_here(self):
@@ -933,7 +943,7 @@ class TestPngPixels:
         viz_type, payload = PAYLOADS[shape]
         spec = compile_chart(viz_type, payload).spec
         for theme in ("light", "dark"):
-            counts = dominant_colours(render_png(spec, theme=theme, scale=1), limit=None)
+            counts = dominant_colours(render_png(spec, palette=packaged_palette(theme), scale=1), limit=None)
             # Counted over the WHOLE histogram and reported over the head of it: the
             # question is how much of this colour was drawn, not whether it out-ranked
             # the anti-aliasing, and a shape whose marks are small loses that ranking
@@ -1009,7 +1019,7 @@ class TestPngPixels:
         import vl_convert as vlc
 
         broken = {
-            **vega_config("dark"),
+            **vega_config(packaged_palette("dark")),
             "mark": {"color": "oklch(0.70 0.22 295)"},
             "bar": {"color": "oklch(0.70 0.22 295)"},
         }
@@ -1047,13 +1057,29 @@ class TestALabelTooWideForTheColumnOverrunsRatherThanTruncating:
         return compile_chart("breakdown", payload).spec
 
     def test_the_name_survives_whole_into_the_drawn_document(self):
-        assert self._UNBREAKABLE in render_svg(self._spec(), theme="dark")
+        assert self._UNBREAKABLE in render_svg(self._spec(), palette=packaged_palette("dark"))
 
     def test_nothing_in_the_figure_is_ellipsised(self):
         """Vega's own truncation marker. Its absence is the rule holding."""
-        assert "…" not in render_svg(self._spec(), theme="dark")
+        assert "…" not in render_svg(self._spec(), palette=packaged_palette("dark"))
 
     def test_the_figure_widens_past_its_column_and_that_is_the_cost(self):
         """Stated as a measurement, so the trade is visible rather than discovered."""
-        width, _height = png_size(render_png(self._spec(), theme="dark", scale=1))
+        width, _height = png_size(render_png(self._spec(), palette=packaged_palette("dark"), scale=1))
         assert width > geometry()["figure_width"]
+
+
+class TestThePackagedPaletteIsHeldByTheContractsColourCheck:
+    """The packaged artifact and a host's palette pass one check, ``require_resolved_colour``."""
+
+    def test_an_artifact_carrying_oklch_is_refused(self):
+        artifact = json.loads(json.dumps(load_palette()))
+        artifact["dark"]["highlight"] = "oklch(0.70 0.22 295)"
+        with pytest.raises(PaletteError, match=r"dark\.highlight.*not resolved sRGB hex"):
+            check_palette_artifact(artifact)
+
+    def test_the_packaged_variants_are_palettes(self):
+        for theme in ("light", "dark"):
+            palette = packaged_palette(theme)
+            assert list(palette.series) == load_palette()[theme]["chart"]
+            assert palette.background == load_palette()[theme]["surface"]

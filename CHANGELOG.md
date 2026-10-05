@@ -6,6 +6,55 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the campaign's report, a code-only report, and the host's palette
+
+- **Breaking: `report_read` reads a campaign, not an analysis.** `report_read(host, campaign_id, scope_id, *,
+  format)` (and the `report_read` action's `campaign_id` parameter, in place of `analysis_id`) returns the
+  campaign's report through `campaign_report(host, campaign_id, scope_id)` (new, `threetears.evals.analysis`) —
+  the one resolver both it and the command line use: the campaign's newest analysis that is not archived, else
+  a code-only report of its evidence. `ReportDocument` gains `campaign_id` and `basis` and its `analysis_id`
+  becomes `None` on a code-only report. A particular analysis, archived ones included, is still read by id with
+  `analysis_report`. `serialize_report(report, format)` (new, `threetears.evals.ops`) is the one place a report
+  becomes Markdown, JSON or HTML. A completed generation's job status points at `report_read` by `campaign_id`.
+- **Breaking: the command line's `report` prints the report.** `report CAMPAIGN [--format markdown|html|json]
+  [--out PATH]` prints (or writes) the campaign's report; it used to print the analysis bundle as JSON, which
+  moves to a new engine command, `bundle CAMPAIGN` (`ENGINE_COMMANDS` is now `run`, `ls`, `report`, `bundle`).
+  An `--out` that cannot be written is refused (exit 2).
+- **A code-only report when there is no analysis.** `build_code_only_report(bundle, *, measures, assembled_at)`
+  (new) lays a campaign's assembled evidence out as a `Report` with `basis="code_only"`: the declared questions
+  (unanswered), the arm table (every arm unresolved), the decision surface, the contrasts the bundle tested
+  against the control with their Holm correction, a distribution chart per numeric measure and judged dimension
+  (a cell with no interval left out and disclosed), and every disclosure the bundle carries about its runs, how
+  they were measured and the rig — opening with `NO_ANALYSIS`, which says that no analysis was generated and what
+  one would add, and closing with the bundle fingerprint it was computed from. It holds no text block.
+  `arm_table_of`, `surface_table_of` and `bundle_decision_surface` (new) are the inputs-only forms of the arm
+  table, the surface table and the frozen surface, which both reports build through.
+- **Breaking: `Report` is version 2** (`REPORT_VERSION = 2`, `report/schema.json` regenerated). `basis`
+  (`analysis` | `code_only`, required) is added; `source.analysis_id` and `source.generator_model` are nullable
+  (`None` on a code-only report, where `generated_at` and `bundle_fingerprint` are the assembly's); disclosure
+  sources `runs`, `measurement`, `apparatus` and `comparisons` and the `comparisons` and `questions` tables are
+  added; a chart block may name no finding (a chart code chose). Refused: an analysis report naming no
+  `analysis_id` or `generator_model`; a code-only report naming either, carrying a headline, counting findings,
+  or holding a text block. The Markdown and HTML title and byline say which a report is, and the HTML `article` carries
+  `data-basis`.
+- **A distribution's value axis is named by its reading** (`x_label`), so two distributions on one page no longer
+  both title themselves "Distribution".
+- **Breaking: the host's palette is renderer-neutral and reaches the renderer.** `StyleProfile.vega_config` is
+  removed; `StyleProfile.chart_palette: ChartPalette | None` (new) replaces it. `ChartPalette` (new,
+  `threetears.evals.contracts.host`) names chart roles, never a renderer's keys: `series` (exactly `SERIES_SLOTS`,
+  slots 1-`VALIDATED_SLOTS` the validated tier), `sequential` (two or more stops), `background`, `ink`, `muted`,
+  `grid`, `rule`, `context`, `on_fill`. Refused (`StyleError`): a series of any other width, a ramp of one stop,
+  and any colour that is not resolved `#rrggbb` — `require_resolved_colour` (new), the one colour check the
+  packaged Vega palette's loader now runs too (`check_palette_artifact`, in `threetears.evals.vega.palette`). `VALIDATED_SLOTS` and `SERIES_SLOTS` now live in the host
+  contract (still exported from `threetears.evals.analysis.viz`).
+- **Breaking: `VegaRenderer` draws in a palette.** `VegaRenderer(palette=..., font_dir=...)`;
+  `VegaRenderer.for_style(style, *, theme="dark", font_dir=None)` draws in the style's declared palette, and in
+  the packaged `theme` variant only when the style declares none — the host's stated default, never a substitute
+  for a palette it declared; `VegaRenderer.packaged(theme)` is the packaged palette. `vega_config(palette)`,
+  `render_png(spec, *, palette, ...)` and `render_svg(spec, *, palette, ...)` take a `ChartPalette` in place of a
+  `theme`; `packaged_palette(theme)` and `PaletteError` are exported from `threetears.evals.vega`. The renderer's
+  type scale, font and geometry stay the packaged artifact's.
+
 ### 3tears-evals: operations, jobs, the action catalogue and the FastMCP transport
 
 - **Typed operations (`threetears.evals.ops`, new public root).** One function per operation over the host, each

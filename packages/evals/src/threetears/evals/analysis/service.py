@@ -46,7 +46,7 @@ from threetears.evals.analysis.reporter_kind import (
     reporter_case_of,
     reporter_case_payload,
 )
-from threetears.evals.analysis.report import Report, build_report
+from threetears.evals.analysis.report import Report, build_code_only_report, build_report
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
@@ -747,6 +747,40 @@ def analysis_report(storage: AnalysisStore, analysis_id: str, scope_id: str) -> 
     return build_report(get_analysis(storage, analysis_id, scope_id))
 
 
+def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
+    """The campaign's report — THE answer to "what is this campaign's report", for every caller.
+
+    **The rule.** The campaign's newest analysis that is not archived, laid out by
+    :func:`~threetears.evals.analysis.report.build_report` (``basis="analysis"``). When it has none —
+    no generation has run, or every analysis it had was archived (an archive is the claim that an
+    analysis was wrong, so it is not the campaign's report) — the campaign's evidence assembled now and
+    laid out by :func:`~threetears.evals.analysis.report.build_code_only_report` (``basis="code_only"``),
+    which says in its first block that no analysis was generated. A particular analysis, archived ones
+    included, is read by its id through :func:`analysis_report`.
+
+    Costs no model call either way: the code-only report is storage reads and arithmetic.
+
+    Args:
+        host: The host: where the campaign and its analyses are read, and the vocabulary its evidence is
+            assembled in when there is no analysis.
+        campaign_id: The campaign.
+        scope_id: The scope it lives in.
+
+    Returns:
+        The report; its ``basis`` says which it is.
+
+    Raises:
+        NotFoundError: No campaign with that id in the scope.
+    """
+    campaign = _load_campaign(host.storage, campaign_id, scope_id)
+    live = [analysis for analysis in list_analyses(host.storage, campaign_id, scope_id) if not analysis.archived]
+    if live:
+        return build_report(live[0])
+    assembled_at = utc_now_iso()
+    bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
+    return build_code_only_report(bundle, measures=host.profile.measures, assembled_at=assembled_at)
+
+
 def finding_chart_intent(storage: AnalysisStore, analysis_id: str, scope_id: str, finding_id: str) -> ChartIntent:
     """Decide one finding's chart, for a surface that draws a single chart at a time with its own renderer.
 
@@ -1326,6 +1360,7 @@ __all__ = [
     "freeze_reporter_case",
     "get_analysis",
     "inspect_analysis_bundle",
+    "campaign_report",
     "inspect_campaign_bundle",
     "list_analyses",
     "list_analysis_attempts",

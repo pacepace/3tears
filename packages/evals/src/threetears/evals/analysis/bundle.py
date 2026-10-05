@@ -138,6 +138,7 @@ from threetears.evals.contracts.result_condition import (
 )
 from threetears.evals.contracts.surface import (
     CellFacts,
+    DecisionSurface,
     JudgedDimensionFacts,
     JudgedReading,
     MeasureFacts,
@@ -5733,6 +5734,29 @@ def cell_dimension_facts(bundle: AnalysisContextBundle) -> dict[str, JudgedDimen
     }
 
 
+def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
+    """Freeze the bundle's per-cell facts into the decision surface an analysis — or a code-only report — reads.
+
+    Copied, never recomputed: each per-cell number is the one assembly computed over the evidence. The
+    control is the declaration's own variant key — the same value ``declared_design`` carries and the arm
+    table marks as the control — so the two cannot name different arms.
+
+    Args:
+        bundle: The evidence set.
+
+    Returns:
+        The decision surface.
+    """
+    return DecisionSurface(
+        control_variant_key=bundle.declared_design.control if bundle.declared_design else None,
+        cells=bundle.cell_measures,
+        bars=bundle.bar_adjudications,
+        measures=cell_measure_facts(bundle),
+        dimensions=cell_dimension_facts(bundle),
+        time_axis=bundle.time_axis,
+    )
+
+
 class InsightStanding(NamedTuple):
     """Where each listed insight's minting analysis stands — the two states a reader must be told.
 
@@ -5855,4 +5879,5 @@ __all__ = [
     "TelemetryRollup",
     "TokenRollup",
     "assemble_context_bundle",
+    "bundle_decision_surface",
 ]

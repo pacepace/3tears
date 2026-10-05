@@ -9,6 +9,14 @@ a published JSON Schema (``schema.json`` beside this module), so a host generate
 the schema rather than mirroring them by hand, and it ships three serializers: JSON (canonical, this
 model's own dump), Markdown (the agent-facing form) and HTML that reads without a script.
 
+**A report is of an analysis, or of the evidence alone — and it says which** (:attr:`Report.basis`). A
+campaign with a generated analysis is reported through it (``analysis``). A campaign with none — no
+analyst has run, and the package ships no keyless one — is still reported (``code_only``): the arm
+table, the decision surface, the contrasts against the control, a chart per measure and every
+disclosure the evidence carries, all computed by code, with NO text block at all, and a disclosure
+stating plainly that no analysis was generated and what one would add. The shape refuses a code-only
+report carrying an author's words, and an analysis report missing its analysis.
+
 **Who wrote what is part of the shape.** A ``text`` block holds what the analysis's author wrote, and
 nothing else; what code has to add — a chart's restatement, an arm the join could not place, why the
 time axis is days — is a ``disclosure``, never appended to the author's words. A chart block carries its
@@ -38,7 +46,16 @@ from threetears.evals.contracts.prose import ModelProse
 
 #: The report shape's version. Moves when a field or block kind is added, renamed or removed, or when a
 #: field's meaning moves under its name; a host reads it to know what it was handed.
-REPORT_VERSION: Literal[1] = 1
+#:
+#: 2: ``basis`` added (a report of an analysis, or a code-only report of the evidence alone);
+#: ``source.analysis_id`` and ``source.generator_model`` became nullable (None on a code-only report),
+#: and ``source.generated_at`` / ``source.bundle_fingerprint`` mean the assembly's on a code-only report;
+#: disclosure sources ``runs``, ``measurement``, ``apparatus`` and ``comparisons`` added; the
+#: ``comparisons`` and ``questions`` tables added; a chart block with no finding (a chart code chose).
+REPORT_VERSION: Literal[2] = 2
+
+#: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
+ReportBasis = Literal["analysis", "code_only"]
 
 #: Where a block sits, in reading order.
 ReportSection = Literal["summary", "questions", "decisions", "findings", "arms", "surface", "next", "methods"]
@@ -69,8 +86,12 @@ TextRole = Literal[
     "next_step_why",
 ]
 
-#: Who a disclosure speaks for.
-DisclosureSource = Literal["chart", "arms", "surface", "time_axis", "generation"]
+#: Who a disclosure speaks for. ``runs``: member runs left out, unfinished or short. ``measurement``: how
+#: and when the runs were launched and measured. ``apparatus``: the rig — controls, confounds, cells that
+#: did not pool. ``comparisons``: how the contrasts against the control were tested and corrected.
+DisclosureSource = Literal[
+    "chart", "arms", "surface", "time_axis", "generation", "runs", "measurement", "apparatus", "comparisons"
+]
 
 
 class Fact(EvalBaseModel):
@@ -143,7 +164,11 @@ class TableBlock(_Block):
 
     kind: Literal["table"] = "table"
     name: str = Field(
-        min_length=1, description="Which table this is: `evidence`, `arms`, `surface` or `unadjudicated_bars`."
+        min_length=1,
+        description=(
+            "Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts "
+            "against the control, as code tested them) or `questions` (the declared questions, on a code-only report)."
+        ),
     )
     title: str = Field(min_length=1, description="The table's heading.")
     columns: list[TableColumn] = Field(min_length=1, description="The columns, in display order.")
@@ -167,7 +192,10 @@ class TableBlock(_Block):
 
 
 class ChartBlock(_Block):
-    """A finding's chart: its intent, or why the stored chart cannot be drawn."""
+    """A chart: a finding's (its intent, or why the stored chart cannot be drawn), or one code chose.
+
+    A chart code chose — on a code-only report, one per measure the surface can draw — names no finding.
+    """
 
     kind: Literal["chart"] = "chart"
     viz_type: ChartType = Field(description="The chart type the finding carries.")
@@ -209,24 +237,49 @@ ReportBlock = Annotated[TextBlock | TableBlock | ChartBlock | DisclosureBlock, F
 
 
 class ReportSource(EvalBaseModel):
-    """What the report is a report of, and how that analysis was generated."""
+    """What the report is a report of, and how that analysis was generated — or that none was."""
 
-    analysis_id: str = Field(min_length=1, description="The analysis the report renders.")
+    analysis_id: str | None = Field(
+        default=None, min_length=1, description="The analysis the report renders; None on a code-only report."
+    )
     campaign_id: str = Field(min_length=1, description="The campaign the analysis is of.")
     scope_id: str = Field(min_length=1, description="The scope both live in.")
     subject_id: str = Field(min_length=1, description="The analysed subject.")
     subject_kind: str = Field(description="The subject's kind; empty when the campaign declared none.")
     behavior: str = Field(min_length=1, description="The behaviour under analysis.")
-    generated_at: str = Field(min_length=1, description="When the analysis was generated (ISO-8601).")
-    generator_model: str = Field(min_length=1, description="The model that wrote it, as the provider reported it.")
-    bundle_fingerprint: str = Field(min_length=1, description="The fingerprint of the bundle it was written over.")
+    generated_at: str = Field(
+        min_length=1,
+        description=(
+            "When the analysis was generated (ISO-8601); on a code-only report, when the evidence was assembled for it."
+        ),
+    )
+    generator_model: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The model that wrote the analysis, as the provider reported it; None on a code-only report.",
+    )
+    bundle_fingerprint: str = Field(
+        min_length=1,
+        description=(
+            "The fingerprint of the evidence bundle the analysis was written over; on a code-only report, of the "
+            "bundle the report was computed from."
+        ),
+    )
 
 
 class Report(EvalBaseModel):
     """One analysis, as a document every surface renders. See the module docstring for the contract."""
 
-    report_version: Literal[1] = Field(default=REPORT_VERSION, description="This shape's version.")
-    headline: ModelProse = Field(description="The author's headline, as written; empty when the author wrote none.")
+    report_version: Literal[2] = Field(default=REPORT_VERSION, description="This shape's version.")
+    basis: ReportBasis = Field(
+        description=(
+            "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the "
+            "report is the campaign's evidence as code computed it — no headline, no findings, no author's words."
+        )
+    )
+    headline: ModelProse = Field(
+        description="The author's headline, as written; empty when the author wrote none, and on a code-only report."
+    )
     finding_count: int = Field(
         ge=0, description="How many findings the document holds — the range every position is in."
     )
@@ -249,6 +302,34 @@ class Report(EvalBaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _the_basis_matches_what_the_report_holds(self) -> Self:
+        """Refuse a report whose basis disagrees with its source or its blocks.
+
+        An analysis report names its analysis and the model that wrote it. A code-only report names
+        neither, and holds nothing an author wrote: no headline, no findings, no text block — so a
+        reader can never take code's computation for an analyst's judgement, or the reverse.
+
+        Raises:
+            ValueError: The basis and what the report holds disagree.
+        """
+        source = self.source
+        if self.basis == "analysis":
+            if source.analysis_id is None or source.generator_model is None:
+                raise ValueError("an analysis report names its analysis_id and generator_model in its source")
+            return self
+        if source.analysis_id is not None or source.generator_model is not None:
+            raise ValueError(
+                "a code-only report renders no analysis, so its source names no analysis_id or generator_model"
+            )
+        if self.headline.strip():
+            raise ValueError("a code-only report has no author, so it carries no headline")
+        if self.finding_count:
+            raise ValueError(f"a code-only report has no findings, and this one counts {self.finding_count}")
+        if authored := [index for index, block in enumerate(self.blocks) if isinstance(block, TextBlock)]:
+            raise ValueError(f"a code-only report holds no author's words, and blocks {authored} are text blocks")
+        return self
+
     def to_canonical_json(self) -> str:
         """The report as its canonical JSON — the form the published schema validates.
 
@@ -256,6 +337,41 @@ class Report(EvalBaseModel):
             The JSON text, indented, keys in model order.
         """
         return self.model_dump_json(indent=2)
+
+
+def report_title(report: Report) -> str:
+    """The report's title, as every serializer prints it: the author's headline, or what a code-only report is.
+
+    Args:
+        report: The report.
+
+    Returns:
+        The title, one line before escaping.
+    """
+    if report.basis == "code_only":
+        return f"Campaign {report.source.campaign_id}: its evidence, with no analysis"
+    return report.headline.strip() or "(blank headline)"
+
+
+def report_byline(report: Report) -> str:
+    """What the report is of and how it was made, as every serializer prints it under the title.
+
+    Args:
+        report: The report.
+
+    Returns:
+        The line, before escaping.
+    """
+    source = report.source
+    if report.basis == "code_only":
+        return (
+            f"Code-only report of campaign {source.campaign_id} — {source.behavior}; computed from its evidence on "
+            f"{source.generated_at}. No analysis was generated."
+        )
+    return (
+        f"Analysis {source.analysis_id} of campaign {source.campaign_id} — {source.behavior}; generated "
+        f"{source.generated_at} by {source.generator_model}."
+    )
 
 
 __all__ = [
@@ -267,6 +383,7 @@ __all__ = [
     "FINDING_ROLES",
     "Fact",
     "Report",
+    "ReportBasis",
     "ReportBlock",
     "ReportSection",
     "ReportSource",
@@ -275,4 +392,6 @@ __all__ = [
     "TextBlock",
     "TextRole",
     "finding_number",
+    "report_byline",
+    "report_title",
 ]

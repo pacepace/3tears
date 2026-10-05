@@ -18,9 +18,9 @@ from typing import Literal
 from pydantic import Field
 
 from threetears.evals.analysis.campaigns import create_campaign, list_campaigns
-from threetears.evals.analysis.report import report_html, report_markdown
+from threetears.evals.analysis.report import Report, ReportBasis, report_html, report_markdown
 from threetears.evals.analysis.service import (
-    analysis_report,
+    campaign_report,
     get_analysis,
     list_analyses,
     prepare_analysis_generation,
@@ -86,9 +86,13 @@ class AnalysisListing(EvalBaseModel):
 
 
 class ReportDocument(EvalBaseModel):
-    """A stored analysis's report, serialized in one form."""
+    """A campaign's report, serialized in one form."""
 
-    analysis_id: str
+    campaign_id: str
+    basis: ReportBasis = Field(
+        description="`analysis` when the report renders the campaign's analysis; `code_only` when it has none."
+    )
+    analysis_id: str | None = Field(description="The analysis the report renders; None on a code-only report.")
     format: ReportFormat
     body: str = Field(description="The report in that form: Markdown, canonical JSON, or script-free HTML.")
 
@@ -263,12 +267,35 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
     )
 
 
-def report_read(host: EvalHost, analysis_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument:
-    """A stored analysis's report, serialized in one form.
+def serialize_report(report: Report, format: ReportFormat) -> str:
+    """A report in one of its three forms.
 
     Args:
-        host: The host whose store holds the analysis.
-        analysis_id: The analysis.
+        report: The report.
+        format: ``markdown``, ``json`` (canonical, what the published schema validates) or ``html``.
+
+    Returns:
+        The serialized report.
+    """
+    match format:
+        case "markdown":
+            return report_markdown(report)
+        case "html":
+            return report_html(report)
+        case "json":
+            return report.to_canonical_json()
+
+
+def report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat) -> ReportDocument:
+    """The campaign's report, serialized in one form — the same report the command line's ``report`` prints.
+
+    What "the campaign's report" is has one answer,
+    :func:`~threetears.evals.analysis.campaign_report`: its newest analysis that is not archived, else a
+    code-only report of its evidence. ``basis`` on the result says which.
+
+    Args:
+        host: The host whose store holds the campaign.
+        campaign_id: The campaign.
         scope_id: The scope it lives in.
         format: ``markdown``, ``json`` or ``html``.
 
@@ -276,17 +303,16 @@ def report_read(host: EvalHost, analysis_id: str, scope_id: str, *, format: Repo
         The report in that form.
 
     Raises:
-        NotFoundError: No analysis with that id in the scope.
+        NotFoundError: No campaign with that id in the scope.
     """
-    report = analysis_report(host.storage, analysis_id, scope_id)
-    match format:
-        case "markdown":
-            body = report_markdown(report)
-        case "html":
-            body = report_html(report)
-        case "json":
-            body = report.to_canonical_json()
-    return ReportDocument(analysis_id=analysis_id, format=format, body=body)
+    report = campaign_report(host, campaign_id, scope_id)
+    return ReportDocument(
+        campaign_id=campaign_id,
+        basis=report.basis,
+        analysis_id=report.source.analysis_id,
+        format=format,
+        body=serialize_report(report, format),
+    )
 
 
 def analysis_delete(host: EvalHost, analysis_id: str, scope_id: str, *, confirm: str | None) -> AnalysisDeleted:
@@ -327,4 +353,5 @@ __all__ = [
     "campaigns_list",
     "generation_key",
     "report_read",
+    "serialize_report",
 ]
