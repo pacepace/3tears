@@ -80,7 +80,12 @@ def variant_levers(run: EvalRun) -> dict[str, SweepableValue]:
     """
     payload = _payload(run)
     schema = payload.get("extraction_schema")
+    prompt = run.subject_snapshot.components.get("extraction_prompt")
     return {
+        # The subject's component, as itself — the only route a component has into the key.
+        "extraction_prompt": prompt
+        if prompt is not None
+        else SweepableValue.of(None, display="(no extraction prompt)"),
         "chunk_tokens": _interval(payload.get("chunk_tokens"), unit="tok", absent="(no chunk size recorded)"),
         "retriever_top_k": _interval(payload.get("retriever_top_k"), unit=None, absent="(no retriever width recorded)"),
         "extraction_schema": (

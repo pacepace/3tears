@@ -16,6 +16,14 @@ candidate produced — carried memory, accumulated notes — and an eval run's r
 bounded by its matrix, never by what it observed. So the subject's prose is addressable from here
 and not readable from here, and that is the point rather than a limitation.
 
+**A component enters the variant key through a lever, and only through one.** The key hashes the
+host's resolved lever map — the registry is the single authority for an axis, so a campaign can place
+and sweep it — and a component is in the key exactly when a registered lever of the same name resolves
+to it. A component no lever carries would let two subjects differing only in it (a prompt, by content)
+share a key and pool as repeats, so deriving the variant identity refuses it
+(``derive_variant_identity``). Something that identifies and does not determine belongs in
+:attr:`~SubjectSnapshot.labels`; something the subject carried in belongs in :attr:`~SubjectSnapshot.state`.
+
 **Two maps, because a subject has two halves and they belong to different keys.**
 :attr:`~SubjectSnapshot.components` is what the subject **is** — what a campaign sweeps, and what
 the variant key is computed over. :attr:`~SubjectSnapshot.state` is what the subject **carried
@@ -83,7 +91,10 @@ class SubjectSnapshot(BaseModel):
         default_factory=dict,
         description=(
             "Host-registered name → the level this subject carried, content-addressed. What the variant key is "
-            "computed over. Holds hashes, never component text."
+            "computed over — through the host's levers: every component must be carried by a registered lever "
+            "under its own name, resolved to this value, and a component no lever carries is refused when the "
+            "variant identity is derived, because the key hashes only the lever map. Holds hashes, never "
+            "component text."
         ),
     )
     state: dict[str, SweepableValue] | None = Field(

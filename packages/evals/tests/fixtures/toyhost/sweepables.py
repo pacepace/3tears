@@ -55,6 +55,16 @@ def _reader(key: str, *, default: Any = None) -> Any:
 
 
 TOYHOST_SWEEPABLES: tuple[Sweepable, ...] = (
+    # The subject's one component, carried into the variant key as itself: a component no lever carries
+    # is refused when the variant identity is derived, since the key hashes only the lever map.
+    Sweepable(
+        name="extraction_prompt",
+        role="lever",
+        read=lambda run, _results: (
+            prompt.content_hash if (prompt := run.subject_snapshot.components.get("extraction_prompt")) else None
+        ),
+        reader_prose="the extraction prompt the subject carried, by content",
+    ),
     Sweepable(
         name="chunk_tokens",
         role="lever",
