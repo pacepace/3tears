@@ -23,7 +23,11 @@ code, and a host-wide answer is false for one of them. It is an allow-list — t
 the dimensions it lacks — so a dimension added to the rig later is inapplicable to every kind that has
 not claimed it, and cannot turn such a kind's runs ``undecided``. Drift is prevented by
 :meth:`HostProfile.omits_apparatus` reading the runs' own values instead, so the claim is checked
-against what happened rather than trusted. Recorded at ``boundary-patterns.md`` § Eval host-profile
+against what happened rather than trusted. **Seats are then narrowed per RUN** where the run's own record
+decides it (:meth:`HostProfile.seats`): a run naming no judge was not judged — the runner refuses to
+execute a judged run that names none — so its rig had no judge seat whatever its kind declares, and a
+cohort mixing judged and code-only runs of one kind reads the code-only runs' judge as
+:data:`UNSEATED_LEVEL`, a level, rather than as ``undecided``. Recorded at ``boundary-patterns.md`` § Eval host-profile
 registry seam. **They are reached to different depths, and which is which is recorded here** because a
 reader of this paragraph would otherwise supply all three and have no way to tell what each one
 does. Sweepables are read by the variant key and the coverage lens on every generation. The world
@@ -96,6 +100,18 @@ from threetears.evals.contracts.host.world import WorldRegistry
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
+
+#: The level an apparatus dimension reads at for a run whose rig has no such seat
+#: (:meth:`HostProfile.apparatus_level`), where the dimension is kept because another run in the same
+#: comparison does have it. A recorded level, never ``undecided``: the run's own record says the seat was
+#: empty, and two such runs agree; against a run that filled the seat it reads as the difference it is.
+UNSEATED_LEVEL = "(none — this run's rig has no such seat)"
+
+#: The apparatus inputs a run's own record empties when it names no ``judge_model``: the run was not judged,
+#: so it had no judge pin, no judge request settings and no per-dim judge attribution. Not the whole judge
+#: role: a role's other pins — the versioned configs the RESULTS were scored with, a host's grader nominated
+#: into the role — can be filled by code or a person on a run no model judged, and their own values say so.
+_UNJUDGED_RUN_HAS_NO: frozenset[str] = frozenset({"judge_model", "judge_request_settings", "judge_dim_divergence"})
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.models import EvalRun
@@ -630,18 +646,60 @@ class HostProfile:
         pins = {role.name: role.pins for role in self.sweepables.roles}
         return frozenset(name for seat in seats for name in pins.get(seat, (seat,)))
 
-    def omits_apparatus(self, dimension: str, observed: Iterable[tuple[str, Any]]) -> bool:
+    def seats(self, run: EvalRun, dimension: str) -> bool:
+        """Whether this run's rig had a seat for apparatus ``dimension``.
+
+        The run's kind's seats (:attr:`~threetears.evals.contracts.host.kinds.KindContract.seats`, a pinned
+        role seating its pins), narrowed by what the run's own record states: a run whose ``judge_model``
+        is None was not judged — the runner refuses to execute a judged run that names none — so the judge
+        inputs read off the run's judge — its pin, its request settings, its per-dim attribution — are not
+        seats of its rig, whatever its kind declares. Per run, because one kind runs
+        judged and code-only templates alike, and a per-kind answer is false for one of them.
+
+        Args:
+            run: The run.
+            dimension: The declared apparatus input name.
+
+        Returns:
+            Whether the run's rig had that seat.
+        """
+        if run.judge_model is None and dimension in _UNJUDGED_RUN_HAS_NO:
+            return False
+        seated = self._seated(run.candidate_kind)
+        return seated is None or dimension in seated
+
+    def apparatus_level(self, run: EvalRun, dimension: str, value: Any) -> Any:
+        """The level a run's value of an apparatus dimension reads at, once the dimension is kept for a comparison.
+
+        A recorded value is its own level. A blank one is :data:`UNSEATED_LEVEL` when the run's rig had
+        no such seat (:meth:`seats`) — the record says the seat was empty, which is a level and not an
+        unknown — and stays the blank it is, ``undecided`` where its declaration says so, when the run did
+        have the seat and recorded nothing in it.
+
+        Args:
+            run: The run.
+            dimension: The declared apparatus input name.
+            value: What the run's reader returned for it.
+
+        Returns:
+            ``value``, or :data:`UNSEATED_LEVEL`.
+        """
+        if not self.seats(run, dimension) and self.sweepables.is_indeterminate(dimension, value):
+            return UNSEATED_LEVEL
+        return value
+
+    def omits_apparatus(self, dimension: str, observed: Iterable[tuple[EvalRun, Any]]) -> bool:
         """Whether a reporting surface should leave ``dimension`` out entirely, given what ran.
 
-        The single authority for the omission. A dimension is omitted only when **no** kind among the
-        runs seats it (:attr:`~threetears.evals.contracts.host.kinds.KindContract.seats`, a pinned role
-        seating its pins) **and** no run recorded a level for it. Two things decide it, and neither
-        alone may:
+        The single authority for the omission. A dimension is omitted only when **no** run among them
+        seats it (:meth:`seats`: its kind's seats, narrowed by its own record) **and** no run recorded a
+        level for it. Two things decide it, and neither alone may:
 
-        * **The kinds present.** A store holding a judged kind's runs and a code-graded kind's runs
-          answers per cohort: a cohort with one judged run keeps the judge axes, so that run's
-          unrecoverable judge still reads ``undecided``; a cohort of code-graded runs alone omits them.
-          A host-wide answer is false for one of the two.
+        * **The runs present.** A cohort answers per run: one with a judged run keeps the judge axes —
+          that run's unrecoverable judge still reads ``undecided``, and a code-only run beside it reads
+          :data:`UNSEATED_LEVEL` (:meth:`apparatus_level`) — while a cohort of code-graded runs alone
+          omits them, whether their kind seats a judge or not. A host-wide or kind-wide answer is false
+          for one of the two.
         * **The values.** A kind's seats say "these runs have no such thing"; the runs are what say
           whether that is true. A non-blank value wins over the declaration: the dimension is
           reported, and the contradiction is logged. Reported rather than raised because this runs
@@ -650,10 +708,9 @@ class HostProfile:
 
         Args:
             dimension: The declared apparatus input name.
-            observed: ``(candidate kind, value)`` for every run under consideration. Pass them all: one
-                run of a kind that seats the dimension keeps it, and one run recording a level
-                refutes the claim, so a caller that passes only the first would omit on the strength of
-                the run that agreed.
+            observed: ``(run, value)`` for every run under consideration. Pass them all: one run that
+                seats the dimension keeps it, and one run recording a level refutes the claim, so a
+                caller that passes only the first would omit on the strength of the run that agreed.
 
         Returns:
             True when no kind present seats the dimension and nothing contradicts it, which is
@@ -670,18 +727,19 @@ class HostProfile:
                 f"omits_apparatus({dimension!r}) was called with no runs — the check IS the kinds and values that "
                 "ran, and answering without them is the unvalidated omission this method exists to replace."
             )
-        if any((seated := self._seated(kind)) is None or dimension in seated for kind, _ in observations):
+        if any(self.seats(run, dimension) for run, _ in observations):
             return False
         if recorded := [
-            (kind, value) for kind, value in observations if not self.sweepables.is_indeterminate(dimension, value)
+            (run, value) for run, value in observations if not self.sweepables.is_indeterminate(dimension, value)
         ]:
-            kind, value = recorded[0]
+            run, value = recorded[0]
             log.warning(
-                "host %r: kind %r does not seat apparatus dimension %r, but one of its runs recorded %r — "
+                "host %r: run %s (kind %r) has no seat for apparatus dimension %r, but it recorded %r — "
                 "reporting it rather than omitting it, because a recorded level is evidence the seat declaration "
                 "is wrong and dropping it would hide a real apparatus difference",
                 self.host_id,
-                kind,
+                run.id,
+                run.candidate_kind,
                 dimension,
                 value,
             )
@@ -859,4 +917,5 @@ __all__ = [
     "CoverageState",
     "HostProfile",
     "ProfileRegistrationError",
+    "UNSEATED_LEVEL",
 ]

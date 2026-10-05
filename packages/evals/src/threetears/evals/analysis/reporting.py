@@ -2438,9 +2438,13 @@ def compute_comparison_sets(
         pins_by_run = {run.id: sweepables.read_role_pins(run, results_by_run.get(run.id, ())) for run in grouped}
         pin_values = {name: [pins_by_run[run.id].get(name) for run in grouped] for name in sweepables.role_pins}
         pins_differ = any(
-            sweepables.comparability(name, values) == "differs"
+            sweepables.comparability(
+                name,
+                [profile.apparatus_level(run, name, value) for run, value in zip(grouped, values, strict=True)],
+            )
+            == "differs"
             for name, values in pin_values.items()
-            if not profile.omits_apparatus(name, zip((run.candidate_kind for run in grouped), values, strict=True))
+            if not profile.omits_apparatus(name, zip(grouped, values, strict=True))
         )
         recorded_attributions = {
             canonical_digest(dict(sorted(judges.items())))

@@ -3229,16 +3229,17 @@ def _apparatus_levels(
         declared.name
         for declared in apparatus
         if runs
-        and profile.omits_apparatus(
-            declared.name, [(run.candidate_kind, values_by_run[run.id][declared.name]) for run in runs]
-        )
+        and profile.omits_apparatus(declared.name, [(run, values_by_run[run.id][declared.name]) for run in runs])
     }
     for run in runs:
         values = values_by_run[run.id]
         for declared in apparatus:
             if declared.name in omitted:
                 continue
-            value = values[declared.name]
+            # A run whose rig had no such seat reads at UNSEATED_LEVEL — a level, not an unknown — beside
+            # a run that had it, so a cohort mixing judged and code-only runs of one kind does not read
+            # the code-only runs' judge as undecided.
+            value = profile.apparatus_level(run, declared.name, values[declared.name])
             undecided = sweepables.is_indeterminate(declared.name, value)
             levels.setdefault(declared.name, {})[run.id] = None if undecided else canonical_json(value)
         # The world this run placed the subject in, on the same axis for the same reason. A run

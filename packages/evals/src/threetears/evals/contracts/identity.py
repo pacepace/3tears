@@ -1005,14 +1005,11 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         ("judge_dim_divergence", hashable_judges),
         ("judge_config_ids", run.judge_config_ids),
     )
-    declared_omitted = {
-        name for name, value in role_inputs if profile.omits_apparatus(name, [(run.candidate_kind, value)])
-    }
     # An unjudged run has no judge, whatever its host declares: the runner refuses to execute a
     # judged run that names none (``execute_run``), so this blank is a recorded fact about the run
-    # rather than a gap, and the judge's dependents follow it out exactly as they follow a declaration.
-    if run.judge_model is None:
-        declared_omitted.add("judge_model")
+    # rather than a gap — which is why the run's own seats (``HostProfile.seats``) leave the judge
+    # role out of an unjudged run's rig, and the judge's inputs follow it out here.
+    declared_omitted = {name for name, value in role_inputs if profile.omits_apparatus(name, [(run, value)])}
     role_values = dict(role_inputs)
     # A dependent is carried out with its owner ONLY when the run recorded nothing for it. The
     # rest of this mechanism rests on the value beating the declaration, and propagation is the

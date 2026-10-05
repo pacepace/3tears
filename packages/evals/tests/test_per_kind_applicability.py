@@ -6,11 +6,15 @@ blank judge model means the judge is *unrecoverable*, which is exactly what shou
 For a kind graded by code it is not an absence at all, and reading it as one gave every such kind
 ``undecided`` apparatus confounds in every bundle.
 
-**Declared per kind, because one host grades two ways.** A host-wide declaration was true of one kind
-and false of the other: with ``judge_model`` declared away for the whole host, a judged run whose judge
-was genuinely unrecoverable lost its ``undecided`` confound silently. Each kind contract names the seats
-in the rig it fills (:attr:`~threetears.evals.contracts.host.kinds.KindContract.seats`), and a dimension
-is omitted only for a cohort in which no kind seats it.
+**Declared per kind, because one host grades two ways — and narrowed per run, because one kind does too.**
+A host-wide declaration was true of one kind and false of the other: with ``judge_model`` declared away
+for the whole host, a judged run whose judge was genuinely unrecoverable lost its ``undecided`` confound
+silently. Each kind contract names the seats in the rig it fills
+(:attr:`~threetears.evals.contracts.host.kinds.KindContract.seats`), and each RUN's own record narrows
+them: a run naming no judge was not judged, so its rig had no judge seat whatever its kind declares. A
+dimension is omitted only for a cohort in which no run seats it, and where it is kept, a run without the
+seat reads :data:`~threetears.evals.contracts.host.UNSEATED_LEVEL` — a level, not ``undecided`` — so a
+kind whose templates are judged and code-only alike does not read its code-only runs' judge as unknown.
 
 **Declared as an allow-list, so a new core dimension cannot make a host ``undecided``.** A kind names
 what it HAS; a dimension added to the rig later — by the engine or by the host — is inapplicable to every
@@ -28,13 +32,25 @@ from dataclasses import replace
 
 import pytest
 
-from threetears.evals.contracts.host import SHARED_CORE, KindContract, RolePins, Sweepable, SweepableRegistry
+from threetears.evals.analysis.reads import bisect_runs
+from threetears.evals.contracts import EvalStorage, RubricScore
+from threetears.evals.contracts.host import (
+    SHARED_CORE,
+    UNSEATED_LEVEL,
+    KindContract,
+    RolePins,
+    Sweepable,
+    SweepableRegistry,
+)
 from threetears.evals.contracts.host.sweepables import NO_JUDGE_CONFIGS
 from threetears.evals.contracts.host.profile import HostProfile, ProfileRegistrationError
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_REGISTRY
+from packages.evals.tests.factories import make_eval_result, make_eval_run
+from threetears.evals.contracts.models import EvalRun
+from threetears.evals.storage import InMemoryDocumentStore
 
 #: The apparatus a model-scored, simulator-driven kind would have and the toy extractor does not: the
 #: core's model-judge axes and its simulator axes. ``judge_config_ids`` is not among them: the extractor's
@@ -65,6 +81,11 @@ def _toyhost_bundle(profile: HostProfile):
 
 def _with_kinds(*kinds: KindContract) -> HostProfile:
     return replace(toyhost_profile(), kinds=kinds)
+
+
+def _run(kind: str, *, judged: bool, run_id: str = "run-1") -> EvalRun:
+    """A run of ``kind``, judged (it names a judge) or not."""
+    return make_eval_run(id=run_id, candidate_kind=kind, judge_model="vendor/judge-1" if judged else None)
 
 
 # --- the seats are validated where the contracts and the registry are both in hand -------------
@@ -102,7 +123,7 @@ def test_a_role_seats_every_pin_it_holds() -> None:
     """Seating ``judge`` seats the core's judge axes and the host's grader, which the toy nominated into it."""
     profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
     for pin in ("judge_model", "judge_config_ids", "grader_version"):
-        assert not profile.omits_apparatus(pin, [(_JUDGED_KIND, None)]), pin
+        assert not profile.omits_apparatus(pin, [(_run(_JUDGED_KIND, judged=True), None)]), pin
 
 
 def test_asking_whether_to_omit_without_any_run_is_refused() -> None:
@@ -121,15 +142,44 @@ def test_a_judged_run_keeps_its_undecided_judge_while_a_code_graded_cohort_omits
     cohort is kept, so the judged run's unrecoverable judge still reads as undecided.
     """
     profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
+    extractor = _run(TOY_EXTRACTOR_KIND, judged=False)
+    judged = _run(_JUDGED_KIND, judged=True)
 
-    assert profile.omits_apparatus("judge_model", [(TOY_EXTRACTOR_KIND, None), (TOY_EXTRACTOR_KIND, None)])
-    assert not profile.omits_apparatus("judge_model", [(TOY_EXTRACTOR_KIND, None), (_JUDGED_KIND, None)])
-    assert not profile.omits_apparatus("judge_model", [(_JUDGED_KIND, None)])
+    assert profile.omits_apparatus("judge_model", [(extractor, None), (extractor, None)])
+    assert not profile.omits_apparatus("judge_model", [(extractor, None), (judged, None)])
+    assert not profile.omits_apparatus("judge_model", [(judged, None)])
+
+
+def test_a_judging_kind_s_run_that_names_no_judge_had_no_judge_seat() -> None:
+    """Seats per run: one kind runs judged and code-only templates, and the code-only run's judge is not unknown.
+
+    Both directions on one profile: the code-only runs alone omit the judge; beside a judged run of the
+    same kind it is kept, the judged run's blank stays undecided, and the code-only run reads UNSEATED_LEVEL.
+    """
+    profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
+    code_only = _run(_JUDGED_KIND, judged=False)
+    judged = _run(_JUDGED_KIND, judged=True)
+
+    assert not profile.seats(code_only, "judge_model") and profile.seats(judged, "judge_model")
+    assert profile.seats(code_only, "ocr_engine_version"), "only the run's judge inputs are narrowed by its record"
+    assert profile.seats(code_only, "judge_config_ids"), "results a person or code scored may carry configs"
+    assert profile.omits_apparatus("judge_model", [(code_only, None), (code_only, None)])
+    assert not profile.omits_apparatus("judge_model", [(code_only, None), (judged, None)])
+    assert profile.apparatus_level(code_only, "judge_model", None) == UNSEATED_LEVEL
+    assert profile.apparatus_level(judged, "judge_model", None) is None, "an unrecovered judge stays a blank"
+    assert profile.apparatus_level(code_only, "judge_model", ["vendor/judge-1"]) == ["vendor/judge-1"], (
+        "a recorded level beats the seat, as it beats a kind's"
+    )
 
 
 def test_a_kind_with_no_contract_is_held_to_every_seat() -> None:
-    """Silence is conservative: a kind that has declared nothing has not said it lacks a judge."""
-    assert not toyhost_profile().omits_apparatus("judge_model", [("a-kind-nobody-contracted", None)])
+    """Silence is conservative: a kind that has declared nothing has not said it lacks a judge — its run's record may."""
+    uncontracted = "a-kind-nobody-contracted"
+    assert not toyhost_profile().omits_apparatus("judge_model", [(_run(uncontracted, judged=True), None)])
+    assert not toyhost_profile().omits_apparatus("simulator_model", [(_run(uncontracted, judged=False), None)])
+    assert toyhost_profile().omits_apparatus("judge_model", [(_run(uncontracted, judged=False), None)]), (
+        "a run naming no judge was not judged, whatever its kind declares"
+    )
 
 
 def test_a_kind_recording_a_level_it_does_not_seat_is_reported_and_logged(caplog: pytest.LogCaptureFixture) -> None:
@@ -139,15 +189,14 @@ def test_a_kind_recording_a_level_it_does_not_seat_is_reported_and_logged(caplog
     judge does not, and a caller passing only the first would drop a difference that is really there.
     """
     profile = toyhost_profile()
-    blank_only = profile.omits_apparatus("judge_model", [(TOY_EXTRACTOR_KIND, None)])
+    extractor = _run(TOY_EXTRACTOR_KIND, judged=False)
+    blank_only = profile.omits_apparatus("judge_model", [(extractor, None)])
     with caplog.at_level(logging.WARNING):
-        with_a_level = profile.omits_apparatus(
-            "judge_model", [(TOY_EXTRACTOR_KIND, None), (TOY_EXTRACTOR_KIND, ["vendor/judge-1"])]
-        )
+        with_a_level = profile.omits_apparatus("judge_model", [(extractor, None), (extractor, ["vendor/judge-1"])])
 
     assert blank_only, "nothing contradicts the seats when every run read blank"
     assert not with_a_level, "a run that recorded a judge refutes the seats, and the dimension must be reported"
-    assert "does not seat apparatus dimension 'judge_model'" in caplog.text
+    assert "has no seat for apparatus dimension 'judge_model'" in caplog.text
 
 
 # --- surface: the bundle, and with it the cell partition -----------------------------------------
@@ -160,7 +209,7 @@ def test_the_toy_hosts_bundle_names_no_apparatus_confound_it_did_not_observe(
     with caplog.at_level(logging.WARNING):
         bundle = _toyhost_bundle(toyhost_profile())
 
-    assert "does not seat apparatus dimension" not in caplog.text, caplog.text
+    assert "has no seat for apparatus dimension" not in caplog.text, caplog.text
     assert bundle.apparatus_confounds == [], (
         "the toy host's clean campaign reports an apparatus confound nobody observed: "
         f"{[(c.dimension, c.status) for c in bundle.apparatus_confounds]}"
@@ -184,9 +233,11 @@ def test_holding_the_kind_to_every_seat_brings_the_unseated_confounds_back() -> 
     bundle = _toyhost_bundle(toyhost_profile(every_seat=True))
 
     reported = {confound.dimension for confound in bundle.apparatus_confounds if confound.status == "undecided"}
-    assert reported == _UNSEATED_BY_THE_EXTRACTOR, (
-        "held to every seat, the bundle should report exactly the dimensions the extractor does not seat as "
-        f"undecided, and instead reported {sorted(reported)}"
+    # The judge axes stay out even so: the toy runs name no judge, so their rigs had no judge seat — the
+    # per-run narrowing, which no kind declaration can widen back.
+    assert reported == _UNSEATED_BY_THE_EXTRACTOR - {"judge_model", "judge_request_settings", "judge_dim_divergence"}, (
+        "held to every seat, the bundle should report exactly the non-judge dimensions the extractor does not seat "
+        f"as undecided, and instead reported {sorted(reported)}"
     )
 
 
@@ -242,7 +293,9 @@ def test_the_same_growth_reaches_a_kind_that_declared_no_seats() -> None:
     bundle = _toyhost_bundle(profile)
 
     reported = {confound.dimension for confound in bundle.apparatus_confounds if confound.status == "undecided"}
-    assert {"judge_rubric_digest", "cassette_corpus"} <= reported
+    assert {"judge_rubric_digest", "cassette_corpus"} <= reported, (
+        "a host pin joining the judge role is not emptied by an unjudged run: its value is what says"
+    )
 
 
 # --- a judge-config set nothing was scored with is a blank, not a level ------------------------------------
@@ -263,3 +316,63 @@ def test_results_nobody_scored_record_no_judge_config_level() -> None:
 
     assert reader.read(make_eval_run(), [unscored]) == []
     assert reader.read(make_eval_run(), [scored]) == NO_JUDGE_CONFIGS
+
+
+# --- one kind, a judged run and a code-only run: the judge is a difference, not an unknown ---------------
+
+
+def test_bisecting_a_judged_and_a_code_only_run_of_one_kind_reads_the_judge_as_a_difference() -> None:
+    """The surface the review saw ``undecided`` on: two runs of one judging kind, one judged and one not."""
+    profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
+    storage = EvalStorage(InMemoryDocumentStore())
+    judged = _run(_JUDGED_KIND, judged=True, run_id="run-judged")
+    code_only = _run(_JUDGED_KIND, judged=False, run_id="run-code-only")
+    for run in (judged, code_only):
+        storage.save_eval_run(run)
+    scored = make_eval_result(
+        eval_run_id=judged.id,
+        scope_id=judged.scope_id,
+        rubric_scores=[RubricScore(dim="judged.fair", score=4, scale="ordinal", served_model="vendor/judge-1")],
+    )
+    storage.save_eval_result(scored)
+
+    bisected = bisect_runs(storage, judged.id, code_only.id, judged.scope_id, profile=profile)
+
+    assert "judge_model" in bisected["differs"] and "judge_model" not in bisected["unknown"]
+    assert bisected["details"]["judge_model"]["b"] == UNSEATED_LEVEL
+    assert "judge_request_settings" in bisected["differs"]
+
+
+def test_a_bundle_over_a_judged_and_a_code_only_run_of_one_kind_records_no_unknown_judge() -> None:
+    """The cell partition and the confound scan read the code-only run's judge as unseated, never undecided."""
+    from threetears.evals.analysis import assemble_context_bundle
+    from threetears.evals.contracts import EvalCampaign
+    from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
+
+    profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
+    judged = _run(_JUDGED_KIND, judged=True, run_id="run-judged").model_copy(update={"status": "completed"})
+    code_only = _run(_JUDGED_KIND, judged=False, run_id="run-code-only").model_copy(update={"status": "completed"})
+    results = {
+        judged.id: [
+            make_eval_result(
+                eval_run_id=judged.id,
+                scope_id=judged.scope_id,
+                rubric_scores=[RubricScore(dim="judged.fair", score=4, scale="ordinal", served_model="vendor/judge-1")],
+            )
+        ],
+        code_only.id: [make_eval_result(eval_run_id=code_only.id, scope_id=code_only.scope_id, rubric_scores=[])],
+    }
+    campaign = EvalCampaign(
+        scope_id=judged.scope_id,
+        name="judged and code-only",
+        subject_id=judged.subject_snapshot.subject_id,
+        subject_kind="s",
+        behavior="b",
+        run_ids=[judged.id, code_only.id],
+        created_by="test:fixture",
+    )
+
+    bundle = assemble_context_bundle(campaign, storage=ToyhostStorage([judged, code_only], results), profile=profile)
+
+    assert not {"judge_model", "judge_request_settings"} & {d for cell in bundle.cells for d in cell.unknown_dimensions}
+    assert not [c for c in bundle.apparatus_confounds if c.dimension == "judge_model" and c.status == "undecided"]

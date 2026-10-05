@@ -81,6 +81,7 @@ from threetears.evals.contracts.host.world_conformance import (
 from threetears.evals.contracts.host.world_seed import SeedRefused, SeedWrite, check_seed
 from threetears.evals.contracts.host.bars import BarProposal, BarRegistrationError
 from threetears.evals.contracts.host.profile import (
+    UNSEATED_LEVEL,
     ActionParameterReader,
     CoverageState,
     ProfileRegistrationError,
@@ -115,6 +116,7 @@ __all__ = [
     "CANDIDATE_MODEL_LEVER",
     "SERIES_SLOTS",
     "SHARED_CORE",
+    "UNSEATED_LEVEL",
     "VALIDATED_SLOTS",
     "ActionParameterReader",
     "ApparatusError",
