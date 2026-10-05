@@ -69,6 +69,7 @@ class LaunchArguments(EvalBaseModel):
     n_variations: int = 0
     variation_model: str | None = None
     overlays: dict[str, Any] | None = None
+    apparatus_settings: dict[str, Any] | None = None
     max_cost_usd: float | None = None
     judge_model: str | None = None
     simulator_model: str | None = None
@@ -181,6 +182,7 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
         n_variations=arguments.n_variations,
         variation_model=arguments.variation_model,
         overlays=arguments.overlays,
+        apparatus_settings=arguments.apparatus_settings,
         max_cost_usd=arguments.max_cost_usd,
         judge_model=arguments.judge_model,
         simulator_model=arguments.simulator_model,

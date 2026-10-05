@@ -98,9 +98,10 @@ def _launch_settings() -> LaunchSettings:
     """The launch settings of the one-call path.
 
     One arm, one admitted run at a time, and the cost and metered-call ceilings off: the candidate is
-    an opaque callable whose spend the engine cannot see, so a ceiling would bind nothing. The two
+    an opaque callable whose spend the engine cannot see, so a ceiling would bind nothing. The
     ceiling values are required by the settings model and, with enforcement off, recorded as absent
-    on the run rather than as caps.
+    on the run rather than as caps; the out-of-run one binds nothing either, since the callable kind
+    declines ``n_variations`` and so never generates.
     """
     return LaunchSettings(
         max_launch_arms=1,
@@ -109,6 +110,7 @@ def _launch_settings() -> LaunchSettings:
         enforcement_enabled=False,
         max_cost_usd=1.0,
         max_metered_calls=1,
+        max_out_of_run_cost_usd=1.0,
     )
 
 

@@ -19,6 +19,8 @@ from threetears.evals.contracts.errors import AdmissionRefusedError
 from threetears.evals.contracts.host import EvalHost
 from threetears.evals.contracts.models import VariationCounts
 from threetears.evals.run import (
+    ArmPlan,
+    ArmPrice,
     EvalJobManager,
     KindWiring,
     LaunchableKind,
@@ -280,8 +282,23 @@ def _launching_with(
         handed.append(request)
         return await launch_run(launching, request, wire(request))
 
+    def plan(request: LaunchRequest) -> ArmPlan:
+        # The toy invoices, whatever a generation would have asked for: a launcher that generates nothing.
+        if request.candidate_model is None:
+            raise ValidationFailedError("the toy extractor has no default candidate model; name one")
+        return ArmPlan(case_count=len(toyhost_test_cases(request.template)), candidate_model=request.candidate_model)
+
     launching = replace(
-        host, kinds={TOY_EXTRACTOR_KIND: LaunchableKind(launch=launch, unhonoured_launch_arguments=unhonoured)}
+        host,
+        kinds={
+            TOY_EXTRACTOR_KIND: LaunchableKind(
+                launch=launch,
+                unhonoured_launch_arguments=unhonoured,
+                plan_arm=None if "n_variations" in unhonoured else plan,
+            )
+        },
+        # Every arm priced at nothing, so a generating launch reaches the launcher this drives.
+        launch_pricer=lambda _quote: ArmPrice(predicted_usd=0.0, basis="scripted"),
     )
     return launching, storage, handed
 

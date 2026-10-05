@@ -534,6 +534,9 @@ def test_a_launcher_reads_the_overlays_as_its_kinds_own_model():
         kind_spec=None,
         max_cost_usd=None,
         max_metered_calls=None,
+        apparatus_settings={},
+        generation_budget=None,
+        arm_plan=None,
         launch_group=LaunchGroup(candidate_models=[]),
     )
 

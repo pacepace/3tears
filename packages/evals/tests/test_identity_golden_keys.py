@@ -44,7 +44,7 @@ from packages.evals.tests.fixtures.toyhost.run import (
 )
 
 #: The ``IDENTITY_VERSION`` every golden below was derived under.
-PINNED_IDENTITY_VERSION = 22
+PINNED_IDENTITY_VERSION = 23
 
 #: The toy host's context, shared by both its arms: one condition, two contestants.
 _TOY_CONTEXT = {
@@ -55,9 +55,10 @@ _TOY_CONTEXT = {
     "cassette": "c7978efdb5bf6764fcf4785ba9fc5d0464e9d3e39dc798d06349188b85803d28",
     "tool_permissions": "baf5287548d904d9d942c97182d06b2bbc9ba2c35129e6cc9f1302922224e915",
     "world": "35efc88198267d603fa880ed25f36644d541fd4a5884a401dfb08b60867e7742",
+    "apparatus_settings": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     "scope": "toyhost-scope",
 }
-_TOY_CONTEXT_KEY = "9b804fe9cec9adda042e579368a936d7af43e4a604384f3e53012fc5844e60c6"
+_TOY_CONTEXT_KEY = "a784a3ab06c1c496edf240e8ba7528beb16f6df44ed3eacd1cd936c1cbcc376d"
 
 _COURIER_CONTEXT = {
     "subject_state": {},
@@ -67,9 +68,10 @@ _COURIER_CONTEXT = {
     "cassette": "c7978efdb5bf6764fcf4785ba9fc5d0464e9d3e39dc798d06349188b85803d28",
     "tool_permissions": "baf5287548d904d9d942c97182d06b2bbc9ba2c35129e6cc9f1302922224e915",
     "world": "0868b4f01fb7c86e57c3a9270c1115d89d309d6e72418e664a57f4dc79679b54",
+    "apparatus_settings": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     "scope": "courier-depot-north",
 }
-_COURIER_CONTEXT_KEY = "469dc8bc6e6863ac661be601ac6f0e3bbbdb2ede23e0ed6c128e524d9bf18d2c"
+_COURIER_CONTEXT_KEY = "89a065de810ffb5d09bc8a3cbaaaaf7a5f8ed57bb2980b0a3bda086797ba932e"
 
 
 @dataclass(frozen=True)

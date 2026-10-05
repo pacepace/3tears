@@ -103,6 +103,7 @@ from threetears.evals.contracts.metrics import (
     materiality,
 )
 from threetears.evals.contracts.models import (
+    ApparatusSettingValue,
     CANDIDATE_SPEAKER,
     DEFAULT_LAUNCH_K_RUNS,
     NON_TERMINAL_RUN_STATUSES,
@@ -142,12 +143,23 @@ from threetears.evals.contracts.models import (
     eval_trace_doc_id,
     utc_now_iso,
 )
+from threetears.evals.contracts.out_of_run import (
+    AdmittedCall,
+    OutOfRunBudget,
+    OutOfRunOutcome,
+    OutOfRunPurpose,
+    OutOfRunSpend,
+    OutOfRunSpendStore,
+    PlannedCall,
+    RecordedCompletion,
+)
 from threetears.evals.contracts.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt, SeedSection, SeedTemplate
 from threetears.evals.contracts.prose import PROSE_SCHEMA_KEY
 from threetears.evals.contracts.provider import (
     PROVIDER_REQUEST_ATTEMPTS,
     BoundCompletionClient,
     CompletionClient,
+    PricedCompletion,
     ProviderFailure,
     ProviderFailureDescriber,
     SimulatorLLM,
@@ -479,6 +491,16 @@ __all__ = [
     "NextStep",
     "NonTerminalRunScan",
     "NotFoundError",
+    "AdmittedCall",
+    "ApparatusSettingValue",
+    "OutOfRunBudget",
+    "OutOfRunOutcome",
+    "OutOfRunPurpose",
+    "OutOfRunSpend",
+    "OutOfRunSpendStore",
+    "PlannedCall",
+    "PricedCompletion",
+    "RecordedCompletion",
     "Precondition",
     "PreconditionOutcome",
     "ProposedDimSuggestion",

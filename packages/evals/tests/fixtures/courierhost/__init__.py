@@ -435,6 +435,7 @@ COURIER_LAUNCH_SETTINGS = LaunchSettings(
     enforcement_enabled=False,
     max_cost_usd=1.0,
     max_metered_calls=1,
+    max_out_of_run_cost_usd=1.0,
 )
 
 

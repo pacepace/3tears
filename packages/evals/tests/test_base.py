@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.contracts.models import EVAL_SCHEMA_VERSION, CassetteKey, EvalCassette, EvalResult, EvalRun
+from threetears.evals.contracts.out_of_run import OutOfRunSpend
 from threetears.evals.contracts.storage import EvalStorage
 from threetears.evals.contracts.identity import IDENTITY_VERSION
 from packages.evals.tests.factories import (
@@ -319,6 +320,24 @@ def _cassette() -> EvalCassette:
     return EvalCassette.build(key, scope_id="uni-1", seam="action", captured_model="m", response={"hits": []})
 
 
+def _out_of_run_spend() -> OutOfRunSpend:
+    """One ledgered proposer call, as an out-of-run budget writes one."""
+    return OutOfRunSpend(
+        scope_id="uni-1",
+        purpose="proposer",
+        model="m",
+        outcome="completed",
+        stop_reason="end_turn",
+        prompt_tokens=120,
+        completion_tokens=40,
+        cost_usd=0.002,
+        price_source="provider",
+        priced_ceiling_usd=0.01,
+        cap_usd=1.0,
+        subject_id="subj-1",
+    )
+
+
 #: A valid instance of every stored model, by name. Keyed by the derived population below, so a
 #: stored model added without a row here fails :func:`test_every_stored_model_has_a_sample` rather
 #: than slipping past both refusals.
@@ -336,6 +355,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "EvalTestCase": make_test_case,
     "EvalTrace": make_eval_trace,
     "JudgeConfig": make_judge_config,
+    "OutOfRunSpend": _out_of_run_spend,
 }
 
 

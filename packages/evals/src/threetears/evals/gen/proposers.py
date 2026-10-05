@@ -5,30 +5,34 @@ and its scenario axes; on the ``boundary`` axis it drafts a universal boundary b
 refusal dims. Either way it sends a system prompt and a two-feed user message — the subject
 feed (what the subject under test is) and the catalog feed (the reusable rubric dims the
 operator already trusts) — and validates the reply into a
-:class:`~threetears.evals.contracts.models.RubricProposal`. Nothing is persisted: the operator
-edits the draft and commits the parts they accept through the authoring operations.
+:class:`~threetears.evals.contracts.models.RubricProposal`. No draft is persisted: the operator
+edits it and commits the parts they accept through the authoring operations. What IS written is
+the call's spend: the call runs outside any run, so it is priced before it is made and ledgered
+once it is, through the :class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget` the host hands in.
 
 **What arrives here is text.** The host renders the subject feed from its own subject, the
 catalog feed from its rubric-dim store, and the system prompt from its prompt registry — each
 for the axis it is proposing on — then hands this module the three strings and a
-:class:`~threetears.evals.contracts.provider.CompletionClient`. So the proposer knows neither what
+:class:`~threetears.evals.contracts.provider.BoundCompletionClient`. So the proposer knows neither what
 a subject is nor where a prompt is kept, and every host drafts with the same code whatever its
 subject is.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import ValidationError
 
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.models import RubricAxis, RubricProposal
+from threetears.evals.contracts.out_of_run import OutOfRunSpend, PlannedCall
 from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT, extract_json
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.provider import CompletionClient
+    from threetears.evals.contracts.out_of_run import OutOfRunBudget
+    from threetears.evals.contracts.provider import BoundCompletionClient
 
 log = get_logger(__name__)
 
@@ -49,15 +53,25 @@ _REFUSAL_SUBJECT: dict[str, str] = {
 PROPOSER_MAX_TOKENS = 16384
 
 
+class ProposedDraft(NamedTuple):
+    """A rubric draft, and the ledger row of the call that wrote it."""
+
+    proposal: RubricProposal
+    #: What the drafting call cost as the provider reported it, the ceiling it was admitted at and the
+    #: cap it was admitted under — written to the budget's store before the reply was read.
+    spend: OutOfRunSpend
+
+
 async def propose_draft(
-    client: CompletionClient,
+    client: BoundCompletionClient,
     *,
+    budget: OutOfRunBudget,
     axis: RubricAxis,
     subject_id: str,
     system_prompt: str,
     subject_feed: str,
     catalog_feed: str,
-) -> RubricProposal:
+) -> ProposedDraft:
     """Draft a rubric on ``axis`` from a subject feed and a catalog feed.
 
     On the ``capability`` axis the draft is a capability rubric and its scenario axes. On the
@@ -73,13 +87,18 @@ async def propose_draft(
 
     One call on ``client`` renders both feeds into a strict-JSON draft, which is validated
     into a :class:`~threetears.evals.contracts.models.RubricProposal` and **returned for operator
-    review — nothing is persisted**. The client is released when the call returns, on the
+    review — no draft is persisted**. The call runs outside any run, so it goes through ``budget``:
+    priced on the client before it is made and refused when the cap cannot pay for it, and its
+    spend ledgered as soon as it returns — before the reply is read, so a draft refused for its
+    content still has its cost on record. The client is released when the call returns, on the
     refusal paths too: a proposal is the client's whole lifetime.
 
     Args:
         client: The completion client to draft with — the host's client for the ``proposer`` role
             (:data:`~threetears.evals.contracts.host.CompletionRole`). This function owns it from here
             and releases it.
+        budget: The out-of-run budget the call is priced against and ledgered through. Its
+            ``subject_id``, when it names one, is the subject the draft is for.
         axis: Which catalog axis the draft is for; stamped onto every new-dim suggestion.
         subject_id: The subject the draft is for, named in the log line only.
         system_prompt: The rendered system prompt for ``axis``.
@@ -88,25 +107,41 @@ async def propose_draft(
             so the model can name reuses in ``reused_dim_keys``.
 
     Returns:
-        The validated :class:`~threetears.evals.contracts.models.RubricProposal` draft.
+        The validated :class:`~threetears.evals.contracts.models.RubricProposal` draft, and its call's
+        ledger row.
 
     Raises:
-        ValidationFailedError: The completion was not JSON, or failed draft validation.
+        ValueError: ``budget`` names another subject than ``subject_id``.
+        ValidationFailedError: The call cannot be priced under the budget's enforced cap, or is priced
+            above it (nothing was called); or the completion was not JSON, or failed draft validation
+            (the call's spend is already ledgered).
     """
+    if budget.subject_id is not None and budget.subject_id != subject_id:
+        raise ValueError(
+            f"the budget ledgers its calls under subject {budget.subject_id!r} and the draft is for {subject_id!r}; "
+            "one budget per proposal, built for the subject it drafts"
+        )
     refused = _REFUSAL_SUBJECT[axis]
-    content = await _draft(
-        client, system_prompt=system_prompt, user_prompt=_assemble_user_prompt(subject_feed, catalog_feed)
+    content, spend = await _draft(
+        client,
+        budget,
+        PlannedCall(
+            system=system_prompt,
+            user=_assemble_user_prompt(subject_feed, catalog_feed),
+            response_format=JSON_OBJECT_RESPONSE_FORMAT,
+        ),
     )
+    cost = _spent(spend)
     try:
         payload = extract_json(content)
     except ValueError as e:
-        raise ValidationFailedError(f"{refused} LLM output was not valid JSON: {e}") from e
+        raise ValidationFailedError(f"{refused} LLM output was not valid JSON ({cost}): {e}") from e
 
     _coerce_new_dim_axis(payload, axis)
     try:
         proposal = RubricProposal(**payload)
     except ValidationError as e:
-        raise ValidationFailedError(f"{refused} LLM output failed draft validation: {e}") from e
+        raise ValidationFailedError(f"{refused} LLM output failed draft validation ({cost}): {e}") from e
 
     if axis == "boundary":
         log.info(
@@ -125,21 +160,25 @@ async def propose_draft(
             len(proposal.new_dim_suggestions),
             len(proposal.template.variation_axes),
         )
-    return proposal
+    return ProposedDraft(proposal, spend)
 
 
-async def _draft(client: CompletionClient, *, system_prompt: str, user_prompt: str) -> str:
-    """Send the prompt pair in JSON-object mode and return the completion text.
+async def _draft(client: BoundCompletionClient, budget: OutOfRunBudget, call: PlannedCall) -> tuple[str, OutOfRunSpend]:
+    """Admit the call under ``budget``, make it, and return the completion text and its ledger row.
 
-    The ``async with`` releases the client on every exit: it owns a connection pool that
-    garbage collection does not close deterministically, and one proposal is its whole
-    lifetime.
+    The ``async with`` releases the client on every exit, a refused admission included: it owns a
+    connection pool that garbage collection does not close deterministically, and one proposal is
+    its whole lifetime.
     """
     async with client:
-        response = await client.generate(
-            system=system_prompt, user=user_prompt, response_format=JSON_OBJECT_RESPONSE_FORMAT
-        )
-    return response.content
+        [admitted] = budget.admit(client, "proposer", [call])
+        recorded = await budget.generate(client, admitted)
+    return recorded.result.content, recorded.spend
+
+
+def _spent(spend: OutOfRunSpend) -> str:
+    """What the refused draft's call cost, for the refusal to say — it was paid either way."""
+    return "the call cost an unreported amount" if spend.cost_usd is None else f"the call cost ${spend.cost_usd:.4f}"
 
 
 def _assemble_user_prompt(subject_feed: str, catalog_feed: str) -> str:
@@ -170,5 +209,6 @@ def _coerce_new_dim_axis(payload: Any, axis: RubricAxis) -> None:
 
 __all__ = [
     "PROPOSER_MAX_TOKENS",
+    "ProposedDraft",
     "propose_draft",
 ]

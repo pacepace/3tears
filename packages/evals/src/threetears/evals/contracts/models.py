@@ -18,6 +18,7 @@ change they are dropped and regenerated, not migrated.
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -32,6 +33,10 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
     field_validator,
     model_validator,
 )
@@ -102,6 +107,19 @@ def _current_schema_only(version: int) -> int:
 #: The ``schema_version`` field type of every stored eval entity: defaulted to the current version on
 #: write, and refusing any other on read.
 SchemaVersion = Annotated[int, AfterValidator(_current_schema_only)]
+
+
+def _finite_setting(value: str | bool | int | float) -> str | bool | int | float:
+    """Refuse a non-finite number as an apparatus setting — it has no JSON form and no level to compare."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"an apparatus setting is a finite number, a string or a bool; got {value!r}")
+    return value
+
+
+#: One host-declared apparatus value a launch sets (:attr:`EvalRun.apparatus_settings`): a string, a
+#: bool, or a finite number — a level two runs can be compared on, and hashed into the measurement
+#: context. Strict, so ``"1"`` and ``1`` stay two levels rather than one coerced into the other.
+ApparatusSettingValue = Annotated[StrictStr | StrictBool | StrictInt | StrictFloat, AfterValidator(_finite_setting)]
 
 
 def utc_now_iso() -> str:
@@ -1547,6 +1565,16 @@ class ContextComponents(EvalDocumentModel):
             "None whenever the run did not record placements, on the same all-or-none rule roles follows."
         ),
     )
+    apparatus_settings: str | None = Field(
+        default=None,
+        description=(
+            "Digest of the host-declared apparatus values the run's launch set (EvalRun.apparatus_settings) — how "
+            "the measuring rig was set up, such as who sat in an adjudicator's seat. Its own component because one "
+            "template is run at two such values to compare them, and those runs were measured on two rigs, not "
+            "repeated on one. Always composable: no settings is a recorded level, so two runs that set none hash "
+            "equal."
+        ),
+    )
     scope: str | None = Field(
         default=None,
         description="Storage scope the run executed in, kept raw so a mismatch badges as a value.",
@@ -2104,6 +2132,17 @@ class EvalRun(EvalDocumentModel):
             "same thing. Frozen at launch: the model is the kind's code and moves, so this is what the run "
             "actually ran at. The engine reads it only through the levers the kind's contract derives "
             "(``HostProfile.kinds``). Empty for a kind that declares no overlays."
+        ),
+    )
+    apparatus_settings: dict[str, ApparatusSettingValue] = Field(
+        default_factory=dict,
+        description=(
+            "The host-declared apparatus values this run's launch set — a setup value of the measuring rig the "
+            "kind's launcher reads (an adjudicator's seat, a rules version), keyed by the apparatus dimension "
+            "the host declares, so one template can be run at two of them and compared. Each is a launch "
+            "argument the kind declares it honours (``LaunchableKind.apparatus_settings``). Hashed into the "
+            "measurement context: two runs whose rig was set up differently are not repetitions of one "
+            "condition. Empty when the launch set none, which is a level."
         ),
     )
     resolved_world_seed: dict[str, Any] = Field(
@@ -3813,6 +3852,7 @@ class EvalCassette(EvalDocumentModel):
 
 
 __all__ = [
+    "ApparatusSettingValue",
     "CANDIDATE_SPEAKER",
     "EVAL_SCHEMA_VERSION",
     "NON_TERMINAL_RUN_STATUSES",

@@ -49,9 +49,13 @@ TOYHOST_LAUNCH_SETTINGS = LaunchSettings(
     enforcement_enabled=True,
     max_cost_usd=TOYHOST_COST_CEILING_USD,
     max_metered_calls=100,
+    max_out_of_run_cost_usd=TOYHOST_COST_CEILING_USD,
     # What an operator of this product turns, so a refusal names the knob rather than the field.
     setting_names={"max_launch_arms": "toyhost.launch.arms", "max_admitted_runs": "toyhost.launch.admitted"},
 )
+
+#: The reviewer pool a run is reviewed by when its launch sets none — the host's standing rig.
+TOYHOST_REVIEWER_POOL = "pool-a"
 
 #: The subjects this host can capture, by the id a launch names. One: the toy host deploys one
 #: extractor configuration.
@@ -127,7 +131,9 @@ def toyhost_launch_host(
                         "retriever_top_k": RUN_RETRIEVER_TOP_K,
                         "extraction_schema": "v1",
                         "ocr_engine_version": "tess-5.3.1",
-                        "reviewer_pool": "pool-a",
+                        # Who reviews is a setup value of the rig a launch may set; unset, the host's
+                        # standing pool reviews.
+                        "reviewer_pool": request.apparatus_settings.get("reviewer_pool", TOYHOST_REVIEWER_POOL),
                     }
                 },
             ),
@@ -143,6 +149,8 @@ def toyhost_launch_host(
                 unhonoured_launch_arguments=frozenset(
                     {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
                 ),
+                # The one apparatus value a launch sets: who reviews the extractions.
+                apparatus_settings=frozenset({"reviewer_pool"}),
             )
         },
         settings=settings,
@@ -153,4 +161,4 @@ def toyhost_launch_host(
     return launch_host, client
 
 
-__all__ = ["TOYHOST_LAUNCH_SETTINGS", "TOYHOST_SUBJECTS", "toyhost_launch_host"]
+__all__ = ["TOYHOST_LAUNCH_SETTINGS", "TOYHOST_REVIEWER_POOL", "TOYHOST_SUBJECTS", "toyhost_launch_host"]

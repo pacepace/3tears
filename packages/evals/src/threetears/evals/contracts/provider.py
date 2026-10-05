@@ -221,6 +221,56 @@ class BoundCompletionClient(CompletionClient, Protocol):
     #: The model this client calls, as the host resolved it.
     model_name: str
 
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The most one :meth:`generate` with this prompt pair can cost, in dollars, or ``None`` when it cannot say.
+
+        See :meth:`PricedCompletion.price_ceiling`: a client the engine calls outside any run — a case
+        generation's writer, a rubric proposer — is priced through this before the call is made.
+        """
+        ...
+
+
+class PricedCompletion(Protocol):
+    """A completion the engine can price before it makes it: the call, the model, and the call's ceiling.
+
+    What every call the engine makes OUTSIDE a run goes through
+    (:class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`): a case generation's ``llm``
+    axis writer and the rubric proposer. A run's calls are bounded by its cost cap as their spend
+    arrives; an out-of-run call has no run around it, so it is priced before it is made and refused
+    when the price would pass the cap. The engine knows neither a model's rates nor the output cap
+    the host built the client with, so the price is the client's answer — never the engine's guess.
+
+    :class:`BoundCompletionClient` and :class:`VariationLLM` both satisfy it.
+    """
+
+    #: The model this client calls, as the host resolved it — what the call is priced and recorded as.
+    model_name: str
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The most one :meth:`generate` with this prompt pair can cost, in dollars, or ``None`` when it cannot say.
+
+        A CEILING, not an estimate: the host's rate for :attr:`model_name` applied to a bound on the
+        prompt's tokens and to the output cap it built this client with, reasoning included, times
+        every attempt the client makes for one request (a re-sent severed body is billed twice). A
+        figure below what the call can cost lets a call past the cap it was admitted under.
+
+        ``None`` is "this client cannot bound the call" — no rate for its model — and an out-of-run
+        call under an enforced cap is then refused rather than made, since unknown is not $0.
+
+        Args:
+            system: The system prompt the call would send.
+            user: The user message the call would send.
+            response_format: The provider directive the call would send, or ``None``.
+
+        Returns:
+            The ceiling in dollars, or ``None``.
+        """
+        ...
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        """Send a prompt pair and return the completion, read for usage by attribute."""
+        ...  # pragma: no cover — protocol
+
 
 class SimulatorLLM(Protocol):
     """The one-shot text-generation port the simulator role and the variation generator call.
@@ -261,6 +311,13 @@ class VariationLLM(SimulatorLLM, Protocol):
 
     #: The model this client calls, as the host resolved it.
     model_name: str
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The most one :meth:`generate` with this prompt pair can cost — see :meth:`PricedCompletion.price_ceiling`.
+
+        A generation's calls run outside every run, so each is priced before it is made.
+        """
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -709,6 +766,7 @@ __all__ = [
     "CompletionClient",
     "CompletionGenerator",
     "CompletionResult",
+    "PricedCompletion",
     "ProviderFailure",
     "ProviderFailureDescriber",
     "SimulatorLLM",
