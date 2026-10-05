@@ -40,6 +40,7 @@ from threetears.geo.overlay import (
     missing_features,
     replace_features,
 )
+from threetears.geo.scope import MAX_CACHE_SCOPE_LENGTH, check_cache_scope
 from threetears.geo.tiles import (
     MAX_MERCATOR_LATITUDE,
     TILE_EXTENT,
@@ -51,6 +52,7 @@ from threetears.geo.tiles import (
 )
 
 __all__ = [
+    "MAX_CACHE_SCOPE_LENGTH",
     "MAX_MERCATOR_LATITUDE",
     "AggregateSpec",
     "BandResult",
@@ -90,4 +92,5 @@ __all__ = [
     "mean_width_m",
     "missing_features",
     "replace_features",
+    "check_cache_scope",
 ]

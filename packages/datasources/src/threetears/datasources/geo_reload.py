@@ -10,7 +10,14 @@ move to the new tiles at once and no cache is purged.
 The request and reply models, the subject and the pod's client live here, beside
 :class:`~threetears.datasources.geo_config.GeoConfig`, and both sides import them.
 
-**The generation rule.** A layer's tile version starts at 1 and only moves forward.
+**Nothing is served before the first report.** A layer has no tile version until a pod
+first reports one, and until then the hub serves nothing for it -- no TileJSON, no tile.
+Its rows before that are a load in progress, or one that failed part way, and a tile
+built from them would be cached as immutable at an address that stays current. The
+first successful report sets the version; a layer the epoch store has never moved has
+none.
+
+**The generation rule.** Once set, a layer's tile version only moves forward.
 A pod reports a generation it has fully written:
 
 - the version + 1 or more: the version moves to it;
@@ -65,7 +72,8 @@ read, and the next successful report deletes them.
    (:meth:`threetears.epoch.EpochClient.versions`), refusing any other without caching the
    refusal: a version not yet reached has no rows, an older one may have lost them, a
    skipped one is a failed load's, and a tile built from no rows would be cached as an
-   empty map.
+   empty map. A layer never reported (``versions`` answers epoch ``0``) serves nothing --
+   neither tiles nor a TileJSON naming a version.
 
 ``error_code`` vocabulary: :data:`GEO_RELOAD_ERROR_CODES`.
 """

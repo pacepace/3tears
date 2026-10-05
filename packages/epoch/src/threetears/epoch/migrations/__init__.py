@@ -15,8 +15,8 @@ version history:
 
 - v001 -- create the ``config_epochs`` table with subject_path PK,
   epoch counter, opaque payload, and update timestamp.
-- v002 -- add ``previous_epoch``, the value a durable subject's latest
-  :meth:`~threetears.epoch.client.EpochClient.advance_to` replaced.
+- v002 -- add ``previous_epoch``, the value a durable subject's latest move
+  (``advance_to`` or a durable ``bump``) replaced.
 """
 
 from __future__ import annotations

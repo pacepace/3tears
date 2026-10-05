@@ -76,6 +76,7 @@ def _make_collection(
         loader=_loader,
         object_store=FilesystemObjectStore(tmp_path),
         datasource_name="aibotsmap-data",
+        cache_scope="ds_aibotsmap",
     )
     return collection, calls
 
@@ -371,6 +372,7 @@ class TestDurableTierFailures:
             loader=_loader,
             object_store=store,
             datasource_name="aibotsmap-data",
+            cache_scope="ds_aibotsmap",
         )
 
     async def test_missing_object_is_a_miss(self) -> None:

@@ -1,7 +1,8 @@
 """epoch v002: add ``config_epochs.previous_epoch``.
 
-``previous_epoch`` is the epoch a durable subject held before its latest move by
-:meth:`threetears.epoch.client.EpochClient.advance_to`: the value that move replaced,
+``previous_epoch`` is the epoch a durable subject held before its latest move, by
+:meth:`~threetears.epoch.client.EpochClient.advance_to` or a durable
+:meth:`~threetears.epoch.client.EpochClient.bump`: the value that move replaced,
 ``NULL`` before the subject has moved twice (an insert replaces nothing). A tile
 version's previous generation is what the hub keeps serving while clients still hold
 it, and versions may skip, so it is recorded rather than inferred as one below.

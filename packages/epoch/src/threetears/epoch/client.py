@@ -1,14 +1,19 @@
 """epoch client -- atomic counter bump plus best-effort NATS broadcast.
 
 :class:`EpochClient` is the publish-side companion to
-:class:`~threetears.epoch.listener.EpochListener`. it owns one pair of
-operations over whichever substrate the subject belongs to:
+:class:`~threetears.epoch.listener.EpochListener`. it owns the read and the
+bump over whichever substrate the subject belongs to, and two operations
+that only a durable subject has:
 
 - :meth:`current` -- read the latest epoch for a subject (used by
   listeners on cold start and by periodic catch-up ticks)
 - :meth:`bump` -- atomically increment the epoch for a subject, then
   publish an :class:`~threetears.epoch.wire.EpochBumpMessage` on the
   same subject so sibling pods notice immediately
+- :meth:`advance_to` -- move a durable subject forward to a target, never
+  back, then broadcast as :meth:`bump` does
+- :meth:`versions` -- read a durable subject's epoch and the one its
+  latest move replaced
 
 **two substrates, routed by what the number means.** an epoch is a
 coherence signal, not a durable fact, so the counter for one lives in a
@@ -279,8 +284,9 @@ class DurableEpoch:
     ``previous`` is recorded, never inferred: a durable epoch may move forward by more
     than one, so the epoch before ``epoch`` is not ``epoch - 1``. Both :meth:`EpochClient.bump`
     and :meth:`EpochClient.advance_to` record it. It is ``None`` until the subject has moved
-    twice -- the first move creates the row and replaces nothing -- and for a subject that has
-    never moved, whose ``epoch`` is ``0``.
+    twice -- the first move creates the row and replaces nothing -- for a subject that has
+    never moved, whose ``epoch`` is ``0``, and for a row written before migration v002 until
+    its next move.
 
     :ivar epoch: the subject's epoch, ``0`` when it has never moved
     :ivar previous: the epoch the latest move replaced, or ``None``

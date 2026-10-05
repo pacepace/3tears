@@ -44,6 +44,21 @@ packages (bumped in lock-step).
   they wrote counted, so one failed pass over a large catalog no longer takes the registry out of
   rotation by itself. `threetears.registry.catalog.WRITE_FAILURE_THRESHOLD` is the shared value.
 
+### Geo: a tile source's caches are its own
+
+- **Changed, breaking, `threetears.geo.TileCollection` and `FeatureCache`:** each takes a required
+  `cache_scope`, the tile source's identity, and its table name carries it
+  (`geo_tiles_<scope>`, `geo_features_<scope>`). Every tier the collection framework keys by
+  table -- the pod-local L1 table, the NATS L2 keys, the cross-pod build lock and the registry
+  entry -- was shared by every source under one name, and tiles are keyed by
+  `(layer, version, z, x, y)` alone: two sources serving a layer of the same name (two
+  datasources, or a customer's datasource and a platform layer, both starting at version 1)
+  answered for each other from whichever built a tile first, across tenants. Only the object
+  store was scoped (by `datasource_name`, unchanged). `check_cache_scope` refuses anything but
+  a lowercase identifier of at most `MAX_CACHE_SCOPE_LENGTH` (48) characters, since the scope
+  names SQL tables and NATS KV keys unquoted: `ds_<32 hex>` and `ns_<32 hex>` fit. A caller
+  whose L1 backend declares the tables by name declares the scoped names.
+
 ### Geo: building layers from other layers
 
 - **Added, `threetears.geo`:** `cut` cuts one layer by another within a shared key (a state,
