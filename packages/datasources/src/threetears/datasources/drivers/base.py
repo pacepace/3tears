@@ -59,7 +59,7 @@ import functools
 import inspect
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from types import TracebackType
 from typing import Any, TypeAlias, TypedDict, TypeVar
 
@@ -945,7 +945,9 @@ class Driver(ABC):
         """
 
     @abstractmethod
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count a relation and fingerprint its ordering key, in one statement.
 
         The completeness check a paged read rests on. Taken before the first page
@@ -974,6 +976,9 @@ class Driver(ABC):
             a fingerprint over no columns would answer the same for every
             relation of the same size, which is a count wearing a digest's name
         :ptype key: list[str]
+        :param where: equality filters, column -> value, naming the rows to fingerprint;
+            columns are TRUSTED identifiers, values are bound as parameters
+        :ptype where: Mapping[str, str] | None
         :return: the relation's current row count and key digest
         :rtype: RelationFingerprint
         :raises ValueError: when ``key`` is empty

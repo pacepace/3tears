@@ -132,6 +132,7 @@ CI-required live test
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from threetears.datasources.config import SnowflakeConnectionConfig
@@ -236,7 +237,9 @@ class SnowflakeDriver(Driver):
         """
         raise NotImplementedError(f"SnowflakeDriver.list_columns is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count and fingerprint a relation over its key -- NOT YET IMPLEMENTED.
 
         When this driver is built, the dialect-specific half is

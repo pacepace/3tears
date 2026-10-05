@@ -136,7 +136,7 @@ import dataclasses
 import functools
 import socket
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 try:
@@ -164,6 +164,7 @@ from threetears.datasources.drivers._redshift_connector_internals import connect
 from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
+    build_equality_filter,
     build_relation_key_expression,
     build_set_local_statement_timeout_sql,
     build_set_search_path_sql,
@@ -2108,7 +2109,9 @@ class RedshiftDriver(Driver):
 
     @traced
     @observed(driver_type="redshift")
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count and fingerprint ``relation`` over ``key``, in one statement.
 
         Redshift turns a hash into a summable number with ``STRTOL``, which
@@ -2134,16 +2137,21 @@ class RedshiftDriver(Driver):
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
         key_expression = build_relation_key_expression(key)
+        filters, values = build_equality_filter(where)
         sql = (
             "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
             "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
-            f"FROM (SELECT {key_expression} AS k FROM {relation}) AS fingerprint_source"
+            f"FROM (SELECT {key_expression} AS k FROM {relation}{filters}) AS fingerprint_source"
         )
+        sql = translate_placeholders(sql, "pyformat")
 
         def _do_sync(conn: RedshiftConnection) -> RelationFingerprint:
             cursor = conn.cursor()
             try:
-                cursor.execute(sql)
+                if values:
+                    cursor.execute(sql, values)
+                else:
+                    cursor.execute(sql)
                 row = cursor.fetchone()
                 return RelationFingerprint(row_count=int(row[0]), digest=str(row[1]))
             finally:

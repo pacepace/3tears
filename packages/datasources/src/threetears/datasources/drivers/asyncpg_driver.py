@@ -149,7 +149,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
 
 import asyncpg
@@ -167,6 +167,7 @@ from threetears.datasources.config import (
 )
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
+    build_equality_filter,
     build_relation_key_expression,
     build_reset_statement_timeout_sql,
     build_search_path_value,
@@ -1161,7 +1162,9 @@ class AsyncpgDriver(Driver):
 
     @traced
     @observed(driver_type="asyncpg")
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count and fingerprint ``relation`` over ``key``, in one statement.
 
         Postgres turns a hash into a summable number by casting the leading hex
@@ -1186,12 +1189,14 @@ class AsyncpgDriver(Driver):
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
         key_expression = build_relation_key_expression(key)
+        filters, values = build_equality_filter(where)
         sql = (
             "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
             "COALESCE(SUM(('x' || SUBSTR(MD5(k), 1, 8))::bit(32)::bigint), 0) AS digest "
-            f"FROM (SELECT {key_expression} AS k FROM {relation}) AS fingerprint_source"
+            f"FROM (SELECT {key_expression} AS k FROM {relation}{filters}) AS fingerprint_source"
         )
-        record = await self._acquire_and_run(lambda conn: conn.fetchrow(sql))
+        sql = translate_placeholders(sql, "asyncpg")
+        record = await self._acquire_and_run(lambda conn: conn.fetchrow(sql, *values))
         return RelationFingerprint(row_count=int(record["row_count"]), digest=str(record["digest"]))
 
     @traced

@@ -48,7 +48,7 @@ the prefix, a derivation refuses it.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid7
@@ -140,6 +140,28 @@ class RelationFingerprintRequest(BaseModel):
 
     relation: str
     key_columns: list[str]
+    #: equality filters, column -> value: the fingerprint describes only the matching rows.
+    #: columns are identifiers (interpolated); values are bound as parameters, never as text
+    where: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("where")
+    @classmethod
+    def _where_columns_are_identifiers(cls, value: dict[str, str]) -> dict[str, str]:
+        """refuse a filter column that is not a plain identifier; values are parameters.
+
+        :param value: the filters
+        :ptype value: dict[str, str]
+        :return: the value unchanged
+        :rtype: dict[str, str]
+        :raises ValueError: if any column is not a plain identifier
+        """
+        bad = [c for c in value if not _IDENTIFIER_GRAMMAR.match(c)]
+        if bad:
+            raise ValueError(
+                f"where columns {bad!r} are not plain SQL identifiers; they are interpolated "
+                f"into a statement, so each must match {_IDENTIFIER_GRAMMAR.pattern}"
+            )
+        return value
 
     @field_validator("relation")
     @classmethod
@@ -476,6 +498,7 @@ class DatasourceQueryClient:
         *,
         relation: str,
         key: Sequence[str],
+        where: Mapping[str, str] | None = None,
         user_identity_token: str | None = None,
         correlation_id: UUID | None = None,
     ) -> RelationFingerprintResult:
@@ -497,6 +520,8 @@ class DatasourceQueryClient:
         :ptype relation: str
         :param key: the ordering columns the digest is computed over
         :ptype key: Sequence[str]
+        :param where: equality filters naming the rows to fingerprint; all of them when omitted
+        :ptype where: Mapping[str, str] | None
         :param user_identity_token: the per-turn user assertion when a human is
             in the loop; ``None`` evaluates the principal's own grants alone
         :ptype user_identity_token: str | None
@@ -512,7 +537,7 @@ class DatasourceQueryClient:
             correlation_id=correlation_id if correlation_id is not None else uuid7(),
             identity_token=SecretStr(self.forwarded_identity_token()),
             user_identity_token=SecretStr(user_identity_token) if user_identity_token is not None else None,
-            fingerprint=RelationFingerprintRequest(relation=relation, key_columns=list(key)),
+            fingerprint=RelationFingerprintRequest(relation=relation, key_columns=list(key), where=dict(where or {})),
         )
         subject = Subjects.datasource_query(datasource_name)
         try:
@@ -700,6 +725,7 @@ async def read_all(
     columns: Sequence[str],
     relation: str,
     key: Sequence[str],
+    where: Mapping[str, str] | None = None,
     page_size: int = _DEFAULT_PAGE_SIZE,
     max_pages: int = 10_000,
 ) -> list[dict[str, Any]]:
@@ -776,6 +802,11 @@ async def read_all(
     :param key: the ordering key. Must be unique for the read to be complete;
         non-uniqueness is detected rather than assumed
     :ptype key: Sequence[str]
+    :param where: equality filters, column -> value, naming the part of the relation to read
+        (the rows of one level of a table that holds several); the count, the fingerprint
+        and every page apply them alike, so "the whole relation" means the whole of that part.
+        Columns are TRUSTED identifiers; values are bound as parameters
+    :ptype where: Mapping[str, str] | None
     :param page_size: rows per page. Must be UNDER the hub's row cap and is
         REFUSED at or above it, because the query asks for ``page_size + 1`` and
         the sentinel must fit under the cap; at the cap the hub would cut the
@@ -831,14 +862,15 @@ async def read_all(
     # during the read will not match. That is reported rather than hidden: on a
     # relation that is changing there is no "whole relation" to return, and this
     # function's promise is the whole relation or a raise.
-    before = await client.relation_fingerprint(datasource_name, relation=relation, key=key)
+    filters = dict(where or {})
+    before = await client.relation_fingerprint(datasource_name, relation=relation, key=key, where=filters)
 
     rows: list[dict[str, Any]] = []
     cursor: tuple[Any, ...] | None = None
     previous_had_more = False
 
     for _ in range(max_pages):
-        predicate, params = _keyset_predicate(key, cursor)
+        predicate, params = _filtered(filters, *_keyset_predicate(key, cursor))
         # LIMIT page_size + 1: the extra row is a SENTINEL, not data. Getting it
         # back proves more rows exist; not getting it proves they do not. That is
         # the has-more signal, and it is computed HERE from a row count we asked
@@ -863,14 +895,14 @@ async def read_all(
                     f"over duplicates, or rows were deleted mid-read. {len(rows)} rows were read and they "
                     f"are NOT the whole relation."
                 )
-            return await _proven(client, datasource_name, relation, key, rows, before)
+            return await _proven(client, datasource_name, relation, key, rows, before, filters)
 
         had_more = len(page.rows) > page_size
         if not had_more:
             # No sentinel: the warehouse had nothing past this page, so every row
             # is safe to keep and there is no boundary to worry about.
             rows.extend(page.rows)
-            return await _proven(client, datasource_name, relation, key, rows, before)
+            return await _proven(client, datasource_name, relation, key, rows, before, filters)
 
         # A KEY GROUP MUST NOT STRADDLE THE BOUNDARY. The next page asks for rows
         # strictly greater than the cursor, so any row sharing the cursor's key is
@@ -925,6 +957,7 @@ async def _proven(
     key: Sequence[str],
     rows: list[dict[str, Any]],
     before: RelationFingerprintResult,
+    where: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     """return ``rows`` only if it provably holds the whole relation, unchanged.
 
@@ -977,7 +1010,7 @@ async def _proven(
             f"{datasource_name}: {relation} counted {before.row_count} rows and the read returned {len(rows)}. {cause}"
         )
 
-    after = await client.relation_fingerprint(datasource_name, relation=relation, key=key)
+    after = await client.relation_fingerprint(datasource_name, relation=relation, key=key, where=where)
     if after != before:
         raise IncompleteReadError(
             f"{datasource_name}: {relation} changed while it was being read. the row count and the "
@@ -988,6 +1021,30 @@ async def _proven(
         )
 
     return rows
+
+
+def _filtered(where: Mapping[str, str], predicate: str, params: list[Any]) -> tuple[str, list[Any]]:
+    """the ``WHERE`` fragment that keeps only ``where``'s rows, and after them the keyset predicate.
+
+    The filters' values are bound first, as ``$1..$n``, and the keyset predicate's placeholders
+    are renumbered after them, so each placeholder still names its own parameter.
+
+    :param where: equality filters, column -> value; columns are TRUSTED identifiers
+    :ptype where: Mapping[str, str]
+    :param predicate: the keyset fragment (`` WHERE ...``) or empty
+    :ptype predicate: str
+    :param params: the keyset fragment's parameters
+    :ptype params: list[Any]
+    :return: the combined fragment and parameters
+    :rtype: tuple[str, list[Any]]
+    """
+    if not where:
+        return predicate, params
+    filters = " AND ".join(f"{column} = ${index + 1}" for index, column in enumerate(where))
+    shift = len(where)
+    keyset = re.sub(r"\$(\d+)", lambda m: f"${int(m.group(1)) + shift}", predicate.removeprefix(" WHERE "))
+    combined = f" WHERE ({filters}) AND ({keyset})" if keyset else f" WHERE {filters}"
+    return combined, [*where.values(), *params]
 
 
 def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None) -> tuple[str, list[Any]]:

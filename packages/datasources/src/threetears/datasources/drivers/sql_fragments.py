@@ -19,11 +19,12 @@ target styles:
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Literal
 
 __all__ = [
     "PlaceholderStyle",
+    "build_equality_filter",
     "build_relation_key_expression",
     "build_reset_statement_timeout_sql",
     "build_search_path_value",
@@ -334,6 +335,23 @@ def translate_placeholders(sql: str, target_style: PlaceholderStyle) -> str:
         else:
             out.append(_translate_non_literal_segment(segment, target_style))
     return "".join(out)
+
+
+def build_equality_filter(where: Mapping[str, str] | None) -> tuple[str, list[str]]:
+    """a `` WHERE`` fragment keeping only the rows whose columns equal ``where``'s values.
+
+    Placeholders are ``$1..$n``, the canonical style; a driver translates them for its engine
+    with :func:`translate_placeholders`. Values are bound, never interpolated; the column
+    names are interpolated and must be TRUSTED identifiers, as the request model enforces.
+
+    :param where: column -> value; empty or ``None`` filters nothing
+    :ptype where: Mapping[str, str] | None
+    :return: the fragment (empty when there are no filters) and its values in order
+    :rtype: tuple[str, list[str]]
+    """
+    filters = dict(where or {})
+    clause = " AND ".join(f"{column} = ${index + 1}" for index, column in enumerate(filters))
+    return (f" WHERE {clause}" if clause else ""), list(filters.values())
 
 
 def build_relation_key_expression(key: Sequence[str]) -> str:
