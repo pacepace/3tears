@@ -7011,7 +7011,7 @@ class TestSignificanceFormatting:
         differently from the compare table about the same row.
         """
         from threetears.evals.analysis.reporting import format_significance
-        from threetears.evals.analysis.viz.compiler import compile_chart
+        from threetears.evals.vega.compiler import compile_chart
         from threetears.evals.analysis.viz.payloads import DeltaRow, DeltaTablePayload
 
         def effect_reads(row: DeltaRow) -> set[str]:

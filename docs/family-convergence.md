@@ -401,6 +401,16 @@ package:
   machine with different fonts is the normal case for CI and for agents, and text
   metrics change silently when a font is swapped.
 
+**Status 2026-10-05 (revises the bullets above).** The engine no longer compiles to
+Vega-Lite in its core. `3tears-evals` decides each chart as eval's own chart intent
+(`threetears.evals.analysis.viz.ChartIntent`) and ships no charting library; the
+Vega-Lite compiler, its text metrics, its palette artifact and the `vl-convert`
+raster are an optional adapter, `threetears.evals.vega` (`3tears-evals[vega]`), a
+`ChartRenderer` built with a theme (palette variant and font directory) and held,
+like any host's renderer, to one conformance check: what it draws agrees with the
+intent's values. The adapter's palette is still a packaged artifact rather than a
+host-supplied value, so the first rule above is not yet true of it.
+
 Donated content: metallm's sycophancy-judge prompt; hallucinote's
 brief/rubric/verdict scenario schema. Two footnotes: 3tears' only in-house eval
 machinery -- scrape's runtime recipe-judge loop -- becomes an internal consumer of

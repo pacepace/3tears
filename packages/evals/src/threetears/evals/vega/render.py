@@ -33,7 +33,7 @@ rather than by reading documentation:
 
   That asymmetry is why the gate for it is not a render. The host that supplies the
   directory checks that it exists and declares the family
-  :func:`~threetears.evals.analysis.viz.palette.vega_config` asks for, rather than looking
+  :func:`~threetears.evals.vega.palette.vega_config` asks for, rather than looking
   for that family name in the output: vl-convert writes the configured family
   into the SVG's ``font-family`` whether or not any file provides it, so the
   rendered document cannot tell the two cases apart.
@@ -41,7 +41,7 @@ rather than by reading documentation:
 **The font directory is injected; the palette is packaged.** The two assets this
 subsystem needs are solved by opposite mechanisms on purpose. The palette is a
 small JSON file that ships inside the package and is read from the module's own
-directory (:data:`~threetears.evals.analysis.viz.palette._PALETTE_PATH`). A directory of font
+directory (:data:`~threetears.evals.vega.palette._PALETTE_PATH`). A directory of font
 binaries cannot sensibly live in a Python package — it is megabytes of licensed
 files, it belongs to whoever owns the brand, and the same package rendering for
 two products would need two of them — so it arrives as
@@ -70,17 +70,16 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.analysis.viz.palette import Theme, vega_config
+from threetears.evals.vega.palette import Theme, vega_config
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
 
 # ``vl_convert`` is imported inside the three calls that reach the rasteriser and nowhere
-# at module level. It is the analysis package's one optional dependency (a native
-# extension, and the only third-party import the package matrix allows it), and this
-# module is re-exported from the ``analysis.viz`` root, which every analysis module that
-# touches a chart payload initialises: imported here at module level, compiling a chart
-# or validating a generated analysis would require the rasteriser too.
+# at module level. It is the ``[vega]`` extra's one dependency (a native extension, and the
+# only third-party import the package matrix allows this adapter), and this module is
+# re-exported from the ``threetears.evals.vega`` root: imported here at module level,
+# compiling a spec for a browser to draw would require the rasteriser too.
 
 #: Device-pixel multiplier for the PNG. 2 is a retina-legible chart that still fits
 #: a chat transcript; the SVG path exists for when a caller wants it resolution-free.

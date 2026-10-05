@@ -6,7 +6,7 @@ intervals say what they span, whether identity rides on position rather than col
 false before anything is drawn, and stating them over :class:`~threetears.evals.analysis.viz.intent.ChartIntent`
 is what lets a host bring its own renderer without bringing its own idea of an honest chart. How a
 renderer realises them — upright text, an undashed grid, one scale across layers — is the renderer's
-own gate (the Vega-Lite compiler's is :mod:`threetears.evals.analysis.viz.vega_policy`), and its
+own gate (the Vega-Lite compiler's is :mod:`threetears.evals.vega.spec_policy`), and its
 conformance test holds it to the intent it was handed.
 
 The rules, numbered as the report standards number them:

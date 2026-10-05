@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.viz.compiler import (
+from threetears.evals.vega.compiler import (
     DISPLAY_FIELD,
     SECONDARY_OPACITY,
     VEGA_LITE_SCHEMA,

@@ -6,6 +6,34 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the Vega-Lite renderer leaves the core
+
+- **The core ships no charting library.** `vl-convert-python` is no longer a dependency of `3tears-evals`; it is the
+  new `[vega]` extra (`pip install "3tears-evals[vega]"`, pinned `==1.9.0.post1` as before). Installing the core alone
+  generates, reports and decides charts; only rasterising needs the extra.
+- **`threetears.evals.vega` (new public root) is the Vega-Lite renderer**, moved out of `analysis.viz` unchanged in what
+  it draws: `compiler.py`, `arms/`, `palette.py` with `chart_palette.json`, `text_metrics.py` with `font_metrics.json`,
+  `render.py`, and the spec gate, renamed `vega_policy.py` → `spec_policy.py`. It exports `VegaRenderer`,
+  `CompiledChart`, `CompiledColumn`, `compile_chart`, `draw_intent`, `check_spec`, `SpecPolicyError`, `Theme`,
+  `vega_config`, `register_fonts`, `render_png`, `render_svg`, `TextMetricsError` and `write_font_metrics`. These are
+  removed from `threetears.evals.analysis.viz` (no shim): import them from `threetears.evals.vega`.
+- **`VegaRenderer(theme=..., font_dir=...)`** (new) is a `ChartRenderer` with its theme bound once: `draw(intent)` returns
+  the `CompiledChart`, `config()` the Vega-Lite config a browser embeds beside the spec, `png(chart)` / `svg(chart)`
+  rasterise in that theme, and `drawn_data(chart)` reads the spec's inline data back, each drawn name resolved to the
+  identity it stands for (refusing, with `ValueError`, names that are no spelling of the intent's identities).
+- **The renderer seam** (`analysis/viz/renderer.py`, new, exported from `threetears.evals.analysis.viz`):
+  `ChartRenderer` (a protocol: `draw(intent)`, `drawn_data(drawing)`), `renderer_disagreements(renderer, intent)` and
+  `assert_renderer_conforms(renderer, intents)` — the one conformance check every renderer passes: per identity, every
+  value the intent's `data` holds for an encoded field the values table states is among the values the drawing places,
+  every identity the table names is drawn, and nothing is drawn under an identity the intent does not hold. A run over no
+  intents is refused. The Vega-Lite renderer passes it for every chart type.
+- **`finding_chart_intent(storage, analysis_id, scope_id, finding_id)`** replaces `compile_finding_chart` (removed, no
+  shim): one finding's chart as its `ChartIntent`, for the host's renderer to draw; an undecidable stored chart is
+  refused with `NotFoundError` naming why.
+- The package matrix gains a `vega` row (it reaches `contracts` and `analysis`; no package reaches it; `vl_convert` only
+  in `vega.render`), and a probe runs the toy host's analysis to a report three ways with neither the renderer nor
+  `vl_convert` importable. The extraction boundary admits an extra's dependency only inside that extra's subpackage.
+
 ### 3tears-evals: the Report document and chart intent
 
 - **An analysis is read through one document.** `Report` (new, `REPORT_VERSION` 1): an ordered list of blocks —
@@ -28,8 +56,8 @@ packages (bumped in lock-step).
   mode and held to it by test), `report_json_schema()`, `published_report_schema()`, `SCHEMA_PATH`. Ships in the wheel.
 - **`analysis_report` replaces the four-read assembly.** `compile_analysis_charts`, `analysis_arm_table` and
   `analysis_surface_table` are removed, with `FindingChart` and `analysis/viz/models.py` (no shim): the report carries
-  the arm table, the surface table and every chart. `compile_finding_chart` (the per-chart Vega-Lite path) stays until
-  the renderer leaves the core.
+  the arm table, the surface table and every chart. `compile_finding_chart` (the per-chart Vega-Lite path) stayed until
+  the renderer left the core (see above).
 - **Where a caveat goes.** An author's caveat is attached to its finding, as written; the authored `Caveat` carries no
   magnitude, and placing caveats by materiality would mean reading it out of prose. A measure's materiality threshold
   already labels the delta it applies to (`immaterial`) where that delta is drawn. The `methods` section holds what no

@@ -117,18 +117,18 @@ CACHES: frozenset[str] = frozenset({"cache", "lru_cache", "cached_property"})
 
 #: ``(module, name)`` -> why this module state holds nothing a host could read. The only entries.
 ALLOWED: dict[tuple[str, str], str] = {
-    ("threetears/evals/analysis/viz/render.py", "_fonts_registered"): (
+    ("threetears/evals/vega/render.py", "_fonts_registered"): (
         "whether the renderer's bundled fonts were registered with the chart library — a process-wide "
         "font cache shared by every host because the library's font table is process-wide"
     ),
-    ("threetears/evals/analysis/viz/render.py", "_warned_unfonted"): (
+    ("threetears/evals/vega/render.py", "_warned_unfonted"): (
         "whether the one-time warning that a render ran with no bundled fonts has been logged — a log "
         "de-duplication flag about the process, not about any host"
     ),
-    ("threetears/evals/analysis/viz/render.py", "_font_lock"): (
+    ("threetears/evals/vega/render.py", "_font_lock"): (
         "serialises the one-time font registration above; guards process-wide library state"
     ),
-    ("threetears/evals/analysis/viz/render.py", "_registered_font_dirs"): (
+    ("threetears/evals/vega/render.py", "_registered_font_dirs"): (
         "the font directories already handed to the chart library, so none is registered twice — "
         "part of the same process-wide font cache"
     ),

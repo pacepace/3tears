@@ -2,7 +2,7 @@
 
 Shape only. What the chart says — the order, the unit, the values, the disclosures — arrives decided in
 its :class:`~threetears.evals.analysis.viz.intent.ChartIntent`; what lives here is the layout arithmetic
-and the marks, gated by :mod:`threetears.evals.analysis.viz.vega_policy`, which reads the spec rather
+and the marks, gated by :mod:`threetears.evals.vega.spec_policy`, which reads the spec rather
 than trusting the producer.
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.viz.compiler import (
+from threetears.evals.vega.compiler import (
     VEGA_LITE_SCHEMA,
     MarkValue,
     ValueAxis,

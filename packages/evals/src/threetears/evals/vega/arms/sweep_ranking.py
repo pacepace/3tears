@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.viz.compiler import (
+from threetears.evals.vega.compiler import (
     DISPLAY_FIELD,
     VEGA_LITE_SCHEMA,
     MarkValue,
@@ -41,9 +41,9 @@ from threetears.evals.analysis.viz.compiler import (
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
 from threetears.evals.analysis.viz.intents.sweep_ranking import CONFIG_FIELD, LEVER_KEY_PREFIX
-from threetears.evals.analysis.viz.palette import CONTEXT_STYLE, SEQUENTIAL_RANGE, geometry
+from threetears.evals.vega.palette import CONTEXT_STYLE, SEQUENTIAL_RANGE, geometry
 from threetears.evals.analysis.viz.payloads import ABSENT_LEVEL
-from threetears.evals.analysis.viz.vega_policy import RANKING_SPEC_NAME
+from threetears.evals.vega.spec_policy import RANKING_SPEC_NAME
 
 #: The row key holding a configuration's identity — what both panels align on.
 #:

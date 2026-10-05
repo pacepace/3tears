@@ -225,5 +225,35 @@ a charting library's spec: its type from eval's eight, the rows it draws, what e
 length, position, interval with what it varies over, level, class, ordinal), its axes with their units and
 zero baselines, its order, the colour *slots* it uses and what it must disclose — plus its values as drawn,
 which the HTML shows as a table. How a chart looks is the host's: a renderer reads the intent and the
-host's theme. The package's Vega-Lite renderer (`draw_intent`, `compile_chart`) is the first; the
-presentation rules are checked on the intent (`check_intent`), so they hold for any renderer.
+host's theme. The presentation rules are checked on the intent (`check_intent`), so they hold for any
+renderer, and the core ships no charting library.
+
+### Drawing charts: the Vega-Lite adapter
+
+The package's own renderer is an optional adapter, `threetears.evals.vega`. Install the extra for its
+rasteriser (`vl-convert-python`):
+
+```bash
+pip install "3tears-evals[vega]"
+```
+
+```python
+from pathlib import Path
+
+from threetears.evals.analysis import finding_chart_intent
+from threetears.evals.vega import VegaRenderer
+
+renderer = VegaRenderer(theme="dark", font_dir=Path("/srv/fonts"))  # the host's theme, bound once
+intent = finding_chart_intent(host.storage, analysis_id, scope_id, "0")  # or a chart block's `intent`
+chart = renderer.draw(intent)   # a colourless Vega-Lite spec, chart.spec, for a browser to embed...
+renderer.config()               # ...with this config beside it
+renderer.png(chart)             # or rasterised, for a surface that cannot run a browser
+```
+
+Drawing a spec needs nothing past the core; only `png` and `svg` need the extra. Nothing in the core
+imports the adapter.
+
+A host bringing its own renderer implements `ChartRenderer` (`draw(intent)`, and `drawn_data(drawing)`
+reading its drawing back) and runs the one conformance check every renderer passes —
+`assert_renderer_conforms(renderer, intents)`, from `threetears.evals.analysis.viz`: what it draws agrees
+with the intent's values, per row.

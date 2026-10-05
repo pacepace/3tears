@@ -6,9 +6,9 @@ own. The one exception is a payload whose every group recorded only pre-binned
 counts: nothing places on a value axis there, so the counts are the whole chart.
 
 **The geometry values this module reads are its own.** ``geometry()`` and
-``font_weights()`` are imported here from :mod:`threetears.evals.analysis.viz.palette`
+``font_weights()`` are imported here from :mod:`threetears.evals.vega.palette`
 directly, so they resolve in THIS module's namespace: a test that replaces
-``geometry`` on :mod:`threetears.evals.analysis.viz.compiler` — which is where the shared
+``geometry`` on :mod:`threetears.evals.vega.compiler` — which is where the shared
 row-step and bar-thickness arithmetic reads it — does not reach the panel gap or
 the rug threshold below. Patch this module to move those.
 """
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.viz.compiler import (
+from threetears.evals.vega.compiler import (
     ANCHOR_FIELD,
     DISPLAY_FIELD,
     KIND_FIELD,
@@ -41,15 +41,15 @@ from threetears.evals.analysis.viz.compiler import (
     value_label_mark,
 )
 from threetears.evals.analysis.viz.intent import ChartIntent
-from threetears.evals.analysis.viz.palette import font_sizes, font_weights, geometry
-from threetears.evals.analysis.viz.text_metrics import text_width
+from threetears.evals.vega.palette import font_sizes, font_weights, geometry
+from threetears.evals.vega.text_metrics import text_width
 
 #: How tall the cap at a known interval bound is drawn, in px.
 _CAP_HEIGHT = 12
 
 #: How tall a row's marginal draws, in px.
 #:
-#: Well inside :func:`~threetears.evals.analysis.viz.palette.geometry`'s ``row_step_marginal``,
+#: Well inside :func:`~threetears.evals.vega.palette.geometry`'s ``row_step_marginal``,
 #: because the rest of the row is the estimate the marginal sits under.
 _MARGINAL_RISE = 26
 
@@ -95,7 +95,7 @@ def compile_distribution(intent: ChartIntent) -> dict[str, Any]:
     single-group payload is the pooled case already, and gets there by having one
     row rather than by taking a different path.
 
-    Below :func:`~threetears.evals.analysis.viz.palette.geometry`'s ``rug_max_per_series``
+    Below :func:`~threetears.evals.vega.palette.geometry`'s ``rug_max_per_series``
     observations every one is drawn as its own tick, because at n=5 a histogram is
     a bin-width decision imposed on data small enough to show whole; above it the
     ticks would merge, so a binned band takes over at the same row height.
@@ -452,7 +452,7 @@ def _every_distribution_layer(axis: ValueAxis, layout: _RowLayout, band: float, 
 def _estimate_label_placements(values: Sequence[MarkValue], axis: ValueAxis) -> dict[str, list[MarkValue]]:
     """Group each estimate label by the alignment that keeps it inside the plot.
 
-    **A different question from :func:`~threetears.evals.analysis.viz.compiler._aligned_values`,
+    **A different question from :func:`~threetears.evals.vega.compiler._aligned_values`,
     which is why this does not call it.** That one asks which side of a mark's END has
     room, because a bar's label goes beside the bar. This label is anchored at an
     INTERIOR point — the mean — and is lifted clear of the mark rather than set beside

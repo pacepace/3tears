@@ -1,7 +1,7 @@
 """The engine's analysis package: campaigns, context bundles, generated analyses and the read lenses.
 
 It turns a campaign's runs into a generated, stored analysis. Of the engine it imports only itself
-and :mod:`threetears.evals.contracts`; ``viz.render`` alone reaches the optional rasteriser. The
+and :mod:`threetears.evals.contracts`, and ships no charting library. The
 stored shapes it writes into — the
 :class:`~threetears.evals.contracts.campaign.EvalCampaign` hub and the
 :class:`~threetears.evals.contracts.campaign.EvalAnalysis` /
@@ -17,7 +17,8 @@ not here. The pipeline:
   :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into
   a schema-valid ``EvalAnalysis`` + extracted insights.
 - ``viz`` — the typed chart payloads the generator's authored charts compile to, the chart intent
-  decided from each, and a Vega-Lite renderer for it.
+  decided from each, and the renderer seam (the Vega-Lite renderer is the ``threetears.evals.vega``
+  adapter, outside the core).
 - ``errors`` — ``GenerationError`` / ``SoundnessRefusal``, raised by ``generator`` and
   caught by ``service`` and ``reporter_kind``.
 - ``report`` — the :class:`~threetears.evals.analysis.report.Report` an analysis is read through, with
@@ -153,8 +154,8 @@ from threetears.evals.analysis.report import (
 from threetears.evals.analysis.service import (
     PreparedGeneration,
     analysis_report,
-    compile_finding_chart,
     describe_insight_id_filters,
+    finding_chart_intent,
     freeze_reporter_case,
     get_analysis,
     inspect_analysis_bundle,
@@ -377,7 +378,6 @@ __all__ = [
     "compare_runs",
     "compare_two_runs",
     "comparison_sets",
-    "compile_finding_chart",  # debt: the Vega-Lite path; leaves the core with the renderer adapter (phase D chunk 24)
     "completeness_disclosure",  # debt: retires when the English moves to one renderer
     "create_campaign",
     "declarable_axes",
@@ -386,6 +386,7 @@ __all__ = [
     "estimate_cost",
     "estimate_launch_cost",
     "export_results",
+    "finding_chart_intent",
     "first_request",
     "format_number",
     "format_signed",

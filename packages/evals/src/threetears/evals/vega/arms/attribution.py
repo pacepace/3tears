@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.analysis.viz.compiler import (
+from threetears.evals.vega.compiler import (
     SECONDARY_OPACITY,
     VALUE_LABEL_OFFSET,
     VEGA_LITE_SCHEMA,

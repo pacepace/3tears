@@ -24,8 +24,14 @@ classifiers = [
 dependencies = [
     "3tears-observe>=0.64.0,<0.65.0",
     "pydantic>=2.0",
-    # Renders a report's charts to PNG. Pinned exactly: the analysis tests compare rendered
-    # output, and a vl-convert release bundles a different Vega-Lite.
+]
+
+[project.optional-dependencies]
+# The Vega-Lite chart renderer, `threetears.evals.vega`: its rasteriser draws a report's charts to
+# PNG and SVG. The core ships no charting library and never imports the renderer, so a host that
+# brings its own renderer installs without this. Pinned exactly: the renderer's tests compare
+# rendered output, and a vl-convert release bundles a different Vega-Lite.
+vega = [
     "vl-convert-python==1.9.0.post1",
 ]
 

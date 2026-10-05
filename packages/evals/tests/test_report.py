@@ -34,6 +34,7 @@ from threetears.evals.analysis import (
     TextBlock,
     analysis_report,
     build_report,
+    finding_chart_intent,
     published_report_schema,
     report_html,
     report_json_schema,
@@ -230,6 +231,45 @@ class TestTheToyReportsContent:
             analysis_report(host.storage, "no-such-analysis", analysis.scope_id)
 
 
+class TestOneFindingsChart:
+    """``finding_chart_intent``: one finding's chart decided for a host's own renderer, or refused by name."""
+
+    async def test_the_service_decides_the_findings_chart(self, toy: tuple[EvalHost, EvalAnalysis, Any]) -> None:
+        host, analysis, report = toy
+        intent = finding_chart_intent(host.storage, analysis.id, analysis.scope_id, "0")
+
+        (block,) = [block for block in report.blocks if isinstance(block, ChartBlock)]
+        assert intent == block.intent
+
+    @pytest.mark.parametrize("finding_id", ["1", "-1", "first"])
+    async def test_a_finding_the_analysis_does_not_hold_is_refused(
+        self, toy: tuple[EvalHost, EvalAnalysis, Any], finding_id: str
+    ) -> None:
+        host, analysis, _ = toy
+        with pytest.raises(NotFoundError, match="finding"):
+            finding_chart_intent(host.storage, analysis.id, analysis.scope_id, finding_id)
+
+    async def test_a_finding_with_no_chart_is_refused(self, toy: tuple[EvalHost, EvalAnalysis, Any]) -> None:
+        host, analysis, _ = toy
+        bare = analysis.resolutions[0].model_copy(update={"chart": None})
+        host.storage.save_analysis(analysis.model_copy(update={"resolutions": [bare]}))
+        with pytest.raises(NotFoundError, match="chart for finding"):
+            finding_chart_intent(host.storage, analysis.id, analysis.scope_id, "0")
+
+    async def test_a_stored_chart_this_build_cannot_decide_is_refused_with_why(
+        self, toy: tuple[EvalHost, EvalAnalysis, Any]
+    ) -> None:
+        """Refused rather than answered empty: an empty answer would read as "no chart here"."""
+        host, analysis, _ = toy
+        resolution = analysis.resolutions[0]
+        broken = resolution.model_copy(
+            update={"chart": Viz(type="delta_table", payload={"rows": []}, ref=resolution.chart.ref)}  # type: ignore[union-attr]
+        )
+        host.storage.save_analysis(analysis.model_copy(update={"resolutions": [broken]}))
+        with pytest.raises(NotFoundError, match="drawable chart for finding"):
+            finding_chart_intent(host.storage, analysis.id, analysis.scope_id, "0")
+
+
 # =============================================================================
 # The report's own refusals
 # =============================================================================
@@ -293,7 +333,7 @@ class TestTheReportsRefusals:
             ChartBlock(section="findings", finding=0, viz_type="breakdown", error=error)
 
     def test_a_chart_block_with_both_an_intent_and_a_reason_is_refused(self) -> None:
-        from packages.evals.tests.test_viz_compiler import EVERY_TYPE
+        from packages.evals.tests.chart_examples import EVERY_TYPE
         from threetears.evals.analysis.viz import chart_intent
 
         intent = chart_intent("breakdown", EVERY_TYPE["breakdown"])
@@ -301,7 +341,7 @@ class TestTheReportsRefusals:
             ChartBlock(section="findings", finding=0, viz_type="breakdown", intent=intent, error="it broke")
 
     def test_a_chart_block_whose_intent_is_another_type_is_refused(self) -> None:
-        from packages.evals.tests.test_viz_compiler import EVERY_TYPE
+        from packages.evals.tests.chart_examples import EVERY_TYPE
         from threetears.evals.analysis.viz import chart_intent
 
         intent = chart_intent("breakdown", EVERY_TYPE["breakdown"])

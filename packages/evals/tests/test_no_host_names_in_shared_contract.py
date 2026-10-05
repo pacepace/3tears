@@ -450,7 +450,10 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: ``storage`` and ``testing`` are whole trees from birth: the adapters the engine ships behind the
 #: store port (the in-memory reference store) and the conformance kits any host runs against its own
 #: adapter. Each exists to serve every host, so a host noun in either would be a leak. ``quick``, the
-#: batteries (``run_eval`` and the command line), is whole from birth on the same terms.
+#: batteries (``run_eval`` and the command line), is whole from birth on the same terms. ``vega``, the
+#: Vega-Lite chart renderer the package ships as an optional adapter, is whole on the same terms too: it
+#: draws for every host (a host's typeface arrives through the renderer's theme), and it was scanned as part of
+#: ``analysis`` before it moved out of the core.
 #:
 #: A host's adapter tree never belongs here. Its whole purpose is host coupling — it names its
 #: host's concepts on purpose, and an extraction deletes it rather than porting it. Scanning it
@@ -463,6 +466,7 @@ _SHARED_CONTRACT_TREES: tuple[str, ...] = (
     "storage",
     "testing",
     "quick",
+    "vega",
 )
 
 _HOST_NOUN_RE = re.compile(rf"^(?:{'|'.join(HOST_NOUNS)})s?$", re.IGNORECASE)

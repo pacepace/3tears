@@ -15,8 +15,8 @@ import logging
 
 import pytest
 
-from threetears.evals.analysis.viz.palette import VALUE_ON_FILL_STYLE
-from threetears.evals.analysis.viz.vega_policy import SpecPolicyError, check_spec, enforce_spec
+from threetears.evals.vega.palette import VALUE_ON_FILL_STYLE
+from threetears.evals.vega.spec_policy import SpecPolicyError, check_spec, enforce_spec
 
 
 def _bar(**overrides):
@@ -253,7 +253,7 @@ class TestTheKnockoutInkStaysWhereItWasMeasured:
         assert not any("measured against slot 1 only" in violation for violation in check_spec(spec))
 
     # No "every arm still compiles" case here: `compile_chart` calls `enforce_spec` on
-    # its own output, so every compiler test in `test_viz_compiler.py` already proves
+    # its own output, so every compiler test in `test_vega_compiler.py` already proves
     # this gate refuses nothing the compiler emits. A copy would be coverage theatre.
 
 
@@ -309,13 +309,13 @@ class TestPaletteDiscipline:
         as another — the exact failure the old refusal was reaching for. Drawing the data is
         not the same as pretending the palette was wide enough for it.
         """
-        with caplog.at_level(logging.WARNING, logger="threetears.evals.analysis.viz.vega_policy"):
+        with caplog.at_level(logging.WARNING, logger="threetears.evals.vega.spec_policy"):
             check_spec(self._coloured([f"c{index}" for index in range(9)]))
         assert any("recycles from slot 1" in record.getMessage() for record in caplog.records)
 
     def test_a_domain_inside_the_palette_is_not_warned_about(self, caplog):
         """The negative half, so the assertion above is known to discriminate."""
-        with caplog.at_level(logging.WARNING, logger="threetears.evals.analysis.viz.vega_policy"):
+        with caplog.at_level(logging.WARNING, logger="threetears.evals.vega.spec_policy"):
             check_spec(self._coloured(["a", "b", "c", "d", "e"]))
         assert not [record for record in caplog.records if "recycles" in record.getMessage()]
 
@@ -521,7 +521,7 @@ class TestRenderableColour:
         The gate exists for producers that do not exist yet; a rule that only ever
         fires for one of those has to be written before they are.
         """
-        from threetears.evals.analysis.viz import compile_chart
+        from threetears.evals.vega import compile_chart
 
         payload = {"parts": [{"label": "a", "value": 2}, {"label": "b", "value": 1}], "unit": "runs"}
         assert check_spec(compile_chart("breakdown", payload).spec) == []
@@ -608,7 +608,7 @@ class TestResolvedSize:
         The gate exists for producers that do not exist yet, and the deleted
         substitution is what used to stand in for it.
         """
-        from threetears.evals.analysis.viz import compile_chart
+        from threetears.evals.vega import compile_chart
 
         payload = {"parts": [{"label": "a", "value": 2}, {"label": "b", "value": 1}], "unit": "runs"}
         assert check_spec(compile_chart("breakdown", payload).spec) == []
