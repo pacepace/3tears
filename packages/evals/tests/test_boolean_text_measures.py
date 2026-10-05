@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.analysis.bundle import _measure_collection
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import resolve_reading
@@ -31,6 +30,7 @@ from threetears.evals.contracts.analysis_measures import MeasureCollection, Meas
 from threetears.evals.contracts.host import SHARED_CORE, HostProfile, MeasureRegistry
 from threetears.evals.contracts.metrics import confusion_of, describe_measure
 from threetears.evals.contracts.surface import CellFacts, DecisionSurface, MeasureFacts
+from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.factories import make_eval_result
 
 
@@ -71,9 +71,22 @@ def _result(case: str, faulted: bool = False, **measures: bool | float | str) ->
     )
 
 
-def _summaries(results: list[EvalResult], undeclared: str = "scored") -> dict[str, MeasureSummary]:
-    collection = _measure_collection(results, profile=_PROFILE, undeclared=undeclared)  # type: ignore[arg-type]
-    return {summary.name: summary for summary in collection.measures}
+def _collection(results: list[EvalResult], surface: str = "cell") -> MeasureCollection:
+    """The measures one surface of the assembled bundle summarises over ``results``.
+
+    ``cell`` is the one cell's facts, whose undeclared population is ``scored``; ``run`` is the batch's
+    run summary, whose undeclared population is ``all_observed``.
+    """
+    bundle = one_batch_bundle(results, profile=_PROFILE)
+    if surface == "run":
+        (summary,) = bundle.run_summaries
+        return summary.measures
+    (cell,) = bundle.cell_measures
+    return cell.measures
+
+
+def _summaries(results: list[EvalResult], surface: str = "cell") -> dict[str, MeasureSummary]:
+    return {summary.name: summary for summary in _collection(results, surface).measures}
 
 
 # --- boolean -------------------------------------------------------------------------------------------
@@ -95,7 +108,7 @@ def test_a_rate_at_an_end_keeps_its_width() -> None:
 
 
 def test_a_number_under_a_boolean_name_is_dropped_and_reported() -> None:
-    collection = _measure_collection([_result("c1", on_target=1.0)], profile=_PROFILE, undeclared="scored")
+    collection = _collection([_result("c1", on_target=1.0)])
 
     assert "on_target" not in {summary.name for summary in collection.measures}
     assert "on_target" in collection.unreported_observations
@@ -165,9 +178,7 @@ def test_per_label_precision_recall_and_f1_come_from_the_confusion_counts() -> N
 
 
 def test_a_confusion_cell_that_does_not_split_is_dropped_and_reported() -> None:
-    collection = _measure_collection(
-        [_result("c1", confusion_cell="attack->move")], profile=_PROFILE, undeclared="scored"
-    )
+    collection = _collection([_result("c1", confusion_cell="attack->move")])
     assert "confusion_cell" in collection.unreported_observations
     assert not any(summary.name.startswith("classifier:") for summary in collection.measures)
 
@@ -189,8 +200,8 @@ def test_each_measure_is_computed_over_its_declared_population() -> None:
 def test_a_measure_declaring_no_population_takes_the_surfaces() -> None:
     results = [_result("c1", bare=1.0), _result("c2", faulted=True, bare=0.0)]
 
-    on_a_cell = _summaries(results, undeclared="scored")["bare"]
-    on_a_run = _summaries(results, undeclared="all_observed")["bare"]
+    on_a_cell = _summaries(results, "cell")["bare"]
+    on_a_run = _summaries(results, "run")["bare"]
 
     assert (on_a_cell.n, on_a_cell.population) == (1, "scored")
     assert (on_a_run.n, on_a_run.population) == (2, "all_observed")

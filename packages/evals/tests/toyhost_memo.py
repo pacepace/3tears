@@ -55,8 +55,9 @@ class FixturedCompletion:
 
     content: str
     cost_usd: float | None = 0.02
-    input_tokens: int = 1200
-    output_tokens: int = 800
+    # ``None`` is a count the provider did not report, as ``CompletionResult`` allows.
+    input_tokens: int | None = 1200
+    output_tokens: int | None = 800
     model: str = MODEL
     stop_reason: str = "end_turn"
     tool_calls: list[Any] = field(default_factory=list)

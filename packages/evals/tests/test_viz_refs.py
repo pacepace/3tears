@@ -118,7 +118,7 @@ def _cell(arm: str, rig: str = RIG, *, n: int = 8, n_independent: int = 8, drop:
     )
 
 
-def _measure_facts(latency_axis: tuple[str, ...] = ("total_ms", "llm_ms", "tool_ms")) -> dict[str, MeasureFacts]:
+def measure_facts(latency_axis: tuple[str, ...] = ("total_ms", "llm_ms", "tool_ms")) -> dict[str, MeasureFacts]:
     facts = {
         "total_ms": MeasureFacts(unit="ms", merit_axis=None, higher_is_better=False),
         "llm_ms": MeasureFacts(unit="ms", merit_axis=None, higher_is_better=False),
@@ -170,7 +170,7 @@ def surface(
         control_variant_key=KEYS["A"],
         cells=sorted(cells, key=lambda c: (c.variant_key, c.apparatus_class_id)),
         bars=[_bar(cells)],
-        measures=facts if facts is not None else _measure_facts(latency_axis),
+        measures=facts if facts is not None else measure_facts(latency_axis),
         dimensions={"reply.grounding": JudgedDimensionFacts(higher_is_better=True, value_range=(1.0, 5.0))},
     )
 
@@ -533,7 +533,7 @@ def test_an_attribution_states_the_remainder_of_a_sole_component_a_host_declares
         )
         for arm, (whole, part) in means.items()
     ]
-    facts = _measure_facts() | {
+    facts = measure_facts() | {
         name: MeasureFacts(unit="ms", merit_axis=None, higher_is_better=False)
         for name in ("host_whole_ms", "host_part_ms")
     }
@@ -865,7 +865,7 @@ def test_an_ambiguous_latency_default_names_the_candidates():
 
 
 def test_an_ambiguous_cost_default_names_the_candidates():
-    facts = _measure_facts(("total_ms",))
+    facts = measure_facts(("total_ms",))
     facts["tokens"] = facts["tokens"].model_copy(update={"merit_axis": "cost"})
 
     with pytest.raises(
@@ -875,7 +875,7 @@ def test_an_ambiguous_cost_default_names_the_candidates():
 
 
 def test_a_frontier_with_no_cost_measure_asks_for_one():
-    facts = _measure_facts(("total_ms",))
+    facts = measure_facts(("total_ms",))
     facts["cost_usd"] = facts["cost_usd"].model_copy(update={"merit_axis": None})
 
     with pytest.raises(UnresolvableReference, match=r"no measure on the cost axis"):
@@ -883,7 +883,7 @@ def test_a_frontier_with_no_cost_measure_asks_for_one():
 
 
 def test_a_named_cost_measure_overrides_an_ambiguous_default():
-    facts = _measure_facts(("total_ms",))
+    facts = measure_facts(("total_ms",))
     facts["tokens"] = facts["tokens"].model_copy(update={"merit_axis": "cost"})
 
     payload = build(chart("frontier", [], ["pass_rate", "tokens"]), surface(facts=facts))
@@ -959,7 +959,7 @@ def test_mixed_units_are_refused_where_one_unit_is_required(authored: Chart):
 
 
 def test_a_unitless_breakdown_is_refused():
-    facts = _measure_facts()
+    facts = measure_facts()
     facts["llm_ms"] = facts["llm_ms"].model_copy(update={"unit": None})
     facts["tool_ms"] = facts["tool_ms"].model_copy(update={"unit": None})
 

@@ -30,7 +30,6 @@ left alone, and an applied re-check is idempotent: a second pass finds nothing t
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -41,12 +40,13 @@ from threetears.evals.contracts.dsl import DSLError, extract_paths
 from threetears.evals.contracts.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.contracts.models import NON_TERMINAL_RUN_STATUSES, GoalStateOutcome
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
+from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.call_ledger import CallLedger
     from threetears.evals.contracts.models import EvalResult, EvalRun, EvalTestCase, EvalTrace
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 #: The one termination whose checks were graded against the cell's end. Any other left them
 #: unevaluated (a deadline), never ran them (excluded before a turn), or predates the field.

@@ -112,6 +112,7 @@ def _expect_conflict(write: Callable[[], None], what: str) -> None:
     try:
         write()
     except StoreConflict:
+        # NOSILENT: the conflict IS the conformance check passing; the failure is the write landing
         return
     raise StoreConformanceFailure(f"{what} landed; expected StoreConflict")
 
@@ -120,6 +121,7 @@ def _expect_value_error(call: Callable[[], object], what: str) -> None:
     try:
         call()
     except ValueError:
+        # NOSILENT: the refusal IS the conformance check passing; the failure is the call being accepted
         return
     raise StoreConformanceFailure(f"{what} was accepted; expected ValueError")
 
