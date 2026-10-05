@@ -1,8 +1,9 @@
-"""The toy host's profile — five measures, two bars in opposite directions, a world, and a style unlike the default.
+"""The toy host's profile — six measures, two bars in opposite directions, a world, and a style unlike the default.
 
-Each measure is chosen for a value-shape the engine has to handle: a bounded ratio, two unbounded quantities in opposite better-directions, and an
+Each measure is chosen for a value-shape the engine has to handle: a bounded ratio, two unbounded quantities in opposite better-directions, an
 **unbounded count** — the class where a confidence interval reached −7.7 on a quantity that
-cannot go below zero and shipped green.
+cannot go below zero and shipped green — and a **signed diagnostic** with no better end, which the
+host declares as one so the bundle carries it rather than dropping it as a raw count.
 
 All four merit axes are represented, which is the assertion behind the axis enum being
 engine-owned and closed: a second product's measures land on the same four without being made to.
@@ -15,6 +16,7 @@ from dataclasses import replace
 from threetears.evals.contracts import MeasureFamily, MetricDescriptor
 from threetears.evals.contracts.host import Bar, BarRegistry, HostProfile, MeasureRegistry, StyleProfile
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
+from packages.evals.tests.fixtures.toyhost.kind import FIELD_COUNT_ERROR
 from packages.evals.tests.fixtures.toyhost.sweepables import (
     TOYHOST_SWEEPABLE_REGISTRY,
     TOYHOST_TUNABLE_SWEEPABLE_REGISTRY,
@@ -106,6 +108,23 @@ TOYHOST_MEASURES: tuple[MetricDescriptor, ...] = (
         reader_prose="how many fields the validator threw away",
         higher_is_better=False,
         merit_axis="quality",
+        population="all_observed",
+    ),
+    # A SIGNED DIAGNOSTIC: no better end (emitting more fields than the template grades is not
+    # better or worse, it is what happened), so it declares no direction — and declares itself a
+    # diagnostic, which is what carries it onto the bundle's measure surfaces instead of being kept
+    # out as a raw count. The host-side twin of the engine's own provider-rate diagnostic.
+    MetricDescriptor(
+        name=FIELD_COUNT_ERROR,
+        data_type="numeric",
+        family="mechanical",
+        transferability_class="mechanical",
+        attribution_scope="subsystem",
+        description="Fields the extractor emitted minus the fields the template grades; negative when it emitted fewer.",
+        reader_prose="how far the extractor's field count was from the graded set",
+        higher_is_better=None,
+        diagnostic=True,
+        unit="fields",
         population="all_observed",
     ),
 )

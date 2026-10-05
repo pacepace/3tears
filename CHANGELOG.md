@@ -29,6 +29,36 @@ packages (bumped in lock-step).
   not callable in its role's shape).
 - The conformance kit is unchanged: it proves the profile registry's own table.
 
+### 3tears-evals: a host declares a diagnostic measure; four authoring names exported; golden identity keys
+
+- **`MetricDescriptor.diagnostic`** (new, default `False`). A host marks a measure as a diagnostic on its
+  descriptor: reported so a reader can explain a movement, never ranked on and never a bar. The bundle's
+  measure filter now admits a directionless numeric measure when its descriptor declares
+  `diagnostic=True`, for the engine's own diagnostic (`candidate_output_tokens_per_s`, which now
+  declares it) and a host's alike. Before, the engine's diagnostics were a fixed set of names inside
+  the engine, so a host's signed, directionless diagnostic registered and then appeared on no surface.
+  A directionless measure that does not declare itself a diagnostic is still a raw count and stays
+  out.
+  - **New refusal:** a descriptor with `diagnostic=True` and a `higher_is_better` other than `None`
+    fails validation. A direction is exactly what would let a ranking read a diagnostic as a merit.
+  - **Removed:** `threetears.evals.contracts.metrics.DIAGNOSTIC_MEASURES` (it was not on a public root).
+    Read `descriptor.diagnostic` instead.
+  - A bar on a directionless measure is refused as before (`no_better_end`), and the reason now says
+    whether the measure is a diagnostic or a raw count, read off the descriptor.
+- **Exported from `threetears.evals.contracts`:** `resolve_bar_name` with its types `BarName`,
+  `UnreadableBarName`, `BarNameKind` and `BarNameRefusal`, so a host's authoring surface can say what
+  a bar name resolves to, or why it cannot carry a verdict, before a design is submitted (bar
+  registration checks only that the measure is declared and the direction agrees). And
+  `refuse_an_undeclarable_design`, the authoring gate, for a host that authors designs outside the
+  campaign write path, for example as code checked at boot. Its only other route is a campaign write.
+  `is_code_graded` and `evidence_tier_of` stay unexported. A host reads a finding's tier off
+  `FindingResolution.evidence_tier`, and whether a measure can carry a bar off `resolve_bar_name`.
+- **Golden identity keys** (`tests/test_identity_golden_keys.py`). The context and variant keys of
+  every arm of the toy and courier fixture hosts are pinned, with their context components, under
+  `IDENTITY_VERSION` 22. A key derivation that changes without a version bump fails the test. So does
+  a bump that is not re-pinned, or one with no entry in the identity ledger in `identity.py`. The
+  courier fixture's cases now have stable ids, so its keys are reproducible.
+
 ### 3tears-evals: world conformance checks that unnamed surfaces stay still
 
 - **`perception_stillness`** (new `CheckName`, run by `check_world_conformance`, owed by every
