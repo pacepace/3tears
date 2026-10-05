@@ -117,6 +117,8 @@ def _make_service(
     memories.create = MagicMock(side_effect=lambda data: MagicMock(data=data))
     memories.save_entity = AsyncMock()
     memories.mark_superseded = AsyncMock()
+    # supersede reads each source to refuse a permanent one; these are not permanent
+    memories.get = AsyncMock(return_value=None)
 
     edges = MagicMock()
     edges.assert_no_cycle = AsyncMock()

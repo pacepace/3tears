@@ -7,6 +7,9 @@ uses discord.Client with gateway intents for real-time message handling.
 from __future__ import annotations
 
 import io
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,8 +27,45 @@ from threetears.channels.protocol import (
 )
 
 __all__ = [
+    "DirectMessageSent",
     "DiscordAdapter",
 ]
+
+
+@dataclass(frozen=True)
+class DirectMessageSent:
+    """what a direct message to a user left behind: the handles a reply to it carries.
+
+    a reply in the same DM arrives with ``channel_id`` as its channel; a reply
+    to one of the sent messages arrives with that message's id as its
+    ``reply_to_id`` (:func:`_build_channel_message`). a caller files both, so
+    the reply finds the conversation that sent it.
+
+    :ivar channel_id: the direct-message channel between the bot and the user
+    :ivar message_ids: every message sent, in order (one per 2000-char chunk)
+    """
+
+    channel_id: str
+    message_ids: tuple[str, ...]
+
+
+#: The host every REST call and the gateway go through, for the proxy lookup.
+_DISCORD_URL = "https://discord.com"
+
+
+def proxy_from_env() -> str | None:
+    """The proxy the environment names for Discord, as httpx would choose it.
+
+    ``HTTPS_PROXY`` (or ``ALL_PROXY``), unless ``NO_PROXY`` covers discord.com.
+
+    :return: the proxy URL, or None to connect directly
+    :rtype: str | None
+    """
+    host = urllib.parse.urlsplit(_DISCORD_URL).hostname or ""
+    if urllib.request.proxy_bypass(host):
+        return None
+    proxies = urllib.request.getproxies()
+    return proxies.get("https") or proxies.get("all") or None
 
 
 class DiscordAdapter:
@@ -66,10 +106,24 @@ class DiscordAdapter:
         intents = discord.Intents.default()
         intents.messages = True
         intents.message_content = True
-        self._client = discord.Client(intents=intents)
+        # discord.py's aiohttp session ignores HTTPS_PROXY, so a host that reaches the
+        # internet only through a proxy could not reach Discord at all: name resolution
+        # failed and the token check was a 500 (metallm dev, 2026-10-04).
+        self._client = discord.Client(intents=intents, proxy=self.config.get("proxy") or proxy_from_env())
 
-        self._client.event(self._on_message)
-        self._client.event(self._on_ready)
+        # ``Client.event`` registers a handler under its own ``__name__``, and
+        # discord.py dispatches the message event to ``on_message``. Registered
+        # directly, the adapter's ``_on_message`` and ``_on_ready`` were never called:
+        # no inbound message reached the router (metallm dev, 2026-10-04: the owner's
+        # Discord reply never arrived). These carry the names it dispatches to.
+        async def on_message(message: Any) -> None:
+            await self._on_message(message)
+
+        async def on_ready() -> None:
+            await self._on_ready()
+
+        self._client.event(on_message)
+        self._client.event(on_ready)
         # whether the REST-only http session has been authenticated (via
         # :meth:`_ensure_logged_in`). the out-of-band :meth:`post_message` path
         # logs in ONCE and reuses the session; it never opens the gateway
@@ -148,6 +202,49 @@ class DiscordAdapter:
         for chunk in _split_message(content):
             await target.send(content=chunk)
 
+    async def identify(self) -> str:
+        """authenticate the token over REST and say which bot it is, without opening the gateway.
+
+        what a caller asks before it keeps a token: a token discord refuses
+        raises :class:`discord.LoginFailure` here rather than when the gateway
+        first connects, where nobody is waiting to hear it.
+
+        :return: the bot's own user name
+        :rtype: str
+        :raises discord.LoginFailure: when discord refuses the token
+        """
+        await self._ensure_logged_in()
+        result = str(self._client.user)
+        return result
+
+    async def send_direct(self, *, user_id: str, content: str) -> DirectMessageSent:
+        """send a direct message to a user out-of-band, and say what it left behind.
+
+        the bot opens (or reuses) its DM channel with the user over REST --
+        ``fetch_user`` then ``create_dm``, no gateway -- and posts the content,
+        split to discord's 2000-char limit. discord delivers it only to a user
+        who shares a server with the bot and accepts DMs from its members; a
+        refusal raises :class:`discord.Forbidden`, a user id that names nobody
+        :class:`discord.NotFound`.
+
+        :param user_id: the discord user id (a snowflake, as text)
+        :ptype user_id: str
+        :param content: message text in markdown
+        :ptype content: str
+        :return: the DM channel and the ids of the messages sent
+        :rtype: DirectMessageSent
+        """
+        await self._ensure_logged_in()
+        user = await self._client.fetch_user(int(user_id))
+        dm = await user.create_dm()
+        sent_ids: list[str] = []
+        for chunk in _split_message(content):
+            sent = await dm.send(content=chunk)
+            sent_ids.append(str(sent.id))  # convert at border: discord snowflake id handed back as text
+        channel_id = str(dm.id)  # convert at border: discord snowflake id handed back as text
+        result = DirectMessageSent(channel_id=channel_id, message_ids=tuple(sent_ids))
+        return result
+
     async def _on_ready(self) -> None:
         """handle discord on_ready event.
 
@@ -159,7 +256,7 @@ class DiscordAdapter:
         """handle discord on_message event.
 
         delegates to :meth:`handle_message` for processing.
-        registered as discord.py event handler via client.event().
+        reached through a handler registered on the client as ``on_message``, the name discord.py dispatches to.
 
         :param message: discord message object
         :ptype message: Any

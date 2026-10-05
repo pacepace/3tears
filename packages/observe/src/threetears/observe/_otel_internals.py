@@ -32,6 +32,16 @@ every construction. The replacement exports the ``code.*`` call-site attributes 
 ``log_code_attributes=True``, which this module passes: the call-site enrichment in ``setup.py``
 rewrites exactly the fields those attributes carry.
 
+**The handler's filter.** The handler never exports a record that exporting produced: one from
+OpenTelemetry's own loggers (``opentelemetry`` and every logger under it), or one emitted on a
+thread that calls exporters (:data:`EXPORT_THREAD_NAMES`) while the SDK has instrumentation
+suppressed, which it does around every exporter call. Exporting those let a failing export enqueue
+its own failure reports into the queue it was draining, so a force flush against an unreachable
+collector never returned. A host's own records inside ``suppress_instrumentation()`` on any other
+thread are still exported. The filter is on the handler itself, so anything that attaches
+:attr:`OtelLogExport.handler` gets it. The SDK's worker-thread names are not an API, so
+``tests/test_otel_internals.py`` checks that the installed release still starts threads with them.
+
 The names imported here set the ``otel`` extra's floor: the replacement handler first shipped in
 opentelemetry-instrumentation-logging 0.61b0, which pins opentelemetry-api 1.40.0, so api, sdk and
 exporter are declared ``>=1.40`` beside it (``LogRecordExporter``, which set the earlier floor,
@@ -45,6 +55,7 @@ Consumers never import these modules: a host app gets log export through
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Sequence
 from typing import Protocol, cast
 
@@ -52,12 +63,28 @@ from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.instrumentation.logging.handler import LoggingHandler
+from opentelemetry.instrumentation.utils import is_instrumentation_enabled
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk._logs.export import LogRecordExporter as SdkLogRecordExporter
 from opentelemetry.sdk.resources import Resource
 
-__all__ = ["LogRecordExporter", "OtelLogExport", "allow_tracer_provider_reset", "start_log_export"]
+__all__ = [
+    "EXPORT_THREAD_NAMES",
+    "FLUSH_THREAD_NAME",
+    "LogRecordExporter",
+    "OtelLogExport",
+    "allow_tracer_provider_reset",
+    "start_log_export",
+]
+
+#: the daemon thread :mod:`threetears.observe.setup` runs provider flushes on; the SDK's
+#: ``force_flush`` calls the exporter on whichever thread calls it, so this one calls exporters too
+FLUSH_THREAD_NAME = "threetears-telemetry-flush"
+
+#: every thread that calls into an exporter: the SDK's batch workers -- its ``BatchProcessor``
+#: names each ``OtelBatch{Log,Span}RecordProcessor`` -- and the flush thread above
+EXPORT_THREAD_NAMES = frozenset({"OtelBatchLogRecordProcessor", "OtelBatchSpanRecordProcessor", FLUSH_THREAD_NAME})
 
 
 class LogRecordExporter(Protocol):
@@ -174,4 +201,44 @@ def start_log_export(
     # code attributes on: the SDK handler this replaced always exported them, and setup.py's
     # call-site enrichment exists to fill them
     handler = LoggingHandler(level=logging.DEBUG, logger_provider=provider, log_code_attributes=True)
+    handler.addFilter(_is_not_telemetrys_own_record)
     return OtelLogExport(provider, handler)
+
+
+#: the logger every OpenTelemetry API, SDK and exporter module logs under: each one logs through
+#: ``logging.getLogger(__name__)``, so its records are named ``opentelemetry`` or ``opentelemetry.*``
+_OPENTELEMETRY_LOGGER_ROOT = "opentelemetry"
+
+
+def _is_not_telemetrys_own_record(record: logging.LogRecord) -> bool:
+    """keep a record out of the export when exporting telemetry is what produced it.
+
+    The OTLP exporter reports a failed export through its own logger -- a WARNING per retry, an
+    ERROR on giving up -- and the HTTP client under it logs every connection attempt at DEBUG.
+    Those records reach the root logger, where the export handler is attached. Exported, every
+    failed export would enqueue more records into the very queue being exported: against an
+    unreachable collector that is a loop that never drains, and a force flush, which exports until
+    the queue is empty, never returns.
+
+    So two kinds of record are dropped here. One is any record from OpenTelemetry's own loggers,
+    ``opentelemetry`` and every logger under it, wherever it is emitted. The other is a record
+    emitted on one of :data:`EXPORT_THREAD_NAMES` while instrumentation is suppressed, which is how
+    the SDK's batch processor marks every call into its exporter: that catches the HTTP client's
+    records, and any other library's, logged on the export's behalf. Both conditions are needed for
+    the second kind: a host that wraps its own code in ``suppress_instrumentation()`` on any other
+    thread still has those records exported, as upstream OpenTelemetry does.
+
+    Dropped, an export failure can never produce an export. Only this handler drops them; every
+    other handler on the root logger still receives them, so the operator still sees why export
+    is failing.
+
+    :param record: the record about to be exported
+    :ptype record: logging.LogRecord
+    :return: ``False`` for a record from ``opentelemetry`` or any logger under it, or one emitted on
+        an export thread while instrumentation is suppressed; ``True`` otherwise
+    :rtype: bool
+    """
+    name = record.name
+    from_opentelemetry = name == _OPENTELEMETRY_LOGGER_ROOT or name.startswith(f"{_OPENTELEMETRY_LOGGER_ROOT}.")
+    on_behalf_of_an_export = threading.current_thread().name in EXPORT_THREAD_NAMES and not is_instrumentation_enabled()
+    return not (from_opentelemetry or on_behalf_of_an_export)

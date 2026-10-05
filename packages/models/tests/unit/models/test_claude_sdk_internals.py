@@ -89,13 +89,17 @@ class TestTheControlProtocol:
         assert answer == {"rewound": True}
         assert sent == [({"subtype": "rewind_conversation"}, 1.5)]
 
-    def test_a_tool_server_is_installed_and_removed_where_the_sdk_routes_tool_calls(self) -> None:
+    @pytest.mark.asyncio
+    async def test_a_tool_server_is_installed_and_removed_where_the_sdk_routes_tool_calls(self) -> None:
         servers: dict[str, Any] = {}
-        client = SimpleNamespace(_query=SimpleNamespace(sdk_mcp_servers=servers))
+        bridges: dict[str, Any] = {}
+        client = SimpleNamespace(_query=SimpleNamespace(sdk_mcp_servers=servers, _sdk_mcp_bridges=bridges))
         server = object()
 
-        install_tool_server(client, "langchain-tools", server)
+        await install_tool_server(client, "langchain-tools", server)
         assert servers == {"langchain-tools": server}
-        remove_tool_server(client, "langchain-tools")
-        remove_tool_server(client, "langchain-tools")
-        assert servers == {}, "removing an absent server must be a no-op"
+        # SDK 0.2.163 routes a tools/call through the bridge, not the table: one is built for it
+        assert bridges["langchain-tools"].name == "langchain-tools"
+        await remove_tool_server(client, "langchain-tools")
+        await remove_tool_server(client, "langchain-tools")
+        assert servers == {} and bridges == {}, "removing an absent server must be a no-op"

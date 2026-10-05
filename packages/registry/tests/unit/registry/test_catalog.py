@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 
-from threetears.nats import Subjects
+from threetears.core.testing.kv import FakeKvBucket
+from threetears.nats import KvError, Subjects
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 
 from .copy_entries import uniform_entry
@@ -76,20 +77,18 @@ def _make_mock_kv(entries: list[CatalogEntry] | None = None) -> AsyncMock:
     """
     kv = AsyncMock()
     if entries:
-        kv.keys = AsyncMock(return_value=[e.full_name for e in entries])
-        kv_entries_map: dict[str, MagicMock] = {}
+        kv.list_keys = AsyncMock(return_value=[e.full_name for e in entries])
+        kv_entries_map: dict[str, bytes] = {}
         for entry in entries:
-            mock_entry = MagicMock()
-            mock_entry.value = json.dumps(entry.to_dict()).encode("utf-8")
-            kv_entries_map[entry.full_name] = mock_entry
+            kv_entries_map[entry.full_name] = json.dumps(entry.to_dict()).encode("utf-8")
 
-        async def mock_get(key: str) -> MagicMock:
-            """return mock KV entry for key."""
-            return kv_entries_map[key]
+        async def mock_get(*, key: str) -> bytes | None:
+            """return the stored value for key, as the bucket handle's keyword-only get does."""
+            return kv_entries_map.get(key)
 
         kv.get = mock_get
     else:
-        kv.keys = AsyncMock(return_value=[])
+        kv.list_keys = AsyncMock(return_value=[])
     kv.put = AsyncMock()
     kv.delete = AsyncMock()
     return kv
@@ -863,6 +862,36 @@ class TestToolCatalogKVPersistence:
         assert catalog.get("tool.beta@2.0") is not None
 
     @pytest.mark.asyncio
+    async def test_load_from_an_empty_bucket_starts_empty_and_binds_it(self) -> None:
+        """an empty bucket lists no keys; the catalog starts empty and writes to it from then on."""
+        bucket = FakeKvBucket(bucket_name="tool_catalog", storage="file", direct=True)
+        catalog = ToolCatalog()
+        await catalog.load_from_kv(bucket)
+        assert catalog.search() == []
+        await catalog.register(_make_entry())
+        assert await bucket.list_keys() == ["threetears_calculator_AT_1_0_0"]
+
+    @pytest.mark.asyncio
+    async def test_a_listing_that_fails_is_raised_not_taken_for_an_empty_bucket(self) -> None:
+        """a failed read must not pass for "nothing was persisted": the declaration retries it."""
+        bucket = FakeKvBucket(bucket_name="tool_catalog", storage="file", direct=True)
+        bucket.become_unreachable(KvError("nats: timeout"))
+        catalog = ToolCatalog()
+        with pytest.raises(KvError, match="nats: timeout"):
+            await catalog.load_from_kv(bucket)
+
+    @pytest.mark.asyncio
+    async def test_an_entry_deleted_between_the_listing_and_its_read_is_not_loaded(self) -> None:
+        """a key listed and then deleted reads as absent, and a deregistration must stay one."""
+        kv = AsyncMock()
+        kv.list_keys = AsyncMock(return_value=["threetears_calculator_AT_1_0_0"])
+        kv.get = AsyncMock(return_value=None)
+        catalog = ToolCatalog()
+        await catalog.load_from_kv(kv)
+        kv.get.assert_awaited_once_with(key="threetears_calculator_AT_1_0_0")
+        assert catalog.search() == []
+
+    @pytest.mark.asyncio
     async def test_register_writes_to_kv(self) -> None:
         """register writes entry to KV when KV is configured."""
         kv = _make_mock_kv()
@@ -872,8 +901,8 @@ class TestToolCatalogKVPersistence:
         await catalog.register(entry)
         kv.put.assert_called_once()
         call_args = kv.put.call_args
-        key = call_args[0][0]
-        payload = json.loads(call_args[0][1].decode("utf-8"))
+        key = call_args.kwargs["key"]
+        payload = json.loads(call_args.kwargs["value"].decode("utf-8"))
         assert "threetears" in key
         assert "endpoints" in payload
         assert isinstance(payload["endpoints"], list)
@@ -891,7 +920,7 @@ class TestToolCatalogKVPersistence:
         await catalog.register(entry_b)
         kv.put.assert_called_once()
         call_args = kv.put.call_args
-        payload = json.loads(call_args[0][1].decode("utf-8"))
+        payload = json.loads(call_args.kwargs["value"].decode("utf-8"))
         assert len(payload["endpoints"]) == 2
 
     @pytest.mark.asyncio
@@ -928,7 +957,7 @@ class TestToolCatalogKVPersistence:
 
         kv.put.assert_called_once()
         call_args = kv.put.call_args
-        payload = json.loads(call_args[0][1].decode("utf-8"))
+        payload = json.loads(call_args.kwargs["value"].decode("utf-8"))
         assert len(payload["endpoints"]) == 1
         assert payload["endpoints"][0]["pod_id"] == "pod-B"
         kv.delete.assert_not_called()

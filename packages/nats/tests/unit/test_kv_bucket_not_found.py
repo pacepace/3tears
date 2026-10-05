@@ -15,6 +15,7 @@ wrapper sees is the one nats-py itself raises from that answer.
 from __future__ import annotations
 
 import asyncio
+import logging
 import json
 from datetime import timedelta
 from typing import Any
@@ -525,6 +526,143 @@ class TestOneSlowOpenDoesNotStallTheOthers:
         finally:
             waiting.cancel()
             await asyncio.gather(waiting, return_exceptions=True)
+
+
+async def _until_refilled(refills: list[Any], count: int) -> None:
+    """wait until the client's background refill has run ``count`` times, failing the test if it never does.
+
+    :param refills: the buckets each refill was handed, appended as it runs
+    :ptype refills: list[Any]
+    :param count: how many refills to wait for
+    :ptype count: int
+    :return: nothing
+    :rtype: None
+    """
+    for _ in range(500):
+        if len(refills) >= count:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"expected {count} refills, saw {len(refills)}")
+
+
+class TestASelfHealThatCreatedTheBucketOwesItsRefill:
+    """the path no reconnect runs: an operation finds the stream gone and its declaring handle creates it.
+
+    A put after a wipe, or the first operation after a move to a successor connection, recreates the
+    bucket through the handle's own re-open, and nothing else tells the declarer its entries are gone.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_put_after_a_wipe_recreates_the_bucket_and_runs_the_refill_with_the_handle(self) -> None:
+        wire = _FakeWire()
+        wire.creates_streams = True
+        refills: list[Any] = []
+
+        async def _write_back(bucket: Any) -> None:
+            refills.append(bucket)
+
+        bucket = await _client(wire).ensure_kv_bucket(name="nonces", on_restored=_write_back)
+        wire.streams.clear()  # a NATS restart took the stream, and no reconnect ran
+
+        await bucket.put(key="k", value=b"v")
+
+        assert _STREAM in wire.streams, "the declaring handle put its bucket back"
+        await _until_refilled(refills, 1)
+        assert refills == [bucket]
+
+    @pytest.mark.asyncio
+    async def test_a_reopen_that_found_the_stream_live_owes_nothing(self) -> None:
+        """a write nothing acknowledged once is a transport failure, not a lost bucket."""
+        wire = _FakeWire()
+        wire.creates_streams = True
+        refills: list[Any] = []
+
+        async def _write_back(bucket: Any) -> None:
+            refills.append(bucket)
+
+        bucket = await _client(wire).ensure_kv_bucket(name="nonces", on_restored=_write_back)
+        wire.unacknowledged_publishes = 1
+
+        await bucket.put(key="k", value=b"v")
+        for _ in range(50):
+            await asyncio.sleep(0)
+
+        assert refills == []
+
+    @pytest.mark.asyncio
+    async def test_a_raising_refill_after_a_self_heal_is_retried(self, caplog: pytest.LogCaptureFixture) -> None:
+        wire = _FakeWire()
+        wire.creates_streams = True
+        refills: list[Any] = []
+
+        async def _write_back(bucket: Any) -> None:
+            refills.append(bucket)
+            if len(refills) == 1:
+                raise RuntimeError("nats: connection closed")
+
+        bucket = await _client(wire).ensure_kv_bucket(name="nonces", on_restored=_write_back)
+        wire.streams.clear()
+
+        with caplog.at_level(logging.ERROR, logger="threetears.nats.client"):
+            await bucket.put(key="k", value=b"v")
+            await _until_refilled(refills, 2)
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any(_BUCKET in message and "nats: connection closed" in message for message in errors), errors
+
+
+class TestAKeyListingFollowsAMovedConnection:
+    """a listing, like every other operation, binds its handle on the client's current connection first."""
+
+    @staticmethod
+    def _moved_handle(wire: _FakeWire) -> NatsKvBucket:
+        """a declaring handle bound on a connection the client has since replaced with ``wire``.
+
+        :param wire: the client's current connection, and the server behind it
+        :ptype wire: _FakeWire
+        :return: the handle
+        :rtype: NatsKvBucket
+        """
+        client = MagicMock()
+        client.jetstream_context = MagicMock(return_value=wire.jetstream())
+        client.raw = wire
+        return NatsKvBucket(
+            client=client, full_name=_BUCKET, kv=MagicMock(), ttl=None, timings=_FAST, bound_to=object()
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_handle_is_bound_once_on_the_successor(self) -> None:
+        wire = _FakeWire()
+        wire.streams[_STREAM] = _kv_stream_config(_STREAM)
+        bucket = self._moved_handle(wire)
+        infos_before = wire.infos
+
+        assert await bucket.list_keys() == []
+        assert wire.infos == infos_before + 1, "the listing bound the handle on the current connection"
+
+        assert await bucket.list_keys() == []
+        assert wire.infos == infos_before + 1, "a handle already on the current connection is not bound again"
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_absent_on_the_successor_is_recreated_by_a_declaring_handle(self) -> None:
+        wire = _FakeWire()
+        wire.creates_streams = True
+        bucket = self._moved_handle(wire)
+
+        assert await bucket.list_keys() == []
+        assert _STREAM in wire.streams
+
+    @pytest.mark.asyncio
+    async def test_a_bind_on_the_successor_that_is_never_answered_is_a_kv_error(self) -> None:
+        wire = _FakeWire()
+        wire.streams[_STREAM] = _kv_stream_config(_STREAM)
+        wire.unanswered = True
+        bucket = self._moved_handle(wire)
+
+        raised = await _raised_by(bucket.list_keys())
+
+        assert isinstance(raised, KvError), repr(raised)
+        assert not isinstance(raised, KvBucketNotFoundError), "an unanswered bind is not an absence"
 
 
 async def _nats_py_raises(coro: Any) -> BaseException:

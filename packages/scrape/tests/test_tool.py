@@ -2044,9 +2044,13 @@ class TestSsrfGuard:
         assert driver.render_calls == ["https://8.8.8.8/robots.txt"]
 
     async def test_blocks_hostname_resolving_to_private(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A public-looking hostname resolving to a private address (DNS rebinding)."""
+        """A public-looking hostname whose DNS answer is a private address.
+
+        Not DNS rebinding, which the guard does not catch: that is a name answering
+        differently between the guard's lookup and the one the client makes to connect.
+        """
         fake = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.0.0.5", 80))]
-        monkeypatch.setattr("threetears.scrape.tool.socket.getaddrinfo", lambda *a, **k: fake)
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: fake)
         driver = _FakeDriver(_SINGLE_HTML)
 
         result = await self._guarded_tool(driver).execute(

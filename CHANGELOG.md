@@ -856,8 +856,6 @@ packages (bumped in lock-step).
   and `vega_config(theme)` already handed them to a caller; the check that every type a public name
   reaches is exported had been reading a copy of the roots that left `analysis.viz` out.
 
-## v0.64.0 -- 2026-10-04
-
 ### 3tears-evals joins the family, with a host contract any app can implement
 
 `3tears-evals` (new package; imports under `threetears.evals`) evaluates an LLM-backed product as
@@ -1047,6 +1045,232 @@ The package is alpha; these change its public API.
   which nothing called; `LaunchGroup(candidate_models)` takes the models alone.
 - **Exported from `threetears.evals.run`:** `RunJudge`, `LaunchArgument`, `JobTimeoutFactory`,
   `default_job_timeout`.
+
+## v0.65.0 -- 2026-10-05
+
+### NATS: a declared KV bucket can carry its exact name and be refilled when it comes back empty
+
+A service that keeps an in-memory structure's persisted copy in a KV bucket could not declare it
+through `ensure_kv_bucket`: the bucket was always named `{namespace}-{name}`, and after a NATS
+restart it came back empty with nothing told to refill it. So each such service held a raw nats-py
+handle, which stays bound to the connection it was opened on and fails with `connection closed` once
+the client moves to a successor connection.
+
+- **Added, `NatsClient.ensure_kv_bucket(prefix_namespace=True, on_restored=None)`:** with
+  `prefix_namespace=False` the name is used verbatim. `on_restored` is the declarer's refill
+  (`KvRestoredHook`, called with the live handle). A declaration given one is owed it each time the
+  client creates the bucket's stream again after the declaration: a restoration round that found the
+  stream absent, an owner's storage recreate, or a self-heal re-open on a handle's next operation.
+  The refill runs in the background and settles only when it returns; one that raises is logged at
+  ERROR and retried, and one cancelled stays owed. `FakeNatsClient.ensure_kv_bucket` takes the same
+  parameters.
+- **Added, `threetears.nats.PersistedCopyBucket`:** the one owner of a bucket that is the persisted
+  copy of memory. It declares under the exact name in the background, retried with capped backoff
+  and an ERROR per failed attempt until it lands, runs `load` once at the first declaration, runs
+  `write_back` then and on every refill, and `stop()` ends a declaration still retrying.
+- **Changed, `NatsKvBucket.list_keys`:** follows the client onto its current connection before
+  listing, like every other operation.
+- **Added, `FakeNatsClient`:** `restart_broker` and `reconnect` run every refill owed, so a
+  consumer's fake-based tests drive the same path, and `refill_owed(name)` says whether one still is.
+
+#### Changed, breaking for structural implementers and `open_kv_stream` callers
+
+A class that satisfies `KvBucketLike` or `KvDeclaring` structurally -- a consumer's test fake
+declaring `# parity-with:` either protocol, or any hand-rolled double passed where one is expected --
+no longer satisfies it until it is updated. Update it in the same commit that relocks to this release.
+
+- **`KvBucketLike` gains `list_keys`.** Structural implementers must add
+  `async list_keys(*, prefix: str = "") -> list[str]` (an empty bucket is `[]`). `FakeKvBucket`
+  already has it, so a subclass inherits it.
+- **`KvDeclaring.ensure_kv_bucket` gains the keyword parameters `prefix_namespace: bool = True` and
+  `on_restored: KvRestoredHook | None = None`.** Structural implementers must accept both.
+- **`open_kv_stream` returns `KvStreamOpening(kv, created)`** instead of the bare handle, and takes
+  `detect_creation`, which looks the stream up before a declaring create so `created` says whether
+  this call made it. A caller reads `.kv` for the handle.
+
+### Registry: the tool catalog keeps recording registrations after a NATS rolling restart
+
+After a NATS rolling restart the registry refused every tool registration with `CATALOG_UNAVAILABLE`
+/ `nats: connection closed` until its pod was deleted by hand, while it reported itself healthy. The
+catalog bucket was held through a raw nats-py handle, which stayed bound to the connection the
+client retired when it moved off a lame-duck server.
+
+- **Changed, `threetears.registry.catalog_persistence`:** the `tool_catalog` bucket is owned by
+  `threetears.nats.PersistedCopyBucket`, built by the new `catalog_bucket(catalog=, client=, bucket=)`,
+  under its exact name with file storage, history 1 and `allow_direct` stated. Its handle follows the
+  client across a renewal or a successor move, and the catalog is written back whenever the client
+  creates the bucket again. Bucket names on the wire are unchanged, so no grant changes.
+- **Removed:** `CatalogPersistence` and `CatalogBucketClient`. Call `catalog_bucket(...)` and
+  `start()` / `stop()` the owner it returns.
+- **Changed, `ToolCatalog`:** typed `KvBucketLike`. `load_from_kv` lists with `list_keys` (an empty
+  bucket is no keys) and raises a listing or read that fails, rather than taking it for an empty
+  bucket.
+- **Added:** `ToolCatalog.persisting` and `WRITE_FAILURE_THRESHOLD`. Three catalog writes failing in
+  a row, for any reason, make the registry's new `catalog_persisting` readiness check fail, until a
+  write lands.
+- **Liveness unchanged:** a catalog write failure is never a liveness failure. A connection closed
+  for good is already caught by the registry's existing `nats` liveness check: the catalog's bucket
+  follows the client's current connection, so its writes fail on a closed connection only when the
+  client's own connection is closed.
+- **Removed, `RegistryServer`:** the authorizer `initialize(js, namespace)` hook. The registry
+  called it, through `hasattr`, with a raw JetStream context; no authorizer in 3tears or its
+  consumers implemented it, and it was the last raw JetStream handle in the registry. An authorizer
+  that needs state builds it before it is passed in.
+
+## v0.64.0 -- 2026-10-04
+
+### Models: the Claude CLI pool on claude-agent-sdk 0.2.163
+
+- **Changed:** `packages/models` requires `claude-agent-sdk>=0.2.163,<0.3`. 0.2.118's bundled CLI did
+  not know `claude-sonnet-5-5` and sent `thinking: disabled`, which the model refuses (400, "send
+  between_tools"); 0.2.163 knows it.
+- **Fixed, the CLI session pool:** 0.2.163 routes an in-process tool server's calls through
+  `Query._sdk_mcp_bridges`, one bridge per server built when the client connects. A tool server the
+  pool installs per checkout now gets its own bridge (and the replaced one is closed), and its calls
+  run in the borrower's context through a shallow copy of the server rather than a wrapper. The
+  private accesses are recorded in `_claude_sdk_internals` with their reasons.
+
+### Channels: a Discord bot reaches Discord through a proxy, and hears what it is sent
+
+- **Fixed, `DiscordAdapter`:** the client takes the proxy the environment names for discord.com
+  (`HTTPS_PROXY` or `ALL_PROXY`, unless `NO_PROXY` covers it), as httpx does; a `proxy` in the
+  adapter's config wins. discord.py's aiohttp session ignores those variables, so on a host that
+  reaches out only through a proxy every token check failed on name resolution.
+- **Fixed, `DiscordAdapter`:** its handlers are registered as `on_message` and `on_ready`, the names
+  discord.py dispatches to. `Client.event` registered them under their own names, `_on_message` and
+  `_on_ready`, so no inbound message ever reached a router.
+
+
+### Security: `ScrapeTool`'s SSRF guard checks every request, not only the target URL
+
+`ScrapeTool` refused a target whose host resolves to a private, loopback, link-local or reserved
+address, but checked only the URL it was given. The HTTP clients behind it follow redirects, so a
+public URL answering `302 Location: http://169.254.169.254/...` or `http://127.0.0.1/...` passed
+the check and the fetch went there.
+
+- **Fixed, in `threetears.scrape`:** while a tool's guard is on, every request its fetch sends is
+  checked the same way: each redirect hop, each detail link `ListingDetailDriver` follows, each
+  document `MultiDocumentDriver` fetches, and the default `RobotsGate`'s `robots.txt` read. It covers
+  the clients `ApiDriver`, `DocumentDriver`, `ListingDetailDriver`, `MultiDocumentDriver` and the
+  default robots fetcher build. A refused hop answers `refused: <reason>`, the same as a refused
+  target, logs a WARNING naming the URL, and counts against the target's fetch circuit as a fetch
+  that produced no page. A refused detail link costs only that row's detail fields, and a refused
+  `robots.txt` redirect reads as no file.
+- **Unchanged:** a tool built with `block_private_hosts=False`, and a driver rendered outside a tool,
+  follow redirects exactly as before.
+- **Not covered, and now documented as not covered:** the browser backends (`camoufox`, and
+  `nodriver` and `nodriver_download` through the sidecar) follow redirects inside the browser, so
+  only their target URL is checked. A client or fetcher the caller injects is used as given. DNS
+  rebinding is not caught; the guard's docstring had said it was.
+
+### Channels: a Discord bot can reach a user directly, and say how a reply will find it
+
+- **Added, `DiscordAdapter.send_direct(*, user_id, content) -> DirectMessageSent`:** opens (or
+  reuses) the bot's DM channel with a user over REST, without the gateway, sends the content split
+  to Discord's 2000-character limit, and returns the DM channel id and every sent message's id. A
+  reply in that DM carries the channel id; a reply to a sent message carries its id as
+  `reply_to_id`, so a caller that files both finds the conversation that reached out.
+- **Added, `threetears.channels.discord.DirectMessageSent`.**
+- **Added, `DiscordAdapter.identify() -> str`:** checks the token over REST, without the gateway, and
+  returns the bot's user name; a refused token raises `discord.LoginFailure` there.
+
+### Memory: nothing an agent remembers is destroyed, and a permanent memory is never touched
+
+Extraction's UPDATE overwrote a memory in place and its DELETE hard-deleted it; `memory_add`
+overwrote a near-duplicate. Each lost what the agent had remembered, with no trace of why.
+
+- **Added, `threetears.agent.memory.revisions`:** `supersede(memories, consolidations, *, agent_id,
+  source_ids, fields, rationale)` writes the replacing memory, links each old one to it in
+  `memory_consolidations` with the reason, and marks them superseded (out of ambient recall,
+  readable by id). `retract(memories, *, agent_id, memory_id, reason)` tags a memory `retracted`
+  with why and sets its salience to 0. `is_permanent(memory)` is what every writer asks first.
+  Dream's consolidation now writes through `supersede`.
+- **Changed, `MemoryExtractor`:** UPDATE is a `supersede` (rationale "revised by a later
+  conversation"); DELETE is a `retract`. New `consolidations_collection` argument: without it an
+  UPDATE is skipped, never written over. A permanent memory is never superseded or retracted: a
+  revision of one is written beside it.
+- **Changed, `memory_add`:** a near-duplicate is replaced through `supersede` (with
+  `consolidations_collection`, a new argument) or written beside the old one, never over it. New
+  `permanent` argument stores the memory `evergreen`.
+- **Added, `load_memory_keep_tool` / `memory_keep`:** pins a stored memory permanent. One way.
+- **Added, `MemoriesCollection.set_salience(agent_id, *, memory_ids, salience)`.**
+- **Changed, every search, dedup and Dream candidate query** skips a `retracted` memory.
+- **Changed, Dream's consolidation prompt** asks two judgments: `one_subject` (every source is about
+  the same person or thing, and the gist names no one they do not; false refuses the merge) and
+  `permanent` (the gist is stored `evergreen`). A reply without them reads as one subject, not
+  permanent.
+
+### Migrations: the rbac tables and audit_events are 3tears' own
+
+Until now 3tears declared no Postgres table for rbac or audit: each deploying application wrote
+its own DDL, and the shapes drifted (a missing grant index left the hub's grants held twice).
+
+- **Added, `threetears.agent.acl.migrations` (`agent_acl`, platform scope), v001:** `namespaces`,
+  `groups`, `group_members`, `roles`, `role_assignments`, with the platform's rules: namespace
+  names not unique (two servers may expose a tool of one name; a row is addressed by its id) and
+  `owner_namespace` a name with no foreign key (only a registry makes an agent's own namespace
+  row); non-workspace schema names unique, a
+  platform namespace one of the platform types; group and role names unique per owner scope;
+  `managed_by` NOT NULL DEFAULT 'manual'; the grant natural-key unique indexes that make
+  `ensure_group_role_assignment` race-safe. `agent_tools_platform` ALTERs `namespaces`: register
+  it with `depends_on=("agent_acl",)`. An application with its own tables adopts v001 by stamping
+  it once they match.
+- **Added, `threetears.agent.audit.migrations` (`agent_audit`, platform scope), v001:**
+  `audit_events` and its four indexes. The statements live in the migration, frozen;
+  `persist.AUDIT_EVENTS_DDL` reads them, so the runner and `ensure_audit_events_table` run one
+  definition.
+
+### Wakes and skills
+
+- **Added, `is_tool_only`:** a wake whose skill is one tool call runs it with no model and starts no
+  conversation for its fire; a skill with both steps and a tool is refused with how to switch. A
+  skill that is one tool call is not activated in a turn.
+- **Changed:** a skill tool takes the skill's name as well as its id.
+
+### Intentions
+
+- **Added, `intention_log(..., on_logged=...)`:** a consumer hears of each new want it stores.
+
+## v0.63.1 -- 2026-10-04
+
+### Telemetry flushes return within their timeout, and a failing export no longer feeds itself
+
+**The hang.** `force_flush_telemetry(timeout=...)`, added in 0.63.0, could block forever. With
+log export configured, an unreachable collector, and the root logger at WARNING or lower, it
+never returned; its docstring promised the timeout bounded the whole call.
+
+**The feedback loop behind it, which also hit production.** The OTLP log exporter reports each
+failed retry as a WARNING and each abandoned batch as an ERROR, and at DEBUG the HTTP client logs
+every connection attempt. All of those reached the root logger, where 3tears' OTLP log handler is
+attached, so they were queued for export too. Against an unreachable collector every failed export
+produced more records to export: a self-sustaining stream of export-failure logs in any running
+service, not only in tests. OpenTelemetry's batch processor flushes until its queue is empty and
+ignores the timeout it is given (open-telemetry/opentelemetry-python#4568), so a flush during that
+loop never finished.
+
+**The fix, in two parts.**
+
+- The OTLP log handler drops every record that exporting produces: one from OpenTelemetry's own
+  loggers (`opentelemetry` and every logger under it), or one emitted on a thread that calls
+  exporters (the SDK's `OtelBatchLogRecordProcessor` and `OtelBatchSpanRecordProcessor` workers,
+  and 3tears' own flush thread) while the SDK has instrumentation suppressed, which it does around
+  every exporter call. An export failure can no longer produce an export. A host's own records
+  logged inside its own `suppress_instrumentation()` block, on any other thread, are still
+  exported. Every other handler on the root logger still receives the dropped records, so the
+  warnings still reach stderr and any other local sink.
+- `force_flush_telemetry` runs the provider flushes on a daemon worker thread and waits for it no
+  longer than `timeout`. It now returns within `timeout`, plus the cost of starting one thread and
+  writing one log line, whatever the providers do. When the wait runs out it returns `False` and
+  logs a WARNING naming the signal still flushing and those not started. One flush runs at a time:
+  a call made while an earlier flush is still running waits for it inside its own timeout instead
+  of starting a second worker. A provider flush that raises is logged as a failure naming the
+  signal and the exception type, not as a timeout, and the flushes after it still run.
+  `shutdown_telemetry` had the same unbounded flushes (its 2-second `timeout_millis` was ignored
+  the same way) and now bounds each flush the same way before shutting the provider down.
+
+`3tears-observe`'s `otel` extra now also declares `opentelemetry-instrumentation>=0.61b0,<1`, whose
+suppression check the filter reads. `opentelemetry-instrumentation-logging` already required that
+exact release, so no resolution changes.
 
 ## v0.63.0 -- 2026-10-04
 

@@ -80,6 +80,7 @@ __all__ = [
     "FireNoLongerInFlight",
     "detect_silent_prefix",
     "dispatch_wake",
+    "is_tool_only",
 ]
 
 
@@ -168,7 +169,8 @@ async def dispatch_wake(
        limit emits :data:`EVENT_FIRE_RATE_LIMITED`, increments the matching
        Prometheus rejection counter, and returns
        ``status='skipped_rate_limit'`` without invoking the handler.
-    2. With a ``start_conversation`` hook: calls it inside a transaction,
+    2. With a ``start_conversation`` hook, and an attached skill that is not
+       tool-only (:func:`is_tool_only`): calls it inside a transaction,
        links the fire row to the conversation it returns on the same
        connection, and hands the handler a trigger whose
        ``started_conversation_id`` is that conversation. A fire the reaper
@@ -281,11 +283,14 @@ async def dispatch_wake(
             latency_ms=int((time.monotonic() - started) * 1000),
         )
 
-    if start_conversation is not None:
+    # The skill is resolved first because it decides whether the fire has a
+    # conversation at all: a skill that only calls a tool runs with no model,
+    # so there is nothing to converse with and its record is the tool's return.
+    attached_skill = await _resolve_attached_skill(pool, trigger)
+    if start_conversation is not None and not is_tool_only(attached_skill):
         trigger = await _start_fire_conversation(pool, trigger, fire_id, start_conversation)
 
     context_blocks = await _resolve_context_from(pool, trigger)
-    attached_skill = await _resolve_attached_skill(pool, trigger)
     prepared = PreparedWakeContext(
         trigger=trigger,
         attached_skill=attached_skill,
@@ -522,6 +527,21 @@ async def _resolve_context_from(
             },
         )
     return (block,)
+
+
+def is_tool_only(skill: Any) -> bool:
+    """Whether a skill runs by calling one tool, with no model: it names a tool and has no body.
+
+    The collection refuses a skill with both, so a skill with a tool never has
+    a body; the body is checked anyway so a row the check missed is still run
+    as prose rather than dropping its text.
+
+    :param skill: an ``AgentSkillEntity``, or ``None``
+    :ptype skill: Any
+    :return: whether the skill is tool-only
+    :rtype: bool
+    """
+    return skill is not None and bool(getattr(skill, "tool", None)) and not getattr(skill, "body", None)
 
 
 async def _resolve_attached_skill(
