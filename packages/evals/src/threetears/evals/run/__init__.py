@@ -81,6 +81,15 @@ from threetears.evals.run.lifecycle import (
 from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
 from threetears.evals.run.offload import run_blocking
 from threetears.evals.run.reads import get_result, get_result_trace, list_results, list_runs
+from threetears.evals.run.recheck import (
+    CheckFlip,
+    KeptOutcome,
+    RecheckStore,
+    ResultRecheck,
+    RunRecheck,
+    recheck_goal_states,
+    recheck_result,
+)
 from threetears.evals.run.rejudge import reproducible_judge_inputs
 from threetears.evals.run.runner import (
     CellContext,
@@ -130,6 +139,7 @@ __all__ = [
     "CandidateTurn",
     "CapBreach",
     "CellContext",
+    "CheckFlip",
     "CurationStore",
     "ErrorLedger",
     "EvalJobManager",
@@ -144,6 +154,7 @@ __all__ = [
     "JudgeOutcome",
     "JudgeRequest",
     "JudgeService",
+    "KeptOutcome",
     "KindFactory",
     "KindLauncher",
     "KindWiring",
@@ -155,9 +166,12 @@ __all__ = [
     "LaunchableKind",
     "MeteredCallLedger",
     "MeteredCallTally",
+    "RecheckStore",
     "ReproducibleJudgeInputs",
     "RequestSettingsPolicy",
+    "ResultRecheck",
     "RunCallbacks",
+    "RunRecheck",
     "RunJudge",
     "RunnerOptions",
     "SeedCorpus",
@@ -203,6 +217,8 @@ __all__ = [
     "metered_cell_tally",
     "no_launcher_for",
     "precondition_failure_text",
+    "recheck_goal_states",
+    "recheck_result",
     "refuse_stale_presumptions",
     "rejudge_result",
     "reproducible_judge_inputs",

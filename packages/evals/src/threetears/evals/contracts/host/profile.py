@@ -803,11 +803,18 @@ class HostProfile:
             path: A dotted path into the world, with the language's own root already stripped.
 
         Returns:
-            ``inapplicable`` when this host instantiates no world at all; ``covered`` when a
-            declared dimension covers the path; ``uncovered`` naming the path otherwise.
+            ``covered`` when a declared dimension covers the path; ``uncovered`` naming the path
+            otherwise — including on a host that instantiates no world at all. The goal language
+            roots ``state`` at declared dimensions only, so on such a host a state path names
+            nothing a run could ever read, and a check over it is a typo or a check written for
+            another host, not an inapplicable question.
         """
         if self.world is None:
-            return Coverage("inapplicable", "this host instantiates no simulated world")
+            return Coverage(
+                "uncovered",
+                f"{path} reads world state, and this host instantiates no simulated world — a state path "
+                "names a declared world dimension, and this host declares none",
+            )
         if self.world.resolve_path(path) is None:
             return Coverage("uncovered", f"{path} addresses no dimension this host's world declares")
         return Coverage("covered")

@@ -54,12 +54,16 @@ from typing import Any
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.contracts import (
     CampaignDesign,
+    ControlEndState,
     EvalCampaign,
     EvalResult,
     EvalRun,
     EvalTemplate,
     EvalTestCase,
     EvalTrace,
+    GoalCheckControl,
+    GoalCheckControls,
+    RecordedCall,
     WorldSeed,
 )
 from threetears.evals.contracts.host import CANDIDATE_MODEL_LEVER, EvalHost, WorldRegistry
@@ -74,6 +78,9 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 )
 from packages.evals.tests.fixtures.toyhost.kind import (
     DOCUMENT_PARAM,
+    EMIT_FIELD_ACTION,
+    EXTRACTOR_TOOL,
+    INVOICE_FIELDS,
     TOY_DOCUMENTS,
     TOY_EXTRACTOR_KIND,
     TOY_SCRIPTS,
@@ -104,21 +111,25 @@ RUN_MODELS: tuple[str, ...] = tuple(script.model for script in TOY_SCRIPTS)
 #: duplicates and what that does to an arm's dispersion.
 RUN_K = 2
 
+#: The template's one goal check: the extractor emitted every declared field, read off its call ledger.
+EVERY_FIELD_EMITTED = f'call_count("{EXTRACTOR_TOOL}.{EMIT_FIELD_ACTION}") == {len(INVOICE_FIELDS)}'
+
 #: The question this campaign declares, by id.
 RUN_QUESTION_ID = "q-extractor-model"
 
 
 def toyhost_template() -> EvalTemplate:
-    """The toy host's template: a kind name, three world dimensions, and no rubric.
+    """The toy host's template: a kind name, three world dimensions, one goal check, and no rubric.
 
     Fixed ids and timestamps for the reason every other toy-host fixture pins its own — the
     defaults are ``uuid4`` and the clock, and either makes two builds of this fixture
     incomparable.
 
     **What it declares nothing of is the point.** No rubric (nothing here is model-scored), no
-    simulated actors, no goal-state checks (the mechanical tier is the kind's, reported through
-    ``CandidateOutput.mechanical_facts`` rather than evaluated from a DSL against a world the
-    engine derived), and no preconditions.
+    simulated actors, and no preconditions. Its one goal check reads the call ledger the kind fills
+    (every declared field emitted), graded by the engine's ``grade_goal_checks`` and stored with the
+    ledger, so a stored toy result can be re-checked; its control proves the check discriminates.
+    ``field_accuracy`` stays the kind's own fact, because it needs the adjudicated key.
 
     Returns:
         The template.
@@ -145,6 +156,19 @@ def toyhost_template() -> EvalTemplate:
                 },
                 "console": {"operator_corrections": ["reprice"]},
             }
+        ),
+        goal_state_checks=[EVERY_FIELD_EMITTED],
+        goal_check_controls=GoalCheckControls(
+            checks=[GoalCheckControl(check=EVERY_FIELD_EMITTED, intent="act", control="all-fields-emitted")],
+            end_states={
+                "all-fields-emitted": ControlEndState(
+                    describes="The extractor emitted every declared invoice field.",
+                    calls=[
+                        RecordedCall(tool=EXTRACTOR_TOOL, action=EMIT_FIELD_ACTION, params={"field": name})
+                        for name in INVOICE_FIELDS
+                    ],
+                )
+            },
         ),
     )
 
@@ -338,8 +362,10 @@ async def execute_toyhost_run(
     world = host.profile.world
     assert world is not None, "the run path seeds a world; this profile registers none"
     client = ScriptedExtractionClient()
-    kind = ToyExtractorKind(client=client, world=world, judged=judge_service is not None)
     template = template if template is not None else toyhost_template()
+    kind = ToyExtractorKind(
+        client=client, world=world, judged=judge_service is not None, goal_checks=tuple(template.goal_state_checks)
+    )
     test_cases = toyhost_test_cases(template)
     arms = arms if arms is not None else [ToyhostArm(model=model) for model in RUN_MODELS]
     runs = [
@@ -540,6 +566,7 @@ def toyhost_retrieval_campaign(path: ToyhostRunPath, members: Sequence[EvalRun],
 
 
 __all__ = [
+    "EVERY_FIELD_EMITTED",
     "RETRIEVAL_AXIS",
     "RETRIEVAL_BASE",
     "RETRIEVAL_SWEPT_DEPTH",

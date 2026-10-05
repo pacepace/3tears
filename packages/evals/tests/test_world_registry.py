@@ -795,6 +795,19 @@ class TestRepresentabilityOnTheProfile:
         assert seedless.representable("scan_quality").state == "uncovered"
         assert toyhost_profile(with_world=False).representable("scan_quality").state == "inapplicable"
 
+    def test_a_goal_check_s_state_path_names_nothing_on_a_host_with_no_world(self) -> None:
+        """The goal language roots ``state`` at declared dimensions only, so no world means nothing to read.
+
+        Representability stays ``inapplicable`` — the question of seeding does not apply — but a
+        check that READS a state path on such a host can never read anything, which is a defect
+        the authoring gate refuses rather than a question it waives.
+        """
+        answer = toyhost_profile(with_world=False).addressable("scan_quality")
+
+        assert answer.state == "uncovered"
+        assert "declares none" in answer.reason
+        assert toyhost_profile().addressable("scan_quality").state == "covered"
+
 
 class TestTheWorldIsRealRatherThanAShape:
     """Seeding moves the object the subject view renders from, on one path."""

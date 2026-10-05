@@ -2,21 +2,48 @@
 
 from __future__ import annotations
 
+from typing import Any
 
 import pytest
 
 import threetears.evals.contracts.dsl as _dsl
 from threetears.evals.contracts.dsl import DSLError, Missing, evaluate, evaluate_with_detail, extract_paths, parse
 from threetears.evals.contracts.host import WorldDimension, WorldRegistry
-from threetears.evals.contracts.world_state import WorldState
+from threetears.evals.contracts.call_ledger import CallLedger
 
 
-def _state_with(**kwargs) -> WorldState:
-    """Build a WorldState whose namespaces match the given kwargs."""
-    state = WorldState()
-    for name, ns in kwargs.items():
-        state.namespaces[name] = dict(ns)
-    return state
+def _state_with(**dimensions: dict[str, Any]) -> dict[str, Any]:
+    """The keyword arguments :func:`evaluate` takes for a world holding ``dimensions``, and an empty ledger.
+
+    Each keyword is one declared dimension whose value is an object, so ``state.shop.cart`` names the
+    ``shop`` dimension and addresses ``cart`` inside its value — the longest-declared-prefix rule a
+    real host's world resolves by. Calls go on ``["ledger"]``.
+
+    Args:
+        **dimensions: Dimension name -> its value.
+
+    Returns:
+        ``end_state``, ``ledger`` and ``world``, ready to splat into :func:`evaluate`.
+    """
+    world = WorldRegistry(
+        [
+            WorldDimension(
+                name=name,
+                carrier="test",
+                schema={"type": "object"},
+                matters="a DSL test presumes this value",
+                seed="h.seed",
+                read="h.read",
+            )
+            for name in dimensions
+        ],
+        bindings={"h.seed": lambda value: None, "h.read": dict},
+    )
+    return {
+        "end_state": {name: dict(value) for name, value in dimensions.items()},
+        "ledger": CallLedger(),
+        "world": world,
+    }
 
 
 # =============================================================================
@@ -26,17 +53,17 @@ def _state_with(**kwargs) -> WorldState:
 
 def test_path_resolves_namespace_dict():
     state = _state_with(shop={"cart": [1, 2, 3]})
-    assert evaluate("state.shop.cart.length == 3", state=state) is True
+    assert evaluate("state.shop.cart.length == 3", **state) is True
 
 
 def test_path_with_subscript_positive_index():
     state = _state_with(shop={"cart": [{"title": "A"}, {"title": "B"}]})
-    assert evaluate('state.shop.cart[0].title == "A"', state=state) is True
+    assert evaluate('state.shop.cart[0].title == "A"', **state) is True
 
 
 def test_path_with_subscript_negative_index():
     state = _state_with(chat={"messages": [{"content": "hi"}, {"content": "thanks"}]})
-    assert evaluate('state.chat.messages[-1].content == "thanks"', state=state) is True
+    assert evaluate('state.chat.messages[-1].content == "thanks"', **state) is True
 
 
 # =============================================================================
@@ -86,21 +113,13 @@ _SHOP = {"shelf": {"stock": 3}, "till": {"float": 20}}
     [(False, "state.stock", "state.float"), (True, "state.shelf.stock", "state.till.float")],
     ids=["flat names", "composed names"],
 )
-def test_a_path_names_the_dimension_and_finds_it_where_the_seed_put_it(composed, stock, till_float):
-    """``state.<dimension>`` reads the value its carrier holds it under, however the host names it."""
-    state = _state_with(**_SHOP)
+def test_a_path_names_the_dimension_however_the_host_names_it(composed, stock, till_float):
+    """``state.<dimension>`` reads the value the end state holds under that dimension's name."""
     world = _shop_world(composed=composed)
+    end_state = world.named(_SHOP)
 
-    assert evaluate(f"{stock} == 3 and {till_float} == 20", state=state, world=world) is True
-    assert evaluate_with_detail(f"{stock} > 2", state=state, world=world) == (True, "True")
-
-
-def test_a_flat_name_is_not_read_as_a_namespace_once_the_world_is_known():
-    """The defect this resolution closes: ``state.stock`` read as a namespace finds nothing."""
-    state = _state_with(**_SHOP)
-
-    assert evaluate("state.stock == 3", state=state) is False
-    assert evaluate("state.stock == 3", state=state, world=_shop_world(composed=False)) is True
+    assert evaluate(f"{stock} == 3 and {till_float} == 20", end_state=end_state, ledger=CallLedger(), world=world)
+    assert evaluate_with_detail(f"{stock} > 2", end_state=end_state, ledger=CallLedger(), world=world) == (True, "True")
 
 
 def test_a_path_inside_a_flat_dimension_s_value_resolves_below_it():
@@ -118,23 +137,93 @@ def test_a_path_inside_a_flat_dimension_s_value_resolves_below_it():
         ],
         bindings={"h.seed": lambda value: None, "h.read": list},
     )
-    state = _state_with(console={"corrections": ["reprice", "void"]})
+    cell = {"end_state": {"corrections": ["reprice", "void"]}, "ledger": CallLedger(), "world": world}
 
-    assert evaluate("state.corrections.length == 2", state=state, world=world) is True
-    assert evaluate('state.corrections[-1] == "void"', state=state, world=world) is True
-    assert evaluate('any(it == "reprice" for it in state.corrections)', state=state, world=world) is True
+    assert evaluate("state.corrections.length == 2", **cell) is True
+    assert evaluate('state.corrections[-1] == "void"', **cell) is True
+    assert evaluate('any(it == "reprice" for it in state.corrections)', **cell) is True
 
 
 @pytest.mark.parametrize("composed", [False, True], ids=["flat names", "composed names"])
-def test_a_dimension_the_world_does_not_declare_or_does_not_hold_is_missing(composed):
-    """Undeclared, held under the wrong carrier, or absent — each is Missing, never another key's value."""
+def test_a_dimension_the_world_does_not_declare_or_the_end_state_does_not_hold_is_missing(composed):
+    """Undeclared or absent — each is Missing, never another dimension's value."""
     world = _shop_world(composed=composed)
-    misplaced = _state_with(till={"stock": 3})
     stock = "state.shelf.stock" if composed else "state.stock"
+    full = world.named(_SHOP)
 
-    assert evaluate("state.shelf.mood == 1 or state.mood == 1", state=_state_with(**_SHOP), world=world) is False
-    assert evaluate(f"{stock} == 3", state=misplaced, world=world) is False
-    assert evaluate(f"{stock} == 3", state=_state_with(), world=world) is False
+    assert (
+        evaluate("state.shelf.mood == 1 or state.mood == 1", end_state=full, ledger=CallLedger(), world=world) is False
+    )
+    # A key the end state holds that no dimension declares is unreachable: the path resolves through
+    # the registry, never through the end state's own keys.
+    assert evaluate("state.mood == 1", end_state={**full, "mood": 1}, ledger=CallLedger(), world=world) is False
+    assert evaluate(f"{stock} == 3", end_state={}, ledger=CallLedger(), world=world) is False
+
+
+def test_a_state_path_on_a_host_that_declares_no_world_raises():
+    """No layout is read in place of a registry: a worldless host has no dimension for a path to name."""
+    with pytest.raises(DSLError, match="declares no world"):
+        evaluate("state.shop.cart.length >= 1", end_state={"shop": {"cart": [1]}}, ledger=CallLedger(), world=None)
+
+
+def test_a_check_reading_only_calls_and_the_case_needs_no_world():
+    """The ledger and the case are not world state, so a worldless host grades them."""
+    ledger = CallLedger()
+    ledger.record("shop", "search", {"query": "linen"})
+
+    assert evaluate(
+        'call_count("shop.search") == 1 and variation.tone == "casual"',
+        end_state={},
+        ledger=ledger,
+        world=None,
+        variation={"tone": "casual"},
+    )
+
+
+@pytest.mark.parametrize("expression", ["length(state) == 0", 'state["shop"].length == 1', "not state"])
+def test_state_alone_is_not_a_value(expression):
+    """``state`` names no container of every dimension: a check reads one by name, as the gate resolves it."""
+    with pytest.raises(DSLError, match="'state' is not a value"):
+        evaluate(expression, **_state_with(shop={"cart": []}))
+
+
+class TestNamingASeedShapedWorld:
+    """``WorldRegistry.named`` turns a seed-shaped world into the name-keyed end state a check reads."""
+
+    def test_each_key_is_named_through_the_host_s_addressing(self):
+        assert _shop_world(composed=True).named(_SHOP) == {"shelf.stock": 3, "till.float": 20}
+        assert _shop_world(composed=False).named(_SHOP) == {"stock": 3, "float": 20}
+
+    def test_the_values_are_copies(self):
+        seed = {"shelf": {"stock": [1]}}
+        world = WorldRegistry(
+            [
+                WorldDimension(
+                    name="stock",
+                    carrier="shelf",
+                    schema={"type": "array"},
+                    matters="a shop scenario presumes what is on the shelf",
+                    seed="h.seed",
+                    read="h.read",
+                )
+            ],
+            bindings={"h.seed": lambda value: None, "h.read": list},
+        )
+        world.named(seed)["stock"].append(2)
+        assert seed == {"shelf": {"stock": [1]}}
+
+    @pytest.mark.parametrize(
+        ("namespaces", "refusal"),
+        [
+            ({"shelf": {"mood": 1}}, "addresses no dimension"),
+            ({"till": {"stock": 3}}, "but 'shelf' supplies it"),
+            ({"shelf": 3}, "is not a mapping"),
+        ],
+        ids=["undeclared", "misplaced", "malformed"],
+    )
+    def test_a_value_no_read_could_return_is_refused(self, namespaces, refusal):
+        with pytest.raises(ValueError, match=refusal):
+            _shop_world(composed=False).named(namespaces)
 
 
 def test_variation_resolves_from_variation_dict():
@@ -142,7 +231,7 @@ def test_variation_resolves_from_variation_dict():
     assert (
         evaluate(
             'variation.tone == "casual"',
-            state=state,
+            **state,
             variation={"tone": "casual"},
         )
         is True
@@ -152,18 +241,18 @@ def test_variation_resolves_from_variation_dict():
 def test_missing_namespace_resolves_to_missing_and_comparison_returns_false():
     state = _state_with()
     # No shop namespace at all
-    assert evaluate("state.shop.cart.length >= 1", state=state) is False
+    assert evaluate("state.shop.cart.length >= 1", **state) is False
 
 
 def test_missing_index_resolves_to_missing():
     state = _state_with(shop={"cart": []})
-    assert evaluate('state.shop.cart[0].title == "X"', state=state) is False
+    assert evaluate('state.shop.cart[0].title == "X"', **state) is False
 
 
 def test_missing_dict_key_resolves_to_missing():
     state = _state_with(shop={"cart": []})
     # No 'catalog' key
-    assert evaluate('state.shop.catalog[0].title == "X"', state=state) is False
+    assert evaluate('state.shop.catalog[0].title == "X"', **state) is False
 
 
 # =============================================================================
@@ -173,21 +262,21 @@ def test_missing_dict_key_resolves_to_missing():
 
 def test_int_equality():
     state = _state_with(shop={"cart": [1]})
-    assert evaluate("state.shop.cart.length == 1", state=state) is True
+    assert evaluate("state.shop.cart.length == 1", **state) is True
 
 
 def test_int_ordering_operators():
     state = _state_with(shop={"cart": [1, 2, 3]})
-    assert evaluate("state.shop.cart.length >= 2", state=state) is True
-    assert evaluate("state.shop.cart.length > 3", state=state) is False
-    assert evaluate("state.shop.cart.length <= 3", state=state) is True
-    assert evaluate("state.shop.cart.length < 3", state=state) is False
-    assert evaluate("state.shop.cart.length != 3", state=state) is False
+    assert evaluate("state.shop.cart.length >= 2", **state) is True
+    assert evaluate("state.shop.cart.length > 3", **state) is False
+    assert evaluate("state.shop.cart.length <= 3", **state) is True
+    assert evaluate("state.shop.cart.length < 3", **state) is False
+    assert evaluate("state.shop.cart.length != 3", **state) is False
 
 
 def test_string_comparison():
     state = _state_with(shop={"cart": [{"title": "Blue Kettle"}]})
-    assert evaluate('state.shop.cart[0].title != "Other"', state=state) is True
+    assert evaluate('state.shop.cart[0].title != "Other"', **state) is True
 
 
 def test_comparison_type_mismatch_raises_rather_than_failing_the_check():
@@ -197,9 +286,9 @@ def test_comparison_type_mismatch_raises_rather_than_failing_the_check():
     """
     state = _state_with(shop={"cart": [1]})
     with pytest.raises(DSLError, match="cannot compare int with str"):
-        evaluate('state.shop.cart[0] < "abc"', state=state)
+        evaluate('state.shop.cart[0] < "abc"', **state)
     # The positive case beside it: comparable values still compare.
-    assert evaluate("state.shop.cart[0] < 2", state=state) is True
+    assert evaluate("state.shop.cart[0] < 2", **state) is True
 
 
 @pytest.mark.parametrize(
@@ -213,7 +302,7 @@ def test_comparison_type_mismatch_raises_rather_than_failing_the_check():
 def test_a_builtin_over_a_value_of_the_wrong_type_raises(expression):
     """contains / intersects / any over an int: the world or the template is wrong, not the candidate."""
     with pytest.raises(DSLError):
-        evaluate(expression, state=_state_with(shop={"count": 3}))
+        evaluate(expression, **_state_with(shop={"count": 3}))
 
 
 # =============================================================================
@@ -223,8 +312,8 @@ def test_a_builtin_over_a_value_of_the_wrong_type_raises(expression):
 
 def test_contains_list_membership():
     state = _state_with(shop={"cart": ["a", "b", "c"]})
-    assert evaluate('contains(state.shop.cart, "b")', state=state) is True
-    assert evaluate('contains(state.shop.cart, "z")', state=state) is False
+    assert evaluate('contains(state.shop.cart, "b")', **state) is True
+    assert evaluate('contains(state.shop.cart, "z")', **state) is False
 
 
 def test_contains_string_substring():
@@ -232,7 +321,7 @@ def test_contains_string_substring():
     assert (
         evaluate(
             'contains(state.chat.messages[-1].content, "thank")',
-            state=state,
+            **state,
         )
         is True
     )
@@ -243,7 +332,7 @@ def test_intersects_lists():
     assert (
         evaluate(
             "intersects(state.shop.cart, variation.target_categories)",
-            state=state,
+            **state,
             variation={"target_categories": ["kitchen", "outdoor"]},
         )
         is True
@@ -251,7 +340,7 @@ def test_intersects_lists():
     assert (
         evaluate(
             "intersects(state.shop.cart, variation.target_categories)",
-            state=state,
+            **state,
             variation={"target_categories": ["toys"]},
         )
         is False
@@ -263,7 +352,7 @@ def test_intersects_missing_path_returns_false():
     assert (
         evaluate(
             "intersects(state.shop.cart, variation.target_categories)",
-            state=state,
+            **state,
             variation={"target_categories": ["kitchen"]},
         )
         is False
@@ -272,8 +361,8 @@ def test_intersects_missing_path_returns_false():
 
 def test_length_function_form_matches_attribute_form():
     state = _state_with(shop={"cart": [1, 2, 3]})
-    assert evaluate("length(state.shop.cart) == 3", state=state) is True
-    assert evaluate("state.shop.cart.length == 3", state=state) is True
+    assert evaluate("length(state.shop.cart) == 3", **state) is True
+    assert evaluate("state.shop.cart.length == 3", **state) is True
 
 
 # =============================================================================
@@ -287,7 +376,7 @@ def test_and_short_circuits_on_missing():
     assert (
         evaluate(
             "state.shop.cart.length == 0 and state.chat.messages.length >= 1",
-            state=state,
+            **state,
         )
         is False
     )
@@ -298,7 +387,7 @@ def test_or_ignores_missing_in_favor_of_truthy_sibling():
     assert (
         evaluate(
             "state.chat.messages.length >= 1 or state.shop.cart.length >= 1",
-            state=state,
+            **state,
         )
         is True
     )
@@ -306,7 +395,7 @@ def test_or_ignores_missing_in_favor_of_truthy_sibling():
 
 def test_not_inverts_truthy():
     state = _state_with(shop={"cart": []})
-    assert evaluate("not state.shop.cart.length >= 1", state=state) is True
+    assert evaluate("not state.shop.cart.length >= 1", **state) is True
 
 
 def test_not_on_missing_path_returns_true():
@@ -319,59 +408,59 @@ def test_not_on_missing_path_returns_true():
     doesn't satisfy the predicate, so the negation is True.
     """
     state = _state_with()
-    assert evaluate("not state.shop.cart.length >= 1", state=state) is True
+    assert evaluate("not state.shop.cart.length >= 1", **state) is True
 
 
 # =============================================================================
-# Ordering predicates (require global_calls ledger)
+# Ordering predicates (read the call ledger)
 # =============================================================================
 
 
 def test_called_before_finds_first_occurrences():
-    state = WorldState()
-    state.record_call("shop", "search", {"query": "kitchen"})
-    state.record_call("shop", "add_item", {"item_ref": "r1"})
-    state.record_call("chat", "send_message", {"content": "added!"})
+    state = _state_with()
+    state["ledger"].record("shop", "search", {"query": "kitchen"})
+    state["ledger"].record("shop", "add_item", {"item_ref": "r1"})
+    state["ledger"].record("chat", "send_message", {"content": "added!"})
 
-    assert evaluate('called_before("shop.search", "shop.add_item")', state=state) is True
-    assert evaluate('called_before("shop.add_item", "shop.search")', state=state) is False
+    assert evaluate('called_before("shop.search", "shop.add_item")', **state) is True
+    assert evaluate('called_before("shop.add_item", "shop.search")', **state) is False
 
 
 def test_called_before_cross_tool():
-    state = WorldState()
-    state.record_call("shop", "add_item", {"item_ref": "r1"})
-    state.record_call("chat", "send_message", {"content": "added"})
+    state = _state_with()
+    state["ledger"].record("shop", "add_item", {"item_ref": "r1"})
+    state["ledger"].record("chat", "send_message", {"content": "added"})
 
-    assert evaluate('called_before("shop.add_item", "chat.send_message")', state=state) is True
+    assert evaluate('called_before("shop.add_item", "chat.send_message")', **state) is True
 
 
 def test_called_before_returns_false_if_either_missing():
-    state = WorldState()
-    state.record_call("shop", "search", {})
+    state = _state_with()
+    state["ledger"].record("shop", "search", {})
 
-    assert evaluate('called_before("shop.search", "shop.add_item")', state=state) is False
-    assert evaluate('called_before("shop.add_item", "shop.search")', state=state) is False
+    assert evaluate('called_before("shop.search", "shop.add_item")', **state) is False
+    assert evaluate('called_before("shop.add_item", "shop.search")', **state) is False
 
 
 def test_called_after_uses_last_occurrences():
-    state = WorldState()
-    state.record_call("shop", "search", {})
-    state.record_call("shop", "add_item", {})
-    state.record_call("shop", "search", {})  # second search
+    state = _state_with()
+    state["ledger"].record("shop", "search", {})
+    state["ledger"].record("shop", "add_item", {})
+    state["ledger"].record("shop", "search", {})  # second search
 
     # last search (index 2) comes after last add_item (index 1)
-    assert evaluate('called_after("shop.search", "shop.add_item")', state=state) is True
+    assert evaluate('called_after("shop.search", "shop.add_item")', **state) is True
 
 
 def test_call_count_returns_int_for_comparison():
-    state = WorldState()
-    state.record_call("shop", "add_item", {})
-    state.record_call("shop", "add_item", {})
-    state.record_call("shop", "add_item", {})
+    state = _state_with()
+    state["ledger"].record("shop", "add_item", {})
+    state["ledger"].record("shop", "add_item", {})
+    state["ledger"].record("shop", "add_item", {})
 
-    assert evaluate('call_count("shop.add_item") >= 2', state=state) is True
-    assert evaluate('call_count("shop.add_item") == 3', state=state) is True
-    assert evaluate('call_count("shop.skip") == 0', state=state) is True
+    assert evaluate('call_count("shop.add_item") >= 2', **state) is True
+    assert evaluate('call_count("shop.add_item") == 3', **state) is True
+    assert evaluate('call_count("shop.skip") == 0', **state) is True
 
 
 # =============================================================================
@@ -395,64 +484,64 @@ def test_negated_and_equality_restraint_forms_agree():
     template uses because it reads as a statement about the count rather than as
     a negation of a threshold, but nothing in the DSL prefers it.
     """
-    quiet = WorldState()
-    quiet.record_call("chat", "send_message", {"content": "linen is nostalgia"})
-    busy = WorldState()
-    busy.record_call("lookup", "lookup", {"query": "linen"})
+    quiet = _state_with()
+    quiet["ledger"].record("chat", "send_message", {"content": "linen is nostalgia"})
+    busy = _state_with()
+    busy["ledger"].record("lookup", "lookup", {"query": "linen"})
 
     for state in (quiet, busy):
-        assert evaluate('call_count("lookup.lookup") == 0', state=state) == evaluate(
-            'not call_count("lookup.lookup") >= 1', state=state
+        assert evaluate('call_count("lookup.lookup") == 0', **state) == evaluate(
+            'not call_count("lookup.lookup") >= 1', **state
         )
 
 
 def test_last_call_was_matches_most_recent():
-    state = WorldState()
-    state.record_call("shop", "search", {})
-    state.record_call("shop", "add_item", {})
-    state.record_call("chat", "send_message", {})
+    state = _state_with()
+    state["ledger"].record("shop", "search", {})
+    state["ledger"].record("shop", "add_item", {})
+    state["ledger"].record("chat", "send_message", {})
 
-    assert evaluate('last_call_was("chat.send_message")', state=state) is True
-    assert evaluate('last_call_was("shop.add_item")', state=state) is False
+    assert evaluate('last_call_was("chat.send_message")', **state) is True
+    assert evaluate('last_call_was("shop.add_item")', **state) is False
 
 
 def test_last_call_was_empty_state_false():
-    state = WorldState()
-    assert evaluate('last_call_was("shop.search")', state=state) is False
+    state = _state_with()
+    assert evaluate('last_call_was("shop.search")', **state) is False
 
 
 def test_ordering_predicate_rejects_unparseable_spec():
-    state = WorldState()
-    state.record_call("shop", "search", {})
+    state = _state_with()
+    state["ledger"].record("shop", "search", {})
 
     with pytest.raises(DSLError):
-        evaluate('called_before("not_a_tool_action", "shop.search")', state=state)
+        evaluate('called_before("not_a_tool_action", "shop.search")', **state)
 
 
 def test_ordering_predicate_rejects_non_string_spec():
     """Passing a path expression where a 'tool.action' string is required raises."""
-    state = WorldState()
-    state.record_call("shop", "search", {})
+    state = _state_with()
+    state["ledger"].record("shop", "search", {})
     # state.shop is a dict, not a 'tool.action' string spec.
     with pytest.raises(DSLError, match="string spec"):
-        evaluate("called_before(state.shop, state.chat)", state=state)
+        evaluate("called_before(state.shop, state.chat)", **state)
 
 
 def test_call_count_rejects_non_string_spec():
-    state = WorldState()
-    state.record_call("shop", "search", {})
+    state = _state_with()
+    state["ledger"].record("shop", "search", {})
     with pytest.raises(DSLError, match="string spec"):
-        evaluate("call_count(state.shop) >= 1", state=state)
+        evaluate("call_count(state.shop) >= 1", **state)
 
 
 def test_ordering_predicate_rejects_non_string_constant():
     """Passing an int / list constant where 'tool.action' is required raises at run time."""
-    state = WorldState()
-    state.record_call("shop", "search", {})
+    state = _state_with()
+    state["ledger"].record("shop", "search", {})
     with pytest.raises(DSLError, match="string spec"):
-        evaluate('called_before(1, "shop.search")', state=state)
+        evaluate('called_before(1, "shop.search")', **state)
     with pytest.raises(DSLError, match="string spec"):
-        evaluate("last_call_was([1, 2, 3])", state=state)
+        evaluate("last_call_was([1, 2, 3])", **state)
 
 
 def test_dunder_attribute_access_blocked():
@@ -465,8 +554,8 @@ def test_dunder_attribute_access_blocked():
     """
     state = _state_with(shop={"cart": []})
     # __class__ on the dict would normally return <class 'dict'>; DSL returns Missing.
-    assert evaluate("state.shop.__class__.length == 0", state=state) is False
-    assert evaluate("state.shop._private == 1", state=state) is False
+    assert evaluate("state.shop.__class__.length == 0", **state) is False
+    assert evaluate("state.shop._private == 1", **state) is False
 
 
 # =============================================================================
@@ -486,14 +575,14 @@ def test_any_finds_matching_element():
     assert (
         evaluate(
             'any(it.title == "Item A" for it in state.shop.cart)',
-            state=state,
+            **state,
         )
         is True
     )
     assert (
         evaluate(
             'any(it.title == "Item Z" for it in state.shop.cart)',
-            state=state,
+            **state,
         )
         is False
     )
@@ -511,7 +600,7 @@ def test_any_with_intersects_predicate():
     assert (
         evaluate(
             "any(intersects(it.tags, variation.target) for it in state.shop.cart)",
-            state=state,
+            **state,
             variation={"target": ["kitchen", "klezmer"]},
         )
         is True
@@ -530,7 +619,7 @@ def test_all_requires_every_element_to_match():
     assert (
         evaluate(
             'all(contains(it.tags, "kitchen") for it in state.shop.cart)',
-            state=state,
+            **state,
         )
         is True
     )
@@ -538,7 +627,7 @@ def test_all_requires_every_element_to_match():
     assert (
         evaluate(
             'all(contains(it.tags, "kitchen") for it in state.shop.cart)',
-            state=state2,
+            **state2,
         )
         is False
     )
@@ -546,30 +635,30 @@ def test_all_requires_every_element_to_match():
 
 def test_any_over_empty_iterable_is_false():
     state = _state_with(shop={"cart": []})
-    assert evaluate('any(it.title == "X" for it in state.shop.cart)', state=state) is False
+    assert evaluate('any(it.title == "X" for it in state.shop.cart)', **state) is False
 
 
 def test_all_over_empty_iterable_is_true():
     """Vacuous truth — all(empty) is True (matches Python's all([]))."""
     state = _state_with(shop={"cart": []})
-    assert evaluate('all(it.title == "X" for it in state.shop.cart)', state=state) is True
+    assert evaluate('all(it.title == "X" for it in state.shop.cart)', **state) is True
 
 
 def test_any_over_missing_iterable_is_false():
     state = _state_with()
-    assert evaluate('any(it.title == "X" for it in state.shop.cart)', state=state) is False
+    assert evaluate('any(it.title == "X" for it in state.shop.cart)', **state) is False
 
 
 def test_any_requires_it_as_binding_variable():
     state = _state_with(shop={"cart": []})
     with pytest.raises(DSLError):
-        evaluate('any(item.title == "X" for item in state.shop.cart)', state=state)
+        evaluate('any(item.title == "X" for item in state.shop.cart)', **state)
 
 
 def test_any_rejects_if_filters():
     state = _state_with(shop={"cart": []})
     with pytest.raises(DSLError):
-        evaluate('any(it.title == "X" for it in state.shop.cart if it.tag)', state=state)
+        evaluate('any(it.title == "X" for it in state.shop.cart if it.tag)', **state)
 
 
 # =============================================================================
@@ -612,7 +701,7 @@ def test_parse_rejects_dict_literal():
 def test_it_outside_generator_raises():
     state = _state_with()
     with pytest.raises(DSLError):
-        evaluate('it.title == "X"', state=state)
+        evaluate('it.title == "X"', **state)
 
 
 # =============================================================================
@@ -651,7 +740,7 @@ def test_missing_iter_yields_nothing():
 
 def test_evaluate_with_detail_passes_through_value():
     state = _state_with(shop={"cart": [1, 2]})
-    result, detail = evaluate_with_detail("state.shop.cart.length >= 1", state=state)
+    result, detail = evaluate_with_detail("state.shop.cart.length >= 1", **state)
     assert result is True
     assert "True" in detail
 
@@ -666,14 +755,14 @@ def test_evaluate_with_detail_reports_missing_leaf():
     """
     state = _state_with()
     # Bare path → resolves to Missing → detail labels it.
-    result, detail = evaluate_with_detail("state.shop.cart", state=state)
+    result, detail = evaluate_with_detail("state.shop.cart", **state)
     assert result is False
     assert "Missing" in detail
 
 
 def test_evaluate_with_detail_reports_false_for_compared_missing():
     state = _state_with()
-    result, detail = evaluate_with_detail("state.shop.cart.length >= 1", state=state)
+    result, detail = evaluate_with_detail("state.shop.cart.length >= 1", **state)
     assert result is False
     # Comparison against Missing returns False; detail surfaces the value.
     assert detail == "False"
@@ -696,7 +785,7 @@ def test_variation_resolves_inside_generator_body():
     assert (
         evaluate(
             "any(it.title == variation.target_title for it in state.shop.cart)",
-            state=state,
+            **state,
             variation={"target_title": "A"},
         )
         is True

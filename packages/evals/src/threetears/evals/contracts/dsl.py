@@ -1,9 +1,10 @@
 """Goal-state DSL — small expression language for eval scoring.
 
-Expressions are evaluated against a :class:`~threetears.evals.contracts.world_state.WorldState`
-(``state``) and a variation parameter dict (``variation``). They return a
-:class:`bool` (or :class:`Missing` if a path resolution fails — comparisons
-against ``Missing`` always return ``False`` rather than raising).
+Expressions are evaluated against a cell's end state (``state``: declared world dimension name →
+value), its :class:`~threetears.evals.contracts.call_ledger.CallLedger` (read by the call
+predicates), and a variation parameter dict (``variation``). They return a :class:`bool` (or
+:class:`Missing` if a path resolution fails — comparisons against ``Missing`` always return
+``False`` rather than raising).
 
 Surface
 -------
@@ -16,10 +17,11 @@ Path access (Python-style)::
     state.support.messages[-1].content
     variation.region_pair            # variation parameter
 
-With the host's world registry passed, ``state.<path>`` roots at a dimension NAME, as the
-authoring gate reads it: ``state.inbox.messages`` and a flat ``state.ingest_backlog`` both resolve,
-each found where the registry's addressing put it. Without one, the path reads the world's
-``namespace.key`` layout directly.
+``state.<path>`` roots at a declared world dimension's NAME and nothing else, as the authoring gate
+reads it: ``state.inbox.messages`` and a flat ``state.ingest_backlog`` both resolve through the
+host's world registry, by the longest declared prefix, and whatever follows the dimension addresses
+inside its value. A path naming no declared dimension is :data:`Missing`. There is no reading of a
+raw layout: a host that declares no world has no ``state`` to read, and a path under it raises.
 
 Comparisons::
 
@@ -33,7 +35,7 @@ Predicates (function-call form)::
     intersects(state.inventory.orders, variation.categories) # non-empty intersection
     length(state.inventory.orders) >= 2                     # equivalent to .length
 
-Ordering predicates (across all tools' recorded calls)::
+Ordering predicates (across all tools' recorded calls — the cell's call ledger, never world state)::
 
     called_before("inventory.search", "inventory.place_order")
     called_after("inventory.place_order", "inventory.cancel_order")
@@ -107,13 +109,14 @@ a run starts.
 from __future__ import annotations
 
 import ast
+import copy
 import itertools
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from threetears.evals.contracts.call_ledger import CallLedger
 from threetears.evals.contracts.prose import schema_is_prose, schema_nodes_at
-from threetears.evals.contracts.world_state import WorldState
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.host.world import WorldRegistry
@@ -218,10 +221,11 @@ _BUILTINS = frozenset(
 class _EvalContext:
     """Per-call evaluation context passed through the AST walker."""
 
-    state: WorldState
+    end_state: Mapping[str, Any]  # declared dimension name -> value
+    ledger: CallLedger
     variation: dict[str, Any]
     binding: dict[str, Any]  # `it` -> current element inside any()/all()
-    world: WorldRegistry | None = None  # how `state.<dimension>` finds a value; None reads the layout raw
+    world: WorldRegistry | None  # how `state.<dimension>` resolves a name; None declares no world at all
 
 
 # =============================================================================
@@ -897,34 +901,34 @@ def _collect_call_operands(node: ast.AST, it_binding: _Operand | None, found: li
 def evaluate(
     expression: str,
     *,
-    state: WorldState,
+    end_state: Mapping[str, Any],
+    ledger: CallLedger,
+    world: WorldRegistry | None,
     variation: dict[str, Any] | None = None,
-    world: WorldRegistry | None = None,
 ) -> bool:
     """Evaluate a goal-state expression and return its boolean result.
 
     Args:
         expression: DSL expression text.
-        state: The :class:`~threetears.evals.contracts.world_state.WorldState` to read
-            path expressions against.
+        end_state: The world to read ``state.<dimension>`` against, keyed by declared dimension name.
+        ledger: The calls the candidate made, read by the call predicates.
+        world: The host's world registry, through which ``state.<path>`` resolves to a declared
+            dimension — the resolution the authoring gate refuses an unknown path by. None for a
+            host that declares no world, where any ``state`` path raises.
         variation: Variation parameter dict (test case's variation_params).
             Defaults to empty when omitted.
-        world: The host's world registry. Given one, ``state.<path>`` roots at a dimension name and
-            finds the value where the registry's addressing put it — the reading the authoring gate
-            resolves the same path by. None (a host with no world, or the language exercised alone)
-            reads ``state.<namespace>.<key>`` off the container's layout.
 
     Returns:
         ``True`` if the expression's value is truthy after coercion;
         ``False`` otherwise (including ``Missing`` results).
 
     Raises:
-        DSLError: For malformed expressions. Evaluation errors against valid
-            expressions return ``False`` via :data:`Missing` semantics — they
-            never raise at run time.
+        DSLError: For malformed expressions, and for a ``state`` path on a host that declares no
+            world. A path that names no declared dimension, or that does not resolve inside one,
+            returns ``False`` via :data:`Missing` semantics instead.
     """
     tree = parse(expression)
-    ctx = _EvalContext(state=state, variation=variation or {}, binding={}, world=world)
+    ctx = _EvalContext(end_state=end_state, ledger=ledger, variation=variation or {}, binding={}, world=world)
     result = _eval_node(tree.body, ctx)
     if result is Missing:
         return False
@@ -934,9 +938,10 @@ def evaluate(
 def evaluate_with_detail(
     expression: str,
     *,
-    state: WorldState,
+    end_state: Mapping[str, Any],
+    ledger: CallLedger,
+    world: WorldRegistry | None,
     variation: dict[str, Any] | None = None,
-    world: WorldRegistry | None = None,
 ) -> tuple[bool, str]:
     """Evaluate and return ``(result, detail)`` for trace inspection.
 
@@ -948,15 +953,19 @@ def evaluate_with_detail(
 
     Args:
         expression: DSL expression text.
-        state: The world to read path expressions against.
-        variation: Variation parameter dict. Defaults to empty when omitted.
+        end_state: The world to read, keyed by declared dimension name, as :func:`evaluate` takes it.
+        ledger: The calls the candidate made, as :func:`evaluate` takes it.
         world: The host's world registry, as :func:`evaluate` takes it.
+        variation: Variation parameter dict. Defaults to empty when omitted.
 
     Returns:
         The boolean result and the resolved value's ``repr``, or ``"<Missing>"``.
+
+    Raises:
+        DSLError: As :func:`evaluate` raises it.
     """
     tree = parse(expression)
-    ctx = _EvalContext(state=state, variation=variation or {}, binding={}, world=world)
+    ctx = _EvalContext(end_state=end_state, ledger=ledger, variation=variation or {}, binding={}, world=world)
     value = _eval_node(tree.body, ctx)
     if value is Missing:
         return False, "<Missing>"
@@ -997,7 +1006,11 @@ def _eval_node(node: ast.AST, ctx: _EvalContext) -> Any:
 def _resolve_root(name: str, ctx: _EvalContext) -> Any:
     """Resolve a bare identifier — state / variation / it."""
     if name == "state":
-        return _StateProxy(ctx.state)
+        # Reached only by a `state` that does not head an attribute chain (`state[...]`, `length(state)`,
+        # a bare `state`): a chain is resolved whole by _resolve_attr. The root is not a value, so there
+        # is nothing to hand back — and a container of every dimension would let a check read state
+        # without naming the dimension the authoring gate resolves.
+        raise DSLError("'state' is not a value: name a declared world dimension under it (state.<dimension>).")
     if name == "variation":
         return ctx.variation
     if name == "it":
@@ -1009,8 +1022,13 @@ def _resolve_root(name: str, ctx: _EvalContext) -> Any:
 
 def _resolve_attr(node: ast.Attribute, ctx: _EvalContext) -> Any:
     """Resolve an attribute path against the current value."""
-    if ctx.world is not None and (segments := _state_segments(node)) is not None:
-        return _resolve_dimension_path(segments, ctx.world, ctx.state)
+    if (segments := _state_segments(node)) is not None:
+        if ctx.world is None:
+            raise DSLError(
+                f"state.{'.'.join(segments)} reads world state, and this host declares no world: "
+                "a state path names a declared world dimension, and there is none to name"
+            )
+        return _resolve_dimension_path(segments, ctx.world, ctx.end_state)
     base = _eval_node(node.value, ctx)
     attr = node.attr
     return _lookup(base, attr)
@@ -1080,62 +1098,29 @@ def _state_segments(node: ast.Attribute) -> list[str] | None:
     return segments
 
 
-def _resolve_dimension_path(segments: list[str], world: WorldRegistry, state: WorldState) -> Any:
+def _resolve_dimension_path(segments: list[str], world: WorldRegistry, end_state: Mapping[str, Any]) -> Any:
     """Read ``state.<segments>`` as a dimension name and a path inside its value.
 
     The dimension is the longest declared prefix — :meth:`WorldRegistry.resolve_path`, the same
     resolution the authoring gate refuses an unknown path by, so a check that passes the gate reads
-    the value the gate resolved it to. The value is found where the registry's addressing puts it in
-    a world laid out as a seed is, whatever the host names its dimensions: ``ingest_backlog`` held
-    under its carrier as ``ingest_backlog``, or ``inbox.messages`` held under ``inbox`` as ``messages``.
+    the value the gate resolved it to. The end state is keyed by that name, so no layout is consulted.
 
     Args:
         segments: The attribute chain below ``state``.
         world: The host's world registry.
-        state: The world to read.
+        end_state: The world to read, keyed by declared dimension name.
 
     Returns:
-        The value at the path, or :data:`Missing` when it names no declared dimension, the world
+        The value at the path, or :data:`Missing` when it names no declared dimension, the end state
         holds no value for the dimension, or the rest of the path does not resolve inside it.
     """
     name = world.resolve_path(".".join(segments))
-    if name is None:
+    if name is None or name not in end_state:
         return Missing
-    dimension = world.get(name)
-    if dimension is None:
-        return Missing
-    key = world.held_at(name, state.namespaces)
-    if key is None:
-        return Missing
-    value: Any = state.namespaces[dimension.carrier][key]
+    value: Any = end_state[name]
     for attr in segments[len(name.split(".")) :]:
         value = _lookup(value, attr)
     return value
-
-
-class _StateProxy:
-    """Thin wrapper around WorldState that reads dotted paths off its layout.
-
-    ``state.inventory.orders`` ->
-        ``state_proxy.inventory`` returns the inventory namespace dict ->
-        ``.orders`` calls _lookup on the dict.
-
-    The reading with no world registry. With one, an attribute chain off ``state`` never reaches
-    here: :func:`_resolve_dimension_path` reads it as a dimension name instead.
-    """
-
-    __slots__ = ("_state",)
-
-    def __init__(self, state: WorldState):
-        self._state = state
-
-    def __getattr__(self, name: str) -> Any:
-        # `length` is special even here — return the total number of
-        # populated namespaces for `state.length` (rarely useful, but consistent).
-        if name == "length":
-            return len(self._state.namespaces)
-        # Otherwise, return the namespace dict (or Missing if absent).
-        return self._state.namespaces.get(name, Missing)
 
 
 def _eval_unary(node: ast.UnaryOp, ctx: _EvalContext) -> Any:
@@ -1241,15 +1226,15 @@ def _eval_call(node: ast.Call, ctx: _EvalContext) -> Any:
     if func_name == "length":
         return _builtin_length(*_check_arity("length", args, 1))
     if func_name == "called_before":
-        return _builtin_called_before(ctx.state, *_check_arity("called_before", args, 2))
+        return _builtin_called_before(ctx.ledger, *_check_arity("called_before", args, 2))
     if func_name == "called_after":
-        return _builtin_called_after(ctx.state, *_check_arity("called_after", args, 2))
+        return _builtin_called_after(ctx.ledger, *_check_arity("called_after", args, 2))
     if func_name == "call_count":
-        return _builtin_call_count(ctx.state, *_check_arity("call_count", args, 1))
+        return _builtin_call_count(ctx.ledger, *_check_arity("call_count", args, 1))
     if func_name == "last_call_was":
-        return _builtin_last_call_was(ctx.state, *_check_arity("last_call_was", args, 1))
+        return _builtin_last_call_was(ctx.ledger, *_check_arity("last_call_was", args, 1))
     if func_name == "calls":
-        return _builtin_calls(ctx.state, *_check_arity("calls", args, 1))
+        return _builtin_calls(ctx.ledger, *_check_arity("calls", args, 1))
     raise DSLError(f"Unknown DSL function: {func_name}")
 
 
@@ -1302,15 +1287,9 @@ def _builtin_length(value: Any) -> Any:
 # ---- Ordering predicates -----------------------------------------------------
 
 
-def _all_calls_with_index(state: WorldState) -> list[tuple[int, str, str]]:
-    """Return ``[(global_index, tool, action), ...]`` from ``state.global_calls``.
-
-    Cross-tool ordering relies on the global ledger maintained by
-    :meth:`WorldState.record_call`. Per-tool ``calls`` lists are
-    intentionally NOT used as a fallback — they don't preserve cross-tool
-    order and would silently degrade the ordering-predicate semantics.
-    """
-    return [(i, entry.get("tool", ""), entry.get("action", "")) for i, entry in enumerate(state.global_calls)]
+def _all_calls_with_index(ledger: CallLedger) -> list[tuple[int, str, str]]:
+    """Return ``[(index, tool, action), ...]`` over the ledger, in recorded order across every tool."""
+    return [(i, call.tool, call.action) for i, call in enumerate(ledger.calls)]
 
 
 def _parse_tool_action(spec: Any) -> tuple[str, str]:
@@ -1335,11 +1314,11 @@ def _parse_tool_action(spec: Any) -> tuple[str, str]:
     raise DSLError(f"Expected a 'tool.action' string spec; got {type(spec).__name__}.")
 
 
-def _builtin_called_before(state: WorldState, first: Any, second: Any) -> bool:
+def _builtin_called_before(ledger: CallLedger, first: Any, second: Any) -> bool:
     """True when the first occurrence of ``first`` precedes the first occurrence of ``second``."""
     tool_a, action_a = _parse_tool_action(first)
     tool_b, action_b = _parse_tool_action(second)
-    calls = _all_calls_with_index(state)
+    calls = _all_calls_with_index(ledger)
     first_idx_a = next((i for i, t, a in calls if t == tool_a and a == action_a), None)
     first_idx_b = next((i for i, t, a in calls if t == tool_b and a == action_b), None)
     if first_idx_a is None or first_idx_b is None:
@@ -1347,11 +1326,11 @@ def _builtin_called_before(state: WorldState, first: Any, second: Any) -> bool:
     return first_idx_a < first_idx_b
 
 
-def _builtin_called_after(state: WorldState, first: Any, second: Any) -> bool:
+def _builtin_called_after(ledger: CallLedger, first: Any, second: Any) -> bool:
     """True when the last occurrence of ``first`` follows the last occurrence of ``second``."""
     tool_a, action_a = _parse_tool_action(first)
     tool_b, action_b = _parse_tool_action(second)
-    calls = _all_calls_with_index(state)
+    calls = _all_calls_with_index(ledger)
     last_idx_a = next((i for i, t, a in reversed(calls) if t == tool_a and a == action_a), None)
     last_idx_b = next((i for i, t, a in reversed(calls) if t == tool_b and a == action_b), None)
     if last_idx_a is None or last_idx_b is None:
@@ -1359,34 +1338,30 @@ def _builtin_called_after(state: WorldState, first: Any, second: Any) -> bool:
     return last_idx_a > last_idx_b
 
 
-def _builtin_call_count(state: WorldState, spec: Any) -> int:
+def _builtin_call_count(ledger: CallLedger, spec: Any) -> int:
     """Return the count of recorded calls matching ``tool.action``."""
     tool, action = _parse_tool_action(spec)
-    calls = _all_calls_with_index(state)
+    calls = _all_calls_with_index(ledger)
     return sum(1 for _, t, a in calls if t == tool and a == action)
 
 
-def _builtin_last_call_was(state: WorldState, spec: Any) -> bool:
+def _builtin_last_call_was(ledger: CallLedger, spec: Any) -> bool:
     """True when the most recent recorded call matches ``tool.action``."""
     tool, action = _parse_tool_action(spec)
-    calls = _all_calls_with_index(state)
+    calls = _all_calls_with_index(ledger)
     if not calls:
         return False
     _, last_tool, last_action = calls[-1]
     return last_tool == tool and last_action == action
 
 
-def _builtin_calls(state: WorldState, spec: Any) -> list[dict[str, Any]]:
+def _builtin_calls(ledger: CallLedger, spec: Any) -> list[dict[str, Any]]:
     """Return the recorded parameters of every call matching ``tool.action``, in ledger order.
 
     Copies, so an expression cannot reach the ledger it reads.
     """
     tool, action = _parse_tool_action(spec)
-    return [
-        dict(entry.get("params", {}))
-        for entry in state.global_calls
-        if entry.get("tool") == tool and entry.get("action") == action
-    ]
+    return [copy.deepcopy(call.params) for call in ledger.calls if call.tool == tool and call.action == action]
 
 
 # ---- any() / all() generators ------------------------------------------------

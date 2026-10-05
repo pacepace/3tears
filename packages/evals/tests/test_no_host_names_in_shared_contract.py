@@ -360,7 +360,14 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # host noun arriving in any of them would be one host's subject written back into the engine.
     "run/judge_service.py",
     "run/simulator.py",
-    "contracts/world_state.py",
+    # The call ledger every kind fills and every goal check's call predicates read: tool and action
+    # names are the host's words carried as data, never declared here. A host noun in this module
+    # would be one host's tool written into the record every kind keeps.
+    "contracts/call_ledger.py",
+    # The re-check that re-grades a stored run from the ledgers its cells stored, through the run's
+    # own grading function. It reads no kind's trace shape, so a host noun here would be one kind's
+    # replay written back into the engine.
+    "run/recheck.py",
     # Moved off _HOST_COUPLED_MODULES when a launch's overlays became one map the kind's own model
     # validates: the launch names no overlay of any host's, so a host noun arriving
     # here would be one host's knob written into every host's launch signature.

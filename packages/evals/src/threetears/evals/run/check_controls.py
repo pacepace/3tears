@@ -9,8 +9,9 @@ at authoring instead.
 
 **Two controls per check.** Each check is evaluated against:
 
-* **the do-nothing control** — the template's own seed as the end state, with an empty call ledger:
-  the candidate did nothing. Derived, so it needs no data and cannot be authored wrong.
+* **the do-nothing control** — the template's own seed as the end state, named through the host's
+  world registry, with an empty call ledger: the candidate did nothing. Derived, so it needs no data
+  and cannot be authored wrong.
 * **its named control** — an end state the template's author states in
   :class:`~threetears.evals.contracts.models.GoalCheckControls`: for an ``act`` check, one where the
   behaviour happened; for a ``hold`` check, one where the forbidden thing happened.
@@ -42,16 +43,17 @@ prove them.
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from typing import Any, NamedTuple
 
+from threetears.evals.contracts.call_ledger import CallLedger
 from threetears.evals.contracts.dsl import undefined_action
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.host.profile import HostProfile
+from threetears.evals.contracts.host.world import WorldRegistry
 from threetears.evals.contracts.host.world_schema import schema_violations
 from threetears.evals.contracts.models import ControlEndState, EvalTemplate, GoalCheckIntent, GoalStateOutcome
-from threetears.evals.contracts.world_state import WorldState, init_world
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
 
 #: The fields whose write puts the proof in question: the checks themselves, the controls, and the
@@ -126,38 +128,73 @@ def _verdict(outcome: GoalStateOutcome) -> str:
     return f"{'passes' if outcome.passed else 'fails'} ({outcome.detail})"
 
 
-def do_nothing_end_state(template: EvalTemplate) -> WorldState:
+class ControlEnd(NamedTuple):
+    """What a control states the candidate left behind: the world, and the calls it made."""
+
+    #: The world, keyed by declared dimension name — the shape a goal check reads ``state.<dimension>`` from.
+    end_state: dict[str, Any]
+    #: The calls, recorded through :meth:`~threetears.evals.contracts.call_ledger.CallLedger.record`,
+    #: the method a kind records its candidate's calls with.
+    ledger: CallLedger
+
+
+def _named(world: WorldRegistry | None, namespaces: Mapping[str, Any]) -> dict[str, Any]:
+    """A seed-shaped world, keyed by dimension name through the host's registry.
+
+    Args:
+        world: The host's world registry, or None for a host that declares no world.
+        namespaces: Carrier → (key → value).
+
+    Returns:
+        Dimension name → value. Empty for a worldless host stating no world.
+
+    Raises:
+        ValueError: The world states something the host's registry does not declare — including
+            any world state at all on a host that declares no world.
+    """
+    if world is not None:
+        return world.named(namespaces)
+    if namespaces:
+        raise ValueError("this host declares no world, so world state stated for it names nothing a check can read")
+    return {}
+
+
+def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None) -> ControlEnd:
     """The end state of a candidate that did nothing: the template's seed, and no calls.
 
     Args:
         template: The template whose seed it is.
+        world: The host's world registry, which names each seeded value's dimension.
 
     Returns:
-        A fresh world. Built anew on each call, so evaluating one control cannot leak into another.
+        A fresh end state. Built anew on each call, so evaluating one control cannot leak into another.
+
+    Raises:
+        ValueError: The seed states something the registry does not declare.
     """
-    return init_world(template.world_seed)
+    return ControlEnd(end_state=_named(world, template.world_seed.namespaces), ledger=CallLedger())
 
 
-def control_end_state(template: EvalTemplate, end_state: ControlEndState) -> WorldState:
-    """A named control end state: the seed with the stated keys replaced, and the stated calls recorded.
-
-    The calls are recorded through :meth:`~threetears.evals.contracts.world_state.WorldState.record_call`,
-    the method a run records the candidate's calls with, so both ledgers a check can read — the
-    cross-tool one and each namespace's own — hold them exactly as a run's would.
+def control_end_state(template: EvalTemplate, end_state: ControlEndState, *, world: WorldRegistry | None) -> ControlEnd:
+    """A named control end state: the seed with the stated dimensions replaced, and the stated calls recorded.
 
     Args:
         template: The template whose seed the control is laid over.
         end_state: The control.
+        world: The host's world registry, which names each stated value's dimension.
 
     Returns:
-        A fresh world.
+        A fresh end state.
+
+    Raises:
+        ValueError: The seed or the control states something the registry does not declare.
     """
-    world = do_nothing_end_state(template)
-    for namespace, keys in end_state.world.items():
-        world.namespace(namespace).update(copy.deepcopy(keys))
+    idle = do_nothing_end_state(template, world=world)
+    named = {**idle.end_state, **_named(world, end_state.world)}
+    ledger = CallLedger()
     for call in end_state.calls:
-        world.record_call(call.tool, call.action, copy.deepcopy(call.params))
-    return world
+        ledger.record(call.tool, call.action, call.params)
+    return ControlEnd(end_state=named, ledger=ledger)
 
 
 def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> list[CheckDiscrimination]:
@@ -172,6 +209,7 @@ def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> li
 
     Raises:
         GoalCheckUnevaluable: A check raised while being evaluated against a control.
+        ValueError: The seed or a control states world state the host's registry does not declare.
     """
     controls = template.goal_check_controls
     if controls is None:
@@ -179,15 +217,19 @@ def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> li
     results: list[CheckDiscrimination] = []
     for entry in controls.checks:
         end_state = controls.end_states[entry.control]
+        nothing = do_nothing_end_state(template, world=profile.world)
         (idle,) = grade_goal_checks(
             [entry.check],
-            world_state=do_nothing_end_state(template),
+            ledger=nothing.ledger,
+            end_state=nothing.end_state,
             variation=end_state.variation,
             world=profile.world,
         )
+        stated = control_end_state(template, end_state, world=profile.world)
         (acted,) = grade_goal_checks(
             [entry.check],
-            world_state=control_end_state(template, end_state),
+            ledger=stated.ledger,
+            end_state=stated.end_state,
             variation=end_state.variation,
             world=profile.world,
         )
@@ -269,6 +311,10 @@ def refuse_non_discriminating_checks(
             f"template {template.name!r}: {unevaluable} against a control end state — "
             "a check that cannot be evaluated is not one a run can grade"
         ) from unevaluable
+    except ValueError as unnamed:
+        raise ValidationFailedError(
+            f"template {template.name!r}: its world_seed states world state a control cannot be built over: {unnamed}"
+        ) from unnamed
     refusals = [refusal for discrimination in discriminations if (refusal := discrimination.refusal()) is not None]
     if refusals:
         raise ValidationFailedError(
@@ -286,8 +332,9 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile) -> list
     a check pass or fail its control for a reason no run reproduces. Asked of the host's profile,
     as the world gate asks of a goal check. A key names its dimension through the host's addressing
     (:meth:`~threetears.evals.contracts.host.world.WorldRegistry.address`), as a seed key does. A host
-    that declares no world, or cannot list a tool's actions, leaves that part unchecked rather than
-    refused; a tool the host does not have is refused, since its reader answers that with an empty
+    that declares no world refuses any world state a control states, since a goal check can only
+    read a declared dimension and there is none. A host that cannot list a tool's actions leaves
+    that part unchecked rather than refused; a tool the host does not have is refused, since its reader answers that with an empty
     action set (:func:`~threetears.evals.contracts.dsl.undefined_action`, the rule a goal check's own
     call references are held to).
 
@@ -300,7 +347,15 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile) -> list
     """
     world = profile.world
     defects: list[str] = []
-    # A host with no world has no vocabulary to hold a control's keys to, so they go unchecked.
+    # A host with no world has no dimension a check could read a control's keys as.
+    stated = [f"{namespace}.{key}" for namespace, keys in end_state.world.items() for key in keys]
+    if world is None and stated:
+        defects.append(
+            "it states world state ("
+            + ", ".join(stated)
+            + "), and this host declares no world — a goal check reads only declared dimensions, so none of it "
+            "could ever be read"
+        )
     if world is not None:
         for namespace, keys in end_state.world.items():
             for key, value in keys.items():
@@ -334,6 +389,7 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile) -> list
 
 __all__ = [
     "CheckDiscrimination",
+    "ControlEnd",
     "check_discriminations",
     "control_end_state",
     "do_nothing_end_state",

@@ -96,6 +96,7 @@ from typing import Any, Literal, Protocol
 from pydantic import model_validator
 
 from threetears.evals.contracts.base import EvalBaseModel, VerbatimJsonObject
+from threetears.evals.contracts.call_ledger import CallLedger
 from threetears.evals.contracts.cassettes import CellCassettes
 from threetears.evals.contracts.host.subject import SubjectSnapshot
 from threetears.evals.contracts.models import (
@@ -243,6 +244,18 @@ class CandidateOutput(EvalBaseModel):
     conversational turn, ``label == expected`` for a classifier, schema validity for an
     artifact. Lands on :attr:`~threetears.evals.contracts.models.EvalResult.goal_state_outcomes` and
     is handed to the judge as context.
+    """
+
+    call_ledger: CallLedger | None = None
+    """Every action the candidate took that succeeded, as the kind recorded it.
+
+    The ledger the kind graded its goal checks against
+    (:func:`~threetears.evals.run.runner.grade_goal_checks`), stored on the cell's
+    :class:`~threetears.evals.contracts.models.EvalTrace` so a re-check
+    (:mod:`threetears.evals.run.recheck`) re-grades the stored result from exactly what the
+    candidate did, under today's rule, without re-running it. ``None`` for a kind that keeps no
+    ledger — nobody recorded, which is a different fact from an empty ledger, where the kind
+    recorded and the candidate called nothing.
     """
 
     telemetry: CandidateTelemetry = CandidateTelemetry()

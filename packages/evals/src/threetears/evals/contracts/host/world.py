@@ -39,6 +39,7 @@ rather than a shrug.
 
 from __future__ import annotations
 
+import copy
 import inspect
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -848,6 +849,43 @@ class WorldRegistry(HostAttributed):
         if not isinstance(held, Mapping):
             return None
         return next((key for key in held if self._address(declared.carrier, key) == name), None)
+
+    def named(self, namespaces: Mapping[str, Any]) -> dict[str, Any]:
+        """A world laid out as a seed is (carrier → key → value), keyed by dimension name instead.
+
+        The form the goal language reads ``state.<dimension>`` from: a run's end state is read back
+        dimension by dimension, and an end state stated as a seed (a template's seed, which is the
+        do-nothing control; a control end state laid over it) is named here through this host's
+        :meth:`address`, so both reach a check in one shape.
+
+        Args:
+            namespaces: Carrier → (key → value).
+
+        Returns:
+            Dimension name → a deep copy of its value, in the order the keys appear.
+
+        Raises:
+            ValueError: A carrier's value is not a mapping, a key addresses no declared dimension,
+                or a key sits under a carrier other than the one supplying its dimension. Each is a
+                value no read handle could ever return, so naming it anyway would hand a check a
+                world no run can leave.
+        """
+        named: dict[str, Any] = {}
+        for carrier, held in namespaces.items():
+            if not isinstance(held, Mapping):
+                raise ValueError(f"{self._host}world state under {carrier!r} is not a mapping of key to value")
+            for key, value in held.items():
+                name = self._address(carrier, key)
+                declared = self._by_name.get(name)
+                if declared is None:
+                    raise ValueError(f"{self._host}{carrier}.{key} addresses no dimension this world declares")
+                if declared.carrier != carrier:
+                    raise ValueError(
+                        f"{self._host}{carrier}.{key} puts {name!r} under {carrier!r}, but {declared.carrier!r} "
+                        "supplies it"
+                    )
+                named[name] = copy.deepcopy(value)
+        return named
 
     def resolve_path(self, path: str) -> str | None:
         """The dimension a dotted path addresses into, or None when this host declares none.
