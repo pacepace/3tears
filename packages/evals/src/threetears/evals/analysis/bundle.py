@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
+from threetears.evals.analysis.agreement import JudgeAgreement, judge_agreement
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
     ApparatusClass,
@@ -116,7 +117,7 @@ from threetears.evals.contracts.metrics import (
 from threetears.evals.contracts.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
-from threetears.evals.contracts.models import ApparatusProvenance, EvalResult
+from threetears.evals.contracts.models import ApparatusProvenance, CalibrationRating, EvalResult
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -134,11 +135,12 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
 
 
 class CampaignReadStore(Protocol):
-    """The four reads assembling a campaign's context bundle needs.
+    """The five reads assembling a campaign's context bundle needs.
 
     Cut to what :func:`assemble_context_bundle` calls rather than to what a
     storage layer offers: the bundle reads member runs (in one batch, without the
     payload paths the host declares a listing may leave out), each run's results, the
+    people's calibration ratings of those results, the
     subject's prior insights, and — for an insight that names one — whether the
     analysis that minted it is archived, and writes nothing at all. That flag is read
     because archiving an analysis RETRACTS what it minted (:func:`retracted_insights`),
@@ -175,6 +177,10 @@ class CampaignReadStore(Protocol):
 
     def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
         """Every result belonging to one run within a scope."""
+        ...
+
+    def query_calibration_ratings(self, scope_id: str, /, *, run_id: str) -> list[CalibrationRating]:
+        """Every calibration rating of one run's results within a scope, oldest first — unpaged."""
         ...
 
     def query_insights(self, scope_id: str, /, *, subject_id: str) -> list[EvalInsight]:
@@ -1153,7 +1159,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=32, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=33, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -1292,6 +1298,16 @@ class AnalysisContextBundle(EvalDocumentModel):
             "with the sentence to quote when they disagree, when runs mix commissioned and witnessed apparatus "
             "with nothing declared, or when the stimulus was declared uncontrolled. Commissioned and witnessed "
             "observations never share a cell, so a mixed campaign has separate cells for them."
+        ),
+    )
+    judge_agreement: JudgeAgreement = Field(
+        default_factory=JudgeAgreement,
+        description=(
+            "How the judge's scores agreed with people's calibration ratings of the same results, per judged "
+            "dimension and per judge model: n, exact agreement, Cohen's kappa and, on 1-5 dimensions, quadratic-"
+            "weighted kappa — over every resolved member run's results. A dimension absent here is uncalibrated: "
+            "nobody rated it, so an absolute claim about it rests on the judge alone. Ratings that could not be "
+            "paired with a judge score are listed with why."
         ),
     )
     verdict_order: VerdictOrder = Field(
@@ -4506,6 +4522,13 @@ def assemble_context_bundle(
         ),
         prior_insights=_sorted_insights([insight for insight in ledger if insight.id not in retracted]),
         retracted_insights=retracted,
+        # Over the resolved members only, like every other lens: a rating of an archived run's result
+        # calibrates a judge the bundle does not otherwise read. Ratings are read per run, in run order,
+        # so the unpaired list is deterministic for the fingerprint.
+        judge_agreement=judge_agreement(
+            (rating for run in runs for rating in storage.query_calibration_ratings(scope_id, run_id=run.id)),
+            results,
+        ),
     )
     # Judged quality and the bars, per cell. Both read the cell algebra's own grouping, so every
     # per-arm number here describes observations the bundle already calls one arm, and neither

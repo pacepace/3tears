@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import math
 from statistics import NormalDist
-from typing import NamedTuple
+from collections.abc import Sequence
+from typing import Literal, NamedTuple
 
 # Two-sided p-value below which a composite delta is called significant.
 SIGNIFICANCE_ALPHA = 0.05
@@ -265,6 +266,61 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
     centre = (rate + z * z / (2 * n)) / denominator
     half = z * math.sqrt(rate * (1 - rate) / n + z * z / (4 * n * n)) / denominator
     return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def cohen_kappa(
+    pairs: Sequence[tuple[int, int]], categories: Sequence[int], *, weights: Literal["none", "quadratic"] = "none"
+) -> float | None:
+    """Cohen's kappa between two raters over the same items: agreement beyond what chance would give.
+
+    ``1 - observed disagreement / expected disagreement``, where the expectation crosses the two
+    raters' own marginal distributions. Unweighted, every disagreement costs the same; quadratic,
+    a disagreement costs ``(i - j)² / (k - 1)²`` across ``k`` ordered categories, so a 4 against a
+    5 is a near miss and a 1 against a 5 is not — the reading an ordinal judge's calibration wants.
+    Over two categories the two weightings are the same number.
+
+    Args:
+        pairs: ``(first, second)`` per item.
+        categories: Every category either rater could give, in order — the scale, not merely the
+            values seen, because the quadratic cost is a distance along it.
+
+    Returns:
+        Kappa, in ``[-1, 1]``; ``None`` with no pairs, or when chance alone predicts no
+        disagreement (both raters gave one and the same category to every item), where the ratio
+        is undefined rather than perfect.
+
+    Raises:
+        ValueError: A pair holds a value outside ``categories``, or fewer than two categories.
+    """
+    if len(categories) < 2:
+        raise ValueError(f"kappa needs at least two categories; got {list(categories)}")
+    index = {category: position for position, category in enumerate(categories)}
+    stray = sorted({value for pair in pairs for value in pair if value not in index})
+    if stray:
+        raise ValueError(f"values {stray} are not among the categories {list(categories)}")
+    n = len(pairs)
+    if n == 0:
+        return None
+    k = len(categories)
+
+    def cost(i: int, j: int) -> float:
+        if weights == "quadratic":
+            return (i - j) ** 2 / (k - 1) ** 2
+        return 0.0 if i == j else 1.0
+
+    first = [0] * k
+    second = [0] * k
+    observed = 0.0
+    for a, b in pairs:
+        i, j = index[a], index[b]
+        first[i] += 1
+        second[j] += 1
+        observed += cost(i, j)
+    observed /= n
+    expected = sum(first[i] * second[j] * cost(i, j) for i in range(k) for j in range(k)) / (n * n)
+    if expected == 0:
+        return None
+    return 1 - observed / expected
 
 
 class SignificanceResult(NamedTuple):
@@ -515,6 +571,7 @@ __all__ = [
     "ChangeVerdict",
     "SignificanceResult",
     "ci_half_width",
+    "cohen_kappa",
     "composite_significance",
     "paired_change",
     "standard_error_of_mean",

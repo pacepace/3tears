@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: calibration ratings and judge-versus-human agreement
+
+- **`CalibrationRating` is a standalone document** (`doc_type="calibration_rating"`, in `EVAL_DOC_TYPES`, so the
+  operator wipe sweeps it): `scope_id`, `run_id`, `result_id`, `rubric_dim`, `rater`, `scale`, `score`, `reason`,
+  `rated_at`. Its `id` is derived from `(result_id, rubric_dim, rater)`, so one rater rating the same dimension of
+  the same result again replaces the earlier rating; a stored id its fields do not derive is refused. `score` is a
+  strict integer on `scale` (1-5, or 1/0 for pass/fail). The old embedded shape (`operator_score` /
+  `judge_score` / `rubric_dim_id`) is gone, and so is the rating list `EvalResult` carried inline, which nothing
+  wrote. A stored result carrying that field is refused on read.
+- **`rate_result(storage, *, result_id, scope_id, rubric_dim, rater, score, reason) -> CalibrationRating`** and its
+  port **`RatingStore`** (new, exported from `threetears.evals.run`). The run and the scale are read off the stored
+  result, never taken from the caller. Refuses an unknown result (`NotFoundError`); a dimension the judge did not
+  score on that result (`ValidationFailedError`, naming the judged dimensions); an off-scale or non-integer score,
+  a bare dimension name, and a blank rater or reason (`ValidationFailedError`).
+- **`EvalStorage.save_calibration_rating`** and **`EvalStorage.query_calibration_ratings(scope_id, *, run_id=None,
+  result_id=None)`** (new; unpaged, oldest first).
+- **`EvalResult.judge_score(dim) -> RubricScore | None`** (new): the judge's score for a dimension wherever the
+  result carries it, the two dual-score axes included.
+- **Agreement** (new, exported from `threetears.evals.analysis`): `judge_agreement(ratings, results) ->
+  JudgeAgreement`, with `DimensionAgreement` (per dimension, scale and judge `served_model`: `n`, `raters`,
+  `exact_agreement`, Cohen's `kappa`, quadratic `weighted_kappa` on 1-5 dimensions only), `UnpairedRating` and
+  `UnpairedReason` (`result_unresolved` | `dimension_unscored` | `scale_changed`). Each judge model is read
+  separately. An undefined kappa (chance predicts no disagreement) is `None`, not 1.
+  `threetears.evals.analysis.stats.cohen_kappa(pairs, categories, *, weights="none" | "quadratic")` (new).
+- **`AnalysisContextBundle.judge_agreement: JudgeAgreement`** (new) over every resolved member run's results.
+  `CampaignReadStore` gains **`query_calibration_ratings(scope_id, /, *, run_id)`**: a host store implementing the
+  port must add it. Bundle `schema_version` 32 -> 33. The generator prompt names the field: an absolute judged claim
+  cites its dimension's agreement, or says the judge is uncalibrated there.
+- **`ReporterCalibration.rating_agreement: JudgeAgreement`** (new): a reporter run's ratings, read by the same
+  function beside its labels. `read_calibration` takes a new required `ratings` argument.
+- Deleting a result or a run leaves its ratings in place; agreement lists them as `result_unresolved`.
+
 ### 3tears-evals: witnessed provenance and the design readers
 
 - **`EvalRun.apparatus_provenance: ApparatusProvenance`** (new, **required**, no default;

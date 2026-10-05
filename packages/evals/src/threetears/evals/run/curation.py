@@ -470,7 +470,9 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
     indistinguishable from a lookup failure; an insight's evidence citation is
     not — insights are the durable ledger and destroying conclusions to tidy a
     reference would lose more than it repairs. So the id stays and this states
-    that it dangles, rather than the reader discovering it as a 404.
+    that it dangles, rather than the reader discovering it as a 404. Calibration
+    ratings of the destroyed results stay for the same reason: a person's judgement
+    is not regenerable.
 
     Prefer :func:`set_run_archived` — deletion is unrecoverable and there is no
     import path for runs or results.
@@ -560,6 +562,10 @@ def delete_result(
     As with :func:`delete_run`, an insight citing this result in
     ``evidence_result_ids`` keeps the id and it stops resolving; the ledger is
     durable on purpose and is not cascaded.
+
+    A calibration rating of this result stays too: a person's judgement is not
+    regenerable, and every agreement read lists it as ``result_unresolved``
+    rather than shrinking a dimension's n with nothing saying why.
 
     Args:
         storage: Eval storage backend.

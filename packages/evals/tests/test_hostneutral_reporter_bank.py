@@ -282,6 +282,7 @@ class TestReadingCalibration:
             "live_criteria": None,
             "judge_model": "judge-x",
             "effective_judges": {ACCURACY: "judge-x", CLARITY: "judge-y"},
+            "ratings": [],
         }
         call.update(overrides)
         return read_calibration(**call)
@@ -383,6 +384,7 @@ class TestCriterionDrift:
             live_criteria={ACCURACY: _WORDS.model_copy(update={"description": "now worded otherwise"})},
             judge_model="judge-x",
             effective_judges=None,
+            ratings=[],
         )
         (reading,) = read.cases[0].cells[0].labelled
         assert (reading.agrees, reading.criterion_drift) == (False, "changed")
@@ -410,6 +412,7 @@ class TestARetiredCase:
             live_criteria=None,
             judge_model=None,
             effective_judges=None,
+            ratings=[],
         )
         assert [(c.archived, c.archived_reason) for c in read.cases] == [(False, None), (True, None), (False, None)]
         assert [c.writer_message_check for c in read.cases] == ["differs", "verified", None]

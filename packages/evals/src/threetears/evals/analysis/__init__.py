@@ -35,6 +35,13 @@ inside the package imports its own modules directly.
 
 from __future__ import annotations
 
+from threetears.evals.analysis.agreement import (
+    DimensionAgreement,
+    JudgeAgreement,
+    UnpairedRating,
+    UnpairedReason,
+    judge_agreement,
+)
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bundle import (
     AnalysisContextBundle,
@@ -248,6 +255,7 @@ __all__ = [
     "CriterionDrift",
     "DeclarableAxes",
     "DesignArm",
+    "DimensionAgreement",
     "DimensionReading",
     "FindingChart",
     "FrontierDominator",
@@ -258,6 +266,7 @@ __all__ = [
     "GenerationError",
     "GenerationTally",
     "InsightStanding",
+    "JudgeAgreement",
     "JudgedArm",
     "JudgedMeasure",
     "LabelCriterion",
@@ -301,6 +310,8 @@ __all__ = [
     "TelemetryRollup",
     "TokenRollup",
     "TwoPillarDisclosure",
+    "UnpairedRating",
+    "UnpairedReason",
     "VerdictOrder",
     "WriterMessageCheck",
     "add_runs_to_campaign",
@@ -339,6 +350,7 @@ __all__ = [
     "insight_standing",
     "inspect_analysis_bundle",
     "inspect_campaign_bundle",
+    "judge_agreement",
     "judge_phase_ceiling_s",
     "list_analyses",
     "list_analysis_attempts",

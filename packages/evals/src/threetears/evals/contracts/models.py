@@ -37,6 +37,7 @@ from pydantic import (
 
 from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel, VerbatimJsonObject, VerbatimObject
 from threetears.evals.contracts.call_ledger import CallLedger, RecordedCall
+from threetears.evals.contracts.hashing import canonical_digest
 from threetears.evals.contracts.dsl import DSLError, extract_paths, parse, referenced_fires
 from threetears.evals.contracts.host.spend import ExternalSpend
 from threetears.evals.contracts.host.subject import SubjectSnapshot
@@ -888,24 +889,101 @@ class RubricProposal(EvalBaseModel):
     )
 
 
-class CalibrationRating(EvalDocumentModel):
-    """One operator-vs-judge calibration rating (embedded seed).
+def _calibration_rating_id(result_id: str, rubric_dim: str, rater: str) -> str:
+    """The id of one rater's rating of one dimension of one result.
 
-    Captured passively when the operator hand-reads a transcript and disagrees
-    with the judge: their score is persisted inline on
-    :attr:`EvalResult.manual_overrides`. A later calibration step promotes these into standalone
-    ``calibration_rating`` documents (adding the ``id`` / ``doc_type`` /
-    ``scope_id`` envelope and Cohen's-κ panels); until then the embedded
-    shape is intentionally minimal — no doc envelope, since nothing queries it
-    as a standalone row yet.
+    Derived rather than minted, because "this rater's score for this dimension of this result" is
+    one fact: a rater who rates the same dimension again is correcting themselves, and the write
+    replaces the earlier rating instead of standing beside it as a second, disagreeing human. Two
+    raters of one dimension are two ratings, which is what agreement pools.
+
+    Args:
+        result_id: The rated result.
+        rubric_dim: The rated dimension.
+        rater: Who rated it.
+
+    Returns:
+        ``rating:`` and the digest of the three, so it can never collide with the result's own id or
+        its trace sibling's in a shared partition.
+    """
+    return "rating:" + canonical_digest([result_id, rubric_dim, rater])
+
+
+def _derived_rating_id(data: dict[str, Any]) -> str:
+    """The default ``id`` of a rating, from the fields validated before it.
+
+    Blank when one of them failed validation, which is then the error the construction reports.
+    """
+    try:
+        return _calibration_rating_id(data["result_id"], data["rubric_dim"], data["rater"])
+    except KeyError:
+        return ""
+
+
+class CalibrationRating(EvalDocumentModel):
+    """A person's score for one judged dimension of one result — the human side of judge calibration.
+
+    A standalone document, never embedded on the result: a rating is written after the run, by
+    someone who is not the run, and a result is a measurement the engine does not rewrite to add an
+    opinion about it. The judge's side is never copied here. Agreement pairs this score with the
+    score the result carries for the same dimension when it is read, so a re-judged result is
+    compared with the judge that now scores it, and a rating cannot drift from the judge it claims
+    to be read against.
+
+    Written through :func:`threetears.evals.run.rate_result`, which reads the result first: the
+    run, the scale and the existence of a judge score to calibrate are taken from it, never from
+    the caller. Read by the bundle (``AnalysisContextBundle.judge_agreement``) and by a reporter
+    run's calibration read, both through :func:`threetears.evals.analysis.judge_agreement`.
+
+    One per ``(result, dimension, rater)``: the ``id`` is derived from the three, and a stored id that
+    disagrees with its own fields is refused.
     """
 
-    rubric_dim_id: DimName
-    result_id: str = Field(default="", description="Set when promoted to a standalone calibration document.")
-    operator_score: int = Field(ge=1, le=5)
-    judge_score: int = Field(ge=1, le=5, description="The judge's score for this dim, captured at rating time.")
-    operator_reason: str = Field(default="")
+    doc_type: Literal["calibration_rating"] = "calibration_rating"
+    schema_version: SchemaVersion = EVAL_SCHEMA_VERSION
+    scope_id: str = Field(min_length=1, description="The scope of the rated result.")
+    run_id: str = Field(min_length=1, description="The run the rated result belongs to, read off the result.")
+    result_id: str = Field(min_length=1, description="The rated result.")
+    rubric_dim: DimName = Field(description="The judged dimension rated, spelled as the result's score spells it.")
+    rater: str = Field(
+        min_length=1,
+        description=(
+            "Who rated, as the host names its people (an account, a seat). Agreement pools raters and lists "
+            "them; one rater's second rating of the same dimension of the same result replaces the first."
+        ),
+    )
+    id: str = Field(
+        default_factory=lambda data: _derived_rating_id(data),
+        description="Derived from (result_id, rubric_dim, rater): one rating per rater per dimension per result.",
+    )
+    scale: RubricScale = Field(description="The dimension's scale on the rated result, read off the judge's score.")
+    score: int = Field(
+        strict=True, description="1-5 on the ordinal scale; 1 (pass) or 0 (fail) on pass/fail. A bool is not a score."
+    )
+    reason: str = Field(min_length=1, description="The rater's own words for the score — the evidence for it.")
     rated_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("doc_type")
+    @classmethod
+    def check_doc_type(cls, v: str) -> str:
+        """Reject documents loaded into the wrong model class."""
+        if v != "calibration_rating":
+            raise ValueError(f"doc_type must be 'calibration_rating', got '{v}'")
+        return v
+
+    @model_validator(mode="after")
+    def _score_on_scale_and_id_derived(self) -> CalibrationRating:
+        """Refuse a score its scale cannot hold, and an id that is not the one its fields derive."""
+        low, high = SCALES[self.scale].scores
+        if not low <= self.score <= high:
+            raise ValueError(f"score {self.score!r} is not on the {self.scale} scale of {self.rubric_dim!r}")
+        derived = _calibration_rating_id(self.result_id, self.rubric_dim, self.rater)
+        if self.id != derived:
+            raise ValueError(
+                f"id {self.id!r} is not the one (result_id, rubric_dim, rater) derive ({derived!r}): a rating "
+                "under another id would stand beside the rater's own rating of the same thing instead of replacing it"
+            )
+        return self
 
 
 # =============================================================================
@@ -3233,10 +3311,6 @@ class EvalResult(EvalDocumentModel):
     # pinned for it.
     judge_config_ids: dict[DimName, str] = Field(default_factory=dict)
 
-    # Inline calibration seed. Operator hand-read disagreements persist
-    # here; a later calibration step promotes them to standalone CalibrationRating documents.
-    manual_overrides: list[CalibrationRating] = Field(default_factory=list)
-
     # Re-judges of this result's failed judge dimensions, oldest first — see
     # :class:`JudgeRescore`. Empty for a result scored in one pass.
     judge_rescores: list[JudgeRescore] = Field(default_factory=list)
@@ -3474,6 +3548,24 @@ class EvalResult(EvalDocumentModel):
         if v != "eval_result":
             raise ValueError(f"doc_type must be 'eval_result', got '{v}'")
         return v
+
+    def judge_score(self, dim: str) -> RubricScore | None:
+        """The judge's score for one dimension, wherever this result carries it.
+
+        A template dimension lives in ``rubric_scores``; the two dual-score axes live in
+        ``transcript_score`` / ``outcome_score`` under their reserved ids. One lookup, so a rating's
+        write and every agreement read find the same score.
+
+        Args:
+            dim: The dimension, as its score spells it.
+
+        Returns:
+            The score, or ``None`` when this result carries none on that dimension.
+        """
+        for score in (*self.rubric_scores, self.transcript_score, self.outcome_score):
+            if score is not None and score.dim == dim:
+                return score
+        return None
 
 
 # =============================================================================

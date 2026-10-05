@@ -145,8 +145,17 @@ def _rescore(**fields: Any) -> JudgeRescore:
             id="JudgeConfig.rubric_dim_id",
         ),
         pytest.param(
-            lambda name: CalibrationRating(rubric_dim_id=name, operator_score=3, judge_score=4),
-            id="CalibrationRating.rubric_dim_id",
+            lambda name: CalibrationRating(
+                scope_id="s",
+                run_id="run-1",
+                result_id="r-1",
+                rubric_dim=name,
+                rater="host",
+                scale="ordinal",
+                score=3,
+                reason="why",
+            ),
+            id="CalibrationRating.rubric_dim",
         ),
         # Every place a judged dim's id is STORED, not only where one is authored: a score, a
         # re-judge's record, the run's per-dim maps, a result's per-dim maps, the decision surface,
