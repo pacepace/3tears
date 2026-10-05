@@ -20,9 +20,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from threetears.evals.contracts import EvalRun, EvalStorage, NotFoundError, WorldSeed
+from threetears.evals.contracts import EvalRun, EvalStorage, NotFoundError, ValidationFailedError, WorldSeed
 from threetears.evals.contracts.host import CompletionClients, HostProfile, TraceSink, WorldPlacement
 from threetears.evals.run import (
+    ArmPlan,
+    ArmPrice,
+    ArmQuote,
     KindWiring,
     LaunchableKind,
     LaunchHost,
@@ -38,7 +41,13 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 )
 from packages.evals.tests.fixtures.toyhost.contract import ExtractorSpec
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
+from packages.evals.tests.fixtures.toyhost.kind import (
+    TOY_DOCUMENTS,
+    TOY_EXTRACTOR_KIND,
+    TOY_SCRIPTS,
+    ScriptedExtractionClient,
+    ToyExtractorKind,
+)
 from packages.evals.tests.fixtures.toyhost.run import RUN_CHUNK_TOKENS, RUN_RETRIEVER_TOP_K, toyhost_test_cases
 
 #: The toy host's launch settings. Generous, so a launch is refused only where a test says so.
@@ -56,6 +65,50 @@ TOYHOST_LAUNCH_SETTINGS = LaunchSettings(
 
 #: The reviewer pool a run is reviewed by when its launch sets none — the host's standing rig.
 TOYHOST_REVIEWER_POOL = "pool-a"
+
+
+def plan_toyhost_arm(request: LaunchRequest) -> ArmPlan:
+    """What one arm of a toy launch runs: every case the launcher freezes, on the model the arm names.
+
+    The engine asks this of every arm before the launcher runs, and prices what it says. The extractor has
+    no role default, so an arm naming no model cannot be planned, and is refused here rather than at the
+    tail after the launcher built its rig.
+
+    Args:
+        request: The arm.
+
+    Returns:
+        The plan.
+
+    Raises:
+        ValidationFailedError: The arm names no model.
+    """
+    if request.candidate_model is None:
+        raise ValidationFailedError(f"kind {request.kind!r} has no default candidate model; name one")
+    return ArmPlan(case_count=len(toyhost_test_cases(request.template)), candidate_model=request.candidate_model)
+
+
+def price_toyhost_arm(quote: ArmQuote) -> ArmPrice:
+    """The toy host's launch pricer: a rate card, read off the extractor's own scripts.
+
+    Its upper bound is every cell at the dearest document's price — the figure the launch holds to the
+    arm's cap. A model no script covers is unpriceable, which the engine reads as unknown, never $0.
+
+    Args:
+        quote: The arm.
+
+    Returns:
+        The prediction, or none for a model the rate card does not cover.
+    """
+    script = next((script for script in TOY_SCRIPTS if script.model == quote.candidate_model), None)
+    if script is None:
+        return ArmPrice(predicted_usd=None, basis=f"the toy rate card covers no model {quote.candidate_model!r}")
+    per_cell = max(script.cost_of(document) for document in TOY_DOCUMENTS)
+    return ArmPrice(
+        predicted_usd=per_cell * quote.case_count * quote.k_runs,
+        basis=f"the toy rate card: {quote.case_count} case(s) x {quote.k_runs} repeat(s) at most ${per_cell:.4f} each",
+    )
+
 
 #: The subjects this host can capture, by the id a launch names. One: the toy host deploys one
 #: extractor configuration.
@@ -150,11 +203,15 @@ def toyhost_launch_host(
                 unhonoured_launch_arguments=frozenset(
                     {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
                 ),
+                # What each arm will run, asked before the launcher is, so the engine prices every arm.
+                plan_arm=plan_toyhost_arm,
                 # The one apparatus value a launch sets: who reviews the extractions, the host's standing
                 # pool when a launch sets none.
                 apparatus_settings={"reviewer_pool": TOYHOST_REVIEWER_POOL},
             )
         },
+        # Every arm is priced by the engine before its launcher runs; the toy prices from its rate card.
+        launch_pricer=price_toyhost_arm,
         settings=settings,
         # The toy host has no timeout layer of its own, so a run's job is bounded by the engine's.
         job_timeout_factory=default_job_timeout,
@@ -163,4 +220,11 @@ def toyhost_launch_host(
     return launch_host, client
 
 
-__all__ = ["TOYHOST_LAUNCH_SETTINGS", "TOYHOST_REVIEWER_POOL", "TOYHOST_SUBJECTS", "toyhost_launch_host"]
+__all__ = [
+    "TOYHOST_LAUNCH_SETTINGS",
+    "TOYHOST_REVIEWER_POOL",
+    "TOYHOST_SUBJECTS",
+    "plan_toyhost_arm",
+    "price_toyhost_arm",
+    "toyhost_launch_host",
+]

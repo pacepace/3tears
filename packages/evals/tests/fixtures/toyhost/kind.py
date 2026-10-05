@@ -161,6 +161,18 @@ class ExtractorScript:
     #: asserting its own arithmetic rather than the port's.
     latency_s: float
 
+    def cost_of(self, document: ToyDocument) -> float:
+        """What one extraction of ``document`` costs on this model — the figure every call reports.
+
+        Args:
+            document: The document extracted.
+
+        Returns:
+            The call's cost, in dollars.
+        """
+        completion_tokens = 20 * len(INVOICE_FIELDS)
+        return round(self.usd_per_kilotoken * (document.prompt_tokens + completion_tokens) / 1000.0, 6)
+
 
 #: The two contestants. ``extractor-v3`` is better on every document and dearer per token, which
 #: is the shape a reader has to weigh; an arm that won on every axis would leave a memo with
@@ -247,12 +259,11 @@ class ScriptedExtractionClient:
         await asyncio.sleep(script.latency_s)
         missed = set(script.misses.get(document.document_id, ()))
         fields = {name: ("" if name in missed else value) for name, value in document.key.items()}
-        completion_tokens = 20 * len(INVOICE_FIELDS)
         return ExtractionResult(
             fields=fields,
             prompt_tokens=document.prompt_tokens,
-            completion_tokens=completion_tokens,
-            cost_usd=round(script.usd_per_kilotoken * (document.prompt_tokens + completion_tokens) / 1000.0, 6),
+            completion_tokens=20 * len(INVOICE_FIELDS),
+            cost_usd=script.cost_of(document),
             model=model,
         )
 

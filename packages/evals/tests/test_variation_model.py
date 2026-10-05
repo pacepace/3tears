@@ -602,59 +602,49 @@ async def test_an_unpredicted_arm_is_refused_under_an_inherited_cap_and_runs_und
     assert all(run.max_cost_usd == 1.5 and run.max_cost_usd_origin == "chosen" for run in runs)
 
 
-async def test_a_generating_launch_on_a_host_that_prices_no_launch_is_refused():
+async def test_a_generating_arm_on_a_host_that_prices_no_launch_is_unpriceable():
+    """No pricer is one more way an arm is unknown, read by the one rule: refused under an inherited cap only."""
     template = _template(LLM_AXIS)
     host, storage, clients, handed = _generating_host(template, pricer=None)
 
     with pytest.raises(
-        ValidationFailedError, match="prices no launch \\(LaunchHost.launch_pricer\\).*Nothing was called"
+        ValidationFailedError,
+        match=(
+            "cannot be priced: host 'toyhost' prices no launch \\(LaunchHost.launch_pricer\\).*inherited.*"
+            "Refused before the generation was paid for"
+        ),
     ):
-        await _launch(host, template, n_variations=2, variation_model=WRITER, max_cost_usd=1.5)
-
+        await _launch(host, template, n_variations=2, variation_model=WRITER)
     assert handed == []
     _nothing_was_paid_for(host, storage, clients)
 
-
-async def test_a_launch_that_generates_nothing_is_not_priced():
-    """Only a generation runs ahead of every cap; a launch reusing its stored cases is bounded by its runs' own."""
-
-    def refuses(_quote: ArmQuote) -> ArmPrice:
-        raise AssertionError("a launch reusing its stored cases has no generation to price ahead of")
-
-    storage = EvalStorage(InMemoryDocumentStore())
-    storage.save_template(toyhost_template())
-    host, _client = toyhost_launch_host(storage=storage)
-    host = replace(host, launch_pricer=refuses)
-
-    runs = await _launch(host, toyhost_template(), models=[RUN_MODELS[0]])
+    runs = await _launch(host, template, n_variations=2, variation_model=WRITER, max_cost_usd=1.5)
     await _settled(host, [run.id for run in runs])
+    assert all(run.max_cost_usd_origin == "chosen" for run in runs)
 
-    assert storage.query_out_of_run_spend(TOYHOST_SCOPE) == []
 
-
-async def test_a_generating_launch_of_a_kind_that_plans_no_arm_is_refused_at_the_dispatch():
+async def test_a_generating_arm_of_a_kind_that_plans_nothing_is_unpriceable():
+    """Nothing says what the arm will run, so nothing prices it — refused under an inherited cap, run under a chosen one."""
     template = _template(ENUM_AXIS)
-    host, storage, clients, handed = _generating_host(template)
+    asked: list[ArmQuote] = []
+
+    def recording(quote: ArmQuote) -> ArmPrice:
+        asked.append(quote)
+        return ArmPrice(predicted_usd=0.0, basis="a rate card")
+
+    host, storage, clients, handed = _generating_host(template, pricer=recording)
     (launchable,) = host.kinds.values()
     unplanned = replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, plan_arm=None)})
 
-    with pytest.raises(ValidationFailedError, match="plans no arm of a generating launch"):
+    with pytest.raises(ValidationFailedError, match="plans no arm \\(LaunchableKind.plan_arm\\).*inherited"):
         await _launch(unplanned, template, n_variations=2)
-
     assert handed == []
     _nothing_was_paid_for(unplanned, storage, clients)
 
-
-def test_an_arm_plan_on_a_kind_that_never_generates_is_refused():
-    async def launch(_request: LaunchRequest) -> EvalRun:
-        raise AssertionError("never launched")
-
-    with pytest.raises(ValueError, match="declines n_variations, so nothing would ever ask it"):
-        LaunchableKind(
-            launch=launch,
-            unhonoured_launch_arguments=frozenset({"n_variations"}),
-            plan_arm=lambda _request: ArmPlan(case_count=1, candidate_model="m"),
-        )
+    runs = await _launch(unplanned, template, n_variations=2, max_cost_usd=1.5)
+    await _settled(unplanned, [run.id for run in runs])
+    assert asked == [], "an arm nothing planned is never quoted"
+    assert all(run.max_cost_usd_origin == "chosen" for run in runs)
 
 
 @pytest.mark.parametrize(
@@ -723,6 +713,34 @@ async def test_a_battery_prices_every_templates_generating_arms_before_launching
 
     assert handed == []
     _nothing_was_paid_for(host, storage, clients)
+
+
+async def test_a_generating_battery_prices_each_arm_once():
+    """The pre-flight prices each arm and the template's launch carries that plan — the launch never prices it again."""
+    first = _template(ENUM_AXIS, template_id="first", universal=True)
+    second = _template(ENUM_AXIS, template_id="second", universal=True)
+    quotes: list[ArmQuote] = []
+
+    def recording(quote: ArmQuote) -> ArmPrice:
+        quotes.append(quote)
+        return ArmPrice(predicted_usd=0.0, basis="a rate card")
+
+    host, _storage, _clients, handed = _generating_host(first, second, pricer=recording)
+
+    run_ids = await start_universal_battery(
+        host,
+        TOYHOST_SUBJECT.subject_id,
+        scope_id=TOYHOST_SCOPE,
+        models=list(RUN_MODELS),
+        n_variations=2,
+        preflight=_no_preflight,
+    )
+    await _settled(host, run_ids)
+
+    assert sorted((q.template_id, q.candidate_model, q.case_source) for q in quotes) == sorted(
+        (template, model, "generated") for template in ("first", "second") for model in RUN_MODELS
+    )
+    assert len(handed) == 4 and all(request.arm_plan is not None for request in handed)
 
 
 async def test_a_battery_prices_every_templates_generation_calls_before_launching_any():
@@ -894,6 +912,7 @@ def _quote(**overrides: Any) -> ArmQuote:
         "candidate_model": "m-priced",
         "k_runs": 2,
         "case_count": 5,
+        "n_variations": 5,
         "cassette_mode": "off",
         "judge_model": None,
         "simulator_model": None,
@@ -916,6 +935,19 @@ def test_the_history_pricer_bounds_an_arm_by_the_upper_band_of_its_template_and_
     assert f"around ${centre:.2f}" in price.basis and "upper end of the band" in price.basis
     assert "usage-history" in price.basis and "3 past result(s)" in price.basis
     assert price.predicted_usd < 9.0, "another template's history is not drawn on"
+
+
+def test_the_history_pricer_prices_an_arm_over_stored_cases_by_the_same_rule():
+    """One rule for both sources: the same history, cases and repeats bound a stored-case arm exactly as a generating one."""
+    host, storage = _priced_host()
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30])
+    pricer = history_launch_pricer(host)
+
+    stored, generated = pricer(_quote(n_variations=0)), pricer(_quote(n_variations=5))
+
+    assert _quote(n_variations=0).case_source == "stored" and _quote().case_source == "generated"
+    assert stored.predicted_usd is not None and stored.predicted_usd == generated.predicted_usd
+    assert "upper end of the band" in stored.basis
 
 
 def test_the_history_pricer_predicts_nothing_for_an_arm_with_no_priced_history():
