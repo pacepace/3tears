@@ -227,11 +227,14 @@ class L1Backend(Protocol):
         ...
 
     def column_types(self, table: str) -> Mapping[str, str]:
-        """the declared column types of a table this backend created, by column name.
+        """the type codes this backend reads and writes a table's columns by, by column name.
+
+        the backend's serialization codes (``TEXT_UUID``, ``VARCHAR_JSON``), not SQL
+        types; a backend's own bookkeeping columns are not included.
 
         :param table: the table
         :ptype table: str
-        :return: each column's backend type (empty for a table it does not know)
+        :return: each column's type code (empty for a table it does not know)
         :rtype: Mapping[str, str]
         """
         ...

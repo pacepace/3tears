@@ -26,10 +26,9 @@ per-driver :class:`ConnectionConfig` members (added in
   a stub in shard 12, full impl tracked separately).
 - :class:`BigQueryConnectionConfig` -- BigQuery via
   ``google-cloud-bigquery`` (stateless HTTPS; stub in shard 12).
-- :class:`BorrowedPoolConnectionConfig` -- sentinel for agent-created
-  tables (data-task-01). carries no external connection identity; the
-  driver borrows Hub's L3 pool via the factory's ``hub_l3_pool=``
-  kwarg.
+- :class:`BorrowedPoolConnectionConfig` -- a schema in Hub's L3, read
+  through Hub's own pool (the factory's ``hub_l3_pool=`` kwarg) with no
+  external connection identity; its class docstring names its uses.
 
 ``ConnectionConfig`` itself is the discriminated union keyed on
 ``datasource_type``; pydantic routes incoming dicts to the right

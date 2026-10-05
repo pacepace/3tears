@@ -151,29 +151,7 @@ class DuckDBBackend:
         :return: nothing
         :rtype: None
         """
-        _ = self._pk_columns(primary_key)  # validate shape, unused in SQL
-        schema = self._schema_info.get(table, {})
-        # Filter to columns this table actually has, matching SQLiteBackend.
-        # Without it any framework-injected key reaches the SQL: the L1
-        # cache-age stamp is written by the collection's pull-through for
-        # every backend, and this one declares no such column, so an
-        # unfiltered write fails on a table that is otherwise fine. Unknown
-        # schema (unregistered table) keeps the old write-everything shape.
-        columns = [c for c in data if c in schema] if schema else list(data.keys())
-
-        values = []
-        for col_name in columns:
-            value = data[col_name]
-            col_type = schema.get(col_name, "VARCHAR")
-            values.append(self.serialize_value(value, col_type))
-
-        column_names = ", ".join(columns)
-        placeholders = ", ".join(["?" for _ in columns])
-
-        sql = f"INSERT OR REPLACE INTO {table} ({column_names}) VALUES ({placeholders})"
-
-        with self._db_lock:
-            self._db.execute(sql, values)
+        self.upsert_many(table, [data], primary_key)
 
     def upsert_many(
         self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...] = "id"
@@ -194,11 +172,17 @@ class DuckDBBackend:
         :rtype: int
         :raises ValueError: when the rows do not all name the same columns
         """
-        _ = self._pk_columns(primary_key)  # validate shape; INSERT OR REPLACE honours the declared key
+        pk_cols = self._pk_columns(primary_key)
         schema = self._schema_info.get(table, {})
+        # Only the table's own columns are written: the collection's pull-through
+        # injects keys (the L1 cache-age stamp among them) this backend declares no
+        # column for. An unregistered table (no schema) writes every key named.
         columns = bulk_columns(rows, schema)
-        if rows:
-            lists = [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in rows] for c in columns]
+        # DuckDB refuses to touch one key twice in a statement; one by one, the last
+        # write of a key is the one that stays, so the batch keeps only that.
+        latest = list({tuple(row[c] for c in pk_cols): row for row in rows}.values())
+        if latest:
+            lists = [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in latest] for c in columns]
             # values are already serialized to each column's storage form, so the insert's own
             # conversion types them; the registry's names are logical (VARCHAR_UUID), not SQL
             select = ", ".join(f"unnest(${i}) AS {_quote(c)}" for i, c in enumerate(columns, 1))
@@ -250,11 +234,13 @@ class DuckDBBackend:
         return int(count)
 
     def column_types(self, table: str) -> Mapping[str, str]:
-        """the declared column types of a table this backend created, by column name.
+        """the type codes this backend reads and writes a table's columns by, by column name.
+
+        codes, not SQL types: ``VARCHAR_JSON`` is a VARCHAR column holding JSON, for one.
 
         :param table: the table
         :ptype table: str
-        :return: each column's DuckDB type (empty for a table it does not know)
+        :return: each column's type code (empty for a table it does not know)
         :rtype: Mapping[str, str]
         """
         return MappingProxyType(dict(self._schema_info.get(table, {})))

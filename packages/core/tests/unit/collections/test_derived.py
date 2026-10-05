@@ -16,6 +16,8 @@ this class's.
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from typing import Any
 
 import pytest
@@ -129,6 +131,23 @@ class TestComputeOnMiss:
         collection.computable = False
         assert asyncio.run(collection.fetch_from_store((99,))) is None
         assert (99,) not in collection.store
+
+
+class TestWithoutTheNatsClient:
+    """a single pod (no NATS client) derives without the optional NATS client installed."""
+
+    def test_a_derivation_never_reaches_for_the_lock(
+        self, collection: _BucketCollection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _NoClient(types.ModuleType):
+            def __getattr__(self, name: str) -> Any:
+                raise ImportError(f"{name} requires the NATS client, which is not installed")
+
+        # an install without core's nats extra: every lock name raises on access
+        monkeypatch.setitem(sys.modules, "threetears.nats", _NoClient("threetears.nats"))
+        row = asyncio.run(collection.fetch_from_store((7,)))
+        assert row is not None and row["value"] == "derived-7"
+        assert collection.store[(7,)] == row
 
 
 class TestSingleFlight:

@@ -338,3 +338,51 @@ def test_duckdb_loads_a_parquet_file(tmp_path: Path) -> None:
             backend.load_parquet("missing", tmp_path / "r.parquet")
     finally:
         backend.reset()
+
+
+class TestBulkWriteEdges:
+    """the corners a bulk write must still treat as ``upsert`` would row by row."""
+
+    def test_a_key_repeated_in_a_batch_keeps_its_last_row(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert_many("test_entities", [{**row, "name": "first"}, {**row, "name": "last"}])
+        got = backend.select_by_id("test_entities", row["id"])
+        assert got is not None and got["name"] == "last"
+
+    def test_column_types_are_the_tables_own_columns(self, backend: L1Backend) -> None:
+        # the backend's own cache-stamp column is not one of the table's
+        assert set(backend.column_types("test_entities")) == {"id", "name", "age", "active", "data", "created_at"}
+
+
+def test_a_failed_sqlite_write_leaves_no_transaction_open() -> None:
+    """a bad row rolls back, so the thread's next write is not refused by its own open transaction."""
+    from threetears.core.cache.sqlite import SQLiteBackend
+
+    backend = SQLiteBackend(db_name=f"test_{uuid.uuid4().hex[:8]}")
+    backend.initialize(_make_metadata())
+    try:
+        good = _sample_row()
+        backend.upsert("test_entities", good)
+        # a row the database refuses: two rows in one batch, the second missing its key
+        with pytest.raises(Exception):  # noqa: B017 -- any refusal will do; the point is what follows
+            backend.upsert_many("test_entities", [_sample_row(), {**_sample_row(), "id": None}])
+        later = _sample_row()
+        backend.upsert("test_entities", later)
+        assert backend.select_by_id("test_entities", later["id"]) is not None
+    finally:
+        backend.reset()
+
+
+def test_a_sqlite_table_of_only_key_columns_takes_an_upsert() -> None:
+    from threetears.core.cache.sqlite import SQLiteBackend
+
+    metadata = MetaData()
+    Table("tags", metadata, Column("name", String(20), primary_key=True))
+    backend = SQLiteBackend(db_name=f"test_{uuid.uuid4().hex[:8]}")
+    backend.initialize(metadata)
+    try:
+        backend.upsert("tags", {"name": "a"}, primary_key="name")
+        backend.upsert("tags", {"name": "a"}, primary_key="name")
+        assert backend.execute_query("SELECT name FROM tags") == [{"name": "a"}]
+    finally:
+        backend.reset()

@@ -27,17 +27,29 @@ packages (bumped in lock-step).
 - **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as
   its docstring asked once a second use appeared: a tool pod's platform geography layers are read
   for tiles through Hub's pool, scoped to the pod's `ns_<hex>` schema, with no datasource row. The
-  discriminator is unchanged (`agent_internal`). No alias: rename at the call site.
+  discriminator is unchanged (`agent_internal`). No alias: rename at the call site. The Hub's
+  OpenAPI schema component carries the new name too, so the TypeScript clients generated from it
+  (the SDK's `web-api-client`) and any hand-written interface naming the old one follow on their
+  next regeneration.
 
 ### Core: L1 bulk writes, and imports without the NATS client
 
 - **Added, L1 backends:** `upsert_many` writes many rows as `upsert` would one by one (SQLite in
   one transaction; DuckDB in one columnar statement, about twenty times faster than
-  `executemany`). `column_types` exposes a table's declared types.
-  `DuckDBBackend.load_parquet` loads a Parquet file into a table in one statement.
-- **Fixed:** importing `threetears.core.collections.derived`, and with it `threetears.geo`, no
-  longer needs the optional NATS client (core's `nats` extra). The cross-pod build lock is
-  imported where `DerivedCollection` takes it.
+  `executemany`), and `upsert` is now `upsert_many` of one row, so the two cannot drift. A batch
+  repeating a key keeps its last row. `column_types` exposes the type codes a table's columns are
+  read and written by. `DuckDBBackend.load_parquet` loads a Parquet file into a table in one
+  statement. First consumer: the reports product's Tableau evaluator, which loads an extract
+  snapshot into DuckDB L1 (its backlog item RPT-T3B1) and today bulk-inserts on the backend's
+  connection and reads its private schema.
+- **Fixed, `SQLiteBackend`:** a write that fails for any reason rolls its transaction back. It
+  rolled back only on `OperationalError`, so a constraint or binding error left `BEGIN IMMEDIATE`
+  open, holding the write lock against the thread's next write. A table whose every column is its
+  key takes an upsert (`DO NOTHING`, where it built an empty `DO UPDATE SET`).
+- **Fixed:** `DerivedCollection`, and with it `threetears.geo`, no longer needs the optional NATS
+  client (core's `nats` extra) to import or to derive on a single pod. With no NATS client there is
+  no peer to coordinate with, so a derivation runs under the in-process gate alone and never
+  imports the cross-pod lock; with a client it takes the lock, which needs the extra.
 
 ## v0.64.0 -- 2026-10-04
 

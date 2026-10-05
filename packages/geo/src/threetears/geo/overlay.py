@@ -75,7 +75,8 @@ class Overlay:
     :ptype pieces: tuple[KeyedFeature, ...]
     :param slivers_dropped: how many parts were judged artifacts and dropped
     :ptype slivers_dropped: int
-    :param without_pieces: coarse features no fine feature of their key covers at all
+    :param without_pieces: coarse features left with no piece: none of their key's fine
+        features overlaps them, or every overlap was dropped as an artifact
     :ptype without_pieces: tuple[str, ...]
     """
 
@@ -185,7 +186,8 @@ def cut(
     :ptype separator: str
     :return: the pieces, sorted by id, with what was dropped and what found no piece
     :rtype: Overlay
-    :raises LayerOverlayError: when two shapes cannot be intersected
+    :raises LayerOverlayError: when two shapes cannot be intersected, or two pieces would
+        share an id (an id containing the separator, or a fine id repeated)
     """
     tree = STRtree([f.geometry for f in fine])
     pieces: list[KeyedFeature] = []
@@ -208,6 +210,10 @@ def cut(
         "cut a layer by another",
         extra={"extra_data": {"pieces": len(pieces), "slivers_dropped": slivers, "without_pieces": len(without)}},
     )
+    ids = [piece.feature_id for piece in pieces]
+    repeated = sorted({i for i in ids if ids.count(i) > 1})
+    if repeated:
+        raise LayerOverlayError(f"two pieces would share the id {repeated[0]!r}; the ids or the separator collide")
     if without:
         log.warning(
             "features with no piece after cutting",

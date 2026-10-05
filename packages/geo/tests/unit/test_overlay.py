@@ -103,3 +103,10 @@ class TestReplace:
 def test_missing_features_are_the_needed_ids_with_no_feature() -> None:
     assert missing_features(["48001", "48003"], ["48001", "48005", "48005"]) == ("48005",)
     assert missing_features(["48001"], ["48001"]) == ()
+
+
+def test_pieces_that_would_share_an_id_are_refused() -> None:
+    # a fine id repeated within one key would name two different pieces alike
+    county = square("48001", "48", 0, 0, 1)
+    with pytest.raises(LayerOverlayError, match="would share the id '48001-4801'"):
+        _cut([county], [square("4801", "48", 0, 0, 0.5), square("4801", "48", 0.5, 0.5, 0.5)])

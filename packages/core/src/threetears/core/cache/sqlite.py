@@ -14,7 +14,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from types import MappingProxyType
@@ -288,61 +288,7 @@ class SQLiteBackend:
         :return: nothing
         :rtype: None
         """
-        pk_cols = self._pk_columns(primary_key)
-        schema = self._schema_info.get(table, {})
-        # Filter ``data`` to columns the L1 table actually has. The
-        # framework's ``BaseCollection.save_entity`` unconditionally
-        # injects ``date_created`` / ``date_updated`` for new entities,
-        # but not every entity's table carries those columns -- e.g.
-        # ``agent_skill_invocations`` uses ``invoked_at`` and has neither
-        # timestamp column. Writing an unknown column to SQLite raises
-        # ``OperationalError: table X has no column named date_created``.
-        # The L3 path already projects to declared columns
-        # (``save_to_store``); mirror that here so the L1 write never
-        # diverges from the table shape. When the schema is unknown
-        # (table not registered via ``_generate_create_table``), fall
-        # back to writing every key so existing behaviour is preserved.
-        if schema:
-            columns = [c for c in data if c in schema]
-        else:
-            columns = list(data.keys())
-        placeholders = ", ".join(["?" for _ in columns])
-        column_names = ", ".join(columns)
-
-        values = []
-        for col_name in columns:
-            value = data[col_name]
-            col_type = schema.get(col_name, "TEXT")
-            values.append(self.serialize_value(value, col_type))
-
-        # The stamp is preserved on absence, and that falls out of the column
-        # filter above rather than needing its own branch: a key the caller did
-        # not supply is not in ``columns``, so DO UPDATE SET never names it and
-        # the stored value survives. That matters because reads strip the stamp,
-        # so a read-modify-write caller (the context-item collection touching
-        # ``date_accessed``, for one) hands back a dict without it. Clearing on
-        # absence would make an hours-old row read as locally-authored, and
-        # locally-authored rows never expire. A fresh INSERT leaves it NULL,
-        # which is exactly right: that row WAS authored locally.
-        update_cols = [c for c in columns if c not in pk_cols]
-        update_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
-        conflict_clause = ", ".join(pk_cols)
-
-        sql = f"""
-            INSERT INTO {table} ({column_names})
-            VALUES ({placeholders})
-            ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}
-        """
-        values_tuple = tuple(values)
-
-        conn = self.get_connection()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(sql, values_tuple)
-            conn.execute("COMMIT")
-        except sqlite3.OperationalError:
-            conn.execute("ROLLBACK")
-            raise
+        self.upsert_many(table, [data], primary_key)
 
     def upsert_many(
         self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...] = "id"
@@ -361,34 +307,49 @@ class SQLiteBackend:
         """
         pk_cols = self._pk_columns(primary_key)
         schema = self._schema_info.get(table, {})
+        # Only the table's own columns are written. ``BaseCollection.save_entity``
+        # injects ``date_created`` / ``date_updated`` for new entities, and not every
+        # table carries them (``agent_skill_invocations`` has ``invoked_at`` and
+        # neither); writing an unknown column raises. The L3 path projects to declared
+        # columns too. An unregistered table (no schema) writes every key named.
         columns = bulk_columns(rows, schema)
         if rows:
+            # The cache stamp is preserved on absence, and that falls out of the column
+            # filter rather than needing its own branch: a key the caller did not supply
+            # is not in ``columns``, so DO UPDATE SET never names it and the stored value
+            # survives. That matters because reads strip the stamp, so a read-modify-write
+            # caller (the context-item collection touching ``date_accessed``, for one)
+            # hands back a dict without it. Clearing on absence would make an hours-old
+            # row read as locally-authored, and locally-authored rows never expire. A
+            # fresh INSERT leaves it NULL, which is exactly right: that row WAS authored
+            # locally. A table whose every column is its key has nothing to update.
             update_cols = [c for c in columns if c not in pk_cols]
+            on_conflict = (
+                "DO UPDATE SET " + ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+                if update_cols
+                else "DO NOTHING"
+            )
             sql = (
                 f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
-                f"ON CONFLICT ({', '.join(pk_cols)}) DO UPDATE SET "
-                + ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+                f"ON CONFLICT ({', '.join(pk_cols)}) {on_conflict}"
             )
             values = [tuple(self.serialize_value(row[c], schema.get(c, "TEXT")) for c in columns) for row in rows]
-            conn = self.get_connection()
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                conn.executemany(sql, values)
-                conn.execute("COMMIT")
-            except sqlite3.OperationalError:
-                conn.execute("ROLLBACK")
-                raise
+            self._in_write_transaction(lambda conn: conn.executemany(sql, values))
         return len(rows)
 
     def column_types(self, table: str) -> Mapping[str, str]:
-        """the declared column types of a table this backend created, by column name.
+        """the type codes this backend reads and writes a table's columns by, by column name.
+
+        codes, not SQL types: ``TEXT_UUID`` is a TEXT column holding UUIDs, for one.
+        the backend's own cache-stamp column is not one of the table's.
 
         :param table: the table
         :ptype table: str
-        :return: each column's SQLite type (empty for a table it does not know)
+        :return: each column's type code (empty for a table it does not know)
         :rtype: Mapping[str, str]
         """
-        return MappingProxyType(dict(self._schema_info.get(table, {})))
+        schema = self._schema_info.get(table, {})
+        return MappingProxyType({column: code for column, code in schema.items() if column != CACHED_AT_COLUMN})
 
     def select_by_id(
         self,
@@ -554,12 +515,30 @@ class SQLiteBackend:
         pk_vals = self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
         where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
         sql = f"DELETE FROM {table} WHERE {where_clause}"
+        self._in_write_transaction(lambda conn: conn.execute(sql, pk_vals))
+
+    def _in_write_transaction(self, write: Callable[[Any], object]) -> None:
+        """run one write in an immediate transaction on this thread's connection.
+
+        Any failure inside rolls the transaction back before it propagates, so a bad
+        row or a constraint never leaves ``BEGIN IMMEDIATE`` open holding the write
+        lock for the thread's next write. ``BEGIN`` itself sits outside: a busy lock
+        there opened nothing to roll back, and its ``OperationalError`` propagates as
+        it is (callers such as the max-age drop rely on that).
+
+        :param write: issues the write's statements on the connection
+        :ptype write: Callable[[Any], object]
+        :return: nothing
+        :rtype: None
+        """
         conn = self.get_connection()
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(sql, pk_vals)
+            write(conn)
             conn.execute("COMMIT")
-        except sqlite3.OperationalError:
+        except (
+            BaseException
+        ):  # prawduct:allow prawduct/broad-except -- rolls back whatever failed, then re-raises it unchanged
             conn.execute("ROLLBACK")
             raise
 
