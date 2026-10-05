@@ -35,6 +35,11 @@ vega = [
     "vl-convert-python==1.9.0.post1",
 ]
 
+# The FastMCP transport (`threetears.evals.transports.fastmcp`): mounts the action catalogue as tools
+# on a FastMCP server. Optional, so the engine and its catalogue install without an MCP stack; the
+# floor is the first release an adopting host is known to run, and the cap the major this is tested against.
+fastmcp = ["fastmcp>=3.4.2,<4"]
+
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
 

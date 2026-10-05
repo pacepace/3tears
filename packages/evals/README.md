@@ -18,6 +18,9 @@ first release that says otherwise.
 | `threetears.evals.storage` | the storage adapters the engine ships: the in-memory reference store |
 | `threetears.evals.testing` | conformance kits an app runs in its own test suite: the store kit |
 | `threetears.evals.quick` | the batteries: `run_eval` in one call, and the `python -m threetears.evals` command line |
+| `threetears.evals.ops` | typed operations over a host, and one job contract for long work |
+| `threetears.evals.actions` | the action catalogue every transport mounts: `evals` and `evals_admin` |
+| `threetears.evals.transports.fastmcp` | the catalogue as FastMCP tools (extra `fastmcp`) |
 
 Import from those roots and from `threetears.evals.contracts.host`, never from a module below
 them. Every engine type a public signature hands you — a protocol you implement, a value you
@@ -257,3 +260,36 @@ A host bringing its own renderer implements `ChartRenderer` (`draw(intent)`, and
 reading its drawing back) and runs the one conformance check every renderer passes —
 `assert_renderer_conforms(renderer, intents)`, from `threetears.evals.analysis.viz`: what it draws agrees
 with the intent's values, per row.
+
+## Driving it from an agent: operations, actions and MCP
+
+Every surface calls the same **operations** (`threetears.evals.ops`): one function per thing an operator
+does, over an `OpsHost` — the `LaunchHost`, plus `AnalysisGeneration` (the prompt, output cap and budget a
+background generation runs under) — returning a typed model. Long work is a **job**: `run_launch` and
+`analysis_generate` return `JobsStarted`, and `job_poll` / `job_cancel` take any job id either returned. A
+job id names the durable record its work writes, so it is still answerable after a restart.
+
+The **action catalogue** (`threetears.evals.actions`) declares each operation once for an agent: a `noun_verb`
+name, a permission class (`read`, `spend`, `write`, `destructive`), flat described parameters, a result and
+its rendering. A host adds its own actions and cuts tools by class:
+
+```python
+from fastmcp import FastMCP
+from threetears.evals.actions import Caller, eval_catalogue, standard_tools
+from threetears.evals.ops import OpsHost
+from threetears.evals.transports.fastmcp import mount_fastmcp
+
+server = FastMCP("myapp")
+mount_fastmcp(
+    server,
+    eval_catalogue(my_actions),               # the engine's actions, then the host's
+    host=OpsHost(launch=launch_host, generation=my_generation),
+    caller=lambda: Caller(scope_id=current_scope(), identity=current_user()),
+    tools=standard_tools("evals"),            # `evals` (read, spend, write) and `evals_admin` (destructive)
+)
+```
+
+An agent calls `action='help'` for the actions grouped by workflow and `action='help', topic=<action>` for one
+action's parameters and an example. A parameter the action does not declare is refused, naming the ones it
+accepts. `read_only_tools(prefix)` mounts a tool an agent can only read through. The FastMCP transport needs
+`3tears-evals[fastmcp]`; the core does not.

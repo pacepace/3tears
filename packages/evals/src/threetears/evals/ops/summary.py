@@ -1,7 +1,7 @@
 """A finished run as a short summary: how it ended, how its cells came out, and each measure's mean.
 
-What :func:`~threetears.evals.quick.run_eval` returns and what the CLI prints after a launch. It is
-read from the store, never from the job that ran, so a summary of a run finished in another process
+What :func:`~threetears.evals.quick.run_eval` returns, what the CLI prints after a launch and what the
+``run_get`` action reads. It is read from the store, never from the job that ran, so a summary of a run finished in another process
 says the same thing as one made the moment it ended.
 
 Every count is over the run's stored results, and each result is classified once by

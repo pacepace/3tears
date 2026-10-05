@@ -65,10 +65,14 @@ IMPORT_ROOTS_BY_DEPENDENCY: dict[str, tuple[str, ...]] = {
 
 #: Each optional extra the manifest declares: the subpackage that is the extra (and so the only
 #: modules that may name its dependencies), and each of its dependencies' import roots. Checked against
-#: the manifest by :func:`test_the_extras_map_is_the_manifests`. A core module naming an extra's
-#: dependency would be an ``ImportError`` for every host that installed without the extra.
+#: the manifest by :func:`test_the_extras_map_is_the_manifests`. An extra is the dependency of the
+#: subpackage it serves and of nothing else: the engine imported without the extra must still import,
+#: so a core module naming an extra's dependency would be an ``ImportError`` for every host that
+#: installed without it, and one extra's subpackage naming ANOTHER extra's dependency would tie the two
+#: extras together.
 IMPORT_ROOTS_BY_EXTRA: dict[str, tuple[str, dict[str, tuple[str, ...]]]] = {
     "vega": ("threetears.evals.vega", {"vl-convert-python": ("vl_convert",)}),
+    "fastmcp": ("threetears.evals.transports.fastmcp", {"fastmcp": ("fastmcp",)}),
 }
 
 #: Packages the portable test support may neither name nor load: the first host, and the web and
@@ -206,6 +210,9 @@ def test_the_extras_map_is_the_manifests():
     assert {extra: sorted(deps) for extra, (_, deps) in IMPORT_ROOTS_BY_EXTRA.items()} == {
         extra: sorted(deps) for extra, deps in _declared_extras().items()
     }
+    for subpackage, _ in IMPORT_ROOTS_BY_EXTRA.values():
+        path = SOURCE_ROOT.joinpath(*subpackage.split("."))
+        assert path.is_dir(), f"an extra serves {subpackage}, which does not exist"
 
 
 def test_no_engine_module_names_the_first_host():
@@ -276,6 +283,26 @@ def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path, source,
 def test_an_extras_dependency_is_admitted_only_inside_its_subpackage(importer, allowed):
     """``vl_convert`` is the ``[vega]`` extra's: the renderer may name it and the core may not."""
     assert _allowed("vl_convert", importer=importer) is allowed
+
+
+@pytest.mark.parametrize(
+    ("importer", "allowed"),
+    [
+        ("threetears.evals.transports.fastmcp", True),
+        ("threetears.evals.transports", False),
+        ("threetears.evals.actions.catalogue", False),
+        ("threetears.evals.vega.render", False),
+        ("threetears.evals", False),
+    ],
+)
+def test_each_extra_is_admitted_only_inside_its_own_subpackage(importer, allowed):
+    """``fastmcp`` is the ``[fastmcp]`` extra's: its transport may name it; the core and the other extra may not."""
+    assert _allowed("fastmcp.tools", importer=importer) is allowed
+
+
+def test_one_extras_subpackage_may_not_name_another_extras_dependency():
+    """The two extras stay independent: the transport may not name the rasteriser."""
+    assert _allowed("vl_convert", importer="threetears.evals.transports.fastmcp") is False
 
 
 def test_a_relative_import_is_judged_where_it_lands(tmp_path):

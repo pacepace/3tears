@@ -1,6 +1,6 @@
 """Structural gate: the engine's packages import only what the allowed-dependency matrix permits.
 
-``threetears.evals`` is eight physical subpackages, and one allowed-dependency matrix says which may
+``threetears.evals`` is eleven physical subpackages, and one allowed-dependency matrix says which may
 import which:
 
 ============  =========  =====  ========  ===  =======  =======  =====  ====  ============================================
@@ -20,6 +20,19 @@ vega          yes        --     yes       --   --       --       --     yes   th
 intent ``analysis`` decides, so it reaches ``analysis`` and nothing reaches it. Its column is empty
 but its own row, which is what keeps the core free of a charting library: no core package may import
 the renderer, and the rasteriser it takes (``vl_convert``) is the extra's dependency, never the core's.
+
+Three more sit above the engine, as the surfaces an agent drives it through, and the table does not
+name them:
+
+* ``ops`` -- typed operations and the job contract -- may import contracts, run, analysis and itself;
+  pydantic and threetears.observe.
+* ``actions`` -- the action catalogue -- may import contracts, run, ops and itself; pydantic and
+  threetears.observe. It reaches analysis only through ``ops``.
+* ``transports`` -- one adapter per server -- may import contracts, ops, actions and itself; pydantic, and
+  each adapter its own server alone (``transports.fastmcp``: ``fastmcp``, the package's ``fastmcp`` extra).
+
+``quick`` may import ``ops`` too, where the run summary it prints lives. Nothing in the engine imports
+any of the three, and none of the three imports ``vega``.
 
 ``storage`` holds adapters behind the one port and ``testing`` the conformance kits an adopter runs
 against its own adapter; each needs nothing but the port it implements or checks, so neither may
@@ -85,7 +98,7 @@ TESTS_ROOT = Path(__file__).resolve().parent
 #: The repository root, which the probes run from.
 REPO_ROOT = TESTS_ROOT.parents[2]
 
-#: The matrix, for the eight packages.
+#: The matrix, for the eleven packages.
 ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "contracts": frozenset({"contracts"}),
     "run": frozenset({"contracts", "run"}),
@@ -93,8 +106,11 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "gen": frozenset({"contracts", "gen"}),
     "storage": frozenset({"contracts", "storage"}),
     "testing": frozenset({"contracts", "testing"}),
-    "quick": frozenset({"contracts", "run", "analysis", "storage", "quick"}),
+    "quick": frozenset({"contracts", "run", "analysis", "storage", "quick", "ops"}),
     "vega": frozenset({"contracts", "analysis", "vega"}),
+    "ops": frozenset({"contracts", "run", "analysis", "ops"}),
+    "actions": frozenset({"contracts", "run", "ops", "actions"}),
+    "transports": frozenset({"contracts", "ops", "actions", "transports"}),
 }
 
 #: The matrix's third-party column, by import root (a ``threetears`` namespace package by its two
@@ -108,12 +124,17 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "testing": frozenset(),
     "quick": frozenset({"pydantic"}),
     "vega": frozenset({"threetears.observe"}),
+    "ops": frozenset({"pydantic", "threetears.observe"}),
+    "actions": frozenset({"pydantic", "threetears.observe"}),
+    "transports": frozenset({"pydantic"}),
 }
 
-#: The one module-level third-party exception: the Vega renderer's rasteriser and nothing else may
-#: import ``vl_convert``, the ``[vega]`` extra's dependency.
+#: The module-level third-party exceptions, one per extra: the Vega renderer's rasteriser and nothing
+#: else may import ``vl_convert``, the ``[vega]`` extra's dependency, and the FastMCP transport and
+#: nothing else may import ``fastmcp``, the ``[fastmcp]`` extra's.
 THIRD_PARTY_EXCEPTIONS: dict[str, frozenset[str]] = {
     "vega.render": frozenset({"vl_convert"}),
+    "transports.fastmcp": frozenset({"fastmcp"}),
 }
 
 #: The public roots, relative to ``threetears.evals``. A consumer reaches a package only through one
@@ -130,6 +151,9 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "storage",
     "testing",
     "quick",
+    "ops",
+    "actions",
+    "transports.fastmcp",
     "vega",
 )
 
@@ -365,11 +389,11 @@ def consumer_files(tests_root: Path) -> list[tuple[str, Path]]:
 
 
 def _in_a_package(module: str) -> bool:
-    """Whether ``module`` is one of the eight packages or below one."""
+    """Whether ``module`` is one of the eleven packages or below one."""
     return placement(module) in ALLOWED_PACKAGES
 
 
-#: A string literal that IS a dotted path into one of the packages, below the package name.
+#: A string literal that IS a dotted path into one of the engine packages, below the package name.
 #: Whole-string and dotted only: a docstring or a sentence naming a module never matches, and a
 #: file path in slash form is a file to edit rather than a module to import, so it is left alone.
 _DOTTED_PACKAGE_PATH = re.compile(r"threetears\.evals\.(?:contracts|run|analysis|gen|vega)(?:\.\w+)+")

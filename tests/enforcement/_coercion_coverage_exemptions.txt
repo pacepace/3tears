@@ -11,3 +11,6 @@ packages/agent/tools/src/threetears/agent/tools/langchain_adapter.py:*:_TearsStr
 
 # rationale: a LangChain BaseTool proxy renaming a tool for the wire, not a TearsTool; its run hands the call unchanged to the delegate's own run, so a TearsTool delegate's coercion runs exactly as it does unproxied
 packages/models/src/threetears/models/tool_name_translation.py:*:NameMangledToolProxy
+
+# rationale: a FastMCP Tool, not a TearsTool; FastMCP's Tool declares `run(arguments)` as the one method a subclass implements, and this one hands the arguments whole to the eval action catalogue, which validates them against each action's own pydantic model
+packages/evals/src/threetears/evals/transports/fastmcp/__init__.py:*:CatalogueTool

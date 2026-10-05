@@ -6,6 +6,41 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: operations, jobs, the action catalogue and the FastMCP transport
+
+- **Typed operations (`threetears.evals.ops`, new public root).** One function per operation over the host, each
+  returning a typed model in place of a `dict`: `templates_list`, `runs_list`, `run_get` (the run summary, moved here
+  from `quick`, which re-exports it unchanged), `run_launch`, `run_archive`, `run_delete`, `campaigns_list`,
+  `campaign_create`, `campaign_archive`, `analyses_list`, `analysis_generate`, `report_read` (Markdown, the schema's
+  JSON or script-free HTML) and `analysis_delete`. `OpsHost` is the `LaunchHost` plus `AnalysisGeneration` — the
+  prompt, output cap and wall-clock budget a background generation runs under, refused when blank or not positive.
+- **One job contract.** `run_launch` and `analysis_generate` return `JobsStarted` (a `JobHandle` per run, or the one
+  generation); `job_poll` and `job_cancel` take any job id either returned. A job id names the durable record its work
+  writes — `run:<run id>`, `analysis:<campaign id>:<attempt id>` — so it stays answerable across a restart: `JobStatus`
+  reads `running`, `completed`, `stopped`, `failed`, `cancelled`, or `lost` when the record never ended and nothing in
+  this process runs it. Refused: a job id of neither shape; cancelling a job that has ended; a generation on a host with
+  no `AnalysisGeneration`; a second generation of a campaign while one runs (refused before it prepares, and a start
+  that loses the race releases the client it built). `EvalJobManager.cancel_task` (new) cancels a detached task.
+- **The action catalogue (`threetears.evals.actions`, new public root).** `Action` binds one operation to its
+  `noun_verb` name, one-line summary, help-index workflow, permission class (`read`, `spend`, `write`, `destructive`),
+  flat described parameter model, result model, rendering and a validated example; `long_running` actions return
+  `JobsStarted`. `eval_catalogue(host_actions)` is the engine's fifteen actions plus a host's. `ActionCatalogue.mount`
+  cuts a tool by class — `standard_tools(prefix)` gives `evals` (read, spend, write) and `evals_admin` (destructive),
+  `read_only_tools(prefix)` a tool that only reads — and `MountedTool.call` carries a call out: `action='help'` (an index
+  grouped by workflow, or `topic=<action>` for a page) generated from the catalogue, an undeclared parameter refused
+  with the accepted set and an example, every refusal naming what would be right, an engine refusal returned with its
+  reason. The scope is the `Caller`'s, resolved by the host per call, never a parameter. Refused at construction: a
+  name that is not `noun_verb`; a blank or multi-line summary; an unknown class; a parameter that is reserved
+  (`action`, `topic`), undescribed or a nested model; a destructive action with no required `confirm`; `long_running`
+  disagreeing with a `JobsStarted` result; an example that is not a valid call; a duplicate name (a host action cannot
+  shadow an engine one); one parameter name meaning two things on a tool; a tool with no action of its classes; two
+  tools of one name; a malformed `ToolSpec`; a `Caller` naming no identity (its scope is opaque, never read).
+- **The FastMCP transport (`threetears.evals.transports.fastmcp`, new public root, extra `fastmcp`).**
+  `mount_fastmcp(server, catalogue, host=, caller=, tools=)` adds each mounted tool as a `CatalogueTool` carrying the
+  catalogue's name, description, flat input schema and read-only, destructive and open-world hints; a refusal is an
+  MCP error result. Install with `3tears-evals[fastmcp]` (`fastmcp>=3.4.2,<4`); the core does not depend on it. The
+  3tears `mcp` transport waits on pacepace/3tears#531.
+
 ### 3tears-evals: the Vega-Lite renderer leaves the core
 
 - **The core ships no charting library.** `vl-convert-python` is no longer a dependency of `3tears-evals`; it is the
