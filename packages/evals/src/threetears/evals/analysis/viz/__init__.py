@@ -29,20 +29,22 @@ comment on an export names what retires it. Code inside the package imports its 
 
 from __future__ import annotations
 
-from threetears.evals.analysis.viz.compiler import CompiledChart, compile_chart
+from threetears.evals.analysis.viz.compiler import ChartColumn, CompiledChart, compile_chart
 from threetears.evals.analysis.viz.models import FindingChart
-from threetears.evals.analysis.viz.palette import vega_config
+from threetears.evals.analysis.viz.palette import Theme, vega_config
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import SpecPolicyError
 from threetears.evals.analysis.viz.render import render_png
 from threetears.evals.analysis.viz.text_metrics import TextMetricsError, write_font_metrics
 
 __all__ = [
+    "ChartColumn",
     "CompiledChart",
     "FindingChart",
     "PayloadError",
     "SpecPolicyError",
     "TextMetricsError",
+    "Theme",
     "compile_chart",
     "render_png",
     "vega_config",

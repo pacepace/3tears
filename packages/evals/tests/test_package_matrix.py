@@ -807,3 +807,15 @@ def test_the_public_root_rule_admits_each_permitted_import(tmp_path: Path, relat
     """The permitted shapes pass, so a checker that refuses everything cannot pass the refusals above."""
     root = _tree(tmp_path, {**_ROOTS_FILES, relative: source})
     assert public_root_violations(root, _consumers(root), consumer_root=root) == []
+
+
+def test_the_package_publishes_the_roots_this_gate_enforces() -> None:
+    """``threetears.evals.PUBLIC_ROOTS`` is the matrix's roots, in order, so a consumer reads the real set.
+
+    A host checks its own imports against the installed package's tuple rather than keeping a copy,
+    so the published tuple has to be exactly the set this gate holds consumers to: a root missing
+    from it refuses a legal import, and an extra one admits an import nothing here checks.
+    """
+    import threetears.evals
+
+    assert threetears.evals.PUBLIC_ROOTS == tuple(join(relative) for relative in PUBLIC_ROOTS)

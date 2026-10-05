@@ -34,6 +34,21 @@ packages (bumped in lock-step).
   is `DefinitionStore` (both were `threetears.evals.run`); `CassetteStore` moves to
   `threetears.evals.contracts` and gains the two listing methods.
 
+### 3tears-evals: the public roots as a value, and the world conformance kit exported
+
+- **`threetears.evals.PUBLIC_ROOTS`** is the tuple of public roots, as absolute module names:
+  `contracts`, `contracts.host`, `run`, `analysis`, `analysis.viz` and `gen`. An app that gates its
+  own imports reads it from the installed package instead of keeping a copy. The package's matrix
+  test holds it equal to the roots that test enforces.
+- **The world conformance kit is public** from `threetears.evals.contracts.host`:
+  `check_world_conformance`, its `WorldConformanceReport` and `ConformanceResult`, the
+  `WorldConformanceError` it raises, the `CheckName`, `Outcome`, `Qualification` and
+  `ObligationRow` literals, and `obligations` / `obligation_rows`. A host can now run the kit
+  against its own world registry without importing a module below a root.
+- **`ChartColumn` and `Theme` are public** from `threetears.evals.analysis.viz`. `CompiledChart.columns`
+  and `vega_config(theme)` already handed them to a caller; the check that every type a public name
+  reaches is exported had been reading a copy of the roots that left `analysis.viz` out.
+
 ## v0.64.0 -- 2026-10-04
 
 ### 3tears-evals joins the family, with a host contract any app can implement
