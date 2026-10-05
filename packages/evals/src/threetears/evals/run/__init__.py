@@ -41,6 +41,7 @@ from threetears.evals.run.curation import (
     load_run_as_listed,
     require_delete_confirmation,
     set_analysis_archived,
+    set_campaign_archived,
     set_run_archived,
 )
 from threetears.evals.run.definition_seed import load_seed_corpus, seed_eval_definitions
@@ -236,6 +237,7 @@ __all__ = [
     "sample_concurrent_eval_jobs",
     "seed_eval_definitions",
     "set_analysis_archived",
+    "set_campaign_archived",
     "set_run_archived",
     "start_run",
     "start_universal_battery",

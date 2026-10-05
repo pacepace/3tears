@@ -18,9 +18,9 @@ the coverage story**, and merging them destroys it: a declared value with no obs
 registered sweepable LEVER, or a member of an open family the host's own membership test
 recognises, which is what lets an ad-hoc knob be swept without a registration per knob.
 Registration alone is not enough either, since the measuring rig and a bare label are registered too;
-a behavior is a string the engine never interprets; `template_id` and `battery_ref` stay on the
-campaign as optional host references rather than moving inside the declaration — which is what
-lets a consumer with no battery and no template declare a design at all.
+a behavior is a string the engine never interprets; `template_id` stays on the campaign as an
+optional host reference rather than moving inside the declaration — which is what lets a consumer
+with no template declare a design at all.
 
 **The word is `intended_repetitions`, not `intended_k`.** `k` is not shared vocabulary: one
 consumer means iterations per cell, another means the candidate window and calls the repeat
@@ -60,6 +60,7 @@ from threetears.evals.contracts.metrics import (
 )
 from threetears.evals.contracts.models import (
     RESERVED_DIM_IDS,
+    ApparatusProvenance,
     EvalResult,
     EvalTemplate,
     RubricScale,
@@ -256,7 +257,10 @@ class Question(EvalDocumentModel):
     )
     merit_axes: list[MeritAxis] = Field(
         default_factory=list,
-        description="Which axes an answer would move, when the question is about one. Empty means unscoped.",
+        description=(
+            "Which axes an answer would move, when the question is about one. The bundle lists the bars on "
+            "these axes per question (`verdict_order.questions`). Empty means unscoped."
+        ),
     )
     asked_at: str = Field(default_factory=utc_now_iso, description="When it was asked (ISO-8601).")
     retired_at: str | None = Field(
@@ -286,11 +290,12 @@ class ControlDeclaration(EvalDocumentModel):
         default="",
         description="Required when stimulus is uncontrolled: what varied instead. An uncontrolled stimulus with no reason is a gap wearing a label.",
     )
-    apparatus: Literal["commissioned", "witnessed"] = Field(
+    apparatus: ApparatusProvenance = Field(
         description=(
             "commissioned = these observations were gathered deliberately under a declared rig. "
             "witnessed = they were found. The difference between an experiment and a log, and cells "
-            "never pool across it."
+            "never pool across it. The same words every run records (`EvalRun.apparatus_provenance`), so the "
+            "bundle compares this declaration with what the runs say value for value (`controls_reading`)."
         )
     )
 
@@ -368,9 +373,11 @@ class CampaignDesign(EvalDocumentModel):
         default=None,
         ge=1,
         description=(
-            "How many observations this design intends per cell. Named for the slot rather than for "
-            "one host's word: `k` means iterations per cell to one consumer and something else to the "
-            "next, and an engine-owned field cannot carry one host's meaning. None = unstated, "
+            "How many repetitions this design intends per cell, counted per case: a cell's least-repeated "
+            "case is what is compared, because it is the cell's weakest replication. "
+            "Named for the slot rather than for one host's word: `k` means iterations per cell to one "
+            "consumer and something else to the next, and an engine-owned field cannot carry one host's "
+            "meaning. The bundle names every cell that falls short (`short_cells`). None = unstated, "
             "which makes a shortfall undetectable rather than zero."
         ),
     )
@@ -386,7 +393,10 @@ class CampaignDesign(EvalDocumentModel):
     )
     merit_priority: list[MeritAxis] = Field(
         default_factory=list,
-        description="Tie-break order when no bar picks a winner. Empty = no stated preference, and the analysis must not invent one.",
+        description=(
+            "Tie-break order when no bar picks a winner, strongest first. The bundle ranks the adjudicated bars "
+            "by it (`verdict_order`). Empty = no stated preference, and the analysis must not invent one."
+        ),
     )
     declared_at: str = Field(default_factory=utc_now_iso, description="When the declaration was made (ISO-8601).")
     declared_by: str = Field(default="", description="Who declared it.")

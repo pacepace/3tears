@@ -143,19 +143,24 @@ from threetears.evals.analysis.arms import ArmLevel, ArmMeasurement, ArmRow, Arm
 from threetears.evals.analysis.bundle import (
     CampaignReadStore,
     Confound,
+    ControlsReading,
     DesignArm,
     JudgedArm,
     JudgedMeasure,
     LeverCoverageInput,
     MeasureMovement,
+    MeritTier,
+    QuestionScope,
     RealizedDesign,
     RunSummary,
     ScopeDivergence,
+    ShortCell,
     TelemetryRollup,
     TokenRollup,
+    VerdictOrder,
 )
 from threetears.evals.analysis.campaigns import CampaignStore, OpenAxisFamily
-from threetears.evals.analysis.cells import Cell, NextExperiment, Provenance, RefusedMerge, SubjectKeyInstability
+from threetears.evals.analysis.cells import Cell, NextExperiment, RefusedMerge, SubjectKeyInstability
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.analysis.reads import ComparisonColumns, LensStore, RowColumns, RunLister
@@ -239,6 +244,7 @@ __all__ = [
     "ComparisonSet",
     "ComparisonSetsResult",
     "Confound",
+    "ControlsReading",
     "CriterionDrift",
     "DeclarableAxes",
     "DesignArm",
@@ -261,12 +267,13 @@ __all__ = [
     "LeverCoverageInput",
     "MeasureMovement",
     "MeasurementWindow",
+    "MeritTier",
     "NextExperiment",
     "OpenAxisFamily",
     "PreparedGeneration",
     "PreparedReporter",
     "ProjectionExclusions",
-    "Provenance",
+    "QuestionScope",
     "RealizedDesign",
     "RefusedMerge",
     "ReporterCalibration",
@@ -279,6 +286,7 @@ __all__ = [
     "RunLister",
     "RunSummary",
     "ScopeDivergence",
+    "ShortCell",
     "SoundnessRefusal",
     "SubjectFrontier",
     "SubjectKeyInstability",
@@ -293,6 +301,7 @@ __all__ = [
     "TelemetryRollup",
     "TokenRollup",
     "TwoPillarDisclosure",
+    "VerdictOrder",
     "WriterMessageCheck",
     "add_runs_to_campaign",
     "analysis_arm_table",

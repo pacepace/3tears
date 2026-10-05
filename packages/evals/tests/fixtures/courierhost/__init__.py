@@ -367,6 +367,7 @@ def courier_run(model: str, *, cases: Sequence[EvalTestCase], world: WorldRegist
     return EvalRun(
         scope_id=COURIER_SCOPE,
         template_id=COURIER_TEMPLATE_ID,
+        apparatus_provenance="commissioned",
         candidate_kind=COURIER_KIND,
         subject_snapshot=COURIER_SUBJECT,
         candidate_model=model,

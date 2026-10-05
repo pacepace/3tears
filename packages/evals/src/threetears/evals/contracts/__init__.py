@@ -192,7 +192,6 @@ from threetears.evals.contracts.authored import (
     Reading,
 )
 from threetears.evals.contracts.campaign import (
-    BatteryRef,
     CampaignWindow,
     CoverageLens,
     EvidenceRow,
@@ -237,6 +236,7 @@ from threetears.evals.contracts.identity import DerivedContextIdentity, DerivedV
 from threetears.evals.contracts.judge_attribution import JudgeAttributionState
 from threetears.evals.contracts.metrics import MeasurePopulation, MeritAxis, MetricDataType, TransferabilityClass
 from threetears.evals.contracts.models import (
+    ApparatusProvenance,
     AsyncExternalSpend,
     CalibrationRating,
     CassetteKey,
@@ -305,6 +305,7 @@ __all__ = [
     "ActionSeam",
     "ActorPolicy",
     "AdmissionRefusedError",
+    "ApparatusProvenance",
     "AsyncDelivery",
     "AsyncExternalSpend",
     "AttemptOutcome",
@@ -320,7 +321,6 @@ __all__ = [
     "BarNameRefusal",
     "BarOverride",
     "BarVerdict",
-    "BatteryRef",
     "BoundCompletionClient",
     "CalibrationRating",
     "CallLedger",

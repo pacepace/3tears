@@ -198,6 +198,8 @@ def make_eval_run(**overrides: Any) -> EvalRun:
         test_case_ids=["tc-1"],
         rubric_scales={},
         world_placements={},
+        # What the launch path stamps; a witnessed run is the one a test names.
+        apparatus_provenance="commissioned",
     )
     defaults.update(overrides)
     if defaults.get("judge_model") is not None and "effective_judges" not in overrides:

@@ -6,6 +6,41 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: witnessed provenance and the design readers
+
+- **`EvalRun.apparatus_provenance: ApparatusProvenance`** (new, **required**, no default;
+  `ApparatusProvenance = Literal["commissioned", "witnessed"]`, exported from `threetears.evals.contracts`).
+  Whoever writes a run states whether its apparatus was set (`commissioned`) or found on traffic it did
+  not control (`witnessed`). The launch path stamps `commissioned` on every run it starts; a host that
+  captures real sessions writes `witnessed` itself. A run document without the field is refused on read.
+- **The bundle reads provenance off the run** instead of stamping every observation `declared`.
+  Provenance now lives on `ApparatusClass` and enters `apparatus_class_id`, so a witnessed and a
+  commissioned observation of one variant are two cells on every per-cell surface (`cell_measures`,
+  bar verdicts, judged arms, cell references), not only in the cell algebra.
+  - `apparatus_class_of(recorded, *, provenance, dimensions=())` — `provenance` is a new required keyword.
+  - `ApparatusClass.provenance` (new, required). `Observation.provenance` is **removed**: an observation's
+    provenance is its class's. `Cell.provenance` stays, restating the class's.
+  - `threetears.evals.analysis.Provenance` (`Literal["declared", "witnessed"]`) is **removed**; the one
+    literal is `ApparatusProvenance`, the words `ControlDeclaration.apparatus` already used.
+  - `RefusedMerge.apparatus_class_ids` now always holds two ids (`min_length=2`).
+  - `CELL_MODEL_VERSION` 9 → 10; bundle `schema_version` 31 → 32.
+- **Design readers on `AnalysisContextBundle`** (new fields; models exported from `threetears.evals.analysis`):
+  - `controls_reading: ControlsReading` — the declared stimulus and apparatus, each resolved run's
+    provenance, the runs contradicting the declared apparatus, and the sentence to quote.
+  - `short_cells: list[ShortCell]` — every cell whose least-repeated case ran fewer times than the
+    declaration's `intended_repetitions`, with its sentence.
+  - `verdict_order: VerdictOrder` (`MeritTier`, `QuestionScope`) — the adjudicated bars ranked by the
+    declared `merit_priority`, the bars on no ranked axis, and per live question the bars on the axes it
+    names plus the axes no bar answers. An empty priority ranks nothing.
+  - `BarAdjudication.merit_axis: MeritAxis | None` (new, default `None`) — the axis the bar's measure
+    serves, read off its descriptor.
+- **`set_campaign_archived(storage, campaign_id, scope_id, *, archived)`** (new, exported from
+  `threetears.evals.run`), under the campaign write lock; idempotent. Refuses an unknown campaign
+  (`NotFoundError`). `CurationStore` gains `load_campaign`.
+- **The battery pointer is removed** — the field on `EvalCampaign` and `AnalysisContextBundle`, and its
+  `BatteryRef` model. The case set a run froze already enters its apparatus class; a second pointer at
+  "the scenario suite" was a second answer to one question.
+
 ### 3tears-evals: a synchronous act path for the cassette action seam
 
 - **`SyncActionSeam`, `SyncToolLike`, `SyncToolWrap`** (new, exported from `threetears.evals.contracts`).
