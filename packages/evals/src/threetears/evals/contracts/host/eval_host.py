@@ -63,8 +63,11 @@ if TYPE_CHECKING:
 #: ``variation`` writes the values of a template's ``llm`` variation axes when a launch generates its
 #: cases (``n_variations``) — before any run starts, so outside every run's cost cap. A role of its
 #: own because it is a different job from the simulator's: a host resolves or refuses each role on
-#: its own, and a kind with no simulated user still generates.
-CompletionRole = Literal["judge", "simulator", "analysis", "variation"]
+#: its own, and a kind with no simulated user still generates. ``proposer`` drafts a rubric for operator
+#: review (:func:`~threetears.evals.gen.propose_draft`), outside any run, with its own output cap
+#: (:data:`~threetears.evals.gen.PROPOSER_MAX_TOKENS`) — a role of its own so a host does not borrow
+#: another role's model, cap or budget for it.
+CompletionRole = Literal["judge", "simulator", "analysis", "variation", "proposer"]
 
 
 class CompletionClients(Protocol):

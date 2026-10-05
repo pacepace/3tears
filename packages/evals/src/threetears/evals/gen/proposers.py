@@ -77,8 +77,9 @@ async def propose_draft(
     refusal paths too: a proposal is the client's whole lifetime.
 
     Args:
-        client: The completion client to draft with. This function owns it from here and
-            releases it.
+        client: The completion client to draft with — the host's client for the ``proposer`` role
+            (:data:`~threetears.evals.contracts.host.CompletionRole`). This function owns it from here
+            and releases it.
         axis: Which catalog axis the draft is for; stamped onto every new-dim suggestion.
         subject_id: The subject the draft is for, named in the log line only.
         system_prompt: The rendered system prompt for ``axis``.
