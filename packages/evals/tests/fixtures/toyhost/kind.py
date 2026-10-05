@@ -58,6 +58,7 @@ from threetears.evals.contracts import (
     VariantConfig,
 )
 from threetears.evals.contracts.host import ApparatusError, SeedRefused, SubjectSnapshot, WorldRegistry, check_seed
+from packages.evals.tests.fixtures.toyhost.product import ExtractionRequest, extraction_request
 from packages.evals.tests.fixtures.toyhost.tracing import OP_HOST_GRADE, OP_MODEL_CALL, OP_TURN_ROOT, toy_span
 
 #: The name a toy-host template carries on ``EvalTemplate.candidate_kind``, and the key the run
@@ -196,6 +197,8 @@ class ScriptedExtractionClient:
         #: Every call made, in order, as ``(model, document_id)``. The fixture's own record; the
         #: engine never sees it.
         self.calls: list[tuple[str, str]] = []
+        #: Every request received, in order — what a boundary-equality test compares.
+        self.requests: list[ExtractionRequest] = []
 
     @property
     def models(self) -> tuple[str, ...]:
@@ -206,12 +209,12 @@ class ScriptedExtractionClient:
         """
         return tuple(self._scripts)
 
-    async def extract(self, *, model: str, document: ToyDocument) -> ExtractionResult:
+    async def extract(self, request: ExtractionRequest) -> ExtractionResult:
         """Run one extraction, reporting what it cost.
 
         Args:
-            model: The extractor model this cell binds the candidate to.
-            document: The invoice to extract from.
+            request: The request, as the product's one constructor
+                (:func:`~packages.evals.tests.fixtures.toyhost.product.extraction_request`) built it.
 
         Returns:
             The extracted fields and the call's own usage.
@@ -222,8 +225,10 @@ class ScriptedExtractionClient:
                 way, which is the condition the engine's own ``UnknownCandidateKind`` refuses to
                 degrade into N identical excluded cells.
         """
+        model, document = request.model, request.document
         script = self._scripts[model]
         self.calls.append((model, document.document_id))
+        self.requests.append(request)
         # Real wall-clock, so the span buckets measure something. The whole matrix costs twelve
         # cells' worth of these — tens of milliseconds.
         await asyncio.sleep(script.latency_s)
@@ -425,7 +430,10 @@ class ToyExtractorKind:
             with scopes.collecting():
                 with toy_span(f"extract:{document.document_id}", operation=OP_TURN_ROOT, model=instance.model):
                     with toy_span("extract.call", operation=OP_MODEL_CALL, model=instance.model):
-                        extraction = await self._client.extract(model=instance.model, document=document)
+                        # The product's own constructor, not a copy of it: the fidelity contract
+                        # (``fidelity.py``) holds this call to it.
+                        request = extraction_request(model=instance.model, document=document)
+                        extraction = await self._client.extract(request)
 
             # Spanned, and OUTSIDE the collection window on purpose: grading is the host's own
             # grader, not the candidate's work, and the port's two extents differ for exactly

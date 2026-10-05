@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the fidelity checker is public
+
+- **`callers_missing_the_constructor(contract) -> list[str]`** and **`resolve_constructor(contract) -> object`**
+  are exported from `threetears.evals.run`, beside `FidelityContract`. An adopter needs both to write the
+  source canary that proves its eval path calls the production constructor: register a `FidelityContract`
+  naming the constructor and its callers, and assert `callers_missing_the_constructor` returns `[]`. The
+  toy host now declares one (`tests/fixtures/toyhost/product.py`, `fidelity.py`) as the worked example.
+  An unused import of the constructor still counts as reaching it; an adopter's lint (F401) is what
+  catches that shape.
+
+### 3tears-evals: a provider may omit its token counts
+
+- **Breaking:** `CompletionResult.input_tokens` and `output_tokens` are now `int | None`; `None` means
+  the provider did not report the count. Code that reads either field off a completion as an `int`
+  must handle `None`. A client returning `int` still satisfies the protocol.
+- An omitted count is carried as unknown at every reader and never summed as zero, the rule unpriced
+  spend already follows: the judge's attempt totals, the role ledger, the stored `RoleUsage` rows, the
+  analysis log line and a truncation's description (`output token count unreported`).
+- **Breaking:** `TokenRollup.prompt_tokens`, `completion_tokens` and `reasoning_tokens` are now
+  `int | None` and sum only reported counts (`None` when no row reported one; `reasoning_tokens` was
+  `0` in that case). The new required field `n_results_tokens_unreported` counts the results whose
+  token-metered rows left a count unreported, so a partial sum reads as a floor.
+
 ### 3tears-evals ships its type marker
 
 - `py.typed` is now in the package, so an adopter's strict type checker reads `threetears.evals` annotations
