@@ -116,11 +116,13 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "CLASSIFIER_FAMILY",
     "CLASSIFIER_LABEL_MEASURE_PREFIX",
     "COMPOSITE_FAMILY",
+    "ACCURACY_MEASURE",
     "CONFUSION_CELL_MEASURE",
     "CONFUSION_SEPARATOR",
     "DUAL_AXIS_FAMILY",
     "ENGINE_FAMILIES",
     "GOAL_STATE_FAMILY",
+    "MATCH_MEASURE",
     "MECHANICAL_FAMILY",
     "RUBRIC_FAMILY",
     "ClassifierStatistic",
@@ -1426,15 +1428,21 @@ _SEED: tuple[MetricDescriptor, ...] = (
     ),
     # ---- Classifier track ---------------------------------------------------
     _d(
-        name="accuracy",
+        name="accuracy",  # ACCURACY_MEASURE, derived from MATCH_MEASURE — see the pair's definition below
         data_type="numeric",
         family="classifier",
         transferability_class="scenario_bound",
         attribution_scope="end_to_end",
         higher_is_better=True,
         value_range=(0.0, 1.0),
-        formula="correct / total",
-        description="Share of classifications matching the expected label. Scenario-bound: it means only what the labelled set means.",
+        merit_axis="quality",
+        formula="1 when the observation's match is true, 0 when it is false; its mean is correct / total",
+        reader_prose="how often a classification matched its expected label",
+        description=(
+            "Share of classifications matching the expected label — the classifier family's quality measure, "
+            "derived by the engine from each observation's `match` (a host lands `match` and never this). "
+            "Scenario-bound: it means only what the labelled set means."
+        ),
     ),
     _d(
         name="precision",
@@ -1479,13 +1487,16 @@ _SEED: tuple[MetricDescriptor, ...] = (
         description="How many cases carried this expected label — the denominator behind its precision and recall.",
     ),
     _d(
-        name="match",
+        name="match",  # MATCH_MEASURE
         data_type="boolean",
         family="classifier",
         transferability_class="scenario_bound",
         attribution_scope="end_to_end",
         higher_is_better=True,
-        description="Whether one classification matched its expected label.",
+        description=(
+            "Whether one classification matched its expected label. The one a classifier kind lands; the engine "
+            "derives `accuracy`, the quality measure, from it."
+        ),
     ),
     _d(
         name="confusion_cell",  # CONFUSION_CELL_MEASURE, defined below beside the cell's format
@@ -1909,6 +1920,18 @@ def describe_goal_check_rate(expression: str) -> MetricDescriptor:
 
 #: The core measure a classification's confusion-matrix cell is reported under.
 CONFUSION_CELL_MEASURE = "confusion_cell"
+
+#: The core measure one classification's verdict is reported under — the one a classifier kind lands on
+#: ``host_measures``, a bool.
+MATCH_MEASURE = "match"
+
+#: The classifier family's quality measure: 1.0 or 0.0 per observation, DERIVED by the engine from
+#: :data:`MATCH_MEASURE` and never landed by a kind. It is the classifier's reading on the ``quality`` merit
+#: axis, so it is what a bar, a verdict tier and a family of comparisons rank a classifier on. Derived rather
+#: than carried because a host carrying both would put one comparison into every family twice — the duplicate
+#: that made hosts mint their own ``<thing>_accuracy`` while ``match`` had no axis. A boolean has no per-case
+#: mean for a family to test, so the axis lives on the numeric reading, as a goal check's does.
+ACCURACY_MEASURE = "accuracy"
 
 #: The separator between the two labels of a confusion cell — the expected one, then the predicted one.
 CONFUSION_SEPARATOR = " → "

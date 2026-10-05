@@ -88,6 +88,7 @@ from threetears.evals.contracts.host.subject import SubjectSnapshot
 from threetears.evals.contracts.host.timeouts import EvalCellTimeout
 from threetears.evals.contracts.host.traces import CellIdentity, CellTrace, TraceSink
 from threetears.evals.contracts.identity import DerivedVariantIdentity, resolve_variant_identity
+from threetears.evals.contracts.metrics import ACCURACY_MEASURE, MATCH_MEASURE
 from threetears.evals.contracts.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -1144,6 +1145,7 @@ async def run_one_result(
     # cell is assembled: a kind double-reporting its background work's spend is its own code, so
     # every cell would do it, and judging the cell first would spend on a record that cannot be built.
     refuse_inner_agent_usage(telemetry.usage)
+    refuse_engine_derived_host_measures(candidate.host_measures)
 
     # The trace sink's record of the candidate's own work, handed to the assembly whole: it reads
     # the spans and the three named latency buckets off it. ``None`` for a cell that wired no sink,
@@ -1339,6 +1341,29 @@ def refuse_inner_agent_usage(usage: Sequence[RoleUsage]) -> None:
         )
 
 
+def refuse_engine_derived_host_measures(host_measures: Mapping[str, bool | float | str]) -> None:
+    """Refuse a kind's ``host_measures`` that land a measure the engine derives.
+
+    ``accuracy`` is derived from each observation's ``match``
+    (:data:`~threetears.evals.contracts.metrics.ACCURACY_MEASURE`); a kind landing it too would put a
+    second producer of one reading beside the engine's, and which one a surface reported would depend
+    on the walk's precedence rather than on what was measured. Called by the runner before its judge
+    phase pays for anything, and by the assembly every completed cell takes, a witnessed one included.
+
+    Args:
+        host_measures: What the kind measured, by name.
+
+    Raises:
+        ValueError: ``host_measures`` names ``accuracy``.
+    """
+    if ACCURACY_MEASURE in host_measures:
+        raise ValueError(
+            f"a candidate kind landed {ACCURACY_MEASURE!r} on host_measures, which the engine derives from each "
+            f"observation's {MATCH_MEASURE!r}; land the bool {MATCH_MEASURE!r} and the engine reports "
+            f"{ACCURACY_MEASURE!r} from it"
+        )
+
+
 def _unjudged_record() -> _JudgeRecord:
     """The record of a cell nothing judged: every score absent, nothing failed.
 
@@ -1422,6 +1447,7 @@ def assemble_completed_cell(
     """
     if judged is None:
         judged = _unjudged_record()
+    refuse_engine_derived_host_measures(output.host_measures)
     telemetry = output.telemetry
     trace = output.output
     async_deliveries = output.async_deliveries

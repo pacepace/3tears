@@ -282,6 +282,14 @@ def test_background_spend_reported_twice_is_refused() -> None:
         _record(host, run, case, _output(telemetry=CandidateTelemetry(usage=usage)))
 
 
+def test_a_kind_landing_the_derived_accuracy_is_refused() -> None:
+    host, run, case = _witnessed_run()
+    with pytest.raises(ValueError, match="which the engine derives from each observation's 'match'"):
+        _record(host, run, case, _output(host_measures={"match": True, "accuracy": 1.0}))
+    # The verdict alone is the shape a classifier lands.
+    assert _record(host, run, case, _output(host_measures={"match": True}))[0].host_measures == {"match": True}
+
+
 # --- a case under no template --------------------------------------------------------------------
 
 

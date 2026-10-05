@@ -1476,6 +1476,29 @@ def test_an_account_refusal_must_record_the_apparatus_fault_it_is():
     assert CandidateOutput().account_refused is False
 
 
+async def test_the_runner_refuses_a_kind_landing_the_derived_accuracy_before_paying_its_judge() -> None:
+    """``accuracy`` is derived from ``match``; a kind landing it is its own code, so every cell would, and the judge waits."""
+    from threetears.evals.contracts.models import JudgeEvidence, RubricDim
+    from threetears.evals.run import JudgeService
+
+    kind = _FakeSingleShotKind(
+        CandidateOutput(
+            output=[{"document": "report"}],
+            judge_evidence=JudgeEvidence(case_material="the material", artifact="the report"),
+            host_measures={"match": True, "accuracy": 1.0},
+        ),
+        judged_artifact=JudgedArtifact.DOCUMENT,
+    )
+    judge = _RecordingJudgeLLM()
+    service = JudgeService(
+        client_factory=lambda model, temperature: judge, configs={}, failure_describer=withhold_failure_detail
+    )
+    template = _template(rubric=[RubricDim(name="doc.groundedness", description="grounded", scale="ordinal")])
+    with pytest.raises(ValueError, match="which the engine derives from each observation's 'match'"):
+        await _run(kind, template, judge_service=service)
+    assert judge.calls == []
+
+
 async def test_the_runner_refuses_double_reported_background_spend_before_paying_its_judge() -> None:
     """Assembly folds the rows after judging, so the runner's refusal must come first or the judge is paid for nothing."""
     from threetears.evals.contracts.models import JudgeEvidence, RubricDim
