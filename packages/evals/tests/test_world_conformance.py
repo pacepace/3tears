@@ -34,6 +34,7 @@ from threetears.evals.contracts.host.world_conformance import (
 )
 from threetears.evals.contracts.host.world_schema import json_equal
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.courierhost import courier_world
 from packages.evals.tests.fixtures.toyhost.world import (
     TOY_JUDGE_ONLY_EXPRESSION,
     TOY_RESOLVABLE_EXPRESSIONS,
@@ -112,14 +113,15 @@ class TestEveryObligationRowHasAFixture:
 
     def test_obligations_are_derived_from_shape_rather_than_declared(self) -> None:
         """The kit's one rule. A witnessed dimension owes perception and not a round trip; a
-        judge-only one owes the reverse; neither says so about itself."""
+        judge-only one owes the round trip and not A/B; both owe stillness, which every dimension
+        does; neither says so about itself."""
         registry, _state = toyhost_world()
         witnessed = registry.get("ingest_backlog")
         judge_only = registry.get("vendor_template")
         assert witnessed is not None and judge_only is not None
 
-        assert obligations(witnessed) == ("perception_ab",)
-        assert obligations(judge_only) == ("round_trip", "independence")
+        assert obligations(witnessed) == ("perception_ab", "perception_stillness")
+        assert obligations(judge_only) == ("round_trip", "perception_stillness", "independence")
 
 
 class TestRoundTrip:
@@ -1214,6 +1216,162 @@ class TestEverySurfaceAnswersToTheDimension:
         assert ("shelf", "badge") in seen
 
 
+class TestPerceptionStillness:
+    """The other half of A/B: a surface a dimension does not name must not move when it does.
+
+    A/B proves the named surfaces move. A leak that ADDS hidden state to a surface — the answer key
+    printed beside the work — leaves every declared distinction intact, so A/B stays green; only this
+    check sees it. Each fault is paired with the sound toy world it was derived from.
+    """
+
+    async def test_the_sound_toy_world_holds_every_unnamed_surface_still(self) -> None:
+        report = await check_world_conformance(toyhost_world()[0])
+        stillness = {r.dimension: r for r in report.results if r.check == "perception_stillness"}
+
+        assert set(stillness) == {declared.name for declared in toyhost_world()[0].declarations}
+        assert report.failures == ()
+        # supervisor_signoff only a person moves: its judge-only claim is recorded as unchecked, never passed.
+        assert stillness["supervisor_signoff"].qualification == "not_instantiable_unattended"
+        assert all(r.proved for name, r in stillness.items() if name != "supervisor_signoff"), stillness
+
+    async def test_the_judge_only_claim_is_checked_against_every_surface(self) -> None:
+        result = _verdict(await _report(), "perception_stillness", "vendor_template")
+
+        assert result.proved
+        assert "perceived by no surface" in result.detail
+        assert "'document_header'" in result.detail and "'operator_context'" in result.detail
+
+    @pytest.mark.parametrize(
+        ("fault", "dimension", "surface"),
+        [
+            (ToyWorldFaults(operator_context_shows_vendor_template=True), "vendor_template", "operator_context"),
+            (ToyWorldFaults(document_header_shows_payment_hold=True), "payment_hold", "document_header"),
+        ],
+        ids=["judge_only_leaks", "unnamed_surface_moves"],
+    )
+    async def test_a_leak_turns_exactly_this_check_red(
+        self, fault: ToyWorldFaults, dimension: str, surface: str
+    ) -> None:
+        """One defect, one finding: the leak fails stillness for the leaking dimension and nothing else.
+
+        The sound half is asserted on the same dimension, so an implementation that always fails cannot pass.
+        """
+        sound = _verdict(await _report(), "perception_stillness", dimension)
+        report = await check_world_conformance(toyhost_world(faults=fault)[0])
+
+        assert sound.outcome == "passed"
+        assert [(r.check, r.dimension) for r in report.failures] == [("perception_stillness", dimension)]
+        (failed,) = report.failures
+        assert f"['{surface}']" in failed.detail
+        assert "shows this dimension without declaring it" in failed.detail
+        # A/B over the leaking dimension is untouched: the leak adds, it erases nothing.
+        if dimension == "payment_hold":
+            assert _verdict(report.results, "perception_ab", dimension).outcome == "passed"
+
+    async def test_a_seed_that_never_lands_is_not_reported_as_a_still_surface(self) -> None:
+        """Round trip owns a dead seeder; stillness records that it never reached its question."""
+        results = await _report(faults=ToyWorldFaults(seeding_vendor_template_does_nothing=True))
+        result = _verdict(results, "perception_stillness", "vendor_template")
+
+        assert (result.outcome, result.qualification) == ("unavailable", "seeding_did_not_take")
+        assert _verdict(results, "round_trip", "vendor_template").outcome == "failed"
+
+    async def test_a_dimension_nothing_can_move_is_unproved_rather_than_passed(self) -> None:
+        results = await _report(optional_capabilities=False)
+
+        assert _verdict(results, "perception_stillness", "ingest_backlog").qualification == "no_perturbation_binding"
+        assert _verdict(results, "perception_stillness", "payment_hold").qualification == "arming_only"
+
+    async def test_a_world_with_no_surfaces_has_nothing_to_watch(self) -> None:
+        """The courier's judge-only dimension: no subject view at all, so recorded, never passed."""
+        report = await check_world_conformance(courier_world())
+        result = _verdict(report.results, "perception_stillness", "road_closures")
+
+        assert report.failures == ()
+        assert (result.outcome, result.qualification) == ("unavailable", "nothing_to_observe")
+
+    async def test_a_dimension_perceived_by_every_surface_has_nothing_to_watch(self) -> None:
+        registry, _state = _shelf_world(summary="wired")
+        result = _verdict((await check_world_conformance(registry)).results, "perception_stillness", "featured_item")
+
+        assert (result.outcome, result.qualification) == ("unavailable", "nothing_to_observe")
+        assert "every surface this registry names" in result.detail
+
+
+def _mirror_world(*, leak: bool = False, third: bool = True) -> WorldRegistry:
+    """Three dimensions on three surfaces, where seeding ``a`` also writes ``b`` — a shared write path.
+
+    Args:
+        leak: Whether the ``c`` surface also shows ``a``.
+        third: Whether ``c`` is declared at all; without it, ``b_view`` is ``a``'s only other surface.
+
+    Returns:
+        The registry.
+    """
+    state = {"a": "x", "b": "x", "c": "x"}
+
+    def seed_a(value: str) -> None:
+        state["a"] = state["b"] = value
+
+    def view(*, surfaces: tuple[str, ...]) -> dict[str, str]:
+        bodies = {"a_view": state["a"], "b_view": state["b"], "c_view": state["c"] + (state["a"] if leak else "")}
+        return {surface: bodies[surface] for surface in surfaces}
+
+    def dimension(name: str) -> WorldDimension:
+        return WorldDimension(
+            carrier="rig",
+            name=name,
+            schema={"enum": ["x", "y", "z"]},
+            matters=f"a scenario presumes {name}",
+            seed=f"{name}.seed",
+            read=f"{name}.read",
+            perceived_by=(f"{name}_view",),
+        )
+
+    return WorldRegistry(
+        (dimension("a"), dimension("b"), *((dimension("c"),) if third else ())),
+        bindings={
+            "a.seed": seed_a,
+            "b.seed": lambda value: state.__setitem__("b", value),
+            "c.seed": lambda value: state.__setitem__("c", value),
+            "a.read": lambda: state["a"],
+            "b.read": lambda: state["b"],
+            "c.read": lambda: state["c"],
+            "view": view,
+        },
+        subject_view="view",
+    )
+
+
+class TestMovementASiblingAccountsForIsNotALeak:
+    """A surface perceiving a sibling that moved with the dimension moves for a declared reason."""
+
+    async def test_the_sibling_s_surface_is_excused_and_named_and_independence_owns_the_defect(self) -> None:
+        results = (await check_world_conformance(_mirror_world(leak=False))).results
+        result = _verdict(results, "perception_stillness", "a")
+
+        assert result.outcome == "passed", result.detail
+        assert "['b_view'] were not judged" in result.detail
+        assert "['c_view']" in result.detail
+        assert _verdict(results, "independence", "b").outcome == "failed"
+
+    async def test_the_remaining_surfaces_are_still_judged(self) -> None:
+        result = _verdict(
+            (await check_world_conformance(_mirror_world(leak=True))).results, "perception_stillness", "a"
+        )
+
+        assert result.outcome == "failed"
+        assert "['c_view']" in result.detail
+
+    async def test_with_every_other_surface_excused_there_is_nothing_left_to_judge(self) -> None:
+        result = _verdict(
+            (await check_world_conformance(_mirror_world(third=False))).results, "perception_stillness", "a"
+        )
+
+        assert (result.outcome, result.qualification) == ("unavailable", "nothing_to_observe")
+        assert "also perceives a sibling that moved" in result.detail
+
+
 class TestPerceivingSurfacesAreDeclaredAsATuple:
     @pytest.mark.parametrize("surfaces", ["shelf", ("shelf", "shelf"), ("shelf", "")])
     def test_a_bare_string_a_duplicate_or_a_blank_is_refused(self, surfaces: object) -> None:
@@ -1444,6 +1602,7 @@ class TestACouplingNeverDecidesWhetherACheckRuns:
         assert {result.check for result in drawn} == {
             "round_trip",
             "perception_ab",
+            "perception_stillness",
             "independence",
             "ambient_isolation",
         }

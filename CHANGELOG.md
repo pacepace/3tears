@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: world conformance checks that unnamed surfaces stay still
+
+- **`perception_stillness`** (new `CheckName`, run by `check_world_conformance`, owed by every
+  dimension). Perception A/B proves the surfaces a dimension's `perceived_by` names move with it;
+  nothing proved the others do not. The new check puts the dimension at the values A/B uses (a
+  distinct pair the host holds plus the schema's boundaries), renders the whole subject view at each,
+  and requires every surface outside `perceived_by` to render identically. For a judge-only dimension
+  that is every surface, so "no subject sees this" is now a checked claim.
+  **Behaviour change: a host whose surfaces leak now fails conformance**, including a leak that adds
+  hidden state to a surface while keeping every distinction the surface was declared to carry (A/B
+  stays green on that one).
+  - A surface perceiving a sibling whose read moved along with the dimension is left out of the
+    verdict and named in it. Whether the sibling should have moved is independence's finding.
+  - `unavailable` with `nothing_to_observe` when there is no other surface to watch: the registry
+    perceives nothing, the dimension is perceived by every surface the registry names, or every other
+    surface was excused. `no_perturbation_binding`, `arming_only`, `seeding_did_not_take` and
+    `not_instantiable_unattended` mean what they mean for A/B. A coherence handle that starves the
+    check fails it, as it fails the other checks.
+  - Only surfaces some dimension names are watched. A leak onto a surface no dimension names is
+    outside the check.
+  - `obligations()` now includes `perception_stillness` for every dimension.
+
 ### 3tears-evals: post-cell readback, settle, runtime triggers and ambient perturbation
 
 - **`WorldSession`** (new, `threetears.evals.contracts`): one cell's handle on the host's world. The

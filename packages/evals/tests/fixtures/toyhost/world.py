@@ -128,6 +128,22 @@ class ToyWorldFaults:
     of every run in a campaign, and only ambient isolation can find it without spending a run.
     """
 
+    operator_context_shows_vendor_template: bool = False
+    """A judge-only dimension leaking onto a subject surface: the answer key printed beside the work.
+
+    The operator console starts naming the adjudicated template — a debugging aid left in. Nothing it
+    was declared to carry stops moving, so perception A/B stays green; perception stillness is the
+    check that catches it, because ``vendor_template`` is perceived by no surface at all.
+    """
+
+    document_header_shows_payment_hold: bool = False
+    """A surface showing a dimension its ``perceived_by`` does not name.
+
+    ``payment_hold`` is declared on the operator console; the document header starts appending it
+    too. The console still moves with it (A/B green), so only perception stillness sees the header
+    moving for a dimension that never declared it.
+    """
+
     seeding_scan_quality_resets_language: bool = False
     """Two dimensions sharing underlying state, so composing their preconditions is a lie.
 
@@ -197,14 +213,19 @@ class ToyWorld:
 
         Returns:
             ``{surface: rendered text}`` for each attached surface. ``vendor_template`` and
-            ``supervisor_signoff`` appear in neither, which is what makes them ``judge_only``
-            rather than declarations nobody checked.
+            ``supervisor_signoff`` appear in neither, which is what makes them ``judge_only``.
+            For ``vendor_template`` that is checked: the ``perception_stillness`` conformance check
+            moves it and requires both surfaces to hold still. ``supervisor_signoff`` only a person
+            can move, so the same check records it ``unavailable`` (``not_instantiable_unattended``)
+            and its judge-only claim stays a declaration.
         """
         rendered: dict[str, str] = {}
         if _DOCUMENT_SURFACE in surfaces:
             parts = [f"scan={self.measured_scan_quality}", f"handwriting={self.handwriting_present}"]
             if not self.faults.document_header_drops_language:
                 parts.insert(0, f"language={self.document_language}")
+            if self.faults.document_header_shows_payment_hold:
+                parts.append(f"hold={self.payment_hold}")
             rendered[_DOCUMENT_SURFACE] = " ".join(parts)
         if _OPERATOR_SURFACE in surfaces:
             text = (
@@ -213,6 +234,8 @@ class ToyWorld:
             )
             if self.faults.operator_context_reads_the_processing_shift:
                 text += f"; shift={self.processing_shift}"
+            if self.faults.operator_context_shows_vendor_template:
+                text += f"; template={self.vendor_template}"
             rendered[_OPERATOR_SURFACE] = text
         return rendered
 
