@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.66.0 -- 2026-10-05
+
 ### 3tears-evals: the definition seed writes every judge config, and admits templates through authoring's gates
 
 - **A judge config's seed slot is `(rubric_dim_id, name)`, not `rubric_dim_id`.** Keyed by the dim, a corpus

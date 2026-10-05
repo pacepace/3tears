@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -11,40 +11,40 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-3tears-agent-identity = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-workspace = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-nats = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-langchain-openrouter = "2026-09-22T05:00:00Z"
-3tears-models = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-tools = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-object-store = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-conversations = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-registry = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-search = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-tool-schema = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-mcp = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-wake = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-acl = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-identity = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-intention = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-knowledge = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-memory = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-skills = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-tools = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-wake = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-workspace = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-backup = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-channels = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-conversations = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-datasources = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-enforcement = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-epoch = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-acl = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-geo = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-intention = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-iam = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-evals = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-observe = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-geo = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-iam = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-langgraph = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-scheduled-jobs = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-knowledge = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-backup = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-mcp = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-media-contracts = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-models = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-nats = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-object-store = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-observe = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-registry = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-scheduled-jobs = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-scrape = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-datasources = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-search = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-tool-schema = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 claude-agent-sdk = "2026-09-30T20:00:00Z"
-3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-memory = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+langchain-openrouter = "2026-09-22T05:00:00Z"
 
 [manifest]
 members = [
@@ -130,7 +130,7 @@ dev = [
 
 [[package]]
 name = "3tears"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "3tears-nats" },
@@ -190,7 +190,7 @@ provides-extras = ["nats", "tracing", "socks", "duckdb", "testing"]
 
 [[package]]
 name = "3tears-agent-acl"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
@@ -214,7 +214,7 @@ provides-extras = ["bus"]
 
 [[package]]
 name = "3tears-agent-audit"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/agent/audit" }
 dependencies = [
     { name = "3tears" },
@@ -233,7 +233,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-identity"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/agent/identity" }
 dependencies = [
     { name = "3tears" },
@@ -258,7 +258,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-intention"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/agent/intention" }
 dependencies = [
     { name = "3tears" },
@@ -285,7 +285,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-knowledge"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/agent/knowledge" }
 dependencies = [
     { name = "3tears" },
@@ -312,7 +312,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-memory"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/agent/memory" }
 dependencies = [
     { name = "3tears" },
@@ -339,7 +339,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-skills"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/agent/skills" }
 dependencies = [
     { name = "3tears" },
@@ -360,7 +360,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-tools"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/agent/tools" }
 dependencies = [
     { name = "3tears" },
@@ -460,7 +460,7 @@ provides-extras = ["calculator", "units", "fetch", "pdf", "docx", "xlsx", "visio
 
 [[package]]
 name = "3tears-agent-wake"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/agent/wake" }
 dependencies = [
     { name = "3tears" },
@@ -496,7 +496,7 @@ provides-extras = ["prometheus"]
 
 [[package]]
 name = "3tears-agent-workspace"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/agent/workspace" }
 dependencies = [
     { name = "3tears" },
@@ -527,7 +527,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-backup"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/backup" }
 dependencies = [
     { name = "3tears" },
@@ -546,7 +546,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-channels"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/channels" }
 dependencies = [
     { name = "3tears" },
@@ -590,7 +590,7 @@ provides-extras = ["slack", "discord", "websocket", "webhook"]
 
 [[package]]
 name = "3tears-conversations"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/conversations" }
 dependencies = [
     { name = "3tears" },
@@ -609,7 +609,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-datasources"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/datasources" }
 dependencies = [
     { name = "3tears" },
@@ -657,7 +657,7 @@ provides-extras = ["redshift", "snowflake", "bigquery", "dev"]
 
 [[package]]
 name = "3tears-enforcement"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/enforcement" }
 dependencies = [
     { name = "3tears" },
@@ -679,7 +679,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "3tears-epoch"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/epoch" }
 dependencies = [
     { name = "3tears" },
@@ -700,7 +700,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-evals"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/evals" }
 dependencies = [
     { name = "3tears-observe" },
@@ -726,7 +726,7 @@ provides-extras = ["vega", "fastmcp"]
 
 [[package]]
 name = "3tears-geo"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/geo" }
 dependencies = [
     { name = "3tears" },
@@ -747,7 +747,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-iam"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/iam" }
 dependencies = [
     { name = "3tears" },
@@ -795,7 +795,7 @@ provides-extras = ["saml", "webauthn"]
 
 [[package]]
 name = "3tears-langgraph"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/langgraph" }
 dependencies = [
     { name = "3tears" },
@@ -824,7 +824,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-mcp"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/mcp" }
 dependencies = [
     { name = "3tears" },
@@ -855,12 +855,12 @@ requires-dist = [
 
 [[package]]
 name = "3tears-media-contracts"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/media-contracts" }
 
 [[package]]
 name = "3tears-models"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/models" }
 dependencies = [
     { name = "3tears-media-contracts" },
@@ -922,7 +922,7 @@ provides-extras = ["claude-cli", "voyageai", "whisper", "image", "prometheus"]
 
 [[package]]
 name = "3tears-nats"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/nats" }
 dependencies = [
     { name = "3tears-observe" },
@@ -946,7 +946,7 @@ provides-extras = ["client"]
 
 [[package]]
 name = "3tears-object-store"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/object-store" }
 dependencies = [
     { name = "3tears" },
@@ -965,7 +965,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-observe"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/observe" }
 
 [package.optional-dependencies]
@@ -993,7 +993,7 @@ provides-extras = ["otel", "asgi"]
 
 [[package]]
 name = "3tears-registry"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/registry" }
 dependencies = [
     { name = "3tears" },
@@ -1018,7 +1018,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-scheduled-jobs"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/scheduled-jobs" }
 dependencies = [
     { name = "3tears" },
@@ -1046,7 +1046,7 @@ provides-extras = ["prometheus"]
 
 [[package]]
 name = "3tears-scrape"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/scrape" }
 dependencies = [
     { name = "3tears" },
@@ -1096,7 +1096,7 @@ provides-extras = ["reprobe", "hitl"]
 
 [[package]]
 name = "3tears-search"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/search" }
 dependencies = [
     { name = "3tears-media-contracts" },
@@ -1124,7 +1124,7 @@ provides-extras = ["standalone", "extract"]
 
 [[package]]
 name = "3tears-tool-schema"
-version = "0.65.0"
+version = "0.66.0"
 source = { editable = "packages/tool-schema" }
 
 [[package]]
