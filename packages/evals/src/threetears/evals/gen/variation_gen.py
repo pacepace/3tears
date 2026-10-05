@@ -41,8 +41,14 @@ from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.hashing import canonical_json
 from threetears.evals.contracts.identity import compute_content_hash
 from threetears.evals.contracts.models import EvalTemplate, EvalTestCase, VariationAxis, VariationCounts
-from threetears.evals.contracts.out_of_run import AdmittedCall, OutOfRunBudget, OutOfRunSpend, PlannedCall
-from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT, extract_json
+from threetears.evals.contracts.out_of_run import (
+    AdmittedCall,
+    OutOfRunBudget,
+    OutOfRunSpend,
+    existing_axis_values,
+    plan_variation_calls,
+)
+from threetears.evals.contracts.provider import extract_json
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -192,7 +198,7 @@ async def generate_variations(
     # at a time would pay for the first and then refuse the second.
     admitted: dict[str, AdmittedCall] = {}
     if llm is not None and budget is not None:
-        planned = _llm_axis_calls(template, n_variations, existing)
+        planned = plan_variation_calls(template, n_variations, existing)
         admitted = dict(zip(planned, budget.admit(llm, "variation", list(planned.values())), strict=True))
     spend: list[OutOfRunSpend] = []
 
@@ -204,7 +210,7 @@ async def generate_variations(
             assert llm is not None and budget is not None
             recorded = await budget.generate(llm, admitted[axis.name])
             spend.append(recorded.spend)
-            values = _parse_llm_axis_values(axis, recorded.result, n_variations, _existing_values(axis, existing))
+            values = _parse_llm_axis_values(axis, recorded.result, n_variations, existing_axis_values(axis, existing))
         else:
             values = _values_for_axis(axis, n_variations, rng=rng)
         if not values:
@@ -264,9 +270,10 @@ async def price_variations(
 ) -> list[float | None]:
     """Price the calls :func:`generate_variations` would make, refusing exactly as it would — and make none.
 
-    What a pre-flight asks before it lets any work start: a battery that launches several templates
-    checks every template's generation here first, so a generation its cap cannot pay for refuses
-    the battery before the first template's cases are paid for. Commits nothing to ``budget``.
+    What a host's own pre-flight asks before it lets any work start. The engine's battery prices its
+    templates' generations itself, from the same plan
+    (:func:`~threetears.evals.contracts.out_of_run.plan_variation_calls`) through ``budget.quote``.
+    Commits nothing to ``budget``.
 
     Args:
         template: The template whose ``llm`` axes would be written.
@@ -286,7 +293,7 @@ async def price_variations(
     if n_variations <= 0:
         raise ValueError(f"n_variations must be positive; got {n_variations}.")
     existing = storage.query_test_cases(scope_id, template_id=template.id)
-    planned = _llm_axis_calls(template, n_variations, existing)
+    planned = plan_variation_calls(template, n_variations, existing)
     if not planned:
         raise ValueError(f"template {template.id!r} has no llm-generated axis, so a generation of it makes no call")
     return budget.quote(llm, "variation", list(planned.values()))
@@ -326,49 +333,6 @@ def _values_for_axis(axis: VariationAxis, n_variations: int, *, rng: random.Rand
         n = min(n_variations, len(axis.values))
         return rng.sample(axis.values, n)
     raise ValueError(f"Unknown axis generator: {axis.generator!r}")
-
-
-def _existing_values(axis: VariationAxis, existing: list[EvalTestCase]) -> set[str]:
-    """The values the template's stored cases already give ``axis`` — what its prompt asks the model to avoid."""
-    return {tc.variation_params.get(axis.name, "") for tc in existing if tc.variation_params.get(axis.name)}
-
-
-def _llm_axis_calls(template: EvalTemplate, n_variations: int, existing: list[EvalTestCase]) -> dict[str, PlannedCall]:
-    """The one call each ``llm`` axis makes, keyed by axis name in declaration order — built before any is made."""
-    return {
-        axis.name: _llm_axis_call(axis, n_variations, _existing_values(axis, existing))
-        for axis in template.variation_axes
-        if axis.generator == "llm"
-    }
-
-
-def _llm_axis_call(axis: VariationAxis, n_variations: int, existing_values: set[str]) -> PlannedCall:
-    """The call that asks a model for ``n_variations`` novel values for ``axis``.
-
-    The call runs in JSON-object mode (``response_format={"type":
-    "json_object"}``) — the same structured-output robustness the other eval LLM
-    callers get — and asks for ``{"values": [...]}``. The object
-    envelope is required because ``json_object`` mode forbids a bare top-level
-    array. Values already in ``existing_values`` are named so the model avoids them.
-    """
-    existing_block = (
-        "(none — produce any novel values)"
-        if not existing_values
-        else "\n".join(f"- {v}" for v in sorted(existing_values))
-    )
-    system_prompt = (
-        "You generate values for an eval variation axis. Return ONLY a JSON "
-        'object of the form {"values": ["...", "..."]} — a JSON array of strings '
-        'under the key "values", with no other keys and no commentary. Each value '
-        "must be distinct from every value already shown to you."
-    )
-    user_prompt = (
-        f"Axis name: {axis.name}\n"
-        f"Axis description: {axis.description or '(no description)'}\n"
-        f"Existing values to exclude:\n{existing_block}\n\n"
-        f'Produce {n_variations} new distinct values as a JSON object: {{"values": [...]}}.'
-    )
-    return PlannedCall(system=system_prompt, user=user_prompt, response_format=JSON_OBJECT_RESPONSE_FORMAT)
 
 
 def _parse_llm_axis_values(

@@ -5,9 +5,11 @@ apparatus and its kind's launcher builds the rig from. Before ``apparatus_settin
 in a template's ``kind_spec``, so comparing two values took two templates. These pin:
 
 - **The value reaches the launcher and the run**: the kind reads it off its request, and the run records
-  exactly what the launch set (``EvalRun.apparatus_settings``).
+  the rig as it was set up (``EvalRun.apparatus_settings``) — the launch's value, or the kind's standing
+  default where the launch set none.
 - **It is part of the measurement context**: two runs at two values are two conditions (their context
-  keys differ in the ``apparatus_settings`` component) and the same candidate (their variant keys agree).
+  keys differ in the ``apparatus_settings`` component) and the same candidate (their variant keys agree);
+  a launch naming the default and one leaving it out are ONE condition, since they set up one rig.
 - **Every refusal fires before anything is built**: a setting the template's kind does not read, a value
   the run could not store; and at registration, a kind claiming to read a setting the host does not
   declare as its own apparatus.
@@ -100,26 +102,35 @@ async def test_a_launchs_apparatus_setting_reaches_its_launcher_and_its_run():
     assert host.eval_host.profile.sweepables.read_all(stored)[POOL] == "pool-b", "the host's reader reads the rig"
 
 
-async def test_a_launch_setting_none_records_none_and_the_host_reviews_with_its_standing_pool():
+async def test_a_launch_setting_none_records_the_kinds_standing_pool_it_was_reviewed_by():
+    """The run records the rig as set up, so it says who reviewed it rather than that nobody chose."""
     host, storage = _launching()
 
     (run,) = await _launch(host)
 
     stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
-    assert stored is not None and stored.apparatus_settings == {}
+    assert stored is not None and stored.apparatus_settings == {POOL: TOYHOST_REVIEWER_POOL}
     assert stored.host_payload["toyhost"][POOL] == TOYHOST_REVIEWER_POOL
+    assert host.eval_host.profile.sweepables.read_all(stored)[POOL] == stored.apparatus_settings[POOL]
 
 
 async def test_two_values_of_one_template_are_two_conditions_of_one_candidate():
-    """One template, two reviewer pools: never pooled as repeats, and still the same arm."""
+    """One template, two reviewer pools: never pooled as repeats, and still the same arm.
+
+    ``pool-a`` is the kind's standing pool, so the launch naming it and the launch naming nothing set up
+    the same rig, and are one condition — as a ``kind_spec`` stating a default and one omitting it are.
+    """
     host, _storage = _launching()
+    assert TOYHOST_REVIEWER_POOL == "pool-a", "the fixture's standing pool is the one this test names"
 
     (pool_a,) = await _launch(host, apparatus_settings={POOL: "pool-a"})
     (pool_b,) = await _launch(host, apparatus_settings={POOL: "pool-b"})
     (unset,) = await _launch(host)
 
     profile = host.eval_host.profile
-    assert len({pool_a.context_key, pool_b.context_key, unset.context_key}) == 3
+    assert pool_a.context_key == unset.context_key, "naming the default and leaving it out set up one rig"
+    assert pool_a.apparatus_settings == unset.apparatus_settings == {POOL: "pool-a"}
+    assert pool_b.context_key != pool_a.context_key
     assert pool_a.context_components is not None and pool_b.context_components is not None
     differing = {
         name
@@ -130,6 +141,21 @@ async def test_two_values_of_one_template_are_two_conditions_of_one_candidate():
     assert pool_a.identity_version == IDENTITY_VERSION == 23
     variant = {derive_variant_identity(run=run, profile=profile).variant_key for run in (pool_a, pool_b, unset)}
     assert len(variant) == 1, "an apparatus value is the rig, not the candidate"
+
+
+async def test_a_launch_setting_some_of_a_kinds_settings_records_the_rest_at_their_defaults():
+    host, storage = _launching()
+    (launchable,) = host.kinds.values()
+    two = replace(
+        host,
+        kinds={TOY_EXTRACTOR_KIND: replace(launchable, apparatus_settings={POOL: "pool-a", "grader_version": "g1"})},
+    )
+
+    (run,) = await _launch(two, apparatus_settings={POOL: "pool-b"})
+
+    assert run.apparatus_settings == {POOL: "pool-b", "grader_version": "g1"}
+    stored = storage.load_eval_run(run.id, TOYHOST_SCOPE)
+    assert stored is not None and stored.apparatus_settings == run.apparatus_settings
 
 
 def test_the_component_hashes_the_values_and_their_types():
@@ -195,7 +221,16 @@ def test_a_kind_claiming_a_setting_the_host_does_not_declare_as_its_own_apparatu
     (launchable,) = host.kinds.values()
 
     with pytest.raises(ValueError, match=said):
-        replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, apparatus_settings=frozenset({claimed}))})
+        replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, apparatus_settings={claimed: "standing"})})
+
+
+@pytest.mark.parametrize("default", [["pool-a"], None, float("nan")], ids=["a-list", "none", "not-finite"])
+def test_a_kind_defaulting_a_setting_to_a_value_no_run_could_record_is_refused(default):
+    async def launch(_request: LaunchRequest) -> EvalRun:
+        raise AssertionError("never launched")
+
+    with pytest.raises(ValueError, match="defaults a setting to a value no run could record"):
+        LaunchableKind(launch=launch, apparatus_settings={POOL: default})
 
 
 def test_the_settable_apparatus_is_the_hosts_own_and_none_of_the_engines():
@@ -322,4 +357,4 @@ def test_a_kind_reads_nothing_unless_it_says_so():
     async def launch(_request: LaunchRequest) -> EvalRun:
         raise AssertionError("never launched")
 
-    assert LaunchableKind(launch=launch).apparatus_settings == frozenset()
+    assert LaunchableKind(launch=launch).apparatus_settings == {}

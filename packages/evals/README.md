@@ -110,14 +110,21 @@ would merely inherit. The launcher hands `generate_variations` the request's
 `budget=request.generation_budget`: every `llm` axis's call is priced on the writer's client
 (`price_ceiling`, the host's answer) against `LaunchSettings.max_out_of_run_cost_usd` before the first
 is made, and each is ledgered as an `OutOfRunSpend` document (`EvalStorage.query_out_of_run_spend`)
-under the launch's group. `propose_draft` takes a budget the same way. A battery's pre-flight checks
-each template's generation with `price_variations`.
+under the launch's group. `propose_draft` takes a budget the same way. A battery prices every
+template's arms and every template's writer calls (on the host's `variation` client, against the budget
+each launch will be held to) before any template launches, so it pays for no template's cases until all
+have been priced; its caps are per launch, as a launch's are (`start_universal_battery(max_cost_usd=...)`
+names the per-run cap). What was spent out of run is read back by `scope_out_of_run_spend` — the
+`scope_out_of_run_spend` action, and the CLI's `spend`.
 
 **Setting the rig at launch.** `apparatus_settings` sets host-declared apparatus values — who sits in an
 adjudicator's seat, say — so one template can be run at two of them and compared. A kind lists the ones
-its launcher reads (`LaunchableKind.apparatus_settings`, each a non-engine `apparatus` declaration of
-the host) and reads them off `request.apparatus_settings`; the run records them
-(`EvalRun.apparatus_settings`) and they are a component of its measurement context.
+its launcher reads, each with the value its rig takes when a launch sets none
+(`LaunchableKind.apparatus_settings={"adjudicator_seat": "model:default"}`, each a non-engine `apparatus`
+declaration of the host). The dispatch resolves a launch's settings against those defaults, so the
+launcher reads every one off `request.apparatus_settings` with no default of its own, and the run records
+the rig as set up (`EvalRun.apparatus_settings`), a component of its measurement context — a launch naming
+a default and one leaving it out are one condition.
 
 **A host with no metered tools** sets `LaunchSettings.max_metered_calls=None`: its runs record a
 ceiling of `0` with origin `none_declared`, and a metered call that happens anyway is refused and counted.

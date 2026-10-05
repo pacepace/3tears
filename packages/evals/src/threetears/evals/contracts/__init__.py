@@ -157,6 +157,8 @@ from threetears.evals.contracts.out_of_run import (
     OutOfRunSpendStore,
     PlannedCall,
     RecordedCompletion,
+    existing_axis_values,
+    plan_variation_calls,
 )
 from threetears.evals.contracts.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt, SeedSection, SeedTemplate
 from threetears.evals.contracts.prose import PROSE_SCHEMA_KEY
@@ -206,6 +208,7 @@ from threetears.evals.contracts.usage_capture import (
     ResolvedUsage,
     RoleUsageLedger,
     blended_cost_roles,
+    count_substituted,
     count_substituted_deliveries,
     production_replicating_cost,
     program_cost,
@@ -584,6 +587,7 @@ __all__ = [
     "extract_paths",
     "blended_cost_roles",
     "eval_trace_doc_id",
+    "existing_axis_values",
     "fold_phase_timings",
     "goal_check_of",
     "judges_sharing_a_candidate_model",
@@ -591,6 +595,7 @@ __all__ = [
     "list_metrics",
     "omit_paths",
     "percentile",
+    "plan_variation_calls",
     "production_replicating_cost",
     "program_cost",
     "referenced_actions",
@@ -599,6 +604,7 @@ __all__ = [
     # other route to it is a campaign write, which needs a stored campaign.
     "refuse_an_undeclarable_design",
     "resolve_bar_name",
+    "count_substituted",
     "count_substituted_deliveries",
     "derive_variant_identity",
     "resolve_context_identity",

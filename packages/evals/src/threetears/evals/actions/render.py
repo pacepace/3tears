@@ -32,6 +32,7 @@ from threetears.evals.ops import (
     HistoryResult,
     JobsStarted,
     JobStatus,
+    OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
     RunDeleted,
@@ -42,6 +43,7 @@ from threetears.evals.ops import (
     estimate_text,
     export_text,
     history_text,
+    out_of_run_spend_text,
     pivot_text,
 )
 
@@ -265,6 +267,11 @@ def render_pivot(table: PivotTable) -> str:
 def render_history(result: HistoryResult) -> str:
     """Each contestant's series, with each step's regression verdict and the test behind it."""
     return history_text(result)
+
+
+def render_out_of_run_spend(report: OutOfRunSpendReport) -> str:
+    """The scope's out-of-run spend: totals overall, per purpose and per launch, then each call."""
+    return out_of_run_spend_text(report)
 
 
 def render_estimate(estimate: CostEstimate) -> str:

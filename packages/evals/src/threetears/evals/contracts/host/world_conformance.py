@@ -60,7 +60,12 @@ binding is called with one keyword, ``surfaces``, holding the surface names to r
 argument, ``fire`` with none. A triggered dimension's ``seed`` binding ARMS an event and returns the
 host's identity of it — a non-empty string, which a cell's world session keeps so a firing of the
 seed's own event is told from one the world makes of its own on that dimension; the round trip fails
-a seed binding that returns none. Everything else about a host stays the host's business.
+a seed binding that returns none. **The identity must be unique to the event, an obligation no check
+here can verify**: a firing is recorded armed exactly when the identity the kind observes is one a seed
+returned, on any dimension that event moves (``WorldSession.observe``), so an identity that names the
+DIMENSION rather than the event — or one a world's own events share — makes every firing on it read
+armed, and ``fired_armed()`` passes for a candidate whose world fired an event of its own. Everything
+else about a host stays the host's business.
 
 The checks are derived from an obligations table, one row per registrable shape; its rows are
 :data:`ObligationRow`.
@@ -410,7 +415,9 @@ async def _round_trip(registry: WorldRegistry, declared: WorldDimension) -> Conf
     check and a decorative one: synthesizing whatever the schema offers first would let a seeder
     that does nothing pass whenever the schema's first value happened to be the world's default.
     A triggered dimension's seed must also name the event it armed, since a run's world session
-    refuses a seed that does not — so this is the check that finds it before a run does.
+    refuses a seed that does not — so this is the check that finds it before a run does. That the
+    name is unique to the event (never the dimension's name, never one the world's own events share)
+    is the host's obligation, which no single round trip can observe; see the module docstring.
 
     Args:
         registry: The host's registry.

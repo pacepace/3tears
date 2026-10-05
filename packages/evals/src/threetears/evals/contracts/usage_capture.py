@@ -701,11 +701,29 @@ def count_substituted_deliveries(result: EvalResult) -> int:
         production-replicating cost; the number is kept rather than a bool because it is the
         more informative disclosure at no extra cost.
     """
-    if result.async_deliveries is None:
-        # Nothing watched for background work on this result — its candidate kind starts none —
-        # so there was no delivery the harness could have substituted.
+    return count_substituted(result.async_deliveries)
+
+
+def count_substituted(deliveries: Sequence[AsyncDelivery] | None) -> int:
+    """Count the deliveries a harness supplied, over the delivery record itself.
+
+    The one predicate :func:`count_substituted_deliveries` reads a finished result through, for the
+    caller that holds the record before any result exists: a kind computing its own measures from the
+    deliveries its cell collected, which has no :class:`~threetears.evals.contracts.models.EvalResult`
+    to hand over (and would otherwise build a partial one just to ask).
+
+    Args:
+        deliveries: The cell's async-delivery record — ``EvalResult.async_deliveries``, or a candidate
+            output's ``async_deliveries`` — or ``None`` when nothing watched for background work.
+
+    Returns:
+        How many entries a harness supplied; 0 when nothing was watched.
+    """
+    if deliveries is None:
+        # Nothing watched for background work — the candidate kind starts none — so there was no
+        # delivery the harness could have substituted.
         return 0
-    return sum(1 for entry in result.async_deliveries if entry.substituted)
+    return sum(1 for entry in deliveries if entry.substituted)
 
 
 #: The terminations of a cell cut off before it returned, whose usage therefore stops short of the
@@ -763,6 +781,7 @@ __all__ = [
     "blended_cost",
     "blended_cost_roles",
     "cell_cost",
+    "count_substituted",
     "count_substituted_deliveries",
     "production_replicating_cost",
     "program_cost",

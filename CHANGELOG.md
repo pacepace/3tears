@@ -6,6 +6,71 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a second review of the out-of-run spend, priced launches and apparatus settings
+
+- **A battery prices every template's generation before launching any.** It priced every template's arms up
+  front but each template's writer calls only inside that template's launch, so templates 1..k-1 could pay
+  for their generations and start their runs (whose ids were then lost) before template k was refused. The
+  battery now quotes every generating template's ``llm`` calls on the host's ``variation`` client against the
+  budget its launch will be held to, before any launcher runs; nothing starts if anything is refused. The plan
+  of those calls moved to ``threetears.evals.contracts`` (``plan_variation_calls``, ``existing_axis_values``)
+  so ``run`` and ``gen`` read one plan (the package matrix keeps ``run`` off ``gen``). **Adopters:** a battery
+  pre-flight that called ``price_variations`` may drop it.
+- **A battery takes ``max_cost_usd``**, the per-run cap for every run it launches and the cap its generating
+  arms are priced against: without one, a generating template with no priced history was refused with no
+  way to name a cap. Its bounds are per launch, as a launch's are: N generating templates may spend up to N
+  times ``max_out_of_run_cost_usd`` out of run (documented on ``LaunchSettings`` and the battery).
+- **Host settings are read once per launch.** ``start_run`` reads ``LaunchHost.settings`` once and every
+  refusal and every arm's tail uses that snapshot (new required ``LaunchRequest.settings``; **breaking:**
+  ``launch_as_group`` takes ``settings=``); a battery reads once for all its templates. A hot reload part-way
+  can no longer refuse a launch at its tail after its generation was paid for.
+- **Apparatus settings are recorded and hashed resolved.** **Breaking:** ``LaunchableKind.apparatus_settings``
+  maps each honoured setting to its default (``{"reviewer_pool": "pool-a"}``) instead of naming it; the
+  dispatch fills the defaults in, so ``LaunchRequest.apparatus_settings`` carries every one (a launcher reads
+  them with no default of its own) and ``EvalRun.apparatus_settings`` records the rig as set up. A launch
+  naming a default and one omitting it now share a context key, as ``kind_spec`` already did, and agree with
+  what ``bisect_runs`` reads. A default no run could record is refused at construction. **Identity:** still
+  the unreleased ``IDENTITY_VERSION`` 23; the hash function did not change, only what a launch records, and no
+  golden moved. **Adopters (DoW):** give each honoured setting its standing value.
+- **A judged witnessed cell refuses before it pays.** The engine-derived-measure refusal, the double-reported
+  background-spend refusal and the variant-identity derivation now run before the judge, as the runner's do.
+- **A judged witnessed run is held to a cost ceiling.** **Breaking:** ``stamp_witnessed_judge`` takes
+  ``configured_max_cost_usd`` and ``enforcement_enabled`` (and an optional ``max_cost_usd``) and records the
+  run's ``max_cost_usd`` and origin as a launch resolves them; ``record_witnessed_cell`` checks the judge spend
+  the run's SAVED cells carry against it before each judged cell and raises ``BudgetStoppedError`` past it (or
+  on unpriced judge spend under an enforced ceiling). Only the judge's spend counts: the session's own is the
+  host's.
+- **An out-of-run call is made only as it was priced.** ``OutOfRunBudget.generate`` makes only the very
+  ``AdmittedCall`` object ``admit`` minted, on the very client it was priced on, once — a ``dataclasses.replace``
+  copy (its call enlarged after pricing or not), another budget's admission and another client of the same
+  model are refused.
+- **A paid out-of-run call is always ledgered.** An attribute the row cannot hold (a raw provider stop reason,
+  a negative count) is recorded ``None`` and named in the new ``OutOfRunSpend.unreadable``, instead of failing
+  validation and dropping the row. ``PricedCompletion.generate`` returns a ``CompletionResult``: the ledger
+  reads ``served_model`` by that protocol's name, and a simulator-shaped ``model`` is attribution, not who
+  answered, so it is not read in its place.
+- **``history_launch_pricer`` prices from runs launched as the arm will be**: the same judge and simulator pins
+  and resolved apparatus settings as well as template, model and cassette mode (``ArmQuote`` gains
+  ``judge_model``, ``simulator_model`` and ``apparatus_settings``). Its prediction is the band's UPPER end,
+  since the launch holds it to the cap (``ArmPrice.predicted_usd`` documents that); a history too thin to band
+  predicts nothing. It reads only the matching runs' results, not every result in the scope per arm.
+- **Armed provenance has one rule.** The controls gate admits ``fired_armed`` on a dimension the seed did not
+  arm, since the session records the seed's event as armed on any dimension it moves; it refuses one only
+  under a seed that arms no event. The world conformance kit states the host's obligation that an event
+  identity is unique to the event.
+- **Not done: refusing an uncarried subject component before generation.** The subject is captured inside the
+  kind's launcher, which is also where generation happens, and the lever map is read off an assembled run, so
+  the engine has nothing to check before the launcher pays. **Adopters:** run the reader conformance kit after
+  registering component levers; it derives every sample run's variant identity.
+- **``count_substituted(deliveries)``** (``threetears.evals.contracts``) counts substituted deliveries over the
+  delivery record itself, for a kind computing its measures before any result exists;
+  ``count_substituted_deliveries(result)`` reads the result's record through it.
+- **The out-of-run ledger is read back.** ``threetears.evals.ops.scope_out_of_run_spend`` returns an
+  ``OutOfRunSpendReport`` (rows, ``OutOfRunSpendTotals`` overall, per purpose and per launch; unpriced and
+  raised calls counted beside a sum that is then a floor), with ``out_of_run_spend_text``; the
+  ``scope_out_of_run_spend`` catalogue action (``purpose_filter``, ``launch_group_filter``,
+  ``template_filter``) and the CLI's ``spend`` command (``--purpose``, ``--launch-group``, ``--template``) read it.
+
 ### 3tears-evals: fixes from an adopter's review (Dungeons of Wagons, gate G2)
 
 - **The controls gate's do-nothing control runs the world's clock.** A ``turn``-triggered dimension's
@@ -41,7 +106,7 @@ packages (bumped in lock-step).
   kind lands, so it reaches a family of comparisons once; a kind landing ``accuracy`` itself is refused.
   **Adopters:** delete a host-minted numeric copy (DoW's ``router_accuracy``) and land ``match`` only.
 - **A witnessed run can be judged.** ``stamp_witnessed_judge(host, run, template, *, judge_model,
-  judged_artifact, selection=None)`` gives a witnessed run, before its identity is stamped, the template whose
+  judged_artifact, selection=None, configured_max_cost_usd, enforcement_enabled, max_cost_usd=None)`` gives a witnessed run, before its identity is stamped, the template whose
   intent and rubric the judge reads and the judge apparatus a launch stamps; **breaking:**
   ``record_witnessed_cell`` is now ``async`` and scores such a run's cells through the runner's own judge
   phase from the run's recorded apparatus, so the cell is one ``rejudge_result`` reads like any run's. The
@@ -97,7 +162,7 @@ packages (bumped in lock-step).
 - **A launch sets host-declared apparatus values** (``apparatus_settings``), so one template can be
   compared at two adjudicator seats. Threaded through ``start_run``, ``start_universal_battery``,
   ``LaunchRequest``, ``ops.LaunchArguments``, the ``run_launch`` action (and so the FastMCP tool) and the
-  CLI (``--apparatus-settings JSON``). A kind lists what its launcher reads
+  CLI (``--apparatus-settings JSON``). A kind maps what its launcher reads to its defaults
   (``LaunchableKind.apparatus_settings``; ``LaunchHost`` refuses a name that is not one of the host's own
   ``apparatus`` declarations, and ``settable_apparatus`` says which are); a launch setting any other, or a
   value that is not a string, bool or finite number (``ApparatusSettingValue``), is refused before the

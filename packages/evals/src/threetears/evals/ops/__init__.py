@@ -14,6 +14,8 @@ The read lenses — :func:`scope_pivot`, :func:`scope_history`, :func:`scope_exp
 :func:`launch_estimate` — return the analysis package's own result models, re-exported here because
 they are what these operations hand back, with the text a surface shows for each (:func:`pivot_text`
 and its siblings) beside them, so a command line and an agent read one rendering.
+:func:`scope_out_of_run_spend` reads the out-of-run ledger — the spend no run's results carry — into an
+:class:`OutOfRunSpendReport` of its own, with :func:`out_of_run_spend_text` beside it.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -58,14 +60,18 @@ from threetears.evals.ops.jobs import (
 )
 from threetears.evals.analysis import CostEstimate, HistoryResult, PivotTable, ScoreExport
 from threetears.evals.ops.lenses import (
+    OutOfRunSpendReport,
+    OutOfRunSpendTotals,
     estimate_text,
     export_text,
     history_text,
     history_launch_pricer,
     launch_estimate,
+    out_of_run_spend_text,
     pivot_text,
     scope_export,
     scope_history,
+    scope_out_of_run_spend,
     scope_pivot,
 )
 from threetears.evals.ops.runs import (
@@ -106,6 +112,8 @@ __all__ = [
     "LaunchArguments",
     "MeasureSummary",
     "OpsHost",
+    "OutOfRunSpendReport",
+    "OutOfRunSpendTotals",
     "PivotTable",
     "ReportDocument",
     "ReportFormat",
@@ -131,6 +139,7 @@ __all__ = [
     "job_poll",
     "history_launch_pricer",
     "launch_estimate",
+    "out_of_run_spend_text",
     "parse_job_id",
     "pivot_text",
     "report_read",
@@ -143,6 +152,7 @@ __all__ = [
     "runs_list",
     "scope_export",
     "scope_history",
+    "scope_out_of_run_spend",
     "scope_pivot",
     "summarize_run",
     "templates_list",

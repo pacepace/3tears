@@ -472,8 +472,9 @@ class ControlEndState(EvalDocumentModel):
             "The triggered dimensions on which the event the template's seed armed fired, by name — what a check "
             'reads with fired_armed("<dimension>"). Each is also a firing, so it need not be repeated in `fired`. '
             "Laid over the do-nothing control's, which are the clock-driven dimensions the seed arms. Each name "
-            "must be a triggered dimension the template's seed arms: a seed-armed firing of a dimension the seed "
-            "never armed is a state no run could leave."
+            "must be a triggered dimension, and the template's seed must arm at least one event: a firing is armed "
+            "when its event is one the seed armed, on the dimension it was armed on or another that event moves "
+            "(WorldSession.observe), so what no run could leave is an armed firing under a seed that armed none."
         ),
     )
 

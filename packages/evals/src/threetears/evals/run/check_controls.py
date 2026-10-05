@@ -426,7 +426,7 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, arme
     A control is evidence only if it is a state a run could leave: a key no dimension declares, a
     value its dimension's schema refuses, a fired dimension that is not a triggered one the host
     declares (:func:`~threetears.evals.contracts.dsl.undefined_fired_dimension`), a seed-armed firing
-    of a dimension the template's seed does not arm, or a call to an
+    under a template whose seed arms no event at all, or a call to an
     action the host does not define would let a check pass or fail its control for a reason no run
     reproduces. Asked of the host's profile,
     as the world gate asks of a goal check. A key names its dimension through the host's addressing
@@ -476,12 +476,17 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, arme
     # check over a dimension that can never fire.
     stated = [*end_state.fired, *(name for name in end_state.fired_armed if name not in end_state.fired)]
     defects.extend(undefined for name in stated if (undefined := undefined_fired_dimension(name, world)) is not None)
-    defects.extend(
-        f"fired_armed names {name!r}, which this template's seed does not arm — a firing of the seed's armed "
-        "event on a dimension the seed never armed is a state no run could leave"
-        for name in end_state.fired_armed
-        if undefined_fired_dimension(name, world) is None and name not in armed
-    )
+    # The session's rule, not a second one (WorldSession.observe): a firing is armed when its EVENT is one
+    # the seed armed, on the dimension the seed armed it on or on another that event also moves. So a seed-armed
+    # firing on a dimension the seed did not arm is a state a run can leave — what no run can leave is one
+    # under a seed that armed no event at all.
+    if not armed:
+        defects.extend(
+            f"fired_armed names {name!r}, and this template's seed arms no event — a firing of the seed's armed "
+            "event is a state no run could leave when the seed armed none"
+            for name in end_state.fired_armed
+            if undefined_fired_dimension(name, world) is None
+        )
     for call in end_state.calls:
         if (undefined := undefined_action(call.tool, call.action, profile.tool_actions)) is not None:
             defects.append(undefined)
