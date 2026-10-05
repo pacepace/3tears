@@ -37,7 +37,7 @@ templates. A seed value a run resolves from the subject (a reference to the subj
 it does for a run with no subject.
 
 **Which writes it binds** — see :func:`refuse_non_discriminating_checks`. A template written past
-authoring (a host's seed) with no controls is not refused where it is read or run; its checks are
+authoring (saved straight to the store) with no controls is not refused where it is read or run; its checks are
 shown as unproven wherever a template is rendered, and the first write that authors its checks must
 prove them.
 """
@@ -279,11 +279,11 @@ def refuse_non_discriminating_checks(
     writes ``goal_state_checks``, ``goal_check_controls`` or ``world_seed``, and only then — the
     rule every authoring guard here follows, so a stored template stays editable in its other fields.
     An update that writes checks or controls must prove every check the merged template declares,
-    including one a host seeded without controls; one that writes only the seed re-proves the
+    including one written past authoring without controls; one that writes only the seed re-proves the
     controls a template has (the seed is the do-nothing control) and demands none from a template
     that never had them, since it authors no check.
 
-    **Not where a template is read, listed or launched.** A template a host seeded without controls
+    **Not where a template is read, listed or launched.** A template written past authoring without controls
     keeps loading and running. Refusing it there would take the catalogue down with it; what it
     gets instead is a visible "unproven" wherever a template is rendered.
 

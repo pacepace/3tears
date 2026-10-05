@@ -13,10 +13,16 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.run.definition_seed import SeedCorpus, load_seed_corpus, seed_eval_definitions
+from threetears.evals.run.definition_seed import SeedCorpus, SeedOutcome, load_seed_corpus, seed_eval_definitions
 
 from packages.evals.tests.factories import make_template
 from packages.evals.tests.factories import memory_storage
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.run import TOY_EXTRACTOR_KIND
+
+
+def _admit(_definition: object) -> None:
+    """A host check with nothing to refuse — the scope rule under test is the seeder's, not a host's."""
 
 
 def _corpus_dir(tmp_path: Path, template: dict[str, object]) -> Path:
@@ -27,7 +33,7 @@ def _corpus_dir(tmp_path: Path, template: dict[str, object]) -> Path:
 
 def test_a_corpus_is_built_in_the_scope_it_is_loaded_for(tmp_path: Path) -> None:
     corpus = load_seed_corpus(
-        _corpus_dir(tmp_path, {"name": "probe", "intent": "i", "candidate_kind": "test-kind"}), "scope-a"
+        _corpus_dir(tmp_path, {"name": "probe", "intent": "i", "candidate_kind": TOY_EXTRACTOR_KIND}), "scope-a"
     )
 
     assert corpus.scope_id == "scope-a"
@@ -39,19 +45,29 @@ def test_a_file_naming_its_own_scope_does_not_load(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="probe.json"):
         load_seed_corpus(
             _corpus_dir(
-                tmp_path, {"name": "probe", "intent": "i", "candidate_kind": "test-kind", "scope_id": "scope-b"}
+                tmp_path, {"name": "probe", "intent": "i", "candidate_kind": TOY_EXTRACTOR_KIND, "scope_id": "scope-b"}
             ),
             "scope-a",
         )
 
 
 def test_seeding_writes_the_corpus_scope_and_asks_occupancy_there(tmp_path: Path) -> None:
-    directory = _corpus_dir(tmp_path, {"name": "probe", "intent": "i", "candidate_kind": "test-kind"})
+    directory = _corpus_dir(tmp_path, {"name": "probe", "intent": "i", "candidate_kind": TOY_EXTRACTOR_KIND})
     storage, _ = memory_storage()
+    host = toyhost_host(storage=storage)
 
-    first = seed_eval_definitions(storage, load_seed_corpus(directory, "scope-a"))
-    again = seed_eval_definitions(storage, load_seed_corpus(directory, "scope-a"))
-    other = seed_eval_definitions(storage, load_seed_corpus(directory, "scope-b"))
+    def seed(scope_id: str) -> SeedOutcome:
+        return seed_eval_definitions(
+            host,
+            load_seed_corpus(directory, scope_id),
+            require_known_tools_allowed=_admit,
+            refuse_undeclared_world_seed=_admit,
+            refuse_undeliverable_template=_admit,
+        )
+
+    first = seed("scope-a")
+    again = seed("scope-a")
+    other = seed("scope-b")
 
     assert first.created["eval_template"] == 1
     assert again.created["eval_template"] == 0 and again.skipped["eval_template"] == 1

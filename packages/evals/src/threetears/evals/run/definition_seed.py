@@ -22,15 +22,26 @@ the reason seeding from git is safe here where an unconditional write would not 
 Applying that rule needs a definition of "slot", and eval definitions do not supply one the
 way prompts do. A prompt slot is a fixed, enumerable coordinate (one preset per type); a
 template is one member of an open collection with a generated UUID for an id. So occupancy
-is asked of a **natural key** — the same key the runtime already resolves each type by:
+is asked of a **natural key**:
 
 - ``eval_template`` is keyed by ``name`` (``EvalStorage.load_template_by_name``).
 - ``rubric_dim`` is keyed by ``key`` (``EvalStorage.load_active_rubric_dim``).
-- ``judge_config`` is keyed by ``rubric_dim_id`` (``EvalStorage.load_active_judge_config``).
+- ``judge_config`` is keyed by ``(rubric_dim_id, name)``. Not by the dim alone: a dim may carry
+  more than one config — the active one a run inherits, and others a launch names by id in
+  ``judge_config_ids`` (an archived config is accepted there deliberately: it is how an A/B's
+  control arm runs). Keyed by the dim, every config after the first for a dim read as an occupied
+  slot and was never written. The name is what an operator's re-authoring keeps
+  (``update_judge_config`` archives and recreates under the same name), so one authored config's
+  versions share one slot.
 
-**Occupancy is archived-inclusive, and that is the load-bearing part.** Two of those three
-lookups filter ``archived=False`` — correctly, because a retired config should be invisible
-to a *run*. Reusing them here would mean an operator who archives a seeded definition, which
+**A corpus that cannot be seeded as written is refused, never partly skipped.** Two documents
+under one natural key, and two non-archived judge configs for one dim — a state no authoring path
+can produce (``create_judge_config`` keeps one active config per dim, and which of two would score
+the dim would be decided by load order) — are refused when the :class:`SeedCorpus` is built.
+
+**Occupancy is archived-inclusive, and that is the load-bearing part.** The runtime's own
+lookups (``load_active_rubric_dim``, ``load_active_judge_config``) filter ``archived=False`` —
+correctly, because a retired definition should be invisible to a *run*. Reusing them here would mean an operator who archives a seeded definition, which
 is the supported way to retire one, finds it back at the next boot and every boot after.
 Archiving is a decision; a seed must not overturn it. This module therefore probes with the
 archived-inclusive ``query_*`` methods and treats any record carrying the natural key,
@@ -42,30 +53,39 @@ Corpus files are the same create-ready shape the authoring paths accept — serv
 fields (``id``, ``doc_type``, ``schema_version``, ``scope_id``, ``created_at``,
 ``updated_at``) are absent, because loading and saving assign them.
 
-**The seeder writes through the store's ``save_*``, not through the authoring operations,
-so the create-time guards (:mod:`threetears.evals.run.authoring` and the host checks a
-host passes it) do not run here.** A host shipping a corpus owes it a suite that re-applies
-the subset that matters to a committed file — the pydantic model (which itself refuses a
-bare rubric-dim name), goal-state parsing, the world gate
-(``refuse_unsupplied_world``, called rather than reimplemented), unknown top-level keys — so
-those failures land in its CI rather than at a boot. ``create_template``'s ``tools_allowed``
-catalog check and name-conflict guard, and ``create_judge_config``'s one-active-config-per-dim
-rule, are unchecked here. A new validation added to the authoring path does not automatically
-reach a corpus; mirror it into that suite deliberately.
+**Every template meets the gates ``create_template`` applies, before anything is written.** The
+seeder admits each one through :func:`~threetears.evals.run.authoring.admit_template` — the same
+function ``create_template`` calls — so the kind's spec model, the rubric's names, the host's tool
+catalog, the world gate, the goal checks' discrimination proof, the host's seed walk and its kind
+capabilities all apply, and a gate added to authoring reaches a corpus without anyone mirroring it.
+That is why the seeder takes the host and the same three host checks ``create_template`` takes. A
+refusal of any template refuses the whole seed, naming every refused template, and nothing is
+written: a corpus is the host's committed code, and one the host's own gates refuse is a defect to
+fix, not a partial catalogue to boot with. The whole corpus is admitted, written or not, so the
+verdict depends on the corpus and the host alone and a host's CI seeding an empty store reaches the
+answer its production boot would.
+
+Two authoring refusals that read the store become something else here. A taken template name, or
+rubric dim key, is an occupied slot. And ``create_judge_config``'s one-active-config-per-dim rule
+against the store becomes a withheld write: a non-archived corpus
+config for a dim the store already holds an active config for (one an operator authored under
+another name) is not written — writing it would supersede the operator's config for every run — and
+is reported as ``conflicted``, by key, on every boot until one of the two is archived.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic import BaseModel
 
-from threetears.evals.contracts.errors import StorageError
+from threetears.evals.contracts.errors import StorageError, ValidationFailedError
+from threetears.evals.contracts.host.eval_host import EvalHost
 from threetears.evals.contracts.models import CatalogRubricDim, EvalTemplate, JudgeConfig
-from threetears.evals.contracts.storage import DefinitionStore
+from threetears.evals.run.authoring import admit_template
 
 
 @dataclass(frozen=True)
@@ -76,6 +96,11 @@ class SeedCorpus:
         ValueError: A definition names a scope other than ``scope_id``. A corpus seeds one scope,
             and a definition from another would be written there by a seed that reads only this
             one — so its slot would never read occupied, and every boot would write it again.
+            Also two definitions of one type under one natural key (template ``name``, rubric dim
+            ``key``, judge config ``(rubric_dim_id, name)``), since the seed would write the first
+            and read the second as occupied by it; and two non-archived judge configs for one
+            ``rubric_dim_id``, a state no authoring path can produce — archive all but the one a
+            run should inherit, and name the others by id in a launch's ``judge_config_ids``.
     """
 
     scope_id: str
@@ -84,7 +109,7 @@ class SeedCorpus:
     judge_configs: tuple[JudgeConfig, ...] = ()
 
     def __post_init__(self) -> None:
-        """Refuse a definition built for another scope."""
+        """Refuse a definition built for another scope, and a corpus that cannot be seeded as written."""
         definitions: tuple[EvalTemplate | CatalogRubricDim | JudgeConfig, ...] = (
             *self.templates,
             *self.rubric_dims,
@@ -94,13 +119,46 @@ class SeedCorpus:
             raise ValueError(
                 f"seed corpus for scope {self.scope_id!r} carries definitions from another scope: {strays}"
             )
+        defects = [
+            *(f"two templates named {k!r}" for k in _repeated(t.name for t in self.templates)),
+            *(f"two rubric dims keyed {k!r}" for k in _repeated(d.key for d in self.rubric_dims)),
+            *(
+                f"two judge configs named {name!r} for rubric dim {dim!r}"
+                for dim, name in _repeated(_config_key(c) for c in self.judge_configs)
+            ),
+            *(
+                f"more than one non-archived judge config for rubric dim {dim!r} — archive all but the one a run "
+                "should inherit; a launch names the others by id in judge_config_ids"
+                for dim in _repeated(c.rubric_dim_id for c in self.judge_configs if not c.archived)
+            ),
+        ]
+        if defects:
+            raise ValueError(
+                f"seed corpus for scope {self.scope_id!r} cannot be seeded as written: {'; '.join(defects)}"
+            )
+
+
+def _repeated[K: Hashable](keys: Iterable[K]) -> list[K]:
+    """The keys occurring more than once, each once, in first-repeat order."""
+    seen: set[K] = set()
+    repeated: list[K] = []
+    for key in keys:
+        if key in seen and key not in repeated:
+            repeated.append(key)
+        seen.add(key)
+    return repeated
+
+
+def _config_key(config: JudgeConfig) -> tuple[str, str]:
+    """A judge config's slot: the dim it scores and its name."""
+    return (config.rubric_dim_id, config.name)
 
 
 @dataclass
 class SeedOutcome:
     """What one seeding pass did, per doc type.
 
-    All three counts are reported rather than just the writes, because the interesting
+    Every outcome is reported rather than just the writes, because the interesting
     states are the ones a single number cannot separate: a pass that created nothing
     because everything was already there, and a pass that created nothing because the
     corpus never reached the runtime, are opposite events with the same ``created`` total.
@@ -108,7 +166,8 @@ class SeedOutcome:
     ``failed`` counts writes the store refused with ``StorageError``. The seed does not abort
     on one — a single refused definition is no reason to leave the rest of the catalogue
     empty — so the refusal has to be counted somewhere, and counting it as created would put
-    "seeded" in the boot log for records the store does not hold.
+    "seeded" in the boot log for records the store does not hold. ``conflicted`` names the
+    definitions withheld because the store holds a live record they would contradict.
     """
 
     created: dict[str, int] = field(default_factory=dict)
@@ -117,6 +176,10 @@ class SeedOutcome:
     #: Natural keys actually written, per doc type. Counts say how many; a partial seed is
     #: only diagnosable from the log if it says *which*.
     created_keys: dict[str, list[str]] = field(default_factory=dict)
+    #: Natural keys NOT written because the store already holds a live record the write would
+    #: contradict, per doc type — today only a non-archived judge config for a dim the store has an
+    #: active config for. Keys rather than a count, because the operator resolves each one.
+    conflicted: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def total_created(self) -> int:
@@ -134,35 +197,42 @@ class SeedOutcome:
         return sum(self.failed.values())
 
     @property
+    def total_conflicted(self) -> int:
+        """Definitions withheld because the store holds a live record they would contradict."""
+        return sum(len(keys) for keys in self.conflicted.values())
+
+    @property
     def nothing_to_do(self) -> bool:
-        """True when the pass neither wrote, skipped nor failed anything.
+        """True when the pass neither wrote, skipped, failed nor withheld anything.
 
         That is not the reassuring case it resembles: with a corpus present, every
-        definition is either created or skipped, so all-zero means the corpus itself was
+        definition is created, skipped, failed or withheld, so all-zero means the corpus itself was
         empty or unreachable — the state seeding exists to prevent, reported by the caller
         as a warning rather than the routine "already present" line.
         """
-        return not (self.total_created or self.total_skipped or self.total_failed)
+        return not (self.total_created or self.total_skipped or self.total_failed or self.total_conflicted)
 
     def summary(self) -> str:
         """One operator-readable line naming every type, including the zeroes.
 
         Types with nothing to do are named too: a boot that seeded no judge configs because
         the corpus carries none reads identically to one that skipped five, unless the line
-        says which. Failures are named only when there are some, so the ordinary line stays
-        readable. Created keys are named because "1 created, 1 already present" does not say
+        says which. Failures and conflicts are named only when there are some, so the ordinary
+        line stays readable. Created keys are named because "1 created, 1 already present" does not say
         which of the two was written.
         """
         if self.nothing_to_do:
             return "no definitions in the seed corpus"
         parts = []
-        for doc_type in sorted(set(self.created) | set(self.skipped) | set(self.failed)):
+        for doc_type in sorted(set(self.created) | set(self.skipped) | set(self.failed) | set(self.conflicted)):
             part = f"{doc_type}: {self.created.get(doc_type, 0)} created"
             if keys := self.created_keys.get(doc_type):
                 part += f" ({', '.join(keys)})"
             part += f", {self.skipped.get(doc_type, 0)} already present"
             if failed := self.failed.get(doc_type, 0):
                 part += f", {failed} REFUSED BY STORAGE"
+            if conflicted := self.conflicted.get(doc_type):
+                part += f", {len(conflicted)} NOT WRITTEN, CONFLICTING WITH THE STORE ({', '.join(conflicted)})"
             parts.append(part)
         return "; ".join(parts)
 
@@ -222,12 +292,23 @@ def load_seed_corpus(seed_dir: Path, scope_id: str) -> SeedCorpus:
     )
 
 
-def seed_eval_definitions(storage: DefinitionStore, corpus: SeedCorpus) -> SeedOutcome:
+def seed_eval_definitions(
+    host: EvalHost,
+    corpus: SeedCorpus,
+    *,
+    require_known_tools_allowed: Callable[[Sequence[str] | None], None],
+    refuse_undeclared_world_seed: Callable[[EvalTemplate], None],
+    refuse_undeliverable_template: Callable[[EvalTemplate], None],
+) -> SeedOutcome:
     """Create any corpus definition whose natural key is absent from the corpus's scope.
 
     Seeding semantics: empty slots only, the store is master once seeded. Occupancy is decided
     against the archived-inclusive queries, so a definition an operator archived stays
     archived rather than being resurrected at the next boot.
+
+    Every template is first admitted through the gates ``create_template`` applies
+    (:func:`~threetears.evals.run.authoring.admit_template`), all of them before any write, and is
+    stored in the shape admission resolves (its ``kind_spec`` as the kind's spec model fills it).
 
     Nothing is ever updated and nothing is ever deleted. An operator's own definitions, and
     their edits to seeded ones, are untouched.
@@ -235,36 +316,83 @@ def seed_eval_definitions(storage: DefinitionStore, corpus: SeedCorpus) -> SeedO
     A write the storage layer refuses (``StorageError``) is counted as ``failed``, never as
     created, and does not abort the seed: one refused definition is no reason to leave the
     rest of the catalogue empty. The slot is deliberately left unoccupied, so the next boot
-    re-attempts it.
+    re-attempts it. A non-archived judge config for a dim the store already holds an active
+    config for is not written and is reported under ``conflicted``.
 
     Args:
-        storage: The eval store being seeded.
+        host: The host: the store being seeded, and the profile a template is held to.
         corpus: The definitions to seed and the scope they are seeded into, which the host
             loads (:func:`load_seed_corpus` over its own directory) or builds in memory.
             Required rather than defaulted, so the seeder never decides whose definitions a
             scope receives.
+        require_known_tools_allowed: The host's tool-catalog check, as ``create_template`` takes it.
+        refuse_undeclared_world_seed: The host's seed walk, as ``create_template`` takes it.
+        refuse_undeliverable_template: The host's kind-capability check, as ``create_template`` takes it.
 
     Returns:
-        Per-doc-type created, skipped and failed counts, plus the natural keys written.
+        Per-doc-type created, skipped and failed counts, the natural keys written, and the keys
+        withheld as conflicting with the store.
+
+    Raises:
+        ValidationFailedError: A corpus template fails a gate ``create_template`` applies. Raised
+            before anything is written, naming every refused template and why.
     """
+    templates: list[EvalTemplate] = []
+    refusals: list[str] = []
+    for template in corpus.templates:
+        try:
+            templates.append(
+                admit_template(
+                    template,
+                    profile=host.profile,
+                    require_known_tools_allowed=require_known_tools_allowed,
+                    refuse_undeclared_world_seed=refuse_undeclared_world_seed,
+                    refuse_undeliverable_template=refuse_undeliverable_template,
+                )
+            )
+        except ValidationFailedError as refused:
+            refusals.append(f"{template.name!r}: {refused.message}")
+    if refusals:
+        raise ValidationFailedError(
+            f"the seed corpus for scope {corpus.scope_id!r} carries templates authoring would refuse, so nothing "
+            f"was seeded: {'; '.join(refusals)}"
+        )
+
+    storage = host.storage
     outcome = SeedOutcome()
 
     # One archived-inclusive query per type, not one probe per document: the catalogue is
     # small, and a single read is both cheaper and impossible to accidentally write with an
     # `archived=False` filter the way a per-document `load_active_*` call would be.
-    existing_template_names = {t.name for t in storage.query_templates(corpus.scope_id)}
-    existing_dim_keys = {d.key for d in storage.query_rubric_dims(corpus.scope_id)}
-    existing_config_bindings = {c.rubric_dim_id for c in storage.query_judge_configs(corpus.scope_id)}
+    existing_configs = storage.query_judge_configs(corpus.scope_id)
+    dims_with_an_active_config = {c.rubric_dim_id for c in existing_configs if not c.archived}
 
-    _seed_doc_type(outcome, "eval_template", corpus.templates, existing_template_names, "name", storage.save_template)
-    _seed_doc_type(outcome, "rubric_dim", corpus.rubric_dims, existing_dim_keys, "key", storage.save_rubric_dim)
+    _seed_doc_type(
+        outcome,
+        "eval_template",
+        templates,
+        {(t.name,) for t in storage.query_templates(corpus.scope_id)},
+        lambda t: (t.name,),
+        storage.save_template,
+    )
+    _seed_doc_type(
+        outcome,
+        "rubric_dim",
+        corpus.rubric_dims,
+        {(d.key,) for d in storage.query_rubric_dims(corpus.scope_id)},
+        lambda d: (d.key,),
+        storage.save_rubric_dim,
+    )
     _seed_doc_type(
         outcome,
         "judge_config",
         corpus.judge_configs,
-        existing_config_bindings,
-        "rubric_dim_id",
+        {_config_key(c) for c in existing_configs},
+        _config_key,
         storage.save_judge_config,
+        # The corpus holds at most one non-archived config per dim (SeedCorpus refuses more), so the
+        # store's active configs are the only ones a write could contradict.
+        conflicts=lambda c: not c.archived and c.rubric_dim_id in dims_with_an_active_config,
     )
 
     return outcome
@@ -274,9 +402,11 @@ def _seed_doc_type[D](
     outcome: SeedOutcome,
     doc_type: str,
     definitions: Sequence[D],
-    occupied: set[str],
-    natural_key: str,
+    occupied: set[tuple[str, ...]],
+    natural_key: Callable[[D], tuple[str, ...]],
     save: Callable[[D], None],
+    *,
+    conflicts: Callable[[D], bool] = lambda _definition: False,
 ) -> None:
     """Write one doc type's definitions into their empty slots, recording the counts on ``outcome``.
 
@@ -284,16 +414,23 @@ def _seed_doc_type[D](
         outcome: The seed's running tally, written under ``doc_type``.
         doc_type: The doc type the counts are recorded under.
         definitions: That type's definitions from the corpus.
-        occupied: The natural keys already present; a key written here is added to it.
-        natural_key: The attribute naming a definition's slot.
+        occupied: The natural keys already present.
+        natural_key: A definition's slot. Logged joined with ``/``.
         save: The storage write for this type.
+        conflicts: Whether writing an unoccupied definition would contradict a live record; such a
+            definition is not written and is recorded under ``conflicted``.
     """
     created_keys: list[str] = []
+    conflicted: list[str] = []
     skipped = failed = 0
     for definition in definitions:
-        key = getattr(definition, natural_key)
+        key = natural_key(definition)
+        # SeedCorpus refuses two definitions under one key, so `occupied` is only ever the store's.
         if key in occupied:
             skipped += 1
+            continue
+        if conflicts(definition):
+            conflicted.append("/".join(key))
             continue
         try:
             save(definition)
@@ -303,16 +440,13 @@ def _seed_doc_type[D](
             # as a seeded one.
             failed += 1
             continue
-        # Guards a corpus that carries two documents under one natural key: without it
-        # the second would be written too, and "is the slot full?" would have answered
-        # for both. A test asserts the corpus has no such pair; this makes the seeder
-        # correct even if one is introduced.
-        occupied.add(key)
-        created_keys.append(key)
+        created_keys.append("/".join(key))
     outcome.created[doc_type] = len(created_keys)
     outcome.created_keys[doc_type] = created_keys
     outcome.skipped[doc_type] = skipped
     outcome.failed[doc_type] = failed
+    if conflicted:
+        outcome.conflicted[doc_type] = conflicted
 
 
 __all__ = [

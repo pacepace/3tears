@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the definition seed writes every judge config, and admits templates through authoring's gates
+
+- **A judge config's seed slot is `(rubric_dim_id, name)`, not `rubric_dim_id`.** Keyed by the dim, a corpus
+  carrying two configs for one dim seeded the first and counted the second as "already present" without a word.
+  Two configs per dim is a supported shape: the active one a run inherits, and archived ones a launch names by id
+  in `judge_config_ids` (an A/B's control arm). Both now seed; empty-slots-only and archived-inclusive occupancy
+  are unchanged.
+- **A corpus that cannot be seeded as written is refused when `SeedCorpus` is built** (`ValueError`, naming every
+  defect), never partly skipped: two templates with one `name`, two rubric dims with one `key`, two judge configs
+  with one `(rubric_dim_id, name)`, and **two non-archived judge configs for one dim** — a state no authoring path
+  can produce, since `create_judge_config` keeps one active config per dim. **Adopters: of a dim's configs, mark
+  all but the one runs should inherit `"archived": true`, and name the others by id at launch.**
+- **A non-archived corpus config for a dim the store already holds an active config for is withheld**, not
+  written over the operator's: `SeedOutcome.conflicted` (new) names it by `dim/name`, and `summary()` says
+  `NOT WRITTEN, CONFLICTING WITH THE STORE`, on every boot until one of the two is archived.
+- **Breaking: `seed_eval_definitions(host, corpus, *, require_known_tools_allowed, refuse_undeclared_world_seed,
+  refuse_undeliverable_template)`** takes the `EvalHost` and the three host checks `create_template` takes, in
+  place of a `DefinitionStore`. Every corpus template is admitted through `admit_template` (new, in
+  `threetears.evals.run.authoring`) — the one list of create-time gates, which `create_template` now calls too:
+  the kind's spec model, the host's tool catalog, `refuse_unsupplied_world`, `refuse_non_discriminating_checks`,
+  the host's seed walk and its kind capabilities. A refusal of any template raises `ValidationFailedError` naming
+  every refused template, before anything is written; the whole corpus is admitted, written or not, so a host's
+  CI over an empty store reaches its boot's verdict. Templates are stored with `kind_spec` as the spec model
+  resolves it, as `create_template` stores them. The seeder's docstring no longer asks hosts to re-apply the
+  world gate themselves, which is why `refuse_unsupplied_world` and `refuse_non_discriminating_checks` stay out
+  of the public roots: no host needs to call them.
+
 ### 3tears-evals: a launch names the model that writes its generated cases (`variation_model`)
 
 - **New launch argument `variation_model`** on `start_run`, `start_universal_battery`, `LaunchRequest`, ops
