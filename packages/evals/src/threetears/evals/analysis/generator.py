@@ -92,9 +92,9 @@ from threetears.evals.analysis.references import (
     in_writer_terms,
     resolve_reading,
 )
-from threetears.evals.analysis.viz.compiler import compile_chart
+from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
-from threetears.evals.analysis.viz.policy import SpecPolicyError
+from threetears.evals.analysis.viz.policy import IntentPolicyError
 from threetears.evals.contracts.authored import (
     NO_CHART,
     AuthoredAnalysis,
@@ -960,7 +960,9 @@ def _compiled_chart(
 
     **A compiled chart can still be undrawable** — a breakdown whose categorical measure has one
     category has one part — and refusing the whole paid analysis for one picture discards every
-    finding with it. So a chart the presentation rules refuse is dropped, the finding is kept, and
+    finding with it. The check is the chart's INTENT (:func:`~threetears.evals.analysis.viz.intent.chart_intent`:
+    its payload and the presentation rules), never a renderer's output, so a host drawing with its own
+    renderer is held to the same gate. So a chart the presentation rules refuse is dropped, the finding is kept, and
     the reason is recorded beside it (never written into the authored document, which holds only what the model wrote, its figure references rendered)
     and logged at WARNING so the rate is measurable. A reference that points NOWHERE is different:
     that is the model's claim being wrong, and it is refused and repaired.
@@ -980,8 +982,8 @@ def _compiled_chart(
     except UnresolvableReference as unresolved:
         raise UnresolvableReference(f"{where} ({chart.type}): {unresolved}") from unresolved
     try:
-        compile_chart(chart.type, payload)
-    except (PayloadError, SpecPolicyError) as undrawable:
+        chart_intent(chart.type, payload)
+    except (PayloadError, IntentPolicyError) as undrawable:
         note = f"A {chart.type} chart was proposed and dropped because it could not be drawn: {undrawable}."
         log.warning("analysis.viz_dropped at=%s type=%s reason=%s", where, chart.type, undrawable)
         return None, note

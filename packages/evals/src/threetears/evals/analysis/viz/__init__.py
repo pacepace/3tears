@@ -1,26 +1,19 @@
-"""Finding visualizations — typed payloads compiled to Vega-Lite specs.
+"""Finding charts — eval's own chart intent, and a Vega-Lite renderer for it.
 
-One compiler, two surfaces. A finding's ``viz`` carries a narrow typed payload;
-this package turns it into a Vega-Lite spec that the browser renders with
-``vega-embed`` and the server rasterises with ``vl-convert`` for MCP. A chart
-that exists only in a browser is a reporting capability on one surface, which is
-what the cross-surface parity rule exists to prevent.
+**Two halves, and the seam between them is the point.** The engine decides what a chart SAYS; a
+renderer decides how it LOOKS:
 
-The layering matters and is deliberate:
-
-- :mod:`payloads` is the *generation-time* contract — a malformed payload is
-  rejected while the generation can still be retried, not discovered when a
-  reader opens the report. Generation is billed, so a defect that surfaces at
-  render costs a regeneration to correct.
-- :mod:`compiler` turns a validated payload into a spec that carries **no
-  colour**; the palette arrives as a Vega-Lite ``config`` from whichever
-  renderer is drawing.
-- :mod:`policy` gates the compiler's OUTPUT rather than living inside it. The
-  presentation rules a report is held to are properties of a *spec*, and the
-  compiler is not the only thing that will ever produce one — so the gate sits
-  where any producer's spec must pass through it.
-- :mod:`palette` and :mod:`render` are the server-side half: resolved sRGB hex
-  and the vl-convert call.
+- **The intent (the core).** :mod:`payloads` is the *generation-time* contract — each chart type's
+  typed data, rejected while a generation can still be retried rather than discovered when a reader
+  opens the report. :mod:`intent` turns a validated payload into a :class:`ChartIntent` — the order,
+  the units, the values as drawn, what each field encodes, what must be said beside it — through one
+  builder per type (:mod:`intents`), and :mod:`policy` holds every intent to the presentation rules.
+  :mod:`quantities` is how a quantity is stated. None of it knows a charting library exists.
+- **The Vega-Lite renderer.** :mod:`compiler` draws an intent as a Vega-Lite spec through one arm per
+  type (:mod:`arms`), gated by its own spec rules (:mod:`vega_policy`); :mod:`palette`,
+  :mod:`text_metrics` and :mod:`render` are its theme, its measurements and its rasteriser. It reads
+  intents and adds a picture; it decides nothing a reader is told. This half moves out of the core into
+  an optional adapter, which is why nothing in the first half imports it.
 
 **This module is the package's public root.** A host imports from here and from no module below
 it, and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds that. A ``# debt:``
@@ -29,24 +22,54 @@ comment on an export names what retires it. Code inside the package imports its 
 
 from __future__ import annotations
 
-from threetears.evals.analysis.viz.compiler import ChartColumn, CompiledChart, compile_chart
-from threetears.evals.analysis.viz.models import FindingChart
+from threetears.evals.analysis.viz.compiler import CompiledChart, CompiledColumn, compile_chart, draw_intent
+from threetears.evals.analysis.viz.intent import (
+    INTENT_VERSION,
+    Cell,
+    ChartAxis,
+    ChartColours,
+    ChartColumn,
+    ChartEncoding,
+    ChartIdentity,
+    ChartIntent,
+    ChartReference,
+    ChartType,
+    EncodingRole,
+    chart_intent,
+)
 from threetears.evals.analysis.viz.palette import Theme, vega_config
-from threetears.evals.analysis.viz.payloads import PayloadError
-from threetears.evals.analysis.viz.policy import SpecPolicyError
+from threetears.evals.analysis.viz.payloads import SERIES_SLOTS, VALIDATED_SLOTS, PayloadError
+from threetears.evals.analysis.viz.policy import IntentPolicyError, check_intent
 from threetears.evals.analysis.viz.render import render_png
 from threetears.evals.analysis.viz.text_metrics import TextMetricsError, write_font_metrics
+from threetears.evals.analysis.viz.vega_policy import SpecPolicyError
 
 __all__ = [
+    "INTENT_VERSION",
+    "SERIES_SLOTS",
+    "VALIDATED_SLOTS",
+    "Cell",
+    "ChartAxis",
+    "ChartColours",
     "ChartColumn",
-    "CompiledChart",
-    "FindingChart",
+    "ChartEncoding",
+    "ChartIdentity",
+    "ChartIntent",
+    "ChartReference",
+    "ChartType",
+    "CompiledColumn",  # debt: the Vega-Lite renderer; leaves the core for its adapter (phase D chunk 24)
+    "CompiledChart",  # debt: the Vega-Lite renderer; leaves the core for its adapter (phase D chunk 24)
+    "EncodingRole",
+    "IntentPolicyError",
     "PayloadError",
-    "SpecPolicyError",
-    "TextMetricsError",
-    "Theme",
-    "compile_chart",
-    "render_png",
-    "vega_config",
-    "write_font_metrics",
+    "SpecPolicyError",  # debt: the Vega-Lite renderer; leaves the core for its adapter (phase D chunk 24)
+    "TextMetricsError",  # debt: the Vega-Lite renderer; leaves the core for its adapter (phase D chunk 24)
+    "Theme",  # debt: the Vega-Lite renderer; leaves the core for its adapter (phase D chunk 24)
+    "chart_intent",
+    "check_intent",
+    "compile_chart",  # debt: the Vega-Lite renderer; leaves the core for its adapter (phase D chunk 24)
+    "draw_intent",  # debt: the Vega-Lite renderer; leaves the core for its adapter (phase D chunk 24)
+    "render_png",  # debt: the Vega-Lite renderer; leaves the core for its adapter (phase D chunk 24)
+    "vega_config",  # debt: the Vega-Lite renderer; leaves the core for its adapter (phase D chunk 24)
+    "write_font_metrics",  # debt: the Vega-Lite renderer; leaves the core for its adapter (phase D chunk 24)
 ]

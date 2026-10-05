@@ -378,8 +378,8 @@ def format_significance(
 
     **The single renderer of this rule.** Every server-side surface that shows a
     significance verdict calls this one: a host's compare table, its history
-    table's regression flags, and the compiled chart's values table
-    (:mod:`threetears.evals.analysis.viz.compiler`). The same branch written by hand
+    table's regression flags, and a delta-table chart's values table
+    (:mod:`threetears.evals.analysis.viz.intents.delta_table`). The same branch written by hand
     diverged on both its not-tested predicate and its number formatting before it
     was collapsed here, and the copy that outlived the collapse — the history
     table's — printed a bare "significant" for the one verdict that arrives with

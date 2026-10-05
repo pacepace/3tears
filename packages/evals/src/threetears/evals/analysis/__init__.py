@@ -16,12 +16,14 @@ not here. The pipeline:
   prompt and the closed, one-shot
   :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into
   a schema-valid ``EvalAnalysis`` + extracted insights.
-- ``viz`` — the typed chart payloads the generator's authored charts compile to, and their
-  Vega-Lite specs.
+- ``viz`` — the typed chart payloads the generator's authored charts compile to, the chart intent
+  decided from each, and a Vega-Lite renderer for it.
 - ``errors`` — ``GenerationError`` / ``SoundnessRefusal``, raised by ``generator`` and
   caught by ``service`` and ``reporter_kind``.
+- ``report`` — the :class:`~threetears.evals.analysis.report.Report` an analysis is read through, with
+  its published JSON Schema and its Markdown and script-free HTML serializers.
 - ``service`` — the operations a client drives the lens with: generating and reading analyses,
-  inspecting bundles, compiling charts and tables, the insight ledger, and the reporter cases.
+  inspecting bundles, reading an analysis as its report, the insight ledger, and the reporter cases.
 - ``reads`` — the read lenses over runs that already exist: comparison sets, pivot, frontier,
   history, the program budget, orphaned runs, export, the cost estimate, the run summary and the
   run comparisons.
@@ -127,11 +129,30 @@ from threetears.evals.analysis.reporting import (
     metric_help,
     significance_disclosure,
 )
+from threetears.evals.analysis.report import (
+    REPORT_VERSION,
+    SECTION_TITLES,
+    ChartBlock,
+    DisclosureBlock,
+    DisclosureSource,
+    Fact,
+    Report,
+    ReportBlock,
+    ReportSection,
+    ReportSource,
+    TableBlock,
+    TableColumn,
+    TextBlock,
+    TextRole,
+    build_report,
+    published_report_schema,
+    report_html,
+    report_json_schema,
+    report_markdown,
+)
 from threetears.evals.analysis.service import (
     PreparedGeneration,
-    analysis_arm_table,
-    analysis_surface_table,
-    compile_analysis_charts,
+    analysis_report,
     compile_finding_chart,
     describe_insight_id_filters,
     freeze_reporter_case,
@@ -217,10 +238,28 @@ from threetears.evals.analysis.surface_table import (
     SurfaceValue,
     SurfaceVerdict,
 )
-from threetears.evals.analysis.viz.models import FindingChart
 
 
 __all__ = [
+    "REPORT_VERSION",
+    "SECTION_TITLES",
+    "ChartBlock",
+    "DisclosureBlock",
+    "DisclosureSource",
+    "Fact",
+    "Report",
+    "ReportBlock",
+    "ReportSection",
+    "ReportSource",
+    "TableBlock",
+    "TableColumn",
+    "TextBlock",
+    "TextRole",
+    "build_report",
+    "published_report_schema",
+    "report_html",
+    "report_json_schema",
+    "report_markdown",
     "ABSENT",
     "AS_RECORDED_MODEL",
     "CELL_MEASURED",
@@ -271,7 +310,6 @@ __all__ = [
     "DimensionAgreement",
     "DimensionReading",
     "FamilyComparison",
-    "FindingChart",
     "FrontierDominator",
     "FrontierPoint",
     "FrontierResult",
@@ -331,17 +369,15 @@ __all__ = [
     "VerdictOrder",
     "WriterMessageCheck",
     "add_runs_to_campaign",
-    "analysis_arm_table",
+    "analysis_report",
     "analysis_gen_request_settings_for",
-    "analysis_surface_table",
     "assemble_context_bundle",
     "bisect_runs",
     "cell_label",
     "compare_runs",
     "compare_two_runs",
     "comparison_sets",
-    "compile_analysis_charts",
-    "compile_finding_chart",
+    "compile_finding_chart",  # debt: the Vega-Lite path; leaves the core with the renderer adapter (phase D chunk 24)
     "completeness_disclosure",  # debt: retires when the English moves to one renderer
     "create_campaign",
     "declarable_axes",

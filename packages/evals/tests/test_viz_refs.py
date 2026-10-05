@@ -977,7 +977,7 @@ def test_a_single_category_compiles_to_the_one_part_chart_the_drop_removes():
     generator's undrawable-chart drop catches — keeping the finding instead of paying for a repair.
     """
     from threetears.evals.analysis.viz.payloads import PayloadError
-    from threetears.evals.analysis.viz.policy import SpecPolicyError
+    from threetears.evals.analysis.viz.vega_policy import SpecPolicyError
 
     payload = build(chart("breakdown", [ref("B")], ["stop_reason"]))
     assert [part["label"] for part in payload["parts"]] == ["end_turn"]

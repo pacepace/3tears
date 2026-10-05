@@ -8,7 +8,7 @@ every type shares:
 
 * the author's caption is served exactly as written, and what the compiler has to add travels
   as ``disclosures``, one idea per line, never joined onto the caption;
-* the wire shape (:class:`~threetears.evals.analysis.viz.models.FindingChart`) carries those lines apart;
+* the wire shape (:class:`~threetears.evals.analysis.viz.intent.ChartIntent`) carries those lines apart;
 * every line of prose beside a chart is held to the rendering rule, one line at a time;
 * what the prose SAYS is not refused — a significance word in a mechanism draws;
 * one unit per quantity, chosen by the public ``display_scale``;
@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.analysis.viz.compiler import compile_chart, display_scale
-from threetears.evals.analysis.viz.models import FindingChart
+from threetears.evals.analysis.viz.compiler import compile_chart
+from threetears.evals.analysis.viz.quantities import display_scale
+from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError, describe_validation
 
 
@@ -188,19 +189,19 @@ class TestEachArmDisclosesOneIdeaPerLine:
 
 
 class TestTheWireShapeCarriesBothAuthorsApart:
-    """``FindingChart.from_compiled`` serves the caption and the disclosures as two fields."""
+    """The served chart — its ``ChartIntent``, as a report carries it — keeps the caption and the disclosures apart."""
 
     @pytest.mark.parametrize("viz_type", sorted(UNDRAWN_BY_THE_TOY_CAPTURE))
     def test_the_served_chart_keeps_the_caption_and_every_disclosure_line(self, viz_type):
-        compiled = compile_chart(viz_type, {**UNDRAWN_BY_THE_TOY_CAPTURE[viz_type], "caption": AUTHOR})
-        served = FindingChart.from_compiled("f-1", compiled)
-        assert served.caption == AUTHOR
-        assert served.disclosures == compiled.disclosures
-        assert served.model_dump()["disclosures"] == compiled.disclosures
+        payload = {**UNDRAWN_BY_THE_TOY_CAPTURE[viz_type], "caption": AUTHOR}
+        served = chart_intent(viz_type, payload).model_dump(mode="json")
+        compiled = compile_chart(viz_type, payload)
+        assert served["caption"] == AUTHOR
+        assert served["disclosures"] == compiled.disclosures
 
     def test_a_chart_with_nothing_to_disclose_serves_an_empty_list(self):
         payload = {key: value for key, value in BREAKDOWN.items() if key not in ("total", "total_n")}
-        assert FindingChart.from_compiled("f-1", compile_chart("breakdown", payload)).disclosures == []
+        assert chart_intent("breakdown", payload).model_dump(mode="json")["disclosures"] == []
 
 
 class TestProseBesideTheChartIsNotGated:

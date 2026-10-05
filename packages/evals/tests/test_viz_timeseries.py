@@ -33,7 +33,7 @@ from threetears.evals.analysis.generator import first_request, generate_analysis
 from threetears.evals.analysis.references import cell_aliases, resolve_reading
 from threetears.evals.analysis.viz import compile_chart
 from threetears.evals.analysis.viz.payloads import PayloadError, parse_payload
-from threetears.evals.analysis.viz.policy import check_spec
+from threetears.evals.analysis.viz.vega_policy import check_spec
 from threetears.evals.analysis.viz_refs import TimeseriesRef, build_viz_payload, reference_from_chart
 from threetears.evals.contracts.authored import NO_CHART, Chart, MeasureRef
 from threetears.evals.contracts.host.measures import MeasureRegistry
@@ -153,11 +153,22 @@ class TestTheBundleEarnsATimeAxis:
         assert [position.key for position in bundle.time_axis.positions] == ["0.9", "0.10"]
         assert sorted(["0.9", "0.10"]) == ["0.10", "0.9"], "the fixture must be one that name order gets wrong"
 
-    def test_a_run_with_no_build_recorded_falls_back_to_days(self) -> None:
+    def test_a_run_with_no_build_recorded_falls_back_to_days_and_names_the_runs_that_lacked_it(self) -> None:
+        """The fallback is stated on the axis, not left for a reader to mistake days for builds."""
         bundle = _timed([(DAY_ONE, "0.9"), (DAY_TWO, None)], profile=_release_profile())
+        unlabelled = sorted(str(uuid.uuid5(_NAMESPACE, f"1|{level}")) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
 
         assert bundle.time_axis is not None
         assert bundle.time_axis.basis == "date"
+        assert bundle.time_axis.basis_reason == f"2 of 4 runs recorded no batch_label ({', '.join(unlabelled)})"
+
+    def test_a_date_axis_with_no_label_declared_says_the_host_labels_none(self) -> None:
+        assert _two_days().time_axis.basis_reason == "the host labels no build"
+
+    def test_a_release_axis_carries_no_fallback_reason(self) -> None:
+        bundle = _timed([(DAY_ONE, "0.9"), ("2026-03-14T12:00:00+00:00", "0.10")], profile=_release_profile())
+
+        assert bundle.time_axis.basis_reason is None
 
     def test_one_build_on_one_day_says_which_build(self) -> None:
         bundle = _timed([(DAY_ONE, "0.9"), ("2026-03-14T12:00:00+00:00", "0.9")], profile=_release_profile())
@@ -171,9 +182,11 @@ class TestTheBundleEarnsATimeAxis:
         bundle = _timed([(DAY_ONE, "0.9"), ("2026-03-14T12:00:00+00:00", None)], profile=_release_profile())
 
         assert bundle.time_axis is None
-        assert (
-            bundle.time_axis_withheld
-            == "every run started on one day (2026-03-14) and 2 of 4 runs recorded no batch_label"
+        unlabelled = ", ".join(
+            sorted(str(uuid.uuid5(_NAMESPACE, f"1|{level}")) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
+        )
+        assert bundle.time_axis_withheld == (
+            f"every run started on one day (2026-03-14) and 2 of 4 runs recorded no batch_label ({unlabelled})"
         )
 
     def test_a_run_that_measured_nothing_has_no_place_in_time(self) -> None:
@@ -231,7 +244,7 @@ class TestTheBundleEarnsATimeAxis:
         assert named <= set(surface.measures)
 
     def test_the_bundle_shape_version_moved(self) -> None:
-        assert _two_days().schema_version == 35
+        assert _two_days().schema_version == 36
 
 
 class TestTheTimeAxisContract:
@@ -245,7 +258,27 @@ class TestTheTimeAxisContract:
 
     def test_one_position_is_not_an_axis(self) -> None:
         with pytest.raises(ValueError, match="at least 2"):
-            TimeAxis(basis="date", positions=[self._position("a")])
+            TimeAxis(basis="date", basis_reason="the host labels no build", positions=[self._position("a")])
+
+    @pytest.mark.parametrize("reason", [None, "", "   "])
+    def test_a_date_axis_that_does_not_say_why_it_is_not_builds_is_refused(self, reason: str | None) -> None:
+        with pytest.raises(ValueError, match="a `date` time axis states its basis_reason"):
+            TimeAxis(basis="date", basis_reason=reason, positions=[self._position("a"), self._position("b")])
+
+    def test_a_release_axis_with_a_fallback_reason_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="a `release` time axis carries no basis_reason"):
+            TimeAxis(
+                basis="release",
+                release_label="app_version",
+                basis_reason="the host labels no build",
+                positions=[self._position("a"), self._position("b")],
+            )
+
+    def test_a_date_axis_saying_why_is_accepted(self) -> None:
+        axis = TimeAxis(
+            basis="date", basis_reason="the host labels no build", positions=[self._position("a"), self._position("b")]
+        )
+        assert axis.basis_reason == "the host labels no build"
 
     @pytest.mark.parametrize(("basis", "label"), [("release", None), ("date", "app_version")])
     def test_the_basis_and_the_label_agree(self, basis: str, label: str | None) -> None:

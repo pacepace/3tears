@@ -195,6 +195,14 @@ class TimeAxis(EvalDocumentModel):
         default=None,
         description="The host label the positions name, on a `release` axis; None on a `date` axis.",
     )
+    basis_reason: str | None = Field(
+        default=None,
+        description=(
+            "Why the positions are days rather than builds, on a `date` axis — the host labels no build, every run "
+            "recorded the same one, or which runs recorded none — so a fallback from builds to days is stated "
+            "rather than silent. None on a `release` axis, which needs no reason."
+        ),
+    )
     positions: list[TimePosition] = Field(
         min_length=2, description="The positions, earliest first. Two or more, or there is no axis."
     )
@@ -213,6 +221,20 @@ class TimeAxis(EvalDocumentModel):
         """A release axis says which label it reads, and a date axis reads none."""
         if (self.basis == "release") != (self.release_label is not None):
             raise ValueError("a `release` time axis names its release_label, and a `date` axis names none")
+        return self
+
+    @model_validator(mode="after")
+    def _a_date_axis_says_why_it_is_not_builds(self) -> TimeAxis:
+        """A `date` axis states why it fell back from builds, and a `release` axis states no fallback.
+
+        Days are the fallback, and a host that labels its builds reads a date axis as its builds unless
+        something says otherwise — which runs lacked the label is the one thing that sends them to fix it.
+        """
+        reason = (self.basis_reason or "").strip()
+        if self.basis == "date" and not reason:
+            raise ValueError("a `date` time axis states its basis_reason: why the positions are days, not builds")
+        if self.basis == "release" and self.basis_reason is not None:
+            raise ValueError("a `release` time axis carries no basis_reason; it fell back from nothing")
         return self
 
 

@@ -19,7 +19,7 @@ import pytest
 
 from threetears.evals.analysis import numbers, references, reporting, surface_table
 from threetears.evals.analysis.numbers import ABSENT, WHOLE_FROM, format_number, format_signed
-from threetears.evals.analysis.viz import compiler
+from threetears.evals.analysis.viz import quantities
 from threetears.evals.contracts.models import LatencyMetrics
 
 
@@ -88,12 +88,12 @@ class TestTheSignedForm:
 
 class TestThereIsOneImplementation:
     def test_every_surface_that_spells_numbers_holds_the_same_function(self):
-        """The chart compiler re-exports it for the chart arms; nothing holds a copy.
+        """The chart quantities spell their values with it, as every chart arm does; nothing holds a copy.
 
         The arm table is not on the list: it prints no number since its per-measure renderer was
         retired, so it holds no formatter to compare.
         """
-        for module in (compiler, references, surface_table):
+        for module in (quantities, references, surface_table):
             assert module.format_number is numbers.format_number, module.__name__
 
     def test_no_other_module_defines_a_number_formatter(self):

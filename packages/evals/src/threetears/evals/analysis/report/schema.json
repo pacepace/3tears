@@ -1,0 +1,996 @@
+{
+  "$defs": {
+    "ChartAxis": {
+      "additionalProperties": false,
+      "description": "One ruler a chart measures against.",
+      "properties": {
+        "name": {
+          "description": "The axis's name, by which an encoding refers to it.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "order": {
+          "description": "A categorical axis's positions, in their stated order (a time axis); empty for a quantitative one.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Order",
+          "type": "array"
+        },
+        "quantity": {
+          "description": "What the axis measures, as a reader is told it — the quantity, with its unit in parentheses where it has one.",
+          "minLength": 1,
+          "title": "Quantity",
+          "type": "string"
+        },
+        "unit": {
+          "default": "",
+          "description": "The unit the axis is drawn in, after any restatement; empty when it has none.",
+          "title": "Unit",
+          "type": "string"
+        },
+        "zero_baseline": {
+          "description": "Whether the axis starts at zero. Required wherever a length is drawn against it; a position may crop.",
+          "title": "Zero Baseline",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "quantity",
+        "zero_baseline"
+      ],
+      "title": "ChartAxis",
+      "type": "object"
+    },
+    "ChartBlock": {
+      "additionalProperties": false,
+      "description": "A finding's chart: its intent, or why the stored chart cannot be drawn.",
+      "properties": {
+        "error": {
+          "default": "",
+          "description": "Why the stored chart cannot be drawn, naming the offending field; empty when it can. Served rather than omitted: a chart missing from a report is otherwise indistinguishable from a finding that carried none.",
+          "title": "Error",
+          "type": "string"
+        },
+        "finding": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none.",
+          "title": "Finding"
+        },
+        "intent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChartIntent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What the chart draws and must say; None when it cannot be drawn."
+        },
+        "kind": {
+          "const": "chart",
+          "default": "chart",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rests_on": {
+          "description": "Positions of the findings this block rests on, as the author linked them.",
+          "items": {
+            "type": "integer"
+          },
+          "title": "Rests On",
+          "type": "array"
+        },
+        "section": {
+          "description": "The section the block sits in.",
+          "enum": [
+            "summary",
+            "questions",
+            "decisions",
+            "findings",
+            "arms",
+            "surface",
+            "next",
+            "methods"
+          ],
+          "title": "Section",
+          "type": "string"
+        },
+        "viz_type": {
+          "description": "The chart type the finding carries.",
+          "enum": [
+            "delta_table",
+            "frontier",
+            "timeseries",
+            "distribution",
+            "null_result",
+            "breakdown",
+            "attribution",
+            "sweep_ranking"
+          ],
+          "title": "Viz Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "section",
+        "viz_type"
+      ],
+      "title": "ChartBlock",
+      "type": "object"
+    },
+    "ChartColours": {
+      "additionalProperties": false,
+      "description": "One colour scheme a chart uses: which field it carries, and the slot each value takes.",
+      "properties": {
+        "domain": {
+          "description": "The coloured values, in slot or ramp order.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Domain",
+          "type": "array"
+        },
+        "field": {
+          "description": "The `data` key whose values are coloured.",
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "scheme": {
+          "description": "`categorical`: each value in `domain` takes the slot of its position (first value, slot 1), in a fixed order that never cycles inside the domain. `sequential`: `domain` runs low to high and takes a ramp.",
+          "enum": [
+            "categorical",
+            "sequential"
+          ],
+          "title": "Scheme",
+          "type": "string"
+        },
+        "uncoloured": {
+          "description": "Values of `field` deliberately given no slot — an absence (a lever a configuration never set) drawn in the neutral that carries no identity, rather than in a hue that would read as a value.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Uncoloured",
+          "type": "array"
+        }
+      },
+      "required": [
+        "field",
+        "scheme",
+        "domain"
+      ],
+      "title": "ChartColours",
+      "type": "object"
+    },
+    "ChartColumn": {
+      "additionalProperties": false,
+      "description": "One column of the values-as-drawn table.",
+      "properties": {
+        "header": {
+          "description": "The column's header, carrying its unit where it has one.",
+          "minLength": 1,
+          "title": "Header",
+          "type": "string"
+        },
+        "key": {
+          "description": "The key in each row of `rows`.",
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "header"
+      ],
+      "title": "ChartColumn",
+      "type": "object"
+    },
+    "ChartEncoding": {
+      "additionalProperties": false,
+      "description": "What one field of ``data`` encodes, and against which axis.",
+      "properties": {
+        "axis": {
+          "default": "",
+          "description": "The axis the field is measured against; empty for a role drawn on none.",
+          "title": "Axis",
+          "type": "string"
+        },
+        "field": {
+          "description": "The key in each `data` row.",
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "role": {
+          "description": "What the field encodes — see `EncodingRole`.",
+          "enum": [
+            "identity",
+            "length",
+            "position",
+            "interval_low",
+            "interval_high",
+            "level",
+            "class",
+            "ordinal",
+            "count",
+            "label"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "varies_over": {
+          "default": "",
+          "description": "For an interval end: what the interval varies over. Empty for every other role.",
+          "title": "Varies Over",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "role"
+      ],
+      "title": "ChartEncoding",
+      "type": "object"
+    },
+    "ChartIdentity": {
+      "additionalProperties": false,
+      "description": "What a chart's rows are named by, and the order they are drawn in.",
+      "properties": {
+        "field": {
+          "description": "The `data` key carrying each row's identity.",
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "order": {
+          "description": "Every identity, in drawn order — stated, never left to a renderer to sort.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Order",
+          "type": "array"
+        },
+        "ordered_by": {
+          "description": "What decided that order, in plain words.",
+          "minLength": 1,
+          "title": "Ordered By",
+          "type": "string"
+        },
+        "ranked_by": {
+          "default": "",
+          "description": "The `data` field the order RANKS by, descending, when the order is a ranking claim; empty when it is not. A ranking is ordered by a measure it draws, never by a column a reader is meant to discover a pattern in.",
+          "title": "Ranked By",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "order",
+        "ordered_by"
+      ],
+      "title": "ChartIdentity",
+      "type": "object"
+    },
+    "ChartIntent": {
+      "additionalProperties": false,
+      "description": "One chart's intent: what it draws and what it must say, for any renderer to draw.\n\nSee the module docstring for the contract. A renderer may read ``payload`` for what a summary\ntable cannot hold — the raw observations a distribution draws as density — and reads everything\nelse from the fields below, which is what makes two renderers draw one chart.",
+      "properties": {
+        "axes": {
+          "description": "The rulers the chart measures against.",
+          "items": {
+            "$ref": "#/$defs/ChartAxis"
+          },
+          "title": "Axes",
+          "type": "array"
+        },
+        "caption": {
+          "default": "",
+          "description": "The analysis author's own line beside the chart, exactly as written; empty when none.",
+          "title": "Caption",
+          "type": "string"
+        },
+        "colours": {
+          "description": "Every colour scheme the chart uses. Empty for a chart drawn in one ink.",
+          "items": {
+            "$ref": "#/$defs/ChartColours"
+          },
+          "title": "Colours",
+          "type": "array"
+        },
+        "columns": {
+          "description": "The values-as-drawn table's columns, in display order.",
+          "items": {
+            "$ref": "#/$defs/ChartColumn"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "data": {
+          "description": "The marks' values, one row per mark the chart places by value, in drawn order and drawn units.",
+          "items": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "title": "Data",
+          "type": "array"
+        },
+        "direct_labels": {
+          "description": "Whether every mark carries its own identity as text beside it, so no key is needed to read it.",
+          "title": "Direct Labels",
+          "type": "boolean"
+        },
+        "disclosures": {
+          "description": "What the chart must tell a reader that the author could not — one idea per line, in reading order.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Disclosures",
+          "type": "array"
+        },
+        "encodings": {
+          "description": "What each field of `data` encodes.",
+          "items": {
+            "$ref": "#/$defs/ChartEncoding"
+          },
+          "title": "Encodings",
+          "type": "array"
+        },
+        "footnote": {
+          "default": "",
+          "description": "A note the figure carries with it — what it could not draw, in one sentence; empty when none.",
+          "title": "Footnote",
+          "type": "string"
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChartIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What the rows are named by and the order they are drawn in; None where no field names rows."
+        },
+        "intent_version": {
+          "const": 1,
+          "default": 1,
+          "description": "This shape's version.",
+          "title": "Intent Version",
+          "type": "integer"
+        },
+        "intervals": {
+          "default": "",
+          "description": "What the chart's intervals are and what they span, as one statement; empty when it has none.",
+          "title": "Intervals",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "description": "The type's validated data (the payload model for `type`), as JSON — the source the rest was decided from.",
+          "title": "Payload",
+          "type": "object"
+        },
+        "references": {
+          "description": "Standards drawn across an axis — a quality bar the marks are held to.",
+          "items": {
+            "$ref": "#/$defs/ChartReference"
+          },
+          "title": "References",
+          "type": "array"
+        },
+        "rows": {
+          "description": "The values-as-drawn rows, in drawn order, keyed by column key.",
+          "items": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "title": "Rows",
+          "type": "array"
+        },
+        "scale": {
+          "description": "The factor taking the payload's values into the unit drawn (1 when nothing was restated).",
+          "exclusiveMinimum": 0.0,
+          "title": "Scale",
+          "type": "number"
+        },
+        "shapes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "A `class` field's values → the geometric symbol each is drawn as (`circle`, `diamond`, `cross`).",
+          "title": "Shapes",
+          "type": "object"
+        },
+        "title": {
+          "description": "The chart's title.",
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "description": "Which of eval's chart types this is.",
+          "enum": [
+            "delta_table",
+            "frontier",
+            "timeseries",
+            "distribution",
+            "null_result",
+            "breakdown",
+            "attribution",
+            "sweep_ranking"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "unit": {
+          "default": "",
+          "description": "The unit the chart's primary quantity is drawn in; empty when it has none.",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "title",
+        "payload",
+        "scale",
+        "data",
+        "encodings",
+        "axes",
+        "direct_labels",
+        "columns",
+        "rows"
+      ],
+      "title": "ChartIntent",
+      "type": "object"
+    },
+    "ChartReference": {
+      "additionalProperties": false,
+      "description": "A standard drawn across one axis — the bar the marks are read against, not one of them.",
+      "properties": {
+        "axis": {
+          "description": "The axis the standard is drawn across.",
+          "minLength": 1,
+          "title": "Axis",
+          "type": "string"
+        },
+        "label": {
+          "description": "What the standard is, in words.",
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "value": {
+          "description": "Where it sits on that axis, in the axis's unit.",
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "axis",
+        "value",
+        "label"
+      ],
+      "title": "ChartReference",
+      "type": "object"
+    },
+    "DisclosureBlock": {
+      "additionalProperties": false,
+      "description": "Something code must tell the reader that no author wrote — one idea.",
+      "properties": {
+        "finding": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none.",
+          "title": "Finding"
+        },
+        "kind": {
+          "const": "disclosure",
+          "default": "disclosure",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rests_on": {
+          "description": "Positions of the findings this block rests on, as the author linked them.",
+          "items": {
+            "type": "integer"
+          },
+          "title": "Rests On",
+          "type": "array"
+        },
+        "section": {
+          "description": "The section the block sits in.",
+          "enum": [
+            "summary",
+            "questions",
+            "decisions",
+            "findings",
+            "arms",
+            "surface",
+            "next",
+            "methods"
+          ],
+          "title": "Section",
+          "type": "string"
+        },
+        "source": {
+          "description": "What the disclosure speaks for.",
+          "enum": [
+            "chart",
+            "arms",
+            "surface",
+            "time_axis",
+            "generation"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "text": {
+          "description": "The disclosure, one sentence or a few.",
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "section",
+        "source",
+        "text"
+      ],
+      "title": "DisclosureBlock",
+      "type": "object"
+    },
+    "Fact": {
+      "additionalProperties": false,
+      "description": "A labelled fact code states beside an author's words — a confidence, a disposition, a tier.",
+      "properties": {
+        "name": {
+          "description": "What the fact is, e.g. `Confidence`.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "value": {
+          "description": "The fact, in words.",
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "title": "Fact",
+      "type": "object"
+    },
+    "ReportSource": {
+      "additionalProperties": false,
+      "description": "What the report is a report of, and how that analysis was generated.",
+      "properties": {
+        "analysis_id": {
+          "description": "The analysis the report renders.",
+          "minLength": 1,
+          "title": "Analysis Id",
+          "type": "string"
+        },
+        "behavior": {
+          "description": "The behaviour under analysis.",
+          "minLength": 1,
+          "title": "Behavior",
+          "type": "string"
+        },
+        "bundle_fingerprint": {
+          "description": "The fingerprint of the bundle it was written over.",
+          "minLength": 1,
+          "title": "Bundle Fingerprint",
+          "type": "string"
+        },
+        "campaign_id": {
+          "description": "The campaign the analysis is of.",
+          "minLength": 1,
+          "title": "Campaign Id",
+          "type": "string"
+        },
+        "generated_at": {
+          "description": "When the analysis was generated (ISO-8601).",
+          "minLength": 1,
+          "title": "Generated At",
+          "type": "string"
+        },
+        "generator_model": {
+          "description": "The model that wrote it, as the provider reported it.",
+          "minLength": 1,
+          "title": "Generator Model",
+          "type": "string"
+        },
+        "scope_id": {
+          "description": "The scope both live in.",
+          "minLength": 1,
+          "title": "Scope Id",
+          "type": "string"
+        },
+        "subject_id": {
+          "description": "The analysed subject.",
+          "minLength": 1,
+          "title": "Subject Id",
+          "type": "string"
+        },
+        "subject_kind": {
+          "description": "The subject's kind; empty when the campaign declared none.",
+          "title": "Subject Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "analysis_id",
+        "campaign_id",
+        "scope_id",
+        "subject_id",
+        "subject_kind",
+        "behavior",
+        "generated_at",
+        "generator_model",
+        "bundle_fingerprint"
+      ],
+      "title": "ReportSource",
+      "type": "object"
+    },
+    "TableBlock": {
+      "additionalProperties": false,
+      "description": "A table code laid out — its columns, its rows in their stated order, and how much of it is shown.",
+      "properties": {
+        "columns": {
+          "description": "The columns, in display order.",
+          "items": {
+            "$ref": "#/$defs/TableColumn"
+          },
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        },
+        "finding": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none.",
+          "title": "Finding"
+        },
+        "kind": {
+          "const": "table",
+          "default": "table",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "description": "Which table this is: `evidence`, `arms`, `surface` or `unadjudicated_bars`.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "order": {
+          "description": "The order the rows are in, in words.",
+          "minLength": 1,
+          "title": "Order",
+          "type": "string"
+        },
+        "rests_on": {
+          "description": "Positions of the findings this block rests on, as the author linked them.",
+          "items": {
+            "type": "integer"
+          },
+          "title": "Rests On",
+          "type": "array"
+        },
+        "rows": {
+          "description": "The rows shown, in the stated order, keyed by column key.",
+          "items": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "title": "Rows",
+          "type": "array"
+        },
+        "section": {
+          "description": "The section the block sits in.",
+          "enum": [
+            "summary",
+            "questions",
+            "decisions",
+            "findings",
+            "arms",
+            "surface",
+            "next",
+            "methods"
+          ],
+          "title": "Section",
+          "type": "string"
+        },
+        "title": {
+          "description": "The table's heading.",
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "total_rows": {
+          "description": "How many rows the table has; more than are shown when it is truncated.",
+          "minimum": 0,
+          "title": "Total Rows",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "section",
+        "name",
+        "title",
+        "columns",
+        "rows",
+        "order",
+        "total_rows"
+      ],
+      "title": "TableBlock",
+      "type": "object"
+    },
+    "TableColumn": {
+      "additionalProperties": false,
+      "description": "One column of a report table.",
+      "properties": {
+        "header": {
+          "description": "The column's header, carrying its unit where it has one.",
+          "minLength": 1,
+          "title": "Header",
+          "type": "string"
+        },
+        "key": {
+          "description": "The key in each row.",
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "header"
+      ],
+      "title": "TableColumn",
+      "type": "object"
+    },
+    "TextBlock": {
+      "additionalProperties": false,
+      "description": "What the analysis's author wrote, exactly as written, with the facts code states beside it.",
+      "properties": {
+        "body": {
+          "description": "The author's words, Markdown allowed; empty where the author left a required field blank.",
+          "title": "Body",
+          "type": "string"
+        },
+        "facts": {
+          "description": "Facts code states beside the words, in reading order.",
+          "items": {
+            "$ref": "#/$defs/Fact"
+          },
+          "title": "Facts",
+          "type": "array"
+        },
+        "finding": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The finding this block belongs to, by its position in the document (0 is the first); None when it belongs to none.",
+          "title": "Finding"
+        },
+        "kind": {
+          "const": "text",
+          "default": "text",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rests_on": {
+          "description": "Positions of the findings this block rests on, as the author linked them.",
+          "items": {
+            "type": "integer"
+          },
+          "title": "Rests On",
+          "type": "array"
+        },
+        "role": {
+          "description": "What the author wrote it as.",
+          "enum": [
+            "summary",
+            "answer",
+            "decision",
+            "revisit_when",
+            "finding_title",
+            "finding_body",
+            "caveat",
+            "carried_forward",
+            "next_step",
+            "next_step_why"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "section": {
+          "description": "The section the block sits in.",
+          "enum": [
+            "summary",
+            "questions",
+            "decisions",
+            "findings",
+            "arms",
+            "surface",
+            "next",
+            "methods"
+          ],
+          "title": "Section",
+          "type": "string"
+        }
+      },
+      "required": [
+        "section",
+        "role",
+        "body"
+      ],
+      "title": "TextBlock",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One analysis, as a document every surface renders. See the module docstring for the contract.",
+  "properties": {
+    "blocks": {
+      "description": "The report, in reading order.",
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "chart": "#/$defs/ChartBlock",
+            "disclosure": "#/$defs/DisclosureBlock",
+            "table": "#/$defs/TableBlock",
+            "text": "#/$defs/TextBlock"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/TextBlock"
+          },
+          {
+            "$ref": "#/$defs/TableBlock"
+          },
+          {
+            "$ref": "#/$defs/ChartBlock"
+          },
+          {
+            "$ref": "#/$defs/DisclosureBlock"
+          }
+        ]
+      },
+      "title": "Blocks",
+      "type": "array"
+    },
+    "finding_count": {
+      "description": "How many findings the document holds — the range every position is in.",
+      "minimum": 0,
+      "title": "Finding Count",
+      "type": "integer"
+    },
+    "headline": {
+      "description": "The author's headline, as written; empty when the author wrote none.",
+      "title": "Headline",
+      "type": "string"
+    },
+    "report_version": {
+      "const": 1,
+      "default": 1,
+      "description": "This shape's version.",
+      "title": "Report Version",
+      "type": "integer"
+    },
+    "source": {
+      "$ref": "#/$defs/ReportSource",
+      "description": "What this is a report of."
+    }
+  },
+  "required": [
+    "headline",
+    "finding_count",
+    "source",
+    "blocks"
+  ],
+  "title": "Report",
+  "type": "object"
+}

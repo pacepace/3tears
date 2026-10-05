@@ -26,9 +26,20 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from threetears.evals.analysis.viz.palette import validated_slots
 from threetears.evals.contracts.prose import ModelProse
 from threetears.evals.contracts.metrics import Materiality
+
+#: How many categorical colour slots a chart may assign with validated separation.
+#:
+#: Part of eval's chart vocabulary, not of any palette: a chart intent names colour SLOTS, never colours,
+#: and a renderer's theme supplies the hues. Slots 1-4 are the ones a theme must separate for colourblind
+#: readers and against its surface; 5-8 are a derived second tier that need not; past
+#: :data:`SERIES_SLOTS` a renderer recycles from slot 1. A theme is held to these two numbers by its
+#: renderer's conformance test, so the core decides what a slot promises and the theme keeps the promise.
+VALIDATED_SLOTS = 4
+
+#: How many categorical colour slots a theme supplies before it recycles — the width of the vocabulary.
+SERIES_SLOTS = 8
 
 #: How far a breakdown's parts may miss the `total` they claim to make up, as a
 #: fraction of the larger quantity involved.
@@ -431,7 +442,7 @@ class DeltaRow(BaseModel):
     whether the two sides' samples line up case for case, which can differ from
     one metric to the next — and it defaults to the WEAKER claim. It has to: this
     payload is stored and shipped as an open dict (``Viz.payload``), and the same
-    dict is rendered twice, server-side by :mod:`threetears.evals.analysis.viz.compiler` and
+    dict is rendered twice, server-side by :mod:`threetears.evals.analysis.viz.intent` and
     browser-side by a host's eval kit, so an ABSENT
     field is read by both and no default that only one side holds can fill it in.
     Unstated therefore means unpaired on both surfaces — the same reading the
@@ -1268,10 +1279,10 @@ class SweepRankingPayload(_VizPayload):
                 if row.config[name] != ABSENT_LEVEL
             }
         )
-        if len(categorical) > validated_slots():
+        if len(categorical) > VALIDATED_SLOTS:
             raise ValueError(
                 f"{len(categorical)} categorical levels across the swept levers ({', '.join(categorical)}) exceeds the "
-                f"{validated_slots()} validated hues — past them the palette recycles and two levels draw alike, and a "
+                f"{VALIDATED_SLOTS} validated hues — past them the palette recycles and two levels draw alike, and a "
                 "barcode cell cannot carry the direct label that normally makes that survivable; use a heatmap for a "
                 "crossing this wide, or sweep the extra lever separately"
             )
@@ -1509,6 +1520,8 @@ def describe_validation(exc: ValidationError) -> str:
 
 
 __all__ = [
+    "SERIES_SLOTS",
+    "VALIDATED_SLOTS",
     "ABSENT_LEVEL",
     "PAYLOAD_MODELS",
     "AttributionMovement",

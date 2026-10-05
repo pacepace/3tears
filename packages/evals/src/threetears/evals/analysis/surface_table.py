@@ -5,10 +5,10 @@ against them, and what each measure is. How those facts become a table — the r
 measures stand in as the cost and latency columns, the one unit each column is stated in, which
 verdict sits under which bar, the replication sentence, the run notes — is a layout, and a layout
 decided twice is two layouts. It was: the MCP render and the browser each derived it, and the
-browser needed two hand-kept mirrors of server code to do so. So it is derived here, exposed as
-:func:`~threetears.evals.analysis.service.analysis_surface_table`, served at
-``GET /api/v1/eval/analyses/{id}/surface``, and both surfaces render what they are served — the
-pattern :mod:`threetears.evals.analysis.arms` set for the arm table.
+browser needed two hand-kept mirrors of server code to do so. So it is derived here, laid into the
+analysis's :class:`~threetears.evals.analysis.report.Report` (:func:`~threetears.evals.analysis.service.analysis_report`),
+and every surface renders what it is served — the pattern :mod:`threetears.evals.analysis.arms` set
+for the arm table.
 
 **Persisted: the facts. Derived: the table.** Computed on every read and never written back, so a
 stored analysis carries no layout a later reader would have to un-decide.
@@ -40,7 +40,7 @@ from threetears.evals.analysis.arms import (
     short_digest,
 )
 from threetears.evals.analysis.numbers import format_number
-from threetears.evals.analysis.viz.compiler import display_scale
+from threetears.evals.analysis.viz.quantities import display_scale
 from threetears.evals.contracts.analysis_measures import BarAdjudication, BarVerdict, MeasureSummary
 from threetears.evals.contracts.campaign import EvalAnalysis
 from threetears.evals.contracts.metrics import MeritAxis
