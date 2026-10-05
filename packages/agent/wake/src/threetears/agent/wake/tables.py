@@ -28,13 +28,14 @@ this package, so the factories below construct the ``Table`` directly.
 
 **Drift protection.** A parallel hand-written DDL with no parity
 guarantee would be the embedded-DDL-drift smell. The factory output is
-pinned against the canonical migration DDL (the FINAL post-v007 shape:
+pinned against the canonical migration DDL (the FINAL post-v008 shape:
 v001-v003 create the tables, v004 extends the ``wake_fires.status``
 CHECK to add ``'dispatching'``, v005 replaces the
 ``webhook_subscriptions.verification_scheme`` hardcoded-value CHECK
 with a slug-format guard, v006 adds ``include_conversation_history``, v007
 adds ``protected`` and its CHECK, ``started_conversation_id``, the agent
-indexes, ``'skipped_life_off'`` and the ``'spawn'`` default) by
+indexes, ``'skipped_life_off'`` and the ``'spawn'`` default, v008 adds
+``'checked_quiet'``) by
 ``tests/integration/test_sqlalchemy_table_parity.py``: it applies the
 migrations to one Postgres schema, emits each factory's ``CREATE
 TABLE`` + indexes into a second schema, and asserts the two are
@@ -258,9 +259,9 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
 def wake_fires_table(metadata: MetaData) -> Table:
     """Register the ``wake_fires`` table on the given SA metadata.
 
-    Mirrors the canonical migration DDL in its FINAL post-v007 shape
+    Mirrors the canonical migration DDL in its FINAL post-v008 shape
     (``migrations/v002_create_wake_fires.py`` for the table + the v003
-    retro-added webhook FK + the v004 extended ``status`` CHECK):
+    retro-added webhook FK + the ``status`` CHECK as v008 leaves it):
     composite primary key ``(conversation_id, fire_id)``, standalone
     ``UNIQUE (fire_id)``, the FK ``schedule_id REFERENCES
     agent_wake_schedules(schedule_id) ON DELETE CASCADE``
@@ -350,6 +351,7 @@ def wake_fires_table(metadata: MetaData) -> Table:
             "'skipped_cap', "
             "'skipped_no_handler', "
             "'skipped_life_off', "
+            "'checked_quiet', "
             "'failed'"
             ")",
             name="wake_fires_status_check",

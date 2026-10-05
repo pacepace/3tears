@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Wake: a check that found nothing is a fire status of its own
+
+A consumer can run a check before a fire starts anything -- new mail, a changed page -- and wake the
+agent only when it finds something. A check that found nothing ran no turn, but the only statuses
+for it were `fired` and `fired_silent`, which the fire limits count: a check every ten minutes would
+spend an agent's whole budget.
+
+- **Added, fire status `checked_quiet`:** a handler returns it for a check that found nothing. It is
+  not counted by the fire limits, not a failure, and not a `context_from` source.
+- **Migration `agent_wake` v008** widens `wake_fires_status_check` to accept it (drop and re-add,
+  idempotent).
+
 ## v0.65.0 -- 2026-10-05
 
 ### NATS: a declared KV bucket can carry its exact name and be refilled when it comes back empty

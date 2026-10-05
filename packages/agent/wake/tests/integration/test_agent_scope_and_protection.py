@@ -573,6 +573,93 @@ class TestPermitAndLimits:
             await pool.close()
 
 
+class TestAQuietCheck:
+    """A consumer's check that found nothing: recorded as ``checked_quiet``, never counted as a fire."""
+
+    async def test_a_quiet_check_is_written_as_checked_quiet_and_starts_nothing(
+        self, pg_schema: tuple[str, str]
+    ) -> None:
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _conv, sid = await _seed_schedule(
+                pool, agent_id=_new_uuid(), next_fire_at=datetime.now(UTC) - timedelta(seconds=5)
+            )
+
+            class _Quiet(HandlerCallback):
+                async def __call__(
+                    self, trigger: WakeTrigger, prepared_context: PreparedWakeContext, pool: Any
+                ) -> HandlerCallbackResult:
+                    del prepared_context, pool
+                    return HandlerCallbackResult(
+                        status="checked_quiet",
+                        assistant_message_content="Mail check: nothing new",
+                        target_conversation_id=trigger.conversation_id,
+                    )
+
+            async def dispatch(trigger: WakeTrigger, fire_id: UUID, pool_: object) -> WakeDispatchResult:
+                return await dispatch_wake(trigger, fire_id, pool_, handler=_Quiet())
+
+            await wake_tick_job(pool, None, dispatch, **_tick_collections(pool))
+            row = await pool.fetchrow(
+                "SELECT status, display_suppressed, error, started_conversation_id FROM wake_fires WHERE schedule_id = $1",
+                sid,
+            )
+            assert dict(row) == {
+                "status": "checked_quiet",
+                "display_suppressed": False,
+                "error": None,
+                "started_conversation_id": None,
+            }
+        finally:
+            await pool.close()
+
+    async def test_quiet_checks_are_not_counted_by_the_fire_limits(self, pg_schema: tuple[str, str]) -> None:
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _schedules, fires = _collections(pool)
+            agent = _new_uuid()
+            conv, sid = await _seed_schedule(pool, agent_id=agent)
+            for _ in range(3):
+                fire_id = _new_uuid()
+                await fires.create_dispatching(
+                    fire_id=fire_id,
+                    schedule_id=sid,
+                    webhook_subscription_id=None,
+                    conversation_id=conv,
+                    scheduled_fire_at=None,
+                    actual_fired_at=datetime.now(UTC) - timedelta(minutes=1),
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                )
+                await fires.finalize_success(conv, fire_id, status="checked_quiet")
+
+            async def one_a_day(_trigger: WakeTrigger) -> FireLimits | None:
+                return FireLimits(per_wake=1, per_agent=1)
+
+            handler = _RecordingHandler()
+            result = await dispatch_wake(
+                WakeTrigger(
+                    schedule_id=sid,
+                    user_id=_new_uuid(),
+                    agent_id=agent,
+                    conversation_id=conv,
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                    schedule_type="interval",
+                    fired_at=datetime.now(UTC),
+                ),
+                _new_uuid(),
+                pool,
+                handler=handler,
+                permit=one_a_day,
+            )
+            assert result.status == "fired", "three quiet checks spent nothing of a one-a-day limit"
+        finally:
+            await pool.close()
+
+
 class TestFireConversationLink:
     async def test_the_hook_links_the_fire_before_the_handler_runs(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema

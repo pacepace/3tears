@@ -76,6 +76,7 @@ _FireStatus = Literal[
     "skipped_cap",
     "skipped_no_handler",
     "skipped_life_off",
+    "checked_quiet",
     "failed",
 ]
 _FireSource = Literal["scheduled_tick", "webhook"]

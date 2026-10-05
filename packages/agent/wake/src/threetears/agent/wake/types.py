@@ -112,6 +112,9 @@ MissedFirePolicy = Literal["coalesce", "catch_up"]
 # - ``'skipped_life_off'`` -- the consumer's :class:`FirePermit` answered
 #   "not now" (v007). Not a failure: the wake is fine, its agent is not
 #   taking fires at the moment.
+# - ``'checked_quiet'`` -- the consumer's handler ran a check before any
+#   turn and it found nothing (v008). No turn ran; not counted by the fire
+#   limits, not a failure, not a ``context_from`` source.
 # - ``'failed'`` -- exception raised during dispatch / handler.
 FireStatus = Literal[
     "dispatching",
@@ -123,6 +126,7 @@ FireStatus = Literal[
     "skipped_cap",
     "skipped_no_handler",
     "skipped_life_off",
+    "checked_quiet",
     "failed",
 ]
 
@@ -430,6 +434,9 @@ class HandlerCallbackResult:
     - ``'skipped_busy'`` -- the handler declined because the conv was
       busy on a parallel turn. Rare; most busy detection lives in the
       platform's per-conv lock acquire upstream.
+    - ``'checked_quiet'`` -- the handler ran a check before any turn and
+      it found nothing to wake the agent for. No turn ran, and the fire
+      limits do not count it.
 
     The platform inspects :attr:`assistant_message_content` for the
     ``[SILENT]`` prefix and records ``display_suppressed`` on the fire

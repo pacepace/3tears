@@ -66,6 +66,8 @@ Version history:
   agent-scoped indexes, ``wake_fires.started_conversation_id``, the
   ``'skipped_life_off'`` fire status, and the ``'spawn'`` default for
   ``execution_mode``.
+- v008 adds the ``'checked_quiet'`` fire status: a check that found nothing,
+  which ran no turn and is not counted by the fire limits.
 """
 
 from __future__ import annotations
@@ -91,6 +93,9 @@ from threetears.agent.wake.migrations.v006_add_include_conversation_history impo
 from threetears.agent.wake.migrations.v007_agent_scope_protection_and_fire_links import (
     PROTECTED_GATE_SETTING,
     agent_scope_protection_and_fire_links,
+)
+from threetears.agent.wake.migrations.v008_checked_quiet_status import (
+    add_checked_quiet_status,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -126,6 +131,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(5)(open_verification_scheme_check)
     pkg.version(6)(add_include_conversation_history)
     pkg.version(7)(agent_scope_protection_and_fire_links)
+    pkg.version(8)(add_checked_quiet_status)
     runner.register(pkg)
     return pkg
 
@@ -133,6 +139,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 __all__ = [
     "PACKAGE_NAME",
     "PROTECTED_GATE_SETTING",
+    "add_checked_quiet_status",
     "add_dispatching_status",
     "add_include_conversation_history",
     "agent_scope_protection_and_fire_links",
