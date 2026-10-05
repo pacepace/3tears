@@ -382,7 +382,8 @@ def _kv_error(message: str, *, bucket: str, cause: BaseException) -> KvError:
     Built here for every operation that runs through :meth:`NatsKvBucket._run_op` -- the reads, the
     writes and ``date_created`` -- and for a key listing's consumer create. Other paths build their
     own error, each naming a remedy only it knows: the opens (:func:`open_kv_stream`,
-    :func:`_bind_when_declared`, :func:`_live_stream_config`) name the declarer or the grant, a key
+    :func:`_bind_when_declared`, :func:`_live_stream_config`) name the declarer, or the remedy
+    :func:`_failure_remedy` chooses for what the server answered, a key
     listing that ran out its bound names the consumer grant, and a key watch never raises a create
     failure at all. Those that classify an absence use the same predicate. ``cause`` is classified
     by type
@@ -569,10 +570,10 @@ async def open_kv_stream(
       deliberately do not catch. an ABSENT bucket is waited for, with bounded
       backoff, since only its declarer can create it (:func:`_bind_when_declared`).
 
-    a create failure the SERVER answered is classified from its API error code;
-    a failure the server never answered (a permissions refusal reads as a
-    deadline, not as an error) falls through to the bind, whose own failure is
-    what proves the bucket is ungranted rather than merely present.
+    a create failure the server answered as "name in use" is reconciled; any
+    other create failure falls through to the bind, and when the bind fails too
+    the remedy is :func:`_failure_remedy`'s, chosen from what the server
+    answered -- only a failure nothing answered names the grant.
 
     :param js: connected JetStream context
     :ptype js: Any
@@ -657,19 +658,20 @@ async def open_kv_stream(
             return KvStreamOpening(
                 kv=await _bind_when_declared(js=js, full_name=full_name, timings=timings), created=created
             )
-    # else: the server never answered the create. That is what a permissions
-    # refusal looks like -- and what an unreachable broker looks like -- so it is
-    # NOT reconcilable and must not fall through to update_stream, which would be
-    # refused in turn and turn one deadline into two. Fall through to the bind
-    # instead: a bucket this principal may read but not create binds fine, and a
-    # bind that fails too is what proves the grant is missing.
+    # else: the create failed for any other reason -- unanswered (a permissions refusal, or an
+    # unreachable broker), or answered with an error of its own (an offline stream, a capacity
+    # limit). None of those is reconcilable, and falling through to update_stream would only fail
+    # again, turning one deadline into two. Fall through to the bind instead: a bucket this
+    # principal may read but not create binds fine, and when the bind fails too the remedy is
+    # chosen by _failure_remedy from what the server answered.
     kv: KeyValue
     try:
         kv = await js.key_value(full_name)
     except Exception as bind_exc:
         if is_bucket_not_found(bind_exc):
-            # the server ANSWERED the bind: the bucket is absent, and the create before it was never
-            # answered -- the shape a principal refused STREAM.CREATE produces.
+            # the server ANSWERED the bind: the bucket is absent, so the create before it is the call
+            # that decides the remedy -- unanswered, it is the shape a principal refused STREAM.CREATE
+            # produces; answered, the server's own error says why it did not create the bucket.
             raise KvBucketNotFoundError(
                 f"open KV bucket failed: bucket={full_name} does not exist and this principal could not "
                 f"create it: create={add_exc!r}: {add_exc} bind={bind_exc!r}. "
@@ -1254,9 +1256,9 @@ def _refuse_unownable_kv_bucket(
 async def _live_stream_config(*, js: Any, full_name: str, stream: str | None) -> StreamConfig:
     """read the server's config for a KV bucket's backing stream.
 
-    wraps the lookup so a refused or unreachable ``STREAM.INFO`` leaves the
-    opener as a typed :class:`KvError` naming the grant, rather than as whatever
-    nats-py happened to raise.
+    wraps the lookup so a failed ``STREAM.INFO`` leaves the opener as a typed
+    :class:`KvError` carrying the remedy :func:`_failure_remedy` chooses, rather
+    than as whatever nats-py happened to raise.
 
     :param js: connected JetStream context
     :ptype js: Any
