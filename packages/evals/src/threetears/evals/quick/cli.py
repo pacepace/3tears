@@ -49,6 +49,11 @@ EXIT_RUN_DID_NOT_COMPLETE = 1
 EXIT_REFUSED = 2
 
 
+def _say(line: str) -> None:
+    """Write one line of the command's output to stdout — the CLI's product, so a stream write, not a log record."""
+    sys.stdout.write(f"{line}\n")
+
+
 class _Refused(Exception):
     """A command the CLI cannot carry out, with the reason to print."""
 
@@ -144,10 +149,10 @@ def run_cli(
         if args.command == "ls":
             _list(eval_host, args.scope)
         else:
-            print(inspect_campaign_bundle(eval_host, args.campaign, args.scope).model_dump_json(indent=2))
+            _say(inspect_campaign_bundle(eval_host, args.campaign, args.scope).model_dump_json(indent=2))
         return EXIT_OK
     except (_Refused, EvalServiceError) as refused:
-        print(f"{prog} {args.command}: {refused}", file=sys.stderr)
+        sys.stderr.write(f"{prog} {args.command}: {refused}\n")
         return EXIT_REFUSED
 
 
@@ -164,24 +169,24 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
         raise
     summaries = [summarize_run(host.eval_host, run.id, args.scope) for run in runs]
     for summary in summaries:
-        print(summary.render())
+        _say(summary.render())
     return EXIT_OK if all(summary.status == "completed" for summary in summaries) else EXIT_RUN_DID_NOT_COMPLETE
 
 
 def _list(host: EvalHost, scope_id: str) -> None:
     """Print the scope's templates, runs and campaigns, one per line under a counted heading."""
     templates = list_templates(host.storage, scope_id)
-    print(f"templates ({len(templates)})")
+    _say(f"templates ({len(templates)})")
     for template in templates:
-        print(f"  {template.id}  {template.candidate_kind}  {template.name}")
+        _say(f"  {template.id}  {template.candidate_kind}  {template.name}")
     runs = list_runs(host, scope_id)
-    print(f"runs ({len(runs)})")
+    _say(f"runs ({len(runs)})")
     for run in runs:
-        print(f"  {run.id}  {run.status}  {run.candidate_model}  template {run.template_id}")
+        _say(f"  {run.id}  {run.status}  {run.candidate_model}  template {run.template_id}")
     campaigns = list_campaigns(host.storage, scope_id)
-    print(f"campaigns ({len(campaigns)})")
+    _say(f"campaigns ({len(campaigns)})")
     for campaign in campaigns:
-        print(f"  {campaign.id}  {campaign.name}  {len(campaign.run_ids)} run(s)")
+        _say(f"  {campaign.id}  {campaign.name}  {len(campaign.run_ids)} run(s)")
 
 
 __all__ = ["DEFAULT_PROG", "HostFactory", "build_parser", "run_cli"]

@@ -13,14 +13,17 @@ reports, so the rollup's sums are the candidate's alone and say so through
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 
-from threetears.evals.analysis.bundle import _token_rollup
-from threetears.evals.analysis.generator import GenerationTally, _log_generation
+from threetears.evals.analysis import TokenRollup
+from threetears.evals.analysis.generator import GenerationTally, generate_analysis
 from threetears.evals.contracts.provider import StopReason, describe_incomplete_completion
-from threetears.evals.contracts.models import RoleUsage
+from threetears.evals.contracts.models import EvalResult, RoleUsage, utc_now_iso
+from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.factories import make_eval_result
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import (
     TOY_JUDGE_COST_USD,
@@ -29,7 +32,9 @@ from packages.evals.tests.fixtures.toyhost.judge import (
     toyhost_judge_service,
     toyhost_judged_template,
 )
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import ToyhostRunPath, execute_toyhost_run, toyhost_run_bundle
+from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 
 
 async def _judged_drive(*, reports_token_counts: bool) -> ToyhostRunPath:
@@ -75,6 +80,11 @@ async def test_the_bundle_rollup_sums_only_what_was_reported_and_counts_what_was
     # And the partial sum discloses itself, on every result whose judge omitted its counts.
     assert silent_tokens.n_results_tokens_unreported == len(silent.results)
     assert reporting_tokens.n_results_tokens_unreported == 0
+
+
+def _token_rollup(results: list[EvalResult]) -> TokenRollup | None:
+    """The bundle's token rollup over one batch of ``results`` — the telemetry a generation reads."""
+    return one_batch_bundle(results, profile=toyhost_profile()).telemetry.tokens
 
 
 def test_a_rollup_with_no_reported_count_is_unknown_not_zero() -> None:
@@ -130,14 +140,25 @@ def test_a_truncation_with_no_reported_count_says_so_rather_than_printing_none()
     assert "None" not in description
 
 
-def test_the_generation_log_names_an_unreported_count(caplog) -> None:
-    @dataclass
-    class _Bundle:
-        campaign_id: str
+async def test_the_generation_log_names_an_unreported_count(caplog) -> None:
+    """Driven through the generator: the provider returns a well-formed memo and omits both counts."""
+    bundle = toyhost_bundle(profile=toyhost_profile())
+    client = FixturedClient(json.dumps(memo_payload(bundle)))
+    client.completion.input_tokens = None
+    client.completion.output_tokens = None
 
     caplog.set_level(logging.INFO, logger="threetears.evals.analysis.generator")
     tally = GenerationTally()
-    _log_generation(_Bundle("camp-1"), _silent("end_turn"), "m", attempt="initial", tally=tally)  # type: ignore[arg-type]
+    await generate_analysis(
+        bundle,
+        prompt=PROMPT,
+        model=MODEL,
+        client=client,
+        prompt_id=PROMPT_ID,
+        bundle_assembled_at=utc_now_iso(),
+        tally=tally,
+        profile=toyhost_profile(),
+    )
     (record,) = [r for r in caplog.records if "eval analysis generated" in r.getMessage()]
     assert "prompt_tokens=unreported completion_tokens=unreported" in record.getMessage()
     assert tally.returned == 1

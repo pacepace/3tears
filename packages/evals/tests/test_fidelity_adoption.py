@@ -15,6 +15,7 @@ exists to catch — because a check that only ever passed is evidence of nothing
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import sys
 import uuid
 from collections.abc import Iterator
@@ -49,6 +50,31 @@ def test_the_registered_constructor_is_the_one_production_and_the_eval_both_impo
     assert toy_kind.extraction_request is constructor, "the eval side must import the product's constructor"
 
 
+def _importable_copy(tmp_path: Path, prefix: str, source: str) -> Iterator[str]:
+    """Import ``source`` as a fresh module under a unique name, yield the name, then unregister it.
+
+    The checker locates a caller with :func:`importlib.util.find_spec`, which answers from
+    ``sys.modules`` first — so the copy is imported from its file and registered there, and no
+    directory goes onto ``sys.path`` (where a tmp directory's children would become top-level names
+    for the rest of the process).
+    """
+    name = f"{prefix}_{uuid.uuid4().hex}"
+    path = tmp_path / f"{name}.py"
+    path.write_text(source, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+        # The checker must find THIS file: a spec resolving anywhere else would test the wrong source.
+        found = importlib.util.find_spec(name)
+        assert found is not None and found.origin == str(path)
+        yield name
+    finally:
+        sys.modules.pop(name, None)
+
+
 @pytest.fixture
 def diverged_kind_module(tmp_path: Path) -> Iterator[str]:
     """A copy of the toy kind whose invoke builds its own request instead of calling the constructor."""
@@ -60,15 +86,7 @@ def diverged_kind_module(tmp_path: Path) -> Iterator[str]:
     # The mutation must have LANDED: a copy that still calls or imports the constructor would pass
     # for the wrong reason. (Prose naming it in a docstring is no reference, and the walk ignores it.)
     assert "extraction_request(" not in diverged and "extraction_request\n" not in diverged
-    name = f"diverged_toy_kind_{uuid.uuid4().hex}"
-    (tmp_path / f"{name}.py").write_text(diverged, encoding="utf-8")
-    sys.path.insert(0, str(tmp_path))
-    importlib.invalidate_caches()
-    try:
-        yield name
-    finally:
-        sys.path.remove(str(tmp_path))
-        sys.modules.pop(name, None)
+    yield from _importable_copy(tmp_path, "diverged_toy_kind", diverged)
 
 
 def test_the_canary_names_an_eval_caller_that_stops_calling_the_constructor(diverged_kind_module: str) -> None:
@@ -92,15 +110,7 @@ def import_only_kind_module(tmp_path: Path) -> Iterator[str]:
     # Landed, and landed the way this case needs: the call is gone and the import is still there.
     assert "extraction_request(" not in diverged
     assert "import ExtractionRequest, extraction_request" in diverged
-    name = f"import_only_toy_kind_{uuid.uuid4().hex}"
-    (tmp_path / f"{name}.py").write_text(diverged, encoding="utf-8")
-    sys.path.insert(0, str(tmp_path))
-    importlib.invalidate_caches()
-    try:
-        yield name
-    finally:
-        sys.path.remove(str(tmp_path))
-        sys.modules.pop(name, None)
+    yield from _importable_copy(tmp_path, "import_only_toy_kind", diverged)
 
 
 def test_an_import_left_behind_does_not_count_as_reaching_the_constructor(import_only_kind_module: str) -> None:
