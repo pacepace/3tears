@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.66.0 -- 2026-10-05
+
 ### Core: a replay guard owns its nonce bucket, on memory
 
 - **Changed, `threetears.core.coordination.ReplayGuard`:** a guard that declares its bucket
@@ -91,6 +93,7 @@ packages (bumped in lock-step).
   client (core's `nats` extra) to import or to derive on a single pod. With no NATS client there is
   no peer to coordinate with, so a derivation runs under the in-process gate alone and never
   imports the cross-pod lock; with a client it takes the lock, which needs the extra.
+
 ## v0.65.0 -- 2026-10-05
 
 ### NATS: a declared KV bucket can carry its exact name and be refilled when it comes back empty
