@@ -131,8 +131,59 @@ def reproducible_judge_inputs(
     """
     if run.status in NON_TERMINAL_RUN_STATUSES:
         raise ValidationFailedError(f"run '{run.id}' is {run.status} — its results are still being written")
-    # The scored dim set as the launch recorded it. The template names today's rubric, which is
-    # the question the next run asks, not necessarily the one this run asked.
+    judge_model = recorded_judge_pins(run, request_settings=request_settings)
+    template = judged_template(storage, run, scope_id)
+    # What the first judge read, and the declaration that picked its axes, as the cell stored
+    # them. Read before anything is derived from the dim set, because the declaration picks it.
+    trace = storage.load_eval_trace(result.id, scope_id)
+    if trace is None or trace.judge_evidence is None or trace.judged_artifact is None:
+        raise ValidationFailedError(
+            f"result '{result.id}' stores no judge evidence, so what its judge read cannot be sent again"
+        )
+    dims = recorded_judged_dims(run, template, trace.judged_artifact)
+    # A result scored under a config its run did not record read a prompt nothing else names.
+    assert run.judge_config_ids is not None  # recorded_judge_pins refuses a run without
+    for dim, config_id in result.judge_config_ids.items():
+        if run.judge_config_ids.get(dim) != config_id:
+            raise ValidationFailedError(
+                f"result '{result.id}' was scored on {dim} by config '{config_id}' while its run recorded "
+                f"{run.judge_config_ids.get(dim)!r}, so which prompt the judge read is ambiguous"
+            )
+    configs = recorded_judge_configs(
+        storage, run, dims if config_dims is None else [dim for dim in dims if dim in config_dims], scope_id
+    )
+    test_case = storage.load_test_case(result.test_case_id, scope_id)
+    if test_case is None:
+        raise NotFoundError("test_case", result.test_case_id)
+    return ReproducibleJudgeInputs(
+        template=template,
+        test_case=test_case,
+        judge_evidence=trace.judge_evidence,
+        judged_artifact=trace.judged_artifact,
+        configs=configs,
+        dims=dims,
+        judge_model=judge_model,
+    )
+
+
+def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy) -> str:
+    """The run's judge pin, refusing a run whose judging apparatus it did not record.
+
+    One check behind every path that scores a result under a run's recorded judge — a re-judge, a
+    freeze, and the judging of a witnessed cell as it is recorded — so a score is never filed under a
+    judge, a config set or request settings the run does not name.
+
+    Args:
+        run: The run.
+        request_settings: How the run's recorded request settings are treated — see :data:`RequestSettingsPolicy`.
+
+    Returns:
+        The run's judge pin.
+
+    Raises:
+        ValidationFailedError: The run names no judge, recorded no attribution, no config set or no
+            request settings, or (``"today"``) recorded settings other than the ones a call sends now.
+    """
     if run.judge_model is None:
         raise ValidationFailedError(f"run '{run.id}' was not judged, so there is no judgement to reproduce")
     if not run.effective_judges:
@@ -152,6 +203,26 @@ def reproducible_judge_inputs(
             f"run '{run.id}' was judged with request settings {run.judge_request_settings!r} and the judge client "
             f"now sends {JUDGE_REQUEST_SETTINGS!r}; a new call would be asked differently from the rest of the run"
         )
+    return run.judge_model
+
+
+def judged_template(storage: JudgeInputStore, run: EvalRun, scope_id: str) -> EvalTemplate:
+    """The template whose intent and rubric a run's judge reads, as the run was judged against it.
+
+    Args:
+        storage: The eval store.
+        run: The run.
+        scope_id: The partition it lives in.
+
+    Returns:
+        The template.
+
+    Raises:
+        ValidationFailedError: The run names no template; the template was edited after the run was
+            created, so its intent is not the one the run was judged against; or its rubric names one
+            dim twice.
+        NotFoundError: The template does not load.
+    """
     if run.template_id is None:
         raise ValidationFailedError(f"run '{run.id}' is ad hoc, so there is no template to read its intent from")
     template = storage.load_template(run.template_id, scope_id)
@@ -172,49 +243,61 @@ def reproducible_judge_inputs(
             f"template '{template.id}' names rubric dim(s) {', '.join(duplicated)} more than once, so which "
             "of them a stored score belongs to cannot be told apart"
         )
-    # What the first judge read, and the declaration that picked its axes, as the cell stored
-    # them. Read before anything is derived from the dim set, because the declaration picks it.
-    trace = storage.load_eval_trace(result.id, scope_id)
-    if trace is None or trace.judge_evidence is None or trace.judged_artifact is None:
-        raise ValidationFailedError(
-            f"result '{result.id}' stores no judge evidence, so what its judge read cannot be sent again"
-        )
+    return template
+
+
+def recorded_judged_dims(run: EvalRun, template: EvalTemplate, judged_artifact: JudgedArtifact) -> list[str]:
+    """Every dim a cell of this kind is judged on under the run's recorded attribution, in judge-phase order.
+
+    Args:
+        run: The run, whose ``effective_judges`` a caller has checked is recorded.
+        template: Its template.
+        judged_artifact: The kind's declaration, which picks the axes.
+
+    Returns:
+        The dims.
+
+    Raises:
+        ValidationFailedError: The run recorded a judge for a dim a cell of this kind is not scored on.
+    """
     # The dims a cell of this kind is scored on, in judge-phase order — the rule the launch
     # attributed judges by, so a run that recorded a judge for a dim outside it is refused.
-    order = scored_dim_ids(names, trace.judged_artifact)
-    if strays := sorted(set(run.effective_judges) - set(order)):
+    order = scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)
+    recorded = run.effective_judges or {}
+    if strays := sorted(set(recorded) - set(order)):
         raise ValidationFailedError(
-            f"run '{run.id}' judged {', '.join(strays)}, which a {trace.judged_artifact.value} cell of its "
+            f"run '{run.id}' judged {', '.join(strays)}, which a {judged_artifact.value} cell of its "
             "template is not scored on"
         )
-    # A result scored under a config its run did not record read a prompt nothing else names.
-    for dim, config_id in result.judge_config_ids.items():
-        if run.judge_config_ids.get(dim) != config_id:
-            raise ValidationFailedError(
-                f"result '{result.id}' was scored on {dim} by config '{config_id}' while its run recorded "
-                f"{run.judge_config_ids.get(dim)!r}, so which prompt the judge read is ambiguous"
-            )
-    dims = [dim for dim in order if dim in run.effective_judges]
+    return [dim for dim in order if dim in recorded]
+
+
+def recorded_judge_configs(
+    storage: JudgeInputStore, run: EvalRun, dims: Collection[str], scope_id: str
+) -> dict[str, JudgeConfig]:
+    """The versioned judge config the run recorded for each of ``dims`` that has one, loaded.
+
+    Args:
+        storage: The eval store.
+        run: The run, whose ``judge_config_ids`` a caller has checked is recorded.
+        dims: The dims whose configs to load.
+        scope_id: The partition they live in.
+
+    Returns:
+        ``{dim_id: config}`` over the dims the run recorded a config for.
+
+    Raises:
+        NotFoundError: A recorded config does not load.
+    """
     configs: dict[str, JudgeConfig] = {}
-    for dim in dims if config_dims is None else [dim for dim in dims if dim in config_dims]:
-        if (recorded_id := run.judge_config_ids.get(dim)) is None:
+    for dim in dims:
+        if (recorded_id := (run.judge_config_ids or {}).get(dim)) is None:
             continue
         config = storage.load_judge_config(recorded_id, scope_id)
         if config is None:
             raise NotFoundError("judge_config", recorded_id)
         configs[dim] = config
-    test_case = storage.load_test_case(result.test_case_id, scope_id)
-    if test_case is None:
-        raise NotFoundError("test_case", result.test_case_id)
-    return ReproducibleJudgeInputs(
-        template=template,
-        test_case=test_case,
-        judge_evidence=trace.judge_evidence,
-        judged_artifact=trace.judged_artifact,
-        configs=configs,
-        dims=dims,
-        judge_model=run.judge_model,
-    )
+    return configs
 
 
 def failed_judge_dims(result: EvalResult, scored_dims: list[str]) -> list[str]:
@@ -344,5 +427,9 @@ __all__ = [
     "RequestSettingsPolicy",
     "apply_rejudge",
     "failed_judge_dims",
+    "judged_template",
+    "recorded_judge_configs",
+    "recorded_judge_pins",
+    "recorded_judged_dims",
     "reproducible_judge_inputs",
 ]

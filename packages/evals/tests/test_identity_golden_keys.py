@@ -91,7 +91,7 @@ GOLDENS: tuple[Golden, ...] = (
         _TOY_CONTEXT,
         _TOY_CONTEXT_KEY,
         ("subject_state",),
-        "915295efec16f820afb17be03317a065447d61ec5deae123568d70062f99454f",
+        "48516ba0ede3616a3d28349faddd20a6a8822fd89beb14416ccc031eb7610d91",
     ),
     Golden(
         "toy",
@@ -99,7 +99,7 @@ GOLDENS: tuple[Golden, ...] = (
         _TOY_CONTEXT,
         _TOY_CONTEXT_KEY,
         ("subject_state",),
-        "f1c075fed80e0702a1a1e0d93edb701b0ba3e3db9f04680bed1c6d4d55465787",
+        "a52d0e50c2b68544b54a781512ab9dea117177697492eefdfbad69cddd2635c2",
     ),
     Golden(
         "courier",

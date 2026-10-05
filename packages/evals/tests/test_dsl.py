@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 import threetears.evals.contracts.dsl as _dsl
-from threetears.evals.contracts import Precondition
+from threetears.evals.contracts import Firings, Precondition
 from threetears.evals.contracts.dsl import DSLError, Missing, evaluate, evaluate_with_detail, extract_paths, parse
 from threetears.evals.contracts.host import Triggered, WorldDimension, WorldRegistry
 from threetears.evals.contracts.call_ledger import CallLedger
@@ -947,22 +947,41 @@ class TestFired:
 
     def test_fired_is_true_exactly_for_a_dimension_that_fired(self) -> None:
         call = {"end_state": {}, "ledger": CallLedger(), "world": None}
-        assert evaluate('fired("restock_alarm")', fired={"restock_alarm"}, **call) is True
-        assert evaluate('fired("restock_alarm")', fired=set(), **call) is False
-        assert evaluate('not fired("restock_alarm")', fired=set(), **call) is True
+        alarm = frozenset({"restock_alarm"})
+        assert evaluate('fired("restock_alarm")', fired=Firings(dimensions=alarm), **call) is True
+        assert evaluate('fired("restock_alarm")', fired=Firings(), **call) is False
+        assert evaluate('not fired("restock_alarm")', fired=Firings(), **call) is True
 
-    def test_fired_with_no_world_events_recorded_raises_rather_than_answering_false(self) -> None:
-        with pytest.raises(DSLError, match="none were recorded"):
-            evaluate('fired("restock_alarm")', end_state={}, ledger=CallLedger(), world=None, fired=None)
+    def test_fired_armed_is_true_only_for_a_firing_of_the_seed_s_armed_event(self) -> None:
+        """Both directions on one dimension: the world's own firing satisfies fired() and not fired_armed()."""
+        call = {"end_state": {}, "ledger": CallLedger(), "world": None}
+        alarm = frozenset({"restock_alarm"})
+        worlds_own = Firings(dimensions=alarm)
+        seeds = Firings(dimensions=alarm, armed=alarm)
 
-    @pytest.mark.parametrize("expression", ["fired(variation.alarm)", "fired()", 'fired("a", "b")', 'fired("")'])
-    def test_fired_takes_one_dimension_name_as_a_string_literal(self, expression: str) -> None:
-        with pytest.raises(DSLError, match="one dimension name as a string literal"):
-            parse(expression)
+        assert evaluate('fired("restock_alarm")', fired=worlds_own, **call) is True
+        assert evaluate('fired_armed("restock_alarm")', fired=worlds_own, **call) is False
+        assert evaluate('fired_armed("restock_alarm")', fired=seeds, **call) is True
+        assert evaluate('fired_armed("restock_alarm")', fired=Firings(), **call) is False
+
+    def test_an_armed_firing_that_is_not_a_firing_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="an armed firing is a firing"):
+            Firings(armed=frozenset({"restock_alarm"}))
+
+    @pytest.mark.parametrize("predicate", ["fired", "fired_armed"])
+    def test_with_no_world_events_recorded_it_raises_rather_than_answering_false(self, predicate: str) -> None:
+        with pytest.raises(DSLError, match=rf"{predicate}\('restock_alarm'\) reads the cell's world events, and none"):
+            evaluate(f'{predicate}("restock_alarm")', end_state={}, ledger=CallLedger(), world=None, fired=None)
+
+    @pytest.mark.parametrize("predicate", ["fired", "fired_armed"])
+    @pytest.mark.parametrize("arguments", ["(variation.alarm)", "()", '("a", "b")', '("")'])
+    def test_it_takes_one_dimension_name_as_a_string_literal(self, predicate: str, arguments: str) -> None:
+        with pytest.raises(DSLError, match=rf"{predicate}\(\) takes one dimension name as a string literal"):
+            parse(predicate + arguments)
 
     def test_referenced_fires_names_each_dimension_once_in_source_order(self) -> None:
-        expression = 'fired("b") and (fired("a") or not fired("b"))'
-        assert _dsl.referenced_fires(expression) == ("b", "a")
+        expression = 'fired("b") and (fired_armed("a") or not fired("b")) and fired_armed("c")'
+        assert _dsl.referenced_fires(expression) == ("b", "a", "c")
 
     def test_a_fired_name_that_is_not_a_triggered_dimension_is_named(self) -> None:
         world = self._triggered_world()
@@ -972,8 +991,11 @@ class TestFired:
         )
         assert "set at t=0" in _dsl.undefined_fire_references('fired("stock")', world)[0]
         assert "declares no world" in _dsl.undefined_fire_references('fired("stock")', None)[0]
+        assert "set at t=0" in _dsl.undefined_fire_references('fired_armed("stock")', world)[0]
 
     def test_a_precondition_reading_fired_is_refused_where_it_is_written(self) -> None:
         with pytest.raises(ValidationError, match="before any trigger could fire"):
             Precondition(expression='fired("restock_alarm")', presumes="the alarm already went off")
+        with pytest.raises(ValidationError, match="before any trigger could fire"):
+            Precondition(expression='fired_armed("restock_alarm")', presumes="the armed alarm already went off")
         Precondition(expression="state.stock >= 1", presumes="something is on the shelf")

@@ -1437,8 +1437,14 @@ def bisect_runs(
         # judge model for a subject nothing scored with a model. BOTH values go in: one arm
         # recording a level refutes the declaration, and omitting on the strength of the arm
         # that agreed would drop the very difference this surface exists to name.
-        if profile.omits_apparatus(field_name, [(run_a.candidate_kind, value_a), (run_b.candidate_kind, value_b)]):
+        if profile.omits_apparatus(field_name, [(run_a, value_a), (run_b, value_b)]):
             continue
+        # A run whose rig had no such seat (a code-only run beside a judged one) reads at UNSEATED_LEVEL,
+        # so the two are a difference rather than an unknown.
+        if value_a is not _NOT_CARRIED:
+            value_a = profile.apparatus_level(run_a, field_name, value_a)
+        if value_b is not _NOT_CARRIED:
+            value_b = profile.apparatus_level(run_b, field_name, value_b)
         details[field_name] = {"a": value_a, "b": value_b}
         if sweepables.is_indeterminate(field_name, value_a, value_b):
             unknown.append(field_name)

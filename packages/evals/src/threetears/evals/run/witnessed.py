@@ -10,6 +10,19 @@ every cell that reaches its end, so the two cannot drift apart.
 Its own module rather than a function in the runner because it is not part of the runner's dispatch:
 the runner reads ``template.candidate_kind`` exactly once and dispatches on it, while this reads the
 kind a witnessed run was stamped with and dispatches on nothing.
+
+**A witnessed cell can be judged, as it is recorded.** A witnessed session has no template that SET it,
+but a judge reads a template's intent and rubric, so a run that wants its cells judged names the
+template it is judged against and carries the judge apparatus a launch would stamp — through
+:func:`stamp_witnessed_judge`, before its identity is stamped, since the judge is part of the
+conditions the run was measured under. :func:`record_witnessed_cell` then scores each cell through the
+runner's own judge phase, from the apparatus the run recorded, so a judged witnessed cell is the record
+a run's judged cell is and a later re-judge (:func:`~threetears.evals.run.lifecycle.rejudge_result`)
+reads it exactly as it reads one. Why at recording time and not by a later judging operation: the judge
+is part of a run's context identity, stamped once when the run comes into being and never rewritten,
+so a judge added to a stored run afterwards would either rewrite that key or leave the cells scored by
+a judge the key does not name. The case stays template-less either way — a case filed under the
+template would be one every launch of it runs.
 """
 
 from __future__ import annotations
@@ -25,20 +38,112 @@ from threetears.evals.contracts.models import (
     ConversationStopCause,
     EvalResult,
     EvalRun,
+    EvalTemplate,
     EvalTestCase,
     EvalTrace,
     JudgedArtifact,
 )
 from threetears.evals.contracts.spend import ExternalRateTable
 from threetears.evals.contracts.world_events import WorldEvent
-from threetears.evals.run.runner import assemble_completed_cell, hold_to_declaration
+from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
+from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
+from threetears.evals.run.launch import build_judge_service
+from threetears.evals.run.rejudge import (
+    judged_template,
+    recorded_judge_configs,
+    recorded_judge_pins,
+    recorded_judged_dims,
+)
+from threetears.evals.run.runner import (
+    DEFAULT_JUDGE_CONCURRENCY,
+    assemble_completed_cell,
+    hold_to_declaration,
+    judge_witnessed_output,
+)
 
 #: The stop causes only the engine's simulator produces, which a witnessed session — no simulator in it —
 #: cannot carry (:func:`record_witnessed_cell`).
 _SIMULATOR_STOP_CAUSES = frozenset({ConversationStopCause.USER_DONE, ConversationStopCause.SIMULATOR_ERROR})
 
 
-def record_witnessed_cell(
+def stamp_witnessed_judge(
+    host: EvalHost,
+    run: EvalRun,
+    template: EvalTemplate,
+    *,
+    judge_model: str,
+    judged_artifact: JudgedArtifact,
+    selection: dict[str, str] | None = None,
+) -> EvalRun:
+    """A witnessed run that names the template its cells are judged against, and the judge apparatus that scores them.
+
+    The fields a launch stamps for a judged run, resolved the way a launch resolves them
+    (:func:`~threetears.evals.run.launch.build_judge_service`: one config load per scored dim, the
+    run-level pin, each dim's effective judge): ``template_id``, ``judge_model`` and its provenance,
+    ``effective_judges`` (recorded), ``judge_config_ids`` and their provenance, ``judge_request_settings``
+    and ``rubric_scales``. Call it on the run as built and BEFORE stamping its identity — the judge is
+    part of the context it hashes — then record its cells with :func:`record_witnessed_cell`, which
+    scores them from exactly these.
+
+    Args:
+        host: The host: where the judge configs are read and the judge clients come from.
+        run: The witnessed run, unjudged and not yet identity-stamped.
+        template: The template whose intent and rubric the judge reads; in the run's scope, and of the
+            kind the run recorded.
+        judge_model: The run-level judge pin, resolved.
+        judged_artifact: What the kind's judge reads, which picks the dims it scores.
+        selection: Optional ``{dim_id: config_id}`` naming configs per dim, as a launch's
+            ``judge_config_ids`` does; the rest inherit each dim's active config.
+
+    Returns:
+        A copy of the run carrying the judge.
+
+    Raises:
+        ValueError: The run is not witnessed; it already names a judge or a template; its identity is
+            already stamped; the template is in another scope or of another kind; ``judged_artifact``
+            declares a kind no judge reads; or the host supplies no completion clients.
+        ValidationFailedError: ``selection`` names an unscored dim, a config that does not load, or one
+            authored for another dim.
+    """
+    if run.apparatus_provenance != "witnessed":
+        raise ValueError(f"run {run.id} is {run.apparatus_provenance!r}; a launch stamps a commissioned run's judge")
+    if run.judge_model is not None or run.template_id is not None:
+        raise ValueError(
+            f"run {run.id} already names judge {run.judge_model!r} and template {run.template_id!r}; a run's judge "
+            "is stamped once, when it comes into being"
+        )
+    if run.context_key is not None:
+        raise ValueError(
+            f"run {run.id}'s identity is already stamped, and the judge is part of the context it hashes; stamp the "
+            "judge first, then the identity"
+        )
+    if template.scope_id != run.scope_id:
+        raise ValueError(
+            f"template {template.id!r} is in scope {template.scope_id!r} and run {run.id} in {run.scope_id!r}; a "
+            "run is judged against a template of its own scope"
+        )
+    if template.candidate_kind != run.candidate_kind:
+        raise ValueError(
+            f"template {template.id!r} is a {template.candidate_kind!r} template and run {run.id} recorded kind "
+            f"{run.candidate_kind!r}; its intent and rubric were written for another kind's output"
+        )
+    judge = build_judge_service(host, template, judge_model, selection, judged_artifact=judged_artifact)
+    return run.model_copy(
+        update={
+            "template_id": template.id,
+            "judge_model": judge.model,
+            "model_role_provenance": {**(run.model_role_provenance or {}), "judge": "chosen"},
+            "effective_judges": judge.effective_judges,
+            "effective_judges_source": "recorded",
+            "judge_config_ids": judge.config_ids,
+            "judge_config_provenance": judge.config_provenance,
+            "judge_request_settings": JUDGE_REQUEST_SETTINGS,
+            "rubric_scales": {dim.name: dim.scale for dim in template.rubric},
+        }
+    )
+
+
+async def record_witnessed_cell(
     host: EvalHost,
     run: EvalRun,
     test_case: EvalTestCase,
@@ -73,15 +178,21 @@ def record_witnessed_cell(
     ``apparatus_provenance`` is not ``witnessed`` is refused. The runner does not come through here —
     it calls the assembly directly with the ids it mints.
 
-    **Unjudged.** Nothing here calls a judge, so the cell carries no scores, and a run naming a judge
-    model is refused for the reason :func:`~threetears.evals.run.runner.execute_run` refuses a judged run with no judge service:
-    every read surface takes ``judge_model`` to mean the cell was scored by it.
+    **Judged when its run names a judge, unjudged when it does not.** A run stamped by
+    :func:`stamp_witnessed_judge` names the template its cells are judged against and the judge apparatus;
+    the cell is then scored through the runner's own judge phase, from what the run recorded — its
+    template as it stood when the run was created, each dim's recorded config, its judge pin, and the
+    request settings it recorded, which must be the ones a judge call sends now — so the cell is the
+    record a run's judged cell is, and a later re-judge reads it the same way. An output with nothing in
+    it, or no evidence rendered, is not judged, as the runner gates it. A run naming no judge records the
+    cell unjudged, with no scores.
 
-    **What the host writes around it.** A witnessed session has no template, so its run carries
-    ``template_id=None`` and so does its case: an :class:`~threetears.evals.contracts.models.EvalTestCase`
+    **What the host writes around it.** A witnessed session has no template that set it, so its case
+    carries ``template_id=None`` whatever its run names: an :class:`~threetears.evals.contracts.models.EvalTestCase`
     with ``template_id=None``, its stimulus in ``variation_params`` and ``host_payload``, saved with
     ``host.storage.save_test_case`` — re-check and re-judge read it back by id, and no launch will run it,
-    because a launch refuses a case whose template is not its own. A conversation its real participants
+    because a launch refuses a case whose template is not its own. Its run's ``template_id`` is None too,
+    unless the run is judged, when it names the template the judge reads. A conversation its real participants
     ended carries ``stop_cause=participants_ended``; the simulator's two causes (``user_done``,
     ``simulator_error``) are refused here. The run's terminal state is the host's to write too, as the
     job manager writes a commissioned run's: ``status="completed"`` and
@@ -109,9 +220,16 @@ def record_witnessed_cell(
         The result and its trace, unsaved.
 
     Raises:
-        ValueError: The run is not ``witnessed``; it names a judge model; ``test_case`` is not one of
-            its cases, or sits in another scope or under another template; ``k_iteration`` is outside
-            ``1..run.k_runs``; or the output's stop cause is one only the engine's simulator produces.
+        ValueError: The run is not ``witnessed``; it names a template and no judge, or a judge and no
+            template; ``test_case`` is not one of its cases, sits in another scope, or names a template;
+            ``k_iteration`` is outside ``1..run.k_runs``; the output's stop cause is one only the engine's
+            simulator produces; a judged run's kind declares nothing a judge reads; or a judged run's host
+            supplies no completion clients.
+        ValidationFailedError: A judged run's recorded apparatus cannot score the cell: it recorded no
+            attribution, config set or request settings, or settings other than the ones a call sends
+            now; its template was edited after it was created; or it recorded a judge for a dim this
+            kind's cell is not scored on.
+        NotFoundError: A judged run's template, or a judge config it recorded, does not load.
         CandidateKindDefect: ``output`` contradicts ``judged_artifact``.
     """
     if run.apparatus_provenance != "witnessed":
@@ -119,21 +237,25 @@ def record_witnessed_cell(
             f"run {run.id} is {run.apparatus_provenance!r}: only a witnessed run's cells are recorded by its host. "
             "A commissioned run's cells are what its rig produced, and execute_run is what drives that rig"
         )
-    if run.judge_model is not None:
+    if (run.judge_model is None) != (run.template_id is None):
         raise ValueError(
-            f"run {run.id} names judge model {run.judge_model!r}, and a witnessed cell is recorded unjudged; a "
-            "run naming a judge claims every cell was scored by it. Record the witnessed run with no judge model"
+            f"run {run.id} names judge {run.judge_model!r} and template {run.template_id!r}: a witnessed run names a "
+            "template exactly when it is judged against one — stamp both with stamp_witnessed_judge, or neither"
         )
     if test_case.id not in run.test_case_ids:
         raise ValueError(
             f"test case {test_case.id!r} is not one of run {run.id}'s cases; a run's cases are its denominator, "
             "so a cell outside them is an observation no read of the run would count"
         )
-    if (test_case.scope_id, test_case.template_id) != (run.scope_id, run.template_id):
+    if test_case.scope_id != run.scope_id:
         raise ValueError(
-            f"test case {test_case.id!r} is in scope {test_case.scope_id!r} under template {test_case.template_id!r}, "
-            f"and run {run.id} is in scope {run.scope_id!r} under template {run.template_id!r}; a witnessed cell's "
-            "case belongs where its run does — template None on both for a session no template set"
+            f"test case {test_case.id!r} is in scope {test_case.scope_id!r} and run {run.id} in {run.scope_id!r}; a "
+            "witnessed cell's case belongs where its run does"
+        )
+    if test_case.template_id is not None:
+        raise ValueError(
+            f"test case {test_case.id!r} is filed under template {test_case.template_id!r}; a witnessed case names "
+            "none, because no template set the session and a case filed under one is a case every launch of it runs"
         )
     if not 1 <= k_iteration <= run.k_runs:
         raise ValueError(f"k_iteration {k_iteration} is outside run {run.id}'s repeats (1..{run.k_runs})")
@@ -146,6 +268,19 @@ def record_witnessed_cell(
     # Read once: the kind the run stamped at its creation, and so the kind the cell is recorded under.
     candidate_kind = run.candidate_kind
     hold_to_declaration(candidate_kind, judged_artifact, output)
+    judged, judge_ms = (None, None)
+    if run.judge_model is not None:
+        judge_service, template = _recorded_judge(host, run, judged_artifact)
+        async with judge_service:
+            judged, judge_ms = await judge_witnessed_output(
+                template=template,
+                test_case=test_case,
+                output=output,
+                judged_artifact=judged_artifact,
+                judge_service=judge_service,
+                concurrency=DEFAULT_JUDGE_CONCURRENCY,
+                eval_run_id=run.id,
+            )
     result, trace = assemble_completed_cell(
         scope_id=run.scope_id,
         eval_run_id=run.id,
@@ -156,14 +291,14 @@ def record_witnessed_cell(
         subject_id=run.subject_snapshot.subject_id,
         # Read off the run exactly as execute_run reads it, so the two key a cell the same way.
         variant=resolve_variant_identity(run=run, profile=host.profile),
-        judge_model=None,
+        judge_model=run.judge_model,
         output=output,
         judged_artifact=judged_artifact,
         rate_table=external_rates,
         result_id=result_id,
         scored_at=scored_at,
-        judged=None,
-        judge_ms=None,
+        judged=judged,
+        judge_ms=judge_ms,
         spans=spans,
         # Nothing here samples the host's job count: a witnessed session ran under no eval job.
         concurrent_eval_jobs=None,
@@ -175,4 +310,42 @@ def record_witnessed_cell(
     return result, trace
 
 
-__all__ = ["record_witnessed_cell"]
+def _recorded_judge(host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifact) -> tuple[JudgeService, EvalTemplate]:
+    """The judge a judged witnessed run recorded, and the template it reads — refusing what cannot score the cell.
+
+    Built from the run's own record through the checks a re-judge makes (:mod:`threetears.evals.run.rejudge`),
+    so a cell is scored now under exactly the apparatus a re-judge would reproduce later.
+
+    Args:
+        host: The host: its store and its judge clients.
+        run: The judged witnessed run.
+        judged_artifact: What the kind's judge reads.
+
+    Returns:
+        The judge service and the template.
+
+    Raises:
+        ValueError: The kind declares nothing a judge reads, or the host supplies no completion clients.
+        ValidationFailedError: The run's recorded apparatus cannot be reproduced (see the rejudge checks).
+        NotFoundError: The template or a recorded config does not load.
+    """
+    if judged_artifact is JudgedArtifact.UNJUDGED:
+        raise ValueError(
+            f"run {run.id} names judge {run.judge_model!r} and kind {run.candidate_kind!r} declares nothing a judge "
+            "reads; a run naming a judge claims every cell was scored by it"
+        )
+    judge_model = recorded_judge_pins(run, request_settings="today")
+    storage = host.storage
+    template = judged_template(storage, run, run.scope_id)
+    dims = recorded_judged_dims(run, template, judged_artifact)
+    configs = recorded_judge_configs(storage, run, dims, run.scope_id)
+    # A dim the run recorded no config for is scored by the judge's built-in prompt, as a launch scores it.
+    service = JudgeService(
+        client_factory=judge_clients_for_run(host.completion_clients("a judged witnessed cell"), judge_model),
+        configs=configs,
+        failure_describer=host.failure_describer,
+    )
+    return service, template
+
+
+__all__ = ["record_witnessed_cell", "stamp_witnessed_judge"]

@@ -13,7 +13,16 @@ facts about the cell that a reader of its result needs and that its end state al
   at a turn the template states, so a candidate that perceives undeclared state is exposed by a run
   rather than only by the conformance kit.
 
-The goal language reads the fired half (``fired("<dimension>")``), and the result stores both
+**Provenance is per event, never per dimension.** A dimension can fire more than once and for more than
+one reason — the event a cell's seed armed, and an event the host's world holds of its own on the same
+dimension (a module's own weather turning beside the storm the seed scheduled). Every firing names the
+host's identity of the event that fired (:attr:`WorldEvent.event`), and ``armed`` says whether that event
+is one this cell's seed armed: an identity a seed handle returned when it armed it. Deriving ``armed``
+from the dimension instead would record the world's own firing as the seed's whenever the seed armed
+anything on that dimension, and the two could not be told apart afterwards.
+
+The goal language reads the fired half — ``fired("<dimension>")`` for any firing, ``fired_armed("<dimension>")``
+for a firing of the event the seed armed — through :class:`Firings`, and the result stores both
 (:attr:`~threetears.evals.contracts.models.EvalResult.world_events`), so a re-check re-grades a fired
 check from what the cell recorded.
 
@@ -23,6 +32,8 @@ these is :class:`~threetears.evals.contracts.world_session.WorldSession`.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Literal, Self
 
 from pydantic import Field, model_validator
@@ -61,11 +72,21 @@ class WorldEvent(EvalDocumentModel):
         "None exactly when ``kind`` is ``ambient``.",
     )
     caused_by: WorldEventCause = Field(description="Whether the rig made it happen or the world did.")
+    event: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The host's identity of the event that fired: the one its seed handle returned when the "
+        "cell's seed armed it, or the one the kind observed firing in the world. Required for a firing, so "
+        "provenance is a property of the event and never inferred from the dimension; None exactly when "
+        "``kind`` is ``ambient``.",
+    )
     armed: bool = Field(
         default=False,
-        description="Whether this cell's seed armed the dimension before it fired. Always true for a firing "
-        "the rig caused, which is refused on an unarmed dimension; a firing the world caused may be of a "
-        "condition the host's world holds of its own. False for ambient perturbation, which arms nothing.",
+        description="Whether the event that fired is one this cell's seed armed — an identity a seed handle "
+        "returned when it armed it. Always true for a firing the rig caused, which is refused on an unarmed "
+        "dimension; a firing the world caused is armed only when it is the seed's own event, and not when the "
+        "host's world fired an event of its own on the same dimension. False for ambient perturbation, which "
+        "arms nothing.",
     )
     turn: int | None = Field(
         default=None,
@@ -87,18 +108,21 @@ class WorldEvent(EvalDocumentModel):
             The record.
 
         Raises:
-            ValueError: An ambient record names a dimension, a condition or a world cause, or claims to be
-                armed; a fired record names no dimension or condition, or carries what ambient moved; a
-                ``human`` record claims the rig caused it — no fire handle can be bound to a human trigger.
+            ValueError: An ambient record names a dimension, a condition, an event or a world cause, or claims
+                to be armed; a fired record names no dimension, condition or event, or carries what ambient
+                moved; a ``human`` record claims the rig caused it — no fire handle can be bound to a human
+                trigger.
         """
         if self.kind == "ambient":
-            if self.dimension is not None or self.condition is not None:
-                raise ValueError("ambient perturbation moves undeclared state, so it names no dimension or condition")
+            if self.dimension is not None or self.condition is not None or self.event is not None:
+                raise ValueError(
+                    "ambient perturbation moves undeclared state, so it names no dimension, condition or event"
+                )
             if self.caused_by != "rig" or self.armed:
                 raise ValueError("ambient perturbation is the rig's act and arms nothing")
             return self
-        if self.dimension is None or self.condition is None:
-            raise ValueError(f"a {self.kind} firing names the dimension that fired and its condition")
+        if self.dimension is None or self.condition is None or self.event is None:
+            raise ValueError(f"a {self.kind} firing names the dimension that fired, its condition and the event")
         if self.moved is not None:
             raise ValueError("only ambient perturbation reports what it moved")
         if self.kind == "human" and self.caused_by == "rig":
@@ -108,16 +132,49 @@ class WorldEvent(EvalDocumentModel):
         return self
 
 
-def fired_dimensions(events: list[WorldEvent] | tuple[WorldEvent, ...]) -> frozenset[str]:
-    """The triggered dimensions that fired in a cell, whoever caused them — what ``fired()`` reads.
+@dataclass(frozen=True)
+class Firings:
+    """What fired in a cell, as the goal language reads it: every dimension that fired, and the armed ones.
 
-    Args:
-        events: The cell's world events.
+    Built from a cell's world events by :meth:`of` — a live session's, or a stored result's on a
+    re-check — or stated for a control end state. ``fired("<dimension>")`` reads :attr:`dimensions`;
+    ``fired_armed("<dimension>")`` reads :attr:`armed`.
 
-    Returns:
-        The names of every dimension that fired at least once.
+    Attributes:
+        dimensions: Every triggered dimension that fired at least once, whoever caused it.
+        armed: The dimensions on which the event the cell's seed armed fired — a subset of ``dimensions``.
     """
-    return frozenset(event.dimension for event in events if event.dimension is not None)
+
+    dimensions: frozenset[str] = frozenset()
+    armed: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        """Refuse an armed firing that is not a firing.
+
+        Raises:
+            ValueError: ``armed`` names a dimension ``dimensions`` does not.
+        """
+        if stray := sorted(self.armed - self.dimensions):
+            raise ValueError(
+                f"armed firing(s) {', '.join(map(repr, stray))} are not among the dimensions that fired; an armed "
+                "firing is a firing"
+            )
+
+    @classmethod
+    def of(cls, events: Iterable[WorldEvent]) -> Firings:
+        """What a cell's world events say fired.
+
+        Args:
+            events: The cell's world events, in any order.
+
+        Returns:
+            Every dimension that fired, and those on which an armed event fired.
+        """
+        fired = [event for event in events if event.dimension is not None]
+        return cls(
+            dimensions=frozenset(event.dimension for event in fired if event.dimension is not None),
+            armed=frozenset(event.dimension for event in fired if event.dimension is not None and event.armed),
+        )
 
 
-__all__ = ["WorldEvent", "WorldEventCause", "WorldEventKind", "fired_dimensions"]
+__all__ = ["Firings", "WorldEvent", "WorldEventCause", "WorldEventKind"]

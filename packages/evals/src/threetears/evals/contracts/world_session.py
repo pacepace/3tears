@@ -8,12 +8,15 @@ record it whatever way the cell ends — the same reason a cell's spend goes thr
 1. :meth:`WorldSession.seed` — the case's seed, through the engine's seed walk
    (:func:`~threetears.evals.contracts.host.world_seed.check_seed`) and the dimensions' own ``seed``
    handles, for the carriers the kind attaches; then every attached carrier's ``settle`` handle,
-   awaited before the candidate's first turn. Seeding a triggered dimension ARMS it.
+   awaited before the candidate's first turn. Seeding a triggered dimension ARMS it, and its seed
+   handle returns the host's identity of the event it armed, which the session keeps.
 2. :meth:`WorldSession.at_turn` — before each candidate turn, the ambient perturbation the seed
    scheduled for that turn, if any.
 3. :meth:`WorldSession.fire` / :meth:`WorldSession.observe` — a triggered dimension's condition
    happening: made to happen by the rig through the host's ``fire`` handle, or seen happening in the
-   world and recorded. Each is a :class:`~threetears.evals.contracts.world_events.WorldEvent`.
+   world and recorded. Each is a :class:`~threetears.evals.contracts.world_events.WorldEvent` naming the
+   event that fired, and it is ``armed`` exactly when that event is one the seed armed — so the world's
+   own firing on a dimension the seed also armed is never recorded as the seed's.
 4. :meth:`WorldSession.end_state` — every dimension of every attached carrier, read back through its
    ``read`` handle. Read ONCE: a kind that grades its goal checks reads it here, and the runner, which
    reads it after ``invoke`` returns for the cell's trace, gets the same reading. After it the world is
@@ -66,7 +69,7 @@ from threetears.evals.contracts.base import VerbatimJsonObject
 from threetears.evals.contracts.host.world import Triggered, WorldDimension, WorldRegistry
 from threetears.evals.contracts.host.world_seed import SeedWrite, check_seed
 from threetears.evals.contracts.models import WorldSeed
-from threetears.evals.contracts.world_events import WorldEvent, fired_dimensions
+from threetears.evals.contracts.world_events import Firings, WorldEvent
 
 _END_STATE: TypeAdapter[dict[str, Any]] = TypeAdapter(VerbatimJsonObject)
 
@@ -94,6 +97,7 @@ class WorldSession:
         self._bound = False
         self._attached: tuple[str, ...] | None = None
         self._seeded: tuple[str, ...] = ()
+        self._armed_events: dict[str, str] = {}
         self._ambient_turns: frozenset[int] = frozenset()
         self._perturbed: set[int] = set()
         self._events: list[WorldEvent] = []
@@ -160,14 +164,19 @@ class WorldSession:
         return self._seeded
 
     @property
+    def armed_events(self) -> dict[str, str]:
+        """The events the seed armed: triggered dimension → the identity its seed handle returned, a copy."""
+        return dict(self._armed_events)
+
+    @property
     def events(self) -> tuple[WorldEvent, ...]:
         """Everything that moved the world after it was seeded, in order."""
         return tuple(self._events)
 
     @property
-    def fired(self) -> frozenset[str]:
-        """The triggered dimensions that fired, whoever caused them — what ``fired()`` reads."""
-        return fired_dimensions(self._events)
+    def fired(self) -> Firings:
+        """What fired, whoever caused it, and which firings were the seed's armed events — what the goal language reads."""
+        return Firings.of(self._events)
 
     @property
     def end_state_read(self) -> dict[str, Any] | None:
@@ -179,7 +188,9 @@ class WorldSession:
 
         Every write is checked before any is made (the seed walk), so a refused seed leaves the world as it
         was. Each write goes through the dimension's own ``seed`` handle — the path the conformance kit
-        proves — and each attached carrier that declares a ``settle`` handle is awaited after all of them,
+        proves. A triggered dimension's seed handle arms an event and returns the host's identity of it (a
+        non-empty string), which is what later tells the seed's firing from one the world makes of its own
+        on that dimension. Each attached carrier that declares a ``settle`` handle is awaited after all of them,
         in carrier order, so the candidate's first turn meets the world the seed describes. Call it once
         per cell, from ``prepare``, with the empty seed when the case sets nothing: it is also how the
         cell says which carriers its subject holds, which the end state is read over.
@@ -194,8 +205,9 @@ class WorldSession:
         Raises:
             SeedRefused: The seed walk refused a value. Nothing has been written.
             WorldSessionError: The session was already seeded; the host's world binds per cell and this
-                session was never bound; ``attached`` names a carrier no declared dimension names; or the
-                seed schedules ambient perturbation and the host's world has no ambient-perturbation handle.
+                session was never bound; ``attached`` names a carrier no declared dimension names; the
+                seed schedules ambient perturbation and the host's world has no ambient-perturbation handle;
+                or a triggered dimension's seed handle returned no event identity.
         """
         if self._attached is not None:
             raise WorldSessionError("this cell's world was already seeded; a world session seeds once per cell")
@@ -217,8 +229,19 @@ class WorldSession:
                 f"{world_seed.ambient_perturbation_turns!r}, and this host's world declares no perturb_ambient handle"
             )
         writes = check_seed(self._registry, world_seed.namespaces, attached=attached)
+        armed: dict[str, str] = {}
         for write in writes:
-            await self._registry.call(write.handle, write.value)
+            returned = await self._registry.call(write.handle, write.value)
+            declared = self._registry.get(write.name)
+            if declared is not None and isinstance(declared.when, Triggered):
+                if not isinstance(returned, str) or not returned:
+                    raise WorldSessionError(
+                        f"{write.name} is triggered, so its seed handle arms an event and returns the host's identity "
+                        f"of it — it returned {returned!r}. Without it the seed's firing cannot be told from one "
+                        "the world makes of its own on this dimension"
+                    )
+                armed[write.name] = returned
+        self._armed_events = armed
         self._attached = tuple(sorted(set(attached)))
         self._seeded = tuple(write.name for write in writes)
         self._ambient_turns = frozenset(world_seed.ambient_perturbation_turns)
@@ -292,28 +315,36 @@ class WorldSession:
                 "never set up"
             )
         await self._registry.call(trigger.fire)
-        return self._record(declared, trigger, caused_by="rig", turn=turn)
+        return self._record(declared, trigger, caused_by="rig", event=self._armed_events[dimension], turn=turn)
 
-    def observe(self, dimension: str, *, turn: int | None = None) -> WorldEvent:
+    def observe(self, dimension: str, *, event: str, turn: int | None = None) -> WorldEvent:
         """Record a triggered dimension's condition happening in the world, which the rig did not cause.
 
-        The candidate's own action brought an event about, or a person made a ruling: the world fired it,
-        and the kind saw it happen. Nothing is called. Allowed whether or not the seed armed it — a host's
-        world may hold conditions of its own — and the record says which.
+        The candidate's own action brought an event about, a person made a ruling, or the world's own
+        clock or rules fired an event of its own: the world fired it, and the kind saw it happen. Nothing
+        is called. The record is ``armed`` exactly when ``event`` is an identity a seed handle returned for
+        this cell — the seed's own event, on this dimension or one it also moves — and not when the world
+        fired an event of its own on a dimension the seed also armed.
 
         Args:
             dimension: The triggered dimension.
+            event: The host's identity of the event that fired, as the world reports it.
             turn: The candidate turn it fired before or during, counted from 1; None for a kind with no turns.
 
         Returns:
             The firing recorded.
 
         Raises:
-            WorldSessionError: The world is not open or is closed, or the dimension is undeclared, not
-                triggered, or on a carrier this cell did not attach.
+            WorldSessionError: The world is not open or is closed; the dimension is undeclared, not
+                triggered, or on a carrier this cell did not attach; or ``event`` is not a non-empty string.
         """
         declared, trigger = self._triggered(dimension, verb="observe")
-        return self._record(declared, trigger, caused_by="world", turn=turn)
+        if not isinstance(event, str) or not event:
+            raise WorldSessionError(
+                f"cannot observe {dimension}: a firing names the host's identity of the event that fired, and "
+                f"{event!r} is not one — provenance is per event, and without it this firing's cannot be read"
+            )
+        return self._record(declared, trigger, caused_by="world", event=event, turn=turn)
 
     async def end_state(self) -> dict[str, Any]:
         """The world the cell left: every dimension of every attached carrier, read through its ``read`` handle.
@@ -389,30 +420,34 @@ class WorldSession:
             )
         return declared, declared.when
 
-    def _record(self, declared: WorldDimension, trigger: Triggered, *, caused_by: str, turn: int | None) -> WorldEvent:
+    def _record(
+        self, declared: WorldDimension, trigger: Triggered, *, caused_by: str, event: str, turn: int | None
+    ) -> WorldEvent:
         """Append one firing to the record.
 
         Args:
             declared: The dimension that fired.
             trigger: Its trigger.
             caused_by: ``rig`` or ``world``.
+            event: The host's identity of the event that fired.
             turn: The turn, or None.
 
         Returns:
-            The record.
+            The record, ``armed`` when ``event`` is one the seed armed.
         """
-        event = WorldEvent.model_validate(
+        record = WorldEvent.model_validate(
             {
                 "kind": trigger.kind,
                 "dimension": declared.name,
                 "condition": trigger.condition,
                 "caused_by": caused_by,
-                "armed": declared.name in self._seeded,
+                "event": event,
+                "armed": event in self._armed_events.values(),
                 "turn": turn,
             }
         )
-        self._events.append(event)
-        return event
+        self._events.append(record)
+        return record
 
 
 __all__ = ["WorldSession", "WorldSessionError"]

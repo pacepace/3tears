@@ -29,7 +29,7 @@ from threetears.evals.contracts.campaign import (
     GenerationProvenance,
 )
 from threetears.evals.contracts.call_ledger import CallLedger, RecordedCall
-from threetears.evals.contracts.world_events import WorldEvent, WorldEventCause, WorldEventKind
+from threetears.evals.contracts.world_events import Firings, WorldEvent, WorldEventCause, WorldEventKind
 from threetears.evals.contracts.world_session import WorldSession, WorldSessionError
 from threetears.evals.contracts.candidate_kind import (
     CandidateOutput,
@@ -40,7 +40,13 @@ from threetears.evals.contracts.candidate_kind import (
     VariantConfig,
 )
 from threetears.evals.contracts.cassettes import ActionSeam, CassetteSeams, CellCassettes, DeliverySeam, SyncActionSeam
-from threetears.evals.contracts.covariates import fold_phase_timings
+from threetears.evals.contracts.covariates import (
+    DROPPED_TOOL_CALLS_KEY,
+    REFUSED_TOOL_ATTACHES_KEY,
+    TRUNCATED_ROUNDS_KEY,
+    TURN_BUDGET_ENDED_KEY,
+    fold_phase_timings,
+)
 from threetears.evals.contracts.declaration import (
     BarName,
     CampaignDesign,
@@ -70,11 +76,14 @@ from threetears.evals.contracts.judge_attribution import (
     judges_sharing_a_candidate_model,
 )
 from threetears.evals.contracts.metrics import (
+    ACCURACY_MEASURE,
     CLASSIFIER_FAMILY,
     COMPOSITE_FAMILY,
+    CONFUSION_CELL_MEASURE,
     DUAL_AXIS_FAMILY,
     ENGINE_FAMILIES,
     GOAL_STATE_FAMILY,
+    MATCH_MEASURE,
     MECHANICAL_FAMILY,
     METRIC_DESCRIPTORS,
     RUBRIC_FAMILY,
@@ -100,9 +109,11 @@ from threetears.evals.contracts.models import (
     OUTCOME_DIM_ID,
     RESERVED_DIM_IDS,
     ROUND_DONE,
+    SCALES,
     TRANSCRIPT_DIM_ID,
     ActorPolicy,
     AsyncDelivery,
+    AsyncDeliveryStatus,
     CatalogRubricDim,
     ClientRequestSettings,
     ConversationSpec,
@@ -125,8 +136,10 @@ from threetears.evals.contracts.models import (
     RubricScale,
     RubricScore,
     RunCompleteness,
+    ScaleSpec,
     WorldSeed,
     VariationCounts,
+    eval_trace_doc_id,
     utc_now_iso,
 )
 from threetears.evals.contracts.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt, SeedSection, SeedTemplate
@@ -175,6 +188,7 @@ from threetears.evals.contracts.store_port import DocumentStore, StoreConflict
 from threetears.evals.contracts.usage_capture import (
     ResolvedUsage,
     RoleUsageLedger,
+    blended_cost_roles,
     production_replicating_cost,
     program_cost,
     resolve_result_usage,
@@ -305,13 +319,19 @@ __all__ = [
     "PROSE_SCHEMA_KEY",
     "PROVIDER_REQUEST_ATTEMPTS",
     "RESERVED_DIM_IDS",
+    "DROPPED_TOOL_CALLS_KEY",
+    "REFUSED_TOOL_ATTACHES_KEY",
     "ROUND_DONE",
+    "SCALES",
     "TRANSCRIPT_DIM_ID",
+    "TRUNCATED_ROUNDS_KEY",
+    "TURN_BUDGET_ENDED_KEY",
     "ActionSeam",
     "ActorPolicy",
     "AdmissionRefusedError",
     "ApparatusProvenance",
     "AsyncDelivery",
+    "AsyncDeliveryStatus",
     "AsyncExternalSpend",
     "AttemptOutcome",
     "AttributionScope",
@@ -408,6 +428,7 @@ __all__ = [
     "ExtractedPaths",
     "Finding",
     "FindingResolution",
+    "Firings",
     "GenerationProvenance",
     "GoalCheckControl",
     "GoalCheckControls",
@@ -435,11 +456,14 @@ __all__ = [
     "MetricDataType",
     "MetricDescriptor",
     "MetricFamily",
+    "ACCURACY_MEASURE",
     "CLASSIFIER_FAMILY",
     "COMPOSITE_FAMILY",
+    "CONFUSION_CELL_MEASURE",
     "DUAL_AXIS_FAMILY",
     "ENGINE_FAMILIES",
     "GOAL_STATE_FAMILY",
+    "MATCH_MEASURE",
     "MECHANICAL_FAMILY",
     "RUBRIC_FAMILY",
     "ClassifierStatistic",
@@ -480,6 +504,7 @@ __all__ = [
     "RubricScale",
     "RubricScore",
     "RunCompleteness",
+    "ScaleSpec",
     "RunIndexEntry",
     "RunRecordStore",
     "RunStore",
@@ -527,6 +552,8 @@ __all__ = [
     "extract_json",
     "extract_json_array",
     "extract_paths",
+    "blended_cost_roles",
+    "eval_trace_doc_id",
     "fold_phase_timings",
     "goal_check_of",
     "judges_sharing_a_candidate_model",

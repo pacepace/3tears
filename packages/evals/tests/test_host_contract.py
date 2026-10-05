@@ -922,11 +922,53 @@ def test_a_host_that_declares_levers_and_wires_no_reader_is_refused_rather_than_
 def test_a_host_with_no_levers_of_its_own_needs_no_reader():
     """The engine's half of the map is the whole map when the host declares nothing beyond it."""
     bare = HostProfile(host_id="bare", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))
+    observed = toyhost_observation(chunk_tokens=256)
+    componentless = observed.model_copy(
+        update={"subject_snapshot": observed.subject_snapshot.model_copy(update={"components": {}})}
+    )
 
-    identity = derive_variant_identity(run=toyhost_observation(chunk_tokens=256), profile=bare)
+    identity = derive_variant_identity(run=componentless, profile=bare)
 
     assert set(identity.levers) == {CANDIDATE_MODEL_LEVER, CANDIDATE_KIND_LEVER}
     assert identity.variant_key
+
+
+def test_a_subject_component_no_lever_carries_is_refused():
+    """A component is what the subject IS; one the key does not carry pools two subjects that differ in it.
+
+    The probe the refusal answers: two subjects differing only in a component (a prompt, by content) took one
+    variant key. Both directions on one fixture: carried by its lever, two prompts are two variants.
+    """
+    bare = HostProfile(host_id="bare", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))
+    observed = toyhost_observation(chunk_tokens=256)
+
+    with pytest.raises(LeverCoordinateError, match="subject component.s. extraction_prompt that no variant lever"):
+        derive_variant_identity(run=observed, profile=bare)
+
+    toy = toyhost_profile()
+    edited = observed.model_copy(
+        update={
+            "subject_snapshot": observed.subject_snapshot.model_copy(
+                update={
+                    "components": {
+                        "extraction_prompt": SweepableValue.of(
+                            "pull only the totals", display="extraction prompt, rev 4"
+                        )
+                    }
+                }
+            )
+        }
+    )
+    assert (
+        derive_variant_identity(run=observed, profile=toy).variant_key
+        != derive_variant_identity(run=edited, profile=toy).variant_key
+    )
+    # A lever of the component's name resolved to something other than the component is not carrying it.
+    assert toy.variant_levers is not None
+    own = toy.variant_levers
+    elsewhere = replace(toy, variant_levers=lambda run: {**own(run), "extraction_prompt": _A_LEVEL})
+    with pytest.raises(LeverCoordinateError, match="extraction_prompt that no variant lever carries as itself"):
+        derive_variant_identity(run=observed, profile=elsewhere)
 
 
 @pytest.mark.parametrize("engine_lever", [CANDIDATE_MODEL_LEVER, CANDIDATE_KIND_LEVER, "extractor.page_limit"])
@@ -999,7 +1041,10 @@ def test_a_lever_that_declares_why_it_carries_no_coordinate_may_be_omitted():
             ],
             roles=toyhost_profile().host_sweepables.roles,
         ),
-        variant_levers=lambda _run: {"chunk_tokens": _A_LEVEL},
+        variant_levers=lambda run: {
+            "chunk_tokens": _A_LEVEL,
+            "extraction_prompt": run.subject_snapshot.components["extraction_prompt"],
+        },
     )
 
     identity = derive_variant_identity(run=toyhost_observation(chunk_tokens=256), profile=waived)
@@ -1016,7 +1061,12 @@ def test_registering_a_lever_is_what_admits_it_to_the_variant_key():
     which would pass the refusal test on its own.
     """
     resolved = {name: _A_LEVEL for name in _TOYHOST_OWN_LEVERS} | {"a_new_axis": _A_LEVEL}
-    resolves_one_extra = replace(toyhost_profile(), variant_levers=lambda _run: resolved)
+    resolves_one_extra = replace(
+        toyhost_profile(),
+        variant_levers=lambda run: (
+            resolved | {"extraction_prompt": run.subject_snapshot.components["extraction_prompt"]}
+        ),
+    )
 
     with pytest.raises(LeverCoordinateError, match="a_new_axis"):
         derive_variant_identity(run=toyhost_observation(chunk_tokens=256), profile=resolves_one_extra)

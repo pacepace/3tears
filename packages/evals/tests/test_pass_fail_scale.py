@@ -333,6 +333,13 @@ class TestEveryScaleIsKnownEverywhere:
         assert set(SCALES) == scales
         assert set(SCALE_READERS) == scales
 
+    def test_the_public_scale_table_cannot_be_written(self):
+        """SCALES is exported, so a host writing into it would rewrite every other host's arithmetic in the process."""
+        with pytest.raises(TypeError):
+            SCALES["ordinal"] = SCALES["pass_fail"]  # type: ignore[index]
+        with pytest.raises(TypeError):
+            SCALES["pass_fail"].labels[0] = "zero"  # type: ignore[index]
+
     @pytest.mark.parametrize("scale", sorted(get_args(RubricScale)))
     async def test_every_scale_is_asked_for_in_its_own_words(self, scale):
         """The judge service words each scale's question; a scale it has no wording for never reaches the judge."""

@@ -177,6 +177,28 @@ def test_per_label_precision_recall_and_f1_come_from_the_confusion_counts() -> N
     assert summaries[classifier_label_measure("f1", "move")].mean == pytest.approx(2 / 3)
 
 
+def test_accuracy_is_derived_from_match_as_the_classifier_s_quality_reading() -> None:
+    """``match`` is the one verdict a kind lands; ``accuracy`` is its per-observation 0/1, with a mean to rank on."""
+    results = [_result(f"c{i}", match=held) for i, held in enumerate([True, True, True, False])]
+
+    summaries = _summaries(results)
+
+    assert summaries["match"].rate == 0.75
+    accuracy = summaries["accuracy"]
+    assert (accuracy.mean, accuracy.n, accuracy.rate) == (0.75, 4, None), "a numeric reading, so a family can test it"
+    assert describe_measure("accuracy", _PROFILE.measures).merit_axis == "quality"
+    assert describe_measure("match", _PROFILE.measures).merit_axis is None, "one verdict, one reading on the axis"
+
+
+def test_no_match_no_accuracy_and_a_non_bool_match_is_reported_under_its_own_name() -> None:
+    assert "accuracy" not in _summaries([_result("c1", on_target=True)])
+
+    collection = _collection([_result("c1", match=1.0)])
+
+    assert "match" in collection.unreported_observations
+    assert not {"match", "accuracy"} & {summary.name for summary in collection.measures}
+
+
 def test_a_confusion_cell_that_does_not_split_is_dropped_and_reported() -> None:
     collection = _collection([_result("c1", confusion_cell="attack->move")])
     assert "confusion_cell" in collection.unreported_observations

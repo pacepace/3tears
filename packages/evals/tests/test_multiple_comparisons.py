@@ -60,11 +60,13 @@ def _bundle(
     control: str | None = CONTROL,
     questions: bool = True,
     cases: int = 12,
+    matched: tuple[Sequence[bool], Sequence[bool]] | None = None,
 ) -> AnalysisContextBundle:
     """A control and one contrast, scored on one judged dimension per entry of ``differences``.
 
     The control scores 3 on every dimension of every case; the contrast scores ``3 + difference``.
-    Results carry no goal check and no cost, so the judged dimensions are the whole family.
+    Results carry no goal check and no cost, so the judged dimensions are the whole family — unless
+    ``matched`` gives each side's per-case classifier verdicts, landed as ``match``.
     """
     dims = _dims(len(differences))
     runs = []
@@ -81,6 +83,7 @@ def _bundle(
                 test_case_id=f"tc-{case:02d}",
                 goal_state_outcomes=[],
                 cost_usd=None,
+                host_measures={} if matched is None else {"match": matched[model == CONTRAST][case]},
                 rubric_scores=[
                     RubricScore(dim=dim, score=3 + (diffs[case] if model == CONTRAST else 0), scale="ordinal")
                     for dim, diffs in zip(dims, differences, strict=True)
@@ -249,3 +252,18 @@ class TestWhatAFamilyCovers:
         (comparison,) = family.comparisons
         expected = composite_significance([3.0] * 12, [3.0 + d for d in BORDERLINE], paired=True)
         assert comparison.p_raw == pytest.approx(expected.p_value)
+
+    def test_a_classifier_s_verdict_is_one_comparison_on_the_quality_axis(self) -> None:
+        """``match`` lands once and ``accuracy`` is derived from it: the family tests the verdict once, under ``accuracy``."""
+        control = [True] * 6 + [False] * 6
+        contrast = [True] * 11 + [False]
+        family = _family(_bundle([], matched=(control, contrast), merit_axes=["quality"]))
+
+        measured = [c for c in family.comparisons if c.reading == "measure"]
+        assert [c.name for c in measured] == ["accuracy"]
+        (accuracy,) = measured
+        assert (accuracy.control.mean, accuracy.contrast.mean) == (0.5, pytest.approx(11 / 12))
+        assert family.family_size == 1
+
+        cost = _family(_bundle([], matched=(control, contrast), merit_axes=["cost"]))
+        assert not [c for c in cost.comparisons if c.name == "accuracy"], "it sits on quality, not on every axis"

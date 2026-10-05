@@ -1005,14 +1005,11 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         ("judge_dim_divergence", hashable_judges),
         ("judge_config_ids", run.judge_config_ids),
     )
-    declared_omitted = {
-        name for name, value in role_inputs if profile.omits_apparatus(name, [(run.candidate_kind, value)])
-    }
     # An unjudged run has no judge, whatever its host declares: the runner refuses to execute a
     # judged run that names none (``execute_run``), so this blank is a recorded fact about the run
-    # rather than a gap, and the judge's dependents follow it out exactly as they follow a declaration.
-    if run.judge_model is None:
-        declared_omitted.add("judge_model")
+    # rather than a gap — which is why the run's own seats (``HostProfile.seats``) leave the judge
+    # role out of an unjudged run's rig, and the judge's inputs follow it out here.
+    declared_omitted = {name for name, value in role_inputs if profile.omits_apparatus(name, [(run, value)])}
     role_values = dict(role_inputs)
     # A dependent is carried out with its owner ONLY when the run recorded nothing for it. The
     # rest of this mechanism rests on the value beating the declaration, and propagation is the
@@ -1147,8 +1144,9 @@ def derive_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVar
 
     Raises:
         LeverCoordinateError: The host's reader resolved a lever the engine resolves itself, the
-            composed map named an axis the registry does not declare as a lever, or it omitted a
-            declared one that carries no waiver.
+            composed map named an axis the registry does not declare as a lever, it omitted a
+            declared one that carries no waiver, or the subject carries a component no lever carries
+            as itself.
     """
     levers = profile.engine_levels(run)
     hosts = profile.variant_levers(run) if profile.variant_levers is not None else {}
@@ -1185,6 +1183,23 @@ def derive_variant_identity(*, run: EvalRun, profile: HostProfile) -> DerivedVar
             f"host '{profile.host_id}' registered levers its variant map does not resolve: {', '.join(forgotten)}. "
             "A lever missing from the map contributes no coordinate, so two observations differing only on it share "
             'a key — declare `no_own_coordinate="<why>"` on it if that is intended, or resolve it.'
+        )
+
+    # A subject COMPONENT is what the subject is, and the variant key is meant to separate two subjects
+    # that differ in one (SubjectSnapshot.components). The key hashes the lever map and nothing else —
+    # the registry is the single authority for an axis — so a component reaches it only when a lever
+    # carries it, as itself. One that no lever carries would leave two subjects differing only in it
+    # (a prompt, by content) sharing a key and pooling as repeats: refused, naming the component.
+    if uncarried := sorted(
+        name
+        for name, component in run.subject_snapshot.components.items()
+        if name not in levers or levers[name].content_hash != component.content_hash
+    ):
+        raise LeverCoordinateError(
+            f"host '{profile.host_id}' captured subject component(s) {', '.join(uncarried)} that no variant lever "
+            "carries as itself, so two subjects differing only in them would share a variant key and pool as repeats "
+            "of one condition. Register each as a lever and resolve it from the component, or carry it as a label "
+            "(identifies, never determines) or as state (what the subject carried in, hashed into the context)"
         )
 
     return DerivedVariantIdentity(

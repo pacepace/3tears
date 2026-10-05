@@ -105,7 +105,9 @@ from threetears.evals.contracts.host.profile import CANDIDATE_MODEL_LEVER, HostP
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_variant_identity
 from threetears.evals.contracts.metrics import (
+    ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
+    MATCH_MEASURE,
     AttributionScope,
     ClassifierStatistic,
     MeasurePopulation,
@@ -2277,6 +2279,29 @@ def _goal_check_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, b
         yield goal_check_measure(outcome.expression), 1.0 if passed else 0.0, False, "goal_state_outcomes", _PER_RESULT
 
 
+def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:
+    """Yield the observation's classifier accuracy, 1.0 matched and 0.0 not, derived from its ``match``.
+
+    ``match`` is the boolean a classifier kind lands, and a boolean summarises as a rate with no
+    per-case mean, so it cannot carry the classifier's reading on the quality axis into a family of
+    comparisons. ``accuracy`` is that reading, derived here from the one carried verdict — so a host
+    lands one measure and every surface sees one comparison, rather than a host minting its own
+    numeric copy beside ``match`` and every family testing the same verdict twice. A kind may not
+    land ``accuracy`` itself (:func:`~threetears.evals.run.runner.refuse_engine_derived_host_measures`).
+    Nothing is yielded for an observation that carries no ``match``, or one whose ``match`` is not a
+    bool — that value is the walk's to drop and report, under ``match``'s own name.
+
+    Args:
+        result: The observation.
+
+    Yields:
+        ``("accuracy", 1.0 | 0.0, True, "host_measures", "result")`` at most once.
+    """
+    matched = result.host_measures.get(MATCH_MEASURE)
+    if isinstance(matched, bool):
+        yield ACCURACY_MEASURE, 1.0 if matched else 0.0, True, "host_measures", _PER_RESULT
+
+
 def _candidate_output_throughput(result: EvalResult) -> float | None:
     """The candidate's output tokens per second of its own model-call time, or None.
 
@@ -2494,7 +2519,10 @@ def _collect_measures(
         for name, value, descriptor in _open_map_leaves(result, profile=profile):
             record(outer, name, value, descriptor, report_gaps=True, case_id=case_id, faulted=faulted)
         for name, value, report_gaps, carrier, observation_unit in chain(
-            _carrier_leaves(result, profile=profile), _derived_leaves(result), _goal_check_leaves(result)
+            _carrier_leaves(result, profile=profile),
+            _derived_leaves(result),
+            _goal_check_leaves(result),
+            _accuracy_leaves(result),
         ):
             record(
                 inner,
@@ -3201,16 +3229,17 @@ def _apparatus_levels(
         declared.name
         for declared in apparatus
         if runs
-        and profile.omits_apparatus(
-            declared.name, [(run.candidate_kind, values_by_run[run.id][declared.name]) for run in runs]
-        )
+        and profile.omits_apparatus(declared.name, [(run, values_by_run[run.id][declared.name]) for run in runs])
     }
     for run in runs:
         values = values_by_run[run.id]
         for declared in apparatus:
             if declared.name in omitted:
                 continue
-            value = values[declared.name]
+            # A run whose rig had no such seat reads at UNSEATED_LEVEL — a level, not an unknown — beside
+            # a run that had it, so a cohort mixing judged and code-only runs of one kind does not read
+            # the code-only runs' judge as undecided.
+            value = profile.apparatus_level(run, declared.name, values[declared.name])
             undecided = sweepables.is_indeterminate(declared.name, value)
             levels.setdefault(declared.name, {})[run.id] = None if undecided else canonical_json(value)
         # The world this run placed the subject in, on the same axis for the same reason. A run

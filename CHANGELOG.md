@@ -6,6 +6,60 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: fixes from an adopter's review (Dungeons of Wagons, gate G2)
+
+- **The controls gate's do-nothing control runs the world's clock.** A ``turn``-triggered dimension's
+  condition is turns passing, which a cell makes happen whatever its candidate does, yet the do-nothing
+  control fired nothing, so a goal check like ``fired("scene.weather")`` on a seed-armed timed event passed
+  for a candidate that did nothing and was admitted. The do-nothing control now fires every clock-driven
+  dimension (the world's own clock may fire one the seed never armed), fires a seed-armed one as the seed's
+  armed event with its seeded value arrived, and named controls are laid over it. A check a clock firing
+  alone satisfies is refused as non-discriminating; one that also reads what the candidate did is admitted.
+- **Firing provenance is per event, not per dimension.** **Breaking:** a triggered dimension's ``seed``
+  handle returns the host's identity of the event it armed (a non-empty string) — ``WorldSession.seed``
+  refuses one that does not, and the conformance kit's round trip fails it first;
+  ``WorldSession.observe(dimension, *, event, turn=None)`` takes the identity of the event that fired;
+  ``WorldEvent.event`` (required on every firing; folded into the unreleased schema v6) records it, and
+  ``WorldEvent.armed`` is true exactly when that event is one the seed armed, so the world's own firing on a
+  dimension the seed also armed is no longer recorded as the seed's. The goal language gains
+  ``fired_armed("<dimension>")``; ``WorldSession.fired`` now returns ``Firings`` (exported;
+  ``.dimensions``/``.armed``), which ``evaluate``/``grade_goal_checks``/``evaluate_goal_state`` take as
+  ``fired``; ``fired_dimensions`` is gone (``Firings.of(events)``). ``ControlEndState`` gains
+  ``fired_armed``, refused for a dimension the template's seed does not arm, and its ``fired`` is laid over
+  the do-nothing control's. ``referenced_fires`` reports in source order, as documented.
+- **Public exports a host needs.** From ``threetears.evals.contracts``: ``AsyncDeliveryStatus``, ``SCALES``
+  (now read-only) and ``ScaleSpec``, ``eval_trace_doc_id``, ``blended_cost_roles``, the four covariate keys
+  (``TURN_BUDGET_ENDED_KEY`` …), ``Firings``, ``MATCH_MEASURE``, ``CONFUSION_CELL_MEASURE``,
+  ``ACCURACY_MEASURE``. From ``threetears.evals.run``: ``EvalRunCostCap``, ``resolve_effective_ceiling``,
+  ``resolve_ceiling_origin``, ``stamp_witnessed_judge``. From ``threetears.evals.contracts.host``:
+  ``UNSEATED_LEVEL``. **New check for a host's own suite:**
+  ``threetears.evals.testing.nonpublic_evals_imports(*paths)`` reports every ``threetears.evals`` import
+  that reaches below a public root or binds a name its root does not declare, naming the root that exports
+  it (``assert nonpublic_evals_imports(Path("src"), Path("tests")) == ()``).
+- **Classifier ``accuracy`` is the quality reading, derived from ``match``.** ``accuracy`` carries
+  ``merit_axis="quality"`` and is derived by the engine, 1.0/0.0 per observation, from the bool ``match`` a
+  kind lands, so it reaches a family of comparisons once; a kind landing ``accuracy`` itself is refused.
+  **Adopters:** delete a host-minted numeric copy (DoW's ``router_accuracy``) and land ``match`` only.
+- **A witnessed run can be judged.** ``stamp_witnessed_judge(host, run, template, *, judge_model,
+  judged_artifact, selection=None)`` gives a witnessed run, before its identity is stamped, the template whose
+  intent and rubric the judge reads and the judge apparatus a launch stamps; **breaking:**
+  ``record_witnessed_cell`` is now ``async`` and scores such a run's cells through the runner's own judge
+  phase from the run's recorded apparatus, so the cell is one ``rejudge_result`` reads like any run's. The
+  judge is attached at the run's creation, not by a later operation, because it is part of the context key
+  stamped once. A witnessed run names a template exactly when it is judged; its case never names one.
+- **A run's seats are narrowed by its own record.** A run naming no ``judge_model`` was not judged, so its
+  judge pin, request settings and per-dim attribution are not seats of its rig, whatever its kind declares
+  (``HostProfile.seats``). A cohort mixing judged and code-only runs of one kind reads the code-only runs'
+  judge as ``UNSEATED_LEVEL`` (``HostProfile.apparatus_level``), a level, rather than ``undecided``.
+  **Breaking:** ``HostProfile.omits_apparatus`` takes ``(run, value)`` pairs.
+- **A subject component no variant lever carries is refused.** The variant key hashes the lever map only,
+  so a component no lever carried let two subjects differing only in it (a prompt, by content) pool as
+  repeats. ``derive_variant_identity`` refuses one with ``LeverCoordinateError``. **Adopters:** register a
+  lever of the component's name and resolve it to the component, or carry it as a label or as state.
+- **A ``proposer`` completion role** (``CompletionRole``) for ``propose_draft``.
+- Identity: no ``IDENTITY_VERSION`` change — no predicate moved. The toy fixture host's golden variant keys
+  were re-pinned because its registrations gained a lever.
+
 ## v0.66.0 -- 2026-10-05
 
 ### 3tears-evals: the definition seed writes every judge config, and admits templates through authoring's gates

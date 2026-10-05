@@ -9,13 +9,22 @@ at authoring instead.
 
 **Two controls per check.** Each check is evaluated against:
 
-* **the do-nothing control** — the template's own seed as the end state, named through the host's
-  world registry, with an empty call ledger and nothing fired: the candidate did nothing. A triggered
-  dimension's seed arms it rather than setting it, so it is left out — its condition never happened.
+* **the do-nothing control** — what a cell whose candidate did nothing would leave: the template's own
+  seed as the end state, named through the host's world registry, an empty call ledger, and whatever
+  the world does on its own. A triggered dimension's seed arms it rather than setting it, so an armed
+  ``event`` or ``human`` dimension is left out — its condition is the candidate's act or a person's,
+  and neither happened. A ``turn`` dimension is the exception, because its condition is the passage of
+  turns, which a cell makes happen whatever its candidate does (the contract's own words: a turn trigger
+  the session advances). So every clock-driven dimension FIRES in the do-nothing control — the world's
+  own clock may fire one the seed never armed, and the engine cannot rule that out — and one the seed
+  arms fires as the seed's armed event (``fired_armed``), with its seeded value arrived in the end state.
+  A check that passes on a clock firing alone passes for a candidate that did nothing, and is refused.
   Derived, so it needs no data and cannot be authored wrong.
 * **its named control** — an end state the template's author states in
-  :class:`~threetears.evals.contracts.models.GoalCheckControls`: for an ``act`` check, one where the
-  behaviour happened; for a ``hold`` check, one where the forbidden thing happened.
+  :class:`~threetears.evals.contracts.models.GoalCheckControls`, laid over the do-nothing control: for an
+  ``act`` check, one where the behaviour happened; for a ``hold`` check, one where the forbidden thing
+  happened. What the world does on its own happens there too, so its firings are the do-nothing
+  control's plus the ones the control states.
 
 An ``act`` check must fail the first and pass the second; a ``hold`` check must pass the first and
 fail the second. Equal verdicts are refused — the check does not depend on what the candidate did —
@@ -31,7 +40,8 @@ and the evidence the kind renders. A control reaching the candidate would be a h
 
 **What the do-nothing control does not model.** It is the seed as written, not as a host's carriers
 read it back after a cell: a field the host's read adds with a default (a flag reading ``false``)
-is absent here. A check that distinguishes "absent" from "false" can therefore pass this gate and
+is absent here, and so is the value a clock-driven dimension takes when the world's own clock fires it
+unarmed — the firing is modelled, the value it brings is the host's. A check that distinguishes "absent" from "false" can therefore pass this gate and
 grade differently in a run; the host's own suite is where that agreement is proven for its
 templates. A seed value a run resolves from the subject (a reference to the subject's own state) resolves to empty, as
 it does for a run with no subject.
@@ -55,6 +65,7 @@ from threetears.evals.contracts.host.profile import HostProfile
 from threetears.evals.contracts.host.world import Triggered, WorldRegistry
 from threetears.evals.contracts.host.world_schema import schema_violations
 from threetears.evals.contracts.models import ControlEndState, EvalTemplate, GoalCheckIntent, GoalStateOutcome
+from threetears.evals.contracts.world_events import Firings
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
 
 #: The fields whose write puts the proof in question: the checks themselves, the controls, and the
@@ -137,8 +148,9 @@ class ControlEnd(NamedTuple):
     #: The calls, recorded through :meth:`~threetears.evals.contracts.call_ledger.CallLedger.record`,
     #: the method a kind records its candidate's calls with.
     ledger: CallLedger
-    #: The triggered dimensions that fired — what ``fired()`` reads. The do-nothing control fires nothing.
-    fired: frozenset[str]
+    #: What fired — read by ``fired()`` and ``fired_armed()``. The do-nothing control's are the world's
+    #: clock-driven dimensions (:func:`do_nothing_end_state`).
+    fired: Firings
 
 
 def _named(world: WorldRegistry | None, namespaces: Mapping[str, Any]) -> dict[str, Any]:
@@ -163,10 +175,13 @@ def _named(world: WorldRegistry | None, namespaces: Mapping[str, Any]) -> dict[s
 
 
 def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None) -> ControlEnd:
-    """The end state of a candidate that did nothing: the template's seed, no calls, and nothing fired.
+    """The end state of a candidate that did nothing: the template's seed, no calls, and what the world does alone.
 
-    The seed less its triggered dimensions: seeding one arms it, and with nothing done its condition
-    never happened, so its value is not in the world.
+    The seed less its ``event`` and ``human`` triggered dimensions: seeding one arms it, and with nothing
+    done its condition — the candidate's act, or a person's — never happened, so its value is not in the
+    world. A ``turn`` dimension is different: its condition is turns passing, which happens in every cell.
+    Every declared ``turn`` dimension fires, since the world's own clock may fire one the seed never armed;
+    one the seed arms fires as the seed's armed event, and its seeded value is in the end state.
 
     Args:
         template: The template whose seed it is.
@@ -179,12 +194,19 @@ def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None)
         ValueError: The seed states something the registry does not declare.
     """
     seeded = _named(world, template.world_seed.namespaces)
+    clock = _clock_driven(world)
     # A triggered dimension's seed ARMS it rather than setting it: a candidate that did nothing never
-    # met the condition, so the value never arrived. Naming it here would grade a check on a triggered
-    # dimension's end state as already satisfied by the seed — exactly the "graded the seed, not the end
-    # state" defect this gate exists to refuse.
-    idle = {name: value for name, value in seeded.items() if not _is_triggered(world, name)}
-    return ControlEnd(end_state=idle, ledger=CallLedger(), fired=frozenset())
+    # met an event's or a person's condition, so the value never arrived. Naming it here would grade a
+    # check on such a dimension's end state as already satisfied by the seed — exactly the "graded the
+    # seed, not the end state" defect this gate exists to refuse. A clock-driven one is the opposite
+    # case: its condition is turns passing, so leaving it out would let a check on it pass this gate
+    # and then pass, in every cell, for a candidate that did nothing — the same defect from the far side.
+    idle = {name: value for name, value in seeded.items() if not _is_triggered(world, name) or name in clock}
+    return ControlEnd(
+        end_state=idle,
+        ledger=CallLedger(),
+        fired=Firings(dimensions=clock, armed=clock & frozenset(seeded)),
+    )
 
 
 def _is_triggered(world: WorldRegistry | None, name: str) -> bool:
@@ -201,8 +223,29 @@ def _is_triggered(world: WorldRegistry | None, name: str) -> bool:
     return declared is not None and isinstance(declared.when, Triggered)
 
 
+def _clock_driven(world: WorldRegistry | None) -> frozenset[str]:
+    """Every dimension whose trigger is the passage of turns — what fires in a cell whatever its candidate does.
+
+    Args:
+        world: The host's world registry, or None for a host that declares no world.
+
+    Returns:
+        The names of every declared ``turn``-triggered dimension.
+    """
+    if world is None:
+        return frozenset()
+    return frozenset(
+        declared.name
+        for declared in world.declarations
+        if isinstance(declared.when, Triggered) and declared.when.kind == "turn"
+    )
+
+
 def control_end_state(template: EvalTemplate, end_state: ControlEndState, *, world: WorldRegistry | None) -> ControlEnd:
     """A named control end state: the seed with the stated dimensions replaced, the stated calls, and what fired.
+
+    Laid over the do-nothing control throughout, since what the world does alone happens in that cell
+    too: its end state, and its firings plus the ones the control states (``fired``, ``fired_armed``).
 
     Args:
         template: The template whose seed the control is laid over.
@@ -220,7 +263,9 @@ def control_end_state(template: EvalTemplate, end_state: ControlEndState, *, wor
     ledger = CallLedger()
     for call in end_state.calls:
         ledger.record(call.tool, call.action, call.params)
-    return ControlEnd(end_state=named, ledger=ledger, fired=frozenset(end_state.fired))
+    armed = idle.fired.armed | frozenset(end_state.fired_armed)
+    fired = Firings(dimensions=idle.fired.dimensions | frozenset(end_state.fired) | armed, armed=armed)
+    return ControlEnd(end_state=named, ledger=ledger, fired=fired)
 
 
 def check_discriminations(template: EvalTemplate, *, profile: HostProfile) -> list[CheckDiscrimination]:
@@ -325,8 +370,14 @@ def refuse_non_discriminating_checks(
         for entry in controls.checks
         if entry.check not in declared
     ]
+    try:
+        armed = _armed_by_seed(template, profile.world)
+    except ValueError as unnamed:
+        raise ValidationFailedError(
+            f"template {template.name!r}: its world_seed states world state a control cannot be built over: {unnamed}"
+        ) from unnamed
     for name, end_state in controls.end_states.items():
-        defects += [f"control {name!r}: {defect}" for defect in _end_state_defects(end_state, profile)]
+        defects += [f"control {name!r}: {defect}" for defect in _end_state_defects(end_state, profile, armed=armed)]
     if defects:
         raise ValidationFailedError(
             f"template {template.name!r} has goal_check_controls that do not hold: " + "; ".join(defects)
@@ -352,12 +403,30 @@ def refuse_non_discriminating_checks(
         )
 
 
-def _end_state_defects(end_state: ControlEndState, profile: HostProfile) -> list[str]:
+def _armed_by_seed(template: EvalTemplate, world: WorldRegistry | None) -> frozenset[str]:
+    """The triggered dimensions the template's seed arms.
+
+    Args:
+        template: The template.
+        world: The host's world registry, or None for a host that declares no world.
+
+    Returns:
+        The names.
+
+    Raises:
+        ValueError: The seed states something the registry does not declare.
+    """
+    seeded = _named(world, template.world_seed.namespaces)
+    return frozenset(name for name in seeded if _is_triggered(world, name))
+
+
+def _end_state_defects(end_state: ControlEndState, profile: HostProfile, *, armed: frozenset[str]) -> list[str]:
     """What a control end state states that this host's world or tools could not hold.
 
     A control is evidence only if it is a state a run could leave: a key no dimension declares, a
     value its dimension's schema refuses, a fired dimension that is not a triggered one the host
-    declares (:func:`~threetears.evals.contracts.dsl.undefined_fired_dimension`), or a call to an
+    declares (:func:`~threetears.evals.contracts.dsl.undefined_fired_dimension`), a seed-armed firing
+    of a dimension the template's seed does not arm, or a call to an
     action the host does not define would let a check pass or fail its control for a reason no run
     reproduces. Asked of the host's profile,
     as the world gate asks of a goal check. A key names its dimension through the host's addressing
@@ -371,6 +440,7 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile) -> list
     Args:
         end_state: The control.
         profile: The host whose world and tools the control is held to.
+        armed: The triggered dimensions the template's seed arms.
 
     Returns:
         One sentence per defect.
@@ -404,8 +474,13 @@ def _end_state_defects(end_state: ControlEndState, profile: HostProfile) -> list
                     defects.extend(schema_violations(dimension.schema, value, at=name))
     # Held to the rule a goal check's own fired() references are held to, so a control cannot prove a
     # check over a dimension that can never fire.
+    stated = [*end_state.fired, *(name for name in end_state.fired_armed if name not in end_state.fired)]
+    defects.extend(undefined for name in stated if (undefined := undefined_fired_dimension(name, world)) is not None)
     defects.extend(
-        undefined for name in end_state.fired if (undefined := undefined_fired_dimension(name, world)) is not None
+        f"fired_armed names {name!r}, which this template's seed does not arm — a firing of the seed's armed "
+        "event on a dimension the seed never armed is a state no run could leave"
+        for name in end_state.fired_armed
+        if undefined_fired_dimension(name, world) is None and name not in armed
     )
     for call in end_state.calls:
         if (undefined := undefined_action(call.tool, call.action, profile.tool_actions)) is not None:

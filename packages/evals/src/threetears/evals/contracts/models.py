@@ -23,6 +23,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Annotated, Any, Literal, NamedTuple, Self, get_args
 
 from pydantic import (
@@ -73,7 +74,8 @@ so they share its number; the one stored value the required fields change is
 ``GenerationProvenance.cell_model_version``, which the generator had never written. So did the
 cassette corpus — ``EvalCassette`` keyed by corpus and occurrence, ``EvalRun.cassette_corpus_id`` in
 place of ``cassette_version`` on the run and the result — and the background-work spend
-``AsyncDelivery`` carries.)
+``AsyncDelivery`` carries; and ``WorldEvent.event``, the identity of the event a firing names, required
+on every firing so a firing's ``armed`` is the event's provenance rather than the dimension's.)
 """
 
 
@@ -440,9 +442,20 @@ class ControlEndState(EvalDocumentModel):
     fired: list[str] = Field(
         default_factory=list,
         description=(
-            'Every triggered dimension that fired, by name — what a check reads with fired("<dimension>"). '
-            "The whole set, not an overlay: the do-nothing control fires nothing, so an empty list states a "
-            "candidate in whose cell nothing fired. Each name must be a triggered dimension the host declares."
+            'The triggered dimensions the candidate made fire, by name — what a check reads with fired("<dimension>"). '
+            "Laid over the do-nothing control's firings, which are what fires with no candidate action at all: "
+            "every clock-driven (turn-triggered) dimension, since the world's own clock moves whatever the "
+            "candidate does. Each name must be a triggered dimension the host declares."
+        ),
+    )
+    fired_armed: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The triggered dimensions on which the event the template's seed armed fired, by name — what a check "
+            'reads with fired_armed("<dimension>"). Each is also a firing, so it need not be repeated in `fired`. '
+            "Laid over the do-nothing control's, which are the clock-driven dimensions the seed arms. Each name "
+            "must be a triggered dimension the template's seed arms: a seed-armed firing of a dimension the seed "
+            "never armed is a state no run could leave."
         ),
     )
 
@@ -566,22 +579,26 @@ class ScaleSpec(NamedTuple):
 
 
 #: The scales, by name. `RubricScale`'s members and this table's keys are asserted equal by the tests.
-SCALES: dict[str, ScaleSpec] = {
-    "ordinal": ScaleSpec(
-        levels=("1", "2", "3", "4", "5"),
-        scores=(1, 5),
-        labels={},
-        fixed_bar=None,
-        reads_as="scored 1-5 against the template's scoring guide",
-    ),
-    "pass_fail": ScaleSpec(
-        levels=("pass", "fail"),
-        scores=(0, 1),
-        labels={v: k for k, v in PASS_FAIL_SCORES.items()},
-        fixed_bar=PASS_FAIL_SCORES["pass"],
-        reads_as="answered pass (1) or fail (0); its mean is the pass rate",
-    ),
-}
+#: Read-only, because it is public (a host renders a dimension's scale from it) and one process-wide
+#: table a host could write into would change every other host's arithmetic in that process.
+SCALES: Mapping[str, ScaleSpec] = MappingProxyType(
+    {
+        "ordinal": ScaleSpec(
+            levels=("1", "2", "3", "4", "5"),
+            scores=(1, 5),
+            labels=MappingProxyType({}),
+            fixed_bar=None,
+            reads_as="scored 1-5 against the template's scoring guide",
+        ),
+        "pass_fail": ScaleSpec(
+            levels=("pass", "fail"),
+            scores=(0, 1),
+            labels=MappingProxyType({v: k for k, v in PASS_FAIL_SCORES.items()}),
+            fixed_bar=PASS_FAIL_SCORES["pass"],
+            reads_as="answered pass (1) or fail (0); its mean is the pass rate",
+        ),
+    }
+)
 
 #: The scoring-guide keys each scale admits (a projection of :data:`SCALES`, kept for its readers).
 SCALE_LEVELS: dict[str, tuple[str, ...]] = {name: spec.levels for name, spec in SCALES.items()}
@@ -1357,7 +1374,8 @@ class EvalTestCase(EvalDocumentModel):
         description=(
             "The template this case was generated from, or None for a WITNESSED case — the stimulus of a session "
             "a host observed rather than one a template set, recorded through `record_witnessed_cell` under a "
-            "witnessed run (whose own `template_id` is None for the same reason). Required with no default, so "
+            "witnessed run (whose own `template_id` is None for the same reason, unless the run is judged, when it "
+            "names the template whose intent and rubric the judge reads). Required with no default, so "
             "every writer states which it is: a None is a case no template produced, never a template id "
             "forgotten. A launch refuses a case whose template is not the one it runs, so a witnessed case "
             "can never be launched."
@@ -1896,7 +1914,14 @@ class EvalRun(EvalDocumentModel):
     scope_id: str = Field(min_length=1)
 
     # What runs
-    template_id: str | None = Field(default=None, description="None = ad-hoc run from explicit test_case_ids")
+    template_id: str | None = Field(
+        default=None,
+        description=(
+            "The template the run launched; for a witnessed run, the template its cells are judged against "
+            "(`stamp_witnessed_judge`), None when it is unjudged. None on a commissioned run = ad-hoc, from explicit "
+            "test_case_ids."
+        ),
+    )
     subject_snapshot: SubjectSnapshot = Field(
         description=(
             "Who was measured, in the engine's vocabulary: a required non-empty key, a separate reader-facing "

@@ -54,7 +54,7 @@ import random
 import time
 import uuid
 from collections import Counter
-from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import (
     AbstractContextManager,
     contextmanager,
@@ -88,6 +88,7 @@ from threetears.evals.contracts.host.subject import SubjectSnapshot
 from threetears.evals.contracts.host.timeouts import EvalCellTimeout
 from threetears.evals.contracts.host.traces import CellIdentity, CellTrace, TraceSink
 from threetears.evals.contracts.identity import DerivedVariantIdentity, resolve_variant_identity
+from threetears.evals.contracts.metrics import ACCURACY_MEASURE, MATCH_MEASURE
 from threetears.evals.contracts.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -111,7 +112,7 @@ from threetears.evals.contracts.models import (
 )
 from threetears.evals.contracts.scoring import CellSummary
 from threetears.evals.contracts.call_ledger import CallLedger
-from threetears.evals.contracts.world_events import WorldEvent
+from threetears.evals.contracts.world_events import Firings, WorldEvent
 from threetears.evals.contracts.world_session import WorldSession
 from threetears.evals.contracts.usage_capture import (
     ExternalRateTable,
@@ -1144,6 +1145,7 @@ async def run_one_result(
     # cell is assembled: a kind double-reporting its background work's spend is its own code, so
     # every cell would do it, and judging the cell first would spend on a record that cannot be built.
     refuse_inner_agent_usage(telemetry.usage)
+    refuse_engine_derived_host_measures(candidate.host_measures)
 
     # The trace sink's record of the candidate's own work, handed to the assembly whole: it reads
     # the spans and the three named latency buckets off it. ``None`` for a cell that wired no sink,
@@ -1225,35 +1227,17 @@ async def run_one_result(
             evidence=judge_evidence,
             dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
         )
-        judge_started = time.monotonic()
         sink.begin_judging(phase)
-        try:
-            outcomes = await judge_dims(
-                template=template,
-                judge_service=judge_service,
-                concurrency=options.judge_concurrency,
-                settled=sink.judged,
-                context=build_judge_context(
-                    template=template,
-                    test_case=test_case,
-                    goal_outcomes=goal_outcomes,
-                    judged_artifact=judged_artifact,
-                    judge_evidence=judge_evidence,
-                ),
-            )
-        except Exception as e:  # prawduct:ok-broad-except — judge boundary; a judge failure must not wedge the slot
-            log.exception("Judge service failed during eval run %s", eval_run_id)
-            # The calls that returned before it raised were paid for and keep their scores; the
-            # rest are named as failed with the cause.
-            judged = _judge_record(phase, sink.judged, unfinished=f"the judge phase raised {type(e).__name__}: {e}")
-        else:
-            judged = _judge_record(phase, outcomes)
-        finally:
-            # Stamped on the way out of EVERY exit, not just the scoring one. A judge
-            # that raised after two minutes spent those two minutes, and leaving the
-            # phase untimed there would file real wall-clock under the same absence as
-            # a run that never had a judge at all — judge_error is what says it failed.
-            judge_ms = (time.monotonic() - judge_started) * 1000.0
+        judged, judge_ms = await _run_judge_phase(
+            phase,
+            template=template,
+            test_case=test_case,
+            judge_service=judge_service,
+            goal_outcomes=goal_outcomes,
+            concurrency=options.judge_concurrency,
+            settled=sink.judged,
+            eval_run_id=eval_run_id,
+        )
 
     # Second (and final) conditions sample — see sample_concurrent_eval_jobs. Taken after
     # the judging that closes the cell, so the whole window is covered. The assembly folds
@@ -1285,6 +1269,113 @@ async def run_one_result(
         metered_cell=metered_cell,
         world_events=sink.world_events,
         end_state=sink.end_state,
+    )
+
+
+async def _run_judge_phase(
+    phase: _JudgePhase,
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    judge_service: JudgeService,
+    goal_outcomes: list[GoalStateOutcome],
+    concurrency: int,
+    settled: list[tuple[str, JudgeOutcome]],
+    eval_run_id: str,
+) -> tuple[_JudgeRecord, float]:
+    """Run one cell's judge phase and fold what it left, however it ended: the one judge phase a completed cell takes.
+
+    The runner's cells and a judged witnessed cell (:func:`judge_witnessed_output`) both come through
+    here, so a host-observed cell is scored by exactly the calls, the context and the fold a run's is.
+
+    Args:
+        phase: What the judge reads and the dims it asks.
+        template: The template whose intent and rubric the judge reads.
+        test_case: The case the cell answered.
+        judge_service: The judge.
+        goal_outcomes: The cell's goal-state outcomes, which the judge reads beside the evidence.
+        concurrency: Judge calls in flight at once.
+        settled: A caller-owned list each returned call is appended to, so a caller whose deadline
+            cancels the phase still holds what was paid for.
+        eval_run_id: The run, for the log line a judge failure writes.
+
+    Returns:
+        What the phase leaves on the result, and its wall clock in milliseconds.
+    """
+    judge_started = time.monotonic()
+    try:
+        outcomes = await judge_dims(
+            template=template,
+            judge_service=judge_service,
+            concurrency=concurrency,
+            settled=settled,
+            context=build_judge_context(
+                template=template,
+                test_case=test_case,
+                goal_outcomes=goal_outcomes,
+                judged_artifact=phase.judged_artifact,
+                judge_evidence=phase.evidence,
+            ),
+        )
+    except Exception as e:  # prawduct:ok-broad-except — judge boundary; a judge failure must not wedge the slot
+        log.exception("Judge service failed during eval run %s", eval_run_id)
+        # The calls that returned before it raised were paid for and keep their scores; the
+        # rest are named as failed with the cause.
+        judged = _judge_record(phase, settled, unfinished=f"the judge phase raised {type(e).__name__}: {e}")
+    else:
+        judged = _judge_record(phase, outcomes)
+    finally:
+        # Stamped on the way out of EVERY exit, not just the scoring one. A judge
+        # that raised after two minutes spent those two minutes, and leaving the
+        # phase untimed there would file real wall-clock under the same absence as
+        # a run that never had a judge at all — judge_error is what says it failed.
+        judge_ms = (time.monotonic() - judge_started) * 1000.0
+    return judged, judge_ms
+
+
+async def judge_witnessed_output(
+    *,
+    template: EvalTemplate,
+    test_case: EvalTestCase,
+    output: CandidateOutput,
+    judged_artifact: JudgedArtifact,
+    judge_service: JudgeService,
+    concurrency: int,
+    eval_run_id: str,
+) -> tuple[_JudgeRecord, float] | tuple[None, None]:
+    """Judge a host-observed cell's output through the runner's own judge phase, as the runner gates it.
+
+    The gate is the runner's: an output with nothing in it, or with no evidence rendered, is not judged.
+    Used by :func:`~threetears.evals.run.witnessed.record_witnessed_cell` for a judged witnessed run.
+
+    Args:
+        template: The template whose intent and rubric the judge reads.
+        test_case: The case the observation answers.
+        output: What the candidate produced.
+        judged_artifact: What the kind declares a judge reads.
+        judge_service: The judge, built from the run's recorded apparatus.
+        concurrency: Judge calls in flight at once.
+        eval_run_id: The run.
+
+    Returns:
+        What the phase left and its wall clock; ``(None, None)`` when the output gave it nothing to judge.
+    """
+    if not output.output or output.judge_evidence is None:
+        return None, None
+    phase = _JudgePhase(
+        judged_artifact=judged_artifact,
+        evidence=output.judge_evidence,
+        dims=tuple(scored_dim_ids([dim.name for dim in template.rubric], judged_artifact)),
+    )
+    return await _run_judge_phase(
+        phase,
+        template=template,
+        test_case=test_case,
+        judge_service=judge_service,
+        goal_outcomes=output.mechanical_facts,
+        concurrency=concurrency,
+        settled=[],
+        eval_run_id=eval_run_id,
     )
 
 
@@ -1336,6 +1427,29 @@ def refuse_inner_agent_usage(usage: Sequence[RoleUsage]) -> None:
             "a candidate kind reported inner_agent usage on its telemetry; background work reports its spend on "
             "its AsyncDelivery entry (cost_usd, tokens, llm_calls, external_spend), which the runner folds — "
             "reporting it on the telemetry too would count it twice"
+        )
+
+
+def refuse_engine_derived_host_measures(host_measures: Mapping[str, bool | float | str]) -> None:
+    """Refuse a kind's ``host_measures`` that land a measure the engine derives.
+
+    ``accuracy`` is derived from each observation's ``match``
+    (:data:`~threetears.evals.contracts.metrics.ACCURACY_MEASURE`); a kind landing it too would put a
+    second producer of one reading beside the engine's, and which one a surface reported would depend
+    on the walk's precedence rather than on what was measured. Called by the runner before its judge
+    phase pays for anything, and by the assembly every completed cell takes, a witnessed one included.
+
+    Args:
+        host_measures: What the kind measured, by name.
+
+    Raises:
+        ValueError: ``host_measures`` names ``accuracy``.
+    """
+    if ACCURACY_MEASURE in host_measures:
+        raise ValueError(
+            f"a candidate kind landed {ACCURACY_MEASURE!r} on host_measures, which the engine derives from each "
+            f"observation's {MATCH_MEASURE!r}; land the bool {MATCH_MEASURE!r} and the engine reports "
+            f"{ACCURACY_MEASURE!r} from it"
         )
 
 
@@ -1422,6 +1536,7 @@ def assemble_completed_cell(
     """
     if judged is None:
         judged = _unjudged_record()
+    refuse_engine_derived_host_measures(output.host_measures)
     telemetry = output.telemetry
     trace = output.output
     async_deliveries = output.async_deliveries
@@ -2125,7 +2240,7 @@ def evaluate_goal_state(
     test_case: EvalTestCase,
     ledger: CallLedger,
     end_state: Mapping[str, Any],
-    fired: Collection[str] | None,
+    fired: Firings | None,
     world: WorldRegistry | None,
 ) -> list[GoalStateOutcome]:
     """Run every expression in ``template.goal_state_checks`` and capture outcomes.
@@ -2140,8 +2255,7 @@ def evaluate_goal_state(
         test_case: The case, for its variation parameters.
         ledger: The calls the candidate made that succeeded.
         end_state: The world the cell left behind, keyed by declared dimension name.
-        fired: The triggered dimensions that fired (:attr:`WorldSession.fired`), or ``None`` when no
-            world events were recorded.
+        fired: What fired (:attr:`WorldSession.fired`), or ``None`` when no world events were recorded.
         world: The host's world registry (``profile.world``).
 
     Returns:
@@ -2165,7 +2279,7 @@ def grade_goal_checks(
     *,
     ledger: CallLedger,
     end_state: Mapping[str, Any],
-    fired: Collection[str] | None,
+    fired: Firings | None,
     variation: Mapping[str, Any],
     world: WorldRegistry | None,
 ) -> list[GoalStateOutcome]:
@@ -2184,10 +2298,11 @@ def grade_goal_checks(
         ledger: The calls the candidate made that succeeded — a cell's, or a control's stated calls.
         end_state: The world to read, keyed by declared dimension name — a cell's end state, or a
             control end state.
-        fired: The triggered dimensions that fired, read by ``fired()`` — a cell's
-            (:attr:`~threetears.evals.contracts.world_session.WorldSession.fired`), or a control's stated
-            set. Required rather than defaulted: ``None`` says no world events were recorded, and a check
-            reading ``fired()`` then raises rather than scoring "nothing fired" for a cell nobody watched.
+        fired: What fired, read by ``fired()`` and ``fired_armed()`` — a cell's
+            (:attr:`~threetears.evals.contracts.world_session.WorldSession.fired`), a stored result's
+            (:meth:`~threetears.evals.contracts.world_events.Firings.of` its world events), or a control's.
+            Required rather than defaulted: ``None`` says no world events were recorded, and a check
+            reading either then raises rather than scoring "nothing fired" for a cell nobody watched.
         variation: The case parameters a check may read as ``variation.*``.
         world: The host's world registry (``profile.world``), so a path reads the dimension the
             authoring gate resolved it to.
