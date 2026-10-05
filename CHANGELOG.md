@@ -6,6 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals ships its type marker
+
+- `py.typed` is now in the package, so an adopter's strict type checker reads `threetears.evals` annotations
+  instead of skipping every import as untyped. `DocumentStore.by_doc_type` now states that its field-equality
+  predicate values are scalars; a store may refuse an object or list value with `TypeError`.
+
 ### 3tears-evals: storage ports by area, the in-memory adapter's own root, and a store conformance kit
 
 - **`threetears.evals.testing`** (new public root): the store conformance kit.

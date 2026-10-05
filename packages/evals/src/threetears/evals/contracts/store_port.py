@@ -232,7 +232,10 @@ class DocumentStore(Protocol):
                 the documents but not a heavy value inside them; the store drops it before
                 the document is shipped, so the value is never materialised at all.
             **field_eq: Field-equality predicates over the document's other fields. A
-                ``None`` value matches documents where the field is absent or null.
+                ``None`` value matches documents where the field is absent or null. Values are
+                scalars (``str``, ``int``, ``float``, ``bool``, ``None``): a store whose backend
+                compares an object or list by its serialised text cannot match one, so it may
+                refuse such a value with ``TypeError``, and the engine never passes one.
 
         Returns:
             The matching documents.
