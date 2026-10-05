@@ -53,6 +53,7 @@ from threetears.evals.contracts.models import (
     SCALES,
     TRANSCRIPT_DIM_ID,
     RubricScale,
+    utc_now_iso,
 )
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -2732,27 +2733,29 @@ class PivotError(ValueError):
     """
 
 
+#: The ``method_id`` of the cost estimator's predictions: a planned cell priced from the corpus's
+#: own per-observation usage history (:func:`compute_estimate_cost`).
+COST_PREDICTION_METHOD = "usage-history"
+
+
 class PredictedValue(EvalBaseModel):
-    """A modelled estimate for a cell, kept beside its observed value, never fused with it.
+    """A modelled estimate, kept beside the observed value it predicts and never fused with it.
 
-    Reserved now, computed later. No engine in this plan populates a
-    ``PredictedValue`` — the slot exists so the estimation engine (a sibling
-    design) lands without a surface migration, and so a prediction can never be
-    read as a measurement. The two are different claims: an observed value is
-    what happened, a predicted one is what a model expects, and a decision made
-    on the second believing it was the first is the failure the separation
-    prevents.
+    The two are different claims: an observed value is what happened, a predicted one is what a
+    model expected beforehand, and a decision made on the second believing it was the first is the
+    failure the separation prevents. So a prediction never occupies an observed slot — it has its
+    own field wherever it appears, and a surface shows the two side by side.
 
-    The field set is the fixed reservation contract: ``value`` is the point
-    estimate, ``interval_low`` / ``interval_high`` its uncertainty band (absent
-    for a point-only method), ``method_id`` identifies the estimator so two
-    predictions from different methods are never silently compared, ``trust`` is
-    the method's own support/confidence score, and ``computed_at`` is the
-    freshness stamp — a stale prediction over moved data is worse than none.
+    One estimator writes these today: :func:`compute_estimate_cost` (``method_id``
+    :data:`COST_PREDICTION_METHOD`), one per planned cell, predicting that cell's total cost from
+    the corpus's usage history; :func:`compute_pivot` sets it beside each observed cost it planned.
 
-    Display rules (always visually and programmatically distinct from observed
-    values; a calibration panel before any prediction is decision-grade) bind
-    when the engine lands, not here.
+    ``value`` is the point estimate, ``interval_low`` / ``interval_high`` its uncertainty band
+    (absent for a point-only method, or where the basis is too thin for one), ``method_id``
+    identifies the estimator so two predictions from different methods are never silently compared,
+    ``trust`` is the method's own support/confidence score (None for a method that states none),
+    and ``computed_at`` is the freshness stamp — a stale prediction over moved data is worse than
+    none.
     """
 
     value: float
@@ -2770,9 +2773,9 @@ class PivotCell(EvalBaseModel):
     column: str
     status: str
     value: float | None = None
-    # Reserved additive slot for a modelled estimate — always None until the
-    # estimation engine ships. Kept beside `value` rather than folded into it so a
-    # prediction can never be mistaken for an observation.
+    # What the cell was predicted to cost per observation when it was planned — set only on a cost
+    # pivot handed the estimate made before launch (`compute_pivot(predicted_cost=...)`). Kept beside
+    # `value` rather than folded into it so a prediction can never be mistaken for an observation.
     predicted: PredictedValue | None = None
     # Observations that carried a value, and the distinct test cases they span.
     # Under equal-per-scenario weighting `n_cases` is the denominator the value
@@ -2850,6 +2853,10 @@ class PivotTable(EvalBaseModel):
     #: How many of ``n_observations`` came from those runs. The weight the caveat
     #: carries: two of two hundred is a footnote and two of four is the answer.
     n_degraded_observations: int = 0
+    #: Models the cost estimate planned that no level of the model axis carries — planned and never
+    #: observed here. Named rather than dropped, since a prediction with nowhere to sit is still a
+    #: fact about the plan: an arm that was priced and did not run. Empty when no estimate was given.
+    unplaced_predicted_models: list[str] = []
 
 
 def _require_coordinate_name(factor: str) -> None:
@@ -3111,6 +3118,7 @@ def compute_pivot(
     filters: dict[str, str] | None = None,
     exclusions: ProjectionExclusions | None = None,
     completeness_disclosures: Mapping[str, str] | None = None,
+    predicted_cost: CostEstimate | None = None,
     profile: HostProfile,
 ) -> PivotTable:
     """Aggregate score records over any two factors, disclosing every caveat.
@@ -3162,6 +3170,12 @@ def compute_pivot(
             it pools a short run's rows into every rate with nothing saying so**
             — the defect this parameter exists to end, and the reason it is a
             parameter rather than something re-derived per surface.
+        predicted_cost: The estimate made BEFORE these observations, when the cells were planned
+            (:func:`compute_estimate_cost`). Each cell at a planned model carries that model's
+            prediction in ``predicted``, beside the cost it observed and never in place of it. Passed
+            in rather than computed here because a prediction drawn from a history that already
+            holds the observations it predicts would be a restatement of them. Only a cost pivot
+            with the candidate model on an axis has a cell a planned model's cost describes.
         profile: The host whose vocabulary this reads.
 
     Returns:
@@ -3171,7 +3185,8 @@ def compute_pivot(
 
     Raises:
         PivotError: Unknown weighting or metric, an undotted axis or filter the
-            rows do not declare, or a cross-subject pooling. Every one
+            rows do not declare, a cross-subject pooling, or a predicted cost handed
+            to a pivot of another metric or one with no model axis. Every one
             is refused here rather than at an adapter, so both surfaces refuse
             identically instead of one of them answering an empty grid.
     """
@@ -3212,6 +3227,7 @@ def compute_pivot(
         raise PivotError(refusal)
     for name in (row_factor, column_factor, *(filters or {})):
         _require_coordinate_name(name)
+    predictions = _planned_cost_per_observation(predicted_cost, metric, (row_factor, column_factor))
 
     measure = _describe_aggregate(metric, profile=profile)
 
@@ -3263,8 +3279,9 @@ def compute_pivot(
     for row in rows:
         for column in columns:
             at_cell = grouped.get((row, column), [])
+            planned = _planned_for(predictions, row, column, row_factor)
             if not at_cell:
-                cells.append(PivotCell(row=row, column=column, status=CELL_NOT_RUN))
+                cells.append(PivotCell(row=row, column=column, status=CELL_NOT_RUN, predicted=planned))
                 continue
 
             outcomes: dict[str, int] = {}
@@ -3280,6 +3297,7 @@ def compute_pivot(
             if not values_by_case:
                 cells.append(
                     PivotCell(
+                        predicted=planned,
                         row=row,
                         column=column,
                         status=CELL_UNMEASURED,
@@ -3291,6 +3309,7 @@ def compute_pivot(
 
             value, sem = _aggregate(values_by_case, weighting)
             cell = PivotCell(
+                predicted=planned,
                 row=row,
                 column=column,
                 status=CELL_MEASURED,
@@ -3345,7 +3364,69 @@ def compute_pivot(
             if any(record.run_id == run_id for record in selected)
         },
         n_degraded_observations=sum(1 for record in selected if record.run_id in (completeness_disclosures or {})),
+        unplaced_predicted_models=sorted(
+            set(predictions) - set(rows if row_factor == CANDIDATE_MODEL_LEVER else columns)
+        ),
     )
+
+
+def _planned_cost_per_observation(
+    estimate: CostEstimate | None, metric: str, axes: tuple[str, str]
+) -> dict[str, PredictedValue]:
+    """Each planned model's predicted cost per observation, read off the estimate made before the run.
+
+    A planned cell's prediction is its sweep's TOTAL (``n_observations`` draws), and a pivot cell's
+    value is a mean per observation, so the prediction is divided by the planned observation count —
+    and so is its band. That is not a rescaling of convenience: the total's half-width is
+    ``t * s * sqrt(n + n²/N)`` over ``N`` historical observations, and divided by ``n`` it is
+    ``t * s * sqrt(1/n + 1/N)``, exactly the prediction band for the mean of the ``n`` planned
+    observations. One derivation, read two ways.
+
+    Args:
+        estimate: The estimate, or None.
+        metric: The pivot's resolved metric.
+        axes: The pivot's row and column factors.
+
+    Returns:
+        ``{model: per-observation prediction}``; empty when no estimate was given.
+
+    Raises:
+        PivotError: An estimate was given to a pivot of another metric, or to one with no model axis —
+            a planned model's cost describes neither, so its prediction would sit beside a number it
+            does not predict.
+    """
+    if estimate is None:
+        return {}
+    if metric != METRIC_COST_USD:
+        raise PivotError(
+            f"a predicted cost sits beside an observed cost, and this pivot aggregates {metric!r} — "
+            f"pivot {METRIC_COST_USD!r} to set the estimate beside what was spent"
+        )
+    if CANDIDATE_MODEL_LEVER not in axes:
+        raise PivotError(
+            f"the estimate predicts cost per planned model, and neither axis is {CANDIDATE_MODEL_LEVER!r} — "
+            "put the model on an axis so each prediction has the cells it planned"
+        )
+    per_observation: dict[str, PredictedValue] = {}
+    for cell in estimate.cells:
+        if cell.predicted is None:
+            continue
+        n = cell.n_observations
+        per_observation[cell.model] = cell.predicted.model_copy(
+            update={
+                "value": cell.predicted.value / n,
+                "interval_low": None if cell.predicted.interval_low is None else cell.predicted.interval_low / n,
+                "interval_high": None if cell.predicted.interval_high is None else cell.predicted.interval_high / n,
+            }
+        )
+    return per_observation
+
+
+def _planned_for(
+    predictions: dict[str, PredictedValue], row: str, column: str, row_factor: str
+) -> PredictedValue | None:
+    """The prediction for the planned model a pivot cell sits at, or None."""
+    return predictions.get(row if row_factor == CANDIDATE_MODEL_LEVER else column)
 
 
 # =============================================================================
@@ -5665,12 +5746,15 @@ class CostEstimateError(ValueError):
 class CostEstimateCell(EvalBaseModel):
     """The predicted cost of running one proposed model, from its historical per-observation cost.
 
-    ``estimated_cost`` is ``mean_cost_per_observation × n_observations``.
-    ``interval_low`` / ``interval_high`` are the ~95% **prediction** band for what
+    One planned cell, and its prediction is a :class:`PredictedValue` (``method_id``
+    :data:`COST_PREDICTION_METHOD`) rather than loose numbers, so the pivot can set it beside the
+    cost the cell later observed without either one passing for the other.
+    ``predicted.value`` is ``mean_cost_per_observation × n_observations``.
+    ``predicted.interval_low`` / ``interval_high`` are the ~95% **prediction** band for what
     the proposed sweep will cost — not a confidence interval on the historical
     mean, which is a narrower claim than any caller of this surface is making.
 
-    Both are ``None`` when ``n_historical < 3``. At one observation the spread is
+    The band is ``None`` when ``n_historical < 3``. At one observation the spread is
     *unknown*, not zero — the same rule the pivot applies to an n=1 cell. At two it
     is worse than unknown: two points give exactly one difference, so any band drawn
     from them is an accident dressed as a measurement, and it prints NARROW whenever
@@ -5678,7 +5762,7 @@ class CostEstimateCell(EvalBaseModel):
     A stated absence is the honest answer; the point estimate still stands.
 
     ``basis`` is ``no_history`` when no PRICED result in the corpus matches this model at
-    the proposed cassette mode, and then every value is ``None``: an estimate invented
+    the proposed cassette mode, and then every value is ``None``, ``predicted`` included: an estimate invented
     with no data is worse than an admitted gap. ``n_unpriced_historical`` counts the matching
     results left out because their spend went unpriced — the reason a cell can say
     ``no_history`` while the model has run.
@@ -5688,9 +5772,7 @@ class CostEstimateCell(EvalBaseModel):
     n_observations: int
     n_historical: int
     mean_cost_per_observation: float | None = None
-    estimated_cost: float | None = None
-    interval_low: float | None = None
-    interval_high: float | None = None
+    predicted: PredictedValue | None = None
     basis: Literal["historical", "no_history"]
     #: Matching historical results whose spend could not be priced, and so are not in the basis:
     #: a mean drawn only from the priced ones prices a model that partly runs unpriced as if it
@@ -5791,6 +5873,7 @@ def compute_estimate_cost(
     cassette_mode: str = "off",
     subject_id: str | None = None,
     template_id: str | None = None,
+    computed_at: str | None = None,
     profile: HostProfile,
 ) -> CostEstimate:
     """Predict a proposed sweep's cost from historical per-observation costs.
@@ -5855,10 +5938,11 @@ def compute_estimate_cost(
         subject_id: Optional — restrict the historical basis to one subject.
         template_id: Optional — restrict the historical basis to one template, which
             is what the proposed sweep will actually run.
+        computed_at: The instant stamped on each cell's prediction (ISO-8601); ``None`` stamps now.
         profile: The host whose vocabulary this reads.
 
     Returns:
-        A :class:`CostEstimate` — per-model cells and a total, each banded only where its
+        A :class:`CostEstimate` — per-model cells, each predicted as a :class:`PredictedValue`, and a total, each banded only where its
         basis reaches the minimum; a thinner cell carries its point estimate alone, and one
         unbanded cell leaves the total unbanded too.
 
@@ -5874,6 +5958,7 @@ def compute_estimate_cost(
         raise CostEstimateError("k_runs, n_test_cases and n_settings must all be >= 1 to estimate a sweep's cost")
 
     run_by_id = {run.id: run for run in runs}
+    stamp = computed_at if computed_at is not None else utc_now_iso()
 
     def _eligible(result: EvalResult) -> bool:
         run = run_by_id.get(result.eval_run_id)
@@ -5953,9 +6038,13 @@ def compute_estimate_cost(
                 n_observations=n_observations,
                 n_historical=len(history),
                 mean_cost_per_observation=mean,
-                estimated_cost=estimate,
-                interval_low=low,
-                interval_high=high,
+                predicted=PredictedValue(
+                    value=estimate,
+                    interval_low=low,
+                    interval_high=high,
+                    method_id=COST_PREDICTION_METHOD,
+                    computed_at=stamp,
+                ),
                 basis="historical",
                 n_unpriced_historical=unpriced_by_model.get(model, 0),
                 basis_cost_compositions=basis_compositions,
@@ -6010,6 +6099,7 @@ __all__ = [
     "CELL_MEASURED",
     "CELL_NOT_RUN",
     "CELL_UNMEASURED",
+    "COST_PREDICTION_METHOD",
     "DECLARED_INPUT_ORIGIN",
     "DEFAULT_WEIGHTING",
     "DEGRADED_RUN_CLAUSE",
