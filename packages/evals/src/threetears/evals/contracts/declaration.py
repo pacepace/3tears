@@ -45,6 +45,7 @@ from threetears.evals.contracts.covariates import (
     TRUNCATED_ROUNDS_KEY,
     TURN_BUDGET_ENDED_KEY,
 )
+from threetears.evals.contracts.host.bars import Bar, BarRegistrationError, contradicts_descriptor, no_better_end
 from threetears.evals.contracts.host.values import Scale, SweepableValue
 from threetears.evals.contracts.metrics import (
     DERIVED_PER_RESULT_MEASURES,
@@ -741,9 +742,7 @@ def resolve_bar_name(
             return UnreadableBarName(
                 name, "not_numeric", f"{name} is {descriptor.data_type}, so a threshold has nothing to compare against"
             )
-        if descriptor.higher_is_better is None:
-            # Says which of the two directionless shapes it is, off the descriptor's own declaration.
-            what = "a diagnostic" if descriptor.diagnostic else "a raw count"
+        if (what := no_better_end(descriptor)) is not None:
             return UnreadableBarName(
                 name,
                 "no_better_end",
@@ -849,8 +848,6 @@ def refuse_an_undeclarable_design(
             registered value; or a bar contradicts the declared better-direction of what it names,
             naming it and which way its descriptor runs.
     """
-    from threetears.evals.contracts.host.bars import Bar, BarRegistrationError, contradicts_descriptor
-
     # ASK the profile rather than re-deriving from its registry. `HostProfile.controllable` is
     # R10's evaluability map and the design names this gate as its one use — re-deriving
     # `{d.name for d in profile.sweepables.declarations}` here would make two implementations of
