@@ -267,8 +267,16 @@ class PricedCompletion(Protocol):
         """
         ...
 
-    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
-        """Send a prompt pair and return the completion, read for usage by attribute."""
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, Any] | None = None
+    ) -> CompletionResult:
+        """Send a prompt pair and return the completion.
+
+        Read as a :class:`CompletionResult` — by that protocol's attribute names, ``served_model`` for the
+        model the response named among them — for the call's ledger row. One protocol, whatever the client's
+        shape: an attribute the result lacks reads as unreported, never zero, and one named otherwise (a
+        simulator-shaped ``model`` standing in for ``served_model``) is not read.
+        """
         ...  # pragma: no cover — protocol
 
 
@@ -282,9 +290,12 @@ class SimulatorLLM(Protocol):
     answers legal at that pick; the variation generator's ``llm`` axis passes
     ``{"type": "json_object"}`` to force JSON mode. A host's full chat client is compatible -- its
     tool calls and conversation state are simply not needed for one utterance or one pick. Usage is
-    read off the returned object by attribute (``model``, ``input_tokens``, ``output_tokens``,
-    ``reasoning_tokens``, ``cost_usd``, ``price_source``), and an attribute it lacks reads as
-    unreported, never zero.
+    read off the returned object by attribute, by :class:`CompletionResult`'s names (the simulator reads
+    ``model``, ``input_tokens``, ``output_tokens``, ``reasoning_tokens``, ``cost_usd``, ``price_source``;
+    a variation writer's out-of-run ledger reads those and ``served_model`` and ``stop_reason``,
+    :class:`PricedCompletion`), and an attribute it lacks reads as unreported, never zero. ``model`` is the
+    model the call was attributed to, which a client may fill from the request; ``served_model`` is the one
+    the response named, and the two are not interchangeable.
 
     The variation generator types against :class:`VariationLLM`, this port with the model it calls.
 

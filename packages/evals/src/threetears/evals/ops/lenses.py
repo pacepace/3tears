@@ -16,7 +16,8 @@ caveats its model carries (what was left out, which runs came up short) rather t
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import math
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from threetears.evals.analysis.reads import RunLister, estimate_cost, export_results, history, pivot
@@ -30,9 +31,11 @@ from threetears.evals.analysis.reporting import (
     ProjectionExclusions,
     ScoreExport,
 )
+from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.host import EvalHost
 from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS, EvalRun
+from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.run.authoring import get_template
 from threetears.evals.run.launch import ArmPrice, ArmQuote, LaunchPricer
@@ -230,14 +233,24 @@ def launch_estimate(
 
 
 def history_launch_pricer(host: EvalHost) -> LaunchPricer:
-    """The engine's launch pricer: an arm predicted from the scope's usage history of its template on its model.
+    """The engine's launch pricer: an arm bounded from the scope's usage history of runs launched as it will be.
 
     What a :class:`~threetears.evals.run.LaunchHost` takes as ``launch_pricer`` to price the arms of a
-    generating launch before the generation is paid for. Each arm is priced as
-    :func:`launch_estimate` prices a model's cell — the scope's per-observation costs of the same
-    template on the same model at the same cassette mode, archived runs included, scaled to the arm's
-    planned cases and repeats — and its prediction is the cell's point estimate. A scope with no priced
-    history of that template on that model predicts nothing, which the launch reads as unknown.
+    generating launch before the generation is paid for. **The history is the runs launched the way the
+    arm will be**: the same template on the same candidate model at the same cassette mode, under the same
+    judge and simulator pins (the model a launch named for the role, or none — a run that inherited the
+    role's default matches an arm naming none) and the same resolved apparatus settings, archived runs
+    included. A run judged by another model, or with its rig set up otherwise, spent differently, and
+    pricing an arm from it would bias the prediction by whatever the difference costs — low, when the arm's
+    judge is the dearer one, and the generation paid before the run's own cap could say so. Only those runs'
+    results are read, one run at a time, rather than every result in the scope for every arm.
+
+    Each arm is priced as :func:`launch_estimate` prices a model's cell — those results' per-observation
+    costs scaled to the arm's planned cases and repeats — and **its prediction is the cell's upper band**,
+    since the launch holds that figure to the arm's cap (:class:`~threetears.evals.run.ArmPrice`): a central
+    estimate admits an arm that then runs past its cap about as often as the run lands above the centre.
+    A history too thin to band (fewer than three priced observations) bounds nothing, and predicts nothing,
+    as does a scope with no priced history of the condition — the launch reads both as unknown.
 
     Args:
         host: The host whose store holds the history and whose vocabulary reads it.
@@ -247,9 +260,16 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     """
 
     def price(quote: ArmQuote) -> ArmPrice:
+        condition = (
+            f"template {quote.template_id!r} on {quote.candidate_model!r} at cassette mode {quote.cassette_mode!r}, "
+            f"judge pin {quote.judge_model!r}, simulator pin {quote.simulator_model!r} and apparatus settings "
+            f"{dict(quote.apparatus_settings)!r}"
+        )
+        runs = [run for run in list_runs(host, quote.scope_id, include_archived=True) if _launched_as(run, quote)]
+        results = [result for run in runs for result in host.storage.query_eval_results_by_run(run.id, quote.scope_id)]
         estimate = compute_estimate_cost(
-            list_runs(host, quote.scope_id, include_archived=True),
-            host.storage.query_eval_results(quote.scope_id),
+            runs,
+            results,
             models=[quote.candidate_model],
             k_runs=quote.k_runs,
             n_test_cases=quote.case_count,
@@ -267,23 +287,220 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
                 else ""
             )
             return ArmPrice(
+                predicted_usd=None, basis=f"no priced result of {condition} is in scope {quote.scope_id!r}{unpriced}"
+            )
+        if predicted.interval_high is None:
+            return ArmPrice(
                 predicted_usd=None,
                 basis=(
-                    f"no priced result of template {quote.template_id!r} on {quote.candidate_model!r} at cassette mode "
-                    f"{quote.cassette_mode!r} is in scope {quote.scope_id!r}{unpriced}"
+                    f"{cell.n_historical} priced past result(s) of {condition} are too few to bound the arm (a "
+                    f"band needs three; their mean alone puts it at ${predicted.value:.2f})"
                 ),
             )
-        band = (
-            f", band ${predicted.interval_low:.2f}-${predicted.interval_high:.2f}"
-            if predicted.interval_low is not None and predicted.interval_high is not None
-            else ""
-        )
         return ArmPrice(
-            predicted_usd=predicted.value,
-            basis=f"method {predicted.method_id}, from {cell.n_historical} past result(s){band}",
+            predicted_usd=predicted.interval_high,
+            basis=(
+                f"the upper end of the band ${predicted.interval_low or 0.0:.2f}-${predicted.interval_high:.2f} "
+                f"around ${predicted.value:.2f}, method {predicted.method_id}, from {cell.n_historical} past "
+                f"result(s) of {condition}"
+            ),
         )
 
     return price
+
+
+def _launched_as(run: EvalRun, quote: ArmQuote) -> bool:
+    """Whether ``run`` was launched as ``quote``'s arm will be: its template, model, cassette mode, pins and rig.
+
+    Args:
+        run: A run from the scope's history.
+        quote: The arm being priced.
+
+    Returns:
+        True when every launch argument that moves what a run spends matches.
+    """
+    return (
+        run.template_id == quote.template_id
+        and run.candidate_model == quote.candidate_model
+        and run.cassette_mode == quote.cassette_mode
+        and _launch_pin(run, "judge", run.judge_model) == quote.judge_model
+        and _launch_pin(run, "simulator", run.simulator_model) == quote.simulator_model
+        and run.apparatus_settings == dict(quote.apparatus_settings)
+    )
+
+
+def _launch_pin(run: EvalRun, role: str, resolved: str | None) -> str | None:
+    """The model ``run``'s launch named for ``role`` — the resolved model when the launch chose it, else ``None``.
+
+    Args:
+        run: The run.
+        role: ``judge`` or ``simulator``.
+        resolved: The model the run recorded for the role.
+
+    Returns:
+        The pin the launch named, or ``None`` when it named none and the run inherited the role's default
+        (or the role never ran).
+    """
+    return resolved if (run.model_role_provenance or {}).get(role) == "chosen" else None
+
+
+class OutOfRunSpendTotals(EvalBaseModel):
+    """What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
+
+    **Missing is not zero.** A call that reported no cost, and every call that raised (which reports
+    nothing, and may have been billed), are counted in ``n_unpriced`` and left out of ``priced_usd``,
+    so ``priced_usd`` is a floor whenever ``n_unpriced`` is not 0.
+
+    Attributes:
+        n_calls: The calls.
+        n_raised: Those that raised rather than returning.
+        n_unpriced: Those whose cost is unknown — a completed call that reported none, or a raised call.
+        priced_usd: The reported cost of the priced calls, summed.
+        ceiling_usd: The ceilings the calls were admitted at, summed over those the client could price.
+        n_unbounded: Those admitted with no ceiling (the client could not price them and no cap was enforced).
+    """
+
+    n_calls: int
+    n_raised: int
+    n_unpriced: int
+    priced_usd: float
+    ceiling_usd: float
+    n_unbounded: int
+
+    @classmethod
+    def of(cls, rows: Sequence[OutOfRunSpend]) -> OutOfRunSpendTotals:
+        """Sum ``rows``.
+
+        Args:
+            rows: Ledger rows.
+
+        Returns:
+            Their totals.
+        """
+        return cls(
+            n_calls=len(rows),
+            n_raised=sum(1 for row in rows if row.outcome == "raised"),
+            n_unpriced=sum(1 for row in rows if row.cost_usd is None),
+            priced_usd=math.fsum(row.cost_usd for row in rows if row.cost_usd is not None),
+            ceiling_usd=math.fsum(row.priced_ceiling_usd for row in rows if row.priced_ceiling_usd is not None),
+            n_unbounded=sum(1 for row in rows if row.priced_ceiling_usd is None),
+        )
+
+
+class OutOfRunSpendReport(EvalBaseModel):
+    """The calls the engine made outside any run in a scope — case generations and rubric proposals — and their totals.
+
+    Read off the out-of-run ledger (``EvalStorage.query_out_of_run_spend``), the one record of spend no run's
+    cost carries: a run's results sum what its cells spent, never what was spent writing its cases.
+
+    Attributes:
+        scope_id: The scope read.
+        purpose: The purpose the read was narrowed to, or ``None`` for every purpose.
+        launch_group_id: The launch the read was narrowed to, or ``None`` for every launch.
+        template_id: The template the read was narrowed to, or ``None`` for every template.
+        rows: Every matching call, oldest first.
+        totals: Every matching call, summed.
+        by_purpose: The totals per purpose that appears, in the order purposes first appear.
+        by_launch: The totals per launch group that appears (case generations; a proposal belongs to none, and
+            is not listed here), in the order launches first appear.
+    """
+
+    scope_id: str
+    purpose: OutOfRunPurpose | None
+    launch_group_id: str | None
+    template_id: str | None
+    rows: list[OutOfRunSpend]
+    totals: OutOfRunSpendTotals
+    by_purpose: dict[str, OutOfRunSpendTotals]
+    by_launch: dict[str, OutOfRunSpendTotals]
+
+
+def scope_out_of_run_spend(
+    host: EvalHost,
+    scope_id: str,
+    *,
+    purpose: OutOfRunPurpose | None = None,
+    launch_group_id: str | None = None,
+    template_id: str | None = None,
+) -> OutOfRunSpendReport:
+    """What the engine spent outside any run in a scope, call by call and summed, optionally narrowed.
+
+    Args:
+        host: The host whose store holds the ledger.
+        scope_id: The scope to read.
+        purpose: Only calls made for this purpose (``variation`` or ``proposer``).
+        launch_group_id: Only the calls one launch's case generation made; its runs carry the same group id.
+        template_id: Only calls made for this template.
+
+    Returns:
+        The report.
+    """
+    rows = host.storage.query_out_of_run_spend(
+        scope_id, purpose=purpose, launch_group_id=launch_group_id, template_id=template_id
+    )
+    by_purpose: dict[str, list[OutOfRunSpend]] = {}
+    by_launch: dict[str, list[OutOfRunSpend]] = {}
+    for row in rows:
+        by_purpose.setdefault(row.purpose, []).append(row)
+        if row.launch_group_id is not None:
+            by_launch.setdefault(row.launch_group_id, []).append(row)
+    return OutOfRunSpendReport(
+        scope_id=scope_id,
+        purpose=purpose,
+        launch_group_id=launch_group_id,
+        template_id=template_id,
+        rows=rows,
+        totals=OutOfRunSpendTotals.of(rows),
+        by_purpose={name: OutOfRunSpendTotals.of(group) for name, group in by_purpose.items()},
+        by_launch={name: OutOfRunSpendTotals.of(group) for name, group in by_launch.items()},
+    )
+
+
+def _totals_line(totals: OutOfRunSpendTotals) -> str:
+    """One line of totals, saying when the sum is a floor."""
+    floor = f", {totals.n_unpriced} unpriced (so at least)" if totals.n_unpriced else ""
+    raised = f", {totals.n_raised} raised" if totals.n_raised else ""
+    unbounded = f", {totals.n_unbounded} admitted unbounded" if totals.n_unbounded else ""
+    return (
+        f"{totals.n_calls} call(s): ${totals.priced_usd:.4f} reported{floor}{raised}; admitted at up to "
+        f"${totals.ceiling_usd:.4f}{unbounded}"
+    )
+
+
+def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
+    """The scope's out-of-run spend as an operator reads it: the totals, per purpose and launch, then each call.
+
+    Args:
+        report: What :func:`scope_out_of_run_spend` returned.
+
+    Returns:
+        The text.
+    """
+    narrowed = ", ".join(
+        f"{name} {value}"
+        for name, value in (
+            ("purpose", report.purpose),
+            ("launch", report.launch_group_id),
+            ("template", report.template_id),
+        )
+        if value is not None
+    )
+    lines = [f"out-of-run spend in scope {report.scope_id}" + (f" ({narrowed})" if narrowed else "")]
+    if not report.rows:
+        lines.append("no out-of-run call is ledgered here")
+        return "\n".join(lines)
+    lines.append(f"total: {_totals_line(report.totals)}")
+    lines += [f"purpose {name}: {_totals_line(totals)}" for name, totals in report.by_purpose.items()]
+    lines += [f"launch {name}: {_totals_line(totals)}" for name, totals in report.by_launch.items()]
+    for row in report.rows:
+        cost = f"${row.cost_usd:.4f}" if row.cost_usd is not None else "unpriced"
+        ceiling = f"${row.priced_ceiling_usd:.4f}" if row.priced_ceiling_usd is not None else "unbounded"
+        failed = f" {row.failure}" if row.failure else ""
+        lines.append(
+            f"  {row.created_at}  {row.purpose}  {row.model}  {row.outcome}{failed}  {cost} (ceiling {ceiling})"
+            f"  template {row.template_id}  launch {row.launch_group_id}"
+        )
+    return "\n".join(lines)
 
 
 # --- the text an operator or an agent reads ---------------------------------------------------------
@@ -427,12 +644,16 @@ def export_text(export: ScoreExport) -> str:
 
 
 __all__ = [
+    "OutOfRunSpendReport",
+    "OutOfRunSpendTotals",
     "estimate_text",
     "export_text",
     "history_text",
     "launch_estimate",
+    "out_of_run_spend_text",
     "pivot_text",
     "scope_export",
     "scope_history",
+    "scope_out_of_run_spend",
     "scope_pivot",
 ]

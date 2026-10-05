@@ -11,6 +11,7 @@ storage round-trip never stalls the loop a transport serves calls on.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Annotated, Any, Literal
 
 from pydantic import Field
@@ -32,6 +33,7 @@ from threetears.evals.ops import (
     JobStatus,
     LaunchArguments,
     OpsHost,
+    OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
     RunDeleted,
@@ -56,6 +58,7 @@ from threetears.evals.ops import (
     runs_list,
     scope_export,
     scope_history,
+    scope_out_of_run_spend,
     scope_pivot,
     templates_list,
 )
@@ -308,6 +311,22 @@ class LaunchEstimateParams(EvalBaseModel):
     subject_filter: SubjectFilter = None
 
 
+class ScopeOutOfRunSpendParams(EvalBaseModel):
+    """``scope_out_of_run_spend`` — what the engine spent outside any run, narrowed or not."""
+
+    purpose_filter: Annotated[
+        Literal["variation", "proposer"] | None,
+        Field(description="Only calls made for this purpose: variation (a launch's case generation) or proposer."),
+    ] = None
+    launch_group_filter: Annotated[
+        str | None,
+        Field(min_length=1, description="Only the calls one launch's case generation made; its runs carry this id."),
+    ] = None
+    template_filter: Annotated[
+        str | None, Field(min_length=1, description="Only calls made for this template, by id.")
+    ] = None
+
+
 class RunDeleteParams(EvalBaseModel):
     """``run_delete``."""
 
@@ -462,6 +481,23 @@ async def _scope_export(host: OpsHost, caller: Caller, params: ScopeExportParams
         format=params.export_format,
         status=params.run_status,
         run_ids=params.export_run_ids,
+    )
+
+
+async def _scope_out_of_run_spend(
+    host: OpsHost, caller: Caller, params: ScopeOutOfRunSpendParams
+) -> OutOfRunSpendReport:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(
+            scope_out_of_run_spend,
+            eval_host,
+            caller.scope_id,
+            purpose=params.purpose_filter,
+            launch_group_id=params.launch_group_filter,
+            template_id=params.template_filter,
+        ),
     )
 
 
@@ -685,6 +721,25 @@ def engine_actions() -> tuple[Action, ...]:
                 "what it left out and which runs measured less than they promised. A ranking pooled over the rows "
                 "that most rows contradict is flagged. A judged measure over several subjects is refused unless "
                 "subject_filter names one."
+            ),
+        ),
+        Action(
+            name="scope_out_of_run_spend",
+            summary="List what the engine spent outside any run — case generations and rubric proposals — with totals.",
+            workflow=ANALYSE,
+            permission="read",
+            params=ScopeOutOfRunSpendParams,
+            result=OutOfRunSpendReport,
+            handler=_scope_out_of_run_spend,
+            render=render.render_out_of_run_spend,
+            example={"purpose_filter": "variation"},
+            detail=(
+                "Read off the out-of-run ledger, one row per call, returned or raised: the spend no run's results "
+                "carry, since a launch's case generation runs before its runs exist. Totals overall, per purpose and "
+                "per launch; a call that reported no cost, or raised, is counted as unpriced and left out of the sum, "
+                "which is then a floor. Narrow by purpose_filter, launch_group_filter (the launch_group_id a launch's runs "
+                "carry) or template_filter. "
+                "Spends nothing."
             ),
         ),
         Action(

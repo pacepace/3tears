@@ -23,14 +23,23 @@ is part of a run's context identity, stamped once when the run comes into being 
 so a judge added to a stored run afterwards would either rewrite that key or leave the cells scored by
 a judge the key does not name. The case stays template-less either way — a case filed under the
 template would be one every launch of it runs.
+
+**A judged witnessed run is held to a cost ceiling, as a launched run is.** The candidate's spend in a
+witnessed session is the host's (real people, a rig nobody commissioned), but the judge's is the engine's,
+and nothing else bounds it: the host drives recording, and re-recording a cell judges it again. So
+:func:`stamp_witnessed_judge` records the run's ceiling exactly as a launch resolves one, and
+:func:`record_witnessed_cell` checks it before each judged cell, against the judge spend the run's saved
+cells already carry — the runner's between-cells check, read off the store because the loop is the host's.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from threetears.evals.contracts.candidate_kind import CandidateOutput
+from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.host.eval_host import EvalHost
 from threetears.evals.contracts.host.traces import CellTrace
 from threetears.evals.contracts.identity import resolve_variant_identity
@@ -45,6 +54,7 @@ from threetears.evals.contracts.models import (
 )
 from threetears.evals.contracts.spend import ExternalRateTable
 from threetears.evals.contracts.world_events import WorldEvent
+from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.launch import build_judge_service
@@ -54,11 +64,14 @@ from threetears.evals.run.rejudge import (
     recorded_judge_pins,
     recorded_judged_dims,
 )
+from threetears.evals.run.offload import run_blocking
 from threetears.evals.run.runner import (
     DEFAULT_JUDGE_CONCURRENCY,
     assemble_completed_cell,
     hold_to_declaration,
     judge_witnessed_output,
+    refuse_engine_derived_host_measures,
+    refuse_inner_agent_usage,
 )
 
 #: The stop causes only the engine's simulator produces, which a witnessed session — no simulator in it —
@@ -74,8 +87,11 @@ def stamp_witnessed_judge(
     judge_model: str,
     judged_artifact: JudgedArtifact,
     selection: dict[str, str] | None = None,
+    configured_max_cost_usd: float,
+    enforcement_enabled: bool,
+    max_cost_usd: float | None = None,
 ) -> EvalRun:
-    """A witnessed run that names the template its cells are judged against, and the judge apparatus that scores them.
+    """A witnessed run that names the template its cells are judged against, the judge apparatus that scores them, and the ceiling it is held to.
 
     The fields a launch stamps for a judged run, resolved the way a launch resolves them
     (:func:`~threetears.evals.run.launch.build_judge_service`: one config load per scored dim, the
@@ -84,6 +100,10 @@ def stamp_witnessed_judge(
     and ``rubric_scales``. Call it on the run as built and BEFORE stamping its identity — the judge is
     part of the context it hashes — then record its cells with :func:`record_witnessed_cell`, which
     scores them from exactly these.
+
+    It also records the cost ceiling the run's judging is held to (``max_cost_usd`` and its origin),
+    resolved from the same three values a launch resolves a run's from — the per-run override, the host's
+    configured ceiling and whether the host enforces ceilings at all (:class:`~threetears.evals.run.budget.EvalRunCostCap`).
 
     Args:
         host: The host: where the judge configs are read and the judge clients come from.
@@ -94,17 +114,24 @@ def stamp_witnessed_judge(
         judged_artifact: What the kind's judge reads, which picks the dims it scores.
         selection: Optional ``{dim_id: config_id}`` naming configs per dim, as a launch's
             ``judge_config_ids`` does; the rest inherit each dim's active config.
+        configured_max_cost_usd: The host's run cost ceiling, which the run inherits when ``max_cost_usd``
+            names none (a launching host's ``LaunchSettings.max_cost_usd``).
+        enforcement_enabled: Whether the host enforces eval ceilings; when it does not, the run records
+            none and its judging is unbounded, as a launched run's is.
+        max_cost_usd: Optional per-run override; must be ``> 0``.
 
     Returns:
-        A copy of the run carrying the judge.
+        A copy of the run carrying the judge and its ceiling.
 
     Raises:
         ValueError: The run is not witnessed; it already names a judge or a template; its identity is
             already stamped; the template is in another scope or of another kind; ``judged_artifact``
             declares a kind no judge reads; or the host supplies no completion clients.
         ValidationFailedError: ``selection`` names an unscored dim, a config that does not load, or one
-            authored for another dim.
+            authored for another dim; or ``max_cost_usd`` is not positive.
     """
+    if max_cost_usd is not None and max_cost_usd <= 0:
+        raise ValidationFailedError(f"max_cost_usd must be > 0 (got {max_cost_usd})")
     if run.apparatus_provenance != "witnessed":
         raise ValueError(f"run {run.id} is {run.apparatus_provenance!r}; a launch stamps a commissioned run's judge")
     if run.judge_model is not None or run.template_id is not None:
@@ -139,6 +166,14 @@ def stamp_witnessed_judge(
             "judge_config_provenance": judge.config_provenance,
             "judge_request_settings": JUDGE_REQUEST_SETTINGS,
             "rubric_scales": {dim.name: dim.scale for dim in template.rubric},
+            "max_cost_usd": EvalRunCostCap.resolve_effective_ceiling(
+                max_cost_usd,
+                configured_max_cost_usd=configured_max_cost_usd,
+                enforcement_enabled=enforcement_enabled,
+            ),
+            "max_cost_usd_origin": EvalRunCostCap.resolve_ceiling_origin(
+                max_cost_usd, enforcement_enabled=enforcement_enabled
+            ),
         }
     )
 
@@ -187,6 +222,17 @@ async def record_witnessed_cell(
     it, or no evidence rendered, is not judged, as the runner gates it. A run naming no judge records the
     cell unjudged, with no scores.
 
+    **Nothing is paid for a cell that cannot be recorded.** The refusals that would stop the record being
+    built — a kind landing a measure the engine derives, a kind double-reporting its background work's
+    spend, a variant identity the host's profile cannot derive — are made before the judge is called, as
+    the runner makes them before its judge phase.
+
+    **A judged cell is held to its run's ceiling.** Before judging, the judge spend the run's saved cells
+    already carry is checked against the ceiling :func:`stamp_witnessed_judge` recorded, the way the runner
+    checks its cost cap between cells: past it — or with any of that spend unpriced, under an enforced
+    ceiling — the cell is refused before the judge is called. The check reads the store, so it counts the
+    cells the host SAVED: save each pair as it is recorded, as the runner saves each cell's.
+
     **What the host writes around it.** A witnessed session has no template that set it, so its case
     carries ``template_id=None`` whatever its run names: an :class:`~threetears.evals.contracts.models.EvalTestCase`
     with ``template_id=None``, its stimulus in ``variation_params`` and ``host_payload``, saved with
@@ -231,6 +277,12 @@ async def record_witnessed_cell(
             kind's cell is not scored on.
         NotFoundError: A judged run's template, or a judge config it recorded, does not load.
         CandidateKindDefect: ``output`` contradicts ``judged_artifact``.
+        LeverCoordinateError: The host's profile cannot derive the run's variant identity.
+        BudgetStoppedError: A judged run's saved cells already carry judge spend past its ceiling, or
+            unpriced judge spend under an enforced one — raised before the judge is called.
+
+    The refusals of a kind's own defects (a landed engine-derived measure, a double-reported background
+    spend) raise ``ValueError`` too, before the judge is called.
     """
     if run.apparatus_provenance != "witnessed":
         raise ValueError(
@@ -268,8 +320,16 @@ async def record_witnessed_cell(
     # Read once: the kind the run stamped at its creation, and so the kind the cell is recorded under.
     candidate_kind = run.candidate_kind
     hold_to_declaration(candidate_kind, judged_artifact, output)
+    # Every refusal the assembly would make of this output, made BEFORE the judge is paid for — as the
+    # runner makes them before its judge phase — so no judgement is bought for a record that cannot be
+    # built. The assembly makes the two kind refusals again; the variant is handed to it, not re-derived.
+    refuse_inner_agent_usage(output.telemetry.usage)
+    refuse_engine_derived_host_measures(output.host_measures)
+    # Read off the run exactly as execute_run reads it, so the two key a cell the same way.
+    variant = resolve_variant_identity(run=run, profile=host.profile)
     judged, judge_ms = (None, None)
     if run.judge_model is not None:
+        await _refuse_past_the_judge_ceiling(host, run)
         judge_service, template = _recorded_judge(host, run, judged_artifact)
         async with judge_service:
             judged, judge_ms = await judge_witnessed_output(
@@ -289,8 +349,7 @@ async def record_witnessed_cell(
         candidate_kind=candidate_kind,
         k_iteration=k_iteration,
         subject_id=run.subject_snapshot.subject_id,
-        # Read off the run exactly as execute_run reads it, so the two key a cell the same way.
-        variant=resolve_variant_identity(run=run, profile=host.profile),
+        variant=variant,
         judge_model=run.judge_model,
         output=output,
         judged_artifact=judged_artifact,
@@ -308,6 +367,40 @@ async def record_witnessed_cell(
         end_state=dict(end_state) if end_state is not None else None,
     )
     return result, trace
+
+
+async def _refuse_past_the_judge_ceiling(host: EvalHost, run: EvalRun) -> None:
+    """Refuse to judge another of a judged witnessed run's cells once its saved cells' judge spend has passed its ceiling.
+
+    The runner's between-cells check (:meth:`~threetears.evals.run.budget.EvalRunCostCap.check`), over the
+    judge spend the run's saved cells carry — the only spend of a witnessed cell the engine makes. A cell
+    whose judge spend is unpriced counts as unpriced, never as $0, and stops an enforced ceiling.
+
+    Args:
+        host: The host, whose store holds the run's saved cells.
+        run: The judged witnessed run.
+
+    Raises:
+        ValueError: The run records no ceiling origin — it was not stamped by :func:`stamp_witnessed_judge`.
+        BudgetStoppedError: The ceiling is enforced and the saved judge spend is past it, or unpriced.
+    """
+    if run.max_cost_usd_origin is None:
+        raise ValueError(
+            f"run {run.id} names judge {run.judge_model!r} and records no cost ceiling, and a judged witnessed run's "
+            "judging is held to one; stamp it with stamp_witnessed_judge, which records the ceiling a launch would"
+        )
+    if run.max_cost_usd is None:
+        # The host enforces no ceiling, and the run recorded that: uncapped, as a launched run would be.
+        return
+    saved = await run_blocking(host.blocking_executor, host.storage.query_eval_results_by_run, run.id, run.scope_id)
+    cap = EvalRunCostCap(run.id, run.max_cost_usd, enabled=True)
+    for result in saved:
+        judging = [row.cost_usd for row in result.usage if row.role == "judge"]
+        if judging:
+            cap.record(None if None in judging else math.fsum(cost for cost in judging if cost is not None))
+    breach = cap.check()
+    if breach is not None:
+        raise BudgetStoppedError(len(saved), len(run.test_case_ids) * run.k_runs, breach)
 
 
 def _recorded_judge(host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifact) -> tuple[JudgeService, EvalTemplate]:

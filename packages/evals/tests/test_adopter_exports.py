@@ -15,3 +15,26 @@ def test_the_variant_derivation_and_the_substituted_delivery_count_are_on_the_co
     assert contracts.derive_variant_identity is identity.derive_variant_identity
     assert contracts.count_substituted_deliveries is usage_capture.count_substituted_deliveries
     assert {"derive_variant_identity", "count_substituted_deliveries"} <= set(contracts.__all__)
+
+
+def test_the_substituted_delivery_count_reads_a_delivery_record_before_any_result_exists():
+    """A kind computes its measures from its cell's deliveries; it has no result to build just to ask."""
+    from threetears.evals.contracts import AsyncDelivery
+
+    from packages.evals.tests.factories import make_eval_result
+
+    live = AsyncDelivery(tool="scout", status="delivered", acknowledged_turn=1, delivered_turn=2, substituted=False)
+    seeded = AsyncDelivery(tool="scout", status="delivered", acknowledged_turn=3, delivered_turn=3, substituted=True)
+
+    assert contracts.count_substituted is usage_capture.count_substituted
+    assert "count_substituted" in contracts.__all__
+    assert [contracts.count_substituted(record) for record in (None, [], [live], [live, seeded, seeded])] == [
+        0,
+        0,
+        0,
+        2,
+    ]
+    # The result form is the record form, over the result's record: one predicate, not two.
+    for record in (None, [live, seeded]):
+        result = make_eval_result(async_deliveries=record)
+        assert contracts.count_substituted_deliveries(result) == contracts.count_substituted(record)

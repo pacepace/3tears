@@ -35,6 +35,8 @@ from packages.evals.tests.fixtures.toyhost.run import EVERY_FIELD_EMITTED, toyho
 #: The toy host's clock-driven dimension: its trigger is the passage of turns, which the toy template's
 #: seed arms.
 _CLOCK = "operator_corrections"
+#: A human-triggered dimension the seed does not arm, which the seeded hold's event can also move.
+_SIGNOFF = "supervisor_signoff"
 
 #: A hold check over world state: the document's language stays as the seed put it.
 #:
@@ -201,9 +203,26 @@ class TestSeedArmedFirings:
         )
 
         with pytest.raises(
-            ValidationFailedError, match=r"fired_armed names 'payment_hold', which this template's seed does not arm"
+            ValidationFailedError, match=r"fired_armed names 'payment_hold', and this template's seed arms no event"
         ):
             refuse_non_discriminating_checks(template, profile=toyhost_profile())
+
+    def test_the_seeds_event_firing_on_another_dimension_it_moves_is_a_state_a_run_can_leave(self) -> None:
+        """The session records the seed's event as armed on any dimension it moves, so the gate admits it."""
+        held = WorldSeed(namespaces={"console": {PAYMENT_HOLD: "held"}})
+        template = _single_check(
+            toyhost_template(),
+            f'fired_armed("{_SIGNOFF}")',
+            "act",
+            ControlEndState(
+                describes="The seeded hold also brought the supervisor's sign-off.", fired_armed=[_SIGNOFF]
+            ),
+            seed=held,
+        )
+
+        refuse_non_discriminating_checks(template, profile=toyhost_profile())
+        (verdict,) = check_discriminations(template, profile=toyhost_profile())
+        assert (verdict.did_nothing.passed, verdict.controlled.passed) == (False, True)
 
     def test_an_armed_firing_naming_no_triggered_dimension_is_refused(self) -> None:
         template = _single_check(

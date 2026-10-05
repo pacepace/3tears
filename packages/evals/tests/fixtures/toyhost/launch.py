@@ -131,9 +131,10 @@ def toyhost_launch_host(
                         "retriever_top_k": RUN_RETRIEVER_TOP_K,
                         "extraction_schema": "v1",
                         "ocr_engine_version": "tess-5.3.1",
-                        # Who reviews is a setup value of the rig a launch may set; unset, the host's
-                        # standing pool reviews.
-                        "reviewer_pool": request.apparatus_settings.get("reviewer_pool", TOYHOST_REVIEWER_POOL),
+                        # Who reviews is a setup value of the rig a launch may set. The dispatch resolved
+                        # it against the kind's standing pool, so it is always present and no default is
+                        # restated here.
+                        "reviewer_pool": request.apparatus_settings["reviewer_pool"],
                     }
                 },
             ),
@@ -149,8 +150,9 @@ def toyhost_launch_host(
                 unhonoured_launch_arguments=frozenset(
                     {"simulator_model", "judge_model", "judge_config_ids", "cassette_mode", "n_variations"}
                 ),
-                # The one apparatus value a launch sets: who reviews the extractions.
-                apparatus_settings=frozenset({"reviewer_pool"}),
+                # The one apparatus value a launch sets: who reviews the extractions, the host's standing
+                # pool when a launch sets none.
+                apparatus_settings={"reviewer_pool": TOYHOST_REVIEWER_POOL},
             )
         },
         settings=settings,

@@ -10,6 +10,7 @@ then never name the host::
     python -m threetears.evals ls --host myapp.evals:build_host --scope dev
     python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev --format html --out r.html
     python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
+    python -m threetears.evals spend --host myapp.evals:build_host --scope dev --purpose variation
 
 - ``run`` launches through :func:`~threetears.evals.run.start_run`, waits for the runs' jobs, and
   prints each run's summary. It exits 0 when every run completed and 1 when any did not.
@@ -28,6 +29,10 @@ then never name the host::
 - ``bundle`` prints the campaign's analysis bundle as JSON
   (:func:`~threetears.evals.analysis.inspect_campaign_bundle`): what a generation would read, assembled
   without calling any model.
+- ``spend`` prints what the engine spent outside any run in the scope — case generations and rubric
+  proposals, call by call, with totals overall, per purpose and per launch
+  (:func:`~threetears.evals.ops.scope_out_of_run_spend`, the read the ``scope_out_of_run_spend`` action
+  makes). ``--purpose``, ``--launch-group`` and ``--template`` narrow it.
 
 A product mounting the commands may add its own beside them — ``run_cli(..., commands=[HostCommand(...)])``
 — each parsed like the engine's (``--scope``, and ``--host`` when the host is named on the command line)
@@ -51,9 +56,9 @@ from pathlib import Path
 from typing import Any, get_args
 
 from threetears.evals.analysis import inspect_campaign_bundle, list_campaigns
-from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, EvalServiceError
+from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, EvalServiceError, OutOfRunPurpose
 from threetears.evals.contracts.host import EvalHost
-from threetears.evals.ops import ReportFormat, report_read
+from threetears.evals.ops import ReportFormat, out_of_run_spend_text, report_read, scope_out_of_run_spend
 from threetears.evals.ops.summary import summarize_run
 from threetears.evals.run import LaunchHost, list_runs, list_templates, start_run
 
@@ -61,7 +66,7 @@ from threetears.evals.run import LaunchHost, list_runs, list_templates, start_ru
 HostFactory = Callable[[], EvalHost | LaunchHost]
 
 #: The commands the engine itself carries; a host command may take none of these names.
-ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report", "bundle")
+ENGINE_COMMANDS: tuple[str, ...] = ("run", "ls", "report", "bundle", "spend")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -240,6 +245,10 @@ def build_parser(
     report.add_argument("--out", type=Path, metavar="PATH", help="write the report to PATH instead of stdout")
     bundle = command("bundle", "Print a campaign's analysis bundle as JSON — what a generation would read.")
     bundle.add_argument("campaign", help="the campaign, by id")
+    spend = command("spend", "Print what the engine spent outside any run — case generations, rubric proposals.")
+    spend.add_argument("--purpose", choices=get_args(OutOfRunPurpose), default=None, help="only this purpose's calls")
+    spend.add_argument("--launch-group", default=None, metavar="ID", help="only one launch's case generation")
+    spend.add_argument("--template", default=None, metavar="ID", help="only calls made for this template")
     for host_command in commands:
         host_command.configure(command(host_command.name, host_command.help))
     return parser
@@ -297,7 +306,7 @@ def run_cli(
             if not isinstance(host, LaunchHost):
                 raise _Refused(
                     "run launches, so its host factory must return a LaunchHost — the EvalHost with the kinds "
-                    "it can launch; this one returned an EvalHost, which ls, report and bundle can read but nothing can launch"
+                    "it can launch; this one returned an EvalHost, which ls, report, bundle and spend can read but nothing can launch"
                 )
             return asyncio.run(_launch(host, args))
         if (handler := handlers.get(args.command)) is not None:
@@ -308,6 +317,18 @@ def run_cli(
             _list(eval_host, args.scope)
         elif args.command == "report":
             _report(eval_host, args)
+        elif args.command == "spend":
+            _say(
+                out_of_run_spend_text(
+                    scope_out_of_run_spend(
+                        eval_host,
+                        args.scope,
+                        purpose=args.purpose,
+                        launch_group_id=args.launch_group,
+                        template_id=args.template,
+                    )
+                )
+            )
         else:
             _say(inspect_campaign_bundle(eval_host, args.campaign, args.scope).model_dump_json(indent=2))
         return EXIT_OK

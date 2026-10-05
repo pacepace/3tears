@@ -54,7 +54,7 @@ from threetears.evals.contracts.models import (
     resolve_effective_judges,
     scored_dim_ids,
 )
-from threetears.evals.contracts.out_of_run import OutOfRunBudget
+from threetears.evals.contracts.out_of_run import OutOfRunBudget, plan_variation_calls
 from threetears.evals.run.authoring import validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.contracts.cassettes import CassetteMode
@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from threetears.evals.contracts.host.subject import SubjectSnapshot
     from threetears.evals.contracts.host.sweepables import SweepableRegistry
     from threetears.evals.contracts.models import EvalTemplate, EvalTestCase, JudgeConfig, VariationCounts
+    from threetears.evals.contracts.provider import PricedCompletion
     from threetears.evals.contracts.scoring import CellSummary
     from threetears.evals.contracts.storage import DefinitionStore
     from threetears.evals.contracts.usage_capture import ExternalRateTable
@@ -89,11 +90,15 @@ _Validated = TypeVar("_Validated", bound=BaseModel)
 class LaunchSettings(BaseModel):
     """The host's launch settings, as one snapshot of values.
 
-    Read through :attr:`LaunchHost.settings` at the moment a launch needs them — the arm and admission
-    ceilings when a launch is admitted, the run ceilings and judge concurrency once per run when it is
-    assembled — rather than once at construction, because a host's settings hot-reload. One snapshot
-    per read, so the figures a run records and the objects that enforce them come from the same read
-    and a reload cannot leave a run recording a ceiling it did not run under.
+    Read through :attr:`LaunchHost.settings` ONCE per launch, when it begins, rather than once at
+    construction, because a host's settings hot-reload — and not again during it. The one snapshot
+    decides every refusal the launch makes before it pays for anything (the arm and admission ceilings,
+    the out-of-run cap its generation is priced against, the run caps its arms are priced against) and
+    travels to every arm's tail on its request (:attr:`LaunchRequest.settings`), which records and
+    enforces the run's ceilings and judge concurrency from it. So a reload part-way through cannot turn
+    a launch that was admitted under one ceiling into a run refused, after its generation was paid for,
+    under another — nor leave a run recording a ceiling it did not run under. A battery reads once for
+    every template it launches.
 
     Attributes:
         max_launch_arms: How many runs one launch may start together. A group starts every member
@@ -110,7 +115,9 @@ class LaunchSettings(BaseModel):
         max_out_of_run_cost_usd: The most a launch's out-of-run calls — its case generation, which runs
             before any run exists and so under no run's cap — may together be priced at before they are
             made (:class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`). Enforced exactly when
-            ``enforcement_enabled`` is.
+            ``enforcement_enabled`` is. Per LAUNCH, as ``max_cost_usd`` is per run: a battery is one launch
+            per template, so a battery of N generating templates may spend up to N times this out of run,
+            as its runs may spend up to their count times their cap.
         setting_names: What the host calls each of the fields above, keyed by field name, so a
             refusal names the knob an operator turns. A field the host does not name here is
             called by its own name; the engine names no host setting of its own.
@@ -190,6 +197,12 @@ class ArmQuote:
         k_runs: Repeats of every case.
         case_count: The cases it runs, as its plan bounded them.
         cassette_mode: Its cassette mode, normalised.
+        judge_model: The judge pin the launch named, unresolved; ``None`` when it named none and the arm's
+            judge (if its kind has one) is the role default. A judge is part of what a run spends, so an arm
+            priced from history judged by a cheaper model would be predicted low.
+        simulator_model: The simulator pin the launch named, unresolved; ``None`` when it named none.
+        apparatus_settings: The apparatus values the arm's rig is set up with, resolved — every setting its
+            kind honours, defaults filled in, as its run will record them.
     """
 
     scope_id: str
@@ -199,6 +212,9 @@ class ArmQuote:
     k_runs: int
     case_count: int
     cassette_mode: CassetteMode
+    judge_model: str | None
+    simulator_model: str | None
+    apparatus_settings: Mapping[str, ApparatusSettingValue]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -207,7 +223,10 @@ class ArmPrice:
 
     Attributes:
         predicted_usd: The predicted cost of the arm's whole run, in dollars, or ``None`` when the pricer
-            cannot predict it — unknown, which the launch never reads as $0.
+            cannot predict it — unknown, which the launch never reads as $0. It is the figure the arm's cap
+            is held to, so a pricer whose prediction is a range returns its UPPER end: an arm admitted
+            because its central estimate fits is one that runs past its cap whenever the run lands above
+            the centre, after its generation was paid for.
         basis: How the prediction was made, or why there is none, in words a refusal quotes ("from 12
             past results, method usage-history").
     """
@@ -306,7 +325,7 @@ class LaunchHost:
         profile = self.eval_host.profile
         settable = settable_apparatus(profile.sweepables)
         for kind, launchable in self.kinds.items():
-            if undeclared := sorted(launchable.apparatus_settings - settable):
+            if undeclared := sorted(set(launchable.apparatus_settings) - settable):
                 raise ValueError(
                     f"kind {kind!r} honours apparatus setting(s) {', '.join(undeclared)}, which host "
                     f"{profile.host_id!r} does not declare as apparatus of its own; a launch sets only a "
@@ -614,10 +633,11 @@ class LaunchRequest:
             exactly this model's JSON form.
         max_cost_usd: The per-run cost-cap override, already checked positive.
         max_metered_calls: The per-run metered-call ceiling override, already checked positive.
-        apparatus_settings: The host-declared apparatus values this launch sets, each one the kind
-            declares it honours (:attr:`LaunchableKind.apparatus_settings`) and already validated; ``{}``
-            when it sets none. The launcher sets its rig up from them, and the run records exactly
-            these (``EvalRun.apparatus_settings``).
+        apparatus_settings: The host-declared apparatus values this arm's rig is set up with: every one
+            the kind honours (:attr:`LaunchableKind.apparatus_settings`), the launch's value where it set one
+            and the kind's default where it did not, already validated; ``{}`` only for a kind whose rig a
+            launch cannot set. The launcher sets its rig up from them, reading no default of its own, and the
+            run records exactly these (``EvalRun.apparatus_settings``).
         generation_budget: For a launch that generates (``n_variations`` > 0), the out-of-run budget its
             generation's calls are priced against and ledgered through — one for the whole launch, shared
             by every arm, capped at the host's ``max_out_of_run_cost_usd``. A launcher hands it to
@@ -628,6 +648,9 @@ class LaunchRequest:
             (:attr:`LaunchableKind.plan_arm`) — the plan the arm was priced at, and the launch tail holds
             its run to. ``None`` for a launch that generates nothing.
         launch_group: The launch this run is prepared into; the launch starts it with its siblings.
+        settings: The host's launch settings as the launch read them, once, when it began — what its
+            refusals were made under, and what :func:`launch_run` records and enforces the run's ceilings
+            and judge concurrency from. A launcher reads the host's settings from here, never afresh.
     """
 
     template: EvalTemplate
@@ -651,6 +674,7 @@ class LaunchRequest:
     generation_budget: OutOfRunBudget | None
     arm_plan: ArmPlan | None
     launch_group: LaunchGroup
+    settings: LaunchSettings
 
     def overlays_as(self, model: type[_Validated]) -> _Validated:
         """The launch's overlays as the kind's own overlay model, typed.
@@ -737,23 +761,38 @@ class LaunchableKind:
             that generates: a generating launch of a kind with none is refused at the dispatch. ``None``
             for a kind that declines ``n_variations``, and refused beside it, since nothing would ask it.
         apparatus_settings: The host-declared apparatus dimensions this kind's launcher sets its rig up
-            from, read off :attr:`LaunchRequest.apparatus_settings`. A launch setting any other is
-            refused at the dispatch; the :class:`LaunchHost` refuses a name the profile does not declare as
-            one of the host's own apparatus dimensions. Empty for a kind whose rig a launch cannot set.
+            from, each with the value its rig takes when a launch sets none — the kind's standing rig. A
+            launch setting any other is refused at the dispatch; the :class:`LaunchHost` refuses a name the
+            profile does not declare as one of the host's own apparatus dimensions. The dispatch RESOLVES a
+            launch's settings against these defaults, so :attr:`LaunchRequest.apparatus_settings` names every
+            one, the launcher reads them there with no default of its own, and the run records — and its
+            context key hashes — the rig as it was set up: a launch naming a default and one leaving it out
+            are one condition, as a ``kind_spec`` stating a default and one omitting it are. Empty for a kind
+            whose rig a launch cannot set.
     """
 
     launch: KindLauncher
     unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset()
     plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None
-    apparatus_settings: frozenset[str] = frozenset()
+    apparatus_settings: Mapping[str, ApparatusSettingValue] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
-        """Refuse a name that is not a launch argument, and an arm plan for a kind that never generates.
+        """Refuse a name that is not a launch argument, an arm plan for a kind that never generates, and a default no run could store.
 
         Raises:
-            ValueError: An entry of ``unhonoured_launch_arguments`` is not a :data:`LaunchArgument`, or
-                ``plan_arm`` is supplied for a kind that declines ``n_variations``.
+            ValueError: An entry of ``unhonoured_launch_arguments`` is not a :data:`LaunchArgument`,
+                ``plan_arm`` is supplied for a kind that declines ``n_variations``, or an apparatus default
+                is not a string, a bool or a finite number.
         """
+        try:
+            defaults = _APPARATUS_SETTINGS.validate_python(dict(self.apparatus_settings))
+        except ValidationError as e:
+            raise ValueError(
+                f"apparatus_settings defaults a setting to a value no run could record: {e.errors()[0]['msg']} "
+                f"({e.errors()[0]['loc']})"
+            ) from e
+        # Frozen as validated, so a caller's mapping changing afterwards cannot move a kind's standing rig.
+        object.__setattr__(self, "apparatus_settings", MappingProxyType(defaults))
         if unknown := sorted(set(self.unhonoured_launch_arguments) - set(get_args(LaunchArgument))):
             raise ValueError(
                 f"unhonoured_launch_arguments names {', '.join(unknown)}, which are not launch arguments; "
@@ -976,15 +1015,16 @@ def _validated_apparatus_settings(
         apparatus_settings: The launch's settings, unvalidated, or ``None`` for none.
 
     Returns:
-        The settings as the run stores them; ``{}`` when the launch set none.
+        The settings as the run stores them: every one the kind honours, the launch's value where it set
+        one and the kind's default where it did not — ``{}`` only for a kind whose rig a launch cannot set.
 
     Raises:
         ValidationFailedError: A setting the kind does not honour, or a value that is not a string, a bool
             or a finite number.
     """
     if not apparatus_settings:
-        return {}
-    if unhonoured := sorted(set(apparatus_settings) - launchable.apparatus_settings):
+        return dict(launchable.apparatus_settings)
+    if unhonoured := sorted(set(apparatus_settings) - set(launchable.apparatus_settings)):
         honoured = ", ".join(sorted(launchable.apparatus_settings)) or "none"
         raise ValidationFailedError(
             f"template {template.id!r} is a {template.candidate_kind!r} template, and that kind's launcher sets its rig "
@@ -992,7 +1032,8 @@ def _validated_apparatus_settings(
             "a setting nothing reads would be recorded as a rig nobody built"
         )
     try:
-        return _APPARATUS_SETTINGS.validate_python(dict(apparatus_settings))
+        # Resolved against the kind's standing rig: what the run records is the rig as it was set up.
+        return {**launchable.apparatus_settings, **_APPARATUS_SETTINGS.validate_python(dict(apparatus_settings))}
     except ValidationError as e:
         raise ValidationFailedError(
             f"invalid apparatus_settings: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})"
@@ -1330,6 +1371,64 @@ async def start_run(
             under an inherited one (or any generating launch under an enforced cap on a host with no
             pricer), or any refusal the kind's launcher makes.
     """
+    # The host's settings, read ONCE for the whole launch: every refusal below and every arm's tail
+    # reads this snapshot, so a hot reload part-way cannot refuse, after its generation was paid for, a
+    # launch admitted under the figures it started with.
+    return await _start_run(
+        host,
+        host.settings(),
+        template_id=template_id,
+        subject_id=subject_id,
+        models=models,
+        k_runs=k_runs,
+        n_variations=n_variations,
+        variation_model=variation_model,
+        judge_model=judge_model,
+        judge_config_ids=judge_config_ids,
+        simulator_model=simulator_model,
+        cassette_mode=cassette_mode,
+        cassette_corpus_id=cassette_corpus_id,
+        overlays=overlays,
+        apparatus_settings=apparatus_settings,
+        max_cost_usd=max_cost_usd,
+        max_metered_calls=max_metered_calls,
+        scope_id=scope_id,
+        launch_group=launch_group,
+        admission=admission,
+    )
+
+
+async def _start_run(
+    host: LaunchHost,
+    settings: LaunchSettings,
+    *,
+    template_id: str,
+    subject_id: str,
+    models: list[str],
+    k_runs: int,
+    n_variations: int,
+    variation_model: str | None,
+    judge_model: str | None,
+    judge_config_ids: dict[str, str] | None,
+    simulator_model: str | None,
+    cassette_mode: str | None,
+    cassette_corpus_id: str | None,
+    overlays: Mapping[str, Any] | None,
+    apparatus_settings: Mapping[str, Any] | None,
+    max_cost_usd: float | None,
+    max_metered_calls: int | None,
+    scope_id: str,
+    launch_group: LaunchGroup | None,
+    admission: AdmissionTicket | None,
+) -> list[EvalRun]:
+    """:func:`start_run` under a settings snapshot its caller read — the launch's own, or a battery's.
+
+    Args and Returns as :func:`start_run`; ``settings`` is the one read every refusal and every arm's
+    tail is made under.
+
+    Raises:
+        See :func:`start_run`.
+    """
     # NOTE: the "at least one model" refusal is NOT here, because it is not the same
     # refusal for every kind — each kind's launcher makes its own.
     # Per-run cost-cap override: a non-positive cap would stop the
@@ -1343,7 +1442,7 @@ async def start_run(
         raise ValidationFailedError(f"max_metered_calls must be > 0 (got {max_metered_calls})")
     # A host that declares no metered tools has nothing for a ceiling to bound, and recording one would
     # claim a bound the run never had.
-    if max_metered_calls is not None and host.settings().max_metered_calls is None:
+    if max_metered_calls is not None and settings.max_metered_calls is None:
         raise ValidationFailedError(
             f"max_metered_calls={max_metered_calls} names a metered-call ceiling, and host "
             f"{host.eval_host.profile.host_id!r} declares no metered tools, so it would bound nothing; launch "
@@ -1388,6 +1487,7 @@ async def start_run(
         """
         requests = _arm_requests(
             host,
+            settings,
             dispatched,
             group,
             subject_id=subject_id,
@@ -1428,12 +1528,55 @@ async def start_run(
     # hands this one its share rather than letting it compete for room with launches that arrived
     # after the caller was admitted.
     return await launch_as_group(
-        host, max(1, len(models)), form=form, prepare=prepare, admission=admission, event="eval.start_run"
+        host,
+        max(1, len(models)),
+        settings=settings,
+        form=form,
+        prepare=prepare,
+        admission=admission,
+        event="eval.start_run",
+    )
+
+
+def _generation_budget(
+    host: LaunchHost,
+    settings: LaunchSettings,
+    *,
+    scope_id: str,
+    template_id: str,
+    subject_id: str,
+    launch_group_id: str,
+) -> OutOfRunBudget:
+    """The out-of-run budget one launch's generation is admitted under: the host's cap, ledgered under the launch.
+
+    One construction for both of its readers — the launch that hands it to its launcher, and the battery
+    that prices every template's generation against it before any template launches — so the battery
+    cannot pass a generation its launch would refuse.
+
+    Args:
+        host: The host, whose store ledgers the calls.
+        settings: The launch's settings snapshot; the cap is enforced exactly when its enforcement is.
+        scope_id: The scope the generation is for.
+        template_id: The template whose cases it writes.
+        subject_id: The launch's subject.
+        launch_group_id: The launch's group, stamped on every ledger row.
+
+    Returns:
+        The budget, nothing yet admitted.
+    """
+    return OutOfRunBudget(
+        host.eval_host.storage,
+        scope_id=scope_id,
+        cap_usd=settings.max_out_of_run_cost_usd if settings.enforcement_enabled else None,
+        template_id=template_id,
+        subject_id=subject_id,
+        launch_group_id=launch_group_id,
     )
 
 
 def _arm_requests(
     host: LaunchHost,
+    settings: LaunchSettings,
     dispatched: _Dispatched,
     group: LaunchGroup,
     *,
@@ -1458,7 +1601,8 @@ def _arm_requests(
     ledgered under the launch's group.
 
     Args:
-        host: The host, whose settings cap the generation and whose store ledgers it.
+        host: The host, whose store ledgers the generation.
+        settings: The launch's settings snapshot, which caps the generation and travels on every request.
         dispatched: What the dispatch resolved.
         group: The launch the arms are prepared into.
         subject_id: The launch's subject.
@@ -1480,11 +1624,10 @@ def _arm_requests(
     """
     budget: OutOfRunBudget | None = None
     if n_variations > 0:
-        settings = host.settings()
-        budget = OutOfRunBudget(
-            host.eval_host.storage,
+        budget = _generation_budget(
+            host,
+            settings,
             scope_id=scope_id,
-            cap_usd=settings.max_out_of_run_cost_usd if settings.enforcement_enabled else None,
             template_id=dispatched.template.id,
             subject_id=subject_id,
             launch_group_id=group.id,
@@ -1515,6 +1658,7 @@ def _arm_requests(
             generation_budget=budget,
             arm_plan=None,
             launch_group=group,
+            settings=settings,
         )
         for arm_model in arm_models
     ]
@@ -1559,7 +1703,8 @@ async def _priced_generating_arms(
     Args:
         host: The host: its settings resolve the cap, and its pricer predicts.
         launchable: The kind's registry entry, whose ``plan_arm`` plans each arm.
-        requests: The launch's arms, in order; every one carries the same ``max_cost_usd``.
+        requests: The launch's arms, in order; every one carries the same ``max_cost_usd`` and the same
+            settings snapshot.
 
     Returns:
         The requests, each carrying its plan.
@@ -1570,7 +1715,9 @@ async def _priced_generating_arms(
         ValueError: The kind planned an arm on another model than the one it named.
     """
     planned = [replace(request, arm_plan=_planned(launchable, request)) for request in requests]
-    settings = host.settings()
+    # The launch's one read, as every arm carries it — never a fresh read, which a reload could make
+    # disagree with the cap the arm's tail will record and enforce.
+    settings = planned[0].settings
     max_cost_usd = planned[0].max_cost_usd
     cap = EvalRunCostCap.resolve_effective_ceiling(
         max_cost_usd, configured_max_cost_usd=settings.max_cost_usd, enforcement_enabled=settings.enforcement_enabled
@@ -1601,6 +1748,9 @@ async def _priced_generating_arms(
                 k_runs=request.k_runs,
                 case_count=plan.case_count,
                 cassette_mode=request.cassette_mode,
+                judge_model=request.judge_model,
+                simulator_model=request.simulator_model,
+                apparatus_settings=request.apparatus_settings,
             ),
         )
         what = (
@@ -1629,6 +1779,7 @@ async def launch_as_group(
     host: LaunchHost,
     n_runs: int,
     *,
+    settings: LaunchSettings,
     form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]],
     prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]],
     event: str,
@@ -1658,7 +1809,9 @@ async def launch_as_group(
     their own, and a refused launch's share goes back.
 
     Args:
-        host: The host; its arm ceiling and its admission are read here and nowhere else.
+        host: The host; its job manager admits the launch.
+        settings: The launch's settings snapshot, read once by the caller when the launch began; its arm
+            and admission ceilings are applied here, and the caller's arms are prepared under the same read.
         n_runs: How many runs the launch starts, one per arm.
         form: Makes the caller's refusals under the reservation and returns the group, with
             whatever ``prepare`` needs of what it read.
@@ -1677,7 +1830,6 @@ async def launch_as_group(
         AdmissionRefusedError: The runs would pass the host's admission ceiling.
     """
     job_manager = host.job_manager
-    settings = host.settings()
     _refuse_oversized_launch(n_runs, settings.max_launch_arms, settings.name_of("max_launch_arms"))
     ticket = (
         admission.split(n_runs)
@@ -1820,7 +1972,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
        launch named, the cases live in the run's scope and template, every model the request
        names is the one the wiring resolved, a model-written generation was ledgered through the
        request's budget, and a planned arm runs within its plan.
-    2. Read the host's budget settings once, and assemble the run. Everything the request and the
+    2. Take the launch's settings snapshot off the request, and assemble the run. Everything the request and the
        template already say is stamped from them — scope, template, kind, candidate model, repeats,
        cassette mode, overlays, spec, apparatus settings, world seed, tool bound, ceilings — and only what the kind
        resolved comes from the wiring.
@@ -1874,11 +2026,12 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             role_provenance["simulator"] = "chosen" if request.simulator_model is not None else "inherited"
         # The eval ceilings arrive at the engine as values (R7): budget.py and metering.py
         # read no configuration of their own, and the host's settings are resolved through
-        # the host's launch settings. Read ONCE here and used for both the figures stored on the
-        # run and the objects that enforce them — and the judge concurrency below — so separate
-        # reads cannot straddle a hot reload and leave a run recording a ceiling that is not the
-        # one it ran under.
-        settings = host.settings()
+        # the host's launch settings. Taken from the launch's ONE read, carried on the request, and
+        # used for both the figures stored on the run and the objects that enforce them — and the
+        # judge concurrency below — so no read here can straddle a hot reload: neither leave a run
+        # recording a ceiling it did not run under, nor refuse, after its generation was paid for, a
+        # launch whose refusals were all made under the figures it started with.
+        settings = request.settings
         eval_enforcement_enabled = settings.enforcement_enabled
         configured_max_cost_usd = settings.max_cost_usd
         configured_max_metered_calls = settings.max_metered_calls
@@ -2170,6 +2323,7 @@ async def start_universal_battery(
     simulator_model: str | None = None,
     cassette_mode: str | None = "off",
     apparatus_settings: Mapping[str, Any] | None = None,
+    max_cost_usd: float | None = None,
     preflight: BatteryPreflight,
 ) -> list[str]:
     """Launch the operator-curated boundary battery against one subject.
@@ -2186,8 +2340,19 @@ async def start_universal_battery(
     configs. Select per run by calling :func:`start_run` directly.
 
     **All or nothing.** Every refusal an arm of any template would make is made over the whole set
-    before anything launches, through ``preflight`` — the host's check that calls what its launchers
-    call, not a list of checks kept here.
+    before anything launches: the engine's own — the dispatch's refusals, every generating template's
+    arms priced against their run caps, and every generating template's ``llm`` writer calls priced on the
+    host's ``variation`` client against the out-of-run cap its launch will be held to — and then the
+    host's, through ``preflight``, the check that calls what its launchers call. A battery that
+    generates therefore pays for no template's cases until every template's have been priced.
+
+    **Its bounds are per launch, as a launch's are.** Each template is one launch, so each template's
+    generation is held to the host's ``max_out_of_run_cost_usd`` on its own — a battery of N generating
+    templates may spend up to N times that out of run — and each of its runs to its own cost cap, exactly
+    as N separate launches would be. ``max_cost_usd`` names that per-run cap for every run of the
+    battery; without it every run inherits the host's, and a generating template whose arms no history
+    can price is then refused (unknown is not $0, and an inherited cap is nobody's decision about it).
+    The host's settings are read once, for the whole battery.
 
     Args:
         host: The host, whose launch registry names the kind's launcher.
@@ -2208,11 +2373,12 @@ async def start_universal_battery(
         apparatus_settings: Host-declared apparatus values every template's runs are set up with, as
             :func:`start_run` takes them — refused before anything launches when any template's kind
             does not honour one.
+        max_cost_usd: Optional per-run cost-cap override for every run the battery launches, as
+            :func:`start_run` takes it; must be ``> 0``. Also the cap each generating template's arms are
+            priced against before anything launches.
         preflight: The host's pre-flight, prepared once for the subject and models and then asked
-            of every template before any launches. A host whose launchers generate with a model checks
-            each template's generation calls here
-            (:func:`~threetears.evals.gen.price_variations`), since those are priced inside the launcher;
-            each template's generating ARMS the battery prices itself, before any template launches.
+            of every template before any launches, after the engine's own pricing. It checks what only the
+            host's launchers know; a generation's calls and its generating arms the battery prices itself.
 
     Returns:
         The ids of the launched runs: for each active universal template, one per model. An empty
@@ -2223,8 +2389,10 @@ async def start_universal_battery(
             ceiling — raised once the set is listed and before any subject is read or arm prepared,
             so nothing launches.
         ValidationFailedError: An unrecognised ``cassette_mode``, ``'replay'`` (a corpus serves one
-            template, and a battery runs many), or any refusal a template or its
-            arm would make at launch — raised before any template launches, so nothing does.
+            template, and a battery runs many), a non-positive ``max_cost_usd``, a generating template whose
+            writer's calls cannot be priced under an enforced out-of-run cap or are priced above it, or any
+            refusal a template or its arm would make at launch — raised before any template launches, so
+            nothing does.
     """
     templates = await run_blocking(
         host.eval_host.blocking_executor,
@@ -2236,7 +2404,12 @@ async def start_universal_battery(
     # Every template's runs are admitted together, here, before the pre-flight reads a subject or
     # prepares an arm — the count is known once the set is, and a battery admitted template by
     # template could be refused part-way, launching the partial set it promises never to.
+    # The battery's ONE read of the host's settings: its admission, every template's pre-flight pricing
+    # and every template's launch are made under it, so the pre-flight cannot pass a launch a reload then
+    # refuses part-way through the set.
     settings = host.settings()
+    if max_cost_usd is not None and max_cost_usd <= 0:
+        raise ValidationFailedError(_battery_refusal(ValueError(f"max_cost_usd must be > 0 (got {max_cost_usd})")))
     ticket = host.job_manager.admit(
         len(templates) * max(1, len(models)),
         limit=settings.max_admitted_runs,
@@ -2287,25 +2460,32 @@ async def start_universal_battery(
         # The refusals the dispatch itself makes, per template — a kind with no launcher, a battery
         # argument the kind cannot honour, a stored spec its model now refuses — through the same
         # function the dispatch calls, so a battery cannot launch its first templates and then be
-        # refused one of them.
-        for universal_template in templates:
-            try:
-                resolved = _launchable(
-                    host,
-                    universal_template,
-                    n_variations=n_variations,
-                    variation_model=variation_model if _llm_axes(universal_template) else None,
-                    judge_model=judge_model,
-                    judge_config_ids=None,
-                    simulator_model=simulator_model,
-                    cassette_mode=battery_cassette_mode,
-                    overlays=None,
-                    apparatus_settings=apparatus_settings,
-                )
-                if n_variations > 0:
-                    # Every template's generating arms priced now, through the function each launch prices
-                    # them with, so a battery cannot launch and pay for its first templates' generations and
-                    # then be refused a later template's arm. The group is provisional: nothing joins it.
+        # refused one of them. Then, for a generating battery, every template's arms and every template's
+        # writer calls are priced, so it cannot pay for its first templates' generations and then be
+        # refused a later template's. The writer is the host's, built in the role each launch builds it
+        # in; here it is asked its prices and never called.
+        async with contextlib.AsyncExitStack() as pricing:
+            writer: PricedCompletion | None = None
+            for universal_template in templates:
+                writes_with_a_model = bool(_llm_axes(universal_template))
+                template_variation_model = variation_model if writes_with_a_model else None
+                try:
+                    resolved = _launchable(
+                        host,
+                        universal_template,
+                        n_variations=n_variations,
+                        variation_model=template_variation_model,
+                        judge_model=judge_model,
+                        judge_config_ids=None,
+                        simulator_model=simulator_model,
+                        cassette_mode=battery_cassette_mode,
+                        overlays=None,
+                        apparatus_settings=apparatus_settings,
+                    )
+                    if n_variations == 0:
+                        continue
+                    # Through the functions each launch builds and prices its arms with. The group is
+                    # provisional: nothing joins it, and its id stamps only a budget nothing is admitted to.
                     dispatched = _Dispatched(
                         universal_template,
                         resolved.kind,
@@ -2314,11 +2494,12 @@ async def start_universal_battery(
                         resolved.kind_spec,
                         resolved.apparatus_settings,
                     )
-                    await _priced_generating_arms(
+                    requests = await _priced_generating_arms(
                         host,
                         resolved.launchable,
                         _arm_requests(
                             host,
+                            settings,
                             dispatched,
                             LaunchGroup(candidate_models=models),
                             subject_id=subject_id,
@@ -2326,18 +2507,45 @@ async def start_universal_battery(
                             k_runs=k_runs,
                             scope_id=scope_id,
                             n_variations=n_variations,
-                            variation_model=variation_model if _llm_axes(universal_template) else None,
+                            variation_model=template_variation_model,
                             judge_model=judge_model,
                             judge_config_ids=None,
                             simulator_model=simulator_model,
                             cassette_mode=battery_cassette_mode,
                             cassette_corpus_id=None,
-                            max_cost_usd=None,
+                            max_cost_usd=max_cost_usd,
                             max_metered_calls=None,
                         ),
                     )
-            except ValidationFailedError as refused:
-                raise ValidationFailedError(_battery_refusal(refused)) from refused
+                    if template_variation_model is None:
+                        continue
+                    # The calls this template's launch would make, quoted against the budget it would be
+                    # admitted under — the same plan and the same budget construction the launch uses.
+                    # One writer for every template: the battery names one variation model, and each
+                    # launch builds its writer from the same factory, role and model.
+                    quoted_on: PricedCompletion = (
+                        writer
+                        if writer is not None
+                        else await pricing.enter_async_context(
+                            host.eval_host.completion_clients("a battery's generation pricing")(
+                                "variation", template_variation_model
+                            )
+                        )
+                    )
+                    writer = quoted_on
+                    budget = requests[0].generation_budget
+                    assert budget is not None, "a generating launch's every arm carries its budget"
+                    existing = await run_blocking(
+                        host.eval_host.blocking_executor,
+                        partial(host.eval_host.storage.query_test_cases, scope_id, template_id=universal_template.id),
+                    )
+                    budget.quote(
+                        quoted_on,
+                        "variation",
+                        list(plan_variation_calls(universal_template, n_variations, existing).values()),
+                    )
+                except ValidationFailedError as refused:
+                    raise ValidationFailedError(_battery_refusal(refused)) from refused
         # Every refusal an arm of any template would make, made here over the whole set before anything
         # launches — through the host's check, which calls what its launchers call. The subject is read
         # once for the check and not shared with the launches, which each capture their own.
@@ -2352,8 +2560,9 @@ async def start_universal_battery(
         for template in templates:
             # One launch per template, of one run per model: a template's arms answer that
             # template's cases, so they are what shares a group.
-            runs = await start_run(
+            runs = await _start_run(
                 host,
+                settings,
                 template_id=template.id,
                 scope_id=scope_id,
                 subject_id=subject_id,
@@ -2362,9 +2571,15 @@ async def start_universal_battery(
                 n_variations=n_variations,
                 variation_model=variation_model if _llm_axes(template) else None,
                 judge_model=judge_model,
+                judge_config_ids=None,
                 simulator_model=simulator_model,
                 cassette_mode=cassette_mode,
+                cassette_corpus_id=None,
+                overlays=None,
                 apparatus_settings=apparatus_settings,
+                max_cost_usd=max_cost_usd,
+                max_metered_calls=None,
+                launch_group=None,
                 admission=ticket,
             )
             run_ids += [run.id for run in runs]

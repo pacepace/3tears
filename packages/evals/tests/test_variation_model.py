@@ -20,6 +20,7 @@ extractor driven by a launcher that generates the way an adopter's does (once pe
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -42,6 +43,7 @@ from threetears.evals.run import (
     LaunchHost,
     LaunchPricer,
     LaunchRequest,
+    LaunchSettings,
     launch_run,
     start_run,
     start_universal_battery,
@@ -54,7 +56,7 @@ from packages.evals.tests.fixtures.toyhost.kind import (
     ScriptedExtractionClient,
     ToyExtractorKind,
 )
-from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
+from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_DOCUMENTS, RUN_MODELS, toyhost_template
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.ops_support import CALLER, ops_fixture
@@ -84,9 +86,15 @@ class _FakeWriter:
     model_name: str
     answer: str = '{"values": ["' + '", "'.join(RUN_DOCUMENTS) + '"]}'
     ceiling: float | None = WRITER_CEILING
+    #: A call whose prompt carries this marker is priced at ``dear_ceiling`` instead — one template's
+    #: prompt made dearer than another's, as a longer existing-case block or description makes it.
+    dear_marker: str | None = None
+    dear_ceiling: float = 1000.0
     calls: int = 0
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        if self.dear_marker is not None and self.dear_marker in user:
+            return self.dear_ceiling
         return self.ceiling
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
@@ -110,13 +118,16 @@ class _FakeClients:
 
     aliases: dict[str, str] = field(default_factory=dict)
     ceiling: float | None = WRITER_CEILING
+    dear_marker: str | None = None
     asked: list[tuple[CompletionRole, str | None]] = field(default_factory=list)
     writers: list[_FakeWriter] = field(default_factory=list)
 
     def __call__(self, role: CompletionRole, model: str | None, *, temperature: float | None = None) -> _FakeWriter:
         self.asked.append((role, model))
         assert model is not None, "a variation writer is always named"
-        writer = _FakeWriter(model_name=self.aliases.get(model, model), ceiling=self.ceiling)
+        writer = _FakeWriter(
+            model_name=self.aliases.get(model, model), ceiling=self.ceiling, dear_marker=self.dear_marker
+        )
         self.writers.append(writer)
         return writer
 
@@ -141,12 +152,16 @@ def _generating_host(
     budgeted: bool = True,
     plan_cases: int | None = None,
     plan_model: str | None = None,
+    default_model: str | None = None,
+    settings: Callable[[], LaunchSettings] | None = None,
 ) -> tuple[LaunchHost, EvalStorage, _FakeClients, list[LaunchRequest]]:
     """The toy launch host whose launcher generates its cases the way an adopter's does.
 
     ``pricer`` is the host's launch pricer (``None`` for a host that prices no launch); ``budgeted=False``
     makes the launcher hand its generation a budget of its own rather than the request's; ``plan_cases``
-    and ``plan_model`` make the kind's arm plan state another case count or model than the launch's.
+    and ``plan_model`` make the kind's arm plan state another case count or model than the launch's;
+    ``default_model`` is the model the launcher runs an arm naming none on; ``settings`` reads the host's
+    launch settings (the toy host's own when ``None``) — the launcher's tail reads through the same host.
 
     Returns:
         The host, its store, the client factory (to see what was asked for), and every request the
@@ -156,7 +171,11 @@ def _generating_host(
     for template in templates:
         storage.save_template(template)
     clients = clients or _FakeClients()
-    host, _client = toyhost_launch_host(storage=storage, clients=clients)
+    host, _client = (
+        toyhost_launch_host(storage=storage, clients=clients)
+        if settings is None
+        else toyhost_launch_host(storage=storage, clients=clients, settings=settings)
+    )
     world = host.eval_host.profile.world
     assert world is not None
     kind = ToyExtractorKind(client=ScriptedExtractionClient(), world=world)
@@ -195,6 +214,7 @@ def _generating_host(
                 subject=TOYHOST_SUBJECT,
                 test_cases=generation.cases,
                 variation_counts=generation.counts,
+                default_candidate_model=default_model if request.candidate_model is None else None,
             ),
         )
 
@@ -350,7 +370,10 @@ async def test_a_battery_hands_the_writer_only_to_the_templates_with_an_llm_axis
         "written": WRITER,
         "enumerated": None,
     }
-    assert clients.asked == [("variation", WRITER)]
+    # Twice, both in the writer's own role: once by the battery to price the written template's calls
+    # before anything launched — asked its prices and never called — and once by that template's launch.
+    assert clients.asked == [("variation", WRITER), ("variation", WRITER)]
+    assert [writer.calls for writer in clients.writers] == [0, 1]
     writers = {}
     for run_id in run_ids:
         stored = storage.load_eval_run(run_id, TOYHOST_SCOPE)
@@ -702,13 +725,160 @@ async def test_a_battery_prices_every_templates_generating_arms_before_launching
     _nothing_was_paid_for(host, storage, clients)
 
 
+async def test_a_battery_prices_every_templates_generation_calls_before_launching_any():
+    """The second template's writer calls over the out-of-run cap used to surface inside its own launch,
+    after the first template had paid for its generation and started its runs — whose ids were then lost."""
+    cheap = _template(LLM_AXIS, template_id="cheap", universal=True)
+    dear_axis = LLM_AXIS.model_copy(update={"description": "an invoice id, DEAR to write"})
+    dear = _template(dear_axis, template_id="dear", universal=True)
+    host, storage, clients, handed = _generating_host(cheap, dear, clients=_FakeClients(dear_marker="DEAR"))
+    templates = host.eval_host.storage.query_templates(TOYHOST_SCOPE, universal=True, archived=False)
+    assert [template.id for template in templates] == ["cheap", "dear"], "the cheap template would launch first"
+
+    with pytest.raises(ValidationFailedError, match="above the out-of-run cap.*Nothing was launched"):
+        await start_universal_battery(
+            host,
+            TOYHOST_SUBJECT.subject_id,
+            scope_id=TOYHOST_SCOPE,
+            models=[RUN_MODELS[0]],
+            n_variations=2,
+            variation_model=WRITER,
+            preflight=_no_preflight,
+        )
+
+    assert handed == [], "no template's launcher ran"
+    assert clients.asked == [("variation", WRITER)], "one writer, built to be priced"
+    _nothing_was_paid_for(host, storage, clients)
+
+
+async def test_a_battery_prices_a_generation_its_writer_cannot_price_before_launching_any():
+    written = _template(LLM_AXIS, template_id="written", universal=True)
+    host, storage, clients, handed = _generating_host(written, clients=_FakeClients(ceiling=None))
+
+    with pytest.raises(ValidationFailedError, match="cannot be priced before they are made.*Nothing was launched"):
+        await start_universal_battery(
+            host,
+            TOYHOST_SUBJECT.subject_id,
+            scope_id=TOYHOST_SCOPE,
+            models=[RUN_MODELS[0]],
+            n_variations=2,
+            variation_model=WRITER,
+            preflight=_no_preflight,
+        )
+
+    assert handed == []
+    _nothing_was_paid_for(host, storage, clients)
+
+
+async def test_a_battery_names_the_cap_its_runs_are_priced_against_and_held_to():
+    """Without it every run inherits the host's cap, and an arm no history prices is refused — with no way out."""
+    template = _template(ENUM_AXIS, template_id="unpriced", universal=True)
+
+    def unknown(_quote: ArmQuote) -> ArmPrice:
+        return ArmPrice(predicted_usd=None, basis="no priced result of this template on that model")
+
+    host, storage, clients, handed = _generating_host(template, pricer=unknown)
+    battery = {
+        "scope_id": TOYHOST_SCOPE,
+        "models": [RUN_MODELS[0]],
+        "n_variations": 2,
+        "preflight": _no_preflight,
+    }
+
+    with pytest.raises(ValidationFailedError, match="cannot be priced.*inherited.*Nothing was launched"):
+        await start_universal_battery(host, TOYHOST_SUBJECT.subject_id, **battery)
+    assert handed == []
+
+    run_ids = await start_universal_battery(host, TOYHOST_SUBJECT.subject_id, max_cost_usd=1.5, **battery)
+    await _settled(host, run_ids)
+    stored = [storage.load_eval_run(run_id, TOYHOST_SCOPE) for run_id in run_ids]
+    assert [(run.max_cost_usd, run.max_cost_usd_origin) for run in stored if run is not None] == [(1.5, "chosen")]
+
+
+@pytest.mark.parametrize("cap", [0.0, -1.0])
+async def test_a_battery_naming_a_cap_that_is_not_positive_is_refused_before_anything(cap):
+    host, storage, clients, handed = _generating_host(_template(ENUM_AXIS, universal=True))
+
+    with pytest.raises(ValidationFailedError, match=f"max_cost_usd must be > 0 \\(got {cap}\\).*Nothing was launched"):
+        await start_universal_battery(
+            host,
+            TOYHOST_SUBJECT.subject_id,
+            scope_id=TOYHOST_SCOPE,
+            models=[RUN_MODELS[0]],
+            max_cost_usd=cap,
+            preflight=_no_preflight,
+        )
+
+    assert handed == [] and host.job_manager.admitted_count == 0
+
+
+async def test_an_arm_its_launcher_runs_on_another_model_than_its_plan_is_refused_at_the_tail():
+    """An arm naming no model is planned on one and run on the launcher's default: priced as one, run as another."""
+    template = _template(ENUM_AXIS)
+    host, storage, _clients, handed = _generating_host(template, plan_model="planned-model", default_model="ran-model")
+
+    with pytest.raises(ValueError, match="planned this arm on 'planned-model' and its launcher ran it on 'ran-model'"):
+        await _launch(host, template, models=[], n_variations=2)
+
+    assert len(handed) == 1, "the launcher ran; the tail refused what it wired"
+    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+    assert host.job_manager.admitted_count == 0
+
+
+class _MovingSettings:
+    """The host's settings as a hot reload moves them: every read after the first declares no metered tools."""
+
+    def __init__(self, first: LaunchSettings) -> None:
+        self.first = first
+        self.reads = 0
+
+    def __call__(self) -> LaunchSettings:
+        self.reads += 1
+        return self.first if self.reads == 1 else self.first.model_copy(update={"max_metered_calls": None})
+
+
+async def test_a_launch_reads_the_hosts_settings_once_so_a_reload_cannot_refuse_it_after_its_generation():
+    """A launch naming a metered-call ceiling was refused at its tail, generation paid, when a reload landed mid-launch."""
+    template = _template(LLM_AXIS)
+    moving = _MovingSettings(TOYHOST_LAUNCH_SETTINGS)
+    host, storage, clients, _handed = _generating_host(template, settings=moving)
+
+    runs = await _launch(host, template, n_variations=2, variation_model=WRITER, max_metered_calls=5)
+    await _settled(host, [run.id for run in runs])
+
+    assert moving.reads == 1
+    assert all(run.max_metered_calls == 5 and run.max_metered_calls_origin == "chosen" for run in runs)
+
+
+async def test_a_battery_reads_the_hosts_settings_once_for_every_template():
+    first = _template(LLM_AXIS, template_id="first", universal=True)
+    second = _template(LLM_AXIS, template_id="second", universal=True)
+    moving = _MovingSettings(TOYHOST_LAUNCH_SETTINGS)
+    host, _storage, _clients, _handed = _generating_host(first, second, settings=moving)
+
+    run_ids = await start_universal_battery(
+        host,
+        TOYHOST_SUBJECT.subject_id,
+        scope_id=TOYHOST_SCOPE,
+        models=[RUN_MODELS[0]],
+        n_variations=2,
+        variation_model=WRITER,
+        preflight=_no_preflight,
+    )
+    await _settled(host, run_ids)
+
+    assert moving.reads == 1 and len(run_ids) == 2
+
+
 # =============================================================================
 # The engine's own launch pricer: the scope's usage history of the template on the model
 # =============================================================================
 
 
-def _history(storage: EvalStorage, *, template_id: str, model: str, costs: list[float | None]) -> None:
-    run = make_eval_run(scope_id=TOYHOST_SCOPE, template_id=template_id, candidate_model=model)
+def _history(
+    storage: EvalStorage, *, template_id: str, model: str, costs: list[float | None], **run_fields: Any
+) -> None:
+    run = make_eval_run(scope_id=TOYHOST_SCOPE, template_id=template_id, candidate_model=model, **run_fields)
     storage.save_eval_run(run)
     for k, cost in enumerate(costs, start=1):
         storage.save_eval_result(
@@ -725,20 +895,27 @@ def _quote(**overrides: Any) -> ArmQuote:
         "k_runs": 2,
         "case_count": 5,
         "cassette_mode": "off",
+        "judge_model": None,
+        "simulator_model": None,
+        "apparatus_settings": {},
         **overrides,
     }
     return ArmQuote(**fields)
 
 
-def test_the_history_pricer_predicts_an_arm_from_its_template_and_models_past_results():
+def test_the_history_pricer_bounds_an_arm_by_the_upper_band_of_its_template_and_models_past_results():
+    """The launch holds this figure to the cap, so it is the band's upper end, not the centre."""
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30])
     _history(storage, template_id="another-template", model="m-priced", costs=[9.0, 9.0, 9.0])
 
     price = history_launch_pricer(host)(_quote())
 
-    assert price.predicted_usd == pytest.approx(0.20 * 5 * 2), "the mean per observation, times cases x repeats"
+    centre = 0.20 * 5 * 2
+    assert price.predicted_usd is not None and price.predicted_usd > centre, "above the mean x cases x repeats"
+    assert f"around ${centre:.2f}" in price.basis and "upper end of the band" in price.basis
     assert "usage-history" in price.basis and "3 past result(s)" in price.basis
+    assert price.predicted_usd < 9.0, "another template's history is not drawn on"
 
 
 def test_the_history_pricer_predicts_nothing_for_an_arm_with_no_priced_history():
@@ -750,6 +927,78 @@ def test_the_history_pricer_predicts_nothing_for_an_arm_with_no_priced_history()
     assert price.predicted_usd is None
     assert "no priced result of template 'tpl-priced' on 'm-priced'" in price.basis
     assert "1 past result(s) ran unpriced" in price.basis
+
+
+def test_the_history_pricer_predicts_nothing_from_a_history_too_thin_to_bound():
+    """Two observations give a mean and no band; a mean is not a bound, so the arm is unknown."""
+    host, storage = _priced_host()
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20])
+
+    price = history_launch_pricer(host)(_quote())
+
+    assert price.predicted_usd is None
+    assert "2 priced past result(s)" in price.basis and "too few to bound the arm" in price.basis
+
+
+_JUDGED_CHEAPLY = {"judge_model": "judge-cheap", "model_role_provenance": {"judge": "chosen"}}
+_SIMULATED_CHEAPLY = {"simulator_model": "sim-cheap", "model_role_provenance": {"simulator": "chosen"}}
+
+
+@pytest.mark.parametrize(
+    ("history", "other", "same"),
+    [
+        (_JUDGED_CHEAPLY, {"judge_model": "judge-dear"}, {"judge_model": "judge-cheap"}),
+        (_JUDGED_CHEAPLY, {}, {"judge_model": "judge-cheap"}),
+        (_SIMULATED_CHEAPLY, {"simulator_model": "sim-dear"}, {"simulator_model": "sim-cheap"}),
+        (
+            {"apparatus_settings": {"reviewer_pool": "pool-a"}},
+            {"apparatus_settings": {"reviewer_pool": "pool-b"}},
+            {"apparatus_settings": {"reviewer_pool": "pool-a"}},
+        ),
+    ],
+    ids=["another-judge-pin", "a-pinned-judge-for-an-arm-naming-none", "another-simulator-pin", "another-rig"],
+)
+def test_the_history_pricer_draws_only_on_runs_launched_as_the_arm_will_be(history, other, same):
+    """A run judged by a cheaper model, or with its rig set up otherwise, spent differently from the arm."""
+    host, storage = _priced_host()
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30], **history)
+    pricer = history_launch_pricer(host)
+
+    assert pricer(_quote(**other)).predicted_usd is None
+    assert pricer(_quote(**same)).predicted_usd is not None, "the condition it was launched under prices"
+
+
+def test_a_run_that_inherited_its_judge_prices_an_arm_naming_none():
+    host, storage = _priced_host()
+    _history(
+        storage,
+        template_id="tpl-priced",
+        model="m-priced",
+        costs=[0.10, 0.20, 0.30],
+        judge_model="judge-default",
+        model_role_provenance={"judge": "inherited"},
+    )
+
+    assert history_launch_pricer(host)(_quote()).predicted_usd is not None
+
+
+def test_the_history_pricer_reads_only_the_matching_runs_results(monkeypatch: pytest.MonkeyPatch):
+    """Not every result in the scope for every arm: a scope's history grows without bound."""
+    host, storage = _priced_host()
+    _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30])
+    _history(storage, template_id="another-template", model="m-priced", costs=[9.0, 9.0, 9.0])
+    read: list[str | None] = []
+    query = storage.query_eval_results
+
+    def recorded(scope_id: str, **filters: Any) -> Any:
+        read.append(filters.get("run_id"))
+        return query(scope_id, **filters)
+
+    monkeypatch.setattr(storage, "query_eval_results", recorded)
+
+    assert history_launch_pricer(host)(_quote()).predicted_usd is not None
+    assert None not in read, "the pricer scanned every result in the scope"
+    assert len(read) == 1, "the other template's run was never read"
 
 
 def _priced_host() -> tuple[Any, EvalStorage]:

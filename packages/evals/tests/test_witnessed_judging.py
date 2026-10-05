@@ -21,6 +21,9 @@ import pytest
 
 from threetears.evals.contracts import (
     CandidateOutput,
+    CandidateTelemetry,
+    LeverCoordinateError,
+    RoleUsage,
     ConversationStopCause,
     EvalRun,
     EvalTemplate,
@@ -30,10 +33,10 @@ from threetears.evals.contracts import (
     RubricDim,
     ValidationFailedError,
 )
-from threetears.evals.contracts.host import EvalHost
-from threetears.evals.run import record_witnessed_cell, rejudge_result, stamp_witnessed_judge
+from threetears.evals.contracts.host import EvalHost, SweepableValue
+from threetears.evals.run import BudgetStoppedError, record_witnessed_cell, rejudge_result, stamp_witnessed_judge
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
-from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 
 _SCOPE = "toy"
@@ -109,8 +112,15 @@ def _setup(judge: _ScriptedJudge) -> tuple[EvalHost, EvalTemplate, EvalRun, Eval
     return host, template, run, case
 
 
-def _stamped(host: EvalHost, template: EvalTemplate, run: EvalRun) -> EvalRun:
-    return stamp_witnessed_judge(host, run, template, judge_model=_JUDGE, judged_artifact=JudgedArtifact.DOCUMENT)
+#: The host's run cost ceiling, which a judged witnessed run inherits when it names none.
+_CEILING = 5.0
+
+
+def _stamped(host: EvalHost, template: EvalTemplate, run: EvalRun, **ceiling: Any) -> EvalRun:
+    resolved: dict[str, Any] = {"configured_max_cost_usd": _CEILING, "enforcement_enabled": True, **ceiling}
+    return stamp_witnessed_judge(
+        host, run, template, judge_model=_JUDGE, judged_artifact=JudgedArtifact.DOCUMENT, **resolved
+    )
 
 
 def _output(**overrides: Any) -> CandidateOutput:
@@ -229,7 +239,21 @@ class TestStampingRefuses:
     def test_an_unjudged_kind(self) -> None:
         host, template, run, _ = _setup(_ScriptedJudge())
         with pytest.raises(ValueError, match="unjudged kind has no judge to build"):
-            stamp_witnessed_judge(host, run, template, judge_model=_JUDGE, judged_artifact=JudgedArtifact.UNJUDGED)
+            stamp_witnessed_judge(
+                host,
+                run,
+                template,
+                judge_model=_JUDGE,
+                judged_artifact=JudgedArtifact.UNJUDGED,
+                configured_max_cost_usd=_CEILING,
+                enforcement_enabled=True,
+            )
+
+    @pytest.mark.parametrize("cap", [0.0, -1.0])
+    def test_a_ceiling_that_is_not_positive(self, cap: float) -> None:
+        host, template, run, _ = _setup(_ScriptedJudge())
+        with pytest.raises(ValidationFailedError, match=f"max_cost_usd must be > 0 \\(got {cap}\\)"):
+            _stamped(host, template, run, max_cost_usd=cap)
 
 
 class TestRecordingAJudgedCellRefuses:
@@ -269,3 +293,116 @@ class TestRecordingAJudgedCellRefuses:
                 scored_at=_SESSION_CAPTURED,
                 judged_artifact=JudgedArtifact.UNJUDGED,
             )
+
+
+# =============================================================================
+# Nothing is paid for a cell that cannot be recorded, and a judged run is held to its ceiling
+# =============================================================================
+
+
+class TestNothingIsJudgedForACellThatCannotBeRecorded:
+    """The runner makes these refusals before its judge phase; a judged witnessed cell makes them before its judge."""
+
+    async def test_a_kind_landing_the_derived_accuracy(self) -> None:
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+
+        with pytest.raises(ValueError, match="which the engine derives from each observation's 'match'"):
+            await _record(
+                host, _stamped(host, template, run), case, _output(host_measures={"match": True, "accuracy": 1.0})
+            )
+        assert judge.calls == [], "the judge was never paid for a record that could not be built"
+
+    async def test_background_spend_reported_twice(self) -> None:
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        usage = [RoleUsage(role="inner_agent", model="scout/model", call_count=1, cost_usd=0.1, price_source="script")]
+
+        with pytest.raises(ValueError, match="reported inner_agent usage on its telemetry"):
+            await _record(host, _stamped(host, template, run), case, _output(telemetry=CandidateTelemetry(usage=usage)))
+        assert judge.calls == []
+
+    async def test_a_variant_identity_the_host_cannot_derive(self) -> None:
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        uncarried = run.model_copy(
+            update={
+                "subject_snapshot": run.subject_snapshot.model_copy(
+                    update={"components": {"no_lever_carries_this": SweepableValue.of("rev 2", display="rev 2")}}
+                )
+            }
+        )
+
+        with pytest.raises(LeverCoordinateError, match="no_lever_carries_this that no variant lever"):
+            await _record(host, _stamped(host, template, uncarried), case, _output())
+        assert judge.calls == []
+
+
+def _judged_at(host: EvalHost, run: EvalRun, case: EvalTestCase, *, result_id: str, judge_cost: float | None) -> None:
+    """Save a cell of ``run`` whose judging cost ``judge_cost``, as a host saves each recorded cell."""
+    result = make_eval_result(
+        id=result_id,
+        scope_id=_SCOPE,
+        eval_run_id=run.id,
+        test_case_id=case.id,
+        usage=[RoleUsage(role="judge", model=_JUDGE, cost_usd=judge_cost, price_source="script")],
+    )
+    host.storage.save_eval_result(result)
+
+
+class TestAJudgedRunIsHeldToItsCeiling:
+    def test_stamping_records_the_ceiling_a_launch_would(self) -> None:
+        host, template, run, _ = _setup(_ScriptedJudge())
+
+        assert (_stamped(host, template, run).max_cost_usd, _stamped(host, template, run).max_cost_usd_origin) == (
+            _CEILING,
+            "inherited",
+        )
+        chosen = _stamped(host, template, run, max_cost_usd=1.5)
+        assert (chosen.max_cost_usd, chosen.max_cost_usd_origin) == (1.5, "chosen")
+        uncapped = _stamped(host, template, run, enforcement_enabled=False)
+        assert (uncapped.max_cost_usd, uncapped.max_cost_usd_origin) == (None, "uncapped")
+
+    async def test_a_cell_past_the_ceiling_is_refused_before_its_judge(self) -> None:
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        stamped = _stamped(host, template, run, max_cost_usd=1.0)
+        host.storage.save_eval_run(stamped)
+        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.6)
+
+        # Inside the ceiling: judged.
+        result, _ = await _record(host, stamped, case, _output())
+        assert [score.dim for score in result.rubric_scores] == [_DIM]
+
+        _judged_at(host, stamped, case, result_id="later", judge_cost=0.6)
+        with pytest.raises(BudgetStoppedError, match=r"\$1\.2000 spent against a \$1\.0000 cap"):
+            await _record(host, stamped, case, _output())
+        assert len(judge.calls) == 1, "only the cell inside the ceiling was judged"
+
+    async def test_unpriced_judge_spend_stops_an_enforced_ceiling(self) -> None:
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        stamped = _stamped(host, template, run)
+        _judged_at(host, stamped, case, result_id="earlier", judge_cost=None)
+
+        with pytest.raises(BudgetStoppedError, match="could not be priced"):
+            await _record(host, stamped, case, _output())
+        assert judge.calls == []
+
+    async def test_an_uncapped_run_judges_whatever_it_has_spent(self) -> None:
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        stamped = _stamped(host, template, run, enforcement_enabled=False)
+        _judged_at(host, stamped, case, result_id="earlier", judge_cost=None)
+
+        result, _ = await _record(host, stamped, case, _output())
+        assert [score.dim for score in result.rubric_scores] == [_DIM]
+
+    async def test_a_judged_run_recording_no_ceiling_is_refused(self) -> None:
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        unbounded = _stamped(host, template, run).model_copy(update={"max_cost_usd": None, "max_cost_usd_origin": None})
+
+        with pytest.raises(ValueError, match="records no cost ceiling"):
+            await _record(host, unbounded, case, _output())
+        assert judge.calls == []
