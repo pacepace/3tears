@@ -112,6 +112,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "contracts/result_condition.py": {},
     "contracts/schema_nesting.py": {},
     "contracts/scoring.py": {},
+    "contracts/out_of_run.py": {},
     "contracts/spend.py": {},
     "contracts/status_filter.py": {},
     "contracts/storage.py": {},

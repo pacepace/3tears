@@ -78,6 +78,14 @@ KRuns = Annotated[int, Field(ge=1, description="Repeats of every case, for pass^
 Overlays = Annotated[
     dict[str, Any] | None, Field(description="The knobs this launch turns on the template's kind, by field.")
 ]
+ApparatusSettings = Annotated[
+    dict[str, Any] | None,
+    Field(
+        description="Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits "
+        "in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused "
+        "otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two."
+    ),
+]
 MaxCostUsd = Annotated[
     float | None, Field(gt=0, description="A per-run cost cap in dollars, in place of the host default.")
 ]
@@ -190,6 +198,7 @@ class RunLaunchParams(EvalBaseModel):
     n_variations: NVariations = 0
     variation_model: VariationModel = None
     overlays: Overlays = None
+    apparatus_settings: ApparatusSettings = None
     max_cost_usd: MaxCostUsd = None
     judge_model: JudgeModel = None
     simulator_model: SimulatorModel = None

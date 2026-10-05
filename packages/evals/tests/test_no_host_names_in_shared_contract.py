@@ -251,6 +251,10 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # hardcoded again — the shape it replaced held one provider's configured rate as a module
     # constant — so it is scanned rather than trusted.
     "contracts/spend.py",
+    # The out-of-run budget and its ledger: a call's purpose is the engine's own role vocabulary and its
+    # model is the host's word carried as data, so a host noun here would be one host's rate or model
+    # written into the cap every host's generation is held to.
+    "contracts/out_of_run.py",
     # The seeder, not the corpus it ships. It resolves occupancy by each type's natural key and
     # writes through the storage port; the host-specific part is the corpus a host hands it.
     # A host noun appearing HERE would mean the empty-slots-only rule

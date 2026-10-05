@@ -21,6 +21,7 @@ from typing import Any
 
 from threetears.evals.analysis.reads import RunLister, estimate_cost, export_results, history, pivot
 from threetears.evals.analysis.numbers import format_number, format_signed
+from threetears.evals.analysis.reporting import compute_estimate_cost
 from threetears.evals.analysis.reporting import (
     CostEstimate,
     HistoryResult,
@@ -34,6 +35,7 @@ from threetears.evals.contracts.host import EvalHost
 from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS, EvalRun
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.run.authoring import get_template
+from threetears.evals.run.launch import ArmPrice, ArmQuote, LaunchPricer
 from threetears.evals.run.reads import list_runs
 
 
@@ -190,8 +192,9 @@ def launch_estimate(
         n_variations: Cases the launch would generate before its arms run, as the launch takes them; a
             launch that generates runs those cases rather than the stored ones, so they are priced as that
             many (an upper bound, since generation de-duplicates). The generation calls themselves — the
-            ``variation`` role writing an ``llm`` axis — are not priced: they run before any run, outside
-            its cost cap, and leave no per-cell history to price them from.
+            ``variation`` role writing an ``llm`` axis — are not in this estimate: they run before any run,
+            outside its cost cap, and the launch prices them on the writer's own client against the host's
+            out-of-run cap before it makes them, ledgering each (``EvalStorage.query_out_of_run_spend``).
         n_test_cases: A case count to price in place of the template's own, for a hypothetical grid.
         subject_id: Draw the history from this subject's runs alone.
 
@@ -224,6 +227,63 @@ def launch_estimate(
         template_id=template_id,
         profile=eval_host.profile,
     )
+
+
+def history_launch_pricer(host: EvalHost) -> LaunchPricer:
+    """The engine's launch pricer: an arm predicted from the scope's usage history of its template on its model.
+
+    What a :class:`~threetears.evals.run.LaunchHost` takes as ``launch_pricer`` to price the arms of a
+    generating launch before the generation is paid for. Each arm is priced as
+    :func:`launch_estimate` prices a model's cell — the scope's per-observation costs of the same
+    template on the same model at the same cassette mode, archived runs included, scaled to the arm's
+    planned cases and repeats — and its prediction is the cell's point estimate. A scope with no priced
+    history of that template on that model predicts nothing, which the launch reads as unknown.
+
+    Args:
+        host: The host whose store holds the history and whose vocabulary reads it.
+
+    Returns:
+        The pricer.
+    """
+
+    def price(quote: ArmQuote) -> ArmPrice:
+        estimate = compute_estimate_cost(
+            list_runs(host, quote.scope_id, include_archived=True),
+            host.storage.query_eval_results(quote.scope_id),
+            models=[quote.candidate_model],
+            k_runs=quote.k_runs,
+            n_test_cases=quote.case_count,
+            n_test_cases_source="generated",
+            cassette_mode=quote.cassette_mode,
+            template_id=quote.template_id,
+            profile=host.profile,
+        )
+        [cell] = estimate.cells
+        predicted = cell.predicted
+        if predicted is None:
+            unpriced = (
+                f"; {cell.n_unpriced_historical} past result(s) ran unpriced and cannot be drawn on"
+                if cell.n_unpriced_historical
+                else ""
+            )
+            return ArmPrice(
+                predicted_usd=None,
+                basis=(
+                    f"no priced result of template {quote.template_id!r} on {quote.candidate_model!r} at cassette mode "
+                    f"{quote.cassette_mode!r} is in scope {quote.scope_id!r}{unpriced}"
+                ),
+            )
+        band = (
+            f", band ${predicted.interval_low:.2f}-${predicted.interval_high:.2f}"
+            if predicted.interval_low is not None and predicted.interval_high is not None
+            else ""
+        )
+        return ArmPrice(
+            predicted_usd=predicted.value,
+            basis=f"method {predicted.method_id}, from {cell.n_historical} past result(s){band}",
+        )
+
+    return price
 
 
 # --- the text an operator or an agent reads ---------------------------------------------------------

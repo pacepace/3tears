@@ -389,6 +389,19 @@ class _SweepIgnoresDocType(InMemoryDocumentStore):
         yield from [doc_id for (scope, doc_id) in list(self.documents) if scope == scope_id]
 
 
+class _RoutesOnlyTheTypesItWasBuiltFor(InMemoryDocumentStore):
+    """A store routing each ``doc_type`` to a table of its own, built before the out-of-run ledger existed.
+
+    Its router has no table for ``eval_out_of_run_spend``, so a document of that type is written nowhere
+    — the shape an adopter's store is in the day the engine adds a document type.
+    """
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+        if document["doc_type"] == "eval_out_of_run_spend":
+            return
+        super().upsert(document, if_match=if_match)
+
+
 #: Each broken store, and the cases it must turn red. A case may fail under other faults too; what is
 #: asserted is that these ones go red, and that every case is listed against at least one fault.
 _FAULTS: dict[type[InMemoryDocumentStore], frozenset[str]] = {
@@ -429,6 +442,7 @@ _FAULTS: dict[type[InMemoryDocumentStore], frozenset[str]] = {
     _MergeSetsLocatingFields: frozenset({"merge.refuses_empty_and_locating"}),
     _DeleteAlwaysReportsTrue: frozenset({"delete.removes_and_reports"}),
     _SweepIgnoresDocType: frozenset({"delete.sweep_by_doc_type"}),
+    _RoutesOnlyTheTypesItWasBuiltFor: frozenset({"doc_types.every_engine_type_is_stored"}),
 }
 
 _CASES = {case.name: case for case in STORE_CONFORMANCE_CASES}

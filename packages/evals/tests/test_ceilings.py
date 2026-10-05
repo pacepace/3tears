@@ -98,7 +98,12 @@ class TestBothClassesReadTheOneCascade:
         monkeypatch.setattr(ceilings, "resolve_ceiling_origin", lambda override, *, enforcement_enabled: "renamed")
 
         assert EvalRunCostCap.resolve_ceiling_origin(_OVERRIDE_USD, enforcement_enabled=True) == "renamed"
-        assert MeteredCallLedger.resolve_ceiling_origin(_OVERRIDE_CALLS, enforcement_enabled=True) == "renamed"
+        assert (
+            MeteredCallLedger.resolve_ceiling_origin(
+                _OVERRIDE_CALLS, configured_max_metered_calls=_CONFIGURED_CALLS, enforcement_enabled=True
+            )
+            == "renamed"
+        )
 
     def test_a_changed_enforcement_off_rule_reaches_both_recorded_ceilings(self, monkeypatch):
         monkeypatch.setattr(

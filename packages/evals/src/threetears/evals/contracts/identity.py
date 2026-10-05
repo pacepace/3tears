@@ -407,7 +407,14 @@ if TYPE_CHECKING:
 #:   ``ambient_perturbation_turns``. A run whose template scheduled ambient perturbation faced a world that
 #:   moved under it; one that did not, faced a world that held still, and the two were pooled as one
 #:   condition. Composed for every run (``[]`` for none), so every stored context key re-derives.
-IDENTITY_VERSION: int = 22
+#: - **v23** — a new context component, ``apparatus_settings``: the digest of the host-declared apparatus
+#:   values a launch set (``EvalRun.apparatus_settings``, the ``apparatus_settings`` launch argument) — who
+#:   sat in an adjudicator's seat, say. One template is now run at two such values to compare them, and
+#:   those runs were measured on two rigs; without the component they shared every hashed input and pooled
+#:   as repetitions of one condition, a wrong MERGE. Composed for every run (``{}`` — the launch set none —
+#:   is a level), so every stored context key re-derives. Variant keys are unchanged: an apparatus value is
+#:   the rig, not the candidate.
+IDENTITY_VERSION: int = 23
 """Version of the key-derivation predicate below.
 
 Bump whenever the hashed inputs of *any* key change — adding a factor, removing
@@ -540,6 +547,7 @@ def compute_context_components(
     tools_allowed: list[str] | None,
     scope_id: str,
     world_placements: Mapping[str, str] | None,
+    apparatus_settings: Mapping[str, Any],
     include_roles: bool = True,
     omitted_roles: Collection[str] = (),
 ) -> ContextComponents:
@@ -622,6 +630,9 @@ def compute_context_components(
             that placed it differently are not repetitions of one condition. ``{}`` is a value
             here, not an absence: it records that this host's world held nothing this run could
             place. ``None`` is the absence — a run whose writer placed nothing — and drops the component.
+        apparatus_settings: The host-declared apparatus values the run's launch set, by dimension. ``{}``
+            is a level — the launch set none — so the component is always composed and two runs that set
+            none hash equal. Sorted for the reason ``effective_judges`` is.
         omitted_roles: The declared apparatus dimensions this run does not HAVE — pinned to a rig seat
             its kind does not fill — by
             :meth:`~threetears.evals.contracts.host.profile.HostProfile.omits_apparatus` over what the run
@@ -693,6 +704,7 @@ def compute_context_components(
         # Sorted for the reason ``effective_judges`` is: the order dimensions were declared in is
         # the registry's business and must not split an otherwise identical world.
         world=None if world_placements is None else canonical_digest(dict(sorted(world_placements.items()))),
+        apparatus_settings=canonical_digest(dict(sorted(apparatus_settings.items()))),
         scope=scope_id,
     )
 
@@ -1061,6 +1073,8 @@ def derive_context_identity(run: EvalRun, profile: HostProfile) -> DerivedContex
         # reading it as absent would drop the component for exactly the runs whose world is
         # simplest, and stop them pooling with each other.
         world_placements=run.world_placements,
+        # Never absent: a run whose launch set no apparatus value records that, and it is a level.
+        apparatus_settings=run.apparatus_settings,
         include_roles=has_roles,
         omitted_roles=omitted_roles,
     )

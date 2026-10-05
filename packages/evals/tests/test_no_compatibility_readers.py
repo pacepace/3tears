@@ -36,7 +36,9 @@ from threetears.evals.analysis.reporter_kind import (
 from threetears.evals.contracts import (
     IDENTITY_VERSION,
     EvalResult,
+    EvalStorage,
     JudgeConfig,
+    OutOfRunBudget,
     RubricDim,
     resolve_context_identity,
     resolve_variant_identity,
@@ -48,6 +50,7 @@ from threetears.evals.contracts.surface import DecisionSurface, JudgedDimensionF
 from threetears.evals.gen import propose_draft
 from threetears.evals.gen.prompts.boundary_gen import EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
 from threetears.evals.gen.prompts.proposer import EVAL_PROPOSER_TEMPLATE_DEFAULT
+from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import (
     make_analysis,
     make_campaign,
@@ -215,13 +218,22 @@ def test_a_stored_template_carrying_a_bare_dim_is_refused_on_read() -> None:
 
 
 class _ScriptedClient(ReleasableClientMixin):
-    """Answers a proposal with canned content."""
+    """Answers a proposal with canned content, priced at a cent."""
+
+    model_name = "proposer-model"
 
     def __init__(self, content: str) -> None:
         self.content = content
 
+    def price_ceiling(self, *, system: str, user: str, response_format: Any = None) -> float | None:
+        return 0.01
+
     async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
         return SimpleNamespace(content=self.content)
+
+
+def _budget() -> OutOfRunBudget:
+    return OutOfRunBudget(EvalStorage(InMemoryDocumentStore()), scope_id="proposals", cap_usd=1.0)
 
 
 def _draft(name: str, *, scale: str | None = "pass_fail") -> str:
@@ -243,14 +255,16 @@ async def test_a_proposer_draft_naming_a_bare_dim_is_refused_naming_it(axis: str
     with pytest.raises(ValidationFailedError, match="draft validation(.|\n)*'graceful_decline' must be namespaced"):
         await propose_draft(
             _ScriptedClient(_draft("graceful_decline")),
+            budget=_budget(),
             axis=axis,
             subject_id="s",
             system_prompt="",
             subject_feed="F",
             catalog_feed="C",
         )
-    proposal = await propose_draft(
+    proposal, _spend = await propose_draft(
         _ScriptedClient(_draft("boundary.graceful_decline")),
+        budget=_budget(),
         axis=axis,
         subject_id="s",
         system_prompt="",
@@ -266,6 +280,7 @@ async def test_a_proposer_draft_dimension_with_no_scale_is_refused(axis: str) ->
     with pytest.raises(ValidationFailedError, match="draft validation(.|\n)*scale"):
         await propose_draft(
             _ScriptedClient(_draft("boundary.graceful_decline", scale=None)),
+            budget=_budget(),
             axis=axis,
             subject_id="s",
             system_prompt="",

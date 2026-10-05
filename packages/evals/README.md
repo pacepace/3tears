@@ -101,7 +101,26 @@ nothing would call it — which the launcher asks of the host's client factory i
 (`clients("variation", request.variation_model)`), never the simulator's. The run records the model the
 client resolved to on `variation_counts.variation_model`; it enters no identity, because the cases it
 wrote are already hashed through `test_case_ids`. Generation runs before any run exists, so its calls
-are **outside every run's cost cap and metered-call ceiling**, and `launch_estimate` does not price them.
+are outside every run's cost cap and metered-call ceiling — and so **a generating launch is priced
+before it pays for anything**. Before calling the launcher the engine asks the kind what each arm will
+run (`LaunchableKind.plan_arm`, required of a kind that generates), prices it with the host's
+`LaunchHost.launch_pricer` (`threetears.evals.ops.history_launch_pricer` prices from the scope's usage
+history) and refuses an arm predicted above its run's cap, or one nothing can predict whose cap the run
+would merely inherit. The launcher hands `generate_variations` the request's
+`budget=request.generation_budget`: every `llm` axis's call is priced on the writer's client
+(`price_ceiling`, the host's answer) against `LaunchSettings.max_out_of_run_cost_usd` before the first
+is made, and each is ledgered as an `OutOfRunSpend` document (`EvalStorage.query_out_of_run_spend`)
+under the launch's group. `propose_draft` takes a budget the same way. A battery's pre-flight checks
+each template's generation with `price_variations`.
+
+**Setting the rig at launch.** `apparatus_settings` sets host-declared apparatus values — who sits in an
+adjudicator's seat, say — so one template can be run at two of them and compared. A kind lists the ones
+its launcher reads (`LaunchableKind.apparatus_settings`, each a non-engine `apparatus` declaration of
+the host) and reads them off `request.apparatus_settings`; the run records them
+(`EvalRun.apparatus_settings`) and they are a component of its measurement context.
+
+**A host with no metered tools** sets `LaunchSettings.max_metered_calls=None`: its runs record a
+ceiling of `0` with origin `none_declared`, and a metered call that happens anyway is refused and counted.
 
 **Tenancy is one opaque `scope_id`.** Every stored document carries a non-empty `scope_id`, and the
 engine never interprets it, defaults it or branches on it: it is your tenant, project or

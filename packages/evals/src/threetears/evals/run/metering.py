@@ -46,7 +46,7 @@ from threetears.evals.run import ceilings
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.evals.contracts.models import CostCapOrigin
+    from threetears.evals.contracts.models import MeteredCallOrigin
 
 log = get_logger(__name__)
 
@@ -143,9 +143,13 @@ class MeteredCallLedger:
     ``ceiling=None`` counts without bounding — the shape a run gets when eval
     enforcement is switched off, and the shape every non-eval caller gets by
     never having a ledger at all.
+
+    ``none_declared=True`` is a host that declared it has no metered tools: the ceiling is ``0``,
+    so every metered call is refused and counted, and each one is logged as the contradiction of
+    the host's declaration it is rather than as a run reaching its limit.
     """
 
-    def __init__(self, run_id: str, ceiling: int | None):
+    def __init__(self, run_id: str, ceiling: int | None, *, none_declared: bool = False):
         """Bind the ledger to a run and its ceiling.
 
         Args:
@@ -153,7 +157,14 @@ class MeteredCallLedger:
                 ceiling first binds, so a refusal is attributable to its run.
             ceiling: The maximum number of metered calls this run may make, or
                 ``None`` for counted-but-unbounded.
+            none_declared: The host declared it has no metered tools; requires a ``ceiling`` of 0.
+
+        Raises:
+            ValueError: ``none_declared`` with a ceiling other than 0.
         """
+        if none_declared and ceiling != 0:
+            raise ValueError(f"a host declaring no metered tools allows no metered call; got ceiling={ceiling!r}")
+        self._none_declared = none_declared
         self._run_id = run_id
         self._ceiling = ceiling
         self._calls = 0
@@ -163,7 +174,12 @@ class MeteredCallLedger:
 
     @classmethod
     def for_run(
-        cls, run_id: str, max_metered_calls: int | None, *, configured_max_metered_calls: int, enforcement_enabled: bool
+        cls,
+        run_id: str,
+        max_metered_calls: int | None,
+        *,
+        configured_max_metered_calls: int | None,
+        enforcement_enabled: bool,
     ) -> MeteredCallLedger:
         """Build the ledger that bounds one run, from values the caller resolved.
 
@@ -178,12 +194,17 @@ class MeteredCallLedger:
             run_id: The eval run this bounds.
             max_metered_calls: Optional per-run override (validated ``> 0`` at the
                 service boundary). ``None`` inherits the default below.
-            configured_max_metered_calls: The default ceiling, as a value.
+            configured_max_metered_calls: The default ceiling, as a value, or ``None`` for a host that
+                declares it has no metered tools.
             enforcement_enabled: Whether the caller enforces eval ceilings at all.
 
         Returns:
             A ledger bound to this run's effective ceiling, counting without bounding
-            when the caller has enforcement off.
+            when the caller has enforcement off, and refusing every metered call for a host
+            that declared none.
+
+        Raises:
+            ValueError: An override for a host that declares no metered tools.
         """
         return cls(
             run_id,
@@ -192,11 +213,12 @@ class MeteredCallLedger:
                 configured_max_metered_calls=configured_max_metered_calls,
                 enforcement_enabled=enforcement_enabled,
             ),
+            none_declared=configured_max_metered_calls is None,
         )
 
     @staticmethod
     def resolve_effective_ceiling(
-        max_metered_calls: int | None, *, configured_max_metered_calls: int, enforcement_enabled: bool
+        max_metered_calls: int | None, *, configured_max_metered_calls: int | None, enforcement_enabled: bool
     ) -> int | None:
         """Return the ceiling a run is actually bounded by, or ``None`` if unbounded.
 
@@ -205,20 +227,38 @@ class MeteredCallLedger:
         serves both purposes: this is what the run RECORDS **and** what :meth:`for_run` builds
         the ledger with, which is the mirror of the cost cap, where the two differ.
 
+        A host that declares no metered tools (``configured_max_metered_calls=None``) gets ``0``
+        whatever its enforcement: the declaration is a fact about its tools, not a ceiling it may
+        switch off, and a metered call on it contradicts the declaration.
+
         Args:
             max_metered_calls: Optional per-run override.
-            configured_max_metered_calls: The default ceiling, as a value.
+            configured_max_metered_calls: The default ceiling, as a value, or ``None`` for a host that
+                declares no metered tools.
             enforcement_enabled: Whether the caller enforces eval ceilings at all.
 
         Returns:
-            The effective ceiling, or ``None`` when eval enforcement is disabled.
+            The effective ceiling, ``0`` for a host declaring no metered tools, or ``None`` when
+            eval enforcement is disabled.
+
+        Raises:
+            ValueError: An override for a host that declares no metered tools — it would bound nothing.
         """
+        if configured_max_metered_calls is None:
+            if max_metered_calls is not None:
+                raise ValueError(
+                    f"max_metered_calls={max_metered_calls} names a ceiling for a host that declares no metered tools; "
+                    "nothing would be bounded by it"
+                )
+            return 0
         return ceilings.resolve_effective_ceiling(
             max_metered_calls, configured=configured_max_metered_calls, enforcement_enabled=enforcement_enabled
         )
 
     @staticmethod
-    def resolve_ceiling_origin(max_metered_calls: int | None, *, enforcement_enabled: bool) -> CostCapOrigin:
+    def resolve_ceiling_origin(
+        max_metered_calls: int | None, *, configured_max_metered_calls: int | None, enforcement_enabled: bool
+    ) -> MeteredCallOrigin:
         """Return which tier of the cascade supplied the ceiling a run is bounded by.
 
         The companion of :meth:`resolve_effective_ceiling`, answering from the same launch and
@@ -229,12 +269,17 @@ class MeteredCallLedger:
 
         Args:
             max_metered_calls: Optional per-run override.
+            configured_max_metered_calls: The default ceiling, or ``None`` for a host that declares no
+                metered tools.
             enforcement_enabled: Whether the caller enforces eval ceilings at all.
 
         Returns:
-            A :data:`~threetears.evals.contracts.models.CostCapOrigin` value: ``"uncapped"``
-            when enforcement is off, else ``"chosen"`` or ``"inherited"``.
+            A :data:`~threetears.evals.contracts.models.MeteredCallOrigin` value: ``"none_declared"``
+            for a host declaring no metered tools, else ``"uncapped"`` when enforcement is off, else
+            ``"chosen"`` or ``"inherited"``.
         """
+        if configured_max_metered_calls is None:
+            return "none_declared"
         return ceilings.resolve_ceiling_origin(max_metered_calls, enforcement_enabled=enforcement_enabled)
 
     @property
@@ -269,7 +314,16 @@ class MeteredCallLedger:
         """
         if self._ceiling is not None and self._calls >= self._ceiling:
             self._refused += 1
-            if not self._announced:
+            if self._none_declared:
+                log.error(
+                    "Eval run %s made a metered call at %s.%s, and its host declares no metered tools — the call is "
+                    "refused; the host's declaration (LaunchSettings.max_metered_calls=None) or its tool's metering "
+                    "declaration is wrong",
+                    self._run_id,
+                    tool,
+                    action,
+                )
+            elif not self._announced:
                 self._announced = True
                 log.warning(
                     "Eval run %s reached its metered-call ceiling of %d at %s.%s — further metered "
@@ -338,6 +392,11 @@ class MeteredCallLedger:
         Returns:
             One sentence pair, safe to hand back as an ``ActionResult`` description.
         """
+        if self._none_declared:
+            return (
+                f"Cannot run '{tool}.{action}': this evaluation's host declares no metered third-party tools, so "
+                "no metered call is allowed. Continue with what you already have."
+            )
         return (
             f"Cannot run '{tool}.{action}': this evaluation run has reached its limit of "
             f"{self._ceiling} metered third-party calls. Continue with what you already have — "

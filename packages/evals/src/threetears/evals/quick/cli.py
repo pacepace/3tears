@@ -16,7 +16,9 @@ then never name the host::
   ``--max-cost-usd`` caps each run in place of the host's default, as ``run_launch``'s ``max_cost_usd``
   does — the way to launch under a cap the host's inherited one would refuse. ``--n-variations`` and
   ``--variation-model`` generate the cases first, as ``run_launch``'s ``n_variations`` and
-  ``variation_model`` do; the generation calls run before the runs and are outside their cost cap.
+  ``variation_model`` do; the generation calls run before the runs and are outside their cost cap,
+  so they are priced against the host's out-of-run cap before they are made. ``--apparatus-settings``
+  sets host-declared apparatus values as a JSON object, as ``run_launch``'s ``apparatus_settings`` does.
 - ``ls`` prints the scope's templates, runs and campaigns.
 - ``report`` prints the campaign's report (:func:`~threetears.evals.ops.report_read`, the same read the
   ``report_read`` action makes): its newest analysis that is not archived, else a code-only report of its
@@ -41,6 +43,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import json
 import sys
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
@@ -213,6 +216,16 @@ def build_parser(
         metavar="MODEL",
         help="the model that writes the template's llm axes' values when generating (as run_launch's variation_model)",
     )
+    run.add_argument(
+        "--apparatus-settings",
+        type=_json_object,
+        default=None,
+        metavar="JSON",
+        help=(
+            "host-declared apparatus values to set the runs' rig up with, as a JSON object keyed by apparatus "
+            'dimension, e.g. \'{"adjudicator_seat": "model:m"}\' (as run_launch\'s apparatus_settings)'
+        ),
+    )
     command("ls", "List the scope's templates, runs and campaigns.")
     report = command(
         "report", "Print a campaign's report — its analysis, else its evidence alone — without calling a model."
@@ -230,6 +243,21 @@ def build_parser(
     for host_command in commands:
         host_command.configure(command(host_command.name, host_command.help))
     return parser
+
+
+def _json_object(text: str) -> dict[str, Any]:
+    """Parse a command-line JSON object, refusing anything else so argparse names the argument.
+
+    Raises:
+        argparse.ArgumentTypeError: ``text`` is not JSON, or is JSON but not an object.
+    """
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise argparse.ArgumentTypeError(f"not JSON: {e}") from e
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError(f"a JSON object is expected, got a {type(parsed).__name__}")
+    return parsed
 
 
 def run_cli(
@@ -300,6 +328,7 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
         max_cost_usd=args.max_cost_usd,
         n_variations=args.n_variations,
         variation_model=args.variation_model,
+        apparatus_settings=args.apparatus_settings,
     )
     try:
         await host.job_manager.wait_for([run.id for run in runs])

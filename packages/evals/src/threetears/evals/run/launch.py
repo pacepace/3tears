@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, TypeVar, get_args
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NamedTuple, Protocol, TypeVar, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
@@ -41,15 +43,18 @@ from threetears.evals.contracts.host.world import WorldPlacement
 
 from threetears.evals.contracts.arguments import normalize_blank
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
+from threetears.evals.contracts.host.sweepables import CORE_SWEEPABLES
 from threetears.evals.contracts.identity import derive_context_identity, variant_levers_of_run
 from threetears.evals.contracts.models import (
     DEFAULT_LAUNCH_K_RUNS,
+    ApparatusSettingValue,
     EvalRun,
     JudgedArtifact,
     ModelRoleOrigin,
     resolve_effective_judges,
     scored_dim_ids,
 )
+from threetears.evals.contracts.out_of_run import OutOfRunBudget
 from threetears.evals.run.authoring import validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.contracts.cassettes import CassetteMode
@@ -65,6 +70,7 @@ from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.host.subject import SubjectSnapshot
+    from threetears.evals.contracts.host.sweepables import SweepableRegistry
     from threetears.evals.contracts.models import EvalTemplate, EvalTestCase, JudgeConfig, VariationCounts
     from threetears.evals.contracts.scoring import CellSummary
     from threetears.evals.contracts.storage import DefinitionStore
@@ -97,7 +103,14 @@ class LaunchSettings(BaseModel):
         judge_concurrency: How many judge calls one cell makes at once.
         enforcement_enabled: Whether the cost and metered-call ceilings are enforced at all.
         max_cost_usd: The run cost ceiling a run inherits when its launch names none.
-        max_metered_calls: The metered-call ceiling a run inherits when its launch names none.
+        max_metered_calls: The metered-call ceiling a run inherits when its launch names none, or
+            ``None`` for a host that declares it has NO metered tools: its runs record a ceiling of
+            ``0`` (origin ``none_declared``), a metered call on one is refused and counted, and a
+            launch naming a ceiling is refused, since it would bound nothing.
+        max_out_of_run_cost_usd: The most a launch's out-of-run calls — its case generation, which runs
+            before any run exists and so under no run's cap — may together be priced at before they are
+            made (:class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`). Enforced exactly when
+            ``enforcement_enabled`` is.
         setting_names: What the host calls each of the fields above, keyed by field name, so a
             refusal names the knob an operator turns. A field the host does not name here is
             called by its own name; the engine names no host setting of its own.
@@ -110,7 +123,8 @@ class LaunchSettings(BaseModel):
     judge_concurrency: int = Field(gt=0)
     enforcement_enabled: bool
     max_cost_usd: float = Field(gt=0)
-    max_metered_calls: int = Field(gt=0)
+    max_metered_calls: int | None = Field(gt=0)
+    max_out_of_run_cost_usd: float = Field(gt=0)
     setting_names: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -130,6 +144,108 @@ class LaunchSettings(BaseModel):
             The host's name for it, or the field's own name when the host gave none.
         """
         return self.setting_names.get(setting, setting)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ArmPlan:
+    """What one arm of a generating launch will run, as its kind says before it generates.
+
+    A generating launch's cases do not exist until its kind's launcher has paid for them, so the
+    engine asks the kind (:attr:`LaunchableKind.plan_arm`) what the arm will run before calling the
+    launcher, prices that, and refuses an arm its cap cannot pay for before any call. The plan is a
+    promise the launch tail holds the launcher to: a run freezing more cases than planned, or on
+    another model, is refused, since it was priced as something it is not.
+
+    Attributes:
+        case_count: The most cases the arm will run — an upper bound, since generation de-duplicates
+            and can keep fewer.
+        candidate_model: The model the arm will run on: the one the launch named, or the kind's role
+            default for an arm that named none.
+    """
+
+    case_count: int
+    candidate_model: str
+
+    def __post_init__(self) -> None:
+        """Refuse a plan of no cases, or one naming no model.
+
+        Raises:
+            ValueError: ``case_count`` is below one, or ``candidate_model`` is blank.
+        """
+        if self.case_count < 1:
+            raise ValueError(f"an arm plan runs at least one case; got case_count={self.case_count}")
+        if not self.candidate_model.strip():
+            raise ValueError("an arm plan names the model the arm runs on; candidate_model is blank")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ArmQuote:
+    """One arm of a generating launch, as the engine asks the host's pricer to price it.
+
+    Attributes:
+        scope_id: The scope the arm's run will live in, whose history a history pricer reads.
+        template_id: The template the arm runs.
+        subject_id: The subject it measures.
+        candidate_model: The model it runs on, as its plan named it.
+        k_runs: Repeats of every case.
+        case_count: The cases it runs, as its plan bounded them.
+        cassette_mode: Its cassette mode, normalised.
+    """
+
+    scope_id: str
+    template_id: str
+    subject_id: str
+    candidate_model: str
+    k_runs: int
+    case_count: int
+    cassette_mode: CassetteMode
+
+
+@dataclass(frozen=True, kw_only=True)
+class ArmPrice:
+    """What the host's pricer predicts one arm will cost, and how it knows.
+
+    Attributes:
+        predicted_usd: The predicted cost of the arm's whole run, in dollars, or ``None`` when the pricer
+            cannot predict it — unknown, which the launch never reads as $0.
+        basis: How the prediction was made, or why there is none, in words a refusal quotes ("from 12
+            past results, method usage-history").
+    """
+
+    predicted_usd: float | None
+    basis: str
+
+    def __post_init__(self) -> None:
+        """Refuse a negative or non-finite prediction, and a blank basis.
+
+        Raises:
+            ValueError: ``predicted_usd`` is negative or not finite, or ``basis`` is blank.
+        """
+        if self.predicted_usd is not None and not (math.isfinite(self.predicted_usd) and self.predicted_usd >= 0):
+            raise ValueError(f"a predicted cost is a finite amount, 0 or more; got {self.predicted_usd!r}")
+        if not self.basis.strip():
+            raise ValueError("an arm price says how it was made, or why there is none; basis is blank")
+
+
+class LaunchPricer(Protocol):
+    """The host's prediction of what one arm of a generating launch will cost, before anything is paid for.
+
+    A port on :class:`LaunchHost` because the prediction is a read over history — an analysis — and the
+    run package imports no analysis: the host composes one. ``threetears.evals.ops.history_launch_pricer``
+    is the engine's own, over the scope's per-observation usage history; a host with a rate card of its
+    own prices from that instead. Called off the event loop, through the host's blocking executor.
+    """
+
+    def __call__(self, quote: ArmQuote, /) -> ArmPrice:
+        """Predict ``quote``'s cost.
+
+        Args:
+            quote: The arm.
+
+        Returns:
+            The prediction, or a price with no prediction and the reason there is none.
+        """
+        ...  # pragma: no cover — protocol
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -156,6 +272,10 @@ class LaunchHost:
             stamped on the run before the identity that hashes it. Required exactly when the
             profile declares a world, and refused when it declares none — a placement over a world
             the host does not have describes nothing. A host with no world records ``{}``.
+        launch_pricer: Predicts what each arm of a GENERATING launch will cost, so an arm its cap cannot
+            pay for is refused before the launch's paid generation call (:class:`LaunchPricer`). ``None``
+            for a host that prices no launch, whose generating launch under an enforced cap is refused
+            saying so — never run unpriced.
         max_concurrent_jobs: How many runs' jobs execute at once in this process.
         on_job_progress: Called with ``(run id, progress)`` on every progress write — typically a
             broadcast to an operator's view — or ``None``.
@@ -170,18 +290,29 @@ class LaunchHost:
     settings: Callable[[], LaunchSettings]
     job_timeout_factory: JobTimeoutFactory
     world_placements: Callable[[EvalRun], dict[str, WorldPlacement]] | None = None
+    launch_pricer: LaunchPricer | None = None
     max_concurrent_jobs: int = MAX_CONCURRENT_JOBS
     on_job_progress: Callable[[str, dict[str, Any]], None] | None = None
     job_manager: EvalJobManager = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        """Refuse a world placement that disagrees with whether the profile declares a world, then build the jobs.
+        """Refuse a world placement that disagrees with the profile, and an apparatus setting it does not declare; build the jobs.
 
         Raises:
             ValueError: The profile declares a world and no placement was supplied, or declares
-                none and one was.
+                none and one was; or a kind honours an apparatus setting the profile does not declare as
+                one of the host's own apparatus dimensions.
         """
         profile = self.eval_host.profile
+        settable = settable_apparatus(profile.sweepables)
+        for kind, launchable in self.kinds.items():
+            if undeclared := sorted(launchable.apparatus_settings - settable):
+                raise ValueError(
+                    f"kind {kind!r} honours apparatus setting(s) {', '.join(undeclared)}, which host "
+                    f"{profile.host_id!r} does not declare as apparatus of its own; a launch sets only a "
+                    f"host-declared apparatus dimension (declared: {', '.join(sorted(settable)) or 'none'}) — the "
+                    "engine's own apparatus has launch arguments of its own"
+                )
         if profile.world is not None and self.world_placements is None:
             raise ValueError(
                 f"host {profile.host_id!r} declares a world, so a launch must stamp where each run sits in "
@@ -215,6 +346,29 @@ class LaunchHost:
             nothing, which is a different fact from a run that recorded no placements at all.
         """
         return {} if self.world_placements is None else self.world_placements(run)
+
+
+#: The engine's own apparatus dimensions, which have launch arguments of their own (the judge and
+#: simulator pins, the cost ceiling) and so are never an apparatus SETTING.
+_ENGINE_APPARATUS: frozenset[str] = frozenset(
+    declared.name for declared in CORE_SWEEPABLES if declared.role == "apparatus"
+)
+
+
+def settable_apparatus(registry: SweepableRegistry) -> frozenset[str]:
+    """The apparatus dimensions a launch may set: every one the host declares, but none of the engine's.
+
+    Args:
+        registry: The host's sweepable registry (``HostProfile.sweepables``).
+
+    Returns:
+        The names of the host's own ``apparatus`` declarations.
+    """
+    return frozenset(
+        declared.name
+        for declared in registry.declarations
+        if declared.role == "apparatus" and declared.name not in _ENGINE_APPARATUS
+    )
 
 
 def _refuse_oversized_launch(n_runs: int, ceiling: int, setting: str) -> None:
@@ -460,6 +614,19 @@ class LaunchRequest:
             exactly this model's JSON form.
         max_cost_usd: The per-run cost-cap override, already checked positive.
         max_metered_calls: The per-run metered-call ceiling override, already checked positive.
+        apparatus_settings: The host-declared apparatus values this launch sets, each one the kind
+            declares it honours (:attr:`LaunchableKind.apparatus_settings`) and already validated; ``{}``
+            when it sets none. The launcher sets its rig up from them, and the run records exactly
+            these (``EvalRun.apparatus_settings``).
+        generation_budget: For a launch that generates (``n_variations`` > 0), the out-of-run budget its
+            generation's calls are priced against and ledgered through — one for the whole launch, shared
+            by every arm, capped at the host's ``max_out_of_run_cost_usd``. A launcher hands it to
+            :func:`~threetears.evals.gen.generate_variations` as ``budget``; a generation a model wrote
+            whose calls this budget never ledgered is refused at the launch tail. ``None`` for a launch
+            that generates nothing.
+        arm_plan: For a launch that generates, what the kind planned this arm to run
+            (:attr:`LaunchableKind.plan_arm`) — the plan the arm was priced at, and the launch tail holds
+            its run to. ``None`` for a launch that generates nothing.
         launch_group: The launch this run is prepared into; the launch starts it with its siblings.
     """
 
@@ -480,6 +647,9 @@ class LaunchRequest:
     kind_spec: BaseModel | None
     max_cost_usd: float | None
     max_metered_calls: int | None
+    apparatus_settings: Mapping[str, ApparatusSettingValue]
+    generation_budget: OutOfRunBudget | None
+    arm_plan: ArmPlan | None
     launch_group: LaunchGroup
 
     def overlays_as(self, model: type[_Validated]) -> _Validated:
@@ -561,21 +731,38 @@ class LaunchableKind:
         unhonoured_launch_arguments: The engine's launch arguments a run of this kind cannot honour; a
             launch supplying one is refused at the dispatch, naming it. Empty for a kind that honours
             every one.
+        plan_arm: What one arm of a GENERATING launch of this kind will run, asked before the launcher
+            is — the arm's case count and model (:class:`ArmPlan`) — so the engine can price the arm and
+            refuse one its cap cannot pay for before the launch's paid generation call. Required of a kind
+            that generates: a generating launch of a kind with none is refused at the dispatch. ``None``
+            for a kind that declines ``n_variations``, and refused beside it, since nothing would ask it.
+        apparatus_settings: The host-declared apparatus dimensions this kind's launcher sets its rig up
+            from, read off :attr:`LaunchRequest.apparatus_settings`. A launch setting any other is
+            refused at the dispatch; the :class:`LaunchHost` refuses a name the profile does not declare as
+            one of the host's own apparatus dimensions. Empty for a kind whose rig a launch cannot set.
     """
 
     launch: KindLauncher
     unhonoured_launch_arguments: frozenset[LaunchArgument] = frozenset()
+    plan_arm: Callable[[LaunchRequest], ArmPlan] | None = None
+    apparatus_settings: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
-        """Refuse a name that is not a launch argument — it would never match one, and refuse nothing.
+        """Refuse a name that is not a launch argument, and an arm plan for a kind that never generates.
 
         Raises:
-            ValueError: An entry of ``unhonoured_launch_arguments`` is not a :data:`LaunchArgument`.
+            ValueError: An entry of ``unhonoured_launch_arguments`` is not a :data:`LaunchArgument`, or
+                ``plan_arm`` is supplied for a kind that declines ``n_variations``.
         """
         if unknown := sorted(set(self.unhonoured_launch_arguments) - set(get_args(LaunchArgument))):
             raise ValueError(
                 f"unhonoured_launch_arguments names {', '.join(unknown)}, which are not launch arguments; "
                 f"the arguments a kind can decline are {', '.join(get_args(LaunchArgument))}"
+            )
+        if self.plan_arm is not None and "n_variations" in self.unhonoured_launch_arguments:
+            raise ValueError(
+                "plan_arm plans the arms of a generating launch, and this kind declines n_variations, so nothing "
+                "would ever ask it; drop plan_arm, or honour n_variations"
             )
 
 
@@ -774,6 +961,62 @@ def _refuse_a_variation_model_the_launch_cannot_use(
         )
 
 
+#: Validates a launch's apparatus settings as the run will store them.
+_APPARATUS_SETTINGS = TypeAdapter(dict[str, ApparatusSettingValue])
+
+
+def _validated_apparatus_settings(
+    template: EvalTemplate, launchable: LaunchableKind, apparatus_settings: Mapping[str, Any] | None
+) -> dict[str, ApparatusSettingValue]:
+    """Refuse an apparatus setting the template's kind does not honour, and a value the run could not store.
+
+    Args:
+        template: The loaded template, whose kind is the one asked.
+        launchable: That kind's registry entry, which names the settings its launcher reads.
+        apparatus_settings: The launch's settings, unvalidated, or ``None`` for none.
+
+    Returns:
+        The settings as the run stores them; ``{}`` when the launch set none.
+
+    Raises:
+        ValidationFailedError: A setting the kind does not honour, or a value that is not a string, a bool
+            or a finite number.
+    """
+    if not apparatus_settings:
+        return {}
+    if unhonoured := sorted(set(apparatus_settings) - launchable.apparatus_settings):
+        honoured = ", ".join(sorted(launchable.apparatus_settings)) or "none"
+        raise ValidationFailedError(
+            f"template {template.id!r} is a {template.candidate_kind!r} template, and that kind's launcher sets its rig "
+            f"up from no apparatus setting named {', '.join(repr(name) for name in unhonoured)} (it reads: {honoured}); "
+            "a setting nothing reads would be recorded as a rig nobody built"
+        )
+    try:
+        return _APPARATUS_SETTINGS.validate_python(dict(apparatus_settings))
+    except ValidationError as e:
+        raise ValidationFailedError(
+            f"invalid apparatus_settings: {e.errors()[0]['msg']} ({e.errors()[0]['loc']})"
+        ) from e
+
+
+class _Launchable(NamedTuple):
+    """What the refusals over a template and its kind resolved.
+
+    Attributes:
+        kind: The kind the template declares, read once.
+        launchable: Its registry entry.
+        overlays: The launch's overlays, validated by the kind's model.
+        kind_spec: The template's kind spec, validated by the kind's spec model.
+        apparatus_settings: The launch's apparatus settings, validated against the kind.
+    """
+
+    kind: str
+    launchable: LaunchableKind
+    overlays: BaseModel | None
+    kind_spec: BaseModel | None
+    apparatus_settings: dict[str, ApparatusSettingValue]
+
+
 def _launchable(
     host: LaunchHost,
     template: EvalTemplate,
@@ -785,7 +1028,8 @@ def _launchable(
     simulator_model: str | None,
     cassette_mode: str,
     overlays: Mapping[str, Any] | None,
-) -> tuple[str, LaunchableKind, BaseModel | None, BaseModel | None]:
+    apparatus_settings: Mapping[str, Any] | None,
+) -> _Launchable:
     """Make every refusal that reads the template and its kind's registry entry — the dispatch's, and the battery's pre-flight.
 
     One function for both callers, so a battery refuses before launching anything exactly what each
@@ -801,15 +1045,17 @@ def _launchable(
         simulator_model: The launch's simulator pin.
         cassette_mode: The launch's cassette mode, already normalised.
         overlays: The launch's overlays, unvalidated.
+        apparatus_settings: The launch's apparatus settings, unvalidated.
 
     Returns:
-        The kind the template declares, read once; its registry entry; and the overlays and the
-        template's kind spec as the kind's models validated them.
+        The kind the template declares, read once; its registry entry; the overlays and the template's
+        kind spec as the kind's models validated them; and the apparatus settings as the run stores them.
 
     Raises:
         ValidationFailedError: The template names a kind with no launcher, the launch supplies an
             argument the kind cannot honour, a negative ``n_variations``, a variation model the
-            generation needs and the launch does not name or one nothing would call, or the kind's
+            generation needs and the launch does not name or one nothing would call, a generating launch
+            of a kind that plans no arm, an apparatus setting the kind does not honour, or the kind's
             models refuse the overlays or the spec.
     """
     if n_variations < 0:
@@ -838,13 +1084,22 @@ def _launchable(
     _refuse_a_variation_model_the_launch_cannot_use(
         template, n_variations=n_variations, variation_model=variation_model
     )
+    # A generating launch's arms are priced before its generation is paid for, from what the kind plans
+    # each to run — so a kind that cannot say is refused here, before anything is read or built.
+    if n_variations > 0 and launchable.plan_arm is None:
+        raise ValidationFailedError(
+            f"template {template.id!r} is a {candidate_kind!r} template, and that kind plans no arm of a generating "
+            f"launch (LaunchableKind.plan_arm), so this launch's {n_variations} generated case(s) cannot be priced "
+            "before the generation is paid for; launch it with n_variations=0, or declare the kind's plan_arm"
+        )
+    settings = _validated_apparatus_settings(template, launchable, apparatus_settings)
     # What the launch may turn, and what the template states for its kind, are the kind's models'
     # answers, made here — before any arm is prepared, so a refusal leaves nothing built and no run
     # created. The spec was validated when the template was authored; it is validated again because
     # the kind's model is code and may have moved since, and a run freezes what it validates now.
     validated = host.eval_host.profile.kind_contract(candidate_kind).validate_overlays(overlays)
     kind_spec = validated_kind_spec(template, profile=host.eval_host.profile)
-    return candidate_kind, launchable, validated, kind_spec
+    return _Launchable(candidate_kind, launchable, validated, kind_spec, settings)
 
 
 class _Dispatched(NamedTuple):
@@ -853,16 +1108,18 @@ class _Dispatched(NamedTuple):
     Attributes:
         template: The template, loaded.
         kind: The kind it declares, read once.
-        launch: The kind's launcher, from the host's registry.
+        launchable: The kind's registry entry: its launcher, and its arm plan.
         overlays: The launch's overlays, validated by the kind's model.
         kind_spec: The template's kind spec, validated by the kind's spec model.
+        apparatus_settings: The launch's apparatus settings, validated against the kind.
     """
 
     template: EvalTemplate
     kind: str
-    launch: KindLauncher
+    launchable: LaunchableKind
     overlays: BaseModel | None
     kind_spec: BaseModel | None
+    apparatus_settings: dict[str, ApparatusSettingValue]
 
 
 async def _dispatch(
@@ -879,6 +1136,7 @@ async def _dispatch(
     cassette_mode: CassetteMode,
     cassette_corpus_id: str | None,
     overlays: Mapping[str, Any] | None,
+    apparatus_settings: Mapping[str, Any] | None,
 ) -> _Dispatched:
     """Load a launch's template, find its kind's launcher, and make the refusals that read them.
 
@@ -895,17 +1153,19 @@ async def _dispatch(
         cassette_mode: The launch's cassette mode, already normalised.
         cassette_corpus_id: The capture run a replay serves, already checked against the mode.
         overlays: The launch's overlays, unvalidated.
+        apparatus_settings: The launch's apparatus settings, unvalidated.
 
     Returns:
-        The template, its kind, that kind's launcher, and the overlays and the template's kind spec as
-        the kind's models validated them.
+        The template, its kind, that kind's registry entry, the overlays and the template's kind spec as
+        the kind's models validated them, and the apparatus settings validated against the kind.
 
     Raises:
         NotFoundError: The template is not found.
         ValidationFailedError: The template names a kind with no launcher, the launch supplies an
             argument the kind cannot honour, an overlay the kind's model refuses, a template kind spec
             the kind's spec model refuses, a negative ``n_variations``, a variation model the generation
-            needs and the launch does not name or one nothing would call, a model named twice, or a
+            needs and the launch does not name or one nothing would call, a generating launch of a kind
+            that plans no arm, an apparatus setting the kind does not honour, a model named twice, or a
             replay corpus that is not a capture of this template in this scope.
     """
     eval_host = host.eval_host
@@ -934,7 +1194,7 @@ async def _dispatch(
     # which point the subject is snapshotted, the clients are built and the run is
     # persisted — and every cell would fail identically, so the run is misconfigured
     # rather than partly unmeasurable.
-    candidate_kind, launchable, validated, kind_spec = _launchable(
+    resolved = _launchable(
         host,
         template,
         n_variations=n_variations,
@@ -944,6 +1204,7 @@ async def _dispatch(
         simulator_model=simulator_model,
         cassette_mode=cassette_mode,
         overlays=overlays,
+        apparatus_settings=apparatus_settings,
     )
     if cassette_corpus_id is not None:
         corpus_run = await run_blocking(
@@ -957,7 +1218,14 @@ async def _dispatch(
         )
     # The registry entry is the launcher, so a kind the host registered is a kind this launch
     # dispatches — there is no chain of kind comparisons here for a new kind to be missing from.
-    return _Dispatched(template, candidate_kind, launchable.launch, validated, kind_spec)
+    return _Dispatched(
+        template,
+        resolved.kind,
+        resolved.launchable,
+        resolved.overlays,
+        resolved.kind_spec,
+        resolved.apparatus_settings,
+    )
 
 
 async def start_run(
@@ -975,6 +1243,7 @@ async def start_run(
     cassette_mode: str | None = "off",
     cassette_corpus_id: str | None = None,
     overlays: Mapping[str, Any] | None = None,
+    apparatus_settings: Mapping[str, Any] | None = None,
     max_cost_usd: float | None = None,
     max_metered_calls: int | None = None,
     scope_id: str,
@@ -1018,6 +1287,11 @@ async def start_run(
         overlays: The knobs this launch turns on its runs, by field of the kind's overlay model
             (:attr:`~threetears.evals.contracts.host.profile.HostProfile.kinds`). Validated before any arm is
             prepared; every run records the validated model, defaults included.
+        apparatus_settings: Host-declared apparatus values this launch sets its runs' rig up with, by
+            apparatus dimension — each one the kind declares it honours
+            (:attr:`LaunchableKind.apparatus_settings`), valued a string, a bool or a finite number. So one
+            template can be run at two values of, say, an adjudicator's seat and the runs compared. Every
+            run records them (``EvalRun.apparatus_settings``), and they are part of its measurement context.
         max_cost_usd: Optional per-run cost-cap override; must be ``> 0``.
         max_metered_calls: Optional per-run metered-call ceiling override; must be ``> 0``.
         scope_id: The scope the template is read in and the launch's runs live in.
@@ -1027,6 +1301,15 @@ async def start_run(
         admission: A reservation the caller already holds, of which this launch takes its runs'
             share instead of asking for room of its own. Ignored with ``launch_group``, whose
             caller's admission covers it. When omitted, a launch that owns its group is admitted here.
+
+    **A launch that generates is priced before it pays for anything.** Its generation runs inside the
+    kind's launcher and before any run exists, so before calling the launcher this asks the kind what
+    each arm will run (:attr:`LaunchableKind.plan_arm`), asks the host's pricer what that will cost
+    (:attr:`LaunchHost.launch_pricer`) and refuses an arm predicted above the cap its run will be held
+    to — or one nothing can predict whose cap the run would merely inherit, since unknown is not $0 and
+    an inherited cap is nobody's decision about this run (a cap the launch named is that decision, and
+    the run goes ahead under it). The generation's own calls are priced in turn before the first is
+    made, against the host's out-of-run cap (:attr:`LaunchRequest.generation_budget`).
 
     Returns:
         The persisted runs, one per model in the order given (status ``pending``).
@@ -1038,10 +1321,14 @@ async def start_run(
         ValidationFailedError: A model named twice, more runs than one launch may start, a negative
             ``n_variations``, a variation model the generation needs and the launch does not name or one
             nothing would call, a ``k_runs`` outside the run's bounds, a non-positive ``max_cost_usd``
-            or ``max_metered_calls``, a ``cassette_mode`` that is not a mode, a replay naming no corpus
+            or ``max_metered_calls`` (or any ``max_metered_calls`` on a host declaring no metered tools),
+            a ``cassette_mode`` that is not a mode, a replay naming no corpus
             or a corpus that is no capture of this template in this scope, a template naming a
             kind with no launcher, a launch argument that kind cannot honour, an overlay the kind's
-            model refuses (named by field), or any refusal the kind's launcher makes.
+            model refuses (named by field), an apparatus setting the kind does not honour, a generating
+            launch of a kind that plans no arm, a generating arm predicted above its cap or unpriceable
+            under an inherited one (or any generating launch under an enforced cap on a host with no
+            pricer), or any refusal the kind's launcher makes.
     """
     # NOTE: the "at least one model" refusal is NOT here, because it is not the same
     # refusal for every kind — each kind's launcher makes its own.
@@ -1054,6 +1341,14 @@ async def start_run(
     # candidate's first metered call and measure a candidate that could not search.
     if max_metered_calls is not None and max_metered_calls <= 0:
         raise ValidationFailedError(f"max_metered_calls must be > 0 (got {max_metered_calls})")
+    # A host that declares no metered tools has nothing for a ceiling to bound, and recording one would
+    # claim a bound the run never had.
+    if max_metered_calls is not None and host.settings().max_metered_calls is None:
+        raise ValidationFailedError(
+            f"max_metered_calls={max_metered_calls} names a metered-call ceiling, and host "
+            f"{host.eval_host.profile.host_id!r} declares no metered tools, so it would bound nothing; launch "
+            "without max_metered_calls"
+        )
     # The run model bounds k_runs, but it is built after the cases are resolved — so an out-of-range
     # value from a surface that does not bound it at the wire would be refused after generation had
     # been paid for. Checked against the model's own field, so the bound is stated once.
@@ -1078,10 +1373,11 @@ async def start_run(
         cassette_mode=mode,
         cassette_corpus_id=cassette_corpus_id,
         overlays=overlays,
+        apparatus_settings=apparatus_settings,
     )
 
     async def prepare(group: LaunchGroup, dispatched: _Dispatched) -> list[EvalRun]:
-        """Hand each arm, one per model, to the kind's launcher, which prepares its run into ``group``.
+        """Price a generating launch's arms, then hand each arm, one per model, to the kind's launcher.
 
         Args:
             group: The launch the runs are prepared into.
@@ -1090,36 +1386,29 @@ async def start_run(
         Returns:
             The prepared runs, one per model in the order given.
         """
-        runs: list[EvalRun] = []
-        # One arm per model. Naming none is one arm too — on the kind's role default where it has
-        # one, and refused by the launcher of a kind that has none.
-        arm_models: list[str | None] = [*models] or [None]
-        for arm_model in arm_models:
-            runs.append(
-                await dispatched.launch(
-                    LaunchRequest(
-                        template=dispatched.template,
-                        kind=dispatched.kind,
-                        subject_id=subject_id,
-                        candidate_model=arm_model,
-                        k_runs=k_runs,
-                        scope_id=scope_id,
-                        n_variations=n_variations,
-                        variation_model=variation_model,
-                        judge_model=judge_model,
-                        judge_config_ids=judge_config_ids,
-                        simulator_model=simulator_model,
-                        cassette_mode=mode,
-                        cassette_corpus_id=cassette_corpus_id,
-                        overlays=dispatched.overlays,
-                        kind_spec=dispatched.kind_spec,
-                        max_cost_usd=max_cost_usd,
-                        max_metered_calls=max_metered_calls,
-                        launch_group=group,
-                    )
-                )
-            )
-        return runs
+        requests = _arm_requests(
+            host,
+            dispatched,
+            group,
+            subject_id=subject_id,
+            models=models,
+            k_runs=k_runs,
+            scope_id=scope_id,
+            n_variations=n_variations,
+            variation_model=variation_model,
+            judge_model=judge_model,
+            judge_config_ids=judge_config_ids,
+            simulator_model=simulator_model,
+            cassette_mode=mode,
+            cassette_corpus_id=cassette_corpus_id,
+            max_cost_usd=max_cost_usd,
+            max_metered_calls=max_metered_calls,
+        )
+        if n_variations > 0:
+            # Every arm priced before the first launcher runs: the launcher is what pays for the
+            # generation the arms share, so pricing an arm after it would refuse a launch already billed.
+            requests = await _priced_generating_arms(host, dispatched.launchable, requests)
+        return [await dispatched.launchable.launch(request) for request in requests]
 
     # Preparing arms into a caller's group: that caller admitted the launch, and it starts the
     # group once every arm is prepared or abandons it on a refusal, so this call only prepares.
@@ -1141,6 +1430,199 @@ async def start_run(
     return await launch_as_group(
         host, max(1, len(models)), form=form, prepare=prepare, admission=admission, event="eval.start_run"
     )
+
+
+def _arm_requests(
+    host: LaunchHost,
+    dispatched: _Dispatched,
+    group: LaunchGroup,
+    *,
+    subject_id: str,
+    models: Sequence[str],
+    k_runs: int,
+    scope_id: str,
+    n_variations: int,
+    variation_model: str | None,
+    judge_model: str | None,
+    judge_config_ids: dict[str, str] | None,
+    simulator_model: str | None,
+    cassette_mode: CassetteMode,
+    cassette_corpus_id: str | None,
+    max_cost_usd: float | None,
+    max_metered_calls: int | None,
+) -> list[LaunchRequest]:
+    """One request per arm — per model, or one on the kind's default when the launch names none.
+
+    A launch that generates gets ONE out-of-run budget, shared by every arm's request: the arms share
+    one generation (:meth:`LaunchGroup.resolve_once`), so its calls are admitted against one cap and
+    ledgered under the launch's group.
+
+    Args:
+        host: The host, whose settings cap the generation and whose store ledgers it.
+        dispatched: What the dispatch resolved.
+        group: The launch the arms are prepared into.
+        subject_id: The launch's subject.
+        models: The launch's candidate models.
+        k_runs: Repeats per case.
+        scope_id: The scope the runs live in.
+        n_variations: New cases the launch generates.
+        variation_model: The model that writes the ``llm`` axes' values.
+        judge_model: The judge pin.
+        judge_config_ids: The per-dim judge-configuration selection.
+        simulator_model: The simulator pin.
+        cassette_mode: The cassette mode, normalised.
+        cassette_corpus_id: The corpus a replay serves.
+        max_cost_usd: The per-run cost-cap override.
+        max_metered_calls: The per-run metered-call ceiling override.
+
+    Returns:
+        The requests, in arm order, with no arm plan yet.
+    """
+    budget: OutOfRunBudget | None = None
+    if n_variations > 0:
+        settings = host.settings()
+        budget = OutOfRunBudget(
+            host.eval_host.storage,
+            scope_id=scope_id,
+            cap_usd=settings.max_out_of_run_cost_usd if settings.enforcement_enabled else None,
+            template_id=dispatched.template.id,
+            subject_id=subject_id,
+            launch_group_id=group.id,
+        )
+    # One arm per model. Naming none is one arm too — on the kind's role default where it has one,
+    # and refused by the launcher of a kind that has none.
+    arm_models: list[str | None] = [*models] or [None]
+    return [
+        LaunchRequest(
+            template=dispatched.template,
+            kind=dispatched.kind,
+            subject_id=subject_id,
+            candidate_model=arm_model,
+            k_runs=k_runs,
+            scope_id=scope_id,
+            n_variations=n_variations,
+            variation_model=variation_model,
+            judge_model=judge_model,
+            judge_config_ids=judge_config_ids,
+            simulator_model=simulator_model,
+            cassette_mode=cassette_mode,
+            cassette_corpus_id=cassette_corpus_id,
+            overlays=dispatched.overlays,
+            kind_spec=dispatched.kind_spec,
+            max_cost_usd=max_cost_usd,
+            max_metered_calls=max_metered_calls,
+            apparatus_settings=MappingProxyType(dict(dispatched.apparatus_settings)),
+            generation_budget=budget,
+            arm_plan=None,
+            launch_group=group,
+        )
+        for arm_model in arm_models
+    ]
+
+
+def _planned(launchable: LaunchableKind, request: LaunchRequest) -> ArmPlan:
+    """Ask the kind what one arm of a generating launch will run, and refuse a plan the arm contradicts.
+
+    Args:
+        launchable: The kind's registry entry; its ``plan_arm`` was checked present at the dispatch.
+        request: The arm.
+
+    Returns:
+        The plan.
+
+    Raises:
+        ValueError: The plan names another model than the one the arm named — a kind defect.
+    """
+    plan_arm = launchable.plan_arm
+    assert plan_arm is not None, "the dispatch refuses a generating launch of a kind that plans no arm"
+    plan = plan_arm(request)
+    if request.candidate_model is not None and plan.candidate_model != request.candidate_model:
+        raise ValueError(
+            f"kind {request.kind!r} planned an arm the launch named {request.candidate_model!r} on "
+            f"{plan.candidate_model!r}; an arm runs on the model the launch named"
+        )
+    return plan
+
+
+async def _priced_generating_arms(
+    host: LaunchHost, launchable: LaunchableKind, requests: Sequence[LaunchRequest]
+) -> list[LaunchRequest]:
+    """Plan and price every arm of a generating launch, refusing before the generation is paid for.
+
+    An arm is refused when its predicted cost is above the cap its run will be held to, or when nothing
+    predicts it and that cap is one the run would merely inherit (the host's configured ceiling, which
+    nobody chose for this run): unknown is not $0. An arm with a cap the launch named and no prediction
+    goes ahead — the named cap is the most the operator chose to risk on a run nobody could price, and
+    the run's own cost cap enforces it as the spend arrives. With the host's enforcement off no cap is in
+    force, and nothing is priced.
+
+    Args:
+        host: The host: its settings resolve the cap, and its pricer predicts.
+        launchable: The kind's registry entry, whose ``plan_arm`` plans each arm.
+        requests: The launch's arms, in order; every one carries the same ``max_cost_usd``.
+
+    Returns:
+        The requests, each carrying its plan.
+
+    Raises:
+        ValidationFailedError: An arm predicted above its cap, one unpredicted under an inherited cap, or
+            any arm under an enforced cap on a host with no pricer.
+        ValueError: The kind planned an arm on another model than the one it named.
+    """
+    planned = [replace(request, arm_plan=_planned(launchable, request)) for request in requests]
+    settings = host.settings()
+    max_cost_usd = planned[0].max_cost_usd
+    cap = EvalRunCostCap.resolve_effective_ceiling(
+        max_cost_usd, configured_max_cost_usd=settings.max_cost_usd, enforcement_enabled=settings.enforcement_enabled
+    )
+    if cap is None:
+        return planned
+    origin = EvalRunCostCap.resolve_ceiling_origin(max_cost_usd, enforcement_enabled=settings.enforcement_enabled)
+    pricer = host.launch_pricer
+    first = planned[0]
+    if pricer is None:
+        raise ValidationFailedError(
+            f"this launch generates {first.n_variations} case(s) before its runs start, and host "
+            f"{host.eval_host.profile.host_id!r} prices no launch (LaunchHost.launch_pricer), so its arms cannot be "
+            f"held to their ${cap:.2f} cap before the generation is paid for; build the host with a launch pricer, "
+            "or launch with n_variations=0. Nothing was called"
+        )
+    for request in planned:
+        plan = request.arm_plan
+        assert plan is not None
+        price = await run_blocking(
+            host.eval_host.blocking_executor,
+            pricer,
+            ArmQuote(
+                scope_id=request.scope_id,
+                template_id=request.template.id,
+                subject_id=request.subject_id,
+                candidate_model=plan.candidate_model,
+                k_runs=request.k_runs,
+                case_count=plan.case_count,
+                cassette_mode=request.cassette_mode,
+            ),
+        )
+        what = (
+            f"the arm on {plan.candidate_model!r} ({plan.case_count} generated case(s) x {request.k_runs} repeat(s) "
+            f"of template {request.template.id!r})"
+        )
+        if price.predicted_usd is None:
+            if origin == "chosen":
+                continue
+            raise ValidationFailedError(
+                f"{what} cannot be priced: {price.basis}. Its cost is unknown, not $0, and its ${cap:.2f} cap is "
+                f"inherited from {settings.name_of('max_cost_usd')}, which nobody chose for it. Launch it naming "
+                "max_cost_usd — the most you will risk on a run nobody can price; what it costs then prices the next "
+                "launch. Refused before the generation was paid for"
+            )
+        if price.predicted_usd > cap:
+            raise ValidationFailedError(
+                f"{what} is predicted to cost ${price.predicted_usd:.2f} ({price.basis}), above its ${cap:.2f} cap. "
+                "Fewer generated cases, a smaller k_runs or a cheaper model brings it under; a larger max_cost_usd "
+                "raises the cap. Refused before the generation was paid for"
+            )
+    return planned
 
 
 async def launch_as_group(
@@ -1305,6 +1787,25 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
             "'variation' role from the request's variation_model and hand it to generate_variations, whose counts "
             "name the model it called"
         )
+    budget = request.generation_budget
+    if counts is not None and counts.variation_model is not None and (budget is None or not budget.recorded):
+        raise ValueError(
+            f"kind {kind!r}'s launcher recorded cases written by {counts.variation_model!r}, and the launch's "
+            "generation budget ledgered no call: hand generate_variations budget=request.generation_budget, so the "
+            "calls are priced against the launch's out-of-run cap before they are made and ledgered once they are"
+        )
+    plan = request.arm_plan
+    if plan is not None:
+        if candidate_model != plan.candidate_model:
+            raise ValueError(
+                f"kind {kind!r} planned this arm on {plan.candidate_model!r} and its launcher ran it on "
+                f"{candidate_model!r}; the arm was priced as the plan, so it runs as the plan"
+            )
+        if len(wiring.test_cases) > plan.case_count:
+            raise ValueError(
+                f"kind {kind!r} planned this arm at most {plan.case_count} case(s) and its launcher froze "
+                f"{len(wiring.test_cases)}; the arm was priced at the plan's count, so it may run fewer, never more"
+            )
     return candidate_model
 
 
@@ -1316,11 +1817,12 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
     invariant rather than a convention, so it lives here once:
 
     1. Check the wiring against the request: the subject the launcher captured is the one the
-       launch named, the cases live in the run's scope and template, and every model the request
-       names is the one the wiring resolved.
+       launch named, the cases live in the run's scope and template, every model the request
+       names is the one the wiring resolved, a model-written generation was ledgered through the
+       request's budget, and a planned arm runs within its plan.
     2. Read the host's budget settings once, and assemble the run. Everything the request and the
        template already say is stamped from them — scope, template, kind, candidate model, repeats,
-       cassette mode, overlays, spec, world seed, tool bound, ceilings — and only what the kind
+       cassette mode, overlays, spec, apparatus settings, world seed, tool bound, ceilings — and only what the kind
        resolved comes from the wiring.
     3. Stamp the world placements, then the context identity that hashes them, then the
        variant levers, all from the assembled run.
@@ -1349,9 +1851,10 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
             the assembled run does not validate.
         ValueError: The wiring contradicts the request — a subject other than the one named, a case
             in another scope or of another template, a model other than the one the request pinned,
-            a generation count other than the one it asked for, or a generation written by a model
-            other than the request's variation model. A launcher defect, never a
-            caller's; nothing is built.
+            a generation count other than the one it asked for, a generation written by a model
+            other than the request's variation model or whose calls the request's generation budget
+            never ledgered, or an arm that runs more cases than, or another model than, its plan. A
+            launcher defect, never a caller's; nothing is built.
     """
     template = request.template
     launch_group = request.launch_group
@@ -1404,6 +1907,7 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                 rubric_scales={dim.name: dim.scale for dim in template.rubric},
                 overlays=freeze(request.overlays),
                 kind_spec=freeze(request.kind_spec),
+                apparatus_settings=dict(request.apparatus_settings),
                 # The world and the tool bound the template states, frozen as this run launched them:
                 # the template is editable, and the runner hands the candidate the template's seed.
                 resolved_world_seed=dict(template.world_seed.namespaces),
@@ -1439,7 +1943,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                     enforcement_enabled=eval_enforcement_enabled,
                 ),
                 max_metered_calls_origin=MeteredCallLedger.resolve_ceiling_origin(
-                    max_metered_calls, enforcement_enabled=eval_enforcement_enabled
+                    max_metered_calls,
+                    configured_max_metered_calls=configured_max_metered_calls,
+                    enforcement_enabled=eval_enforcement_enabled,
                 ),
             )
         except ValidationError as e:
@@ -1663,6 +2169,7 @@ async def start_universal_battery(
     judge_model: str | None = None,
     simulator_model: str | None = None,
     cassette_mode: str | None = "off",
+    apparatus_settings: Mapping[str, Any] | None = None,
     preflight: BatteryPreflight,
 ) -> list[str]:
     """Launch the operator-curated boundary battery against one subject.
@@ -1698,8 +2205,14 @@ async def start_universal_battery(
         simulator_model: Model driving the simulated user (role default if ``None``).
         cassette_mode: ``'off'`` (default, and what blank spells), ``'capture'`` or ``'replay'``,
             applied to every template in the battery.
+        apparatus_settings: Host-declared apparatus values every template's runs are set up with, as
+            :func:`start_run` takes them — refused before anything launches when any template's kind
+            does not honour one.
         preflight: The host's pre-flight, prepared once for the subject and models and then asked
-            of every template before any launches.
+            of every template before any launches. A host whose launchers generate with a model checks
+            each template's generation calls here
+            (:func:`~threetears.evals.gen.price_variations`), since those are priced inside the launcher;
+            each template's generating ARMS the battery prices itself, before any template launches.
 
     Returns:
         The ids of the launched runs: for each active universal template, one per model. An empty
@@ -1777,7 +2290,7 @@ async def start_universal_battery(
         # refused one of them.
         for universal_template in templates:
             try:
-                _launchable(
+                resolved = _launchable(
                     host,
                     universal_template,
                     n_variations=n_variations,
@@ -1787,7 +2300,42 @@ async def start_universal_battery(
                     simulator_model=simulator_model,
                     cassette_mode=battery_cassette_mode,
                     overlays=None,
+                    apparatus_settings=apparatus_settings,
                 )
+                if n_variations > 0:
+                    # Every template's generating arms priced now, through the function each launch prices
+                    # them with, so a battery cannot launch and pay for its first templates' generations and
+                    # then be refused a later template's arm. The group is provisional: nothing joins it.
+                    dispatched = _Dispatched(
+                        universal_template,
+                        resolved.kind,
+                        resolved.launchable,
+                        resolved.overlays,
+                        resolved.kind_spec,
+                        resolved.apparatus_settings,
+                    )
+                    await _priced_generating_arms(
+                        host,
+                        resolved.launchable,
+                        _arm_requests(
+                            host,
+                            dispatched,
+                            LaunchGroup(candidate_models=models),
+                            subject_id=subject_id,
+                            models=models,
+                            k_runs=k_runs,
+                            scope_id=scope_id,
+                            n_variations=n_variations,
+                            variation_model=variation_model if _llm_axes(universal_template) else None,
+                            judge_model=judge_model,
+                            judge_config_ids=None,
+                            simulator_model=simulator_model,
+                            cassette_mode=battery_cassette_mode,
+                            cassette_corpus_id=None,
+                            max_cost_usd=None,
+                            max_metered_calls=None,
+                        ),
+                    )
             except ValidationFailedError as refused:
                 raise ValidationFailedError(_battery_refusal(refused)) from refused
         # Every refusal an arm of any template would make, made here over the whole set before anything
@@ -1816,6 +2364,7 @@ async def start_universal_battery(
                 judge_model=judge_model,
                 simulator_model=simulator_model,
                 cassette_mode=cassette_mode,
+                apparatus_settings=apparatus_settings,
                 admission=ticket,
             )
             run_ids += [run.id for run in runs]
@@ -1982,12 +2531,16 @@ def _resolve_selected_judge_configs(
 
 
 __all__ = [
+    "ArmPlan",
+    "ArmPrice",
+    "ArmQuote",
     "BatteryPreflight",
     "KindLauncher",
     "KindWiring",
     "LaunchArgument",
     "LaunchHost",
     "LaunchGroup",
+    "LaunchPricer",
     "LaunchRequest",
     "LaunchableKind",
     "LaunchSettings",
@@ -1997,6 +2550,7 @@ __all__ = [
     "launch_as_group",
     "launch_run",
     "no_launcher_for",
+    "settable_apparatus",
     "start_run",
     "start_universal_battery",
 ]

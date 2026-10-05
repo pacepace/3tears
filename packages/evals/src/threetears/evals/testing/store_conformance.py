@@ -19,7 +19,12 @@ port; this module states them again as checks, so an adapter is proved rather th
 **Every case is mandatory.** There is no capability flag and no skip: a store that cannot do one of
 these is a store the engine cannot run on — in particular, a store without conditional writes turns
 every read-modify-write into a blind overwrite. Each case is handed its own store, writes only under
-the kit's own scopes and ``doc_type`` values, and leaves what it wrote behind.
+the kit's own scopes, and leaves what it wrote behind; every case but one writes only the kit's own
+``doc_type`` values, and that one (``doc_types.every_engine_type_is_stored``) writes one document of
+each type the engine writes, so a store that routes documents by ``doc_type`` — a table per type —
+fails it for any type it has no route for. **When the engine adds a document type, that case is how an
+adopter's store learns of it**: the type joins :data:`~threetears.evals.contracts.storage.EVAL_DOC_TYPES`
+and the case goes red until the store routes it.
 
 **What it cannot see.** Behaviour under real concurrency (two processes, one database) — the cases
 drive one store from one thread, so a conditional write that is compared and written in two steps
@@ -35,6 +40,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
+from threetears.evals.contracts.storage import EVAL_DOC_TYPES
 from threetears.evals.contracts.store_port import DocumentStore, StoreConflict
 
 __all__ = [
@@ -501,8 +507,21 @@ def _iter_by_doc_type_yields_each_id_once_for_delete(store: DocumentStore) -> No
     _expect_equal(_ids(store.by_doc_type(_OTHER_TYPE, _SCOPE)), ["kept"], "the other type after the sweep")
 
 
+def _every_engine_doc_type_is_stored(store: DocumentStore) -> None:
+    for doc_type in EVAL_DOC_TYPES:
+        store.upsert(_doc(f"kit-{doc_type}", doc_type=doc_type, marker=doc_type))
+    for doc_type in EVAL_DOC_TYPES:
+        doc_id = f"kit-{doc_type}"
+        expected = _doc(doc_id, doc_type=doc_type, marker=doc_type)
+        _expect_equal(store.get(doc_id, _SCOPE), expected, f"get of a {doc_type!r} document")
+        _expect_equal(store.get_many(doc_type, [doc_id], _SCOPE), [expected], f"get_many of a {doc_type!r} document")
+        _expect_equal(store.by_doc_type(doc_type, _SCOPE), [expected], f"by_doc_type({doc_type!r})")
+        _expect_equal(list(store.iter_by_doc_type(doc_type, _SCOPE)), [doc_id], f"iter_by_doc_type({doc_type!r})")
+
+
 #: Every case, in the order the port states its rules: scoping, the strip on read, projection,
-#: querying, optimistic concurrency (with the re-read that recovers a lost race), merge, delete.
+#: querying, optimistic concurrency (with the re-read that recovers a lost race), merge, delete —
+#: and last, that every ``doc_type`` the engine writes is one the store stores.
 STORE_CONFORMANCE_CASES: tuple[StoreConformanceCase, ...] = (
     StoreConformanceCase(
         "scope.miss_is_an_outcome",
@@ -648,5 +667,11 @@ STORE_CONFORMANCE_CASES: tuple[StoreConformanceCase, ...] = (
         "delete.sweep_by_doc_type",
         "iter_by_doc_type yields each id of its type once, and deleting each sweeps the type",
         _iter_by_doc_type_yields_each_id_once_for_delete,
+    ),
+    StoreConformanceCase(
+        "doc_types.every_engine_type_is_stored",
+        "every doc_type the engine writes (EVAL_DOC_TYPES) is stored and read back — an adapter that routes "
+        "documents by doc_type routes each of them, the out-of-run spend ledger (eval_out_of_run_spend) included",
+        _every_engine_doc_type_is_stored,
     ),
 )

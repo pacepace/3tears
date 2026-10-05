@@ -69,7 +69,12 @@ from threetears.evals.contracts.errors import (
     ValidationFailedError,
 )
 from threetears.evals.contracts.hashing import canonical_digest
-from threetears.evals.contracts.identity import IDENTITY_VERSION, resolve_context_identity, resolve_variant_identity
+from threetears.evals.contracts.identity import (
+    IDENTITY_VERSION,
+    derive_variant_identity,
+    resolve_context_identity,
+    resolve_variant_identity,
+)
 from threetears.evals.contracts.judge_attribution import (
     JudgeAttributionSource,
     attribution_state,
@@ -103,6 +108,7 @@ from threetears.evals.contracts.metrics import (
     materiality,
 )
 from threetears.evals.contracts.models import (
+    ApparatusSettingValue,
     CANDIDATE_SPEAKER,
     DEFAULT_LAUNCH_K_RUNS,
     NON_TERMINAL_RUN_STATUSES,
@@ -142,12 +148,23 @@ from threetears.evals.contracts.models import (
     eval_trace_doc_id,
     utc_now_iso,
 )
+from threetears.evals.contracts.out_of_run import (
+    AdmittedCall,
+    OutOfRunBudget,
+    OutOfRunOutcome,
+    OutOfRunPurpose,
+    OutOfRunSpend,
+    OutOfRunSpendStore,
+    PlannedCall,
+    RecordedCompletion,
+)
 from threetears.evals.contracts.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt, SeedSection, SeedTemplate
 from threetears.evals.contracts.prose import PROSE_SCHEMA_KEY
 from threetears.evals.contracts.provider import (
     PROVIDER_REQUEST_ATTEMPTS,
     BoundCompletionClient,
     CompletionClient,
+    PricedCompletion,
     ProviderFailure,
     ProviderFailureDescriber,
     SimulatorLLM,
@@ -189,6 +206,7 @@ from threetears.evals.contracts.usage_capture import (
     ResolvedUsage,
     RoleUsageLedger,
     blended_cost_roles,
+    count_substituted_deliveries,
     production_replicating_cost,
     program_cost,
     resolve_result_usage,
@@ -262,6 +280,7 @@ from threetears.evals.contracts.models import (
     ContextComponents,
     ControlEndState,
     CostCapOrigin,
+    MeteredCallOrigin,
     EVAL_SCHEMA_VERSION,
     EvalCassette,
     EvalRunStamp,
@@ -391,6 +410,7 @@ __all__ = [
     "ConversationSpec",
     "ConversationStopCause",
     "CostCapOrigin",
+    "MeteredCallOrigin",
     "CoverageLens",
     "DSLError",
     "Decision",
@@ -479,6 +499,16 @@ __all__ = [
     "NextStep",
     "NonTerminalRunScan",
     "NotFoundError",
+    "AdmittedCall",
+    "ApparatusSettingValue",
+    "OutOfRunBudget",
+    "OutOfRunOutcome",
+    "OutOfRunPurpose",
+    "OutOfRunSpend",
+    "OutOfRunSpendStore",
+    "PlannedCall",
+    "PricedCompletion",
+    "RecordedCompletion",
     "Precondition",
     "PreconditionOutcome",
     "ProposedDimSuggestion",
@@ -569,6 +599,8 @@ __all__ = [
     # other route to it is a campaign write, which needs a stored campaign.
     "refuse_an_undeclarable_design",
     "resolve_bar_name",
+    "count_substituted_deliveries",
+    "derive_variant_identity",
     "resolve_context_identity",
     "resolve_result_condition",
     "resolve_result_usage",

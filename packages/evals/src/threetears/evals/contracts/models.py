@@ -18,6 +18,7 @@ change they are dropped and regenerated, not migrated.
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -32,6 +33,10 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
     field_validator,
     model_validator,
 )
@@ -102,6 +107,19 @@ def _current_schema_only(version: int) -> int:
 #: The ``schema_version`` field type of every stored eval entity: defaulted to the current version on
 #: write, and refusing any other on read.
 SchemaVersion = Annotated[int, AfterValidator(_current_schema_only)]
+
+
+def _finite_setting(value: str | bool | int | float) -> str | bool | int | float:
+    """Refuse a non-finite number as an apparatus setting — it has no JSON form and no level to compare."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"an apparatus setting is a finite number, a string or a bool; got {value!r}")
+    return value
+
+
+#: One host-declared apparatus value a launch sets (:attr:`EvalRun.apparatus_settings`): a string, a
+#: bool, or a finite number — a level two runs can be compared on, and hashed into the measurement
+#: context. Strict, so ``"1"`` and ``1`` stay two levels rather than one coerced into the other.
+ApparatusSettingValue = Annotated[StrictStr | StrictBool | StrictInt | StrictFloat, AfterValidator(_finite_setting)]
 
 
 def utc_now_iso() -> str:
@@ -1547,6 +1565,16 @@ class ContextComponents(EvalDocumentModel):
             "None whenever the run did not record placements, on the same all-or-none rule roles follows."
         ),
     )
+    apparatus_settings: str | None = Field(
+        default=None,
+        description=(
+            "Digest of the host-declared apparatus values the run's launch set (EvalRun.apparatus_settings) — how "
+            "the measuring rig was set up, such as who sat in an adjudicator's seat. Its own component because one "
+            "template is run at two such values to compare them, and those runs were measured on two rigs, not "
+            "repeated on one. Always composable: no settings is a recorded level, so two runs that set none hash "
+            "equal."
+        ),
+    )
     scope: str | None = Field(
         default=None,
         description="Storage scope the run executed in, kept raw so a mismatch badges as a value.",
@@ -1631,6 +1659,14 @@ ModelRoleOrigin = Literal["chosen", "inherited"]
 #: ``LaunchSettings.max_metered_calls``, and ``uncapped`` comes off the same enforcement flag
 #: both ceilings share. The name is cost's because cost came first.
 CostCapOrigin = Literal["chosen", "inherited", "uncapped"]
+
+#: Which tier supplied a run's metered-call ceiling (:attr:`EvalRun.max_metered_calls_origin`): the
+#: three :data:`CostCapOrigin` tiers, read with the currency swapped, and one more —
+#: ``none_declared``, a host declaring it has no metered tools (``LaunchSettings.max_metered_calls``
+#: of ``None``). That run records a ceiling of ``0``: no metered call may happen, and one that does
+#: contradicts the host's declaration and is refused and counted. Distinct from ``uncapped``, which
+#: is a host with metered tools whose enforcement is off.
+MeteredCallOrigin = Literal["chosen", "inherited", "uncapped", "none_declared"]
 
 
 def scored_dim_ids(rubric_dim_names: list[str], judged_artifact: JudgedArtifact) -> list[str]:
@@ -2106,6 +2142,17 @@ class EvalRun(EvalDocumentModel):
             "(``HostProfile.kinds``). Empty for a kind that declares no overlays."
         ),
     )
+    apparatus_settings: dict[str, ApparatusSettingValue] = Field(
+        default_factory=dict,
+        description=(
+            "The host-declared apparatus values this run's launch set — a setup value of the measuring rig the "
+            "kind's launcher reads (an adjudicator's seat, a rules version), keyed by the apparatus dimension "
+            "the host declares, so one template can be run at two of them and compared. Each is a launch "
+            "argument the kind declares it honours (``LaunchableKind.apparatus_settings``). Hashed into the "
+            "measurement context: two runs whose rig was set up differently are not repetitions of one "
+            "condition. Empty when the launch set none, which is a level."
+        ),
+    )
     resolved_world_seed: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -2242,21 +2289,22 @@ class EvalRun(EvalDocumentModel):
 
     max_metered_calls: int | None = Field(
         default=None,
-        gt=0,
+        ge=0,
         description=(
             "Effective per-run ceiling on METERED THIRD-PARTY CALLS in force, after the "
             "override-or-config cascade — the quota max_cost_usd cannot see, since that counts "
             "LLM dollars and a search credit or a billed image generation is neither. None "
             "means the run was unbounded (eval enforcement disabled) or its writer recorded no "
-            "ceiling; max_metered_calls_origin tells those apart. Reaching it REFUSES further metered "
+            "ceiling; max_metered_calls_origin tells those apart. 0 means the host declared it has no "
+            "metered tools (origin none_declared), so any metered call is refused. Reaching it REFUSES further metered "
             "calls and records the count on metered_calls_refused — it never stops the run, "
             "because a hard stop would discard a partly-measured matrix."
         ),
     )
-    max_metered_calls_origin: CostCapOrigin | None = Field(
+    max_metered_calls_origin: MeteredCallOrigin | None = Field(
         default=None,
         description=(
-            "Which tier of the cascade supplied max_metered_calls — see CostCapOrigin. Kept "
+            "Which tier of the cascade supplied max_metered_calls — see MeteredCallOrigin. Kept "
             "beside the ceiling for the reason max_cost_usd_origin is: the ceiling is stored "
             "resolved, and a resolved number cannot say whether the launch named it or "
             "the host's configured default did — and only the second kind moves "
@@ -3813,6 +3861,8 @@ class EvalCassette(EvalDocumentModel):
 
 
 __all__ = [
+    "ApparatusSettingValue",
+    "MeteredCallOrigin",
     "CANDIDATE_SPEAKER",
     "EVAL_SCHEMA_VERSION",
     "NON_TERMINAL_RUN_STATUSES",

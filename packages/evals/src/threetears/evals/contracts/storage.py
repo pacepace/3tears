@@ -55,6 +55,7 @@ from threetears.evals.contracts.models import (
     JudgeConfig,
     eval_trace_doc_id,
 )
+from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend, OutOfRunSpendStore
 from threetears.evals.contracts.store_port import DocumentStore, StoreConflict
 from threetears.observe import get_logger
 
@@ -111,6 +112,7 @@ EVAL_DOC_TYPES = (
     "eval_test_case",
     "eval_cassette",
     "calibration_rating",
+    "eval_out_of_run_spend",
 )
 
 
@@ -836,6 +838,47 @@ class EvalStorage:
         return self._hydrate_all(CalibrationRating, items)
 
     # =========================================================================
+    # OutOfRunSpend — the ledger of calls made outside any run
+    # =========================================================================
+
+    def save_out_of_run_spend(self, spend: OutOfRunSpend) -> None:
+        """Persist one out-of-run call's ledger row in the scope it names. Rows are written once, never rewritten."""
+        self._save(spend.to_dict())
+
+    def query_out_of_run_spend(
+        self,
+        scope_id: str,
+        *,
+        purpose: OutOfRunPurpose | None = None,
+        launch_group_id: str | None = None,
+        template_id: str | None = None,
+    ) -> list[OutOfRunSpend]:
+        """The out-of-run calls ledgered in a scope, oldest first, optionally narrowed.
+
+        Unlimited: a paged read summed into a spend total would report the first page as the whole.
+
+        Args:
+            scope_id: The scope to read.
+            purpose: Only calls made for this purpose.
+            launch_group_id: Only the calls a launch's case generation made; its runs carry the same id.
+            template_id: Only calls made for this template.
+
+        Returns:
+            The matching rows, ordered by when they were written.
+        """
+        field_eq: dict[str, Any] = {}
+        if purpose is not None:
+            field_eq["purpose"] = purpose
+        if launch_group_id is not None:
+            field_eq["launch_group_id"] = launch_group_id
+        if template_id is not None:
+            field_eq["template_id"] = template_id
+        items = self._store.by_doc_type(
+            "eval_out_of_run_spend", scope_id, order_by="created_at", descending=False, **field_eq
+        )
+        return self._hydrate_all(OutOfRunSpend, items)
+
+    # =========================================================================
     # EvalTestCase
     # =========================================================================
 
@@ -1431,7 +1474,10 @@ if TYPE_CHECKING:
 
     def _eval_storage_satisfies_every_port(storage: EvalStorage) -> None:
         """Hold :class:`EvalStorage` to each run-side port, so a drifted signature fails typecheck."""
-        ports: tuple[JobStore, RunStore, ResultStore, RunRecordStore, DefinitionStore, CassetteStore] = (
+        ports: tuple[
+            JobStore, RunStore, ResultStore, RunRecordStore, DefinitionStore, CassetteStore, OutOfRunSpendStore
+        ] = (
+            storage,
             storage,
             storage,
             storage,
