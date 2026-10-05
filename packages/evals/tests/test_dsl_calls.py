@@ -24,7 +24,7 @@ from threetears.evals.contracts.dsl import (
 )
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.run.authoring import create_template
-from threetears.evals.contracts.world_state import WorldState
+from threetears.evals.contracts.call_ledger import CallLedger
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 
@@ -48,11 +48,12 @@ def _reader(tool: str, action: str):
     return _SAY if (tool, action) == ("speech", "say") else None
 
 
-def _state(*calls: tuple[str, str, dict]) -> WorldState:
-    state = WorldState()
+def _state(*calls: tuple[str, str, dict]) -> dict:
+    """The keyword arguments ``evaluate`` takes for a cell that made ``calls`` and holds no world."""
+    ledger = CallLedger()
     for tool, action, params in calls:
-        state.record_call(tool, action, params)
-    return state
+        ledger.record(tool, action, params)
+    return {"end_state": {}, "ledger": ledger, "world": None}
 
 
 def _refusals(expression: str, reader=_reader) -> list[str]:
@@ -67,28 +68,28 @@ class TestEvaluation:
             ("speech", "say", {"text": "two"}),
         )
 
-        assert evaluate('calls("speech.say").length == 2', state=state)
-        assert evaluate('calls("speech.say")[0].position == "head"', state=state)
-        assert evaluate('any(it.position == "head" for it in calls("speech.say"))', state=state)
-        assert not evaluate('all(it.position == "head" for it in calls("speech.say"))', state=state)
+        assert evaluate('calls("speech.say").length == 2', **state)
+        assert evaluate('calls("speech.say")[0].position == "head"', **state)
+        assert evaluate('any(it.position == "head" for it in calls("speech.say"))', **state)
+        assert not evaluate('all(it.position == "head" for it in calls("speech.say"))', **state)
 
     def test_a_length_test_reads_presence_across_every_call(self):
         state = _state(("shop", "add_item", {"note_text": "here"}), ("shop", "add_item", {"note_text": ""}))
 
-        assert not evaluate('all(it.note_text.length > 0 for it in calls("shop.add_item"))', state=state)
-        assert evaluate('any(it.note_text.length > 0 for it in calls("shop.add_item"))', state=state)
+        assert not evaluate('all(it.note_text.length > 0 for it in calls("shop.add_item"))', **state)
+        assert evaluate('any(it.note_text.length > 0 for it in calls("shop.add_item"))', **state)
 
     def test_no_matching_call_is_an_empty_list(self):
         state = _state(("shop", "search", {}))
 
-        assert evaluate('calls("speech.say").length == 0', state=state)
-        assert not evaluate('any(it.position == "head" for it in calls("speech.say"))', state=state)
+        assert evaluate('calls("speech.say").length == 0', **state)
+        assert not evaluate('any(it.position == "head" for it in calls("speech.say"))', **state)
 
     def test_the_expression_cannot_reach_the_ledger(self):
         state = _state(("speech", "say", {"text": "one"}))
-        evaluate('calls("speech.say")[0].text == "one"', state=state)
+        evaluate('calls("speech.say")[0].text == "one"', **state)
 
-        assert state.global_calls[0]["params"] == {"text": "one"}
+        assert state["ledger"].calls[0].params == {"text": "one"}
 
     @pytest.mark.parametrize(
         "expression",

@@ -36,6 +36,7 @@ from pydantic import (
 )
 
 from threetears.evals.contracts.base import EvalBaseModel, EvalDocumentModel, VerbatimJsonObject, VerbatimObject
+from threetears.evals.contracts.call_ledger import CallLedger, RecordedCall
 from threetears.evals.contracts.dsl import DSLError, extract_paths, parse
 from threetears.evals.contracts.host.subject import SubjectSnapshot
 from threetears.evals.contracts.host.values import SweepableValue
@@ -352,18 +353,6 @@ class Precondition(EvalDocumentModel):
 GoalCheckIntent = Literal["act", "hold"]
 
 
-class ControlCall(EvalDocumentModel):
-    """One call in a control end state's ledger — a call the candidate is stated to have made.
-
-    The same three fields every recorded call carries, so a control's ledger is read by the goal
-    language exactly as a run's is.
-    """
-
-    tool: str = Field(min_length=1, description="The tool the call went to, as a run's ledger names it.")
-    action: str = Field(min_length=1, description="The action called.")
-    params: dict[str, Any] = Field(default_factory=dict, description="The parameters the call passed.")
-
-
 class ControlEndState(EvalDocumentModel):
     """An end state a template's author states, to prove its goal checks can tell outcomes apart.
 
@@ -393,7 +382,7 @@ class ControlEndState(EvalDocumentModel):
             "state.<dimension>. A key named replaces the seed's value whole; a key left out keeps the seed's."
         ),
     )
-    calls: list[ControlCall] = Field(
+    calls: list[RecordedCall] = Field(
         default_factory=list,
         description=(
             "Every call the candidate made, in order — the whole ledger, not an overlay: an empty list "
@@ -1926,8 +1915,7 @@ class EvalRun(EvalDocumentModel):
         description=(
             "The template's ``world_seed`` as THIS run froze it at ``start_run`` — the immutable "
             "provenance of the world the candidate actually faced, and the seed the goal judge and the eval context panel read. Maps each "
-            "tool namespace to its per-tool state dict (``queue`` / ``history`` / ``catalog`` "
-            "/ …), matching :attr:`~threetears.evals.contracts.world_state.WorldState.namespaces`. Persisted on the "
+            "carrier to its keyed values, exactly as ``WorldSeed.namespaces`` holds them. Persisted on the "
             "RUN, not the template: the template seed is mutable/versioned, "
             "but the run needs the frozen world of this run (context-panel render, "
             "provenance/repro, world diff in bisect). Empty ``{}`` when the template declared no "
@@ -2929,6 +2917,10 @@ class EvalTrace(EvalDocumentModel):
     judge_evidence: JudgeEvidence | None = None
     #: The kind's declaration that picked the judged axes, stored with the evidence it applies to.
     judged_artifact: JudgedArtifact | None = None
+    #: The calls the candidate made that succeeded, as its kind recorded them and graded its goal
+    #: checks against. Stored so a re-check re-grades from what the candidate did rather than from
+    #: the verdicts alone. ``None`` when the kind keeps no ledger.
+    call_ledger: CallLedger | None = None
 
     @model_validator(mode="after")
     def _evidence_and_its_declaration_travel_together(self) -> Self:
@@ -3560,7 +3552,6 @@ __all__ = [
     "CellTermination",
     "ClientRequestSettings",
     "CompletenessSource",
-    "ControlCall",
     "ControlEndState",
     "ConversationSpec",
     "ConversationStopCause",

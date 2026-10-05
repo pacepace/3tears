@@ -159,7 +159,8 @@ def check_seed(
             authoring, the registry's questions are the only ones there are to ask.
         skip_namespaces: Namespaces the run writes from its own record rather than the template's
             seed. Another refusal owns a template naming one; this walk passes over them.
-        skip_keys: Keys inside any namespace that nothing seeds — an engine-owned ledger, say.
+        skip_keys: Keys inside any namespace that nothing seeds — state the host's run writes itself
+            rather than any template.
 
     Returns:
         One :class:`SeedWrite` per seeded value, in the seed's order. Nothing has been written.

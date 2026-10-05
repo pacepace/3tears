@@ -43,6 +43,38 @@ packages (bumped in lock-step).
 - **`ConversationSpec` refuses** two actors with one id, and an actor id of `ROUND_DONE` or
   `CANDIDATE_SPEAKER` (both new constants in `threetears.evals.contracts`).
 
+### 3tears-evals: the call ledger, a goal language rooted at declared dimensions, and the re-check
+
+- **`CallLedger`** / **`RecordedCall`** (`threetears.evals.contracts`): every action a candidate took
+  that succeeded, across tools, in order. A kind fills one with `ledger.record(tool, action, params)`
+  (params deep-copied) and returns it on the new **`CandidateOutput.call_ledger`**; the runner stores
+  it on the new **`EvalTrace.call_ledger`**, and a trace carrying only a ledger is now stored.
+- **Breaking: `WorldState` and `init_world` are removed** (the module `contracts/world_state.py` is
+  gone). A cell's end state is now a plain mapping of declared dimension name to value; the calls live
+  on the ledger. **`WorldRegistry.named(namespaces)`** turns a seed-shaped world (carrier → key →
+  value) into that mapping through the host's addressing, refusing (`ValueError`) a non-mapping
+  carrier, a key no dimension declares, and a key under the wrong carrier.
+- **Breaking: the goal language reads `state.<dimension>` through the host's world registry only.**
+  `evaluate` / `evaluate_with_detail` take `end_state=`, `ledger=` and `world=` (required; `None` for a
+  host with no world) in place of `state=`. There is no reading of a raw namespace layout: a `state`
+  path on a host with no world raises `DSLError`, and so does `state` used as a value on its own
+  (`length(state)`, `state["x"]`). The call predicates read the ledger.
+- **Breaking: `grade_goal_checks(expressions, *, ledger, end_state, variation, world)`** — callable by
+  every kind; `evaluate_goal_state` takes `ledger=` and `end_state=`, and `assert_preconditions`
+  takes the seeded end state (graded with an empty ledger).
+- **Breaking: `ControlCall` is removed**; `ControlEndState.calls` is a list of `RecordedCall`. The
+  check-controls gate builds each control as a `ControlEnd(end_state, ledger)`, and now refuses a
+  control (or a seed) stating world state on a host that declares no world.
+- **`HostProfile.addressable`** answers `uncovered` (was `inapplicable`) on a host with no world, so
+  the authoring gate refuses a goal check reading a `state` path there.
+- **`recheck_goal_states(store, run_id, scope_id, *, apply)`** / **`recheck_result`** (`run`): re-grade
+  a stored run's goal checks from the ledgers its cells stored, through `grade_goal_checks`, writing
+  only results whose verdict moved (ETag-guarded; a lost race is named in `write_conflicts`). Keeps as
+  stored, with the reason, a check reading world state and an outcome that is not a goal-state
+  expression; does not re-check a result not graded at its cell's end, or one with no stored ledger.
+  Refuses (`ValidationFailedError`) a run still pending or running. Reports as `RunRecheck` /
+  `ResultRecheck` / `CheckFlip` / `KeptOutcome`; reads through the `RecheckStore` port.
+
 ### 3tears-evals ships its type marker
 
 - `py.typed` is now in the package, so an adopter's strict type checker reads `threetears.evals` annotations

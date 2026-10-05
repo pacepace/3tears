@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, get_args
 
 from threetears.evals.contracts import (
+    CallLedger,
     CandidateOutput,
     CandidatePreparationFailed,
     CandidateTelemetry,
@@ -58,12 +59,17 @@ from threetears.evals.contracts import (
     VariantConfig,
 )
 from threetears.evals.contracts.host import ApparatusError, SeedRefused, SubjectSnapshot, WorldRegistry, check_seed
+from threetears.evals.run import GoalCheckUnevaluable, grade_goal_checks
 from packages.evals.tests.fixtures.toyhost.tracing import OP_HOST_GRADE, OP_MODEL_CALL, OP_TURN_ROOT, toy_span
 
 #: The name a toy-host template carries on ``EvalTemplate.candidate_kind``, and the key the run
 #: wires this kind under on ``RunnerOptions.candidate_kinds``. Opaque to the engine, which
 #: dispatches on it at one site and never branches on its value.
 TOY_EXTRACTOR_KIND = "toy-extractor"
+
+#: The extractor's one action, as its call ledger records it: one call per field it emits.
+EXTRACTOR_TOOL = "extractor"
+EMIT_FIELD_ACTION = "emit_field"
 
 #: The measure this kind takes, spelled as the toy host's profile declares it.
 FIELD_ACCURACY = "field_accuracy"
@@ -284,6 +290,7 @@ class ToyExtractorKind:
         documents: tuple[ToyDocument, ...] = TOY_DOCUMENTS,
         judged: bool = False,
         graded_fields: tuple[str, ...] = INVOICE_FIELDS,
+        goal_checks: tuple[str, ...] = (),
     ) -> None:
         """Wire the extractor's collaborators.
 
@@ -302,6 +309,9 @@ class ToyExtractorKind:
                 judge wired to it.
             graded_fields: The invoice fields ``field_accuracy`` is computed over — what a template's
                 ``kind_spec`` states (``contract.py``'s ``ExtractorSpec``). Every field, by default.
+            goal_checks: The template's goal checks, graded at each cell's end against the call ledger
+                this kind fills and the world it read back — through the engine's
+                :func:`~threetears.evals.run.grade_goal_checks`, the one evaluation every kind uses.
         """
         self._client = client
         #: The extraction is a document, judged against the invoice it was read from — or, unjudged,
@@ -311,6 +321,7 @@ class ToyExtractorKind:
         self._world = world
         self._documents = {document.document_id: document for document in documents}
         self.graded_fields = graded_fields
+        self.goal_checks = goal_checks
         #: What each cell measured, keyed by ``(model, document_id)``. Kept for the host's own
         #: assertions about what it graded — the number itself reaches the result through
         #: ``CandidateOutput.host_measures``, so nothing downstream depends on this. Keyed on the
@@ -427,6 +438,12 @@ class ToyExtractorKind:
                     with toy_span("extract.call", operation=OP_MODEL_CALL, model=instance.model):
                         extraction = await self._client.extract(model=instance.model, document=document)
 
+            # What the candidate did, recorded through the engine's helper from what the call
+            # actually returned: one call per field the extraction emitted, empty or not.
+            ledger = CallLedger()
+            for name in extraction.fields:
+                ledger.record(EXTRACTOR_TOOL, EMIT_FIELD_ACTION, {"field": name})
+
             # Spanned, and OUTSIDE the collection window on purpose: grading is the host's own
             # grader, not the candidate's work, and the port's two extents differ for exactly
             # this reason. Recorded rather than argued — a test asserts no ``grade`` span reaches
@@ -438,6 +455,19 @@ class ToyExtractorKind:
                 accuracy = len(correct) / len(graded)
                 # One entry per cell coordinate, overwritten identically by the second k repeat.
                 self.measures[instance.model, document.document_id] = {FIELD_ACCURACY: accuracy}
+                # The template's goal checks, graded by the engine against the ledger and the world
+                # this cell read back. A check that cannot be evaluated is the rig's fault, not a
+                # verdict on the extractor, so it excludes the cell rather than failing it.
+                try:
+                    goal_outcomes = grade_goal_checks(
+                        self.goal_checks,
+                        ledger=ledger,
+                        end_state=instance.world,
+                        variation=test_case.variation_params,
+                        world=self._world,
+                    )
+                except GoalCheckUnevaluable as unevaluable:
+                    raise ApparatusError(str(unevaluable)) from unevaluable
 
         return CandidateOutput(
             # One JSON document: the extracted record. The engine never looks inside it.
@@ -455,12 +485,10 @@ class ToyExtractorKind:
                     passed=accuracy >= 0.92,
                     detail=f"{FIELD_ACCURACY}={accuracy:.2f} — {len(correct)} of {len(graded)} graded fields exact",
                 ),
-                GoalStateOutcome(
-                    expression="every declared field was emitted",
-                    passed=set(extraction.fields) == set(INVOICE_FIELDS),
-                    detail=f"emitted {len(extraction.fields)} of {len(INVOICE_FIELDS)} declared fields",
-                ),
+                *goal_outcomes,
             ],
+            # Stored on the cell's trace, so a re-check re-grades the goal checks from exactly this.
+            call_ledger=ledger,
             telemetry=CandidateTelemetry(
                 usage=[
                     RoleUsage(
@@ -508,6 +536,8 @@ def render_invoice(document: ToyDocument) -> str:
 
 __all__ = [
     "DOCUMENT_PARAM",
+    "EMIT_FIELD_ACTION",
+    "EXTRACTOR_TOOL",
     "FIELD_ACCURACY",
     "INVOICE_FIELDS",
     "TOY_DOCUMENTS",

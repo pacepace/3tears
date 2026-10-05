@@ -1080,7 +1080,9 @@ class EvalStorage:
                 by :meth:`_save` and reported through ``has_trace``, not raised.
         """
         stored = False
-        if trace is not None and (trace.trace or trace.otel_trace or trace.judge_evidence is not None):
+        if trace is not None and (
+            trace.trace or trace.otel_trace or trace.judge_evidence is not None or trace.call_ledger is not None
+        ):
             try:
                 self._save(trace.to_dict())
                 stored = True

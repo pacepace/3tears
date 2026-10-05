@@ -101,7 +101,12 @@ def toyhost_launch_host(
         # grades. The run records the same validated spec, so what it graded and what it says it
         # graded are one value.
         spec = request.kind_spec_as(ExtractorSpec)
-        graded = ToyExtractorKind(client=client, world=world, graded_fields=tuple(spec.graded_fields))
+        graded = ToyExtractorKind(
+            client=client,
+            world=world,
+            graded_fields=tuple(spec.graded_fields),
+            goal_checks=tuple(request.template.goal_state_checks),
+        )
         # Everything the request already says — scope, model, repeats, overlays, the template's seed —
         # the engine stamps. What is here is what only this kind resolves. Nothing is model-scored on
         # this path, so there is no judge, and the extractor has no default model to fall back on.

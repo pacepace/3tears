@@ -109,7 +109,7 @@ from threetears.evals.contracts.models import (
     scored_dim_ids,
 )
 from threetears.evals.contracts.scoring import CellSummary
-from threetears.evals.contracts.world_state import WorldState
+from threetears.evals.contracts.call_ledger import CallLedger
 from threetears.evals.contracts.usage_capture import (
     ExternalRateTable,
     RoleUsageLedger,
@@ -1359,6 +1359,8 @@ async def run_one_result(
             # changed since. ``None`` for both on an unjudged kind's cell and on an empty output.
             judge_evidence=judge_evidence,
             judged_artifact=judged_artifact if judge_evidence is not None else None,
+            # What the candidate did, as the kind recorded it — the input a re-check re-grades from.
+            call_ledger=candidate.call_ledger,
         ),
     )
 
@@ -1815,7 +1817,7 @@ def sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = N
 
 
 def assert_preconditions(
-    template: EvalTemplate, test_case: EvalTestCase, world_state: WorldState, *, world: WorldRegistry | None
+    template: EvalTemplate, test_case: EvalTestCase, seeded: Mapping[str, Any], *, world: WorldRegistry | None
 ) -> list[PreconditionOutcome]:
     """Assert at t=0 that the world this template presumes actually holds.
 
@@ -1845,7 +1847,10 @@ def assert_preconditions(
         template: The template whose presumptions these are.
         test_case: The case, for its variation parameters — an expression may read
             ``variation.tone`` beside the world.
-        world_state: The seeded world, immediately after seeding and before any turn.
+        seeded: The seeded world, immediately after seeding and before any turn, keyed by declared
+            dimension name — read back through the dimensions' ``read`` handles, or named from the
+            seed by :meth:`~threetears.evals.contracts.host.world.WorldRegistry.named`. Read with an
+            empty call ledger: at t=0 the candidate has made no call.
         world: The host's world registry (``profile.world``), so a path reads the dimension the
             authoring gate resolved it to.
 
@@ -1856,7 +1861,11 @@ def assert_preconditions(
     for precondition in template.preconditions:
         try:
             held, detail = evaluate_with_detail(
-                precondition.expression, state=world_state, variation=dict(test_case.variation_params), world=world
+                precondition.expression,
+                end_state=seeded,
+                ledger=CallLedger(),
+                world=world,
+                variation=dict(test_case.variation_params),
             )
         except (
             Exception
@@ -1896,8 +1905,9 @@ class GoalCheckUnevaluable(RuntimeError):
     """A goal check raised while being evaluated — a fault of the rig, not a verdict on the candidate.
 
     The check is a claim about the world, and a check that cannot be evaluated has made no claim.
-    Scoring it as failed would put a harness or DSL fault on the candidate's record, so the runner
-    records it as an apparatus fault instead, which excludes the cell.
+    Scoring it as failed would put a harness or DSL fault on the candidate's record, so a kind that
+    catches it raises :class:`~threetears.evals.contracts.host.ApparatusError` from ``invoke``, which
+    the runner records as an apparatus fault that excludes the cell.
 
     Engine API beside :func:`evaluate_goal_state`, which raises it: a kind catches it to tell a
     rig fault from a verdict, whichever kind evaluates the template's goal checks.
@@ -1918,7 +1928,8 @@ def evaluate_goal_state(
     *,
     template: EvalTemplate,
     test_case: EvalTestCase,
-    world_state: WorldState,
+    ledger: CallLedger,
+    end_state: Mapping[str, Any],
     world: WorldRegistry | None,
 ) -> list[GoalStateOutcome]:
     """Run every expression in ``template.goal_state_checks`` and capture outcomes.
@@ -1931,33 +1942,48 @@ def evaluate_goal_state(
     Args:
         template: The template whose goal checks to run.
         test_case: The case, for its variation parameters.
-        world_state: The world the cell left behind.
+        ledger: The calls the candidate made that succeeded.
+        end_state: The world the cell left behind, keyed by declared dimension name.
         world: The host's world registry (``profile.world``).
+
+    Returns:
+        One outcome per goal check, in the template's order.
 
     Raises:
         GoalCheckUnevaluable: An expression raised while being evaluated.
     """
     return grade_goal_checks(
-        template.goal_state_checks, world_state=world_state, variation=test_case.variation_params, world=world
+        template.goal_state_checks,
+        ledger=ledger,
+        end_state=end_state,
+        variation=test_case.variation_params,
+        world=world,
     )
 
 
 def grade_goal_checks(
     expressions: Sequence[str],
     *,
-    world_state: WorldState,
+    ledger: CallLedger,
+    end_state: Mapping[str, Any],
     variation: Mapping[str, Any],
     world: WorldRegistry | None,
 ) -> list[GoalStateOutcome]:
-    """Grade goal checks against a world: the one evaluation a run and the authoring gate both use.
+    """Grade goal checks against a call ledger and an end state: the one evaluation every caller uses.
 
-    :func:`evaluate_goal_state` grades a finished cell through here, and the check-controls gate
+    **Callable by every kind.** A kind fills a :class:`~threetears.evals.contracts.call_ledger.CallLedger`
+    as its candidate acts, reads its end state, and grades here; :func:`evaluate_goal_state` is the
+    same call over a template's checks. The check-controls gate
     (:mod:`threetears.evals.run.check_controls`) grades a template's control end states through here,
-    so a check proven to discriminate at authoring is proven under the rule a run will grade it by.
+    so a check proven to discriminate at authoring is proven under the rule a run will grade it by,
+    and the re-check (:mod:`threetears.evals.run.recheck`) re-grades a stored result through here,
+    so a ledger rule's change reaches results stored before it under that same rule.
 
     Args:
         expressions: The goal checks, in order.
-        world_state: The world to read — a cell's end state, or a control end state.
+        ledger: The calls the candidate made that succeeded — a cell's, or a control's stated calls.
+        end_state: The world to read, keyed by declared dimension name — a cell's end state, or a
+            control end state.
         variation: The case parameters a check may read as ``variation.*``.
         world: The host's world registry (``profile.world``), so a path reads the dimension the
             authoring gate resolved it to.
@@ -1971,7 +1997,9 @@ def grade_goal_checks(
     outcomes: list[GoalStateOutcome] = []
     for expr in expressions:
         try:
-            passed, detail = evaluate_with_detail(expr, state=world_state, variation=dict(variation), world=world)
+            passed, detail = evaluate_with_detail(
+                expr, end_state=end_state, ledger=ledger, world=world, variation=dict(variation)
+            )
         except Exception as e:  # prawduct:ok-broad-except — DSL evaluation boundary; re-raised as a named rig fault
             log.warning("Goal-state expression failed to evaluate: %r → %s", expr, e)
             raise GoalCheckUnevaluable(expr, e) from e
