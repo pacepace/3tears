@@ -63,6 +63,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
+    "RESULT_TOO_LARGE",
     "QUERY_STATEMENT_TIMEOUT_SECONDS",
     "DatasourceQueryClient",
     "DatasourceQueryError",
@@ -706,6 +707,10 @@ _HUB_ROW_CAP: Final[int] = 1000
 #: while the default sat on it, and the default is what a caller gets by not
 #: thinking about it -- which is precisely the caller the guard protects. Found
 #: by a consumer reading both sides rather than trusting either.
+#: the hub's refusal code for a result too large for one reply on the bus. ``read_all``
+#: answers it by halving its page; another caller asks for fewer rows
+RESULT_TOO_LARGE: Final = "RESULT_TOO_LARGE"
+
 _DEFAULT_PAGE_SIZE: Final[int] = 500
 
 
@@ -869,9 +874,10 @@ async def read_all(
     cursor: tuple[Any, ...] | None = None
     previous_had_more = False
 
+    size = page_size
     for _ in range(max_pages):
         predicate, params = _filtered(filters, *_keyset_predicate(key, cursor))
-        # LIMIT page_size + 1: the extra row is a SENTINEL, not data. Getting it
+        # LIMIT size + 1: the extra row is a SENTINEL, not data. Getting it
         # back proves more rows exist; not getting it proves they do not. That is
         # the has-more signal, and it is computed HERE from a row count we asked
         # for, independent of anything the hub decides.
@@ -883,8 +889,20 @@ async def read_all(
         # is permanently false. `truncated` answers "did the hub cut an UNBOUNDED
         # result"; it was read here as "are there more rows", which is a different
         # question the hub is not being asked.
-        sql = f"SELECT {selected} FROM {relation}{predicate} ORDER BY {ordering} LIMIT {int(page_size) + 1}"
-        page = await client.query(datasource_name, sql, params=params)
+        sql = f"SELECT {selected} FROM {relation}{predicate} ORDER BY {ordering} LIMIT {int(size) + 1}"
+        try:
+            page = await client.query(datasource_name, sql, params=params)
+        except DatasourceQueryError as exc:
+            # more bytes than one reply may carry: the same rows in smaller pages. Row counts
+            # cannot bound bytes when one row can be a thousand times another (a polygon)
+            if exc.error_code != RESULT_TOO_LARGE or size == 1:
+                raise
+            size = max(1, size // 2)
+            log.info(
+                "read_all page too large for one reply; halving it",
+                extra={"extra_data": {"datasource": datasource_name, "relation": relation, "page_size": size}},
+            )
+            continue
 
         if not page.rows:
             if previous_had_more:
@@ -897,7 +915,7 @@ async def read_all(
                 )
             return await _proven(client, datasource_name, relation, key, rows, before, filters)
 
-        had_more = len(page.rows) > page_size
+        had_more = len(page.rows) > size
         if not had_more:
             # No sentinel: the warehouse had nothing past this page, so every row
             # is safe to keep and there is no boundary to worry about.
@@ -906,27 +924,27 @@ async def read_all(
 
         # A KEY GROUP MUST NOT STRADDLE THE BOUNDARY. The next page asks for rows
         # strictly greater than the cursor, so any row sharing the cursor's key is
-        # unreachable once we move past it. Trimming blindly at page_size splits a
+        # unreachable once we move past it. Trimming blindly at size splits a
         # run of equal keys and silently drops its tail -- a 7-row relation with a
         # 3-run in the middle returned 6 rows and reported success.
         #
         # So the trailing group is dropped from this page and re-read at the head
         # of the next one. It costs re-reading at most one group per page and it
         # is what makes the promise hold for a key that is unique only by promise.
-        kept = page.rows[:page_size]
-        sentinel_key = tuple(page.rows[page_size][column] for column in key)
+        kept = page.rows[:size]
+        sentinel_key = tuple(page.rows[size][column] for column in key)
         while kept and tuple(kept[-1][column] for column in key) == sentinel_key:
             kept.pop()
 
         if not kept:
             # Every row in the page shares the sentinel's key, so the group is
             # larger than the page and no page size below it can advance. Raising
-            # names the cause; a bigger page_size is the fix when the group is
+            # names the cause; a bigger size is the fix when the group is
             # genuinely smaller than the cap.
             raise IncompleteReadError(
                 f"{datasource_name}: a single value of {tuple(key)} fills an entire page of "
-                f"{page_size} rows in {relation}, so paging cannot step past it without dropping "
-                f"rows. {tuple(key)} is not unique. read with a larger page_size, or use a key "
+                f"{size} rows in {relation}, so paging cannot step past it without dropping "
+                f"rows. {tuple(key)} is not unique. read with a larger size, or use a key "
                 f"that is."
             )
 
@@ -943,6 +961,8 @@ async def read_all(
         rows.extend(kept)
         cursor = advanced
         previous_had_more = had_more
+        # back toward the asked-for size: one oversized stretch should not slow the rest
+        size = min(page_size, size * 2)
 
     raise IncompleteReadError(
         f"{datasource_name}: still reading after {max_pages} pages ({len(rows)} rows). raising rather than "

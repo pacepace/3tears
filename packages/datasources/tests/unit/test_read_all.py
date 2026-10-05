@@ -35,6 +35,8 @@ import pytest
 
 from threetears.datasources.drivers.sql_fragments import translate_placeholders
 from threetears.datasources.query_client import (
+    RESULT_TOO_LARGE,
+    DatasourceQueryError,
     DatasourceQueryResult,
     IncompleteReadError,
     RelationFingerprintRequest,
@@ -1096,3 +1098,46 @@ def test_the_equality_filter_binds_its_values() -> None:
         ["State", "x"],
     )
     assert build_equality_filter(None) == ("", [])
+
+
+class _ByteCappedWarehouse(_PagingWarehouse):
+    """a hub that refuses a page whose rows weigh more than one reply may carry.
+
+    Each row's weight is its ``period``'s length here; the refusal is the hub's typed code,
+    as the broker answers an oversized reply rather than leaving the caller to time out.
+    """
+
+    def __init__(self, dataset: list[dict[str, Any]], budget: int) -> None:
+        super().__init__(dataset)
+        self.budget = budget
+        self.limits: list[int] = []
+
+    async def query(
+        self, datasource_name: str, query: str, *, params: list[Any] | None = None, **_: Any
+    ) -> DatasourceQueryResult:
+        page = await super().query(datasource_name, query, params=params)
+        self.limits.append(_limit_of(query))
+        if sum(len(r["period"]) for r in page.rows) > self.budget:
+            raise DatasourceQueryError(RESULT_TOO_LARGE, "too large for one reply")
+        return page
+
+
+class TestAPageTooLargeForOneReplyIsReadInSmallerPages:
+    @pytest.mark.asyncio
+    async def test_a_heavy_stretch_shrinks_the_page_and_every_row_still_comes_back(self) -> None:
+        dataset = [_row(f"s{i:02d}", "x" * (40 if i == 7 else 1)) for i in range(20)]
+        warehouse = _ByteCappedWarehouse(dataset, budget=45)
+
+        rows = await _read(warehouse, page_size=8)
+
+        assert [r["jurisdiction"] for r in rows] == [f"s{i:02d}" for i in range(20)]
+        # shrank around the heavy row, then grew back toward the asked-for size
+        assert min(warehouse.limits) < 9
+        assert warehouse.limits[-1] == 9
+
+    @pytest.mark.asyncio
+    async def test_a_single_row_too_large_for_a_reply_is_refused_not_looped(self) -> None:
+        warehouse = _ByteCappedWarehouse([_row("s00", "x" * 50)], budget=10)
+        with pytest.raises(DatasourceQueryError) as raised:
+            await _read(warehouse, page_size=8)
+        assert raised.value.error_code == RESULT_TOO_LARGE
