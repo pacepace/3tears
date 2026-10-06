@@ -19,7 +19,9 @@ then never name the host::
   omitted).
   ``--max-cost-usd`` caps each run at or below the host's ceiling, as ``run_launch``'s ``max_cost_usd``
   does — it may only lower the host's ceiling, never raise it, and naming it is how a launch chooses
-  the cap an unpriceable arm runs under rather than inheriting one nobody chose. ``--n-variations`` and
+  the cap an unpriceable arm runs under rather than inheriting one nobody chose. ``--judge-model`` and
+  ``--simulator-model`` pin the judge and the simulated user, as ``run_launch``'s ``judge_model`` and
+  ``simulator_model`` do; omitted, the kind's own defaults apply. ``--n-variations`` and
   ``--variation-model`` generate the cases first, as ``run_launch``'s ``n_variations`` and
   ``variation_model`` do; the generation calls run before the runs and are outside their cost cap,
   so they are priced against the host's out-of-run cap before they are made. ``--apparatus-settings``
@@ -233,6 +235,18 @@ def build_parser(
         help="a per-run cost cap in dollars, at or below the host's ceiling (as run_launch's max_cost_usd)",
     )
     run.add_argument(
+        "--judge-model",
+        default=None,
+        metavar="MODEL",
+        help="the judge model, where the kind is model-judged (as run_launch's judge_model)",
+    )
+    run.add_argument(
+        "--simulator-model",
+        default=None,
+        metavar="MODEL",
+        help="the simulated user's model, where the kind has one (as run_launch's simulator_model)",
+    )
+    run.add_argument(
         "--n-variations",
         type=int,
         default=0,
@@ -379,6 +393,8 @@ async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
         k_runs=args.k,
         scope_id=args.scope,
         max_cost_usd=args.max_cost_usd,
+        judge_model=args.judge_model,
+        simulator_model=args.simulator_model,
         n_variations=args.n_variations,
         variation_model=args.variation_model,
         apparatus_settings=args.apparatus_settings,

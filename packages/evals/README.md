@@ -64,8 +64,8 @@ returning an `EvalHost`, or a `LaunchHost` for `run`:
 
 ```
 python -m threetears.evals run    --host myapp.evals:build_host --scope dev --template T --subject S [--model M ...]
-                                  [--k N] [--max-cost-usd DOLLARS] [--n-variations N] [--variation-model MODEL]
-                                  [--apparatus-settings JSON]
+                                  [--k N] [--max-cost-usd DOLLARS] [--judge-model MODEL] [--simulator-model MODEL]
+                                  [--n-variations N] [--variation-model MODEL] [--apparatus-settings JSON]
 python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
 python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out PATH]
 python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
@@ -75,7 +75,8 @@ python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--p
 `run` launches, waits and prints each run's summary. Each `--model` is one arm and one run; with no
 `--model` the kind runs one arm on its own default model, and a kind with no default refuses the launch.
 `--k` is the repeats per case (the launch default when omitted); `--max-cost-usd` caps each run at or
-below the host's ceiling (a launch may only lower that ceiling; a value above it is refused); `--n-variations` and `--variation-model` generate that many cases first (priced against
+below the host's ceiling (a launch may only lower that ceiling; a value above it is refused); `--judge-model` and `--simulator-model` pin the judge and the simulated user
+(omitted, the kind's defaults apply); `--n-variations` and `--variation-model` generate that many cases first (priced against
 the host's out-of-run cap, outside the runs' caps); `--apparatus-settings` sets host-declared apparatus
 values as a JSON object — each as `start_run`'s argument of the same name. `report` prints the campaign's
 report (below) — its analysis, or, when it has none, a code-only report of its evidence; `bundle` prints the
