@@ -438,6 +438,12 @@ _NEGATED_FORMS = [
     'not any(it == "x" for it in state.chat.tags)',
     'not all(it == "x" for it in state.chat.tags)',
     'state.chat.status != "open"',
+    # A list literal holding a missing element is itself missing, so building one around a path
+    # does not launder the unknown into an answer.
+    'not contains([state.chat.status], "open")',
+    'not intersects([state.chat.status], ["open"])',
+    'not ([state.chat.status] == ["open"])',
+    'not ((state.chat.status, 1) == ("open", 1))',
 ]
 
 

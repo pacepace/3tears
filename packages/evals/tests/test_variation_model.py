@@ -413,6 +413,63 @@ async def test_a_battery_hands_the_writer_only_to_the_templates_with_an_llm_axis
     assert writers == {"written": WRITER, "enumerated": None}
 
 
+async def test_a_battery_prepares_the_templates_a_model_writes_last_so_an_earlier_refusal_pays_for_no_generation():
+    """The model-written template is listed FIRST; the enumerated one's preparation refuses, and no writer call is bought.
+
+    Preparing a model-written template generates its cases, which is paid; in listed order its generation would be
+    bought and then abandoned with everything else.
+    """
+    written = _template(LLM_AXIS, template_id="written", universal=True)
+    enumerated = _template(ENUM_AXIS, template_id="enumerated", universal=True)
+    host, storage, clients, handed = _generating_host(written, enumerated)
+    (launchable,) = host.kinds.values()
+
+    async def refuses_enumerated(request: LaunchRequest) -> EvalRun:
+        if request.template.id == "enumerated":
+            handed.append(request)
+            raise ValidationFailedError("the enumerated template's subject cannot be captured")
+        return await launchable.launch(request)
+
+    refusing = replace(host, kinds={TOY_EXTRACTOR_KIND: replace(launchable, launch=refuses_enumerated)})
+
+    with pytest.raises(ValidationFailedError, match="cannot be captured"):
+        await start_universal_battery(
+            refusing,
+            TOYHOST_SUBJECT.subject_id,
+            scope_id=TOYHOST_SCOPE,
+            models=[RUN_MODELS[0]],
+            n_variations=2,
+            variation_model=WRITER,
+            preflight=_no_preflight,
+        )
+
+    assert [request.template.id for request in handed] == ["enumerated"], "the written template was never prepared"
+    assert sum(writer.calls for writer in clients.writers) == 0, "no generation was paid for"
+    assert storage.query_eval_runs(TOYHOST_SCOPE) == []
+
+
+async def test_a_battery_returns_its_run_ids_in_the_templates_order_whatever_order_it_prepared_them_in():
+    written = _template(LLM_AXIS, template_id="written", universal=True)
+    enumerated = _template(ENUM_AXIS, template_id="enumerated", universal=True)
+    host, storage, _clients, handed = _generating_host(written, enumerated)
+
+    run_ids = await start_universal_battery(
+        host,
+        TOYHOST_SUBJECT.subject_id,
+        scope_id=TOYHOST_SCOPE,
+        models=[RUN_MODELS[0]],
+        n_variations=2,
+        variation_model=WRITER,
+        preflight=_no_preflight,
+    )
+    await _settled(host, run_ids)
+
+    templates_listed = [t.id for t in storage.query_templates(TOYHOST_SCOPE) if t.universal]
+    stored = [storage.load_eval_run(run_id, TOYHOST_SCOPE) for run_id in run_ids]
+    assert [run.template_id for run in stored if run is not None] == templates_listed
+    assert [request.template.id for request in handed] == ["enumerated", "written"], "prepared paying-last"
+
+
 async def test_a_battery_refuses_a_writer_none_of_its_templates_uses():
     host, storage, clients, handed = _generating_host(_template(ENUM_AXIS, universal=True))
 

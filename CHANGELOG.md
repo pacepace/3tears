@@ -6,19 +6,79 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a list literal cannot launder a missing value, a failed candidate's stored result counts every check, a cell that ended before turn 1 does not fail a perturbed run, one launch-cost rule, hold checks over an unfired event are provable again
+
+- **A list or tuple literal holding a missing element is itself missing.** ``not contains([state.x], "y")``,
+  ``not intersects([state.x], [...])`` and ``not ([state.x] == [...])`` held over an end state without ``x``:
+  the literal kept the ``Missing`` as an ordinary element that equals nothing. Such a literal now evaluates to
+  ``Missing``, so each is graded failed and not established, as every other shape over a missing value already
+  was. **Adopters (goal-check semantics):** a check over a literal that names an absent path no longer passes;
+  one over a literal of present values is unchanged.
+- **A failed candidate's STORED result carries every template check as failed.** ``hold_to_goal_checks`` synthesized
+  the not-evaluated outcomes and handed them to the judge only; the stored ``goal_state_outcomes`` were the
+  kind's raw facts, so a candidate failing before its kind graded anything dropped out of every per-check rate
+  and inflated it. ``assemble_completed_cell`` — the one assembly every completed cell passes through — now holds
+  the output to the template's checks (new keyword ``goal_checks``). A judged witnessed cell is held to its
+  template's checks too: a failed one stores each ungraded check as failed, and a clean one that graded fewer
+  than the template declares is refused before the judge is paid. ``judge_witnessed_output`` takes
+  ``goal_outcomes``. **Adopters:** a host recording judged witnessed cells against a template with goal checks
+  grades them (``grade_goal_checks``) or judges against a template without checks.
+- **A cell that ended before turn 1 no longer fails a perturbed run.** **Breaking:**
+  ``WorldSession.require_schedule_announced`` takes a required keyword ``ran_its_course``. Announcing no turn is
+  refused only for a cell that ran its course — no candidate or infra error, no cost-cap breach, and a
+  conversation (if any) stopped on ``max_turns``. A simulator or rig fault, a candidate failing first, the cap
+  reached before the first answer (the run still ends ``budget_stopped``), or every actor leaving before
+  anything was delivered may all end a cell before turn 1, and used to end the whole run with
+  ``WorldSessionError``. The gap check (turns announced with one skipped) still holds for every cell.
+- **One launch-cost rule is exported.** **Breaking:** ``analysis.estimate_cost`` and ``analysis.estimate_launch_cost``
+  are removed. Both priced from history pooled across every judge, simulator and rig and counted cases through a
+  host callback, so the figure they showed could admit a launch the launch's own pricing refused, or the
+  reverse. **Adopters:** price a launch with ``ops.launch_estimate`` (``run.quote_launch``), which runs the
+  launch's own plans and pricer and launches nothing; ``analysis.compute_estimate_cost`` remains the pure
+  history computation the launch pricer is built on, and ``scope_pivot``'s ``predicted_cost`` still takes its
+  ``CostEstimate``.
+- **The controls gate proves a hold check over an unfired event dimension again.** The do-nothing control models
+  an ``event`` or ``human`` dimension the seed arms as *known absent* — present, holding ``None`` — rather than
+  leaving it out, where the three-valued change read it as ``Missing`` and refused
+  ``not state.payment_hold == "held"`` as "the same verdict on both". A check that a control holds nothing for is
+  now refused for that reason, naming which control and pointing at ``fired()`` / ``fired_armed()``, never as
+  not depending on what the candidate did. **Adopters:** templates whose hold checks the previous change refused
+  on their authoring write are admitted again; a host whose ``read`` answers something other than ``None`` for
+  an unfired dimension proves that agreement in its own suite, as the gate's docstring says.
+- **An alternate judge is recorded as one.** New ``contracts.RoleModelOrigin`` (``chosen`` / ``inherited`` /
+  ``alternate``) types ``EvalRun.model_role_provenance``; a run whose launch named no judge and whose judge is the
+  host's ``judge_alternate_model`` records ``alternate`` rather than ``inherited``. ``ModelRoleOrigin`` (still
+  two-valued) keeps typing ``judge_config_provenance``. Stored shape: a widened value set under the unreleased
+  ``EVAL_SCHEMA_VERSION`` 7, no bump.
+- **The battery prepares the templates a model writes last.** Preparing one generates its cases, which is paid,
+  so every stored-case and enumerated template's preparation now makes its refusals first and a refusal there
+  pays for no generation. A model-written template's preparation refusing after an earlier one's generation was
+  paid still loses that spend (held to that launch's out-of-run cap) — documented on ``start_universal_battery``.
+  Run ids are still returned, and groups started, in the templates' order.
+- **A witnessed cell recorded twice counts both judgements.** ``WitnessedJudging`` counted the latest judgement
+  per result id, so re-recording a cell judged it again for free against the ceiling. Every judgement now counts:
+  a re-record's earlier judgement (unsaved, saved, or the one the store held before) stays counted although the
+  store keeps the later. ``WitnessedJudging.admitting()`` yields nothing (it yielded the unsaved map); new
+  ``spent(saved)`` and ``judged_ids``.
+- **Wording.** The mid-conversation cap's overshoot is at most two simulator calls (an ``llm_decided`` decision
+  and its one repair), not one, now pinned by a test; a cap reached as the last actor leaves records
+  ``user_done`` deliberately, said in ``drive_conversation``'s docstring. A ``_base_never_landed`` site the toy
+  host cannot reach says why it stays. ``run_eval``'s overlays/spec refusal has firing tests.
+
 ### 3tears-evals: a conversation is held to the run's cost cap and answers its last round, simulator spend is stored per actor, run_eval refuses a host with no callable contract, the CLI's own exit code for an unanticipated error, and three store-kit gaps
 
 - **A conversation asks the run's cost cap before every paid call.** **Breaking:** ``drive_conversation`` takes a
-  required keyword ``sink`` (the cell's ``CellSink``). Before each scheduling pick, utterance and candidate answer it
-  asks ``sink.cost_cap_reached(driver.cost_usd)`` — new on the ``CellSink`` protocol, answered by the run's cap
+  required keyword ``sink`` (the cell's ``CellSink``). Before each scheduling pick, utterance and candidate answer
+  it asks ``sink.cost_cap_reached(driver.cost_usd)`` — new on the ``CellSink`` protocol, answered by the run's cap
   counting the simulator's spend so far (unpriced spend reaches an enforcing cap) — and when the cap is reached it
   stops under the new ``ConversationStopCause.BUDGET_STOPPED`` without making the call. The runner puts an infra
   error naming the breach on that cell, which excludes it, and raises ``BudgetStoppedError`` once the cell is saved,
-  so a cut-short last cell still ends the run ``budget_stopped``. Before, the cap was looked at only between cells, and
-  one conversation could make over 6,000 simulator calls at the schema's maxima after a sibling had tripped it; the
-  worst case is now written in the simulator module's *Spend*, and the overshoot is one simulator call plus the cell's
-  candidate spend. ``EvalRunCostCap.check`` takes an optional ``pending_usd`` (the running cell's uncounted spend),
-  and ``execute_run``'s ``budget_gate`` is called with it (``0.0`` between cells). New ``TurnDriver.cost_usd``. A
+  so a cut-short last cell still ends the run ``budget_stopped``. Before, the cap was looked at only between cells,
+  and one conversation could make over 6,000 simulator calls at the schema's maxima after a sibling had tripped it;
+  the worst case is now written in the simulator module's *Spend*, and the overshoot is at most two simulator calls
+  (an ``llm_decided`` decision and its one repair; one call under ``round_robin``) plus the cell's candidate spend.
+  ``EvalRunCostCap.check`` takes an optional ``pending_usd`` (the running cell's uncounted spend), and
+  ``execute_run``'s ``budget_gate`` is called with it (``0.0`` between cells). New ``TurnDriver.cost_usd``. A
   witnessed cell refuses ``budget_stopped`` beside the simulator's two causes. **Adopters:** pass ``sink=sink`` to
   ``drive_conversation``.
 - **The last actor leaving mid-round is answered first.** When the last actor present said ``done`` after others had
@@ -92,10 +152,11 @@ packages (bumped in lock-step).
   checks (the toy extractor's ``goal_checks`` is now required, with no default).
 - **A perturbation schedule the kind never announced is refused.** New ``WorldSession.require_schedule_announced``
   (the runner calls it after ``invoke`` for an opened world) and ``WorldSession.announced_turns``: when the seed
-  schedules ambient perturbation, a kind that announced no turn through ``at_turn`` — or announced turns with a
-  gap — ends the run with ``WorldSessionError`` instead of recording an unperturbed cell under a perturbed
-  condition. A scheduled turn past the last one announced is a turn the cell never reached, as before.
-  **Adopters:** a kind running under a schedule calls ``world.at_turn(n)`` before every turn it takes, from 1.
+  schedules ambient perturbation, a kind that announced no turn through ``at_turn`` in a cell that ran its course
+  (see the section above for which cells those are) — or announced turns with a gap, in any cell — ends the run with
+  ``WorldSessionError`` instead of recording an unperturbed cell under a perturbed condition. A scheduled turn past
+  the last one announced is a turn the cell never reached, as before. **Adopters:** a kind running under a schedule
+  calls ``world.at_turn(n)`` before every turn it takes, from 1.
 - **World conformance verifies its base world.** Every check composing over the base world reads each base value
   back; one that did not land records the check ``unavailable`` / ``seeding_did_not_take`` naming the base
   dimension, so a dead seeder on a base dimension is one finding (its round trip) rather than nine across five
@@ -281,8 +342,8 @@ packages (bumped in lock-step).
   every kind — router, forge, session — a ``plan_arm`` that plans a stored-case arm too:
   ``ArmPlan(case_count=<stored, unarchived cases of the template> if request.n_variations == 0 else
   request.n_variations, candidate_model=require_candidate_model(request, <the kind's role default>), judge=...,
-  simulator_model=...)`` (``stored_case_counter`` already answers the count; ``judge`` and ``simulator_model`` as
-  the entry above says), raising
+  simulator_model=...)`` (the kind counts the stored cases itself — ``OpsHost``'s ``stored_case_counter`` is
+  removed, as the later section above says; ``judge`` and ``simulator_model`` as that section says), raising
   ``ValidationFailedError`` for a template with no stored case; keep ``launch_pricer=history_launch_pricer(...)``.
   Expect stored-case launches that a single priced result used to admit to be refused under the inherited
   cap until enough priced results launched the same way exist to bound it (``COST_ESTIMATE_MIN_BASIS``): launch once naming ``max_cost_usd``. A host

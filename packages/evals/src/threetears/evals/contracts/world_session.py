@@ -293,7 +293,7 @@ class WorldSession:
         """The turns the kind announced through :meth:`at_turn`, ascending."""
         return tuple(sorted(self._announced))
 
-    def require_schedule_announced(self) -> None:
+    def require_schedule_announced(self, *, ran_its_course: bool) -> None:
         """Refuse a cell whose kind never told the session which turns it took, when the seed scheduled perturbation.
 
         The run's identity keys its condition on the scheduled turns
@@ -304,19 +304,34 @@ class WorldSession:
         do the same. A scheduled turn past the last one announced is a turn the cell never reached, which is
         an honest outcome — the result's ``world_events`` carry each perturbation actually applied.
 
+        **Announcing nothing is refused only for a cell that ran its course**: one that carries no error, was
+        not stopped by the run's cost cap, and whose conversation, if it had one, stopped on its turn budget.
+        Any other cell may have ended before turn 1 — a simulator or rig fault, a candidate failing first, the
+        cap reached before the first answer, every simulated actor leaving before anything was delivered — and
+        then announcing nothing is the truth, not a defect; such a cell is excluded, failed or stops the run on
+        its own terms. A kind that never announces still fails on every cell that ran its course. The gap
+        check holds for every cell: turns a kind did announce are its turns, however the cell ended.
+
         Called by the runner once ``invoke`` has returned, for a world the kind opened.
 
+        Args:
+            ran_its_course: Whether the cell ran to its own end — see above. The runner derives it from the
+                kind's output and the cell's sink.
+
         Raises:
-            WorldSessionError: The seed scheduled perturbation and the kind announced no turn, or announced
-                turns with a gap (they must run 1, 2, … without one).
+            WorldSessionError: The seed scheduled perturbation and a cell that ran its course announced no
+                turn, or any cell announced turns with a gap (they must run 1, 2, … without one).
         """
         if not self._ambient_turns:
             return
         if not self._announced:
+            if not ran_its_course:
+                return
             raise WorldSessionError(
                 "the seed schedules ambient perturbation before turn(s) "
-                f"{sorted(self._ambient_turns)!r}, and the kind announced no turn through at_turn(), so none was "
-                "applied while the run is keyed as perturbed; a kind calls world.at_turn(n) before each turn it takes"
+                f"{sorted(self._ambient_turns)!r}, and the kind announced no turn through at_turn() in a cell that "
+                "ran its course, so none was applied while the run is keyed as perturbed; a kind calls "
+                "world.at_turn(n) before each turn it takes"
             )
         if gaps := sorted(set(range(1, max(self._announced) + 1)) - self._announced):
             raise WorldSessionError(

@@ -710,7 +710,8 @@ def count_substituted_deliveries(result: EvalResult) -> int:
 
     **Not every cost surface passes through this guard, and the ones that do not are still
     wrong for the same underlying reason.** Export, pivot and history project
-    ``PROJECTED_METRICS`` off raw ``result.cost_usd``, and :func:`estimate_cost` pools that
+    ``PROJECTED_METRICS`` off raw ``result.cost_usd``, and
+    :func:`~threetears.evals.analysis.reporting.compute_estimate_cost` (the launch pricer's basis) reads that
     same blended field — none of them reach production-replicating cost at all, so a result
     that replayed a DELIVERY understates them and this function is not what would fix it.
     That half is open; do not read this docstring as saying it is closed.

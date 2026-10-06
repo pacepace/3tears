@@ -31,7 +31,7 @@ interprets. The host chooses what a scope is and passes it through.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 
@@ -39,7 +39,6 @@ from threetears.evals.analysis.reporting import (
     DEFAULT_WEIGHTING,
     METRIC_COMPOSITE,
     CostEstimate,
-    CostEstimateError,
     PlannedCost,
     ExportError,
     FrontierError,
@@ -51,7 +50,6 @@ from threetears.evals.analysis.reporting import (
     cassette_mode_disclosure,
     completeness_disclosure,
     compute_comparison_sets,
-    compute_estimate_cost,
     compute_frontier,
     compute_history,
     compute_orphaned_runs,
@@ -68,7 +66,6 @@ from threetears.evals.analysis.stats import composite_significance
 from threetears.evals.contracts.arguments import normalize_blank
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
 from threetears.evals.contracts.host.profile import HostProfile
-from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS
 from threetears.evals.contracts.scoring import (
     compute_composite_summary,
     compute_cost_summary,
@@ -398,10 +395,11 @@ def pivot(
             same reason as :func:`comparison_sets` — an in-flight run's cells
             are still arriving. ``"all"`` aggregates over every run.
         predicted_cost: The estimate the caller made before these runs, as
-            :func:`estimate_cost` or :func:`estimate_launch_cost` returned it — the model, or its JSON
+            :func:`~threetears.evals.analysis.reporting.compute_estimate_cost` returned it — the model, or its JSON
             form as a caller across a wire holds it — or the planned costs of a launch its host's pricer priced
-            (:class:`~threetears.evals.analysis.reporting.PlannedCost`). Each cost cell at a planned model then carries
-            that model's predicted cost per observation beside the cost it observed. ``None`` shows
+            (:class:`~threetears.evals.analysis.reporting.PlannedCost`, which
+            :func:`~threetears.evals.ops.launch_estimate`'s ``LaunchEstimate`` is). Each cost cell at a planned model
+            then carries that model's predicted cost per observation beside the cost it observed. ``None`` shows
             observed cost alone.
         profile: The host whose vocabulary this reads.
 
@@ -779,232 +777,6 @@ def export_results(
         return export_projection(projection, fmt=fmt)
     except ExportError as e:
         raise ValidationFailedError(str(e)) from e
-
-
-def estimate_cost(
-    storage: LensStore,
-    scope_id: str,
-    *,
-    list_runs: RunLister,
-    load_template: Callable[[str], EvalTemplate],
-    count_template_cases: Callable[[str, str, str], int],
-    models: list[str],
-    k_runs: int = DEFAULT_LAUNCH_K_RUNS,
-    n_test_cases: int | None = None,
-    n_settings: int = 1,
-    n_new_cases: int = 0,
-    cassette_mode: str | None = None,
-    subject_id: str | None = None,
-    template_id: str | None = None,
-    profile: HostProfile,
-) -> CostEstimate:
-    """Predict a proposed sweep's cost from the scope's historical per-cell costs.
-
-    Composed over ``list_runs`` plus the scope's results and delegated
-    to :func:`~threetears.evals.analysis.reporting.compute_estimate_cost`. Reads **every** run
-    regardless of status: a failed run's results are still complete
-    per-observation cost samples, so excluding them would only narrow the
-    historical basis.
-
-    **The case count is derived from the template when the caller names one.**
-    ``template_id`` used to filter the historical *basis* only, so naming the
-    template you were about to sweep still priced 1 case — a 5-case template
-    came out at a fifth of its cost, and the error scales with ``k_runs`` ×
-    model count. Underpricing
-    is the harmful direction — the sweep then meets ``max_cost_usd`` partway,
-    which is the failure the estimate exists to prevent. An explicit
-    ``n_test_cases`` still wins, since pricing a hypothetical grid is a real
-    use. The derivation counts the template's PERSISTED cases in this scope
-    — what a launch with ``n_variations=0`` would run, which is the host's answer
-    (``count_template_cases``) because where a kind's cases come from is its own; a
-    launch that generates variations instead is a different grid: ``n_new_cases`` states it,
-    and it is priced as that many cases — an upper bound, because generation de-duplicates.
-
-    ``template_id`` is RESOLVED here rather than passed through as an opaque
-    filter string. It has to be, to count the cases — and it closes a gap on
-    the way: a mistyped id used to yield an empty basis reported as "no
-    historical cost at this cassette mode / template", sending the reader to
-    check the mode.
-
-    Args:
-        storage: Where the scope's results are read (:class:`LensStore`).
-        scope_id: Partition key — the scope whose history to draw from.
-        list_runs: The run listing (:data:`RunLister`).
-        load_template: Loads a template by id, raising ``NotFoundError`` for an unknown one.
-        count_template_cases: ``(template_id, candidate_kind, scope_id) -> int`` — how many
-            cases a launch of the template would run from what is stored in the scope. The
-            host's, because where a kind's cases come from (stored, frozen, minted at launch)
-            is a fact about the kinds it can launch.
-        models: The candidate models the proposed sweep would run.
-        k_runs: Proposed iterations per test case.
-        n_test_cases: Proposed test-case count. ``None`` derives it from
-            ``n_new_cases`` when that is positive, else from ``template_id`` when one is
-            given, and otherwise falls back to 1.
-        n_settings: How many settings each model runs at — a campaign launch's
-            ``variations``. Each model's cell prices that many arms.
-        n_new_cases: Cases the proposed launch GENERATES before its arms run (a launch's
-            ``n_variations``). A launch that generates runs those cases rather than the
-            stored ones, so the stored count would price the wrong grid.
-        cassette_mode: The proposed run's cassette mode; ``None`` or blank
-            takes ``"off"``. History is matched to it (cassette-aware cost).
-        subject_id: Optional — restrict the historical basis to one subject.
-        template_id: Optional — restrict the historical basis to one template,
-            and derive the case count from it. A template fixes the test cases,
-            so it drives cost far harder than the subject does; pass the one
-            the proposed sweep will run.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The :class:`~threetears.evals.analysis.reporting.CostEstimate`,
-        carrying ``n_test_cases_source`` (``"supplied"`` | ``"derived"`` |
-        ``"default"``), ``template_case_count`` and ``template_candidate_kind``.
-        Those three are RESOLVED here and echoed by the projection — the
-        reporting function is pure over runs and results and cannot open a
-        template — the same shape ``subject_id`` and ``template_id`` already use.
-        The kind rides along because a zero case count means opposite things for
-        a ``conversational-turn`` template (nothing to sweep) and a ``classifier``
-        one (cases minted at launch from the subject's bank).
-
-    Raises:
-        NotFoundError: ``template_id`` names no template in the scope.
-        ValidationFailedError: The proposal is malformed — no models, or a
-            non-positive grid — a question the caller can restate; or
-            ``count_template_cases`` refuses the template's stored cases, as the
-            launch being priced would.
-    """
-    cassette = normalize_blank(cassette_mode, "off")
-    subject = (subject_id or "").strip() or None
-    template = (template_id or "").strip() or None
-
-    template_case_count: int | None = None
-    template_kind: str | None = None
-    if template:
-        # The kind travels with the count off the SAME read. What a zero case count
-        # means is the kind's answer, not the count's — a classifier's cases are minted
-        # at launch from the subject's snapshot bank, so zero persisted cases is its
-        # ordinary state, while for a conversational template it is an empty sweep. A
-        # renderer holding only the number has to guess between them.
-        template_kind = load_template(template).candidate_kind  # NotFoundError on a typo, before any pricing
-        # Where the kind's cases come from is the host's answer, so the count is the host's:
-        # for a kind whose cases are minted at launch it is usually zero, which the renderers
-        # read off the kind rather than the count.
-        template_case_count = count_template_cases(template, template_kind, scope_id)
-
-    if n_new_cases < 0:
-        raise ValidationFailedError(f"n_new_cases must be 0 (price the stored cases) or more; got {n_new_cases}")
-    source: Literal["supplied", "derived", "generated", "default"]
-    if n_test_cases is not None:
-        n_cases, source = n_test_cases, "supplied"
-    elif n_new_cases > 0:
-        n_cases, source = n_new_cases, "generated"
-    elif template_case_count:
-        n_cases, source = template_case_count, "derived"
-    else:
-        # Either no template was named, or the named one has no persisted cases
-        # in this scope. Both fall back to 1 and SAY they did — pricing an
-        # empty template at $0.00 would be a confidently wrong answer, and the
-        # renderers name the zero-case condition off `template_case_count`.
-        n_cases, source = 1, "default"
-
-    # Corpus, archived included — `estimate_cost` reads history to predict what a
-    # proposed sweep will cost, and an archived run's observed per-result cost is
-    # still a real measurement of what a run of that shape spends. Its parameters
-    # were `estimate_cost(runs=corpus runs, results=corpus results)` before this
-    # curation surface existed, and that contract is unchanged.
-    runs = list_runs(scope_id, include_archived=True)
-    results = storage.query_eval_results(scope_id)
-    try:
-        estimate = compute_estimate_cost(
-            runs,
-            results,
-            models=models,
-            k_runs=k_runs,
-            n_test_cases=n_cases,
-            n_settings=n_settings,
-            n_test_cases_source=source,
-            template_case_count=template_case_count,
-            template_candidate_kind=template_kind,
-            cassette_mode=cassette,
-            subject_id=subject,
-            template_id=template,
-            profile=profile,
-        )
-    except CostEstimateError as e:
-        raise ValidationFailedError(str(e)) from e
-    return estimate
-
-
-def estimate_launch_cost(
-    storage: LensStore,
-    campaign_id: str,
-    scope_id: str,
-    *,
-    list_runs: RunLister,
-    load_template: Callable[[str], EvalTemplate],
-    count_template_cases: Callable[[str, str, str], int],
-    n_settings: int,
-    models: list[str],
-    k_runs: int = DEFAULT_LAUNCH_K_RUNS,
-    n_new_cases: int = 0,
-    profile: HostProfile,
-) -> CostEstimate:
-    """Price a campaign launch before it is made, from the same arguments the launch takes.
-
-    The launch shape is ``n_settings × models`` arms, each running the campaign's template's
-    cases ``k_runs`` times — or the ``n_new_cases`` cases the launch would generate instead.
-    Pricing it here, from the launch's own arguments and the campaign's own template, is what
-    keeps the multiplication in one place: a form that multiplied a per-model figure by its
-    own count of settings would be a second derivation of the grid, free to disagree with
-    the one the launch runs.
-
-    The basis is filtered to the campaign's template and NOT to its subject. The template
-    fixes the cases and so drives cost hardest; a subject filter would leave a subject's
-    first campaign with no history at all, and dollars pool across subjects where quality
-    does not. The response echoes ``subject_id: null`` so a reader can see which it was.
-
-    Args:
-        storage: Where the campaign and the scope's results are read (:class:`LensStore`).
-        campaign_id: The campaign whose template the arms would run.
-        scope_id: The campaign's scope, whose history prices the launch — the one its runs will live in.
-        list_runs: The run listing (:data:`RunLister`).
-        load_template: Loads a template by id, raising ``NotFoundError`` for an unknown one.
-        count_template_cases: How many cases a launch of a template would run, as
-            :func:`estimate_cost` takes it.
-        n_settings: How many settings the launch runs each model at — its ``variations``.
-        models: The launch's candidate models.
-        k_runs: Repeats per case, as the launch would take them.
-        n_new_cases: Cases the launch would generate first; 0 prices the stored cases.
-        profile: The host whose vocabulary this reads.
-
-    Returns:
-        The same :class:`~threetears.evals.analysis.reporting.CostEstimate` :func:`estimate_cost`
-        returns, carrying ``n_settings``.
-
-    Raises:
-        NotFoundError: No such campaign, or its template does not resolve.
-        ValidationFailedError: The campaign names no template, there are no settings, or the
-            grid is malformed — each of which the launch itself would refuse too.
-    """
-    campaign = _load_campaign(storage, campaign_id, scope_id)
-    if not campaign.template_id:
-        raise ValidationFailedError(
-            f"campaign {campaign_id!r} names no template, so there is nothing for its arms to run and nothing to price"
-        )
-    if not n_settings:
-        raise ValidationFailedError("a campaign launch needs at least one variation, so there is nothing to price")
-    return estimate_cost(
-        storage,
-        scope_id,
-        list_runs=list_runs,
-        load_template=load_template,
-        count_template_cases=count_template_cases,
-        models=models,
-        k_runs=k_runs,
-        n_settings=n_settings,
-        n_new_cases=n_new_cases,
-        template_id=campaign.template_id,
-        profile=profile,
-    )
 
 
 def run_summary(
@@ -1711,8 +1483,6 @@ __all__ = [
     "compare_runs",
     "compare_two_runs",
     "comparison_sets",
-    "estimate_cost",
-    "estimate_launch_cost",
     "export_results",
     "frontier",
     "history",

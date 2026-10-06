@@ -1661,6 +1661,18 @@ ApparatusProvenance = Literal["commissioned", "witnessed"]
 #: the only thing that still distinguishes the two.
 ModelRoleOrigin = Literal["chosen", "inherited"]
 
+#: How a run arrived at one of its resolved role MODELS — :data:`ModelRoleOrigin`'s two values plus
+#: ``alternate``: the launch named no judge, and the host's alternate judge
+#: (:attr:`~threetears.evals.run.LaunchSettings.judge_alternate_model`) scored, because the judge role's
+#: default was one of the launch's candidates (:func:`~threetears.evals.run.resolve_judge_pin`). Its own
+#: literal because only a role model can be stepped off: a judge config's origin
+#: (``judge_config_provenance``) is chosen or inherited and nothing else. Re-running the same launch
+#: arguments picks the alternate setting as it then stands, and only while the role default is still a
+#: candidate. Recorded from what the launch can see — no pin named, and the judge equal to the alternate
+#: setting — so a host whose alternate is set to the role default itself records ``alternate`` for that
+#: model too: the two settings named one model, and either reproduces it.
+RoleModelOrigin = Literal["chosen", "inherited", "alternate"]
+
 #: How a run arrived at the spend ceiling it ran under. Deliberately NOT
 #: :data:`ModelRoleOrigin`: that literal's two values cannot express the third state this
 #: cascade really has — a run can be bounded by nothing at all.
@@ -2061,11 +2073,13 @@ class EvalRun(EvalDocumentModel):
             "judged run that names no judge, or an unjudged run that names one."
         ),
     )
-    model_role_provenance: dict[str, ModelRoleOrigin] | None = Field(
+    model_role_provenance: dict[str, RoleModelOrigin] | None = Field(
         default=None,
         description=(
             "How each pinned role model was arrived at, keyed by role (``judge`` / ``simulator``): "
-            "``chosen`` = the launch named it, ``inherited`` = the role default supplied it. Kept "
+            "``chosen`` = the launch named it, ``inherited`` = the role default supplied it, "
+            "``alternate`` = the launch named no judge and the host's alternate judge scored in place of a "
+            "role default that was one of the launch's candidates (see ``RoleModelOrigin``). Kept "
             "beside the resolved pins because resolution makes the two indistinguishable on the "
             "value alone, and they answer different questions — the resolved model says what ran, "
             "the origin says whether re-running today would pick the same one. Deliberately NOT "

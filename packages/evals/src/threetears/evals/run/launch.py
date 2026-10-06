@@ -51,6 +51,7 @@ from threetears.evals.contracts.models import (
     EvalRun,
     JudgedArtifact,
     ModelRoleOrigin,
+    RoleModelOrigin,
     resolve_effective_judges,
     scored_dim_ids,
 )
@@ -2491,6 +2492,27 @@ def resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_mo
     return role_default
 
 
+def _judge_origin(request: LaunchRequest, judge_model: str) -> RoleModelOrigin:
+    """How an arm's judge was arrived at: named by the launch, its alternate stepped in, or the role default.
+
+    ``alternate`` when the launch named none and the judge is the host's alternate — the pin
+    :func:`resolve_judge_pin` steps to off a role default that is one of the launch's candidates (the
+    tail has already refused a launcher that kept such a default where the alternate stood ready).
+
+    Args:
+        request: The arm.
+        judge_model: The judge the launcher wired.
+
+    Returns:
+        The origin recorded on the run's ``model_role_provenance``.
+    """
+    if request.judge_model is not None:
+        return "chosen"
+    if judge_model == request.settings.judge_alternate_model:
+        return "alternate"
+    return "inherited"
+
+
 def _candidates_of(request: LaunchRequest, candidate_model: str) -> frozenset[str]:
     """Every candidate model of ``request``'s launch: each arm's, and this arm's own.
 
@@ -2713,9 +2735,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
         judge = wiring.judge
         # Whether each pinned role was named by the launch or resolved from the role's default: the
         # request says which, so the run records it without the launcher restating it.
-        role_provenance: dict[str, ModelRoleOrigin] = {}
+        role_provenance: dict[str, RoleModelOrigin] = {}
         if judge is not None:
-            role_provenance["judge"] = "chosen" if request.judge_model is not None else "inherited"
+            role_provenance["judge"] = _judge_origin(request, judge.model)
         if wiring.simulator_model is not None:
             role_provenance["simulator"] = "chosen" if request.simulator_model is not None else "inherited"
         # The eval ceilings arrive at the engine as values (R7): budget.py and metering.py
@@ -3045,6 +3067,13 @@ async def start_universal_battery(
     then the host's, through ``preflight``, the check that calls what its launchers call. A battery that
     generates therefore pays for no template's cases until every template's have been priced.
 
+    **Preparing a template whose cases a model writes pays for them** — its launcher generates — so those
+    templates are prepared after every other: a refusal any stored-case or enumerated template's preparation
+    makes is made before any generation is paid. A model-written template's preparation refusing after an
+    earlier model-written template's generation was paid still loses that generation (held to that
+    template's own out-of-run cap) and starts nothing; the pricing above is what keeps that rare — such a
+    refusal is one only a launcher or its tail makes, against something that changed since the pre-flight.
+
     **Its bounds are per launch, as a launch's are.** Each template is one launch, so each template's
     generation is held to the host's ``max_out_of_run_cost_usd`` on its own — a battery of N generating
     templates may spend up to N times that out of run — and each of its runs to its own cost cap, exactly
@@ -3264,19 +3293,32 @@ async def start_universal_battery(
                     await check(universal_template, battery_cassette_mode)
                 except ValidationFailedError as refused:
                     raise ValidationFailedError(_battery_refusal(refused)) from refused
+
         # Every template's arms PREPARED before any template's runs start — each launcher called, each case
         # set frozen, each tail's checks made against the plans priced above — and only then is every group
         # started. So a refusal any template's preparation makes (a stored case added since its pre-flight,
         # which its tail refuses as more cases than planned; a refusal only its launcher makes) abandons every
         # prepared group and starts nothing, where launching template by template would have left the
         # templates ahead of it running. Each template is still its own group, its runs sharing one slot.
-        run_ids: list[str] = []
+        #
+        # Preparing a template whose cases a model writes PAYS: its launcher generates them. So those are
+        # prepared last — every template whose preparation spends nothing (stored cases, or cases enumerated
+        # without a model) makes its refusals first, and a refusal there costs no generation. What ordering
+        # cannot close: a later model-written template's preparation refusing after an earlier one's
+        # generation was paid — that spend is spent, held to its own launch's out-of-run cap, and its runs are
+        # abandoned with the rest. The ids are still returned, and the groups started, in the templates' order.
+        def pays_to_prepare(template: EvalTemplate) -> bool:
+            return n_variations > 0 and bool(_llm_axes(template))
+
+        prepared_runs: dict[str, list[str]] = {}
+        group_of: dict[str, LaunchGroup] = {}
         groups: list[LaunchGroup] = []
         started: set[str] = set()
         try:
-            for template in templates:
+            for template in sorted(templates, key=pays_to_prepare):
                 group = LaunchGroup(candidate_models=models)
                 groups.append(group)
+                group_of[template.id] = group
                 runs = await _start_run(
                     host,
                     settings,
@@ -3301,8 +3343,8 @@ async def start_universal_battery(
                     admission=None,
                     priced=priced[template.id],
                 )
-                run_ids += [run.id for run in runs]
-            for group in groups:
+                prepared_runs[template.id] = [run.id for run in runs]
+            for group in (group_of[template.id] for template in templates):
                 await host.job_manager.start_group(group.members)
                 started.add(group.id)
                 log.info(
@@ -3318,6 +3360,7 @@ async def start_universal_battery(
                 if group.id not in started:
                     await group.abandon()
             raise
+        run_ids = [run_id for template in templates for run_id in prepared_runs[template.id]]
         log.info(
             "eval.start_universal_battery subject=%s launched=%d runs=%s",
             subject_id,

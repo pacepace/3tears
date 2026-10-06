@@ -465,6 +465,36 @@ class TestAJudgedRunIsHeldToItsCeiling:
             "$0.9995 spent, not $1.0005 with the saved cell counted twice"
         )
 
+    @pytest.mark.parametrize("saved_between", [False, True], ids=["unsaved", "saved-between"])
+    async def test_a_cell_recorded_twice_counts_both_judgements(self, saved_between: bool) -> None:
+        """Re-recording a cell judges it again, and both judgements were paid for, though the store keeps one."""
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        stamped = _stamped(host, template, run, max_cost_usd=1.0)
+        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.9985)
+        judging = WitnessedJudging(stamped.id)
+
+        for _ in range(2):
+            result, trace = await _record(host, stamped, case, _output(), judging=judging, result_id="first")
+            if saved_between:
+                host.storage.save_eval_result(result, trace)
+        with pytest.raises(BudgetStoppedError, match=r"\$1\.0005 spent against a \$1\.0000 cap"):
+            await _record(host, stamped, case, _output(), judging=judging, result_id="second")
+        assert len(judge.calls) == 2
+
+    async def test_re_recording_a_cell_the_store_held_counts_the_judgement_it_replaces(self) -> None:
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        stamped = _stamped(host, template, run, max_cost_usd=1.0)
+        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.9985)
+        _judged_at(host, stamped, case, result_id="first", judge_cost=0.001)
+        judging = WitnessedJudging(stamped.id)
+
+        result, trace = await _record(host, stamped, case, _output(), judging=judging, result_id="first")
+        host.storage.save_eval_result(result, trace)
+        with pytest.raises(BudgetStoppedError, match=r"\$1\.0005 spent against a \$1\.0000 cap"):
+            await _record(host, stamped, case, _output(), judging=judging, result_id="second")
+
     async def test_unpriced_judge_spend_stops_an_enforced_ceiling(self) -> None:
         judge = _ScriptedJudge()
         host, template, run, case = _setup(judge)
@@ -492,3 +522,40 @@ class TestAJudgedRunIsHeldToItsCeiling:
         with pytest.raises(ValueError, match="records no cost ceiling"):
             await _record(host, unbounded, case, _output())
         assert judge.calls == []
+
+
+_GOAL_CHECK = 'call_count("t.act") == 1'
+
+
+def _with_a_goal_check(template: EvalTemplate) -> EvalTemplate:
+    """``template`` declaring one goal check; the caller saves it over the stored one, which the run's judge reads."""
+    return template.model_copy(update={"goal_state_checks": [_GOAL_CHECK]})
+
+
+async def test_a_failed_witnessed_cell_stores_every_check_of_the_template_it_is_judged_against_as_failed() -> None:
+    """The stored result — not a helper's return — carries the not-evaluated, failed outcome, so per-check rates count it."""
+    judge = _ScriptedJudge()
+    host, template, run, case = _setup(judge)
+    template = _with_a_goal_check(template)
+    host.storage.save_template(template)
+
+    result, _trace = await _record(
+        host, _stamped(host, template, run), case, _output(candidate_errors=["the player walked out mid-ruling"])
+    )
+
+    assert [(fact.expression, fact.passed) for fact in result.goal_state_outcomes] == [(_GOAL_CHECK, False)]
+    assert result.goal_state_outcomes[0].detail.startswith("not evaluated: the candidate failed")
+
+
+async def test_a_clean_witnessed_cell_that_graded_none_of_the_template_s_checks_is_refused_before_the_judge_is_paid() -> (
+    None
+):
+    judge = _ScriptedJudge()
+    host, template, run, case = _setup(judge)
+    template = _with_a_goal_check(template)
+    host.storage.save_template(template)
+
+    with pytest.raises(ValueError, match="without grading the template's goal check"):
+        await _record(host, _stamped(host, template, run), case, _output())
+
+    assert judge.calls == [], "refused before any judge call was bought"

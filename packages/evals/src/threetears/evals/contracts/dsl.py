@@ -76,6 +76,8 @@ propagates by Kleene's three-valued logic, so negating a question never turns "u
 
 * a comparison with a ``Missing`` side is ``Missing`` (and so is ``contains``/``intersects`` over one,
   and ``.length``/``length()`` of one);
+* a list or tuple literal holding a ``Missing`` element is ``Missing`` (``[state.x]`` is not a
+  one-element list when ``state.x`` resolved to nothing);
 * ``not Missing`` is ``Missing``;
 * ``a and b`` is False when any operand is False, else ``Missing`` when any is ``Missing``, else True;
   ``a or b`` is True when any operand is True, else ``Missing`` when any is ``Missing``, else False;
@@ -1218,7 +1220,11 @@ def _eval_node(node: ast.AST, ctx: _EvalContext) -> Any:
     if isinstance(node, ast.Subscript):
         return _resolve_subscript(node, ctx)
     if isinstance(node, ast.List | ast.Tuple):
-        return [_eval_node(elt, ctx) for elt in node.elts]
+        # A literal holding an unknown element is itself unknown: Python's `==`, `in` and `set()`
+        # would otherwise read the element as an ordinary value that equals nothing, so
+        # `not contains([state.x], ...)` answered True over a world that never held `state.x`.
+        elements = [_eval_node(elt, ctx) for elt in node.elts]
+        return Missing if any(element is Missing for element in elements) else elements
     if isinstance(node, ast.UnaryOp):
         return _eval_unary(node, ctx)
     if isinstance(node, ast.BoolOp):

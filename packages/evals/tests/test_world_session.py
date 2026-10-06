@@ -325,7 +325,23 @@ class TestAmbientPerturbation:
         session, _state = await _opened(WorldSeed(ambient_perturbation_turns=[2]))
 
         with pytest.raises(WorldSessionError, match="announced no turn"):
-            session.require_schedule_announced()
+            session.require_schedule_announced(ran_its_course=True)
+
+    async def test_a_cell_that_did_not_run_its_course_may_have_announced_nothing(self) -> None:
+        """A cell that ended early — a fault, the cap, every actor gone — may have ended before turn 1."""
+        session, _state = await _opened(WorldSeed(ambient_perturbation_turns=[2]))
+
+        session.require_schedule_announced(ran_its_course=False)
+        assert session.events == ()
+
+    async def test_a_gap_is_refused_however_the_cell_ended(self) -> None:
+        """Turns a kind did announce are its turns: ending early excuses announcing none, never skipping one."""
+        session, _state = await _opened(WorldSeed(ambient_perturbation_turns=[2]))
+        await session.at_turn(1)
+        await session.at_turn(3)
+
+        with pytest.raises(WorldSessionError, match=r"skipped \[2\]"):
+            session.require_schedule_announced(ran_its_course=False)
 
     async def test_announced_turns_with_a_gap_are_refused(self) -> None:
         """Announcing turn 3 and not turn 2 skips the perturbation due before turn 2 while having taken it."""
@@ -335,21 +351,21 @@ class TestAmbientPerturbation:
 
         assert state.processing_shift == "day", "turn 2 was never announced, so nothing perturbed"
         with pytest.raises(WorldSessionError, match=r"skipped \[2\]"):
-            session.require_schedule_announced()
+            session.require_schedule_announced(ran_its_course=True)
 
     async def test_a_scheduled_turn_the_cell_never_reached_is_honest(self) -> None:
         """A cell that ended after turn 1 never reached turn 2: no refusal, and no perturbation recorded."""
         session, _state = await _opened(WorldSeed(ambient_perturbation_turns=[2]))
         await session.at_turn(1)
 
-        session.require_schedule_announced()
+        session.require_schedule_announced(ran_its_course=True)
         assert session.announced_turns == (1,)
         assert session.events == ()
 
     async def test_no_schedule_asks_nothing_of_the_kind(self) -> None:
         session, _state = await _opened(WorldSeed())
 
-        session.require_schedule_announced()
+        session.require_schedule_announced(ran_its_course=True)
 
     async def test_what_the_rig_reports_moving_is_recorded(self) -> None:
         registry, _state = toyhost_world()

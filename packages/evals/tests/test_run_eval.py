@@ -18,6 +18,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
+import pydantic
 import pytest
 
 from threetears.evals.contracts import ValidationFailedError
@@ -189,6 +190,12 @@ async def test_a_scorer_the_callers_host_declares_no_measure_for_is_refused() ->
     assert list_templates(host.storage, SCOPE) == []
 
 
+class _ATemperature(pydantic.BaseModel):
+    """A knob a launch could turn, which a run_eval run neither turns nor states."""
+
+    temperature: float = pydantic.Field(default=0.0, description="How freely the candidate samples its answer.")
+
+
 def _host_whose_callable_contract_is(contract: KindContract | None) -> EvalHost:
     """``callable_host([even])`` with its callable-kind contract replaced, or dropped for ``None``."""
     host = callable_host([even])
@@ -204,8 +211,24 @@ def _host_whose_callable_contract_is(contract: KindContract | None) -> EvalHost:
         (KindContract(CALLABLE_KIND, seats=frozenset({"judge"})), "seats judge for the 'callable' kind"),
         (KindContract(CALLABLE_KIND, seats=frozenset({"simulator_model"})), "seats simulator_model"),
         (KindContract(CALLABLE_KIND, seats=frozenset({"max_cost_usd"})), "seats max_cost_usd"),
+        (
+            dataclasses.replace(CALLABLE_KIND_CONTRACT, overlays=_ATemperature, prefix="callable"),
+            "declares overlays or a spec for the 'callable' kind",
+        ),
+        (
+            dataclasses.replace(CALLABLE_KIND_CONTRACT, spec=_ATemperature),
+            "declares overlays or a spec for the 'callable' kind",
+        ),
     ],
-    ids=["no contract", "no seats declared", "the judge role", "a simulator pin", "the spend ceiling"],
+    ids=[
+        "no contract",
+        "no seats declared",
+        "the judge role",
+        "a simulator pin",
+        "the spend ceiling",
+        "overlays",
+        "a spec",
+    ],
 )
 async def test_a_callers_host_must_declare_what_a_run_eval_runs_rig_holds(
     contract: KindContract | None, said: str

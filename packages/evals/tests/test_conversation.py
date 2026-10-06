@@ -218,6 +218,24 @@ async def test_the_scheduler_s_picks_count_against_the_cap_too():
     assert kind.rounds == []
 
 
+async def test_one_scheduling_decision_can_overshoot_the_cap_by_its_repair_call_and_no_more():
+    """The documented bound: the cap is asked per decision, and a refused pick buys one repair before it is asked again.
+
+    Half a call's worth of cap, crossed by the first call: the refused pick's repair is still made (two calls),
+    and nothing after it — no utterance — is bought.
+    """
+    driver = _driver(actors=[actor("a"), actor("b")], turn_scheduler="llm_decided", max_speakers_per_round=2)
+    table = ScriptedTable(picks=[Raw("not a pick"), "a"], lines={"a": ["a1"]})
+    kind = _Kind()
+
+    cause = await drive_conversation(driver, kind.answer, kind.post, llm=table, sink=FakeCellSink(cap_usd=0.0005))
+
+    assert cause is ConversationStopCause.BUDGET_STOPPED
+    assert [call.purpose for call in driver.calls] == ["schedule", "schedule"]
+    assert table.utterance_calls == []
+    assert driver.cost_usd == pytest.approx(0.002)
+
+
 async def test_an_unpriced_simulator_call_stops_the_conversation_under_a_cap():
     driver = _driver(actors=[actor("a")], max_turns=3)
     table = ScriptedTable(lines={"a": ["a1", "a2"]}, cost_usd=None)
