@@ -1180,9 +1180,9 @@ def _request_settings(settings: Any) -> dict[str, Any] | None:
             ``None``.
 
     Returns:
-        The settings as a plain mapping — ``reasoning_max_tokens: None`` inside it is a recorded
-        level (no reasoning parameter was sent), so the mapping is never blank — or ``None`` when
-        the run carries no stamp.
+        The settings as a plain mapping — ``reasoning_max_tokens: None`` and ``reasoning_effort:
+        None`` inside it are a recorded level (no reasoning parameter was sent), so the mapping is
+        never blank — or ``None`` when the run carries no stamp.
     """
     return None if settings is None else settings.model_dump(mode="json")
 
@@ -1304,16 +1304,20 @@ CORE_SWEEPABLES: tuple[Sweepable, ...] = (
         indeterminate_when_blank=True,
     ),
     # How the simulated user was asked, for the reason `judge_request_settings` is recorded: the
-    # same simulator model at a different cap can cut a turn off, and the candidate then answers
-    # a different conversation. Indeterminate when blank on the same terms.
+    # same simulator model at a different cap or reasoning effort can reason through the cap and cut
+    # a turn off, and the candidate then answers a different conversation. Indeterminate when blank
+    # on the same terms.
     Sweepable(
         name="simulator_request_settings",
         role="apparatus",
         read=lambda run, _results: _request_settings(run.simulator_request_settings),
-        reader_prose="the output cap and private-reasoning budget every simulated-user request was sent with",
+        reader_prose=(
+            "the output cap and reasoning parameter (a private-reasoning budget or an effort level) every "
+            "simulated-user request was sent with"
+        ),
         confounds=(
-            "the simulated user was asked with a different output cap or reasoning budget, so the same simulator "
-            "model may have played the conversation differently"
+            "the simulated user was asked with a different output cap or reasoning budget or effort, so the same "
+            "simulator model may have played the conversation differently"
         ),
         indeterminate_when_blank=True,
     ),

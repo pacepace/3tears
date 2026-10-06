@@ -1927,6 +1927,12 @@ class RunCompleteness(EvalDocumentModel):
         return self.measured_cells < self.expected_cells
 
 
+#: A reasoning effort level, as the router's ``reasoning.effort`` takes it. ``none`` disables
+#: reasoning, and a model whose reasoning is mandatory refuses it; which of the others a model
+#: accepts is its own (the router lists each model's ``supported_efforts``).
+ReasoningEffort = Literal["max", "xhigh", "high", "medium", "low", "minimal", "none"]
+
+
 class ClientRequestSettings(EvalDocumentModel):
     """The request parameters a host applied to one apparatus role's LLM client, for one run.
 
@@ -1936,6 +1942,14 @@ class ClientRequestSettings(EvalDocumentModel):
     off. Two runs carrying the same ``judge_model`` were therefore NOT judged alike if these
     differ, and nothing else on the run can say so — the values are applied process-wide by the
     host's client builder, and moving them regrades every later run without touching a model id.
+
+    **Reasoning is asked for one way or the other, never both.** ``reasoning_max_tokens`` is a
+    budget in tokens, which Anthropic- and Gemini-style models take as one; ``reasoning_effort`` is
+    a level, which is all an effort-only model (OpenAI's reasoning series) understands — the router
+    maps a token budget onto one of those by its share of the cap, so a budget sent to such a model
+    bounds nothing in tokens. A request carrying both would leave the provider to pick, and the
+    record could not say which it did, so a settings value naming both is refused rather than
+    given a precedence.
 
     The host builds this from the same value its client builder applies, so the stamp and the
     request cannot disagree (see :data:`threetears.evals.run.judge.JUDGE_REQUEST_SETTINGS`).
@@ -1947,10 +1961,35 @@ class ClientRequestSettings(EvalDocumentModel):
         gt=0,
         description=(
             "The private-reasoning budget sent with every request (the provider's `reasoning.max_tokens`), a share "
-            "of `max_tokens`. None = no reasoning parameter was sent, so the provider's default applied — a "
-            "recorded level, not an absence."
+            "of `max_tokens`. None, with `reasoning_effort` also None, = no reasoning parameter was sent, so the "
+            "provider's default applied — a recorded level, not an absence. Never set beside `reasoning_effort`."
         ),
     )
+    reasoning_effort: ReasoningEffort | None = Field(
+        default=None,
+        description=(
+            "The reasoning effort level sent with every request (the provider's `reasoning.effort`): a level, not a "
+            "token bound, so `max_tokens` stays the only hard stop. None = no effort was sent. Never set beside "
+            "`reasoning_max_tokens`."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _one_way_to_ask_for_reasoning(self) -> Self:
+        """Refuse a settings value that asks for reasoning both by a token budget and by an effort level.
+
+        Returns:
+            The settings, unchanged.
+
+        Raises:
+            ValueError: Both ``reasoning_max_tokens`` and ``reasoning_effort`` are set.
+        """
+        if self.reasoning_max_tokens is not None and self.reasoning_effort is not None:
+            raise ValueError(
+                "reasoning is asked for by a token budget (reasoning_max_tokens) or by an effort level "
+                "(reasoning_effort), not both: the provider would pick one and the record could not say which"
+            )
+        return self
 
 
 #: Repeats per (case, model) a launch uses when the caller names none: one observation per case cannot
@@ -2312,7 +2351,7 @@ class EvalRun(EvalDocumentModel):
     simulator_request_settings: ClientRequestSettings | None = Field(
         default=None,
         description=(
-            "The output cap and reasoning budget every simulated-user request of this run was sent with, "
+            "The output cap and reasoning parameter every simulated-user request of this run was sent with, "
             "stamped at launch from the value the host's client builder applies to the simulator role — "
             "recorded for the reason ``judge_request_settings`` is. None = no simulated user was pinned, or "
             "the run's writer recorded no settings."
@@ -4052,6 +4091,7 @@ __all__ = [
     "OUTCOME_DIM_ID",
     "ROUND_DONE",
     "RaterKind",
+    "ReasoningEffort",
     "TERMINAL_RUN_STATUSES",
     "TRANSCRIPT_DIM_ID",
     "ActorPolicy",

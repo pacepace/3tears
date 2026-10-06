@@ -12,7 +12,8 @@ from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
     SIMULATOR_ANSWER_BUDGET_TOKENS,
     SIMULATOR_MAX_TOKENS,
-    SIMULATOR_REASONING_BUDGET_TOKENS,
+    SIMULATOR_REASONING_ALLOWANCE_TOKENS,
+    SIMULATOR_REASONING_EFFORT,
     SIMULATOR_REQUEST_SETTINGS,
     CandidateTurn,
     SimulatorReplyInvalid,
@@ -601,12 +602,11 @@ def test_fold_usage_refuses_another_roles_ledger(role):
         _usage_driver().fold_usage(RoleUsageLedger(role=role))
 
 
-def test_the_simulator_bounds_its_reasoning_under_a_cap_derived_above_the_bound() -> None:
-    """A reasoning model at its default effort spent a flat 4096-token cap reasoning and returned an empty turn, so the
-    simulator sends a reasoning budget and its cap is that budget plus room for the reply — never a cap at or under the
-    budget. The budget is at most a fifth of the cap: an effort-only model maps it by that share, and a fifth is
-    ``low``, below the default that exhausted the old cap."""
-    assert SIMULATOR_REQUEST_SETTINGS.reasoning_max_tokens == SIMULATOR_REASONING_BUDGET_TOKENS
+def test_the_simulator_asks_for_its_reasoning_by_effort_under_a_derived_cap() -> None:
+    """``openai/gpt-5-nano`` is effort-only: a token budget was mapped to an effort by its share of the cap and still
+    reasoned through the whole cap, so the simulator names the lowest effort that reasons and sends no token budget —
+    and its cap is still derived as room for that reasoning plus room for the reply."""
+    assert SIMULATOR_REQUEST_SETTINGS.reasoning_effort == SIMULATOR_REASONING_EFFORT == "minimal"
+    assert SIMULATOR_REQUEST_SETTINGS.reasoning_max_tokens is None
     assert SIMULATOR_REQUEST_SETTINGS.max_tokens == SIMULATOR_MAX_TOKENS
-    assert SIMULATOR_MAX_TOKENS == SIMULATOR_REASONING_BUDGET_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
-    assert SIMULATOR_REASONING_BUDGET_TOKENS / SIMULATOR_MAX_TOKENS <= 0.2
+    assert SIMULATOR_MAX_TOKENS == SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
