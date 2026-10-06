@@ -6,6 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the quick CLI's `run` pins the judge and the simulated user
+
+- `run` takes `--judge-model` and `--simulator-model`, handed to the launch as `run_launch`'s `judge_model` and
+  `simulator_model`. Before, the command could not launch a kind that names no default simulator at all (DoW's
+  session kind refuses a launch without one), though the launch operation and the MCP action both took the pin.
+
 ### 3tears-evals: judged readings carry a code-decided evidence tier (PD-13), and a judge's agreement with itself is measured
 
 - **Evidence tiers** (`threetears.evals.contracts.evidence_tiers`, owner ruling 2026-10-06): `calibrated` when the

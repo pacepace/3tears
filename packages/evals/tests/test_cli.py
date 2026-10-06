@@ -251,6 +251,33 @@ def test_run_hands_the_launch_the_max_cost_it_is_given(
     assert seen == [launched]
 
 
+@pytest.mark.parametrize(
+    ("given", "launched"),
+    [
+        (["--judge-model", "judge-a", "--simulator-model", "voice-a"], ("judge-a", "voice-a")),
+        ([], (None, None)),
+    ],
+)
+def test_run_hands_the_launch_the_judge_and_simulator_it_is_given(
+    given: list[str],
+    launched: tuple[str | None, str | None],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--judge-model`` and ``--simulator-model`` reach the launch as ``run_launch``'s pins do; omitted, the kind's
+    own defaults apply — so a kind that names no simulator can still be launched from the command line."""
+    seen: list[tuple[str | None, str | None]] = []
+
+    async def recording(*args: Any, **kwargs: Any) -> Any:
+        seen.append((kwargs["judge_model"], kwargs["simulator_model"]))
+        return await start_run(*args, **{**kwargs, "judge_model": None, "simulator_model": None})
+
+    monkeypatch.setattr(quick_cli, "start_run", recording)
+
+    assert run_cli([*_courier_run_args("planner-lite"), *given], host_factory=courier_launch_host) == 0
+    assert seen == [launched]
+
+
 def test_run_relays_the_launchers_refusal_of_a_cap_that_is_not_positive(capsys: pytest.CaptureFixture[str]) -> None:
     assert run_cli([*_courier_run_args("planner-lite"), "--max-cost-usd", "0"], host_factory=courier_launch_host) == 2
     assert "max_cost_usd" in capsys.readouterr().err
