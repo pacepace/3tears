@@ -21,6 +21,17 @@ whose message names the case, the rule, the reader and the run. Under pytest::
 **Every case is mandatory**, and a sample with no runs is refused: a reader checked over nothing is
 a reader nobody checked.
 
+**Every case reads over its own deep copy of the sample**, so the cases can share one sample — a
+module-scoped fixture, recorded once — in any order. Reading the caller's runs directly would let a
+reader that writes to them do its damage in whichever case ran first, after which
+``sweepable.mutates_nothing`` would compare the mutated state against itself and pass.
+
+**One broken promise turns one case red.** A case whose question rests on another's defers to it: the
+determinism and order cases skip a reader whose answer JSON cannot encode (``sweepable.json_safe``
+owns that), the order case skips a reader that is not deterministic (``sweepable.deterministic`` owns
+that), and the variant-key case skips a run on which a family does not read a map
+(``open_family.member_map`` owns that). Anything else a reader raises propagates unchanged.
+
 **What it cannot see.** That a reader reads the RIGHT thing — a judge reader returning the candidate
 model would pass every case here. Behaviour on a run shape the sample does not hold: hand the kit
 runs of every kind the host launches, and at least one recorded before any optional field existed.
@@ -114,8 +125,25 @@ def _json(value: Any, what: str) -> str:
         raise ReaderConformanceFailure(f"{what} returned {value!r}, which JSON cannot encode ({refused})") from None
 
 
+def _json_or_none(value: Any) -> str | None:
+    """The canonical JSON of ``value``, or None when JSON cannot encode it — the case for a reader ``json_safe`` owns."""
+    try:
+        return canonical_json(value)
+    except UnhashableContentError:
+        # NOSILENT: None IS the answer -- the caller defers to sweepable.json_safe, which reports this value
+        return None
+
+
 def _dump(run: EvalRun, results: Sequence[EvalResult]) -> tuple[Any, list[Any]]:
     return run.model_dump(mode="json"), [result.model_dump(mode="json") for result in results]
+
+
+def _copies(sample: ReaderSample) -> list[tuple[EvalRun, list[EvalResult]]]:
+    """Deep copies of the sample's runs and results, so no case's reads can reach the caller's objects."""
+    return [
+        (run.model_copy(deep=True), [result.model_copy(deep=True) for result in results])
+        for run, results in sample.runs
+    ]
 
 
 def _declarations(sample: ReaderSample) -> tuple[Sweepable, ...]:
@@ -130,25 +158,32 @@ def _where(declared: Sweepable, run: EvalRun) -> str:
 
 
 def _every_read_is_json_safe(sample: ReaderSample) -> None:
-    for run, results in sample.runs:
+    for run, results in _copies(sample):
         for declared in _declarations(sample):
             _json(declared.read(run, results), _where(declared, run))
 
 
 def _a_read_is_deterministic(sample: ReaderSample) -> None:
-    for run, results in sample.runs:
+    for run, results in _copies(sample):
         for declared in _declarations(sample):
-            first = _json(declared.read(run, results), _where(declared, run))
-            second = _json(declared.read(run, results), _where(declared, run))
+            first = _json_or_none(declared.read(run, results))
+            second = _json_or_none(declared.read(run, results))
+            if first is None or second is None:
+                continue  # an answer JSON cannot encode is sweepable.json_safe's finding
             if first != second:
                 raise ReaderConformanceFailure(f"{_where(declared, run)} answered {first} and then {second}")
 
 
 def _a_read_ignores_result_order(sample: ReaderSample) -> None:
-    for run, results in sample.runs:
+    for run, results in _copies(sample):
         for declared in _declarations(sample):
-            forward = _json(declared.read(run, list(results)), _where(declared, run))
-            backward = _json(declared.read(run, list(reversed(results))), _where(declared, run))
+            forward = _json_or_none(declared.read(run, list(results)))
+            again = _json_or_none(declared.read(run, list(results)))
+            backward = _json_or_none(declared.read(run, list(reversed(results))))
+            if forward is None or again is None or backward is None:
+                continue  # an answer JSON cannot encode is sweepable.json_safe's finding
+            if forward != again:
+                continue  # a reader that answers the same question differently is sweepable.deterministic's finding
             if forward != backward:
                 raise ReaderConformanceFailure(
                     f"{_where(declared, run)} answered {forward} over the results in order and {backward} reversed — "
@@ -157,8 +192,10 @@ def _a_read_ignores_result_order(sample: ReaderSample) -> None:
 
 
 def _a_read_mutates_nothing(sample: ReaderSample) -> None:
-    for run, results in sample.runs:
-        for declared in _declarations(sample):
+    # A fresh copy per declaration, snapshotted before the read: neither an earlier case nor an earlier
+    # declaration's reader can have applied an idempotent write that this read then repeats unseen.
+    for declared in _declarations(sample):
+        for run, results in _copies(sample):
             before = _dump(run, results)
             declared.read(run, results)
             if _dump(run, results) != before:
@@ -166,12 +203,20 @@ def _a_read_mutates_nothing(sample: ReaderSample) -> None:
 
 
 def _a_family_reads_a_map_of_its_own_members(sample: ReaderSample) -> None:
-    for run, results in sample.runs:
+    for run, results in _copies(sample):
         for family in sample.profile.sweepables.open_families:
             members = family.read(run, results)
             if not isinstance(members, Mapping) or not all(isinstance(name, str) for name in members):
                 raise ReaderConformanceFailure(f"{_where(family, run)} returned {members!r}, not a member-name map")
-            if family.owns_member is not None:
+            if family.owns_member is None:
+                if members:
+                    # The registry reads a family with no membership test as recognising none of its members,
+                    # so whatever this resolves is a member no campaign can admit as an axis.
+                    raise ReaderConformanceFailure(
+                        f"{_where(family, run)} resolved {sorted(members)} and the family declares no membership "
+                        "test, so the registry recognises none of them as an axis — declare owns_member"
+                    )
+            else:
                 strays = sorted(name for name in members if not family.owns_member(name))
                 if strays:
                     raise ReaderConformanceFailure(
@@ -180,7 +225,7 @@ def _a_family_reads_a_map_of_its_own_members(sample: ReaderSample) -> None:
 
 
 def _a_residual_reads_comparable_content(sample: ReaderSample) -> None:
-    for run, results in sample.runs:
+    for run, results in _copies(sample):
         for family in sample.profile.sweepables.open_families:
             if family.read_residual is None:
                 continue
@@ -191,7 +236,11 @@ def _a_residual_reads_comparable_content(sample: ReaderSample) -> None:
 
 
 def _every_run_derives_a_variant_key(sample: ReaderSample) -> None:
-    for run, _results in sample.runs:
+    for run, results in _copies(sample):
+        if any(
+            not isinstance(family.read(run, results), Mapping) for family in sample.profile.sweepables.open_families
+        ):
+            continue  # a family that does not read a map is open_family.member_map's finding
         try:
             derive_variant_identity(run=run, profile=sample.profile)
         except LeverCoordinateError as refused:
@@ -224,7 +273,8 @@ READER_CONFORMANCE_CASES: tuple[ReaderConformanceCase, ...] = (
     ),
     ReaderConformanceCase(
         "open_family.member_map",
-        "an open family reads a map of member names, every one of which its own membership test admits",
+        "an open family reads a map of member names, every one of which its own membership test admits — and a "
+        "family that resolves any member declares that test",
         _a_family_reads_a_map_of_its_own_members,
     ),
     ReaderConformanceCase(

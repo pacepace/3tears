@@ -233,8 +233,10 @@ async def test_a_cell_cut_off_by_its_deadline_keeps_the_kinds_payload_and_delive
     host = toyhost_host()
     world = host.profile.world
     assert world is not None
-    kind = _ScoutStillOutKind(client=ScriptedExtractionClient(), world=world)
     template = toyhost_template()
+    kind = _ScoutStillOutKind(
+        client=ScriptedExtractionClient(), world=world, goal_checks=tuple(template.goal_state_checks)
+    )
     (case, *_) = toyhost_test_cases(template)
     run = toyhost_run(model=RUN_MODELS[0], template=template, kind=kind, world=world).model_copy(
         update={"k_runs": 1, "test_case_ids": [case.id]}

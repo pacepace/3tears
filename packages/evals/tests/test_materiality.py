@@ -1,11 +1,13 @@
 """A difference below a measure's declared materiality threshold is labelled immaterial — wherever one is stated.
 
 ``MetricDescriptor.materiality_threshold`` is the host's word for "smaller than this is not worth acting
-on". It is read by one predicate, :func:`~threetears.evals.contracts.materiality`, at the two places the
+on". It is read by one predicate, :func:`~threetears.evals.contracts.materiality`, at every place the
 engine states a difference:
 
 * **the analysis bundle**, where every :class:`~threetears.evals.analysis.MeasureMovement` between two
-  levels of a lever carries ``materiality`` — the input a generator's caveats are written from;
+  levels of a lever carries ``materiality`` — the input a generator's caveats are written from — and so
+  does every comparison a declared question's family tests (``FamilyComparison.materiality``, pinned in
+  ``test_multiple_comparisons.py``);
 * **the decision surface**, which freezes each measure's threshold beside its facts, so a delta table
   drawn from it labels a row ``immaterial`` in its values table and names it in a disclosure.
 

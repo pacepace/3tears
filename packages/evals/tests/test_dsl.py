@@ -400,17 +400,142 @@ def test_not_inverts_truthy():
     assert evaluate("not state.shop.cart.length >= 1", **state) is True
 
 
-def test_not_on_missing_path_returns_true():
-    """Negating a missing-path comparison yields True.
+# =============================================================================
+# Missing values — three-valued, so negation never turns "unknown" into a pass
+# =============================================================================
 
-    Per the DSL spec, ``Missing >= 1`` evaluates to False (Missing
-    propagates through the comparison as "unknown / can't satisfy").
-    ``not False`` is then True. This matches user intent: "is it NOT the
-    case that the cart has >= 1 items?" — a missing cart clearly
-    doesn't satisfy the predicate, so the negation is True.
+
+def _chat_absent() -> dict[str, Any]:
+    """A world declaring ``shop`` and ``chat`` whose end state holds ``shop`` and not ``chat``.
+
+    The shape a dimension whose carrier was not attached leaves: declared, so every path below
+    resolves, and absent from the end state, so ``state.chat.*`` is Missing.
     """
-    state = _state_with()
-    assert evaluate("not state.shop.cart.length >= 1", **state) is True
+    state = _state_with(shop={"cart": ["x"], "items": [{"q": 1}, {"p": 1}]}, chat={})
+    del state["end_state"]["chat"]
+    return state
+
+
+def _chat_present() -> dict[str, Any]:
+    """The same world, with ``chat`` held: the positive half of every negated case below."""
+    return _state_with(
+        shop={"cart": ["x"], "items": [{"q": 1}, {"p": 1}]},
+        chat={"messages": [], "status": "closed", "tags": ["y"]},
+    )
+
+
+#: Every negated shape the language has, each TRUE over ``_chat_present`` — so a case that reads False over
+#: ``_chat_absent`` is failing for the missing value and not for the expression.
+_NEGATED_FORMS = [
+    "not state.chat.messages.length >= 1",
+    'not state.chat.status == "open"',
+    'not not state.chat.status == "closed"',
+    'not (state.chat.status == "open" and state.shop.cart.length == 1)',
+    'not (state.chat.status == "open" or state.shop.cart.length == 5)',
+    'not contains(state.chat.tags, "x")',
+    'not intersects(state.chat.tags, ["x"])',
+    "not length(state.chat.tags) >= 2",
+    'not any(it == "x" for it in state.chat.tags)',
+    'not all(it == "x" for it in state.chat.tags)',
+    'state.chat.status != "open"',
+]
+
+
+@pytest.mark.parametrize("expression", _NEGATED_FORMS)
+def test_a_negated_check_over_a_missing_value_is_not_established(expression: str) -> None:
+    """``not`` keeps an unknown unknown: the check holds over the world that has the value, and over the
+    world that does not it is never a pass — it is failed as *not established*, naming what was missing.
+
+    Read as False, a comparison against a missing value made its negation True, so a check scored a
+    candidate that did nothing as passing.
+    """
+    assert evaluate(expression, **_chat_present()) is True
+
+    assert evaluate(expression, **_chat_absent()) is False
+    passed, detail = evaluate_with_detail(expression, **_chat_absent())
+    assert passed is False
+    assert detail.startswith(_dsl.NOT_ESTABLISHED)
+    assert "state.chat." in detail
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        # `and`: a False operand decides, whatever else is unknown; otherwise unknown wins over True.
+        ('state.chat.status == "open" and state.shop.cart.length == 5', False),
+        ('state.shop.cart.length == 5 and state.chat.status == "open"', False),
+        ('state.chat.status == "open" and state.shop.cart.length == 1', None),
+        # `or`: the dual.
+        ('state.chat.status == "open" or state.shop.cart.length == 1', True),
+        ('state.shop.cart.length == 1 or state.chat.status == "open"', True),
+        ('state.chat.status == "open" or state.shop.cart.length == 5', None),
+        # A chain is the `and` of its pairs.
+        ("5 < state.shop.cart.length < state.chat.count", False),
+        ("0 < state.shop.cart.length < state.chat.count", None),
+        # any() is the `or` over elements, all() the `and`; an element without the field is unknown.
+        ("any(it.p == 1 for it in state.shop.items)", True),
+        ("any(it.p == 2 for it in state.shop.items)", None),
+        ("all(it.p == 2 for it in state.shop.items)", False),
+        ("all(it.p == 1 for it in state.shop.items)", None),
+        ("any(it == 1 for it in state.chat.tags)", None),
+        ("all(it == 1 for it in state.chat.tags)", None),
+    ],
+)
+def test_each_connective_decides_by_kleene_logic(expression: str, expected: bool | None) -> None:
+    """A deciding operand settles the expression; otherwise a missing operand leaves it unknown (None here)."""
+    passed, detail = evaluate_with_detail(expression, **_chat_absent())
+
+    if expected is None:
+        assert passed is False
+        assert detail.startswith(_dsl.NOT_ESTABLISHED)
+    else:
+        assert passed is expected
+        assert detail == repr(expected)
+
+
+def test_not_established_names_a_missing_variation_and_an_index_past_the_end() -> None:
+    """The detail names whatever resolved to nothing, not only state paths."""
+    state = _chat_present()
+
+    _, by_variation = evaluate_with_detail("not variation.tone == 'hostile'", **state)
+    _, by_index = evaluate_with_detail('not state.chat.messages[0] == "hi"', **state)
+
+    assert by_variation == f"{_dsl.NOT_ESTABLISHED}: variation.tone resolved to nothing"
+    assert by_index == f"{_dsl.NOT_ESTABLISHED}: state.chat.messages[0] resolved to nothing"
+
+
+def test_a_negated_presumption_over_a_value_the_seeded_world_lacks_does_not_hold() -> None:
+    """A precondition goes through the same evaluator: an unknown is never a presumption the world satisfied."""
+    from packages.evals.tests.factories import make_template, make_test_case
+    from threetears.evals.run import assert_preconditions
+
+    template = make_template(
+        preconditions=[Precondition(expression='not state.chat.status == "open"', presumes="the chat is not open")]
+    )
+    absent = _chat_absent()
+    present = _chat_present()
+
+    (failed,) = assert_preconditions(template, make_test_case(), absent["end_state"], world=absent["world"])
+    assert failed.held is False and failed.detail.startswith(_dsl.NOT_ESTABLISHED)
+    assert assert_preconditions(template, make_test_case(), present["end_state"], world=present["world"]) == []
+
+
+def test_grading_records_a_not_established_check_as_failed_and_says_so() -> None:
+    """The grader every kind uses: never a pass, and a detail telling it from a check that evaluated False."""
+    from threetears.evals.run import grade_goal_checks
+
+    absent = _chat_absent()
+    unknown, false = grade_goal_checks(
+        ['not state.chat.status == "open"', "state.shop.cart.length == 5"],
+        ledger=absent["ledger"],
+        end_state=absent["end_state"],
+        fired=None,
+        variation={},
+        world=absent["world"],
+    )
+
+    assert (unknown.passed, unknown.detail) == (False, f"{_dsl.NOT_ESTABLISHED}: state.chat.status resolved to nothing")
+    assert (false.passed, false.detail) == (False, "False")
 
 
 # =============================================================================
@@ -520,30 +645,41 @@ def test_ordering_predicate_rejects_unparseable_spec():
         evaluate('called_before("not_a_tool_action", "shop.search")', **state)
 
 
-def test_ordering_predicate_rejects_non_string_spec():
-    """Passing a path expression where a 'tool.action' string is required raises."""
-    state = _state_with()
-    state["ledger"].record("shop", "search", {})
-    # state.shop is a dict, not a 'tool.action' string spec.
-    with pytest.raises(DSLError, match="string spec"):
-        evaluate("called_before(state.shop, state.chat)", **state)
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "called_before(state.shop, state.chat)",
+        'called_before(variation.a, "shop.search")',
+        'called_after("shop.search", variation.b)',
+        "call_count(state.shop) >= 1",
+        "last_call_was(variation.a)",
+        "calls(variation.a).length >= 1",
+        'called_before(1, "shop.search")',
+        "last_call_was([1, 2, 3])",
+    ],
+)
+def test_every_call_builtin_refuses_a_computed_spec_at_parse(expression: str) -> None:
+    """A spec that is not a ``'tool.action'`` literal is refused where the template is written.
+
+    The authoring gate names the actions a check reads from its literals alone, so a computed spec
+    would leave it unable to ask whether the host defines the action, and a typo would score False on
+    every trial instead of being refused.
+    """
+    with pytest.raises(DSLError, match="never a computed spec"):
+        parse(expression)
 
 
-def test_call_count_rejects_non_string_spec():
-    state = _state_with()
-    state["ledger"].record("shop", "search", {})
-    with pytest.raises(DSLError, match="string spec"):
-        evaluate("call_count(state.shop) >= 1", **state)
+@pytest.mark.parametrize("expression", ["contains", "contains == 1", "length(calls)", "not fired"])
+def test_a_builtin_used_as_a_value_is_refused_at_parse(expression: str) -> None:
+    """A builtin named outside a call parses as nothing evaluable, so it is refused at parse, by name."""
+    with pytest.raises(DSLError, match="is a DSL function, not a value"):
+        parse(expression)
 
 
-def test_ordering_predicate_rejects_non_string_constant():
-    """Passing an int / list constant where 'tool.action' is required raises at run time."""
-    state = _state_with()
-    state["ledger"].record("shop", "search", {})
-    with pytest.raises(DSLError, match="string spec"):
-        evaluate('called_before(1, "shop.search")', **state)
-    with pytest.raises(DSLError, match="string spec"):
-        evaluate("last_call_was([1, 2, 3])", **state)
+def test_a_unary_operator_over_a_value_it_cannot_apply_to_raises_a_dsl_error() -> None:
+    """Negating a string is the template's fault, raised as one, never as a raw TypeError."""
+    with pytest.raises(DSLError, match="cannot apply unary USub to str"):
+        evaluate("-state.shop.name == 1", **_state_with(shop={"name": "x"}))
 
 
 def test_dunder_attribute_access_blocked():
@@ -551,8 +687,8 @@ def test_dunder_attribute_access_blocked():
 
     Without this guard, an expression like ``state.shop.__class__`` would
     return the actual class object via Python's getattr fallback.
-    Comparisons against Missing return False, so the expression evaluates
-    to False rather than leaking implementation details.
+    A Missing value leaves the check not established — failed rather than
+    leaking implementation details.
     """
     state = _state_with(shop={"cart": []})
     # __class__ on the dict would normally return <class 'dict'>; DSL returns Missing.
@@ -748,26 +884,20 @@ def test_evaluate_with_detail_passes_through_value():
 
 
 def test_evaluate_with_detail_reports_missing_leaf():
-    """When the entire expression evaluates to Missing, detail says so.
-
-    A comparison against a Missing path returns False (per spec), so the
-    detail surfaces 'False'. The 'Missing' label only fires when the
-    expression itself resolves to Missing without a comparison — e.g.,
-    'state.shop.cart' alone, with no operator.
-    """
+    """When the entire expression evaluates to Missing, detail says it was not established."""
     state = _state_with()
     # Bare path → resolves to Missing → detail labels it.
     result, detail = evaluate_with_detail("state.shop.cart", **state)
     assert result is False
-    assert "Missing" in detail
+    assert detail.startswith(_dsl.NOT_ESTABLISHED)
 
 
-def test_evaluate_with_detail_reports_false_for_compared_missing():
+def test_evaluate_with_detail_reports_a_compared_missing_value_as_not_established():
     state = _state_with()
     result, detail = evaluate_with_detail("state.shop.cart.length >= 1", **state)
     assert result is False
-    # Comparison against Missing returns False; detail surfaces the value.
-    assert detail == "False"
+    # A comparison against Missing is itself Missing — never False, whose negation would pass.
+    assert detail == f"{_dsl.NOT_ESTABLISHED}: state.shop.cart.length resolved to nothing"
 
 
 # =============================================================================

@@ -14,10 +14,16 @@ at authoring instead.
   the world does on its own. A triggered dimension's seed arms it rather than setting it, so an armed
   ``event`` or ``human`` dimension is left out — its condition is the candidate's act or a person's,
   and neither happened. A ``turn`` dimension is the exception, because its condition is the passage of
-  turns, which a cell makes happen whatever its candidate does (the contract's own words: a turn trigger
-  the session advances). So every clock-driven dimension FIRES in the do-nothing control — the world's
-  own clock may fire one the seed never armed, and the engine cannot rule that out — and one the seed
-  arms fires as the seed's armed event (``fired_armed``), with its seeded value arrived in the end state.
+  turns, which happens in a cell whatever its candidate does. The session does not advance a clock
+  itself — :meth:`~threetears.evals.contracts.world_session.WorldSession.at_turn` only applies ambient
+  perturbation — so a turn trigger fires when the kind fires it as its turns pass
+  (:meth:`~threetears.evals.contracts.world_session.WorldSession.fire`), or when the world's own clock
+  fires it and the kind records it (``observe``). Whether a given kind fires its turn triggers is the
+  kind's code, which this gate cannot see, so it assumes the worst case for a do-nothing candidate:
+  every clock-driven dimension FIRES in the do-nothing control — the world's own clock may fire one the
+  seed never armed, and the engine cannot rule that out — and one the seed arms fires as the seed's armed
+  event (``fired_armed``), with its seeded value arrived in the end state. That over-refuses rather than
+  over-admits: a check on a clock dimension that a particular kind never fires is still refused.
   A check that passes on a clock firing alone passes for a candidate that did nothing, and is refused.
   Derived, so it needs no data and cannot be authored wrong.
 * **its named control** — an end state the template's author states in
@@ -179,9 +185,11 @@ def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None)
 
     The seed less its ``event`` and ``human`` triggered dimensions: seeding one arms it, and with nothing
     done its condition — the candidate's act, or a person's — never happened, so its value is not in the
-    world. A ``turn`` dimension is different: its condition is turns passing, which happens in every cell.
-    Every declared ``turn`` dimension fires, since the world's own clock may fire one the seed never armed;
-    one the seed arms fires as the seed's armed event, and its seeded value is in the end state.
+    world. A ``turn`` dimension is different: its condition is turns passing, which happens in every cell
+    whatever the candidate does, and whether a kind fires it then is the kind's code, not something this
+    gate can see — so it is taken as firing. Every declared ``turn`` dimension fires, since the world's own
+    clock may fire one the seed never armed; one the seed arms fires as the seed's armed event, and its
+    seeded value is in the end state.
 
     Args:
         template: The template whose seed it is.

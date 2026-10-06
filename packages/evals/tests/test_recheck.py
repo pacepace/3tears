@@ -277,7 +277,7 @@ def test_a_check_reading_the_case_is_kept_when_its_test_case_no_longer_resolves(
 
 
 def test_a_check_that_no_longer_evaluates_stops_the_result_s_recheck() -> None:
-    broken = GoalStateOutcome(expression="call_count(1) == 4", passed=True)
+    broken = GoalStateOutcome(expression='call_count("extractor.emit_field") < "four"', passed=True)
 
     report, outcomes = recheck_result(
         make_eval_result(goal_state_outcomes=[broken]), ledger=_ledger(4), end_state=None, world=None, variation={}
@@ -337,3 +337,98 @@ def test_a_rewrite_something_else_raced_is_named_and_not_stored() -> None:
     assert recheck.write_conflicts == [result.id]
     stored = storage.load_eval_result(result.id, "uni-1")
     assert stored is not None and stored.goal_state_outcomes == [_every_field(True)]
+
+
+def test_a_goal_check_today_s_language_refuses_is_kept_and_named_as_refused() -> None:
+    """A check stored under a looser rule is not mistaken for a kind's own fact — it is named as refused today."""
+    stored = GoalStateOutcome(expression="call_count(variation.spec) == 4", passed=True)
+
+    report, outcomes = recheck_result(
+        make_eval_result(goal_state_outcomes=[stored]), ledger=_ledger(4), end_state=None, world=None, variation={}
+    )
+
+    assert outcomes is None and report.not_rechecked is None
+    (kept,) = report.kept_as_stored
+    assert "today's language refuses" in kept.reason and "never a computed spec" in kept.reason
+
+
+# =============================================================================
+# The vocabulary moved: a renamed or removed dimension keeps its stored verdict
+# =============================================================================
+
+
+def _toy_registry() -> Any:
+    from packages.evals.tests.fixtures.toyhost.world import toyhost_world
+
+    registry, _state = toyhost_world()
+    return registry
+
+
+def test_a_check_over_a_dimension_today_s_world_no_longer_declares_keeps_its_stored_pass() -> None:
+    """Renamed or removed since the cell was graded: re-grading would read Missing and flip a pass to a fail."""
+    stored = GoalStateOutcome(expression='state.payment_hold_v1 == "held"', passed=True)
+
+    report, outcomes = recheck_result(
+        make_eval_result(goal_state_outcomes=[stored]),
+        ledger=None,
+        end_state={"payment_hold_v1": "held"},
+        world=_toy_registry(),
+        variation={},
+    )
+
+    assert outcomes is None and report.flips == [] and report.regraded == 0
+    (kept,) = report.kept_as_stored
+    assert "names no dimension today's world declares" in kept.reason
+
+
+def test_a_check_whose_path_today_s_world_resolves_to_another_dimension_keeps_its_stored_pass() -> None:
+    """The cell stored ``inbox.messages``; today's world declares only ``inbox``, which the end state never held."""
+    from threetears.evals.contracts.host import WorldDimension, WorldRegistry
+
+    today = WorldRegistry(
+        [
+            WorldDimension(
+                name="inbox",
+                carrier="mail",
+                schema={"type": "object"},
+                matters="the inbox the subject triages",
+                seed="mail.seed",
+                read="mail.read",
+            )
+        ],
+        bindings={"mail.seed": lambda value: None, "mail.read": dict},
+    )
+    stored = GoalStateOutcome(expression="state.inbox.messages.length >= 1", passed=True)
+
+    report, outcomes = recheck_result(
+        make_eval_result(goal_state_outcomes=[stored]),
+        ledger=None,
+        end_state={"inbox.messages": ["hello"]},
+        world=today,
+        variation={},
+    )
+
+    assert outcomes is None and report.flips == []
+    (kept,) = report.kept_as_stored
+    assert "stored under inbox.messages" in kept.reason and "resolves to inbox" in kept.reason
+
+
+def test_a_negated_check_over_a_dimension_its_cell_never_held_is_re_graded_as_not_established() -> None:
+    """Not a vocabulary change: today's world resolves the dimension and the cell never held it under any name.
+
+    A negated comparison over that absent value was once stored as a pass; the re-check is how the
+    three-valued rule reaches it, and it must flip to a fail that says it was not established.
+    """
+    stored = GoalStateOutcome(expression='not state.payment_hold == "released"', passed=True)
+
+    report, outcomes = recheck_result(
+        make_eval_result(goal_state_outcomes=[stored]),
+        ledger=None,
+        end_state={"document_language": "de"},
+        world=_toy_registry(),
+        variation={},
+    )
+
+    assert [(flip.was, flip.now) for flip in report.flips] == [(True, False)]
+    assert outcomes is not None
+    assert outcomes[0].detail.startswith("not established: state.payment_hold")

@@ -209,7 +209,9 @@ class _FakeGmKind:
         )
 
 
-_TEMPLATE = make_template(id="tpl-ambush", candidate_kind=DEFAULT_KIND)
+# No goal checks: the fake kinds here grade none, and the runner refuses a completed cell that left a
+# template's checks ungraded.
+_TEMPLATE = make_template(id="tpl-ambush", candidate_kind=DEFAULT_KIND, goal_state_checks=[])
 _CASES = [make_test_case(id=f"case-{n}", template_id=_TEMPLATE.id) for n in (1, 2)]
 
 

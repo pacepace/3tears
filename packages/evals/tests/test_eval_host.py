@@ -256,7 +256,9 @@ def _wired(request: LaunchRequest, **overrides: object) -> KindWiring:
     """What a well-behaved toy launcher resolves for ``request``, with ``overrides`` applied."""
     world = toyhost_profile().world
     assert world is not None
-    kind = ToyExtractorKind(client=ScriptedExtractionClient(), world=world)
+    kind = ToyExtractorKind(
+        client=ScriptedExtractionClient(), world=world, goal_checks=tuple(request.template.goal_state_checks)
+    )
     fields_: dict[str, object] = {
         "kind_factory": lambda _cell: kind,
         "subject": TOYHOST_SUBJECT,

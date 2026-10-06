@@ -321,6 +321,36 @@ class TestAmbientPerturbation:
         assert session.events == (event,)
         assert session.fired == Firings(), "ambient perturbation fires no dimension"
 
+    async def test_a_schedule_the_kind_never_announced_a_turn_for_is_refused(self) -> None:
+        session, _state = await _opened(WorldSeed(ambient_perturbation_turns=[2]))
+
+        with pytest.raises(WorldSessionError, match="announced no turn"):
+            session.require_schedule_announced()
+
+    async def test_announced_turns_with_a_gap_are_refused(self) -> None:
+        """Announcing turn 3 and not turn 2 skips the perturbation due before turn 2 while having taken it."""
+        session, state = await _opened(WorldSeed(ambient_perturbation_turns=[2]))
+        await session.at_turn(1)
+        await session.at_turn(3)
+
+        assert state.processing_shift == "day", "turn 2 was never announced, so nothing perturbed"
+        with pytest.raises(WorldSessionError, match=r"skipped \[2\]"):
+            session.require_schedule_announced()
+
+    async def test_a_scheduled_turn_the_cell_never_reached_is_honest(self) -> None:
+        """A cell that ended after turn 1 never reached turn 2: no refusal, and no perturbation recorded."""
+        session, _state = await _opened(WorldSeed(ambient_perturbation_turns=[2]))
+        await session.at_turn(1)
+
+        session.require_schedule_announced()
+        assert session.announced_turns == (1,)
+        assert session.events == ()
+
+    async def test_no_schedule_asks_nothing_of_the_kind(self) -> None:
+        session, _state = await _opened(WorldSeed())
+
+        session.require_schedule_announced()
+
     async def test_what_the_rig_reports_moving_is_recorded(self) -> None:
         registry, _state = toyhost_world()
         reporting = WorldRegistry(
@@ -472,6 +502,30 @@ async def test_the_toy_kind_fires_an_event_trigger_at_run_time_and_every_result_
         trace = path.trace(result)
         assert trace is not None and trace.end_state is not None
         assert trace.end_state[PAYMENT_HOLD] == "held"
+
+
+async def test_each_toy_cell_seeds_a_world_of_its_own_so_one_cell_s_firing_never_reaches_the_next() -> None:
+    """A cell that fires the hold leaves it in force in ITS world; a later cell on the same host starts clean.
+
+    One world shared by every cell would carry the fired hold into the next cell, whose end state would
+    then record the previous cell's world.
+    """
+    host = toyhost_host()
+    armed = await execute_toyhost_run(host=host, template=toyhost_arming_template())
+    armed_ids = {result.id for result in armed.results}
+    for result in armed.results:
+        trace = armed.trace(result)
+        assert trace is not None and trace.end_state is not None and trace.end_state[PAYMENT_HOLD] == "held"
+
+    # A toy run's id derives from its arm, so the plain drive's runs are the armed drive's: its own cells are
+    # the ones the armed drive did not produce.
+    plain = await execute_toyhost_run(host=host, template=toyhost_template())
+    later = [result for result in plain.results if result.id not in armed_ids]
+    assert later
+    for result in later:
+        trace = plain.trace(result)
+        assert trace is not None and trace.end_state is not None
+        assert trace.end_state[PAYMENT_HOLD] == "released", "a previous cell's fired hold leaked into this cell"
 
 
 async def test_a_run_whose_seed_arms_nothing_records_an_opened_world_in_which_nothing_moved() -> None:

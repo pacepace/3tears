@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+import pytest
+
 from threetears.evals.contracts import (
     CandidateOutput,
     CellSink,
@@ -27,6 +29,7 @@ from threetears.evals.contracts import (
     WorldSession,
 )
 from threetears.evals.contracts.host import ApparatusError, WorldRegistry
+from threetears.evals.contracts.world_session import WorldSessionError
 from threetears.evals.contracts.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.run.runner import RunnerOptions, run_one_result
@@ -67,19 +70,25 @@ class _MovesItsWorldKind:
         return CandidateOutput(output=[{"posted": True}])
 
 
-def _template() -> EvalTemplate:
+def _template(seed: WorldSeed = _SEED) -> EvalTemplate:
     return EvalTemplate(
-        scope_id="uni-1", name="readback", intent="move the world", candidate_kind=_KIND, world_seed=_SEED
+        scope_id="uni-1", name="readback", intent="move the world", candidate_kind=_KIND, world_seed=seed
     )
 
 
-async def _cell(kind: _MovesItsWorldKind, *, registry: WorldRegistry | None = None, worldless: bool = False) -> Any:
+async def _cell(
+    kind: _MovesItsWorldKind,
+    *,
+    registry: WorldRegistry | None = None,
+    worldless: bool = False,
+    seed: WorldSeed = _SEED,
+) -> Any:
     profile = toyhost_profile()
     if worldless:
         profile = replace(profile, world=None)
     elif registry is not None:
         profile = replace(profile, world=registry)
-    template = _template()
+    template = _template(seed)
     return await run_one_result(
         toyhost_host(profile=profile),
         template=template,
@@ -181,3 +190,19 @@ def test_a_trace_carrying_only_an_end_state_is_stored() -> None:
     trace = storage.load_eval_trace(result.id, result.scope_id)
     assert stored is not None and stored.has_trace is True
     assert trace is not None and trace.end_state == {"payment_hold": "held"}
+
+
+async def test_a_kind_that_never_announces_its_turns_under_a_perturbation_schedule_is_refused() -> None:
+    """The run is keyed as perturbed, and only the kind announcing a turn applies its perturbation.
+
+    This kind takes its turn without calling ``at_turn``, so nothing was perturbed; recording the cell
+    would put an unperturbed cell under the perturbed condition.
+    """
+    scheduled = _SEED.model_copy(update={"ambient_perturbation_turns": [1]})
+
+    with pytest.raises(WorldSessionError, match="announced no turn"):
+        await _cell(_MovesItsWorldKind(), seed=scheduled)
+
+    # The same kind under no schedule completes: the refusal is the unannounced schedule, nothing else.
+    result, _trace = await _cell(_MovesItsWorldKind())
+    assert result.termination == "completed"

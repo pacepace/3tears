@@ -37,7 +37,9 @@ def _host(
     host, _client = toyhost_launch_host(storage=storage, settings=lambda: settings)
     world = host.eval_host.profile.world
     assert world is not None
-    kind = ToyExtractorKind(client=ScriptedExtractionClient(), world=world)
+    kind = ToyExtractorKind(
+        client=ScriptedExtractionClient(), world=world, goal_checks=tuple(toyhost_template().goal_state_checks)
+    )
     admitted: list[bool] = []
 
     def factory(context: Any) -> ToyExtractorKind:
