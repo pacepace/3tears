@@ -6,6 +6,69 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: an arm is priced by the judges it will be scored by, and the estimate is the launch's own price
+
+- **An arm is priced, and held, by its effective judges and its resolved simulator.** **Breaking:**
+  ``ArmPlan`` gains required ``judge`` (a ``PlannedJudge`` — the resolved run-level pin, the model each scored
+  dim is requested from, and the config set — or ``None`` for a mechanically graded kind) and
+  ``simulator_model`` (resolved, or ``None``); ``ArmQuote`` carries the same two in place of the unresolved
+  ``judge_model`` pin. A judge config's ``model`` overrides the run-level pin for its dim, and a pin a launch
+  left unnamed resolves to a role default that moves, so ``history_launch_pricer`` now matches history on
+  ``EvalRun.effective_judges`` and ``EvalRun.simulator_model`` — the models that ran — rather than on what each
+  launch named; it no longer prices an arm whose dim is scored by a dearer config model, or whose default judge
+  has moved, from cheaper history. It does not match a config's prompt (two configs on one model are one
+  judge to it). New ``plan_judge(host, template, judge_model, selection, judged_artifact=...)`` resolves an arm's
+  judges exactly as ``build_judge_service`` does, building nothing and paying for nothing, and makes the
+  selection's refusals; ``RunJudge.planned`` is the built judge in the same shape. The launch tail refuses an
+  arm whose launcher wired other judges or another simulator than its plan, and planning refuses a plan that
+  contradicts a pinned judge, a config selection or a pinned simulator.
+- **``launch_estimate`` prices by the launch's own rule.** **Breaking:** it takes ``run_launch``'s own
+  arguments — ``launch_estimate(host, LaunchArguments(...), scope_id, n_test_cases=None)``, now ``async`` — and
+  returns a new ``LaunchEstimate``: per arm its plan, the host's ``launch_pricer`` price (the held-to figure,
+  plus a range pricer's centre and lower end), the cap and the outcome the launch's rule reaches, with the
+  launch's refusal word for word. It is built by the new read-only ``run.quote_launch``, which runs the launch's
+  argument refusals, dispatch, plans and prices and launches nothing. It used to count cases through
+  ``OpsHost.count_template_cases`` and price from history pooled across every judge, simulator and rig at a
+  fixed cassette mode, so it could show a launch fitting its cap that the launch then refused. The
+  ``launch_estimate`` action takes ``run_launch``'s parameters (``subject_id`` now required; ``subject_filter``
+  is gone) plus ``n_test_cases``. A ``LaunchEstimate`` is a cost pivot's plan: ``scope_pivot``'s
+  ``predicted_cost`` takes it as well as a ``CostEstimate`` (new ``analysis.PlannedCost`` is the shape the pivot
+  reads). ``ArmPrice`` gains optional ``central_usd``, ``low_usd`` and ``method_id`` (``low <= central <=
+  predicted``); ``history_launch_pricer`` fills them.
+- **``OpsHost.count_template_cases`` and ``TemplateCaseCounter`` are removed** — nothing reads a second count
+  of a template's cases now; the kind's ``plan_arm`` is the one. **Adopters (Dungeons of Wagons):** drop
+  ``stored_case_counter`` from ``OpsHost(...)``, keep the count in each kind's ``plan_arm``.
+- **``plan_arm`` is the home of a kind's request-level refusals.** Every arm is planned before any is priced,
+  so a refusal made there — no model and no role default, a judge or simulator the kind needs, a config
+  selection that does not fit — reaches the operator before any "cannot be priced". New
+  ``require_candidate_model(request, default)`` is the "has no default candidate model; name one" refusal the
+  launch tail makes, shared so a plan makes the same one. An arm of a kind that plans nothing, refused as
+  unpriceable, is now told the launch may also be missing something its kind needs. **Adopters:** move the
+  session kind's "needs a simulator" and the router's "needs a judge" into their ``plan_arm``; give each kind's
+  plan its ``judge`` (``plan_judge`` with the pin the launcher will resolve, ``None`` for an unjudged kind) and
+  ``simulator_model``.
+- **No arm reaches the tail unpriced under an enforced cap.** New public ``price_arms(host, launchable,
+  requests)`` is the pricing step ``start_run`` and the battery take; ``LaunchRequest`` gains ``arm_price``,
+  and the launch tail refuses an arm carrying none while a cap is in force. ``launch_as_group`` prices nothing,
+  and a ``prepare`` composing its own arms calls ``price_arms``.
+- **A battery prepares every template before starting any, and launches each template as it priced it.**
+  A refusal one template's preparation makes (a launcher's own, or a tail refusal of a stored case added since
+  the pre-flight) used to leave the earlier templates' runs started; now every prepared group is abandoned
+  and nothing starts. Each template's launch runs the template its pre-flight loaded rather than re-reading
+  it, so an edit mid-battery cannot launch it under plans made for another. Starting is one store write per
+  group, so a store refusing a later group's save still leaves earlier groups running. The battery now makes a
+  launch's argument refusals (a model named twice, more arms than one launch may start) once, before
+  admission. The carried plans' invariant is a ``ValueError``, not an ``assert``.
+- **A judged witnessed run's ceiling check is atomic with the judgement it admits.** **Breaking:**
+  ``record_witnessed_cell`` takes ``judging=WitnessedJudging(run.id)`` for a judged run — one per run, handed to
+  every cell — and refuses a judged cell without it. Cells recorded concurrently through one ``WitnessedJudging``
+  are admitted one at a time, each against every cell judged before it, saved or not, so the ceiling is
+  overshot by at most the cell that crosses it. Judgements made through another ``WitnessedJudging`` (another
+  process's) that are not yet saved are invisible to it.
+- **Wording.** Refusals and docs say "priced past results"; the band's threshold is read from
+  ``analysis.COST_ESTIMATE_MIN_BASIS`` (renamed from the private ``_COST_ESTIMATE_MIN_BASIS``) rather than
+  written as "three".
+
 ### 3tears-evals: every arm of every launch is priced by the engine, by one rule
 
 - **The engine prices every arm before any launcher runs** — an arm over the template's stored cases as
@@ -41,11 +104,12 @@ packages (bumped in lock-step).
   ``priced_kinds`` (hand the engine the kinds unwrapped), ``refuse_over_cap`` and ``predict_run_cost``; give
   every kind — router, forge, session — a ``plan_arm`` that plans a stored-case arm too:
   ``ArmPlan(case_count=<stored, unarchived cases of the template> if request.n_variations == 0 else
-  request.n_variations, candidate_model=request.candidate_model or <the kind's role default>)``
-  (``stored_case_counter`` already answers the count, and stays for ``launch_estimate``), raising
+  request.n_variations, candidate_model=require_candidate_model(request, <the kind's role default>), judge=...,
+  simulator_model=...)`` (``stored_case_counter`` already answers the count; ``judge`` and ``simulator_model`` as
+  the entry above says), raising
   ``ValidationFailedError`` for a template with no stored case; keep ``launch_pricer=history_launch_pricer(...)``.
   Expect stored-case launches that a single priced result used to admit to be refused under the inherited
-  cap until three priced results launched the same way exist: launch once naming ``max_cost_usd``. A host
+  cap until enough priced results launched the same way exist to bound it (``COST_ESTIMATE_MIN_BASIS``): launch once naming ``max_cost_usd``. A host
   constructing ``ArmQuote`` (a test pricer, say) passes ``n_variations``.
 
 ### 3tears-evals: a second review of the out-of-run spend, priced launches and apparatus settings

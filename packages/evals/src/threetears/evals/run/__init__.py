@@ -57,9 +57,11 @@ from threetears.evals.run.jobs import (
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, JUDGE_REQUEST_SETTINGS, run_judge_llm
 from threetears.evals.run.judge_service import JudgeRequest, JudgeService
 from threetears.evals.run.launch import (
+    ArmOutcome,
     ArmPlan,
     ArmPrice,
     ArmQuote,
+    ArmVerdict,
     KindLauncher,
     KindWiring,
     LaunchableKind,
@@ -67,14 +69,20 @@ from threetears.evals.run.launch import (
     LaunchGroup,
     LaunchHost,
     LaunchPricer,
+    LaunchQuote,
     LaunchRequest,
     LaunchSettings,
+    PlannedJudge,
     RunJudge,
     TemplatePreflight,
     build_judge_service,
     launch_as_group,
     launch_run,
     no_launcher_for,
+    plan_judge,
+    price_arms,
+    quote_launch,
+    require_candidate_model,
     settable_apparatus,
     start_run,
     start_universal_battery,
@@ -124,7 +132,7 @@ from threetears.evals.run.simulator import (
     SimulatorTurn,
     TurnDriver,
 )
-from threetears.evals.run.witnessed import record_witnessed_cell, stamp_witnessed_judge
+from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
 from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, CapBreach, EvalRunCostCap
 from threetears.evals.run.ceilings import resolve_ceiling_origin, resolve_effective_ceiling
 from threetears.evals.run.curation import CurationStore
@@ -147,9 +155,11 @@ __all__ = [
     "AbandonedRunSweepReport",
     "AccountExhaustedError",
     "AdmissionTicket",
+    "ArmOutcome",
     "ArmPlan",
     "ArmPrice",
     "ArmQuote",
+    "ArmVerdict",
     "BatteryPreflight",
     "BudgetStoppedError",
     "CandidateTurn",
@@ -179,6 +189,7 @@ __all__ = [
     "LaunchGroup",
     "LaunchHost",
     "LaunchPricer",
+    "LaunchQuote",
     "LaunchRequest",
     "LaunchSettings",
     "LaunchableKind",
@@ -191,6 +202,7 @@ __all__ = [
     "ResultRecheck",
     "RunCallbacks",
     "RunRecheck",
+    "PlannedJudge",
     "RunJudge",
     "RunnerOptions",
     "SeedCorpus",
@@ -200,6 +212,7 @@ __all__ = [
     "SimulatorTurn",
     "TemplatePreflight",
     "TurnDriver",
+    "WitnessedJudging",
     "WorkFn",
     "assert_preconditions",
     "build_judge_context",
@@ -238,6 +251,10 @@ __all__ = [
     "load_seed_corpus",
     "metered_cell_tally",
     "no_launcher_for",
+    "plan_judge",
+    "price_arms",
+    "quote_launch",
+    "require_candidate_model",
     "settable_apparatus",
     "precondition_failure_text",
     "rate_result",

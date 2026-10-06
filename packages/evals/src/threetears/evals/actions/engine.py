@@ -26,7 +26,7 @@ from threetears.evals.ops import (
     CampaignDefinition,
     CampaignLine,
     CampaignListing,
-    CostEstimate,
+    LaunchEstimate,
     EvalSummary,
     HistoryResult,
     JobsStarted,
@@ -148,7 +148,7 @@ PredictedCost = Annotated[
     dict[str, Any] | None,
     Field(
         description="A cost pivot's plan: the structured result launch_estimate returned before these runs. Each "
-        "planned model's cell then shows its predicted cost beside the cost observed."
+        "priced arm's model's cell then shows its predicted cost beside the cost observed."
     ),
 ]
 MinAbsoluteChange = Annotated[
@@ -170,7 +170,8 @@ ExportRunIds = Annotated[
     Field(description="Export only these runs, archived ones included since they are named; omitted exports all."),
 ]
 CaseCount = Annotated[
-    int | None, Field(ge=1, description="A case count to price in place of the template's own, for a what-if grid.")
+    int | None,
+    Field(ge=1, description="A case count to price each planned arm at in place of its plan's, for a what-if grid."),
 ]
 
 
@@ -300,15 +301,10 @@ class ScopeExportParams(EvalBaseModel):
     export_run_ids: ExportRunIds = None
 
 
-class LaunchEstimateParams(EvalBaseModel):
-    """``launch_estimate`` — what a ``run_launch`` with the same arguments would cost."""
+class LaunchEstimateParams(RunLaunchParams):
+    """``launch_estimate`` — what a ``run_launch`` with the same arguments would cost, priced by its own rule."""
 
-    template_id: TemplateId
-    models: Models = Field(default_factory=list)
-    k_runs: KRuns = DEFAULT_LAUNCH_K_RUNS
-    n_variations: NVariations = 0
     n_test_cases: CaseCount = None
-    subject_filter: SubjectFilter = None
 
 
 class ScopeOutOfRunSpendParams(EvalBaseModel):
@@ -501,18 +497,12 @@ async def _scope_out_of_run_spend(
     )
 
 
-async def _launch_estimate(host: OpsHost, caller: Caller, params: LaunchEstimateParams) -> CostEstimate:
-    return await run_blocking(
-        host.eval_host.blocking_executor,
-        launch_estimate,
+async def _launch_estimate(host: OpsHost, caller: Caller, params: LaunchEstimateParams) -> LaunchEstimate:
+    return await launch_estimate(
         host,
+        LaunchArguments.model_validate(params.model_dump(exclude={"n_test_cases"})),
         caller.scope_id,
-        template_id=params.template_id,
-        models=params.models,
-        k_runs=params.k_runs,
-        n_variations=params.n_variations,
         n_test_cases=params.n_test_cases,
-        subject_id=params.subject_filter,
     )
 
 
@@ -610,18 +600,19 @@ def engine_actions() -> tuple[Action, ...]:
             workflow=RUN,
             permission="read",
             params=LaunchEstimateParams,
-            result=CostEstimate,
+            result=LaunchEstimate,
             handler=_launch_estimate,
             render=render.render_estimate,
-            example={"template_id": "tmpl-1", "models": ["model-a", "model-b"], "k_runs": 3},
+            example={"template_id": "tmpl-1", "subject_id": "subject-1", "models": ["model-a", "model-b"], "k_runs": 3},
             detail=(
-                "Takes run_launch's own arguments: the template's cases, k_runs repeats, one arm per model — named, since "
-                "the default an empty run_launch runs has no name to look its history up by — and n_variations, "
-                "priced as that many cases (an upper bound); the generation calls themselves are not priced. Each "
-                "model is priced from its own history at the live cassette mode, with a prediction band once three "
-                "or more priced observations back it; a model with no history is named and left out of the total. "
-                "Pass the structured result to scope_pivot as predicted_cost after the runs land, to set each "
-                "prediction beside the cost observed. Spends nothing."
+                "Takes run_launch's own arguments and prices them by the launch's own rule: each arm planned by its "
+                "kind (its cases, its model, its judges and simulator) and priced by the host's launch pricer, held to "
+                "the cap the launch would hold it to. Every refusal the launch makes before pricing is returned as an "
+                "error, as run_launch returns it; an arm the launch would refuse on its price is reported with the "
+                "refusal, word for word. n_test_cases prices a hypothetical grid instead of each plan's cases; the "
+                "generation calls a generating launch makes first are priced by the launch itself. Pass the structured "
+                "result to scope_pivot as predicted_cost after the runs land, to set each prediction beside the cost "
+                "observed. Spends nothing."
             ),
         ),
         Action(

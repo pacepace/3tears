@@ -27,13 +27,19 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.analysis import CostEstimate
+from threetears.evals.analysis import COST_ESTIMATE_MIN_BASIS
 from threetears.evals.contracts import EvalRun, EvalStorage, OutOfRunBudget, ValidationFailedError
 from threetears.evals.contracts.host import CompletionRole
 from threetears.evals.contracts.identity import derive_context_identity
-from threetears.evals.contracts.models import EvalTemplate, VariationAxis, VariationCounts
+from threetears.evals.contracts.models import (
+    OUTCOME_DIM_ID,
+    TRANSCRIPT_DIM_ID,
+    EvalTemplate,
+    VariationAxis,
+    VariationCounts,
+)
 from threetears.evals.gen import generate_variations
-from threetears.evals.ops import LaunchArguments, history_launch_pricer, launch_estimate, run_launch
+from threetears.evals.ops import LaunchArguments, OpsHost, history_launch_pricer, launch_estimate, run_launch
 from threetears.evals.run import (
     ArmPlan,
     ArmPrice,
@@ -44,6 +50,7 @@ from threetears.evals.run import (
     LaunchPricer,
     LaunchRequest,
     LaunchSettings,
+    PlannedJudge,
     launch_run,
     start_run,
     start_universal_battery,
@@ -225,6 +232,8 @@ def _generating_host(
         return ArmPlan(
             case_count=plan_cases if plan_cases is not None else request.n_variations,
             candidate_model=plan_model or request.candidate_model or RUN_MODELS[0],
+            judge=None,
+            simulator_model=None,
         )
 
     generating = replace(
@@ -463,17 +472,33 @@ async def test_the_run_launch_action_hands_the_launch_both_generation_arguments(
 
 
 async def test_launch_estimate_prices_the_cases_a_launch_would_generate():
-    fixture = ops_fixture()
-    evals = eval_catalogue().mount_all(standard_tools())[0]
-    arguments = {"template_id": toyhost_template().id, "models": [RUN_MODELS[0]], "n_variations": 4}
+    """The estimate quotes a generating arm as the launch's gate does: its plan's generated cases, through the pricer."""
+    template = _template(LLM_AXIS)
+    quotes: list[ArmQuote] = []
 
-    outcome = await evals.call({"action": "launch_estimate", **arguments}, host=fixture.host, caller=CALLER)
+    def dear(quote: ArmQuote) -> ArmPrice:
+        quotes.append(quote)
+        return ArmPrice(predicted_usd=9.5, basis="from 3 past results")
 
-    assert not outcome.is_error, outcome.text
-    estimate = CostEstimate.model_validate(outcome.structured)
-    assert (estimate.n_test_cases, estimate.n_test_cases_source) == (4, "generated")
-    direct = launch_estimate(fixture.host, TOYHOST_SCOPE, **arguments)  # type: ignore[arg-type]
-    assert (direct.n_test_cases, direct.n_test_cases_source) == (4, "generated")
+    host, storage, clients, handed = _generating_host(template, pricer=dear)
+    arguments = LaunchArguments(
+        template_id=template.id,
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        models=[RUN_MODELS[0]],
+        n_variations=4,
+        variation_model=WRITER,
+    )
+
+    estimate = await launch_estimate(OpsHost(launch=host), arguments, TOYHOST_SCOPE)
+
+    (arm,) = estimate.arms
+    assert (arm.case_count, arm.case_source, arm.outcome) == (4, "generated", "refused")
+    assert [(q.case_count, q.n_variations, q.case_source) for q in quotes] == [(4, 4, "generated")]
+    assert handed == [] and clients.asked == [], "an estimate calls no launcher and builds no writer"
+    _nothing_was_paid_for(host, storage, clients)
+    with pytest.raises(ValidationFailedError) as refused:
+        await run_launch(OpsHost(launch=host), arguments, TOYHOST_SCOPE)
+    assert str(refused.value) == arm.refusal, "the estimate reports the launch's own refusal, word for word"
 
 
 # =============================================================================
@@ -671,11 +696,12 @@ async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said):
     [
         ({"case_count": 0, "candidate_model": "m"}, "at least one case"),
         ({"case_count": 1, "candidate_model": " "}, "candidate_model is blank"),
+        ({"case_count": 1, "candidate_model": "m", "simulator_model": " "}, "simulator_model is blank"),
     ],
 )
 def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said):
     with pytest.raises(ValueError, match=said):
-        ArmPlan(**bad)
+        ArmPlan(**{"judge": None, "simulator_model": None, **bad})
 
 
 @pytest.mark.parametrize(
@@ -914,7 +940,7 @@ def _quote(**overrides: Any) -> ArmQuote:
         "case_count": 5,
         "n_variations": 5,
         "cassette_mode": "off",
-        "judge_model": None,
+        "judge": None,
         "simulator_model": None,
         "apparatus_settings": {},
         **overrides,
@@ -933,8 +959,10 @@ def test_the_history_pricer_bounds_an_arm_by_the_upper_band_of_its_template_and_
     centre = 0.20 * 5 * 2
     assert price.predicted_usd is not None and price.predicted_usd > centre, "above the mean x cases x repeats"
     assert f"around ${centre:.2f}" in price.basis and "upper end of the band" in price.basis
-    assert "usage-history" in price.basis and "3 past result(s)" in price.basis
+    assert "usage-history" in price.basis and "3 priced past result(s)" in price.basis
     assert price.predicted_usd < 9.0, "another template's history is not drawn on"
+    assert price.central_usd == pytest.approx(centre), "the centre rides beside the held-to figure, never as it"
+    assert price.low_usd is not None and price.low_usd < centre and price.method_id == "usage-history"
 
 
 def test_the_history_pricer_prices_an_arm_over_stored_cases_by_the_same_rule():
@@ -957,7 +985,7 @@ def test_the_history_pricer_predicts_nothing_for_an_arm_with_no_priced_history()
     price = history_launch_pricer(host)(_quote())
 
     assert price.predicted_usd is None
-    assert "no priced result of template 'tpl-priced' on 'm-priced'" in price.basis
+    assert "no priced past result of template 'tpl-priced' on 'm-priced'" in price.basis
     assert "1 past result(s) ran unpriced" in price.basis
 
 
@@ -970,17 +998,45 @@ def test_the_history_pricer_predicts_nothing_from_a_history_too_thin_to_bound():
 
     assert price.predicted_usd is None
     assert "2 priced past result(s)" in price.basis and "too few to bound the arm" in price.basis
+    assert f"a band needs {COST_ESTIMATE_MIN_BASIS}" in price.basis
 
 
+def _judged_by(pin: str, **per_dim: str) -> PlannedJudge:
+    """The judges an arm is planned to be scored by: ``pin`` on both reserved dims, unless a dim names its own."""
+    return PlannedJudge(
+        model=pin,
+        effective_judges={
+            OUTCOME_DIM_ID: per_dim.get("outcome", pin),
+            TRANSCRIPT_DIM_ID: per_dim.get("transcript", pin),
+        },
+        config_ids={},
+    )
+
+
+#: History judged by a cheap model on both dims, whether the launch named it or inherited the role's default.
 _JUDGED_CHEAPLY = {"judge_model": "judge-cheap", "model_role_provenance": {"judge": "chosen"}}
+_INHERITED_OLD_DEFAULT = {"judge_model": "judge-old-default", "model_role_provenance": {"judge": "inherited"}}
 _SIMULATED_CHEAPLY = {"simulator_model": "sim-cheap", "model_role_provenance": {"simulator": "chosen"}}
 
 
 @pytest.mark.parametrize(
     ("history", "other", "same"),
     [
-        (_JUDGED_CHEAPLY, {"judge_model": "judge-dear"}, {"judge_model": "judge-cheap"}),
-        (_JUDGED_CHEAPLY, {}, {"judge_model": "judge-cheap"}),
+        (_JUDGED_CHEAPLY, {"judge": _judged_by("judge-dear")}, {"judge": _judged_by("judge-cheap")}),
+        # The run-level pin matches; a dim's config names a dearer model than the pin, so that dim is scored by it.
+        (
+            _JUDGED_CHEAPLY,
+            {"judge": _judged_by("judge-cheap", outcome="judge-dear")},
+            {"judge": _judged_by("judge-cheap")},
+        ),
+        # An arm naming no judge resolves to today's default; history that inherited a since-moved default ran
+        # under another judge, and "both inherited" is not the same judge.
+        (
+            _INHERITED_OLD_DEFAULT,
+            {"judge": _judged_by("judge-new-default")},
+            {"judge": _judged_by("judge-old-default")},
+        ),
+        (_JUDGED_CHEAPLY, {}, {"judge": _judged_by("judge-cheap")}),
         (_SIMULATED_CHEAPLY, {"simulator_model": "sim-dear"}, {"simulator_model": "sim-cheap"}),
         (
             {"apparatus_settings": {"reviewer_pool": "pool-a"}},
@@ -988,30 +1044,23 @@ _SIMULATED_CHEAPLY = {"simulator_model": "sim-cheap", "model_role_provenance": {
             {"apparatus_settings": {"reviewer_pool": "pool-a"}},
         ),
     ],
-    ids=["another-judge-pin", "a-pinned-judge-for-an-arm-naming-none", "another-simulator-pin", "another-rig"],
+    ids=[
+        "another-judge",
+        "a-dim-config-overriding-the-pin",
+        "a-role-default-that-moved",
+        "an-unjudged-arm-against-judged-history",
+        "another-simulator",
+        "another-rig",
+    ],
 )
 def test_the_history_pricer_draws_only_on_runs_launched_as_the_arm_will_be(history, other, same):
-    """A run judged by a cheaper model, or with its rig set up otherwise, spent differently from the arm."""
+    """A run judged by a cheaper model on any dim, or simulated or rigged otherwise, spent differently from the arm."""
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30], **history)
     pricer = history_launch_pricer(host)
 
     assert pricer(_quote(**other)).predicted_usd is None
     assert pricer(_quote(**same)).predicted_usd is not None, "the condition it was launched under prices"
-
-
-def test_a_run_that_inherited_its_judge_prices_an_arm_naming_none():
-    host, storage = _priced_host()
-    _history(
-        storage,
-        template_id="tpl-priced",
-        model="m-priced",
-        costs=[0.10, 0.20, 0.30],
-        judge_model="judge-default",
-        model_role_provenance={"judge": "inherited"},
-    )
-
-    assert history_launch_pricer(host)(_quote()).predicted_usd is not None
 
 
 def test_the_history_pricer_reads_only_the_matching_runs_results(monkeypatch: pytest.MonkeyPatch):

@@ -4,8 +4,8 @@ Every operation that reads takes the :class:`~threetears.evals.contracts.host.Ev
 starts long work — a launch, an analysis generation — needs the process's job manager too, which the
 :class:`~threetears.evals.run.LaunchHost` builds. :class:`OpsHost` is the two together with the
 things neither carries: what a background generation is told (its prompt, its output cap and its
-wall-clock budget), and how many cases a launch of a template would run — each the host's
-configuration and never the engine's guess.
+wall-clock budget) — the host's configuration and never the engine's guess. How many cases a launch
+would run is its kinds' answer (``LaunchableKind.plan_arm``), which a launch estimate asks as the launch does.
 """
 
 from __future__ import annotations
@@ -51,13 +51,6 @@ class AnalysisGeneration:
             raise ValueError(f"AnalysisGeneration.budget_s must be positive; got {self.budget_s}")
 
 
-#: How many cases a launch of a template would run from what the scope stores:
-#: ``(template_id, candidate_kind, scope_id) -> int``. The host's answer, because where a kind's cases
-#: come from — stored, frozen, minted at launch from a subject's bank — is a fact about the kinds it
-#: launches, never the engine's guess.
-TemplateCaseCounter = Callable[[str, str, str], int]
-
-
 @dataclass(frozen=True, kw_only=True)
 class OpsHost:
     """The host the operations, and the actions over them, work in.
@@ -67,14 +60,10 @@ class OpsHost:
             the job manager every long-running operation is tracked by.
         generation: How an analysis is generated in the background; ``None`` for a host that does not
             generate analyses here, whose generation start is refused saying so.
-        count_template_cases: How many cases a launch of a template would run
-            (:data:`TemplateCaseCounter`), which a launch estimate prices; ``None`` for a host that does
-            not estimate launches here, whose estimate is refused saying so.
     """
 
     launch: LaunchHost
     generation: AnalysisGeneration | None = None
-    count_template_cases: TemplateCaseCounter | None = None
 
     @property
     def eval_host(self) -> EvalHost:
@@ -82,4 +71,4 @@ class OpsHost:
         return self.launch.eval_host
 
 
-__all__ = ["AnalysisGeneration", "OpsHost", "TemplateCaseCounter"]
+__all__ = ["AnalysisGeneration", "OpsHost"]

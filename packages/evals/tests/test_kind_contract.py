@@ -537,6 +537,7 @@ def test_a_launcher_reads_the_overlays_as_its_kinds_own_model():
         apparatus_settings={},
         generation_budget=None,
         arm_plan=None,
+        arm_price=None,
         launch_group=LaunchGroup(candidate_models=[]),
         settings=TOYHOST_LAUNCH_SETTINGS,
     )

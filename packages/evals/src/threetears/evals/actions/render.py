@@ -27,7 +27,7 @@ from threetears.evals.ops import (
     AnalysisListing,
     CampaignLine,
     CampaignListing,
-    CostEstimate,
+    LaunchEstimate,
     EvalSummary,
     HistoryResult,
     JobsStarted,
@@ -274,8 +274,8 @@ def render_out_of_run_spend(report: OutOfRunSpendReport) -> str:
     return out_of_run_spend_text(report)
 
 
-def render_estimate(estimate: CostEstimate) -> str:
-    """A launch's predicted cost, model by model, and the total with its band."""
+def render_estimate(estimate: LaunchEstimate) -> str:
+    """A launch's price, arm by arm as the launch would judge it, and the total."""
     return estimate_text(estimate)
 
 

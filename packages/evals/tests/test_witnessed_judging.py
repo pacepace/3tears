@@ -12,6 +12,7 @@ Each refusal is driven beside the accepted shape on the same fixture.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -34,7 +35,13 @@ from threetears.evals.contracts import (
     ValidationFailedError,
 )
 from threetears.evals.contracts.host import EvalHost, SweepableValue
-from threetears.evals.run import BudgetStoppedError, record_witnessed_cell, rejudge_result, stamp_witnessed_judge
+from threetears.evals.run import (
+    BudgetStoppedError,
+    WitnessedJudging,
+    record_witnessed_cell,
+    rejudge_result,
+    stamp_witnessed_judge,
+)
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -133,16 +140,26 @@ def _output(**overrides: Any) -> CandidateOutput:
     return CandidateOutput(**fields)
 
 
-async def _record(host: EvalHost, run: EvalRun, case: EvalTestCase, output: CandidateOutput) -> Any:
+async def _record(
+    host: EvalHost,
+    run: EvalRun,
+    case: EvalTestCase,
+    output: CandidateOutput,
+    *,
+    judging: WitnessedJudging | None = None,
+    result_id: str = "result-7",
+) -> Any:
+    """Record one cell of ``run`` — through ``judging`` when given, else through judging of its own for this call."""
     return await record_witnessed_cell(
         host,
         run,
         case,
         output,
         k_iteration=1,
-        result_id="result-7",
+        result_id=result_id,
         scored_at=_SESSION_CAPTURED,
         judged_artifact=JudgedArtifact.DOCUMENT,
+        judging=judging if judging is not None else WitnessedJudging(run.id),
     )
 
 
@@ -292,7 +309,30 @@ class TestRecordingAJudgedCellRefuses:
                 result_id="result-7",
                 scored_at=_SESSION_CAPTURED,
                 judged_artifact=JudgedArtifact.UNJUDGED,
+                judging=WitnessedJudging(run.id),
             )
+
+    async def test_no_judging_or_judging_for_another_run(self) -> None:
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        stamped = _stamped(host, template, run)
+
+        with pytest.raises(ValueError, match="none was given: build WitnessedJudging\\('run-witnessed'\\)"):
+            await record_witnessed_cell(
+                host,
+                stamped,
+                case,
+                _output(),
+                k_iteration=1,
+                result_id="result-7",
+                scored_at=_SESSION_CAPTURED,
+                judged_artifact=JudgedArtifact.DOCUMENT,
+            )
+        with pytest.raises(ValueError, match="the one given judges run run-other"):
+            await _record(host, stamped, case, _output(), judging=WitnessedJudging("run-other"))
+        assert judge.calls == []
+        result, _ = await _record(host, stamped, case, _output(), judging=WitnessedJudging(stamped.id))
+        assert [score.dim for score in result.rubric_scores] == [_DIM], "the accepted shape, on the same fixture"
 
 
 # =============================================================================
@@ -378,6 +418,52 @@ class TestAJudgedRunIsHeldToItsCeiling:
         with pytest.raises(BudgetStoppedError, match=r"\$1\.2000 spent against a \$1\.0000 cap"):
             await _record(host, stamped, case, _output())
         assert len(judge.calls) == 1, "only the cell inside the ceiling was judged"
+
+    async def test_a_judged_cell_the_host_has_not_saved_counts_against_the_next(self) -> None:
+        """The store holds only what the host saved; the run's judging counts what it judged and the host has not."""
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        stamped = _stamped(host, template, run, max_cost_usd=1.0)
+        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.9995)
+        judging = WitnessedJudging(stamped.id)
+
+        await _record(host, stamped, case, _output(), judging=judging, result_id="first")
+        with pytest.raises(BudgetStoppedError, match=r"\$1\.0005 spent against a \$1\.0000 cap"):
+            await _record(host, stamped, case, _output(), judging=judging, result_id="second")
+        assert len(judge.calls) == 1, "the unsaved first cell's judging stopped the second"
+
+    async def test_cells_recorded_concurrently_are_admitted_one_at_a_time(self) -> None:
+        """Two cells checked together would both see room for one; through one judging the second sees the first."""
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        stamped = _stamped(host, template, run, max_cost_usd=1.0)
+        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.9995)
+        judging = WitnessedJudging(stamped.id)
+
+        outcomes = await asyncio.gather(
+            _record(host, stamped, case, _output(), judging=judging, result_id="first"),
+            _record(host, stamped, case, _output(), judging=judging, result_id="second"),
+            return_exceptions=True,
+        )
+
+        assert sum(isinstance(outcome, BudgetStoppedError) for outcome in outcomes) == 1, outcomes
+        assert len(judge.calls) == 1, "the ceiling was crossed by one cell, the runner's bound, never by the batch"
+
+    async def test_a_cell_the_host_saved_is_counted_once(self) -> None:
+        """Once the store holds a judged cell, its spend is read from there and not again from the judging."""
+        judge = _ScriptedJudge()
+        host, template, run, case = _setup(judge)
+        stamped = _stamped(host, template, run, max_cost_usd=1.0)
+        _judged_at(host, stamped, case, result_id="earlier", judge_cost=0.9985)
+        judging = WitnessedJudging(stamped.id)
+
+        first, trace = await _record(host, stamped, case, _output(), judging=judging, result_id="first")
+        host.storage.save_eval_result(first, trace)
+        second, _ = await _record(host, stamped, case, _output(), judging=judging, result_id="second")
+
+        assert [score.dim for score in second.rubric_scores] == [_DIM], (
+            "$0.9995 spent, not $1.0005 with the saved cell counted twice"
+        )
 
     async def test_unpriced_judge_spend_stops_an_enforced_ceiling(self) -> None:
         judge = _ScriptedJudge()
