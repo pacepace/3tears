@@ -11,8 +11,9 @@ The operations are named as the actions over them are (``noun_verb``), so a name
 catalogue (:mod:`threetears.evals.actions`) is the operation it calls.
 
 The read lenses — :func:`scope_pivot`, :func:`scope_history`, :func:`scope_export` and
-:func:`launch_estimate` — return the analysis package's own result models, re-exported here because
-they are what these operations hand back, with the text a surface shows for each (:func:`pivot_text`
+:func:`launch_estimate` — return their result models (the first three the analysis package's own,
+re-exported here because they are what these operations hand back; the estimate its own
+:class:`LaunchEstimate`, priced by the launch's rule), with the text a surface shows for each (:func:`pivot_text`
 and its siblings) beside them, so a command line and an agent read one rendering.
 :func:`scope_out_of_run_spend` reads the out-of-run ledger — the spend no run's results carry — into an
 :class:`OutOfRunSpendReport` of its own, with :func:`out_of_run_spend_text` beside it.
@@ -42,7 +43,7 @@ from threetears.evals.ops.analysis import (
     report_read,
     serialize_report,
 )
-from threetears.evals.ops.host import AnalysisGeneration, OpsHost, TemplateCaseCounter
+from threetears.evals.ops.host import AnalysisGeneration, OpsHost
 from threetears.evals.ops.jobs import (
     ANALYSIS_JOB_PREFIX,
     RUN_JOB_PREFIX,
@@ -60,6 +61,8 @@ from threetears.evals.ops.jobs import (
 )
 from threetears.evals.analysis import CostEstimate, HistoryResult, PivotTable, ScoreExport
 from threetears.evals.ops.lenses import (
+    ArmEstimate,
+    LaunchEstimate,
     OutOfRunSpendReport,
     OutOfRunSpendTotals,
     estimate_text,
@@ -95,6 +98,7 @@ __all__ = [
     "RUN_JOB_PREFIX",
     "TERMINAL_JOB_STATES",
     "AnalysisDeleted",
+    "ArmEstimate",
     "AnalysisGeneration",
     "AnalysisLine",
     "AnalysisListing",
@@ -110,6 +114,7 @@ __all__ = [
     "JobStatus",
     "JobsStarted",
     "LaunchArguments",
+    "LaunchEstimate",
     "MeasureSummary",
     "OpsHost",
     "OutOfRunSpendReport",
@@ -121,7 +126,6 @@ __all__ = [
     "RunLine",
     "RunListing",
     "ScoreExport",
-    "TemplateCaseCounter",
     "TemplateLine",
     "TemplateListing",
     "analyses_list",

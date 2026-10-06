@@ -116,7 +116,14 @@ class TestRateResult:
         storage = self._stored(RubricScore(dim=HELPED, score=1, scale="pass_fail"))
 
         rating = rate_result(
-            storage, result_id="r-1", scope_id="uni-1", rubric_dim=HELPED, rater="host", score=0, reason="it did not"
+            storage,
+            result_id="r-1",
+            scope_id="uni-1",
+            rubric_dim=HELPED,
+            rater="host",
+            rater_kind="person",
+            score=0,
+            reason="it did not",
         )
 
         assert (rating.run_id, rating.scale, rating.score) == ("run-7", "pass_fail", 0)
@@ -124,10 +131,35 @@ class TestRateResult:
 
     def test_rating_again_replaces_the_raters_earlier_rating(self) -> None:
         storage = self._stored(_tone(3))
-        rate_result(storage, result_id="r-1", scope_id="uni-1", rubric_dim=TONE, rater="host", score=2, reason="flat")
-        rate_result(storage, result_id="r-1", scope_id="uni-1", rubric_dim=TONE, rater="host", score=3, reason="fine")
         rate_result(
-            storage, result_id="r-1", scope_id="uni-1", rubric_dim=TONE, rater="guest", score=5, reason="lovely"
+            storage,
+            result_id="r-1",
+            scope_id="uni-1",
+            rubric_dim=TONE,
+            rater="host",
+            rater_kind="person",
+            score=2,
+            reason="flat",
+        )
+        rate_result(
+            storage,
+            result_id="r-1",
+            scope_id="uni-1",
+            rubric_dim=TONE,
+            rater="host",
+            rater_kind="person",
+            score=3,
+            reason="fine",
+        )
+        rate_result(
+            storage,
+            result_id="r-1",
+            scope_id="uni-1",
+            rubric_dim=TONE,
+            rater="guest",
+            rater_kind="person",
+            score=5,
+            reason="lovely",
         )
 
         stored = storage.query_calibration_ratings("uni-1", result_id="r-1")
@@ -137,7 +169,14 @@ class TestRateResult:
         storage = self._stored(transcript_score=RubricScore(dim=TRANSCRIPT_DIM_ID, score=4, scale="ordinal"))
 
         rating = rate_result(
-            storage, result_id="r-1", scope_id="uni-1", rubric_dim=TRANSCRIPT_DIM_ID, rater="host", score=4, reason="ok"
+            storage,
+            result_id="r-1",
+            scope_id="uni-1",
+            rubric_dim=TRANSCRIPT_DIM_ID,
+            rater="host",
+            rater_kind="person",
+            score=4,
+            reason="ok",
         )
 
         assert rating.rubric_dim == TRANSCRIPT_DIM_ID
@@ -146,15 +185,42 @@ class TestRateResult:
         storage = self._stored(_tone(3))
 
         with pytest.raises(NotFoundError, match="result 'r-404'"):
-            rate_result(storage, result_id="r-404", scope_id="uni-1", rubric_dim=TONE, rater="h", score=3, reason="r")
+            rate_result(
+                storage,
+                result_id="r-404",
+                scope_id="uni-1",
+                rubric_dim=TONE,
+                rater="h",
+                rater_kind="person",
+                score=3,
+                reason="r",
+            )
         with pytest.raises(NotFoundError):
-            rate_result(storage, result_id="r-1", scope_id="uni-2", rubric_dim=TONE, rater="h", score=3, reason="r")
+            rate_result(
+                storage,
+                result_id="r-1",
+                scope_id="uni-2",
+                rubric_dim=TONE,
+                rater="h",
+                rater_kind="person",
+                score=3,
+                reason="r",
+            )
 
     def test_a_dimension_the_judge_did_not_score_is_refused_and_names_what_it_did(self) -> None:
         storage = self._stored(_tone(3))
 
         with pytest.raises(ValidationFailedError, match=r"no judge score on 'conversation.helped'.*conversation.tone"):
-            rate_result(storage, result_id="r-1", scope_id="uni-1", rubric_dim=HELPED, rater="h", score=1, reason="r")
+            rate_result(
+                storage,
+                result_id="r-1",
+                scope_id="uni-1",
+                rubric_dim=HELPED,
+                rater="h",
+                rater_kind="person",
+                score=1,
+                reason="r",
+            )
         assert storage.query_calibration_ratings("uni-1") == [], "nothing is written on a refusal"
 
     @pytest.mark.parametrize(
@@ -164,11 +230,12 @@ class TestRateResult:
             ({"score": 0}, "is not on the ordinal scale"),
             ({"rater": ""}, "rater"),
             ({"reason": "   "}, "reason"),
+            ({"rater_kind": "machine"}, "rater_kind"),
         ],
     )
     def test_an_invalid_rating_is_refused_as_a_validation_failure(self, fields: dict[str, Any], match: str) -> None:
         storage = self._stored(_tone(3))
-        call: dict[str, Any] = {"rater": "host", "score": 3, "reason": "fine", **fields}
+        call: dict[str, Any] = {"rater": "host", "rater_kind": "person", "score": 3, "reason": "fine", **fields}
 
         with pytest.raises(ValidationFailedError, match=match):
             rate_result(storage, result_id="r-1", scope_id="uni-1", rubric_dim=TONE, **call)
@@ -178,7 +245,16 @@ class TestRateResult:
         storage = self._stored(_tone(3))
 
         with pytest.raises(ValidationFailedError):
-            rate_result(storage, result_id="r-1", scope_id="uni-1", rubric_dim="tone", rater="h", score=3, reason="r")
+            rate_result(
+                storage,
+                result_id="r-1",
+                scope_id="uni-1",
+                rubric_dim="tone",
+                rater="h",
+                rater_kind="person",
+                score=3,
+                reason="r",
+            )
 
 
 # --- the arithmetic ----------------------------------------------------------------------------------
@@ -295,6 +371,61 @@ class TestJudgeAgreement:
         assert [(d.n, d.raters) for d in agreement.dimensions] == [(1, ["d"])]
         assert agreement.ratings_read == 4, "the pairs and the unpaired reconcile with what was read"
 
+    def test_an_agents_rating_is_listed_and_never_pooled_into_agreement_with_people(self) -> None:
+        """An agent rating through a tool is another model's opinion; read as a person's it would calibrate the judge."""
+        results = [_result("r-1", _tone(4)), _result("r-2", _tone(2))]
+        ratings = [
+            _rating(result_id="r-1", rater="owner", score=4),
+            # The agent agrees with the judge everywhere; pooled, it would lift the judge's agreement with people.
+            _rating(result_id="r-1", rater="agent:scout", rater_kind="agent", score=4),
+            _rating(result_id="r-2", rater="agent:scout", rater_kind="agent", score=2),
+        ]
+
+        agreement = judge_agreement(ratings, results)
+
+        (tone,) = agreement.dimensions
+        assert (tone.n, tone.raters) == (1, ["owner"]), "only the person's rating is a pair"
+        assert [(u.result_id, u.rater, u.reason) for u in agreement.unpaired] == [
+            ("r-1", "agent:scout", "rated_by_an_agent"),
+            ("r-2", "agent:scout", "rated_by_an_agent"),
+        ]
+        assert agreement.ratings_read == 3
+        people_only = judge_agreement([ratings[0]], results)
+        assert people_only.dimensions == agreement.dimensions, "the agent's ratings move no human figure"
+
+    def test_rate_result_records_who_kind_of_rater_wrote_it(self) -> None:
+        storage, _ = memory_storage()
+        storage.save_eval_result(_result("r-1", _tone(3)))
+
+        agent = rate_result(
+            storage,
+            result_id="r-1",
+            scope_id="uni-1",
+            rubric_dim=TONE,
+            rater="agent:scout",
+            rater_kind="agent",
+            score=3,
+            reason="matches the transcript",
+        )
+        person = rate_result(
+            storage,
+            result_id="r-1",
+            scope_id="uni-1",
+            rubric_dim=TONE,
+            rater="owner",
+            rater_kind="person",
+            score=3,
+            reason="fine",
+        )
+
+        stored = {rating.rater: rating.rater_kind for rating in storage.query_calibration_ratings("uni-1")}
+        assert stored == {"agent:scout": "agent", "owner": "person"}
+        assert (agent.rater_kind, person.rater_kind) == ("agent", "person")
+        with pytest.raises(TypeError, match="rater_kind"):
+            rate_result(  # type: ignore[call-arg]
+                storage, result_id="r-1", scope_id="uni-1", rubric_dim=TONE, rater="owner", score=3, reason="fine"
+            )
+
     def test_nobody_rated_anything_is_an_empty_reading(self) -> None:
         assert judge_agreement([], [_result("r-1", _tone(3))]) == JudgeAgreement()
 
@@ -328,6 +459,7 @@ class TestTheBundleReadsRatingsWrittenThroughTheOperation:
                 scope_id=TOYHOST_SCOPE,
                 rubric_dim=TOYHOST_JUDGED_DIMENSION,
                 rater="reviewer-1" if index % 2 else "reviewer-2",
+                rater_kind="person",
                 score=person,
                 reason="read the extracted record against the invoice",
             )
@@ -359,8 +491,26 @@ class TestTheReporterReadCarriesTheRunsRatings:
         storage.save_eval_run(make_eval_run(id="run-r", test_case_ids=["c-1"], status="completed"))
         storage.save_eval_result(_result("r-1", _tone(4), eval_run_id="run-r", test_case_id="c-1"))
         storage.save_eval_result(_result("r-other", _tone(4), eval_run_id="run-other", test_case_id="c-1"))
-        rate_result(storage, result_id="r-1", scope_id="uni-1", rubric_dim=TONE, rater="owner", score=5, reason="sharp")
-        rate_result(storage, result_id="r-other", scope_id="uni-1", rubric_dim=TONE, rater="owner", score=4, reason="x")
+        rate_result(
+            storage,
+            result_id="r-1",
+            scope_id="uni-1",
+            rubric_dim=TONE,
+            rater="owner",
+            rater_kind="person",
+            score=5,
+            reason="sharp",
+        )
+        rate_result(
+            storage,
+            result_id="r-other",
+            scope_id="uni-1",
+            rubric_dim=TONE,
+            rater="owner",
+            rater_kind="person",
+            score=4,
+            reason="x",
+        )
 
         read = reporter_calibration(storage, "run-r", "uni-1")
 

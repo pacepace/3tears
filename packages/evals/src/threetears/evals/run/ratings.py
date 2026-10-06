@@ -1,4 +1,7 @@
-"""Calibration ratings — the write a person makes when they score a result the judge already scored.
+"""Calibration ratings — the write a rater makes when they score a result the judge already scored.
+
+A rating says whether a person or an agent wrote it (``rater_kind``): only a person's calibrates the judge
+against people, so an agent's — a model rating through a tool — is kept out of that agreement and listed.
 
 A judge's agreement with people is only as good as the ratings it is read against, so the write
 takes from the caller only what a person decides — who they are, which dimension, the score and
@@ -24,7 +27,7 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from threetears.evals.contracts.errors import NotFoundError, ValidationFailedError
-from threetears.evals.contracts.models import CalibrationRating, EvalResult
+from threetears.evals.contracts.models import CalibrationRating, EvalResult, RaterKind
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -53,10 +56,11 @@ def rate_result(
     scope_id: str,
     rubric_dim: str,
     rater: str,
+    rater_kind: RaterKind,
     score: int,
     reason: str,
 ) -> CalibrationRating:
-    """Record one person's score for one judged dimension of one result.
+    """Record one rater's score for one judged dimension of one result — a person's, or an agent's.
 
     Args:
         storage: Where the result is read and the rating written.
@@ -64,7 +68,10 @@ def rate_result(
         scope_id: The scope it lives in.
         rubric_dim: The judged dimension, spelled as the result's score spells it (a template
             dimension's ``<context>.<dim>``, or a reserved dual-score axis id).
-        rater: Who rated, as the host names its people.
+        rater: Who rated, as the host names them: a person's account, or an agent's identity.
+        rater_kind: ``person`` or ``agent``. Required, and the caller's to state from what it knows of who is
+            calling — an agent writing through a tool is an ``agent`` whatever account it acts for — because only
+            a person's rating is read as judge-versus-human agreement.
         score: The score, on the dimension's scale: 1-5, or 1 (pass) / 0 (fail).
         reason: The rater's own words for the score.
 
@@ -75,7 +82,8 @@ def rate_result(
     Raises:
         NotFoundError: No such result in the scope.
         ValidationFailedError: The judge scored no such dimension on the result; or the score is
-            not on its scale, the dimension name is not namespaced, or the rater or reason is blank.
+            not on its scale, the dimension name is not namespaced, the rater or reason is blank, or ``rater_kind``
+            is neither ``person`` nor ``agent``.
         StorageError: The write failed.
     """
     result = storage.load_eval_result(result_id, scope_id)
@@ -100,6 +108,7 @@ def rate_result(
             result_id=result.id,
             rubric_dim=rubric_dim,
             rater=rater,
+            rater_kind=rater_kind,
             scale=judged.scale,
             score=score,
             reason=reason,
@@ -108,12 +117,13 @@ def rate_result(
         raise ValidationFailedError(f"rating of {rubric_dim!r} on result {result_id!r} refused: {e}") from e
     storage.save_calibration_rating(rating)
     log.info(
-        "eval.rate_result result=%s run=%s scope=%s dim=%s rater=%s score=%s",
+        "eval.rate_result result=%s run=%s scope=%s dim=%s rater=%s rater_kind=%s score=%s",
         result.id,
         result.eval_run_id,
         result.scope_id,
         rubric_dim,
         rater,
+        rater_kind,
         score,
     )
     return rating

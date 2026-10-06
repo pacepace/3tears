@@ -5,8 +5,8 @@ vocabulary — and returns the lens's own typed result, so a CLI, an MCP action 
 shape. The computation is the lens's; nothing here re-derives an answer.
 
 A launch estimate prices what :func:`~threetears.evals.ops.run_launch` would run from the same
-arguments: the template's cases (counted the host's way, :data:`~threetears.evals.ops.TemplateCaseCounter`),
-``k_runs`` repeats, one arm per model.
+arguments, by the launch's own rule: each arm planned by its kind and priced through the host's
+``launch_pricer`` (:func:`~threetears.evals.run.quote_launch`).
 
 Each result's text is here too (:func:`pivot_text`, :func:`history_text`, :func:`estimate_text`,
 :func:`export_text`), for the reason :meth:`~threetears.evals.ops.EvalSummary.render` sits with the
@@ -18,15 +18,19 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Literal
 
-from threetears.evals.analysis.reads import RunLister, estimate_cost, export_results, history, pivot
+from pydantic import TypeAdapter, ValidationError
+
+from threetears.evals.analysis.reads import RunLister, export_results, history, pivot
 from threetears.evals.analysis.numbers import format_number, format_signed
-from threetears.evals.analysis.reporting import compute_estimate_cost
+from threetears.evals.analysis.reporting import COST_ESTIMATE_MIN_BASIS, compute_estimate_cost
 from threetears.evals.analysis.reporting import (
     CostEstimate,
     HistoryResult,
     PivotTable,
+    PlannedCost,
     PredictedValue,
     ProjectionExclusions,
     ScoreExport,
@@ -34,11 +38,11 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.host import EvalHost
-from threetears.evals.contracts.models import DEFAULT_LAUNCH_K_RUNS, EvalRun
+from threetears.evals.contracts.models import EvalRun
 from threetears.evals.contracts.out_of_run import OutOfRunPurpose, OutOfRunSpend
 from threetears.evals.ops.host import OpsHost
-from threetears.evals.run.authoring import get_template
-from threetears.evals.run.launch import ArmPrice, ArmQuote, LaunchPricer
+from threetears.evals.ops.runs import LaunchArguments
+from threetears.evals.run.launch import ArmOutcome, ArmPrice, ArmQuote, ArmVerdict, LaunchPricer, quote_launch
 from threetears.evals.run.reads import list_runs
 
 
@@ -61,7 +65,7 @@ def scope_pivot(
     weighting: str | None = None,
     subject_id: str | None = None,
     status: str | None = "completed",
-    predicted_cost: CostEstimate | Mapping[str, Any] | None = None,
+    predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None = None,
 ) -> PivotTable:
     """One measure over the scope's observations, aggregated over two coordinates.
 
@@ -75,15 +79,27 @@ def scope_pivot(
         subject_id: Only this subject's observations; required to pivot a judged measure over many.
         status: Only runs with this status; ``"all"`` reads every run.
         predicted_cost: The estimate made before these runs, whose predictions a cost pivot sets beside
-            each planned cell's observed cost.
+            each planned cell's observed cost: a :class:`LaunchEstimate` (:func:`launch_estimate`'s, each priced
+            arm's prediction) or an analysis :class:`~threetears.evals.analysis.reporting.CostEstimate` — the
+            model, or its JSON form as a caller across a wire holds it.
 
     Returns:
         The table.
 
     Raises:
         ValidationFailedError: The pivot cannot be answered honestly — see
-            :func:`~threetears.evals.analysis.pivot`.
+            :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate.
     """
+    plan: CostEstimate | list[PlannedCost] | None = None
+    if predicted_cost is not None:
+        try:
+            # Validated as exactly one of the two shapes — each forbids the other's fields — never sniffed.
+            estimate = _PREDICTED_COST.validate_python(
+                predicted_cost if isinstance(predicted_cost, Mapping) else predicted_cost.model_dump(mode="json")
+            )
+        except ValidationError as e:
+            raise ValidationFailedError(f"predicted_cost is neither a launch estimate nor a cost estimate: {e}") from e
+        plan = estimate.planned_costs() if isinstance(estimate, LaunchEstimate) else estimate
     return pivot(
         host.storage,
         scope_id,
@@ -94,7 +110,7 @@ def scope_pivot(
         weighting=weighting,
         subject_id=subject_id,
         status=status,
-        predicted_cost=predicted_cost,
+        predicted_cost=plan,
         profile=host.profile,
     )
 
@@ -173,62 +189,203 @@ def scope_export(
     )
 
 
-def launch_estimate(
-    host: OpsHost,
-    scope_id: str,
-    *,
-    template_id: str,
-    models: list[str],
-    k_runs: int = DEFAULT_LAUNCH_K_RUNS,
-    n_variations: int = 0,
-    n_test_cases: int | None = None,
-    subject_id: str | None = None,
-) -> CostEstimate:
-    """What launching a template's runs would cost, from the scope's history of what such runs spent.
+class ArmEstimate(EvalBaseModel):
+    """One arm of a launch estimate: what its kind planned, what the host's pricer predicted, and what the launch would do.
+
+    Attributes:
+        described: The arm, as the launch's refusal names it.
+        candidate_model: The model it runs on — its plan's, or the one named when its kind plans nothing
+            (``None`` there for an arm on the kind's unnamed default).
+        case_count: The cases its plan bounds it to (or the hypothetical count the estimate was asked for);
+            ``None`` when its kind plans nothing.
+        case_source: ``stored`` for an arm over the template's stored cases, ``generated`` for one whose cases
+            its launch generates.
+        n_observations: ``case_count × k_runs``, the observations it would make; ``None`` with no plan.
+        predicted_usd: The figure the launch holds to the arm's cap — a range pricer's upper end — or ``None``
+            when nothing predicts it (unknown, never $0).
+        central_usd: A range pricer's central estimate, never held to the cap; ``None`` for a single figure.
+        low_usd: A range pricer's lower end; ``None`` otherwise.
+        method_id: The estimator, or ``None`` for a pricer that names none.
+        basis: How the prediction was made, or why there is none.
+        outcome: What the launch's one pricing rule makes of it (:data:`~threetears.evals.run.ArmOutcome`).
+        refusal: The refusal the launch would make of it, word for word; ``None`` unless refused.
+    """
+
+    described: str
+    candidate_model: str | None
+    case_count: int | None
+    case_source: Literal["stored", "generated"]
+    n_observations: int | None
+    predicted_usd: float | None
+    central_usd: float | None
+    low_usd: float | None
+    method_id: str | None
+    basis: str
+    outcome: ArmOutcome
+    refusal: str | None
+
+
+class LaunchEstimate(EvalBaseModel):
+    """What a launch would cost and whether it would launch, priced by the launch's own rule.
+
+    Built by :func:`~threetears.evals.run.quote_launch` — the launch's argument refusals, its dispatch, each
+    arm's plan (``LaunchableKind.plan_arm``) and each arm's price through the host's ``launch_pricer`` — so the
+    figure an operator reads here is the figure the launch holds each arm's cap to, and an arm this estimate
+    shows refused is an arm the launch refuses, in the same words. It spends nothing.
+
+    Attributes:
+        template_id: The template.
+        subject_id: The subject the launch would measure.
+        cassette_mode: The cassette mode, normalised.
+        k_runs: Repeats per case.
+        n_variations: Cases the launch would generate first; ``0`` for stored cases.
+        hypothetical_case_count: The case count each planned arm was priced at in place of its plan's, for a
+            hypothetical grid; ``None`` when every arm is priced at its plan, as the launch prices it.
+        cap_usd: The cap each arm's run would be held to; ``None`` when the host enforces none.
+        cap_origin: ``chosen`` when the launch named the cap, ``inherited`` from the host's; ``None`` uncapped.
+        arms: Every arm, in arm order.
+        total_predicted_usd: Every arm's held-to figure, summed — ``None`` when any arm has none, since a total
+            missing an arm is not the launch's total.
+        would_launch: Whether no arm would be refused on its price.
+        computed_at: When the estimate was made, the stamp a pivot's prediction carries.
+    """
+
+    template_id: str
+    subject_id: str
+    cassette_mode: str
+    k_runs: int
+    n_variations: int
+    hypothetical_case_count: int | None
+    cap_usd: float | None
+    cap_origin: Literal["chosen", "inherited"] | None
+    arms: list[ArmEstimate]
+    total_predicted_usd: float | None
+    would_launch: bool
+    computed_at: str
+
+    def planned_costs(self) -> list[PlannedCost]:
+        """Each priced arm as a cost pivot's plan: its model, its observations and its prediction.
+
+        Returns:
+            One :class:`~threetears.evals.analysis.reporting.PlannedCost` per arm with a model, a plan and a
+            prediction; the prediction's point is the pricer's central estimate where it gave a range (the
+            band then running from its lower to its upper end) and its single figure otherwise.
+        """
+        planned: list[PlannedCost] = []
+        for arm in self.arms:
+            if arm.candidate_model is None or arm.n_observations is None or arm.predicted_usd is None:
+                continue
+            ranged = arm.central_usd is not None
+            planned.append(
+                PlannedCost(
+                    model=arm.candidate_model,
+                    n_observations=arm.n_observations,
+                    predicted=PredictedValue(
+                        value=arm.central_usd if arm.central_usd is not None else arm.predicted_usd,
+                        interval_low=arm.low_usd if ranged else None,
+                        interval_high=arm.predicted_usd if ranged else None,
+                        method_id=arm.method_id or LAUNCH_PRICER_METHOD,
+                        computed_at=self.computed_at,
+                    ),
+                )
+            )
+        return planned
+
+
+#: The two shapes a cost pivot's plan arrives in, validated as exactly one.
+_PREDICTED_COST: TypeAdapter[CostEstimate | LaunchEstimate] = TypeAdapter(CostEstimate | LaunchEstimate)
+
+#: The method a pivot's prediction names when the host's pricer named none.
+LAUNCH_PRICER_METHOD = "launch-pricer"
+
+
+async def launch_estimate(
+    host: OpsHost, arguments: LaunchArguments, scope_id: str, *, n_test_cases: int | None = None
+) -> LaunchEstimate:
+    """What :func:`~threetears.evals.ops.run_launch` with ``arguments`` would cost, priced by the launch's own rule.
+
+    The launch's own steps, read-only (:func:`~threetears.evals.run.quote_launch`): every refusal it makes before
+    pricing is raised as it raises it — a kind's request-level refusals among them — and every arm is planned by
+    its kind and priced through the host's ``launch_pricer``, held to the cap the launch would hold it to. So
+    the estimate and the launch never price one arm two ways. Nothing is admitted, generated or spent. The
+    generation calls a generating launch makes first are priced separately, against the host's out-of-run cap,
+    by the launch itself (``EvalStorage.query_out_of_run_spend`` reads what they spent).
 
     Args:
-        host: The host: its store, its vocabulary and how it counts a template's cases.
-        scope_id: The scope the launch would run in, whose history prices it.
-        template_id: The template the launch would run; its cases and its kind price the grid.
-        models: The models the launch would run, one arm each.
-        k_runs: Repeats of every case, as the launch would take them.
-        n_variations: Cases the launch would generate before its arms run, as the launch takes them; a
-            launch that generates runs those cases rather than the stored ones, so they are priced as that
-            many (an upper bound, since generation de-duplicates). The generation calls themselves — the
-            ``variation`` role writing an ``llm`` axis — are not in this estimate: they run before any run,
-            outside its cost cap, and the launch prices them on the writer's own client against the host's
-            out-of-run cap before it makes them, ledgering each (``EvalStorage.query_out_of_run_spend``).
-        n_test_cases: A case count to price in place of the template's own, for a hypothetical grid.
-        subject_id: Draw the history from this subject's runs alone.
+        host: The launching host.
+        arguments: What the launch would name.
+        scope_id: The scope the launch would run in.
+        n_test_cases: A case count to price each planned arm at in place of its plan's, for a hypothetical grid;
+            ``None`` prices each at its plan, as the launch would.
 
     Returns:
         The estimate.
 
     Raises:
-        ValidationFailedError: The host does not count template cases here, or the proposal cannot be
-            priced (no models, a grid below one).
-        NotFoundError: No template with that id in the scope.
+        NotFoundError: The template is not in the scope.
+        ValidationFailedError: Any refusal the launch makes before pricing an arm, or an ``n_test_cases``
+            below one.
     """
-    counter = host.count_template_cases
-    if counter is None:
-        raise ValidationFailedError(
-            "this host does not estimate launches here: it was mounted without a template case counter "
-            "(OpsHost.count_template_cases), so a template's case count — which prices the launch — has no answer"
-        )
-    eval_host = host.eval_host
-    return estimate_cost(
-        eval_host.storage,
-        scope_id,
-        list_runs=_lister(eval_host),
-        load_template=lambda template: get_template(eval_host, template, scope_id),
-        count_template_cases=counter,
-        models=models,
-        k_runs=k_runs,
-        n_test_cases=n_test_cases,
-        n_new_cases=n_variations,
-        subject_id=subject_id,
-        template_id=template_id,
-        profile=eval_host.profile,
+    quote = await quote_launch(
+        host.launch,
+        template_id=arguments.template_id,
+        subject_id=arguments.subject_id,
+        models=list(arguments.models),
+        k_runs=arguments.k_runs,
+        n_variations=arguments.n_variations,
+        variation_model=arguments.variation_model,
+        overlays=arguments.overlays,
+        apparatus_settings=arguments.apparatus_settings,
+        max_cost_usd=arguments.max_cost_usd,
+        judge_model=arguments.judge_model,
+        simulator_model=arguments.simulator_model,
+        scope_id=scope_id,
+        case_count=n_test_cases,
+    )
+    arms = [_arm_estimate(arm, quote.k_runs, quote.n_variations) for arm in quote.arms]
+    predicted = [arm.predicted_usd for arm in arms]
+    return LaunchEstimate(
+        template_id=quote.template_id,
+        subject_id=quote.subject_id,
+        cassette_mode=quote.cassette_mode,
+        k_runs=quote.k_runs,
+        n_variations=quote.n_variations,
+        hypothetical_case_count=quote.case_count,
+        cap_usd=quote.arms[0].cap_usd,
+        cap_origin=quote.arms[0].cap_origin,
+        arms=arms,
+        total_predicted_usd=None if None in predicted else math.fsum(p for p in predicted if p is not None),
+        would_launch=all(arm.outcome != "refused" for arm in arms),
+        computed_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimate:
+    """One arm's verdict, as the estimate reports it.
+
+    Args:
+        arm: The verdict.
+        k_runs: Repeats per case.
+        n_variations: Cases the launch generates; ``0`` for stored cases.
+
+    Returns:
+        The arm.
+    """
+    plan = arm.plan
+    price = arm.price
+    return ArmEstimate(
+        described=arm.described,
+        candidate_model=arm.candidate_model,
+        case_count=plan.case_count if plan is not None else None,
+        case_source="generated" if n_variations > 0 else "stored",
+        n_observations=plan.case_count * k_runs if plan is not None else None,
+        predicted_usd=price.predicted_usd,
+        central_usd=price.central_usd,
+        low_usd=price.low_usd,
+        method_id=price.method_id,
+        basis=price.basis,
+        outcome=arm.outcome,
+        refusal=arm.refusal,
     )
 
 
@@ -239,19 +396,24 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     before any launcher runs — an arm over the template's stored cases and one whose cases its launch generates
     alike, priced by this one rule and counted by its source (``derived`` from the template's stored cases, or
     ``generated``). **The history is the runs launched the way the arm will be**: the same template on the
-    same candidate model at the same cassette mode, under the same judge and simulator pins (the model a launch named for the role, or none — a run that inherited the
-    role's default matches an arm naming none) and the same resolved apparatus settings, archived runs
-    included. A run judged by another model, or with its rig set up otherwise, spent differently, and
-    pricing an arm from it would bias the prediction by whatever the difference costs — low, when the arm's
-    judge is the dearer one, and the generation paid before the run's own cap could say so. Only those runs'
-    results are read, one run at a time, rather than every result in the scope for every arm.
+    same candidate model at the same cassette mode, scored by the same judges (the model each scored dim was
+    requested from, ``EvalRun.effective_judges``, against the arm's planned judges — so a dim whose config names
+    its own model, and a role default that has moved since, are both matched by the model that actually scored),
+    driven by the same simulator (the resolved ``EvalRun.simulator_model``) and with the same resolved apparatus
+    settings, archived runs included. A run judged by another model, or with its rig set up otherwise, spent
+    differently, and pricing an arm from it would bias the prediction by whatever the difference costs — low,
+    when the arm's judge is the dearer one, and the generation paid before the run's own cap could say so. What
+    it does not match: a judge config's prompt — two configs on one model are one judge here, a prompt moving a
+    judgement's cost far less than a model does. Only the matching runs' results are read, one run at a time,
+    rather than every result in the scope for every arm.
 
-    Each arm is priced as :func:`launch_estimate` prices a model's cell — those results' per-observation
-    costs scaled to the arm's planned cases and repeats — and **its prediction is the cell's upper band**,
-    since the launch holds that figure to the arm's cap (:class:`~threetears.evals.run.ArmPrice`): a central
-    estimate admits an arm that then runs past its cap about as often as the run lands above the centre.
-    A history too thin to band (fewer than three priced observations) bounds nothing, and predicts nothing,
-    as does a scope with no priced history of the condition — the launch reads both as unknown.
+    Each arm is priced from those results' per-observation costs scaled to the arm's planned cases and repeats,
+    and **its prediction is the band's upper end**, since the launch holds that figure to the arm's cap
+    (:class:`~threetears.evals.run.ArmPrice`): a central estimate admits an arm that then runs past its cap
+    about as often as the run lands above the centre. The central estimate and the lower end ride along beside
+    it. A history too thin to band (fewer than :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` priced
+    past results) bounds nothing, and predicts nothing, as does a scope with no priced history of the
+    condition — the launch reads both as unknown.
 
     Args:
         host: The host whose store holds the history and whose vocabulary reads it.
@@ -261,9 +423,10 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     """
 
     def price(quote: ArmQuote) -> ArmPrice:
+        judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
         condition = (
             f"template {quote.template_id!r} on {quote.candidate_model!r} at cassette mode {quote.cassette_mode!r}, "
-            f"judge pin {quote.judge_model!r}, simulator pin {quote.simulator_model!r} and apparatus settings "
+            f"judged by {judges!r}, simulator {quote.simulator_model!r} and apparatus settings "
             f"{dict(quote.apparatus_settings)!r}"
         )
         runs = [run for run in list_runs(host, quote.scope_id, include_archived=True) if _launched_as(run, quote)]
@@ -288,21 +451,25 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
                 else ""
             )
             return ArmPrice(
-                predicted_usd=None, basis=f"no priced result of {condition} is in scope {quote.scope_id!r}{unpriced}"
+                predicted_usd=None,
+                basis=f"no priced past result of {condition} is in scope {quote.scope_id!r}{unpriced}",
             )
         if predicted.interval_high is None:
             return ArmPrice(
                 predicted_usd=None,
                 basis=(
                     f"{cell.n_historical} priced past result(s) of {condition} are too few to bound the arm (a "
-                    f"band needs three; their mean alone puts it at ${predicted.value:.2f})"
+                    f"band needs {COST_ESTIMATE_MIN_BASIS}; their mean alone puts it at ${predicted.value:.2f})"
                 ),
             )
         return ArmPrice(
             predicted_usd=predicted.interval_high,
+            central_usd=predicted.value,
+            low_usd=predicted.interval_low,
+            method_id=predicted.method_id,
             basis=(
                 f"the upper end of the band ${predicted.interval_low or 0.0:.2f}-${predicted.interval_high:.2f} "
-                f"around ${predicted.value:.2f}, method {predicted.method_id}, from {cell.n_historical} past "
+                f"around ${predicted.value:.2f}, method {predicted.method_id}, from {cell.n_historical} priced past "
                 f"result(s) of {condition}"
             ),
         )
@@ -311,38 +478,25 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
 
 
 def _launched_as(run: EvalRun, quote: ArmQuote) -> bool:
-    """Whether ``run`` was launched as ``quote``'s arm will be: its template, model, cassette mode, pins and rig.
+    """Whether ``run`` was launched as ``quote``'s arm will be: its template, model, cassette mode, judges, simulator and rig.
 
     Args:
         run: A run from the scope's history.
         quote: The arm being priced.
 
     Returns:
-        True when every launch argument that moves what a run spends matches.
+        True when every launch condition that moves what a run spends matches — the judges and the simulator
+        by the models that ran, not by what the launch named.
     """
+    judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
     return (
         run.template_id == quote.template_id
         and run.candidate_model == quote.candidate_model
         and run.cassette_mode == quote.cassette_mode
-        and _launch_pin(run, "judge", run.judge_model) == quote.judge_model
-        and _launch_pin(run, "simulator", run.simulator_model) == quote.simulator_model
+        and run.effective_judges == judges
+        and run.simulator_model == quote.simulator_model
         and run.apparatus_settings == dict(quote.apparatus_settings)
     )
-
-
-def _launch_pin(run: EvalRun, role: str, resolved: str | None) -> str | None:
-    """The model ``run``'s launch named for ``role`` — the resolved model when the launch chose it, else ``None``.
-
-    Args:
-        run: The run.
-        role: ``judge`` or ``simulator``.
-        resolved: The model the run recorded for the role.
-
-    Returns:
-        The pin the launch named, or ``None`` when it named none and the run inherited the role's default
-        (or the role never ran).
-    """
-    return resolved if (run.model_role_provenance or {}).get(role) == "chosen" else None
 
 
 class OutOfRunSpendTotals(EvalBaseModel):
@@ -603,36 +757,37 @@ def history_text(result: HistoryResult) -> str:
     return "\n".join(lines)
 
 
-def estimate_text(estimate: CostEstimate) -> str:
-    """An estimate as text: the grid priced, each model's cell, and the total with its band."""
-    template = f", template {estimate.template_id}" if estimate.template_id else ""
-    subject = f", subject {estimate.subject_id}" if estimate.subject_id else ", every subject"
-    lines = [
-        f"estimate: {estimate.n_test_cases} case(s) ({estimate.n_test_cases_source}) x k_runs {estimate.k_runs} "
-        f"x {estimate.n_settings} setting(s) per model, cassette mode {estimate.cassette_mode}{template}{subject}",
-    ]
-    for cell in estimate.cells:
-        if cell.basis == "no_history":
-            lines.append(
-                f"- {cell.model}: no priced history under this cassette mode and these filters — not in the total"
-            )
-            continue
-        unpriced = f", {cell.n_unpriced_historical} unpriced left out" if cell.n_unpriced_historical else ""
-        lines.append(
-            f"- {cell.model}: {cell.n_observations} observation(s) at ${format_number(cell.mean_cost_per_observation)} "
-            f"each, from {cell.n_historical} priced in history{unpriced}{_predicted(cell.predicted)}"
-        )
-    band = (
-        f" [{format_number(estimate.total_interval_low)}, {format_number(estimate.total_interval_high)}]"
-        if estimate.total_interval_low is not None and estimate.total_interval_high is not None
-        else " (no band: a cell's history is too thin to bracket)"
+def estimate_text(estimate: LaunchEstimate) -> str:
+    """An estimate as text: the launch priced, each arm's price and outcome, and the total."""
+    grid = (
+        f"{estimate.hypothetical_case_count} case(s) (hypothetical)"
+        if estimate.hypothetical_case_count is not None
+        else (f"{estimate.n_variations} generated case(s)" if estimate.n_variations else "its stored cases")
     )
-    if estimate.total_estimated_cost is None:
-        lines.append("total: none — no proposed model has priced history to estimate from")
+    cap = (
+        f"each arm capped at ${format_number(estimate.cap_usd)} ({estimate.cap_origin})"
+        if estimate.cap_usd is not None
+        else "no cap in force"
+    )
+    lines = [
+        f"estimate: template {estimate.template_id}, subject {estimate.subject_id}, {grid} x k_runs {estimate.k_runs}, "
+        f"cassette mode {estimate.cassette_mode}; {cap}"
+    ]
+    for arm in estimate.arms:
+        figure = (
+            f"${format_number(arm.predicted_usd)}"
+            + (f" (central ${format_number(arm.central_usd)})" if arm.central_usd is not None else "")
+            if arm.predicted_usd is not None
+            else "unpriced"
+        )
+        lines.append(f"- {arm.described}: {figure} — {arm.outcome}; {arm.basis}")
+        if arm.refusal is not None:
+            lines.append(f"  refused: {arm.refusal}")
+    if estimate.total_predicted_usd is None:
+        lines.append("total: none — an arm has no prediction, so no total is the launch's")
     else:
-        lines.append(f"total: ${format_number(estimate.total_estimated_cost)}{band}")
-    if estimate.n_uncovered_models:
-        lines.append(f"{estimate.n_uncovered_models} model(s) have no history and are not in the total")
+        lines.append(f"total: ${format_number(estimate.total_predicted_usd)}")
+    lines.append("would launch" if estimate.would_launch else "would be refused")
     return "\n".join(lines)
 
 
@@ -645,6 +800,9 @@ def export_text(export: ScoreExport) -> str:
 
 
 __all__ = [
+    "LAUNCH_PRICER_METHOD",
+    "ArmEstimate",
+    "LaunchEstimate",
     "OutOfRunSpendReport",
     "OutOfRunSpendTotals",
     "estimate_text",

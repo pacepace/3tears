@@ -3122,7 +3122,7 @@ def compute_pivot(
     filters: dict[str, str] | None = None,
     exclusions: ProjectionExclusions | None = None,
     completeness_disclosures: Mapping[str, str] | None = None,
-    predicted_cost: CostEstimate | None = None,
+    predicted_cost: CostEstimate | Sequence[PlannedCost] | None = None,
     profile: HostProfile,
 ) -> PivotTable:
     """Aggregate score records over any two factors, disclosing every caveat.
@@ -3175,7 +3175,8 @@ def compute_pivot(
             — the defect this parameter exists to end, and the reason it is a
             parameter rather than something re-derived per surface.
         predicted_cost: The estimate made BEFORE these observations, when the cells were planned
-            (:func:`compute_estimate_cost`). Each cell at a planned model carries that model's
+            (:func:`compute_estimate_cost`), or the planned costs of a launch priced by its host's pricer
+            (:class:`PlannedCost`, one per priced arm). Each cell at a planned model carries that model's
             prediction in ``predicted``, beside the cost it observed and never in place of it. Passed
             in rather than computed here because a prediction drawn from a history that already
             holds the observations it predicts would be a restatement of them. Only a cost pivot
@@ -3375,7 +3376,7 @@ def compute_pivot(
 
 
 def _planned_cost_per_observation(
-    estimate: CostEstimate | None, metric: str, axes: tuple[str, str]
+    estimate: CostEstimate | Sequence[PlannedCost] | None, metric: str, axes: tuple[str, str]
 ) -> dict[str, PredictedValue]:
     """Each planned model's predicted cost per observation, read off the estimate made before the run.
 
@@ -3387,7 +3388,7 @@ def _planned_cost_per_observation(
     observations. One derivation, read two ways.
 
     Args:
-        estimate: The estimate, or None.
+        estimate: The estimate, or the planned costs, or None.
         metric: The pivot's resolved metric.
         axes: The pivot's row and column factors.
 
@@ -3412,7 +3413,10 @@ def _planned_cost_per_observation(
             "put the model on an axis so each prediction has the cells it planned"
         )
     per_observation: dict[str, PredictedValue] = {}
-    for cell in estimate.cells:
+    planned: Sequence[CostEstimateCell | PlannedCost] = (
+        estimate.cells if isinstance(estimate, CostEstimate) else estimate
+    )
+    for cell in planned:
         if cell.predicted is None:
             continue
         n = cell.n_observations
@@ -5773,7 +5777,7 @@ _COST_ESTIMATE_CONFIDENCE = 0.95
 # Below this the cell reports its point estimate and no band, and the surfaces say in
 # words why; three observations is the smallest sample whose spread rests on more than one
 # difference.
-_COST_ESTIMATE_MIN_BASIS = 3
+COST_ESTIMATE_MIN_BASIS = 3
 
 
 def _cost_band_half_width(*, sem: float, n_historical: int, n_observations: int) -> float:
@@ -5786,7 +5790,7 @@ def _cost_band_half_width(*, sem: float, n_historical: int, n_observations: int)
     Args:
         sem: Standard error of the historical per-observation costs (``s / sqrt(n)``).
         n_historical: How many historical observations the basis rests on; must be at
-            least :data:`_COST_ESTIMATE_MIN_BASIS`, so ``df >= 2``.
+            least :data:`COST_ESTIMATE_MIN_BASIS`, so ``df >= 2``.
         n_observations: How many observations the proposed sweep would run.
 
     Returns:
@@ -5808,6 +5812,25 @@ class CostEstimateError(ValueError):
     """
 
 
+class PlannedCost(EvalBaseModel):
+    """One planned model's predicted cost over its planned observations, as a cost pivot's plan reads it.
+
+    The plan a launch priced by its host's pricer hands a cost pivot: the same three facts a
+    :class:`CostEstimateCell` carries for one — the model, how many observations its prediction totals, and
+    the prediction — so the pivot divides it by the observations and sets it beside the cost observed, never in
+    place of it.
+
+    Attributes:
+        model: The planned candidate model.
+        n_observations: The observations the prediction totals (cases × repeats).
+        predicted: The predicted total cost, or ``None`` for a model nothing predicted.
+    """
+
+    model: str
+    n_observations: int = Field(ge=1)
+    predicted: PredictedValue | None = None
+
+
 class CostEstimateCell(EvalBaseModel):
     """The predicted cost of running one proposed model, from its historical per-observation cost.
 
@@ -5819,7 +5842,7 @@ class CostEstimateCell(EvalBaseModel):
     the proposed sweep will cost — not a confidence interval on the historical
     mean, which is a narrower claim than any caller of this surface is making.
 
-    The band is ``None`` when ``n_historical < 3``. At one observation the spread is
+    The band is ``None`` when ``n_historical`` is below :data:`COST_ESTIMATE_MIN_BASIS`. At one observation the spread is
     *unknown*, not zero — the same rule the pivot applies to an n=1 cell. At two it
     is worse than unknown: two points give exactly one difference, so any band drawn
     from them is an accident dressed as a measurement, and it prints NARROW whenever
@@ -5958,10 +5981,10 @@ def compute_estimate_cost(
     history accumulates, which is why it could publish a +/-2.4% band from two
     observations and then miss the sweep it priced by 12%.
 
-    **Below three historical observations there is no band at all**, only the point
+    **Below :data:`COST_ESTIMATE_MIN_BASIS` historical observations there is no band at all**, only the point
     estimate. Two observations give one difference; a width computed from it is an
     accident, and a narrow one reads as a measurement. See
-    :data:`_COST_ESTIMATE_MIN_BASIS`.
+    :data:`COST_ESTIMATE_MIN_BASIS`.
 
     **Cassette-aware.** A ``replay`` run's marginal cost differs from a live one
     (cached tool results), so history is matched to the proposed ``cassette_mode``
@@ -6081,7 +6104,7 @@ def compute_estimate_cost(
         estimate = n_observations * mean
         total_estimate += estimate
 
-        if sem is None or len(history) < _COST_ESTIMATE_MIN_BASIS:
+        if sem is None or len(history) < COST_ESTIMATE_MIN_BASIS:
             # Too thin for a band. At n=1 the spread is unknown, not zero; at n=2 it is
             # one difference, which is an accident rather than a dispersion — and one
             # that prints narrow exactly when the pair lands close. The point estimate
@@ -6203,6 +6226,7 @@ __all__ = [
     "ComparisonSet",
     "ComparisonSetsResult",
     "ContestantKey",
+    "COST_ESTIMATE_MIN_BASIS",
     "CostEstimate",
     "CostEstimateCell",
     "CostEstimateError",
@@ -6225,6 +6249,7 @@ __all__ = [
     "PivotError",
     "PivotTable",
     "PlacedResult",
+    "PlannedCost",
     "PredictedValue",
     "ProgramBudget",
     "ProjectionExclusions",

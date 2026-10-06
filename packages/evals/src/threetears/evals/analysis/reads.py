@@ -30,7 +30,7 @@ interprets. The host chooses what a scope is and passes it through.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import ValidationError
@@ -40,6 +40,7 @@ from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
     CostEstimate,
     CostEstimateError,
+    PlannedCost,
     ExportError,
     FrontierError,
     HistoryError,
@@ -361,7 +362,7 @@ def pivot(
     weighting: str | None = None,
     subject_id: str | None = None,
     status: str | None = "completed",
-    predicted_cost: CostEstimate | Mapping[str, Any] | None = None,
+    predicted_cost: CostEstimate | Sequence[PlannedCost] | Mapping[str, Any] | None = None,
     profile: HostProfile,
 ) -> PivotTable:
     """Aggregate a scope's observations over any two coordinates.
@@ -398,7 +399,8 @@ def pivot(
             are still arriving. ``"all"`` aggregates over every run.
         predicted_cost: The estimate the caller made before these runs, as
             :func:`estimate_cost` or :func:`estimate_launch_cost` returned it — the model, or its JSON
-            form as a caller across a wire holds it. Each cost cell at a planned model then carries
+            form as a caller across a wire holds it — or the planned costs of a launch its host's pricer priced
+            (:class:`~threetears.evals.analysis.reporting.PlannedCost`). Each cost cell at a planned model then carries
             that model's predicted cost per observation beside the cost it observed. ``None`` shows
             observed cost alone.
         profile: The host whose vocabulary this reads.
@@ -413,8 +415,14 @@ def pivot(
             from different rubrics; or a ``predicted_cost`` that is not an estimate, or
             that was handed to a pivot of another metric or with no model axis.
     """
+    estimate: CostEstimate | list[PlannedCost] | None
     try:
-        estimate = None if predicted_cost is None else CostEstimate.model_validate(predicted_cost)
+        if predicted_cost is None:
+            estimate = None
+        elif isinstance(predicted_cost, Sequence):
+            estimate = [PlannedCost.model_validate(planned) for planned in predicted_cost]
+        else:
+            estimate = CostEstimate.model_validate(predicted_cost)
     except ValidationError as e:
         raise ValidationFailedError(f"predicted_cost is not a cost estimate: {e}") from e
     metric = normalize_blank(metric, METRIC_COMPOSITE)

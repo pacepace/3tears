@@ -286,7 +286,12 @@ def _launching_with(
         # The toy invoices, whatever a generation would have asked for: a launcher that generates nothing.
         if request.candidate_model is None:
             raise ValidationFailedError("the toy extractor has no default candidate model; name one")
-        return ArmPlan(case_count=len(toyhost_test_cases(request.template)), candidate_model=request.candidate_model)
+        return ArmPlan(
+            case_count=len(toyhost_test_cases(request.template)),
+            candidate_model=request.candidate_model,
+            judge=None,
+            simulator_model=None,
+        )
 
     launching = replace(
         host,

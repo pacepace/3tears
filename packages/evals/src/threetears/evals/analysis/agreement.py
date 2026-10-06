@@ -22,6 +22,10 @@ later moved off is two groups for the same reason.
 re-judged without that dimension, or the dimension's scale may have changed since it was rated; each
 is listed with which, so a dimension's n can be reconciled with the ratings people actually wrote.
 
+**Only a person's rating is agreement with people.** A rating an agent wrote (``rater_kind="agent"``) is
+another model's opinion of the same output, so it is listed as ``rated_by_an_agent`` and never pooled
+into a dimension's pairs, its kappa or its raters.
+
 Pure: the caller hands in the ratings and the results they rate, and nothing here reads storage.
 The bundle and a reporter run's calibration read both call :func:`judge_agreement`, so the two never
 compute agreement two ways.
@@ -43,7 +47,7 @@ if TYPE_CHECKING:
 
 
 #: Why a rating has no judge score to be read against.
-UnpairedReason = Literal["result_unresolved", "dimension_unscored", "scale_changed"]
+UnpairedReason = Literal["result_unresolved", "dimension_unscored", "scale_changed", "rated_by_an_agent"]
 
 
 class DimensionAgreement(EvalDocumentModel):
@@ -58,7 +62,9 @@ class DimensionAgreement(EvalDocumentModel):
         ),
     )
     n: int = Field(ge=1, description="Pairs read: one per rating, so two raters of one result are two pairs.")
-    raters: list[str] = Field(min_length=1, description="Everyone whose ratings are among the pairs, sorted.")
+    raters: list[str] = Field(
+        min_length=1, description="Every person whose ratings are among the pairs, sorted; never an agent."
+    )
     exact_agreement: float = Field(
         ge=0.0, le=1.0, description="The share of pairs where judge and person gave the same score."
     )
@@ -87,7 +93,9 @@ class UnpairedRating(EvalDocumentModel):
         description=(
             "`result_unresolved`: the rated result is not among those read (deleted since, or not a member of what "
             "was read). `dimension_unscored`: the result carries no judge score on the dimension now (re-judged "
-            "without it). `scale_changed`: the judge's score is on another scale than the rating."
+            "without it). `scale_changed`: the judge's score is on another scale than the rating. "
+            "`rated_by_an_agent`: an agent wrote it, so it is another model's opinion, never a person's agreement "
+            "with the judge."
         ),
     )
 
@@ -125,6 +133,10 @@ def judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[Eval
     read = 0
     for rating in ratings:
         read += 1
+        # Before anything is paired: an agent's rating is not a person's, whatever it would pair with.
+        if rating.rater_kind != "person":
+            unpaired.append(_unpaired(rating, "rated_by_an_agent"))
+            continue
         result = by_id.get(rating.result_id)
         if result is None:
             unpaired.append(_unpaired(rating, "result_unresolved"))

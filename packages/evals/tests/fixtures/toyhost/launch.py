@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from threetears.evals.contracts import EvalRun, EvalStorage, NotFoundError, ValidationFailedError, WorldSeed
+from threetears.evals.contracts import EvalRun, EvalStorage, NotFoundError, WorldSeed
 from threetears.evals.contracts.host import CompletionClients, HostProfile, TraceSink, WorldPlacement
 from threetears.evals.run import (
     ArmPlan,
@@ -33,6 +33,7 @@ from threetears.evals.run import (
     LaunchSettings,
     default_job_timeout,
     launch_run,
+    require_candidate_model,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_COST_CEILING_USD,
@@ -70,9 +71,11 @@ TOYHOST_REVIEWER_POOL = "pool-a"
 def plan_toyhost_arm(request: LaunchRequest) -> ArmPlan:
     """What one arm of a toy launch runs: every case the launcher freezes, on the model the arm names.
 
-    The engine asks this of every arm before the launcher runs, and prices what it says. The extractor has
-    no role default, so an arm naming no model cannot be planned, and is refused here rather than at the
-    tail after the launcher built its rig.
+    The engine asks this of every arm before the launcher runs, and prices what it says. It is where the
+    kind's request-level refusals live: the extractor has no role default, so an arm naming no model is
+    refused here — through the engine's own refusal, the one the tail makes — rather than heard as "cannot
+    be priced", or at the tail after the launcher built its rig. The extractor is graded mechanically and
+    simulates nobody, so the plan names no judge and no simulator.
 
     Args:
         request: The arm.
@@ -83,9 +86,12 @@ def plan_toyhost_arm(request: LaunchRequest) -> ArmPlan:
     Raises:
         ValidationFailedError: The arm names no model.
     """
-    if request.candidate_model is None:
-        raise ValidationFailedError(f"kind {request.kind!r} has no default candidate model; name one")
-    return ArmPlan(case_count=len(toyhost_test_cases(request.template)), candidate_model=request.candidate_model)
+    return ArmPlan(
+        case_count=len(toyhost_test_cases(request.template)),
+        candidate_model=require_candidate_model(request, None),
+        judge=None,
+        simulator_model=None,
+    )
 
 
 def price_toyhost_arm(quote: ArmQuote) -> ArmPrice:

@@ -5,17 +5,20 @@ Driven over the toy host through :meth:`MountedTool.call`, the path every transp
 - **Each action is a thin binding of its lens.** Its structured result is the lens's typed model as the
   operation returns it, value for value, and validates as that model — a pivot is a
   :class:`PivotTable`, never a ``dict`` a surface re-types.
+- **An estimate is the launch's own price.** ``launch_estimate`` plans and prices each arm as the launch
+  does, and an arm it reports refused is refused by the launch in the same words; a kind's request-level
+  refusal arrives ahead of any "cannot be priced".
 - **An estimate becomes a pivot's plan.** ``launch_estimate``'s structured result, handed back as
-  ``predicted_cost``, puts each planned model's prediction beside the cost it observed.
+  ``predicted_cost``, puts each priced arm's prediction beside the cost it observed.
 - **An export is the serializer's bytes.** A CSV body keeps its final row terminator, and the counts a
   CSV has no place for ride beside it.
-- **Every refusal names what was wrong**: a host that counts no template cases, a case count below one,
+- **Every refusal names what was wrong**: a case count below one,
   a status no run carries, a format there is not, a plan that is not an estimate, the campaign's
   ``run_ids`` on an export.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
-- ``ops.launch_estimate``: removing the refusal of a host with no ``count_template_cases``.
+- ``run.launch._judged``: either refusal reworded for the launch alone (the estimate then disagrees with it).
 - ``actions.engine``: ``CaseCount`` without ``ge=1``; ``RunStatusFilter`` as a plain ``str``;
   ``ExportFormat`` as a plain ``str``; a handler dropping ``subject_filter``, ``run_status`` or
   ``predicted_cost`` on the way to its operation.
@@ -29,35 +32,43 @@ from __future__ import annotations
 import csv
 import io
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
 from threetears.evals.analysis import (
-    CostEstimate,
-    CostEstimateCell,
     HistoryResult,
     PivotTable,
     ScoreExport,
     campaign_report,
 )
 from threetears.evals.analysis.reporting import ScoreProjection
+from threetears.evals.contracts import ValidationFailedError
 from threetears.evals.ops import (
+    LaunchArguments,
+    LaunchEstimate,
+    history_launch_pricer,
     launch_estimate,
+    run_launch,
     report_read,
     scope_export,
     scope_history,
     scope_pivot,
     serialize_report,
 )
-from packages.evals.tests.factories import make_eval_result, make_eval_run, make_test_case
-from packages.evals.tests.fixtures.toyhost.run import toyhost_template
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
+from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD
+from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_REVIEWER_POOL
+from packages.evals.tests.fixtures.toyhost.run import toyhost_template, toyhost_test_cases
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
 
 #: The model the priced history is for, and the costs its three results record.
 PRICED_MODEL = "extractor-v2"
 PRICED_COSTS = (0.10, 0.20, 0.30)
+#: The cases the toy kind plans every arm at.
+CASES = len(toyhost_test_cases(toyhost_template()))
 
 
 @pytest.fixture
@@ -65,18 +76,22 @@ def evals() -> MountedTool:
     return eval_catalogue().mount_all(standard_tools())[0]
 
 
-def _priced(fixture: OpsFixture) -> str:
-    """Store two of the toy template's cases and a run of it with three priced results; return the template id."""
+def _priced(fixture: OpsFixture) -> OpsFixture:
+    """Store a run of the toy template launched as a toy arm will be, with three priced results; price by history.
+
+    Returns:
+        The fixture over a host whose launch pricer is the engine's history pricer.
+    """
     storage = fixture.host.eval_host.storage
     template = toyhost_template()
-    for index in range(2):
-        storage.save_test_case(make_test_case(id=f"case-{index}", scope_id=TOYHOST_SCOPE, template_id=template.id))
     run = make_eval_run(
         scope_id=TOYHOST_SCOPE,
         template_id=template.id,
         candidate_kind=template.candidate_kind,
         candidate_model=PRICED_MODEL,
         status="completed",
+        # The toy kind's standing rig, which every toy arm is set up with, so the run was launched as one is.
+        apparatus_settings={"reviewer_pool": TOYHOST_REVIEWER_POOL},
     )
     storage.save_eval_run(run)
     for index, cost in enumerate(PRICED_COSTS):
@@ -90,16 +105,20 @@ def _priced(fixture: OpsFixture) -> str:
                 cost_usd=cost,
             )
         )
-    return template.id
+    launch = replace(fixture.host.launch, launch_pricer=history_launch_pricer(fixture.host.eval_host))
+    return OpsFixture(replace(fixture.host, launch=launch), fixture.campaign, fixture.writers)
 
 
-def _unstamped(estimate: CostEstimate) -> dict[str, Any]:
-    """An estimate's JSON form without each prediction's ``computed_at``, which is the clock's, not the lens's."""
+def _unstamped(estimate: LaunchEstimate) -> dict[str, Any]:
+    """An estimate's JSON form without its ``computed_at``, which is the clock's, not the lens's."""
     dumped = estimate.model_dump(mode="json")
-    for cell in dumped["cells"]:
-        if cell["predicted"] is not None:
-            cell["predicted"].pop("computed_at")
+    dumped.pop("computed_at")
     return dumped
+
+
+def _launching(template_id: str, *models: str, **arguments: Any) -> dict[str, Any]:
+    """A launch's own arguments — what ``run_launch`` and ``launch_estimate`` both take."""
+    return {"template_id": template_id, "subject_id": TOYHOST_SUBJECT.subject_id, "models": list(models), **arguments}
 
 
 async def _call(tool: MountedTool, fixture: OpsFixture, arguments: dict[str, Any], caller: Caller = CALLER) -> Any:
@@ -200,47 +219,56 @@ async def test_a_json_export_carries_the_projection(evals: MountedTool) -> None:
     assert {record.run_id for record in projection.records} == {named}
 
 
-async def test_launch_estimate_prices_the_launch_from_the_scopes_history(evals: MountedTool) -> None:
-    fixture = ops_fixture()
-    template_id = _priced(fixture)
-    arguments = {"template_id": template_id, "models": [PRICED_MODEL, "unheard-of"], "k_runs": 2}
+async def test_launch_estimate_prices_the_launch_by_the_launchs_own_rule(evals: MountedTool) -> None:
+    fixture = _priced(ops_fixture())
+    arguments = _launching(toyhost_template().id, PRICED_MODEL, "unheard-of", k_runs=2)
 
     outcome = await _call(evals, fixture, {"action": "launch_estimate", **arguments})
 
-    assert not outcome.is_error
-    estimate = CostEstimate.model_validate(outcome.structured)
-    assert _unstamped(estimate) == _unstamped(launch_estimate(fixture.host, TOYHOST_SCOPE, **arguments))
-    assert (estimate.n_test_cases, estimate.n_test_cases_source, estimate.k_runs) == (2, "derived", 2)
-    priced, unheard = estimate.cells
-    assert isinstance(priced, CostEstimateCell), "the estimate's types are the analysis root's to import"
-    assert priced.n_historical == len(PRICED_COSTS) and priced.predicted is not None
-    assert priced.predicted.value == pytest.approx(0.20 * 2 * 2)
-    assert unheard.basis == "no_history" and estimate.n_uncovered_models == 1
-    assert outcome.text.startswith("estimate: 2 case(s) (derived) x k_runs 2")
-    assert f"- {PRICED_MODEL}: 4 observation(s) at $0.2 each, from 3 priced in history" in outcome.text
-    assert "1 model(s) have no history and are not in the total" in outcome.text
+    assert not outcome.is_error, outcome.text
+    estimate = LaunchEstimate.model_validate(outcome.structured)
+    direct = await launch_estimate(fixture.host, LaunchArguments(**arguments), TOYHOST_SCOPE)
+    assert _unstamped(estimate) == _unstamped(direct)
+    priced, unheard = estimate.arms
+    assert (priced.case_count, priced.case_source, priced.n_observations) == (CASES, "stored", CASES * 2)
+    assert priced.central_usd == pytest.approx(0.20 * CASES * 2), "the history's mean x the plan's cases x repeats"
+    assert priced.predicted_usd is not None and priced.predicted_usd > priced.central_usd, "held to the upper end"
+    assert unheard.predicted_usd is None and unheard.outcome == "refused" and estimate.total_predicted_usd is None
+    assert unheard.refusal is not None and "cannot be priced: no priced past result" in unheard.refusal
+    assert (estimate.cap_usd, estimate.cap_origin, estimate.would_launch) == (
+        TOYHOST_COST_CEILING_USD,
+        "inherited",
+        False,
+    )
+    # One rule: the launch refuses the first refused arm in the estimate's own words.
+    (first_refused,) = [arm.refusal for arm in estimate.arms if arm.refusal is not None][:1]
+    with pytest.raises(ValidationFailedError) as refused:
+        await run_launch(fixture.host, LaunchArguments(**arguments), TOYHOST_SCOPE)
+    assert str(refused.value) == first_refused
+    assert outcome.text.startswith(f"estimate: template {toyhost_template().id}, subject {TOYHOST_SUBJECT.subject_id}")
+    assert "would be refused" in outcome.text
 
 
-async def test_a_launch_estimate_reads_the_subject_it_is_given(evals: MountedTool) -> None:
+async def test_an_estimate_raises_what_the_launch_refuses_before_pricing_a_kinds_plan_first(evals: MountedTool) -> None:
+    """A kind's request-level refusal reaches the operator ahead of "cannot be priced", on a host that prices nothing."""
     fixture = ops_fixture()
-    template_id = _priced(fixture)
-
-    outcome = await _call(
-        evals,
-        fixture,
-        {"action": "launch_estimate", "template_id": template_id, "models": [PRICED_MODEL], "subject_filter": "nobody"},
+    unpriced = OpsFixture(
+        replace(fixture.host, launch=replace(fixture.host.launch, launch_pricer=None)), fixture.campaign, []
     )
 
-    estimate = CostEstimate.model_validate(outcome.structured)
-    assert estimate.subject_id == "nobody" and estimate.cells[0].basis == "no_history"
+    outcome = await _call(evals, unpriced, {"action": "launch_estimate", **_launching(toyhost_template().id)})
+    with pytest.raises(ValidationFailedError) as refused:
+        await run_launch(unpriced.host, LaunchArguments(**_launching(toyhost_template().id)), TOYHOST_SCOPE)
+
+    assert outcome.is_error and "has no default candidate model; name one" in outcome.text
+    assert "cannot be priced" not in outcome.text
+    assert str(refused.value) == f"kind '{toyhost_template().candidate_kind}' has no default candidate model; name one"
 
 
 async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_observed(evals: MountedTool) -> None:
-    fixture = ops_fixture()
-    template_id = _priced(fixture)
-    estimated = await _call(
-        evals, fixture, {"action": "launch_estimate", "template_id": template_id, "models": [PRICED_MODEL]}
-    )
+    fixture = _priced(ops_fixture())
+    template_id = toyhost_template().id
+    estimated = await _call(evals, fixture, {"action": "launch_estimate", **_launching(template_id, PRICED_MODEL)})
     arguments = {"row_factor": "template_id", "column_factor": "model", "metric": "cost_usd"}
 
     outcome = await _call(
@@ -252,7 +280,7 @@ async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_ob
         fixture.host.eval_host,
         TOYHOST_SCOPE,
         **arguments,
-        predicted_cost=CostEstimate.model_validate(estimated.structured),
+        predicted_cost=LaunchEstimate.model_validate(estimated.structured),
     )
     assert outcome.structured == direct.model_dump(mode="json")
     (cell,) = [cell for cell in direct.cells if cell.row == template_id]
@@ -267,25 +295,11 @@ async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_ob
 # =============================================================================
 
 
-async def test_a_host_that_counts_no_template_cases_refuses_an_estimate(evals: MountedTool) -> None:
-    fixture = ops_fixture(counts_cases=False)
-
-    outcome = await _call(
-        evals,
-        fixture,
-        {"action": "launch_estimate", "template_id": toyhost_template().id, "models": [PRICED_MODEL]},
-    )
-
-    assert outcome.is_error and outcome.structured is None
-    assert outcome.text.startswith("refused: launch_estimate: this host does not estimate launches here")
-    assert "OpsHost.count_template_cases" in outcome.text
-
-
 async def test_a_case_count_below_one_is_refused_naming_it(evals: MountedTool) -> None:
     outcome = await _call(
         evals,
         ops_fixture(),
-        {"action": "launch_estimate", "template_id": "t", "models": [PRICED_MODEL], "n_test_cases": 0},
+        {"action": "launch_estimate", **_launching("t", PRICED_MODEL), "n_test_cases": 0},
     )
     assert outcome.is_error and "launch_estimate was called with values it cannot take" in outcome.text
     assert "- n_test_cases:" in outcome.text
@@ -315,7 +329,9 @@ async def test_a_plan_that_is_not_an_estimate_is_refused(evals: MountedTool) -> 
             "predicted_cost": {"cells": "nope"},
         },
     )
-    assert outcome.is_error and outcome.text.startswith("refused: scope_pivot: predicted_cost is not a cost estimate")
+    assert outcome.is_error and outcome.text.startswith(
+        "refused: scope_pivot: predicted_cost is neither a launch estimate nor a cost estimate"
+    )
 
 
 async def test_a_lens_refusal_is_a_refused_call_with_the_lens_reason(evals: MountedTool) -> None:

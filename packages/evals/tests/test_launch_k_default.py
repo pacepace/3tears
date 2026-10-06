@@ -11,7 +11,7 @@ of 3; a test asserting ``k_runs == 3`` would pass for a surface hard-coding 3, s
 reads the constant.
 
 Mutations that turn this file red (each applied to a saved copy and restored from it): the literal ``1``
-in place of the constant in ``ops.runs.LaunchArguments.k_runs``, ``ops.lenses.launch_estimate``,
+in place of the constant in ``ops.runs.LaunchArguments.k_runs`` (which ops ``launch_estimate`` takes too),
 ``quick.cli``'s ``--k``, ``quick.one_call.run_eval``, and ``actions.engine``'s ``RunLaunchParams`` and
 ``LaunchEstimateParams``; and ``quick.cli._launch`` handing on ``k_runs=1`` in place of ``args.k``.
 """
@@ -24,13 +24,11 @@ from typing import Any
 import pytest
 
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
-from threetears.evals.analysis import CostEstimate
 from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS
-from threetears.evals.ops import JobsStarted, LaunchArguments, launch_estimate, run_launch
+from threetears.evals.ops import JobsStarted, LaunchArguments, LaunchEstimate, launch_estimate, run_launch
 from threetears.evals.quick import run_cli, run_eval
 from threetears.evals.quick import cli as quick_cli
 from threetears.evals.run import start_run
-from packages.evals.tests.factories import make_test_case
 from packages.evals.tests.fixtures.courierhost import (
     COURIER_SCOPE,
     COURIER_SUBJECT,
@@ -88,32 +86,36 @@ async def test_the_run_launch_action_stores_the_default_when_the_call_names_none
     assert _stored_k(fixture, JobsStarted.model_validate(outcome.structured)) == {DEFAULT_LAUNCH_K_RUNS}
 
 
-def _with_cases(fixture: OpsFixture) -> str:
-    """Store two of the toy template's cases, so an estimate has a case count to multiply; return its id."""
-    template = toyhost_template()
-    for index in range(2):
-        fixture.host.eval_host.storage.save_test_case(
-            make_test_case(id=f"case-{index}", scope_id=TOYHOST_SCOPE, template_id=template.id)
-        )
-    return template.id
-
-
-def test_ops_launch_estimate_prices_the_default_when_the_call_names_none() -> None:
+async def test_ops_launch_estimate_prices_the_default_when_the_call_names_none() -> None:
     fixture = ops_fixture()
+    arguments = LaunchArguments(
+        template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=list(RUN_MODELS)
+    )
 
-    estimate = launch_estimate(fixture.host, TOYHOST_SCOPE, template_id=_with_cases(fixture), models=["m"])
+    estimate = await launch_estimate(fixture.host, arguments, TOYHOST_SCOPE)
 
     assert estimate.k_runs == DEFAULT_LAUNCH_K_RUNS
+    assert all(
+        arm.case_count is not None and arm.n_observations == arm.case_count * DEFAULT_LAUNCH_K_RUNS
+        for arm in estimate.arms
+    ), "each arm is priced at the default's repeats, not merely echoing it"
 
 
 async def test_the_launch_estimate_action_prices_the_default_when_the_call_names_none(evals: MountedTool) -> None:
     fixture = ops_fixture()
-    arguments = {"action": "launch_estimate", "template_id": _with_cases(fixture), "models": ["m"]}
+    arguments = {
+        "action": "launch_estimate",
+        "template_id": toyhost_template().id,
+        "subject_id": TOYHOST_SUBJECT.subject_id,
+        "models": list(RUN_MODELS),
+    }
 
     outcome = await evals.call(arguments, host=fixture.host, caller=CALLER)
 
     assert not outcome.is_error, outcome.text
-    assert CostEstimate.model_validate(outcome.structured).k_runs == DEFAULT_LAUNCH_K_RUNS
+    estimate = LaunchEstimate.model_validate(outcome.structured)
+    assert estimate.k_runs == DEFAULT_LAUNCH_K_RUNS
+    assert all(arm.n_observations == (arm.case_count or 0) * DEFAULT_LAUNCH_K_RUNS for arm in estimate.arms)
 
 
 def test_the_command_line_launches_the_default_when_run_names_no_k(

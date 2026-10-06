@@ -115,15 +115,23 @@ names the per-run cap). What was spent out of run is read back by `scope_out_of_
 
 **Every arm is priced before any launcher runs, by one rule.** The engine asks the kind what each arm
 will run (`LaunchableKind.plan_arm` → `ArmPlan`: for an arm over stored cases, how many of the template's
-stored cases it plays; for a generating arm, at most `n_variations`) and, under an enforced cap, prices it
-with the host's `LaunchHost.launch_pricer` (`ArmQuote.case_source` says which; `threetears.evals.ops.history_launch_pricer`
-bounds it by the upper end of the band of runs launched the same way — template, model, cassette mode,
-judge and simulator pins, resolved apparatus settings) and refuses an arm predicted above its run's cap,
-or one nothing can predict — no pricer, no plan, or no history to bound — whose cap the run would merely
-inherit. An unpriceable arm under a cap the launch named runs under it. The launch tail holds each
-launcher to its plan (no more cases, no other model). A battery prices each template's arms once, in its
-pre-flight, and each template's launch carries those plans. A host therefore prices no arm itself: a
-wrapper that priced assembled runs would be a second rule, and a second pricing of the same arm.
+stored cases it plays, for a generating arm at most `n_variations`; the model; the judges it will be scored
+by, resolved with `plan_judge`; and its simulator) and, under an enforced cap, prices it with the host's
+`LaunchHost.launch_pricer` (`ArmQuote.case_source` says which; `threetears.evals.ops.history_launch_pricer`
+bounds it by the upper end of the band of runs launched the same way — template, model, cassette mode, the
+model each scored dim was judged by, the simulator that ran, resolved apparatus settings) and refuses an arm
+predicted above its run's cap, or one nothing can predict — no pricer, no plan, or no history to bound —
+whose cap the run would merely inherit. An unpriceable arm under a cap the launch named runs under it.
+Every arm is planned before any is priced, so `plan_arm` is where a kind makes its request-level refusals
+(no model and no default — `require_candidate_model`, the tail's own refusal — a judge or simulator it
+needs): the operator hears those before any "cannot be priced". The launch tail holds each launcher to its
+plan (no more cases, no other model, judges or simulator), and refuses an arm that was never priced under an
+enforced cap — a host composing its own launch through `launch_as_group` prices its arms with `price_arms`.
+A battery prices each template's arms once, in its pre-flight, prepares every template before starting any,
+and launches each template as it priced it. `launch_estimate` (`quote_launch` in `run`) runs the same steps
+read-only and reports each arm's price and the launch's verdict, word for word; hand its result to a cost
+pivot as `predicted_cost`. A host therefore prices no arm itself: a wrapper that priced assembled runs would
+be a second rule, and a second pricing of the same arm.
 
 **Setting the rig at launch.** `apparatus_settings` sets host-declared apparatus values — who sits in an
 adjudicator's seat, say — so one template can be run at two of them and compared. A kind lists the ones
