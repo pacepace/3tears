@@ -113,6 +113,9 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # 37/10: the judge's self-agreement and the evidence tiers it and calibration decide; the apparatus
     # partition is unchanged.
     ((37, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 38/10: a judge's tier is keyed by its config too, and its agreements count distinct results; the
+    # apparatus partition is unchanged.
+    ((38, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 

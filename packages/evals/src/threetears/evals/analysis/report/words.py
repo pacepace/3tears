@@ -60,7 +60,7 @@ EVIDENCE_TIER_WORDS = worded(
     {
         "mechanical": "checks and measures",
         "calibrated": "judged scores from a judge that agrees with people",
-        "separation": "judged scores from a judge that agrees with itself, not checked against people",
+        "separation": "judged scores from a judge that agrees with itself; not shown to agree with people",
         "undetermined": "judged scores whose judge's reliability has not been measured enough to say",
         "incidental": "judged scores from a judge measured as neither agreeing with people nor with itself",
         "none": "no reading it names",

@@ -13,7 +13,10 @@ What is pinned:
 * each call made is a ledger row under purpose ``judge``, stamped with the run;
 * the estimate answers exactly what the repeat would do, making no call;
 * what cannot be reproduced is refused (the run) or named and left out (a result), before any spend;
-* a repeat agreeing with twenty first scores puts the dimension's judge on ``separation``.
+* a repeat agreeing with twenty first scores puts the dimension's judge on ``separation``; two results
+  repeated ten times, or a judge declining a third of its repeats, does not;
+* a write race keeps the other writer's change; a result that cannot be read back is reported unwritten
+  and the report still returns; an account refusal stops the repeat before any later call.
 
 Mutations that turn this file red (each made in a scratch copy, the file restored from it, 2026-10-06):
 
@@ -22,11 +25,15 @@ Mutations that turn this file red (each made in a scratch copy, the file restore
   call is refused as unadmitted);
 - ``_BudgetedJudgeClient.generate``: calling the host's client directly (no ledger rows);
 - ``_record``: writing the repeat's scores over the result's (the scores-untouched assertion); returning on
-  a conflict instead of re-reading (the conflict test's repeat is not stored).
+  a conflict instead of re-reading (the conflict test's repeat is not stored); re-sending the copy read first
+  with a fresh etag (the other writer's repeat is lost); reading the result outside the guard (the report never
+  returns);
+- ``repeat_judge_scores``: not breaking on an account refusal (a call is made after it).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from dataclasses import dataclass, field
@@ -34,11 +41,11 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import judge_agreement, judge_evidence_tiers, judge_self_agreement
+from threetears.evals.analysis import JudgeKey, judge_agreement, judge_evidence_tiers, judge_self_agreement
 from threetears.evals.contracts import EvalStorage
 from threetears.evals.contracts.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
 from threetears.evals.contracts.cassettes import CellCassettes
-from threetears.evals.contracts.errors import ConflictError, ValidationFailedError
+from threetears.evals.contracts.errors import ConflictError, StorageError, ValidationFailedError
 from threetears.evals.contracts.host.eval_host import EvalHost
 from threetears.evals.contracts.identity import resolve_variant_identity
 from threetears.evals.contracts.models import (
@@ -49,9 +56,12 @@ from threetears.evals.contracts.models import (
     EvalTestCase,
     JudgedArtifact,
     JudgeEvidence,
+    JudgeRepeat,
+    RepeatedScore,
     RubricDim,
+    RubricScore,
 )
-from threetears.evals.contracts.provider import withhold_failure_detail
+from threetears.evals.contracts.provider import ProviderFailure, withhold_failure_detail
 from threetears.evals.run import estimate_judge_repeat, repeat_judge_scores
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService
@@ -66,6 +76,8 @@ _KIND = "repeat-probe"
 _JUDGE = "judge/scripted"
 _DIM = "doc.faithful"
 _CEILING = 0.01
+#: The judge every scored dim here is read under: the run's one dim, served by the scripted judge, no config.
+_KEY = JudgeKey(_DIM, "ordinal", _JUDGE, None)
 
 _EVIDENCE = JudgeEvidence(
     subject="The game master. Rules as written.",
@@ -100,6 +112,10 @@ class _PricedJudge:
     #: Dims answered unparseable text once, then scored — the case a parse retry exists for.
     unparseable_once: set[str] = field(default_factory=set)
     cannot_tell: set[str] = field(default_factory=set)
+    #: Parties (cases) answered "can't tell" on every dim.
+    cannot_tell_parties: set[int] = field(default_factory=set)
+    #: Parties whose call raises — the account behind the judge refusing it, as the host describes it.
+    refused_parties: set[int] = field(default_factory=set)
     calls: list[tuple[str, str, str]] = field(default_factory=list)
     model_name: str = _JUDGE
 
@@ -115,7 +131,10 @@ class _PricedJudge:
             self.unparseable_once.discard(dim)
             return _Completion(content="not json")
         party = int(re.search(r"party: p(\d+)", user).group(1))  # type: ignore[union-attr]
-        score: Any = CANNOT_TELL if dim in self.cannot_tell else max(1, min(5, 2 + party % 4 + self.drift))
+        if party in self.refused_parties:
+            raise _AccountRefused("out of credit")
+        declines = dim in self.cannot_tell or party in self.cannot_tell_parties
+        score: Any = CANNOT_TELL if declines else max(1, min(5, 2 + party % 4 + self.drift))
         return _Completion(content=json.dumps({"reasoning": "read it", "criteria_scores": {dim: score}}))
 
     async def aclose(self) -> None:
@@ -145,19 +164,70 @@ class _Kind:
         return CandidateOutput(output=[{"rendered": "elsewhere"}], judge_evidence=_EVIDENCE)
 
 
+class _AccountRefused(Exception):
+    """What the scripted judge raises for a refused party."""
+
+
+def _describe_account_refusal(exc: BaseException) -> ProviderFailure:
+    """The host's describer: :class:`_AccountRefused` is a refusal for the account, anything else is not."""
+    return ProviderFailure(
+        f"{type(exc).__name__}", payload_withheld=True, account_refused=isinstance(exc, _AccountRefused)
+    )
+
+
+#: What the other writer appends while the repeat is between its read and its write.
+_OTHER_WRITERS_REPEAT = JudgeRepeat(
+    judge_model="judge/other-writer",
+    scores=[
+        RepeatedScore(
+            dim=_DIM,
+            scale="ordinal",
+            first_score=1,
+            first_served_model="judge/other-writer",
+            first_judge_config_id=None,
+            repeat=RubricScore(dim=_DIM, scale="ordinal", score=1, served_model="judge/other-writer"),
+        )
+    ],
+)
+
+
 class _ConflictOnce(EvalStorage):
-    """The real store, except that the first rewrite of a result loses to another writer."""
+    """The real store, except that another writer changes the result between the repeat's read and its first write.
+
+    The other writer's change really lands — it appends its own repeat — so a re-send of the stale copy would
+    delete it, and only a re-read that re-applies the repeat to the newer result keeps both.
+    """
 
     def __init__(self) -> None:
         super().__init__(InMemoryDocumentStore())
         self.conflicts = 0
 
     def replace_eval_result(self, result: EvalResult, /, *, if_match: str | None) -> None:
-        """Refuse the first rewrite as a lost race, then write as the store does."""
+        """On the first rewrite, let another writer change the result first, then refuse this one as the lost race."""
         if self.conflicts == 0:
             self.conflicts += 1
+            current, etag = self.load_eval_result_with_etag(result.id, result.scope_id)
+            assert current is not None
+            super().replace_eval_result(
+                current.model_copy(update={"judge_repeats": [*current.judge_repeats, _OTHER_WRITERS_REPEAT]}),
+                if_match=etag,
+            )
             raise ConflictError("another writer got there first")
         super().replace_eval_result(result, if_match=if_match)
+
+
+class _UnreadableOnce(EvalStorage):
+    """The real store, except that reading ``unreadable`` back with its etag fails in the backend."""
+
+    def __init__(self) -> None:
+        super().__init__(InMemoryDocumentStore())
+        self.unreadable: str | None = None
+
+    def load_eval_result_with_etag(self, result_id: str, scope_id: str) -> tuple[EvalResult | None, str | None]:
+        """Fail for the chosen result; read as the store does otherwise."""
+        if result_id == self.unreadable:
+            raise StorageError("the backend timed out")
+        return super().load_eval_result_with_etag(result_id, scope_id)
 
 
 async def _judged_run(
@@ -166,6 +236,7 @@ async def _judged_run(
     cases: int = 2,
     judged_artifact: JudgedArtifact = JudgedArtifact.DOCUMENT,
     storage: EvalStorage | None = None,
+    failure_describer: Any = None,
     **run_fields: Any,
 ) -> tuple[EvalHost, str]:
     """Run ``cases`` judged cells through the real runner and store them as a finished run would.
@@ -174,6 +245,8 @@ async def _judged_run(
         The host holding the records, and the run's id.
     """
     host = toyhost_host(storage=storage, clients=lambda role, model, *, temperature=None: judge)
+    if failure_describer is not None:
+        host = dataclasses.replace(host, failure_describer=failure_describer)
     template = EvalTemplate(
         scope_id=_SCOPE,
         name="repeat",
@@ -303,7 +376,42 @@ class TestARepeatMeasuresTheJudgeAndChangesNothing:
         assert storage.conflicts == 1
         assert report.unwritten == [] and len(report.repeated) == 1
         (result,) = _results(host, run_id)
-        assert len(result.judge_repeats) == 1
+        # Both writers' changes stand: the other writer's repeat, then this one re-applied on top of it.
+        assert [repeat.judge_model for repeat in result.judge_repeats] == ["judge/other-writer", _JUDGE]
+
+
+class TestWhatWasPaidForIsReported:
+    async def test_a_result_that_cannot_be_read_back_is_unwritten_and_the_report_still_returns(self):
+        judge = _PricedJudge()
+        storage = _UnreadableOnce()
+        host, run_id = await _judged_run(judge, cases=2, storage=storage)
+        unreadable, readable = _results(host, run_id)
+        storage.unreadable = unreadable.id
+        judge.calls.clear()
+
+        report = await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
+
+        assert report.unwritten == [unreadable.id]
+        assert report.repeated == [readable.id]
+        assert report.calls_made == len(judge.calls) == 2, "both paid calls are on the report"
+
+    async def test_an_account_refusal_stops_the_repeat_before_any_later_call(self):
+        judge = _PricedJudge()
+        host, run_id = await _judged_run(judge, cases=3, failure_describer=_describe_account_refusal)
+        order = [planned_id for planned_id in (r.id for r in host.storage.query_eval_results_by_run(run_id, _SCOPE))]
+        refused_party = 1
+        judge.refused_parties = {refused_party}
+        judge.calls.clear()
+
+        report = await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
+
+        assert report.stopped is not None and "refused" in report.stopped
+        parties_called = [int(re.search(r"party: p(\d+)", user).group(1)) for _, _, user in judge.calls]  # type: ignore[union-attr]
+        assert parties_called[-1] == refused_party, "nothing is called after the refusal"
+        repeated_up_to_refusal = order[: parties_called.index(refused_party) + 1]
+        assert report.repeated == repeated_up_to_refusal, "the refused result's answer is recorded; nothing after it"
+        assert len(report.repeated) < 3, "the refusal must come before the last result, or the stop is vacuous"
+        assert report.calls_made == len(judge.calls)
 
 
 class TestNothingIsPaidForThatTheCapWouldRefuse:
@@ -425,8 +533,7 @@ class TestTwentyAgreeingRepeatsSeparateTheJudge:
         await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
 
         results = _results(host, run_id)
-        judged = {(_DIM, "ordinal", _JUDGE)}
-        (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), judged)
+        (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_KEY})
         assert (tier.separation.n, tier.separation.agreement, tier.tier) == (20, 1.0, "separation")
 
     async def test_nineteen_repeats_do_not(self):
@@ -437,7 +544,35 @@ class TestTwentyAgreeingRepeatsSeparateTheJudge:
         await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=1.0, result_ids=ids)
 
         results = _results(host, run_id)
-        (tier,) = judge_evidence_tiers(
-            judge_agreement([], results), judge_self_agreement(results), {(_DIM, "ordinal", _JUDGE)}
-        )
+        (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_KEY})
         assert (tier.separation.state, tier.tier) == ("insufficient", "undetermined")
+
+    async def test_two_results_repeated_ten_times_do_not(self):
+        # Twenty agreeing pairs about two results — the shape that reached separation when the floor counted pairs.
+        judge = _PricedJudge()
+        host, run_id = await _judged_run(judge, cases=4)
+        first, *rest = _results(host, run_id)
+        other = next(r for r in rest if r.judge_score(_DIM) != first.judge_score(_DIM))
+
+        for _ in range(10):
+            await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=1.0, result_ids=[first.id, other.id])
+
+        results = _results(host, run_id)
+        (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_KEY})
+        assert (tier.separation.n, tier.separation.results, tier.separation.agreement) == (20, 2, 1.0)
+        assert (tier.separation.state, tier.tier) == ("insufficient", "undetermined")
+
+    async def test_a_judge_declining_a_third_of_its_repeats_does_not(self):
+        judge = _PricedJudge()
+        host, run_id = await _judged_run(judge, cases=30)
+        judge.cannot_tell_parties = set(range(10))
+
+        report = await repeat_judge_scores(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
+
+        assert (report.scores_repeated, report.scores_unanswered) == (20, 10)
+        results = _results(host, run_id)
+        read = judge_self_agreement(results)
+        (dimension,) = read.dimensions
+        assert (dimension.n, dimension.results, dimension.n_cannot_tell) == (30, 30, 10)
+        (tier,) = judge_evidence_tiers(judge_agreement([], results), read, {_KEY})
+        assert (tier.separation.state, tier.tier) == ("not_met", "undetermined")

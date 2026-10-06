@@ -50,17 +50,19 @@ from pydantic import BaseModel, Field, model_validator
 
 from threetears.evals.analysis.agreement import (
     JudgeAgreement,
+    JudgeKey,
     JudgeSelfAgreement,
     judge_agreement,
     judge_evidence_tiers,
+    judge_key,
     judge_self_agreement,
     tier_for_judges,
 )
 from threetears.evals.contracts.evidence_tiers import (
     CALIBRATION_MIN_AGREEMENT,
-    CALIBRATION_MIN_PAIRS,
+    CALIBRATION_MIN_RESULTS,
     SEPARATION_MIN_AGREEMENT,
-    SEPARATION_MIN_PAIRS,
+    SEPARATION_MIN_RESULTS,
     JudgedEvidenceTier,
     JudgeEvidenceTier,
 )
@@ -145,7 +147,7 @@ from threetears.evals.contracts.metrics import (
 from threetears.evals.contracts.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
-from threetears.evals.contracts.models import ApparatusProvenance, CalibrationRating, EvalResult, RubricScale
+from threetears.evals.contracts.models import ApparatusProvenance, CalibrationRating, EvalResult
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -1328,7 +1330,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=37, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=38, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -1483,20 +1485,21 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=JudgeSelfAgreement,
         description=(
             "How the judge's repeated scores agreed with its own first scores of the same evidence, per judged "
-            "dimension and judge model, read exactly as `judge_agreement` is (n, exact agreement, kappa, weighted "
-            "kappa) — over every resolved member run's results. Empty when nothing was repeated: the judge's "
+            "dimension, judge model and judge config, read exactly as `judge_agreement` is (n, distinct results, "
+            'exact agreement, kappa, weighted kappa, a "can\'t tell" repeat counted as a disagreement) — over every '
+            "resolved member run's results. Empty when nothing was repeated: the judge's "
             "consistency is then unmeasured. Repeats that could not be paired are listed with why."
         ),
     )
     judge_evidence_tiers: list[JudgeEvidenceTier] = Field(
         default_factory=list,
         description=(
-            "The evidence tier of each judge's readings on each judged dimension, decided by code from "
-            "`judge_agreement` and `judge_self_agreement`: `calibrated` (agreement with people at least "
-            f"{format_number(CALIBRATION_MIN_AGREEMENT)} over at least {CALIBRATION_MIN_PAIRS} pairs), `separation` "
-            f"(agreement with its own repeats at least {format_number(SEPARATION_MIN_AGREEMENT)} over at least "
-            f"{SEPARATION_MIN_PAIRS}), "
-            "`incidental` (both measured over enough pairs and both missed), or `undetermined` (too little "
+            "The evidence tier of each judge's readings on each judged dimension — a judge being a served model "
+            "and a judge config — decided by code from `judge_agreement` and `judge_self_agreement`: `calibrated` "
+            f"(agreement with people at least {format_number(CALIBRATION_MIN_AGREEMENT)} over at least "
+            f"{CALIBRATION_MIN_RESULTS} distinct results), `separation` (agreement with its own repeats at least "
+            f"{format_number(SEPARATION_MIN_AGREEMENT)} over at least {SEPARATION_MIN_RESULTS} distinct results), "
+            "`incidental` (both measured over enough results and both missed), or `undetermined` (too little "
             "evidence to decide). Each entry carries both criteria. Every judged reading in `judged_measures` and "
             "`cell_measures` carries the tier of the judges behind it; a finding citing one stands on it."
         ),
@@ -4951,13 +4954,13 @@ def _judged_rows(records: list[ScoreRecord]) -> Iterator[tuple[str, ScoreRecord]
                 yield record.metric, record
 
 
-def _judged_keys(results: list[EvalResult]) -> set[tuple[str, RubricScale, str | None]]:
-    """Every ``(dimension, scale, served model)`` a judged score among ``results`` was given under."""
+def _judged_keys(results: list[EvalResult]) -> set[JudgeKey]:
+    """Every judge (:class:`~threetears.evals.analysis.agreement.JudgeKey`) a judged score among ``results`` was given by."""
     return {
-        (score.dim, score.scale, score.served_model)
+        key
         for result in results
         for score in (*result.rubric_scores, result.transcript_score, result.outcome_score)
-        if score is not None
+        if score is not None and (key := judge_key(result, score.dim)) is not None
     }
 
 
@@ -5010,10 +5013,12 @@ def _judged_measures(
                 row for row in rows if row.outcome not in (ResultOutcome.INFRA_EXCLUDE.value, JUDGE_CANNOT_TELL_OUTCOME)
             ]
             values = [float(row.value) for row in counted if row.value is not None]
+            # The whole judge behind each counted score — dimension, scale, served model and config — so an arm
+            # can only carry a tier measured for the very judges that scored it.
             served = [
-                score.served_model
+                judge
                 for row in counted
-                if row.value is not None and (score := result_by_id[row.result_id].judge_score(dimension)) is not None
+                if row.value is not None and (judge := judge_key(result_by_id[row.result_id], dimension)) is not None
             ]
             arms.append(
                 JudgedArm(
@@ -5026,7 +5031,7 @@ def _judged_measures(
                     n_cannot_tell=len(cannot_tell),
                     mean=sum(values) / len(values) if values else None,
                     sem=standard_error_of_mean(values) if values else None,
-                    evidence_tier=tier_for_judges(tiers, dimension, served),
+                    evidence_tier=tier_for_judges(tiers, served),
                 )
             )
         measures.append(

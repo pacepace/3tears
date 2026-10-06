@@ -6,28 +6,51 @@ two measurements of the judge, and on nothing a report writer says (owner ruling
 - **calibrated** — the judge agrees with PEOPLE: on the dimension, its agreement with people's
   calibration ratings of the same results (:func:`threetears.evals.analysis.judge_agreement`, which
   pairs only a person's rating, never an agent's) is at least :data:`CALIBRATION_MIN_AGREEMENT` over at
-  least :data:`CALIBRATION_MIN_PAIRS` pairs. The strongest judged tier: the judge is right as people
-  judge rightness.
+  least :data:`CALIBRATION_MIN_RESULTS` distinct results. The strongest judged tier: the judge is right
+  as people judge rightness.
 - **separation** — the judge agrees with ITSELF: re-scoring evidence it already scored, under the
   apparatus the run recorded (:func:`threetears.evals.analysis.judge_self_agreement`), its agreement with
   its own first scores is at least :data:`SEPARATION_MIN_AGREEMENT` over at least
-  :data:`SEPARATION_MIN_PAIRS` pairs. Its scores are repeatable, so a gap between arms is not its own
-  noise — which says nothing about whether it is right.
-- **incidental** — a judged reading meeting neither: both measurements were taken over enough pairs
+  :data:`SEPARATION_MIN_RESULTS` distinct results. Its scores are repeatable at the item level — a
+  statement about precision, never accuracy, and never about any particular gap: whether a gap between
+  two arms clears the judge's noise is still that comparison's own test (``multiple_comparisons``).
+- **incidental** — a judged reading meeting neither: both measurements were taken over enough results
   and both fell short. The judge was measured and found neither calibrated nor consistent.
 
-**Agreement is one statistic for both tiers**, so the two thresholds are on one scale and the tiers
-compare: Cohen's kappa with quadratic weights on a 1-5 dimension, and Cohen's kappa on pass/fail, where
-the two weightings are the same number (:func:`agreement_statistic`). Both measurements average it per
-rater exactly as :mod:`threetears.evals.analysis.agreement` describes.
+**Agreement is one statistic for both tiers, computed by one rule**, so the two thresholds are on one
+scale and the tiers compare (:func:`threetears.evals.analysis.agreement` holds the one computation):
 
-**Too little evidence is a state, never a tier.** A measurement over fewer pairs than its floor, or
+- *The figure*: Cohen's kappa with quadratic weights on a 1-5 dimension, Cohen's kappa on pass/fail,
+  where the two weightings are the same number (:func:`agreement_statistic`).
+- *Per rater, then pooled by pairs*: each rater's kappa (each person, for calibration; each round of
+  repeats, for self-agreement) is computed over the pairs that rater gave, and the dimension's figure is
+  the mean of the defined ones **weighted by each rater's pairs**. A rater who gave 2 pairs moves it a
+  tenth as far as one who gave 20, so a small rater cannot outvote a large one — the defect an unweighted
+  mean had, where 20 ratings at 0.3 beside 2 at 1.0 read 0.65 and "met" a bar 91% of the evidence missed.
+  The kappa stays per rater rather than pooled into one table, because one table would enter a result two
+  people rated twice and read their disagreement with each other as the judge's.
+- *The floor counts distinct results*, never pairs: :data:`CALIBRATION_MIN_RESULTS` and
+  :data:`SEPARATION_MIN_RESULTS` are met by that many different results among the raters whose kappa
+  entered the figure. Pairs can be multiplied without new evidence — repeating two results ten times
+  is twenty pairs about two results — and results cannot.
+- *A judge that declines on repeat is disagreeing with itself*: a repeat answering "can't tell" on a
+  dimension the judge had scored is a pair whose second half is its own category, at the greatest
+  distance from every score in both kappas, and it counts in ``n``, ``results`` and exact agreement like
+  any other pair (calibration never holds one: a person's rating is a score). Only a repeat that failed
+  for infrastructure, or that another judge or judge config answered, is left out — and named.
+
+**Too little evidence is a state, never a tier.** A measurement over fewer results than its floor, or
 whose kappa is undefined, is ``insufficient``, and a reading whose evidence does not decide its tier is
 ``undetermined`` — never quietly filed as incidental. The rule (:func:`tier_of`): calibrated when the
 calibration criterion is met; else separation when the separation criterion is met; else incidental
-when BOTH criteria were measured over enough pairs and missed; else undetermined. A met criterion
+when BOTH criteria were measured over enough results and missed; else undetermined. A met criterion
 establishes its tier whatever the other one reads, because a tier is a floor the evidence has reached;
 ``incidental`` is itself a finding about the judge, so it needs both measurements to make it.
+
+**A judge is a model AND its config.** Every tier is keyed by dimension, scale, the model that served
+the scores and the versioned judge config that asked (``None`` = the built-in prompt): a changed judge
+prompt is a different judge, so a measurement under one config never sets the tier of readings judged
+under another.
 
 **Tiers are flagged, not dropped** (PD-13): every judged reading stays on every surface, carrying its
 tier and the two criteria that decided it, so a reader sees how much the number can bear.
@@ -48,19 +71,21 @@ from threetears.evals.contracts.models import DimName, RubricScale
 #: to be ``calibrated`` on it. Owner ruling, 2026-10-06.
 CALIBRATION_MIN_AGREEMENT: Final = 0.6
 
-#: The fewest judge–human pairs a calibration is read over before it can decide anything: below it the
-#: calibration is ``insufficient``, whatever its kappa. Owner ruling, 2026-10-06.
-CALIBRATION_MIN_PAIRS: Final = 20
+#: The fewest distinct results a calibration must cover before it can decide anything: below it the
+#: calibration is ``insufficient``, whatever its kappa. The owner's ruling (2026-10-06) reads "20 pairs";
+#: counting distinct results is that floor made unforgeable — every result covered is at least one pair,
+#: and a pile of pairs about a handful of results is not twenty pieces of evidence.
+CALIBRATION_MIN_RESULTS: Final = 20
 
 #: The least agreement a judge must reach with its own repeated scores (the same statistic as
 #: calibration) to earn ``separation``. Owner ruling, 2026-10-06.
 SEPARATION_MIN_AGREEMENT: Final = 0.8
 
-#: The fewest first-score/repeat pairs a self-agreement is read over before it can decide anything. The
-#: ruling sets no floor of its own here; this is calibration's, because the ruling asks for the two
-#: agreements to be computed alike so the tiers compare, and a kappa over three pairs decides nothing
-#: either way.
-SEPARATION_MIN_PAIRS: Final = CALIBRATION_MIN_PAIRS
+#: The fewest distinct results a self-agreement must cover before it can decide anything. The ruling sets
+#: no floor of its own here; this is calibration's, because the ruling asks for the two agreements to be
+#: computed alike so the tiers compare, and a kappa over three results decides nothing either way —
+#: however many times those three are repeated.
+SEPARATION_MIN_RESULTS: Final = CALIBRATION_MIN_RESULTS
 
 #: The tier a judged reading stands on: one of the three the evidence can establish, or ``undetermined``
 #: when it establishes none of them.
@@ -78,8 +103,8 @@ JUDGED_TIERS_WEAKEST_FIRST: Final[tuple[JudgedEvidenceTier, ...]] = (
     "calibrated",
 )
 
-#: How one criterion read: its threshold reached over enough pairs, missed over enough pairs, or too
-#: little evidence to say (fewer pairs than its floor, or a kappa that is undefined).
+#: How one criterion read: its threshold reached over enough results, missed over enough results, or too
+#: little evidence to say (fewer distinct results than its floor, or a kappa that is undefined).
 CriterionState = Literal["met", "not_met", "insufficient"]
 
 
@@ -88,32 +113,43 @@ class TierCriterion(EvalDocumentModel):
 
     state: CriterionState = Field(
         description=(
-            "`met`: `agreement` reached `threshold` over at least `min_pairs` pairs. `not_met`: it fell short "
-            "over at least `min_pairs`. `insufficient`: fewer pairs than `min_pairs`, or an undefined kappa — "
-            "too little evidence to say, never a miss."
+            "`met`: `agreement` reached `threshold` over at least `min_results` distinct results. `not_met`: it "
+            "fell short over at least `min_results`. `insufficient`: fewer distinct results than `min_results`, or "
+            "an undefined kappa — too little evidence to say, never a miss."
         )
     )
     n: int = Field(ge=0, description="The pairs the agreement was read over; 0 when nothing was measured.")
+    results: int = Field(
+        ge=0,
+        description=(
+            "The distinct results among the raters whose kappa entered `agreement` — what the floor counts, "
+            "because pairs can be multiplied by re-measuring the same results and results cannot."
+        ),
+    )
     agreement: float | None = Field(
         description=(
-            "Weighted kappa on a 1-5 dimension, kappa on pass/fail; None when nothing was measured or the "
-            "kappa is undefined."
+            "Weighted kappa on a 1-5 dimension, kappa on pass/fail, per rater and pooled weighted by each rater's "
+            "pairs; None when nothing was measured or every rater's kappa is undefined."
         )
     )
     threshold: float = Field(description="The agreement the criterion asks for.")
-    min_pairs: int = Field(ge=1, description="The fewest pairs it is decided over.")
+    min_results: int = Field(ge=1, description="The fewest distinct results it is decided over.")
 
     @model_validator(mode="after")
     def _state_follows_the_numbers(self) -> TierCriterion:
         """Refuse a state its own numbers contradict — the state is arithmetic, never a second opinion.
 
         Raises:
-            ValueError: ``state`` is not the one :func:`criterion_state` derives from the numbers.
+            ValueError: ``results`` exceeds ``n`` (every result counted is at least one pair), or ``state`` is
+                not the one :func:`criterion_state` derives from the numbers.
         """
-        derived = criterion_state(self.n, self.agreement, threshold=self.threshold, min_pairs=self.min_pairs)
+        if self.results > self.n:
+            raise ValueError(f"a criterion over {self.n} pairs cannot cover {self.results} results")
+        derived = criterion_state(self.results, self.agreement, threshold=self.threshold, min_results=self.min_results)
         if self.state != derived:
             raise ValueError(
-                f"a criterion over n={self.n}, agreement={self.agreement} is {derived!r}, not {self.state!r}"
+                f"a criterion over results={self.results}, agreement={self.agreement} is {derived!r}, "
+                f"not {self.state!r}"
             )
         return self
 
@@ -129,6 +165,12 @@ class JudgeEvidenceTier(EvalDocumentModel):
             "a judge nobody observed, never read as a match for a named one."
         )
     )
+    judge_config_id: str | None = Field(
+        description=(
+            "The versioned JudgeConfig that asked for the scores; None = the built-in prompt. Part of the judge's "
+            "identity: a changed judge prompt is a different judge, so its readings get their own tier."
+        )
+    )
     tier: JudgedEvidenceTier = Field(description="The tier the two criteria decide — see `tier_of`.")
     calibration: TierCriterion = Field(description="The judge's agreement with people's ratings of the same results.")
     separation: TierCriterion = Field(description="The judge's agreement with its own repeated scores.")
@@ -141,13 +183,16 @@ class JudgeEvidenceTier(EvalDocumentModel):
             ValueError: ``tier`` is not :func:`tier_of` of the criteria, or a criterion's threshold or floor is
                 not this module's constant.
         """
-        if (self.calibration.threshold, self.calibration.min_pairs) != (
+        if (self.calibration.threshold, self.calibration.min_results) != (
             CALIBRATION_MIN_AGREEMENT,
-            CALIBRATION_MIN_PAIRS,
+            CALIBRATION_MIN_RESULTS,
         ):
-            raise ValueError("calibration is held to CALIBRATION_MIN_AGREEMENT over CALIBRATION_MIN_PAIRS")
-        if (self.separation.threshold, self.separation.min_pairs) != (SEPARATION_MIN_AGREEMENT, SEPARATION_MIN_PAIRS):
-            raise ValueError("separation is held to SEPARATION_MIN_AGREEMENT over SEPARATION_MIN_PAIRS")
+            raise ValueError("calibration is held to CALIBRATION_MIN_AGREEMENT over CALIBRATION_MIN_RESULTS")
+        if (self.separation.threshold, self.separation.min_results) != (
+            SEPARATION_MIN_AGREEMENT,
+            SEPARATION_MIN_RESULTS,
+        ):
+            raise ValueError("separation is held to SEPARATION_MIN_AGREEMENT over SEPARATION_MIN_RESULTS")
         derived = tier_of(self.calibration, self.separation)
         if self.tier != derived:
             raise ValueError(f"these criteria decide {derived!r}, not {self.tier!r}")
@@ -171,42 +216,48 @@ def agreement_statistic(scale: RubricScale, kappa: float | None, weighted_kappa:
     return weighted_kappa if scale == "ordinal" else kappa
 
 
-def criterion_state(n: int, agreement: float | None, *, threshold: float, min_pairs: int) -> CriterionState:
+def criterion_state(results: int, agreement: float | None, *, threshold: float, min_results: int) -> CriterionState:
     """How one criterion reads: insufficient below its floor or on an undefined kappa, else met or not met.
 
     Args:
-        n: The pairs.
+        results: The distinct results the agreement covers.
         agreement: The agreement figure, or None when undefined.
         threshold: The agreement asked for (inclusive).
-        min_pairs: The fewest pairs (inclusive).
+        min_results: The fewest distinct results (inclusive).
 
     Returns:
         The state.
     """
-    if n < min_pairs or agreement is None:
+    if results < min_results or agreement is None:
         return "insufficient"
     return "met" if agreement >= threshold else "not_met"
 
 
-def calibration_criterion(n: int, agreement: float | None) -> TierCriterion:
-    """The calibration criterion over ``n`` judge–human pairs at ``agreement``."""
+def calibration_criterion(n: int, results: int, agreement: float | None) -> TierCriterion:
+    """The calibration criterion over ``n`` judge–human pairs covering ``results`` results, at ``agreement``."""
     return TierCriterion(
-        state=criterion_state(n, agreement, threshold=CALIBRATION_MIN_AGREEMENT, min_pairs=CALIBRATION_MIN_PAIRS),
+        state=criterion_state(
+            results, agreement, threshold=CALIBRATION_MIN_AGREEMENT, min_results=CALIBRATION_MIN_RESULTS
+        ),
         n=n,
+        results=results,
         agreement=agreement,
         threshold=CALIBRATION_MIN_AGREEMENT,
-        min_pairs=CALIBRATION_MIN_PAIRS,
+        min_results=CALIBRATION_MIN_RESULTS,
     )
 
 
-def separation_criterion(n: int, agreement: float | None) -> TierCriterion:
-    """The separation criterion over ``n`` first-score/repeat pairs at ``agreement``."""
+def separation_criterion(n: int, results: int, agreement: float | None) -> TierCriterion:
+    """The separation criterion over ``n`` first-score/repeat pairs covering ``results`` results, at ``agreement``."""
     return TierCriterion(
-        state=criterion_state(n, agreement, threshold=SEPARATION_MIN_AGREEMENT, min_pairs=SEPARATION_MIN_PAIRS),
+        state=criterion_state(
+            results, agreement, threshold=SEPARATION_MIN_AGREEMENT, min_results=SEPARATION_MIN_RESULTS
+        ),
         n=n,
+        results=results,
         agreement=agreement,
         threshold=SEPARATION_MIN_AGREEMENT,
-        min_pairs=SEPARATION_MIN_PAIRS,
+        min_results=SEPARATION_MIN_RESULTS,
     )
 
 
@@ -219,7 +270,7 @@ def tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvid
 
     Returns:
         ``calibrated`` when calibration is met; else ``separation`` when separation is met; else
-        ``incidental`` when both were measured over enough pairs and missed; else ``undetermined``.
+        ``incidental`` when both were measured over enough results and missed; else ``undetermined``.
     """
     if calibration.state == "met":
         return "calibrated"
@@ -249,10 +300,10 @@ def weakest_judged_tier(tiers: list[JudgedEvidenceTier]) -> JudgedEvidenceTier:
 
 __all__ = [
     "CALIBRATION_MIN_AGREEMENT",
-    "CALIBRATION_MIN_PAIRS",
+    "CALIBRATION_MIN_RESULTS",
     "JUDGED_TIERS_WEAKEST_FIRST",
     "SEPARATION_MIN_AGREEMENT",
-    "SEPARATION_MIN_PAIRS",
+    "SEPARATION_MIN_RESULTS",
     "CriterionState",
     "JudgeEvidenceTier",
     "JudgedEvidenceTier",

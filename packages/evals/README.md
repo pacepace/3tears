@@ -350,13 +350,17 @@ reliability was measured to be (`threetears.evals.contracts.evidence_tiers`, own
 
 | Tier | When |
 |---|---|
-| `calibrated` | the judge agrees with people: `judge_agreement` (person ratings only) at least `CALIBRATION_MIN_AGREEMENT` (0.6) over at least `CALIBRATION_MIN_PAIRS` (20) pairs |
-| `separation` | the judge agrees with itself: `judge_self_agreement` at least `SEPARATION_MIN_AGREEMENT` (0.8) over at least `SEPARATION_MIN_PAIRS` (20) pairs |
-| `incidental` | both measured over enough pairs, and both missed |
+| `calibrated` | the judge agrees with people: `judge_agreement` (person ratings only) at least `CALIBRATION_MIN_AGREEMENT` (0.6) over at least `CALIBRATION_MIN_RESULTS` (20) distinct results |
+| `separation` | the judge agrees with itself: `judge_self_agreement` at least `SEPARATION_MIN_AGREEMENT` (0.8) over at least `SEPARATION_MIN_RESULTS` (20) distinct results |
+| `incidental` | both measured over enough results, and both missed |
 | `undetermined` | too little evidence to decide — never filed as incidental |
 
-Agreement is one statistic for both — quadratic-weighted kappa on 1-5, kappa on pass/fail, averaged per
-rater — so the two thresholds compare. The bundle lists each judge's tier per dimension with both criteria
+Agreement is one statistic computed by one rule for both — quadratic-weighted kappa on 1-5, kappa on pass/fail,
+per rater (each person; each round of repeats) and pooled weighted by each rater's pairs, so a small rater cannot
+outvote a large one; the floor counts distinct results, never pairs, so re-measuring a few results many times cannot
+reach it; and a repeat that answers "can't tell" where the judge had scored is a disagreement, never set aside. A
+judge is a served model and a judge config, so a tier measured under one prompt never sets another's. The bundle
+lists each judge's tier per dimension with both criteria
 (`judge_evidence_tiers`); a finding stands on the weakest tier among its rows (`FindingResolution.evidence_tier`:
 `mechanical`, `calibrated`, `separation`, `undetermined`, `incidental` or `none`), which every report states
 beside the finding; a code-only report also states each judge's tier with the numbers behind it. Tiers are

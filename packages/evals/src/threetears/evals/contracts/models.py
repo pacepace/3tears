@@ -61,7 +61,7 @@ from threetears.observe import get_logger
 log = get_logger(__name__)
 
 
-EVAL_SCHEMA_VERSION: int = 7
+EVAL_SCHEMA_VERSION: int = 8
 """The schema version every stored eval document is written under, and the only one a read accepts.
 
 Bump it when a stored shape changes so that a document written before the change would not mean
@@ -85,6 +85,13 @@ on every firing so a firing's ``armed`` is the event's provenance rather than th
 **v7**: a calibration rating records who KIND of rater wrote it (``CalibrationRating.rater_kind``, a person or
 an agent), required, so an agent's rating is never read as a person's. A rating written before it says
 nothing about which it was, so nothing written under v6 loads.
+
+**v8**: judged readings carry a code-decided evidence tier (PD-13). A stored analysis's judged evidence rows
+(``EvidenceRow.judged_tier``) and its decision surface's judged readings (``JudgedReading.evidence_tier``)
+carry a tier, required; the finding tier ``directional`` is gone from ``EvidenceTier``; a repeated judge score
+records the config that asked for the score it repeats (``RepeatedScore.first_judge_config_id``, required),
+so a repeat under one judge prompt never measures another. A v7 analysis holding a judged reading cannot say
+what tier it stood on, so nothing written under v7 loads.
 """
 
 
@@ -3383,6 +3390,13 @@ class RepeatedScore(EvalDocumentModel):
         description=(
             "The model that served the first score, as its response named it; None when it named none. "
             "The judge whose self-agreement this pair measures."
+        ),
+    )
+    first_judge_config_id: str | None = Field(
+        description=(
+            "The versioned JudgeConfig that asked for the first score, as the result recorded it; None = the "
+            "built-in prompt. The rest of the judge's identity: a repeat answered under another config measures "
+            "a different judge, and is not paired."
         ),
     )
     repeat: RubricScore | None = Field(

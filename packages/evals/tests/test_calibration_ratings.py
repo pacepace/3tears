@@ -314,7 +314,7 @@ class TestJudgeAgreement:
         guest = [(judged[i], people[i]) for i in range(0, 6, 2)]
         host = [(judged[i], people[i]) for i in range(1, 6, 2)]
         scale = [1, 2, 3, 4, 5]
-        # Each person's kappa over the results they rated, averaged unweighted (each person once): a Light-style mean.
+        # Each person's kappa over the results they rated, pooled weighted by each person's pairs (3 and 3 here).
         assert tone.kappa == pytest.approx((cohen_kappa(guest, scale) + cohen_kappa(host, scale)) / 2)
         assert tone.weighted_kappa == pytest.approx(
             (cohen_kappa(guest, scale, weights="quadratic") + cohen_kappa(host, scale, weights="quadratic")) / 2
@@ -353,11 +353,15 @@ class TestJudgeAgreement:
         (tone,) = judge_agreement(ratings, results).dimensions
 
         scale = [1, 2, 3, 4, 5]
-        per_person = (cohen_kappa(list(zip(judged, alice)), scale) + cohen_kappa(list(zip(judged[:2], bob)), scale)) / 2
+        # Per person, then pooled weighted by each person's pairs (5 and 2): alice's five ratings carry five sevenths.
+        per_person = (
+            5 * cohen_kappa(list(zip(judged, alice)), scale) + 2 * cohen_kappa(list(zip(judged[:2], bob)), scale)
+        ) / 7
         pooled = cohen_kappa(list(zip(judged + judged[:2], alice + bob)), scale)
         assert tone.n == 7 and tone.raters == ["alice", "bob"]
+        assert tone.results == 5, "two people rating one result is one result"
         assert tone.kappa == pytest.approx(per_person)
-        assert per_person != pytest.approx(pooled), "the fixture separates averaging from pooling"
+        assert per_person != pytest.approx(pooled), "the fixture separates per-person pooling from one pooled table"
 
     def test_a_person_whose_kappa_is_undefined_is_left_out_of_the_mean(self) -> None:
         results = [
@@ -570,7 +574,7 @@ class TestTheBundleReadsRatingsWrittenThroughTheOperation:
         assert layout.raters == ["reviewer-1", "reviewer-2"]
         assert after.judge_agreement.unpaired == []
         assert after.fingerprint() != before.fingerprint(), "a new rating is evidence that moved"
-        assert after.schema_version == 37
+        assert after.schema_version == 38
 
 
 class TestTheReporterReadCarriesTheRunsRatings:
