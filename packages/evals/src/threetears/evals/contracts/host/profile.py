@@ -108,10 +108,16 @@ log = get_logger(__name__)
 UNSEATED_LEVEL = "(none — this run's rig has no such seat)"
 
 #: The apparatus inputs a run's own record empties when it names no ``judge_model``: the run was not judged,
-#: so it had no judge pin, no judge request settings and no per-dim judge attribution. Not the whole judge
-#: role: a role's other pins — the versioned configs the RESULTS were scored with, a host's grader nominated
-#: into the role — can be filled by code or a person on a run no model judged, and their own values say so.
-_UNJUDGED_RUN_HAS_NO: frozenset[str] = frozenset({"judge_model", "judge_request_settings", "judge_dim_divergence"})
+#: so it had no judge pin, no judge request settings, no per-dim judge attribution and no judge-config seat.
+#: A BLANK in one of these on an unjudged run reads as no such seat (:data:`UNSEATED_LEVEL`), never
+#: ``undecided``; a value the run did record is still its level, because :meth:`HostProfile.apparatus_level`
+#: substitutes only for a blank. That matters for ``judge_config_ids``, which a code grader or a person can
+#: fill on a run no model judged — the configs it recorded show, and only its empty reading is unseated.
+#: Not the whole judge role: a host's grader nominated into the role is filled by whoever grades, so its
+#: own value says whether the run had one.
+_UNJUDGED_RUN_HAS_NO: frozenset[str] = frozenset(
+    {"judge_model", "judge_request_settings", "judge_dim_divergence", "judge_config_ids"}
+)
 
 if TYPE_CHECKING:
     from threetears.evals.contracts.models import EvalRun
@@ -652,8 +658,10 @@ class HostProfile:
         The run's kind's seats (:attr:`~threetears.evals.contracts.host.kinds.KindContract.seats`, a pinned
         role seating its pins), narrowed by what the run's own record states: a run whose ``judge_model``
         is None was not judged — the runner refuses to execute a judged run that names none — so the judge
-        inputs read off the run's judge — its pin, its request settings, its per-dim attribution — are not
-        seats of its rig, whatever its kind declares. Per run, because one kind runs
+        inputs read off the run's judge — its pin, its request settings, its per-dim attribution, the judge
+        configurations its results were scored with — are not seats of its rig, whatever its kind declares.
+        A value the run recorded in one of them still reads as itself (:meth:`apparatus_level` substitutes
+        only for a blank). Per run, because one kind runs
         judged and code-only templates alike, and a per-kind answer is false for one of them.
 
         Args:
@@ -665,7 +673,11 @@ class HostProfile:
         """
         if run.judge_model is None and dimension in _UNJUDGED_RUN_HAS_NO:
             return False
-        seated = self._seated(run.candidate_kind)
+        return self._kind_seats(run.candidate_kind, dimension)
+
+    def _kind_seats(self, kind: str, dimension: str) -> bool:
+        """Whether ``kind``'s contract seats ``dimension`` — the declaration alone, before any run narrows it."""
+        seated = self._seated(kind)
         return seated is None or dimension in seated
 
     def apparatus_level(self, run: EvalRun, dimension: str, value: Any) -> Any:
@@ -702,9 +714,11 @@ class HostProfile:
           for one of the two.
         * **The values.** A kind's seats say "these runs have no such thing"; the runs are what say
           whether that is true. A non-blank value wins over the declaration: the dimension is
-          reported, and the contradiction is logged. Reported rather than raised because this runs
-          inside assembly of an analysis an operator asked for, and a rig disagreement is exactly the
-          thing they need to SEE.
+          reported, and — where the value contradicts the KIND's declaration — the contradiction is
+          logged. Reported rather than raised because this runs inside assembly of an analysis an
+          operator asked for, and a rig disagreement is exactly the thing they need to SEE. A level on
+          a seat only the run's own record narrowed away (judge configs a code grader recorded on an
+          unjudged run) contradicts no declaration, so it is reported without the warning.
 
         Args:
             dimension: The declared apparatus input name.
@@ -729,10 +743,18 @@ class HostProfile:
             )
         if any(self.seats(run, dimension) for run, _ in observations):
             return False
-        if recorded := [
+        recorded = [
             (run, value) for run, value in observations if not self.sweepables.is_indeterminate(dimension, value)
+        ]
+        if not recorded:
+            return True
+        # Only a level recorded where the KIND declares no seat contradicts a declaration. A run whose own
+        # record narrowed the seat away (an unjudged run's judge configs) and that recorded a level anyway
+        # is the narrowing's documented exception — a code grader's configs — so it is reported, unlogged.
+        if contradicted := [
+            (run, value) for run, value in recorded if not self._kind_seats(run.candidate_kind, dimension)
         ]:
-            run, value = recorded[0]
+            run, value = contradicted[0]
             log.warning(
                 "host %r: run %s (kind %r) has no seat for apparatus dimension %r, but it recorded %r — "
                 "reporting it rather than omitting it, because a recorded level is evidence the seat declaration "
@@ -743,8 +765,7 @@ class HostProfile:
                 dimension,
                 value,
             )
-            return False
-        return True
+        return False
 
     def controllable(self, dimension: str) -> Coverage:
         """Whether a run can DELIBERATELY vary ``dimension``, derived from the sweepables registry.

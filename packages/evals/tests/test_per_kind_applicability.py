@@ -162,7 +162,7 @@ def test_a_judging_kind_s_run_that_names_no_judge_had_no_judge_seat() -> None:
 
     assert not profile.seats(code_only, "judge_model") and profile.seats(judged, "judge_model")
     assert profile.seats(code_only, "ocr_engine_version"), "only the run's judge inputs are narrowed by its record"
-    assert profile.seats(code_only, "judge_config_ids"), "results a person or code scored may carry configs"
+    assert not profile.seats(code_only, "judge_config_ids"), "an unjudged run has no judge-config seat"
     assert profile.omits_apparatus("judge_model", [(code_only, None), (code_only, None)])
     assert not profile.omits_apparatus("judge_model", [(code_only, None), (judged, None)])
     assert profile.apparatus_level(code_only, "judge_model", None) == UNSEATED_LEVEL
@@ -170,6 +170,74 @@ def test_a_judging_kind_s_run_that_names_no_judge_had_no_judge_seat() -> None:
     assert profile.apparatus_level(code_only, "judge_model", ["vendor/judge-1"]) == ["vendor/judge-1"], (
         "a recorded level beats the seat, as it beats a kind's"
     )
+
+
+def test_an_unjudged_run_s_empty_judge_configs_read_as_no_seat_and_recorded_ones_still_show(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``judge_config_ids`` on a run naming no judge: its blank is UNSEATED, never undecided; a recorded config shows.
+
+    Driven through the shared core's own reader, so the blank is the one production produces — a run with no
+    judge and no scored results reads ``[]`` — and both directions run on one profile and one run: the empty
+    reading becomes :data:`UNSEATED_LEVEL` while a judged run's empty reading stays the undecided blank, and a
+    config a code grader recorded on the same unjudged run is its level, kept for the comparison with no
+    contradiction logged, since the kind declares the seat and only the run's own record narrowed it.
+    """
+    profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
+    code_only = _run(_JUDGED_KIND, judged=False)
+    judged = _run(_JUDGED_KIND, judged=True)
+    reader = SHARED_CORE.get("judge_config_ids")
+    assert reader is not None
+    blank = reader.read(code_only, [make_eval_result(rubric_scores=[])])
+    assert blank == [], "the precondition: an unjudged, unscored run reads the empty blank"
+
+    assert profile.apparatus_level(code_only, "judge_config_ids", blank) == UNSEATED_LEVEL
+    assert profile.apparatus_level(judged, "judge_config_ids", blank) == [], "a judged run's blank stays undecided"
+    assert profile.omits_apparatus("judge_config_ids", [(code_only, blank), (code_only, blank)])
+
+    recorded = ["grader-config-3"]
+    assert profile.apparatus_level(code_only, "judge_config_ids", recorded) == recorded
+    assert profile.apparatus_level(code_only, "judge_config_ids", NO_JUDGE_CONFIGS) == NO_JUDGE_CONFIGS
+    with caplog.at_level(logging.WARNING):
+        kept = not profile.omits_apparatus("judge_config_ids", [(code_only, blank), (code_only, recorded)])
+    assert kept, "a config a code grader recorded is a level, so the dimension is reported"
+    assert "has no seat for apparatus dimension" not in caplog.text, caplog.text
+
+
+def test_bisecting_two_unjudged_unscored_runs_against_a_judged_one_reads_the_config_seat_as_unseated() -> None:
+    """The bisection surface: an unjudged run's empty judge-config reading is a level, not an unknown."""
+    profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
+    storage = EvalStorage(InMemoryDocumentStore())
+    judged = _run(_JUDGED_KIND, judged=True, run_id="run-judged")
+    code_only = _run(_JUDGED_KIND, judged=False, run_id="run-code-only")
+    for run in (judged, code_only):
+        storage.save_eval_run(run)
+    storage.save_eval_result(
+        make_eval_result(
+            eval_run_id=judged.id,
+            scope_id=judged.scope_id,
+            rubric_scores=[RubricScore(dim="judged.fair", score=4, scale="ordinal", served_model="vendor/judge-1")],
+        )
+    )
+
+    bisected = bisect_runs(storage, judged.id, code_only.id, judged.scope_id, profile=profile)
+
+    assert "judge_config_ids" not in bisected["unknown"], bisected["unknown"]
+    assert bisected["details"]["judge_config_ids"]["b"] == UNSEATED_LEVEL
+
+
+def test_an_unjudged_run_hashes_alike_whether_it_recorded_no_configs_or_an_empty_set() -> None:
+    """The context key follows the seat: ``{}`` and ``None`` on an unjudged run are one condition; a config is not."""
+    from threetears.evals.contracts.identity import derive_context_identity
+
+    profile = _with_kinds(TOY_EXTRACTOR_CONTRACT, _JUDGED_CONTRACT)
+
+    def key(configs: dict[str, str] | None) -> str | None:
+        run = make_eval_run(candidate_kind=_JUDGED_KIND, judge_model=None, judge_config_ids=configs)
+        return derive_context_identity(run, profile).context_key
+
+    assert key({}) == key(None)
+    assert key({"judged.fair": "grader-config-3"}) != key(None), "a config a code grader recorded still hashes"
 
 
 def test_a_kind_with_no_contract_is_held_to_every_seat() -> None:

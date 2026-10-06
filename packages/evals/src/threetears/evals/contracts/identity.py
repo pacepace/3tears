@@ -414,6 +414,10 @@ if TYPE_CHECKING:
 #:   as repetitions of one condition, a wrong MERGE. Composed for every run (``{}`` — the launch set none —
 #:   is a level), so every stored context key re-derives. Variant keys are unchanged: an apparatus value is
 #:   the rig, not the candidate.
+#:   The same (unreleased) version also carries an unjudged run's empty ``judge_config_ids`` out of the
+#:   ``roles`` pre-image with the rest of its judge inputs: a run naming no judge has no judge-config seat
+#:   (``HostProfile.seats``), so ``{}`` there no longer hashes apart from ``None`` — two unjudged runs that
+#:   both recorded no config were one condition split in two. A config such a run did record still hashes.
 IDENTITY_VERSION: int = 23
 """Version of the key-derivation predicate below.
 
