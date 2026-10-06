@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### 3tears-evals: an unjudged run's judge-config seat, directionless measures named for what they are, case generation's store calls off the loop
+### 3tears-evals: an unjudged run's judge-config seat, directionless measures named for what they are, case generation's store calls off the loop, a rating's id carries its rater's kind
 
 - **An unjudged run has no judge-config seat.** ``judge_config_ids`` joins the judge inputs a run naming no
   ``judge_model`` does not have, so an unjudged run with no scored results — whose reader returns ``[]`` — reads
@@ -32,6 +32,13 @@ packages (bumped in lock-step).
   ``threetears.evals.contracts.offload`` (the shared contract's coroutines need it and may not import the run
   package); ``threetears.evals.run`` still exports it. **Adopters:** pass ``blocking_executor=host.blocking_executor``
   to ``generate_variations`` / ``price_variations`` and to any ``OutOfRunBudget`` you construct.
+- **A person's and an agent's rating under one identity are two ratings.** ``CalibrationRating.id`` was derived
+  from result, dimension and rater only, so an agent rating under the account it serves (``rater_kind="agent"``)
+  and that person's own rating of the same dimension shared an id and the later write silently replaced the
+  earlier. The id now digests ``rater_kind`` too; a re-rating by the same rater of the same kind still replaces
+  its earlier one, and agreement still pairs people's ratings only. Still the unreleased
+  ``EVAL_SCHEMA_VERSION`` 7: a rating stored under the old derivation fails its derived-id check, and the v6 → 7
+  bump already drops stored eval documents.
 
 ### 3tears-evals: a candidate does not judge itself where an alternate stands ready; a rating says whether a person wrote it
 

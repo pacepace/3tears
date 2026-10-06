@@ -929,24 +929,30 @@ class RubricProposal(EvalBaseModel):
     )
 
 
-def _calibration_rating_id(result_id: str, rubric_dim: str, rater: str) -> str:
-    """The id of one rater's rating of one dimension of one result.
+def _calibration_rating_id(result_id: str, rubric_dim: str, rater: str, rater_kind: str) -> str:
+    """The id of one rater's rating of one dimension of one result, as a person or as an agent.
 
     Derived rather than minted, because "this rater's score for this dimension of this result" is
     one fact: a rater who rates the same dimension again is correcting themselves, and the write
     replaces the earlier rating instead of standing beside it as a second, disagreeing human. Two
     raters of one dimension are two ratings, which is what agreement pools.
 
+    The rater's kind is part of the fact. A host may let an agent act under a person's identity
+    (an MCP tool calling as the account it serves), so one ``rater`` can write a person's rating and
+    an agent's of the same dimension; they are different facts — only the person's calibrates the
+    judge — and an id without the kind would let either silently overwrite the other.
+
     Args:
         result_id: The rated result.
         rubric_dim: The rated dimension.
         rater: Who rated it.
+        rater_kind: Whether a ``person`` or an ``agent`` wrote it.
 
     Returns:
-        ``rating:`` and the digest of the three, so it can never collide with the result's own id or
+        ``rating:`` and the digest of the four, so it can never collide with the result's own id or
         its trace sibling's in a shared partition.
     """
-    return "rating:" + canonical_digest([result_id, rubric_dim, rater])
+    return "rating:" + canonical_digest([result_id, rubric_dim, rater, rater_kind])
 
 
 def _derived_rating_id(data: dict[str, Any]) -> str:
@@ -955,7 +961,7 @@ def _derived_rating_id(data: dict[str, Any]) -> str:
     Blank when one of them failed validation, which is then the error the construction reports.
     """
     try:
-        return _calibration_rating_id(data["result_id"], data["rubric_dim"], data["rater"])
+        return _calibration_rating_id(data["result_id"], data["rubric_dim"], data["rater"], data["rater_kind"])
     except KeyError:
         return ""
 
@@ -980,8 +986,8 @@ class CalibrationRating(EvalDocumentModel):
     the caller. Read by the bundle (``AnalysisContextBundle.judge_agreement``) and by a reporter
     run's calibration read, both through :func:`threetears.evals.analysis.judge_agreement`.
 
-    One per ``(result, dimension, rater)``: the ``id`` is derived from the three, and a stored id that
-    disagrees with its own fields is refused.
+    One per ``(result, dimension, rater, rater_kind)``: the ``id`` is derived from the four, and a stored
+    id that disagrees with its own fields is refused.
     """
 
     doc_type: Literal["calibration_rating"] = "calibration_rating"
@@ -995,7 +1001,7 @@ class CalibrationRating(EvalDocumentModel):
         description=(
             "Who rated, as the host names them: a person's account or seat, or an agent's identity. Agreement pools "
             "a person's ratings with other people's and lists them; one rater's second rating of the same dimension "
-            "of the same result replaces the first."
+            "of the same result, as the same kind of rater, replaces the first."
         ),
     )
     rater_kind: RaterKind = Field(
@@ -1007,7 +1013,10 @@ class CalibrationRating(EvalDocumentModel):
     )
     id: str = Field(
         default_factory=lambda data: _derived_rating_id(data),
-        description="Derived from (result_id, rubric_dim, rater): one rating per rater per dimension per result.",
+        description=(
+            "Derived from (result_id, rubric_dim, rater, rater_kind): one rating per rater, per kind of rater, per "
+            "dimension per result."
+        ),
     )
     scale: RubricScale = Field(description="The dimension's scale on the rated result, read off the judge's score.")
     score: int = Field(
@@ -1030,10 +1039,10 @@ class CalibrationRating(EvalDocumentModel):
         low, high = SCALES[self.scale].scores
         if not low <= self.score <= high:
             raise ValueError(f"score {self.score!r} is not on the {self.scale} scale of {self.rubric_dim!r}")
-        derived = _calibration_rating_id(self.result_id, self.rubric_dim, self.rater)
+        derived = _calibration_rating_id(self.result_id, self.rubric_dim, self.rater, self.rater_kind)
         if self.id != derived:
             raise ValueError(
-                f"id {self.id!r} is not the one (result_id, rubric_dim, rater) derive ({derived!r}): a rating "
+                f"id {self.id!r} is not the one (result_id, rubric_dim, rater, rater_kind) derive ({derived!r}): a rating "
                 "under another id would stand beside the rater's own rating of the same thing instead of replacing it"
             )
         return self

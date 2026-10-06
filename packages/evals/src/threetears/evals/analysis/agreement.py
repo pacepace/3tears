@@ -2,7 +2,7 @@
 
 A judge's consistency across repeats measures its precision; only people can say whether it is
 right. People say so in :class:`~threetears.evals.contracts.models.CalibrationRating` documents, one
-per rater per dimension per result, and this module sets each beside the score the judge gave the
+per rater and kind of rater per dimension per result, and this module sets each beside the score the judge gave the
 same dimension of the same result and reads the pairs per dimension:
 
 - **n** — the pairs, because a kappa over four of them is a different claim from one over forty;
