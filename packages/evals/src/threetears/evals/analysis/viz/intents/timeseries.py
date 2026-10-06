@@ -42,6 +42,18 @@ def _gap_lines(payload: TimeseriesPayload) -> list[str]:
     ]
 
 
+def _interleave_lines(payload: TimeseriesPayload) -> list[str]:
+    """One line naming the builds whose runs overlap the next build's, when any do."""
+    if not payload.interleaved:
+        return []
+    following = dict(zip(payload.positions, payload.positions[1:], strict=False))
+    steps = "; ".join(f"{build} into {following[build]}" for build in payload.interleaved)
+    return [
+        f"Interleaved builds ({steps}): a build's runs went on after the next build's first run, so the step between "
+        "them pools runs from both sides and is not a clean before/after."
+    ]
+
+
 def timeseries_intent(payload: TimeseriesPayload) -> ChartIntent:
     """Decide one reading across the time axis: each series' points as positions, each with its interval.
 
@@ -106,7 +118,7 @@ def timeseries_intent(payload: TimeseriesPayload) -> ChartIntent:
         intervals=interval_statement(intervals),
         columns=columns,
         rows=[{column.key: row[column.key] for column in columns} for row in points],
-        disclosures=[order_line, *interval_disclosures(intervals), *_gap_lines(payload)],
+        disclosures=[order_line, *_interleave_lines(payload), *interval_disclosures(intervals), *_gap_lines(payload)],
     )
 
 

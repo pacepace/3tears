@@ -21,6 +21,7 @@ unvalidated type is a visible gap and not a passing test.
 from __future__ import annotations
 
 import math
+from datetime import date
 from collections.abc import Iterable
 from typing import Any, Literal, NamedTuple
 
@@ -1406,6 +1407,14 @@ class TimeseriesPayload(_VizPayload):
     gaps: list[TimeseriesGap] = Field(
         default_factory=list, description="Each position a series has no point at, with why — disclosed, never drawn."
     )
+    interleaved: list[str] = Field(
+        default_factory=list,
+        description=(
+            "On a `release` axis, each build whose runs went on being made after the NEXT build's first run, so its "
+            "cells pool runs from both sides of that step — disclosed, since the line reads as a clean before/after. "
+            "Empty when every build's runs ended before the next began, and always on a `date` axis."
+        ),
+    )
 
     @field_validator("positions")
     @classmethod
@@ -1447,11 +1456,48 @@ class TimeseriesPayload(_VizPayload):
         if not any(len(line.points) >= 2 for line in self.series):
             raise ValueError("no series has points at two positions — there is no line to draw")
         drawn = {(line.label, point.position) for line in self.series for point in line.points}
+        stated = {(gap.series, gap.position) for gap in self.gaps}
         for gap in self.gaps:
             if gap.position not in order:
                 raise ValueError(f"a gap names position {gap.position!r}, which the axis does not hold")
+            if gap.series not in labels:
+                raise ValueError(f"a gap names series {gap.series!r}, which the payload does not draw")
             if (gap.series, gap.position) in drawn:
                 raise ValueError(f"series {gap.series!r} has both a point and a gap at {gap.position!r}")
+        if self.interleaved and self.basis != "release":
+            raise ValueError("only builds interleave: a `date` axis's days are disjoint by construction")
+        if off := sorted(set(self.interleaved) - set(order)):
+            raise ValueError(f"interleaved names {', '.join(off)}, which the axis does not hold")
+        if self.positions[-1] in self.interleaved:
+            raise ValueError("the last build has no next build to interleave with")
+        # The other half of "a gap is stated, never bridged": a position a series has no point at is a gap,
+        # and an unstated one is a line broken with nothing saying why.
+        for line in self.series:
+            if unstated := [p for p in self.positions if (line.label, p) not in drawn and (line.label, p) not in stated]:
+                raise ValueError(
+                    f"series {line.label!r} has no point at {', '.join(unstated)} and no gap saying why; a "
+                    "position a series was not measured at is a stated gap"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _days_are_days_in_calendar_order(self) -> TimeseriesPayload:
+        """Refuse a ``date`` axis whose positions are not ISO calendar days, earliest first.
+
+        The chart's disclosure says a ``date`` axis is UTC days in calendar order, so the payload is held to
+        it rather than the sentence being true only of the payloads the builder happens to make.
+        """
+        if self.basis != "date":
+            return self
+        for position in self.positions:
+            try:
+                parsed = date.fromisoformat(position)
+            except ValueError:
+                parsed = None
+            if parsed is None or parsed.isoformat() != position:
+                raise ValueError(f"a `date` axis's positions are days as YYYY-MM-DD; {position!r} is not one")
+        if self.positions != sorted(self.positions):
+            raise ValueError("a `date` axis lists its days in calendar order, earliest first")
         return self
 
 

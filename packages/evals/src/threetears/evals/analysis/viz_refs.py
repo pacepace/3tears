@@ -25,6 +25,7 @@ analysis; deciding that here as well would be a second policy for one question.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Any, Literal, NamedTuple, NoReturn, overload
 
 from pydantic import Field
@@ -586,6 +587,13 @@ def _timeseries(ref: TimeseriesRef, surface: DecisionSurface, labels: dict[str, 
             f"and none of {', '.join(cells)} has one at two — name cells measured at two or more of "
             f"{', '.join(position.key for position in axis.positions)}"
         )
+    # Positions are ordered by their earliest run, so a build interleaves with the next exactly when its latest
+    # run was made after the next one's earliest.
+    interleaved = [
+        position.key
+        for position, following in zip(axis.positions, axis.positions[1:], strict=False)
+        if datetime.fromisoformat(position.last_run_at) > datetime.fromisoformat(following.first_run_at)
+    ]
     return {
         "caption": ref.caption,
         "metric": ref.measure_id,
@@ -595,6 +603,7 @@ def _timeseries(ref: TimeseriesRef, surface: DecisionSurface, labels: dict[str, 
         "positions": [position.key for position in axis.positions],
         "series": series,
         "gaps": gaps,
+        "interleaved": interleaved if axis.basis == "release" else [],
     }
 
 

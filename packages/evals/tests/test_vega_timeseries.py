@@ -21,6 +21,8 @@ class TestTheArm:
         spec = compile_chart(
             "timeseries",
             _payload(
+                basis="release",
+                release_label="app_version",
                 positions=["0.9", "0.10", "0.11"],
                 series=[
                     {
@@ -28,7 +30,7 @@ class TestTheArm:
                         "points": [{"position": "0.9", "ci": _ci(1.0, 0.5)}, {"position": "0.10", "ci": _ci(2.0, 0.5)}],
                     }
                 ],
-                gaps=[],
+                gaps=[{"series": "a", "position": "0.11", "reason": "the cell was not measured there"}],
             ),
         ).spec
         for layer in spec["spec"]["layer"]:
@@ -39,7 +41,7 @@ class TestTheArm:
         segments = {
             row["position"]: row["segment"] for row in chart.spec["data"]["values"] if row.get("series") == "wide"
         }
-        assert segments["d1"] != segments["d3"]
+        assert segments["2026-03-14"] != segments["2026-03-16"]
         narrow = {row["segment"] for row in chart.spec["data"]["values"] if row.get("series") == "narrow"}
         assert len(narrow) == 1
 

@@ -5705,16 +5705,27 @@ def _time_positions(
         declared = profile.sweepables.get(profile.release_label)
         if declared is None:
             raise RuntimeError(f"release_label {profile.release_label!r} names no registered input")
-        values = {run.id: declared.read(run, results_by_run[run.id]) for run in runs}
-        unrecorded = [run.id for run in runs if values[run.id] is None or not str(values[run.id]).strip()]
+        # Normalised ONCE, and every check below reads the normalised label: a position's key is stripped
+        # where it is stored (the base stance), so two labels that differ only in whitespace — a version read
+        # from a file with its trailing newline — are one build, and grouping them as two would hand the axis
+        # two positions it then refuses as repeated.
+        values = {run.id: _release_label(declared.read(run, results_by_run[run.id])) for run in runs}
+        unrecorded = [run.id for run in runs if values[run.id] is None]
         if unrecorded:
             named = ", ".join(sorted(unrecorded))
             release_why = f"{len(unrecorded)} of {len(runs)} runs recorded no {profile.release_label} ({named})"
-        elif len({str(value) for value in values.values()}) > 1:
-            return "release", _group_in_order(runs, lambda run: str(values[run.id])), ""
+        elif len(set(values.values())) > 1:
+            return "release", _group_in_order(runs, lambda run: values[run.id] or ""), ""
         else:
             release_why = f"every run recorded one {profile.release_label} ({next(iter(values.values()))})"
     return "date", _group_in_order(runs, _utc_day), release_why
+
+
+def _release_label(value: object) -> str | None:
+    """A run's release label as a time position keys it: stripped, and ``None`` when it recorded none or only blanks."""
+    if value is None:
+        return None
+    return str(value).strip() or None
 
 
 def _group_in_order(runs: list[EvalRun], key: Callable[[EvalRun], str]) -> list[tuple[str, list[EvalRun]]]:

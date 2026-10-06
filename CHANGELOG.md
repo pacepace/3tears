@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a timeseries survives a whitespace-variant release label, states every gap, holds a date axis to calendar days, and names interleaved builds
+
+- **A release label is normalised once, for every check.** Two runs recording ``v1`` and ``v1 `` (a version read
+  with its trailing newline) were two builds to the grouping and one to the stored position key, so the axis
+  refused its own positions as repeated and the whole bundle — analysis and report with it — failed to assemble.
+  They are one build now; a label of only whitespace counts as unrecorded.
+- **``TimeseriesPayload`` refuses a series with no point and no stated gap at a position**, and a gap naming a
+  series it does not draw. "A gap is stated, never bridged" held only for payloads the builder made.
+- **A ``date`` axis's positions must be ISO days in calendar order**, which its disclosure ("Days are UTC, in
+  calendar order") already claimed.
+- **Interleaved builds are disclosed.** A release axis whose build went on being run after the next build began
+  (``v1``, ``v2``, ``v1`` again) pooled both sides of the step under ``v1`` and read as a clean before/after; the
+  payload's new ``interleaved`` names each such build and the chart says so.
+
 ### 3tears-evals: a launch may only lower the host's per-run ceiling; a job is answered only in its scope; an analysis generation is priced, capped and ledgered
 
 - **A launch's ``max_cost_usd`` (and ``max_metered_calls``) may only LOWER the host's configured ceiling, never

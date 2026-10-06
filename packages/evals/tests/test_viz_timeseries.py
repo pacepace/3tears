@@ -180,6 +180,24 @@ class TestTheBundleEarnsATimeAxis:
             "every run started on one day (2026-03-14) and every run recorded one batch_label (0.9)"
         )
 
+    def test_labels_differing_only_in_whitespace_are_one_build_not_a_crash(self) -> None:
+        """A version read with its trailing newline is the same build; two positions keyed alike were refused."""
+        bundle = _timed([(DAY_ONE, "v1"), ("2026-03-14T12:00:00+00:00", "v1\n")], profile=_release_profile())
+
+        assert bundle.time_axis is None
+        assert bundle.time_axis_withheld == (
+            "every run started on one day (2026-03-14) and every run recorded one batch_label (v1)"
+        )
+
+    def test_whitespace_around_a_label_does_not_split_or_name_a_build(self) -> None:
+        bundle = _timed(
+            [(DAY_ONE, " v1"), ("2026-03-14T11:00:00+00:00", "v1 "), ("2026-03-14T12:00:00+00:00", "v2")],
+            profile=_release_profile(),
+        )
+
+        assert bundle.time_axis is not None and bundle.time_axis.basis == "release"
+        assert [position.key for position in bundle.time_axis.positions] == ["v1", "v2"]
+
     def test_one_day_with_an_unrecorded_build_says_how_many_runs_lacked_it(self) -> None:
         bundle = _timed([(DAY_ONE, "0.9"), ("2026-03-14T12:00:00+00:00", None)], profile=_release_profile())
 
@@ -381,6 +399,27 @@ class TestTheBuilder:
                 )
         assert parse_payload("timeseries", payload) is not None
 
+    def test_builds_whose_runs_interleave_are_named_and_disclosed(self) -> None:
+        """v1 ran, then v2, then v1 again: v1's cells pool runs from both sides of the step to v2."""
+        bundle = _timed(
+            [(DAY_ONE, "v1"), ("2026-03-14T12:00:00+00:00", "v2"), (DAY_TWO, "v1")], profile=_release_profile()
+        )
+        assert [position.key for position in bundle.time_axis.positions] == ["v1", "v2"]
+
+        payload = _build(bundle, _chart([]))
+
+        assert payload["interleaved"] == ["v1"]
+        intent = chart_intent("timeseries", payload)
+        assert any(line.startswith("Interleaved builds (v1 into v2)") for line in intent.disclosures)
+
+    def test_builds_run_one_after_another_interleave_with_nothing(self) -> None:
+        bundle = _timed([(DAY_ONE, "v1"), (DAY_TWO, "v2")], profile=_release_profile())
+
+        payload = _build(bundle, _chart([]))
+
+        assert payload["interleaved"] == []
+        assert not any(line.startswith("Interleaved") for line in chart_intent("timeseries", payload).disclosures)
+
     def test_one_cell_is_one_line(self) -> None:
         bundle = _two_days()
         first = _surface(bundle).cells[0]
@@ -484,36 +523,75 @@ def _with_points(series: int, points: list[dict[str, Any]]) -> dict[str, Any]:
     return payload
 
 
+def _renamed(position: str, to: str) -> dict[str, Any]:
+    """The conforming payload with one position renamed everywhere it appears."""
+    renamed: dict[str, Any] = json.loads(json.dumps(_payload()).replace(f'"{position}"', f'"{to}"'))
+    return renamed
+
+
 class TestThePayloadRefusesWhatCannotBeDrawn:
     @pytest.mark.parametrize(
         ("payload", "match"),
         [
-            (_payload(positions=["d1"], series=[], gaps=[]), "at least 2 positions"),
-            (_payload(positions=["d1", "d1", "d3"]), "duplicated: d1"),
-            (_payload(positions=["d1", " ", "d3"]), "every position needs a name"),
+            (_payload(positions=["2026-03-14"], series=[], gaps=[]), "at least 2 positions"),
+            (_payload(positions=["2026-03-14", "2026-03-14", "2026-03-16"]), "duplicated: 2026-03-14"),
+            (_payload(positions=["2026-03-14", " ", "2026-03-16"]), "every position needs a name"),
             (_payload(series=[], gaps=[]), "at least 1 series"),
             (_payload(series=[_payload()["series"][0], _payload()["series"][0]]), "duplicated: narrow"),
             (
-                _with_points(0, [{"position": "d9", "ci": _ci(1.0)}, {"position": "d1", "ci": _ci(1.0)}]),
-                "d9, which the axis",
+                _with_points(0, [{"position": "2026-03-20", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(1.0)}]),
+                "2026-03-20, which the axis",
             ),
             (
-                _with_points(0, [{"position": "d1", "ci": _ci(1.0)}, {"position": "d1", "ci": _ci(2.0)}]),
-                "more than one point at d1",
+                _with_points(0, [{"position": "2026-03-14", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(2.0)}]),
+                "more than one point at 2026-03-14",
             ),
             (
-                _with_points(0, [{"position": "d3", "ci": _ci(1.0)}, {"position": "d1", "ci": _ci(2.0)}]),
+                _with_points(0, [{"position": "2026-03-16", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(2.0)}]),
                 "out of the axis's order",
             ),
             (
-                _payload(series=[{"label": "narrow", "points": [{"position": "d1", "ci": _ci(1.0)}]}], gaps=[]),
+                _payload(series=[{"label": "narrow", "points": [{"position": "2026-03-14", "ci": _ci(1.0)}]}], gaps=[]),
                 "no series has points at two positions",
             ),
-            (_payload(gaps=[{"series": "wide", "position": "d9", "reason": "x"}]), "gap names position 'd9'"),
-            (_payload(gaps=[{"series": "wide", "position": "d1", "reason": "x"}]), "both a point and a gap at 'd1'"),
+            (_payload(gaps=[{"series": "wide", "position": "2026-03-20", "reason": "x"}]), "gap names position '2026-03-20'"),
+            (_payload(gaps=[]), "series 'wide' has no point at 2026-03-15 and no gap saying why"),
+            (
+                _payload(gaps=[*_payload()["gaps"], {"series": "absent", "position": "2026-03-15", "reason": "x"}]),
+                "gap names series 'absent'",
+            ),
+            (_renamed("2026-03-16", "zzz"), "'zzz' is not one"),
+            (_payload(interleaved=["2026-03-14"]), "only builds interleave"),
+            (
+                _payload(basis="release", release_label="app_version", interleaved=["2026-03-20"]),
+                "interleaved names 2026-03-20",
+            ),
+            (
+                _payload(basis="release", release_label="app_version", interleaved=["2026-03-16"]),
+                "the last build has no next build",
+            ),
+            (_renamed("2026-03-16", "2026-3-16"), "'2026-3-16' is not one"),
+            (
+                _payload(
+                    positions=["2026-03-15", "2026-03-14", "2026-03-16"],
+                    series=[
+                        {
+                            "label": "narrow",
+                            "points": [
+                                {"position": "2026-03-15", "ci": _ci(1.0)},
+                                {"position": "2026-03-14", "ci": _ci(1.0)},
+                                {"position": "2026-03-16", "ci": _ci(1.0)},
+                            ],
+                        }
+                    ],
+                    gaps=[],
+                ),
+                "calendar order, earliest first",
+            ),
+            (_payload(gaps=[{"series": "wide", "position": "2026-03-14", "reason": "x"}]), "both a point and a gap at '2026-03-14'"),
             (_payload(basis="release"), "names its release_label"),
             (_payload(release_label="app_version"), "names its release_label"),
-            (_with_points(1, [{"position": "d1"}, {"position": "d3", "ci": _ci(1.0)}]), "ci"),
+            (_with_points(1, [{"position": "2026-03-14"}, {"position": "2026-03-16", "ci": _ci(1.0)}]), "ci"),
             (_payload(colour="red"), "not permitted"),
         ],
     )
@@ -524,6 +602,13 @@ class TestThePayloadRefusesWhatCannotBeDrawn:
     def test_the_conforming_shape_parses(self) -> None:
         assert parse_payload("timeseries", _payload()) is not None
         assert parse_payload("timeseries", _payload(basis="release", release_label="app_version")) is not None
+        renamed = json.loads(
+            json.dumps(_payload()).replace("2026-03-14", "0.9").replace("2026-03-15", "0.10").replace("2026-03-16", "0.11")
+        )
+        assert renamed["positions"] == ["0.9", "0.10", "0.11"]
+        assert parse_payload("timeseries", renamed | {"basis": "release", "release_label": "app_version"}) is not None, (
+            "a release axis is ordered by when each build first ran, never by its name"
+        )
 
 
 class TestTheIntent:
@@ -580,7 +665,7 @@ class TestTheIntent:
             "Days are UTC, in calendar order.",
             "Intervals are 95% CIs.",
             "Intervals span the cell's observations.",
-            "Not drawn (the cell was not measured there): wide at d2.",
+            "Not drawn (the cell was not measured there): wide at 2026-03-15.",
         ]
         release = chart_intent("timeseries", _payload(basis="release", release_label="app_version"))
         assert release.disclosures[0] == "Builds of app_version are in the order each first ran."
