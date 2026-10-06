@@ -53,6 +53,7 @@ from threetears.evals.contracts.models import (
     EvalTemplate,
     EvalTestCase,
     EvalTrace,
+    JudgeConfig,
     JudgedArtifact,
 )
 from threetears.evals.contracts.spend import ExternalRateTable
@@ -383,7 +384,7 @@ async def record_witnessed_cell(
         )
     async with judging.admitting():
         await _refuse_past_the_judge_ceiling(host, run, judging)
-        judge_service, template = _recorded_judge(host, run, judged_artifact)
+        judge_service, template = await _recorded_judge(host, run, judged_artifact)
         # Held to the template's goal checks before the judge is paid for, as the runner holds a cell
         # before its judge phase; the judge reads the outcomes the cell will store, and the assembly
         # holds the output to the same checks again, idempotently.
@@ -617,14 +618,18 @@ async def _refuse_past_the_judge_ceiling(host: EvalHost, run: EvalRun, judging: 
         raise BudgetStoppedError(len(cells), len(run.test_case_ids) * run.k_runs, breach)
 
 
-def _recorded_judge(host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifact) -> tuple[JudgeService, EvalTemplate]:
+async def _recorded_judge(
+    host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifact
+) -> tuple[JudgeService, EvalTemplate]:
     """The judge a judged witnessed run recorded, and the template it reads — refusing what cannot score the cell.
 
     Built from the run's own record through the checks a re-judge makes (:mod:`threetears.evals.run.rejudge`),
-    so a cell is scored now under exactly the apparatus a re-judge would reproduce later.
+    so a cell is scored now under exactly the apparatus a re-judge would reproduce later. The template and the
+    recorded configs are store reads, made off the event loop on the host's blocking executor, as the runner
+    makes its own; the judge service is built on the loop, where its clients will run.
 
     Args:
-        host: The host: its store and its judge clients.
+        host: The host: its store, its blocking executor and its judge clients.
         run: The judged witnessed run.
         judged_artifact: What the kind's judge reads.
 
@@ -642,10 +647,7 @@ def _recorded_judge(host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifac
             "reads; a run naming a judge claims every cell was scored by it"
         )
     judge_model = recorded_judge_pins(run, request_settings="today")
-    storage = host.storage
-    template = judged_template(storage, run, run.scope_id)
-    dims = recorded_judged_dims(run, template, judged_artifact)
-    configs = recorded_judge_configs(storage, run, dims, run.scope_id)
+    template, configs = await run_blocking(host.blocking_executor, _recorded_apparatus, host, run, judged_artifact)
     # A dim the run recorded no config for is scored by the judge's built-in prompt, as a launch scores it.
     service = JudgeService(
         client_factory=judge_clients_for_run(host.completion_clients("a judged witnessed cell"), judge_model),
@@ -653,6 +655,27 @@ def _recorded_judge(host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifac
         failure_describer=host.failure_describer,
     )
     return service, template
+
+
+def _recorded_apparatus(
+    host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifact
+) -> tuple[EvalTemplate, dict[str, JudgeConfig]]:
+    """The template a judged witnessed run is judged against and the judge configs it recorded, read from the store.
+
+    Blocking: :func:`_recorded_judge` calls it on the host's blocking executor.
+
+    Args:
+        host: The host, whose store holds both.
+        run: The judged witnessed run.
+        judged_artifact: What the kind's judge reads, which picks the dims scored.
+
+    Returns:
+        The template and the recorded config of each scored dim that recorded one.
+    """
+    storage = host.storage
+    template = judged_template(storage, run, run.scope_id)
+    dims = recorded_judged_dims(run, template, judged_artifact)
+    return template, recorded_judge_configs(storage, run, dims, run.scope_id)
 
 
 __all__ = ["WitnessedJudging", "record_witnessed_cell", "stamp_witnessed_judge"]

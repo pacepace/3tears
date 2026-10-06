@@ -60,6 +60,9 @@ packages (bumped in lock-step).
   a re-record's earlier judgement (unsaved, saved, or the one the store held before) stays counted although the
   store keeps the later. ``WitnessedJudging.admitting()`` yields nothing (it yielded the unsaved map); new
   ``spent(saved)`` and ``judged_ids``.
+- **Recording a judged witnessed cell reads the store off the event loop.** ``record_witnessed_cell`` loaded the
+  run's template and recorded judge configs inline on the loop; both now load on the host's blocking executor,
+  as the runner's store reads do (the ceiling's read of saved cells already did).
 - **Wording.** The mid-conversation cap's overshoot is at most two simulator calls (an ``llm_decided`` decision
   and its one repair), not one, now pinned by a test; a cap reached as the last actor leaves records
   ``user_done`` deliberately, said in ``drive_conversation``'s docstring. A ``_base_never_landed`` site the toy

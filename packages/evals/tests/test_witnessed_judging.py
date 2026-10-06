@@ -13,8 +13,10 @@ Each refusal is driven beside the accepted shape on the same fixture.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -559,3 +561,41 @@ async def test_a_clean_witnessed_cell_that_graded_none_of_the_template_s_checks_
         await _record(host, _stamped(host, template, run), case, _output())
 
     assert judge.calls == [], "refused before any judge call was bought"
+
+
+class _ThreadRecordingStore:
+    """The host's store, recording the thread each call ran on."""
+
+    def __init__(self, inner: Any, threads: list[tuple[str, int]]) -> None:
+        self._inner = inner
+        self._threads = threads
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self._inner, name)
+        if not callable(attribute):
+            return attribute
+
+        def recorded(*args: Any, **kwargs: Any) -> Any:
+            self._threads.append((name, threading.get_ident()))
+            return attribute(*args, **kwargs)
+
+        return recorded
+
+
+async def test_no_store_call_from_recording_a_judged_witnessed_cell_runs_on_the_loop_thread() -> None:
+    """The template and config loads, and the ceiling's read of saved cells, all leave the event loop."""
+    judge = _ScriptedJudge()
+    host, template, run, case = _setup(judge)
+    stamped = _stamped(host, template, run)
+    threads: list[tuple[str, int]] = []
+    loop_thread = threading.get_ident()
+    recording = dataclasses.replace(host, storage=_ThreadRecordingStore(host.storage, threads))
+
+    result, _trace = await _record(recording, stamped, case, _output())
+
+    assert [score.dim for score in result.rubric_scores] == [_DIM]
+    called = {name for name, _ in threads}
+    assert {"load_template", "query_eval_results_by_run"} <= called, (
+        f"the precondition: the store was read, so no call passes by not happening — {sorted(called)}"
+    )
+    assert all(ident != loop_thread for _, ident in threads), f"a store call ran on the loop: {threads}"
