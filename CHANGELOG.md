@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a chart's values-as-drawn table is held to its marks, by the policy and by the renderer conformance check
+
+- **Policy rule 12 now ties the values table to the marks** (``table_disagreements``, exported from
+  ``analysis.viz``): a row's value under a key a mark of its identity carries is that mark's value — the same
+  number, the same text, or text spelling the number to the precision written (``-31.8 s``; ``+72.7%`` for
+  0.727) — and every drawn mark has a row that states it. Before, the conformance check compared the drawing
+  with ``data`` only, so an intent whose table disagreed with its picture passed the policy and every renderer.
+  ``renderer_disagreements`` reports these too, which makes the intent docstring's claim — a renderer is held to
+  the table — true. A column only the table carries (a delta table's arm values) is the builder's to spell.
+
 ### 3tears-evals: the report's published schema states every cross-field rule JSON Schema can, and says which three it cannot
 
 - **``schema.json`` now refuses what the model refuses, but for three rules.** It accepted a code-only report with

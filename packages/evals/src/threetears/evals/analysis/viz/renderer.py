@@ -25,6 +25,11 @@ row into one record per level, draw an interval as a span and two caps, add a la
 the comparison is by value under an identity rather than by field name. Auxiliary marks with no
 identity — a reference rule, a band, an anchor — are the renderer's own and are not compared. Order,
 geometry and colour are a picture's properties and are each renderer's own gate.
+
+**The table is held to the marks first.** The comparison above is against ``data``; the values-as-drawn
+table is tied to ``data`` by :func:`~threetears.evals.analysis.viz.policy.table_disagreements` (policy rule
+12), which this check reports too — so a renderer whose drawing agrees with the marks agrees with the table,
+and a builder that spelled a row from the wrong value fails here even when the drawing is faithful.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol, TypeVar
 
 from threetears.evals.analysis.viz.intent import Cell, ChartIntent
+from threetears.evals.analysis.viz.policy import table_disagreements
 
 #: A renderer's own form of a drawn chart — a Vega-Lite spec, an SVG, a component's props.
 DrawingT = TypeVar("DrawingT")
@@ -116,6 +122,8 @@ def renderer_disagreements(renderer: ChartRenderer[DrawingT], intent: ChartInten
     Returns:
         One sentence per disagreement.
     """
+    # The table a reader checks the picture against is tied to the marks before the drawing is compared with them.
+    table = [f"the intent's own {disagreement}" for disagreement in table_disagreements(intent)]
     field = intent.identity.field if intent.identity is not None else None
     # The encoded fields the values table also states: what the table tells a reader the picture shows.
     # A field the table does not carry (a distribution's raw samples, which a renderer may draw as a
@@ -158,7 +166,7 @@ def renderer_disagreements(renderer: ChartRenderer[DrawingT], intent: ChartInten
         if missing:
             shown = ", ".join(repr(value) for _kind, value in sorted(missing.elements(), key=repr))
             disagreements.append(f"drew {identity!r} without the intent's value(s) {shown}")
-    return disagreements
+    return [*table, *disagreements]
 
 
 def assert_renderer_conforms(renderer: ChartRenderer[DrawingT], intents: Sequence[ChartIntent]) -> None:

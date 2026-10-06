@@ -369,7 +369,10 @@ imports the adapter.
 A host bringing its own renderer implements `ChartRenderer` (`draw(intent)`, and `drawn_data(drawing)`
 reading its drawing back) and runs the one conformance check every renderer passes —
 `assert_renderer_conforms(renderer, intents)`, from `threetears.evals.analysis.viz`: what it draws agrees
-with the intent's values, per row.
+with the intent's marks (`data`), per identity, and the intent's values-as-drawn table agrees with those marks
+(`table_disagreements`, policy rule 12) — so a drawing that passes agrees with the table beside it. A table
+column spelled from a drawn number (a delta's `+72.7%`) or carried only by the table is the builder's to
+spell, and is compared with nothing drawn.
 
 ## Driving it from an agent: operations, actions and MCP
 

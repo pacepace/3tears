@@ -27,7 +27,13 @@ The rules, numbered as the report standards number them:
 11. **An ordered category states its order.** An ``ordinal`` position — a build, a day, a named bin —
     is on an axis that states its order, and every position drawn is in it.
 12. **A chart can be read without being seen.** Its values table has columns, every row keyed by them,
-    and a chart that places marks has rows.
+    a chart that places marks has rows, and **the table states what is drawn**: a row's value under a key
+    a mark of the same identity also carries is that mark's value — the same number, the same text, or text
+    spelling the number to the precision it is written at (``-31.8 s`` for -31.8; ``+72.7%`` for 0.727, a
+    ``%`` reading as a percent of the value). Matched on the identity and every text field the two share (a
+    timeseries' position, a sweep's levels). A column only the table carries (a delta table's arm values) is
+    compared with nothing drawn, so it is the builder's to spell; everything a renderer places is tied to
+    the table here, and the renderer to the marks by its conformance check.
 
 Rules 4 (one scale across layers and panels), 6 (prose is never checked) and 8-9 (rendered text upright,
 grid solid) are not here: 4 and 8-9 are properties of a rendered figure and live in each renderer's
@@ -36,7 +42,9 @@ gate, and 6 is a rule about not having a rule.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import math
+import re
+from typing import TYPE_CHECKING, TypeIs
 
 from threetears.evals.analysis.viz.intent import INTERVAL_ROLES, LENGTH_ROLES, MEASURED_ROLES
 from threetears.evals.analysis.viz.payloads import SERIES_SLOTS, VALIDATED_SLOTS
@@ -224,7 +232,102 @@ def _check_readable_without_the_picture(intent: ChartIntent) -> list[str]:
         violations.append(f"the values table's rows state {', '.join(stray)}, which no column shows")
     if intent.data and not intent.rows:
         violations.append("the chart places marks and its values table has no rows")
+    violations.extend(table_disagreements(intent))
     return violations
+
+
+def _is_number(value: object) -> TypeIs[int | float]:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+#: A number as a values table spells it — optionally signed, with a decimal part, perhaps a percent.
+_SPELLED_NUMBER = re.compile(r"(?P<number>[-+−]?\d+(?:\.\d+)?)(?P<percent>\s*%)?")
+
+
+def _spells(text: str, drawn: float) -> bool:
+    """Whether ``text`` states ``drawn`` to the precision it is written at — as itself, or as a percent of it.
+
+    A table spells a drawn number for reading (``-31.8 s`` for -31.8, ``+72.7%`` for 0.727), so a text cell
+    standing for a mark's number is held to name that number: some number written in it equals the mark's
+    value, or the value times 100 when a ``%`` follows it, within half a unit of the last digit written.
+    """
+    for match in _SPELLED_NUMBER.finditer(text):
+        written = match.group("number").replace("−", "-")
+        stated = float(written)
+        decimals = len(written.split(".", 1)[1]) if "." in written else 0
+        target = drawn * 100 if match.group("percent") else drawn
+        if abs(stated - target) <= 0.5 * 10**-decimals + 1e-12:
+            return True
+    return False
+
+
+def table_disagreements(intent: ChartIntent) -> list[str]:
+    """Where the values table states a value no mark of the same identity carries — empty when it agrees.
+
+    The half of rule 12 that ties the table a reader checks the picture against to the marks a renderer
+    places; see the module docstring for what is compared and what is not.
+
+    Args:
+        intent: The chart intent.
+
+    Returns:
+        One sentence per row that disagrees with every mark it could be.
+    """
+    if intent.identity is None:
+        return []
+    field = intent.identity.field
+    disagreements: list[str] = []
+    # Each row against the marks of its identity: a row stating a value none of them carries.
+    for row in intent.rows:
+        if field not in row:
+            continue
+        marks = [datum for datum in intent.data if datum.get(field) == row[field] and _comparable(row, datum, field)]
+        # A withheld row — stated in the table, with no mark — draws nothing the table could contradict.
+        if marks and all(_differing(row, datum, field) for datum in marks):
+            closest = min((_differing(row, datum, field) for datum in marks), key=len)
+            stated = ", ".join(f"{key}={row[key]!r}" for key in closest)
+            disagreements.append(
+                f"the values table's row for {row[field]!r} states {stated}, which no mark of {row[field]!r} carries"
+            )
+    # Each mark against the rows that could state it: a drawn value no row states. This half also covers a
+    # table that shows the identity's parts rather than the identity (a sweep's levels), whose rows carry no
+    # identity to join on, and a truncated table, whose rows past the drawn ones stand for nothing drawn.
+    for datum in intent.data:
+        rows = [
+            row
+            for row in intent.rows
+            if (field not in row or row[field] == datum.get(field)) and _comparable(row, datum, field)
+        ]
+        if rows and all(_differing(row, datum, field) for row in rows):
+            closest = min((_differing(row, datum, field) for row in rows), key=len)
+            drawn = ", ".join(f"{key}={datum[key]!r}" for key in closest)
+            disagreements.append(f"the chart draws {datum.get(field)!r} at {drawn}, which no row of the values table states")
+    return disagreements
+
+
+def _comparable(row: dict[str, object], datum: dict[str, object], field: str) -> bool:
+    """Whether ``row`` and ``datum`` state anything both of them hold besides the identity."""
+    return any(
+        key != field and key in datum and value is not None and datum[key] is not None for key, value in row.items()
+    )
+
+
+def _differing(row: dict[str, object], datum: dict[str, object], field: str) -> list[str]:
+    """The keys on which ``row`` states something other than ``datum`` — see :func:`table_disagreements`."""
+    differ = []
+    for key, value in row.items():
+        if key == field or key not in datum or value is None or datum[key] is None:
+            continue
+        drawn = datum[key]
+        if _is_number(value) and _is_number(drawn):
+            if not math.isclose(value, drawn, rel_tol=1e-9, abs_tol=1e-12):
+                differ.append(key)
+        elif isinstance(value, str) and _is_number(drawn):
+            if not _spells(value, drawn):
+                differ.append(key)
+        elif value != drawn:
+            differ.append(key)
+    return differ
 
 
 #: Row keys a values table may carry without a column: the drawn short name a renderer labels a mark with,
@@ -236,4 +339,5 @@ __all__ = [
     "IntentPolicyError",
     "check_intent",
     "enforce_intent",
+    "table_disagreements",
 ]
