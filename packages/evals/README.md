@@ -220,7 +220,11 @@ the world conformance proves; if your world is real per-cell state, declare
 `world.bind(<that cell's handle table>)` before `seed` — every call the session makes then lands in that
 cell's world, and a session that seeds unbound is refused. A goal check reads the end state as `state.<dimension>`, the
 calls the kind recorded on its `CallLedger`, and what fired as `fired("<dimension>")`; grade them with
-`grade_goal_checks`, and a stored run re-grades from all three with `recheck_goal_states`.
+`grade_goal_checks`, and a stored run re-grades from all three with `recheck_goal_states`. The runner's
+session is `commissioned`; a host grading a cell it witnessed through a session of its own constructs
+`WorldSession(registry, provenance="witnessed")`, so `fired_armed(...)` is not established there — no
+seed armed the session — and `record_witnessed_cell` refuses any world event claiming `armed=True` or
+`caused_by="rig"`.
 
 **What the judge reads, the kind renders.** A judged kind returns `JudgeEvidence` with every
 non-empty output: the subject as the judge should see it, the case material, and the artifact (for a

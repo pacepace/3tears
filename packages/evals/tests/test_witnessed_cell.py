@@ -34,6 +34,7 @@ from threetears.evals.contracts import (
     RoleUsage,
     summarize_completeness,
 )
+from threetears.evals.contracts.world_events import WorldEvent
 from threetears.evals.contracts.host import CellTrace, EvalHost
 from threetears.evals.contracts.models import eval_trace_doc_id
 from threetears.evals.run import RunnerOptions, execute_run, record_witnessed_cell
@@ -125,6 +126,13 @@ async def test_a_witnessed_cell_is_the_runners_cell_for_the_same_output() -> Non
     # The toy run names its template; a witnessed run names one only to be judged against it, and its cases never.
     unjudged = run.model_copy(update={"template_id": None})
     for runner_result, output in paired:
+        # The runner's cell fired its hold through the rig, which a witnessed session cannot hold — no rig and no
+        # seed (refused below). The host records the same firing as the world's own, unarmed, and the assembly
+        # carries what it is handed through verbatim, so the records still agree on every other field.
+        observed = [
+            event.model_copy(update={"caused_by": "world", "armed": False}) for event in runner_result.world_events
+        ]
+        assert observed and all(event.caused_by == "rig" for event in runner_result.world_events)
         runner_trace = host.storage.load_eval_trace(runner_result.id, runner_result.scope_id)
         assert runner_trace is not None
         result, trace = await record_witnessed_cell(
@@ -136,11 +144,14 @@ async def test_a_witnessed_cell_is_the_runners_cell_for_the_same_output() -> Non
             result_id=runner_result.id,
             scored_at=runner_result.scored_at,
             judged_artifact=JudgedArtifact.UNJUDGED,
-            world_events=runner_result.world_events,
+            world_events=observed,
             end_state=runner_trace.end_state,
         )
+        assert result.world_events == observed
         # ``has_trace`` is the store's fact about the write, set when the runner's pair was saved.
-        assert result.model_dump(exclude={"has_trace"}) == runner_result.model_dump(exclude={"has_trace"})
+        assert result.model_dump(exclude={"has_trace", "world_events"}) == runner_result.model_dump(
+            exclude={"has_trace", "world_events"}
+        )
         assert trace.model_dump() == runner_trace.model_dump()
 
 
@@ -274,6 +285,40 @@ async def test_an_engine_driven_stop_cause_is_refused_on_an_observed_session(cau
 async def test_every_other_stop_cause_is_recorded(cause: ConversationStopCause | None) -> None:
     host, run, case = _witnessed_run()
     assert (await _record(host, run, case, _output(stop_cause=cause)))[0].stop_cause == cause
+
+
+#: A firing the world made on its own account, as a witnessed session records one: the world's, and unarmed.
+_WORLD_FIRING = WorldEvent(
+    kind="event", dimension="payment_hold", condition="a hold lands", caused_by="world", event="audit"
+)
+
+
+@pytest.mark.parametrize(
+    ("event", "claims"),
+    [
+        pytest.param(
+            _WORLD_FIRING.model_copy(update={"armed": True}), r"claims armed=True:", id="world-caused-but-armed"
+        ),
+        pytest.param(
+            _WORLD_FIRING.model_copy(update={"caused_by": "rig", "armed": True}),
+            r'claims armed=True and caused_by="rig":',
+            id="rig-fired",
+        ),
+        pytest.param(WorldEvent(kind="ambient", caused_by="rig", turn=1), r'claims caused_by="rig":', id="ambient"),
+    ],
+)
+async def test_a_world_event_only_a_rig_could_produce_is_refused(event: WorldEvent, claims: str) -> None:
+    """No seed armed a witnessed session and no rig moved it: an armed or rig-caused event is a rig's record."""
+    host, run, case = _witnessed_run()
+    with pytest.raises(ValueError, match=claims):
+        await _record(host, run, case, _output(), world_events=[_WORLD_FIRING, event])
+
+
+async def test_the_world_s_own_unarmed_firings_are_recorded() -> None:
+    """The control for the refusal above: the same firing, the world's and unarmed, is what a witnessed cell holds."""
+    host, run, case = _witnessed_run()
+    result, _trace = await _record(host, run, case, _output(), world_events=[_WORLD_FIRING])
+    assert result.world_events == [_WORLD_FIRING]
 
 
 async def test_output_contradicting_the_kinds_declaration_is_refused() -> None:

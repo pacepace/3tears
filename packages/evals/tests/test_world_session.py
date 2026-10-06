@@ -64,7 +64,7 @@ _ARMING_SEED = WorldSeed(
 
 async def _opened(seed: WorldSeed = _ARMING_SEED, **world: Any) -> tuple[WorldSession, ToyWorld]:
     registry, state = toyhost_world(**world)
-    session = WorldSession(registry)
+    session = WorldSession(registry, provenance="commissioned")
     await session.seed(seed, attached=_CARRIERS)
     return session, state
 
@@ -92,15 +92,15 @@ class TestSeeding:
         registry, _state = toyhost_world(faults=ToyWorldFaults(arming_payment_hold_names_no_event=True))
 
         with pytest.raises(WorldSessionError, match=r"payment_hold is triggered, so its seed handle arms an event"):
-            await WorldSession(registry).seed(_ARMING_SEED, attached=_CARRIERS)
+            await WorldSession(registry, provenance="commissioned").seed(_ARMING_SEED, attached=_CARRIERS)
         # The same world, seeding nothing triggered, is fine: only an arming owes an identity.
-        await WorldSession(registry).seed(
+        await WorldSession(registry, provenance="commissioned").seed(
             WorldSeed(namespaces={"page_reader": {"document_language": "de"}}), attached=_CARRIERS
         )
 
     async def test_a_refused_seed_writes_nothing_and_leaves_the_world_unopened(self) -> None:
         registry, state = toyhost_world()
-        session = WorldSession(registry)
+        session = WorldSession(registry, provenance="commissioned")
         refused = WorldSeed(namespaces={"page_reader": {"document_language": "de", "documnet_language": "fr"}})
 
         with pytest.raises(SeedRefused, match="documnet_language"):
@@ -119,14 +119,14 @@ class TestSeeding:
         registry, _state = toyhost_world()
 
         with pytest.raises(WorldSessionError, match="'page_raeder'"):
-            await WorldSession(registry).seed(WorldSeed(), attached=("page_raeder",))
+            await WorldSession(registry, provenance="commissioned").seed(WorldSeed(), attached=("page_raeder",))
 
     async def test_scheduled_perturbation_on_a_world_with_no_handle_for_it_is_refused(self) -> None:
         registry, _state = toyhost_world(optional_capabilities=False)
         scheduled = WorldSeed(ambient_perturbation_turns=[2])
 
         with pytest.raises(WorldSessionError, match="no perturb_ambient handle"):
-            await WorldSession(registry).seed(scheduled, attached=_CARRIERS)
+            await WorldSession(registry, provenance="commissioned").seed(scheduled, attached=_CARRIERS)
 
     async def test_each_attached_carrier_settles_after_every_write_and_an_unattached_one_does_not(self) -> None:
         registry, state = toyhost_world()
@@ -141,13 +141,13 @@ class TestSeeding:
         )
 
         page_only = WorldSeed(namespaces={"page_reader": {"document_language": "de"}})
-        await WorldSession(settling).seed(page_only, attached=("page_reader",))
+        await WorldSession(settling, provenance="commissioned").seed(page_only, attached=("page_reader",))
 
         # Settled once, AFTER the write it settles, and only for the carrier this cell attached.
         assert settled == [("page_reader", "de")]
 
         settled.clear()
-        await WorldSession(settling).seed(_ARMING_SEED, attached=_CARRIERS)
+        await WorldSession(settling, provenance="commissioned").seed(_ARMING_SEED, attached=_CARRIERS)
         assert settled == [("console", "held"), ("page_reader", "de")]
 
 
@@ -242,7 +242,7 @@ class TestFiring:
         self, dimension: str, attached: tuple[str, ...], refusal: str
     ) -> None:
         registry, _state = toyhost_world()
-        session = WorldSession(registry)
+        session = WorldSession(registry, provenance="commissioned")
         await session.seed(WorldSeed(), attached=attached)
 
         with pytest.raises(WorldSessionError, match=refusal):
@@ -252,7 +252,7 @@ class TestFiring:
 
     async def test_nothing_moves_a_world_that_was_never_seeded(self) -> None:
         registry, _state = toyhost_world()
-        session = WorldSession(registry)
+        session = WorldSession(registry, provenance="commissioned")
 
         with pytest.raises(WorldSessionError, match="never seeded"):
             await session.fire(PAYMENT_HOLD)
@@ -285,6 +285,26 @@ class TestFiring:
         seeds = session.observe(PAYMENT_HOLD, event=PAYMENT_HOLD_EVENT, turn=2)
         assert seeds.armed is True
         assert session.fired == Firings(dimensions=frozenset({PAYMENT_HOLD}), armed=frozenset({PAYMENT_HOLD}))
+
+    async def test_a_witnessed_session_reads_its_firings_as_a_witnessed_cell_s(self) -> None:
+        """Constructed ``witnessed``, the same observations establish what fired and not which were armed.
+
+        The commissioned session over the same world and the same observations is the control: it names the
+        seed's event armed, so the difference is the provenance the session was built under and nothing else.
+        """
+        observed: dict[str, Firings] = {}
+        for provenance in ("commissioned", "witnessed"):
+            registry, _state = toyhost_world()
+            session = WorldSession(registry, provenance=provenance)
+            await session.seed(_ARMING_SEED, attached=_CARRIERS)
+            session.observe(PAYMENT_HOLD, event=PAYMENT_HOLD_EVENT, turn=1)
+            assert session.provenance == provenance
+            observed[provenance] = session.fired
+
+        assert observed["commissioned"] == Firings(
+            dimensions=frozenset({PAYMENT_HOLD}), armed=frozenset({PAYMENT_HOLD})
+        )
+        assert observed["witnessed"] == Firings(dimensions=frozenset({PAYMENT_HOLD}), armed_known=False)
 
     async def test_an_armed_event_observed_under_another_dimension_it_moves_is_armed(self) -> None:
         """One event can move two dimensions; the seed armed the event, so its firing on either is the seed's."""
@@ -377,7 +397,7 @@ class TestAmbientPerturbation:
             base_world=registry.base_world,
             coherence=registry.coherence,
         )
-        session = WorldSession(reporting)
+        session = WorldSession(reporting, provenance="commissioned")
         await session.seed(WorldSeed(ambient_perturbation_turns=[1]), attached=_CARRIERS)
 
         event = await session.at_turn(1)
@@ -403,7 +423,7 @@ class TestEndState:
 
     async def test_only_the_attached_carriers_are_read(self) -> None:
         registry, _state = toyhost_world()
-        session = WorldSession(registry)
+        session = WorldSession(registry, provenance="commissioned")
         await session.seed(WorldSeed(), attached=("page_reader",))
 
         end_state = await session.end_state()
@@ -434,7 +454,7 @@ class TestEndState:
             base_world=registry.base_world,
             coherence=registry.coherence,
         )
-        session = WorldSession(unstorable)
+        session = WorldSession(unstorable, provenance="commissioned")
         await session.seed(WorldSeed(), attached=_CARRIERS)
 
         with pytest.raises(WorldSessionError, match="cannot store as JSON"):

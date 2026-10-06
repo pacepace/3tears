@@ -71,7 +71,7 @@ from pydantic import TypeAdapter, ValidationError
 from threetears.evals.contracts.base import VerbatimJsonObject
 from threetears.evals.contracts.host.world import Triggered, WorldDimension, WorldRegistry
 from threetears.evals.contracts.host.world_seed import SeedWrite, check_seed
-from threetears.evals.contracts.models import WorldSeed
+from threetears.evals.contracts.models import ApparatusProvenance, WorldSeed
 from threetears.evals.contracts.world_events import Firings, WorldEvent
 
 _END_STATE: TypeAdapter[dict[str, Any]] = TypeAdapter(VerbatimJsonObject)
@@ -88,15 +88,28 @@ class WorldSession:
     ``prepare``. A kind whose host binds per cell calls :meth:`bind` with that cell's own table before
     :meth:`seed`. A kind that seeds no world never calls it, and the cell then records neither world
     events nor an end state — nobody opened the world, which is a different fact from an empty one.
+
+    **Whose apparatus it records is the constructor's to say.** The runner opens one for each cell of the
+    run it drives and passes ``provenance="commissioned"``: it is the rig, and the seed it applies is what
+    arms the cell's events. A host grading a cell it WITNESSED through a session of its own — real people,
+    no rig — constructs it with ``provenance="witnessed"``, so :attr:`fired` reads its firings as a
+    witnessed cell's, the rule :func:`~threetears.evals.run.witnessed.record_witnessed_cell` and a re-check
+    read the stored cell back by, and the host never overrides ``fired_armed`` itself.
     """
 
-    def __init__(self, registry: WorldRegistry) -> None:
-        """Bind the session to the host's world.
+    def __init__(self, registry: WorldRegistry, *, provenance: ApparatusProvenance) -> None:
+        """Bind the session to the host's world, under the apparatus of the run its cell belongs to.
 
         Args:
             registry: The host's world registry (``profile.world``).
+            provenance: The apparatus provenance of the cell's run
+                (:attr:`~threetears.evals.contracts.models.EvalRun.apparatus_provenance`): ``commissioned``
+                when the runner drives the cell, ``witnessed`` when a host grades a session it observed.
+                Required, with no default, for the reason the run's own field has none — a default would
+                let a witnessed cell's firings read as a rig's.
         """
         self._registry = registry
+        self._provenance: ApparatusProvenance = provenance
         self._bound = False
         self._attached: tuple[str, ...] | None = None
         self._seeded: tuple[str, ...] = ()
@@ -178,13 +191,20 @@ class WorldSession:
         return tuple(self._events)
 
     @property
+    def provenance(self) -> ApparatusProvenance:
+        """The apparatus provenance this session was constructed under, which :attr:`fired` reads by."""
+        return self._provenance
+
+    @property
     def fired(self) -> Firings:
         """What fired, whoever caused it, and which firings were the seed's armed events — what the goal language reads.
 
-        A world session is the rig's: the runner opens one for a commissioned cell and seeds it, so its
-        firings are read as a commissioned cell's.
+        Read under the session's :attr:`provenance` through
+        :meth:`~threetears.evals.contracts.world_events.Firings.of`, the one rule a re-check reads the
+        stored cell back by: a ``commissioned`` session's events carry the seed's arming, while a
+        ``witnessed`` one's cannot, so there ``fired_armed()`` is not established.
         """
-        return Firings.of(self._events, provenance="commissioned")
+        return Firings.of(self._events, provenance=self._provenance)
 
     @property
     def end_state_read(self) -> dict[str, Any] | None:

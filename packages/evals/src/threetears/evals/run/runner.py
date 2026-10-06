@@ -1105,7 +1105,12 @@ async def run_one_result(
     # is the declaration; a host whose world is per-cell state binds this cell's own table on it
     # (``WorldSession.bind``) from ``prepare``, so no two cells — of this run or a concurrent one — share
     # a path to one world, and a host declaring ``binds_per_cell`` that forgets is refused at seed.
-    world_session = WorldSession(host.profile.world) if host.profile.world is not None else None
+    # Commissioned whatever the run's stamp: the runner IS the rig, and the seed it applies through this
+    # session is what arms the cell's events. A host grading a cell it witnessed builds its own session
+    # with ``provenance="witnessed"``.
+    world_session = (
+        WorldSession(host.profile.world, provenance="commissioned") if host.profile.world is not None else None
+    )
     sink.world = world_session
     try:
         # The subject arrives as a PAIR and the split is the point: the engine's snapshot is a

@@ -150,7 +150,7 @@ async def test_two_concurrent_cells_of_two_runs_each_leave_only_their_own_seed()
 class TestTheForgottenBind:
     async def test_a_session_over_a_per_cell_world_refuses_to_seed_unbound(self) -> None:
         registry, conformance_world = _per_cell()
-        session = WorldSession(registry)
+        session = WorldSession(registry, provenance="commissioned")
 
         with pytest.raises(WorldSessionError, match="binds per cell"):
             await session.seed(_seed("de"), attached=_CARRIERS)
@@ -168,7 +168,7 @@ class TestTheForgottenBind:
 
     async def test_a_world_that_does_not_bind_per_cell_seeds_unbound_through_the_profiles_table(self) -> None:
         registry, state = toyhost_world()
-        session = WorldSession(registry)
+        session = WorldSession(registry, provenance="commissioned")
 
         await session.seed(_seed("de"), attached=_CARRIERS)
 
@@ -195,14 +195,14 @@ class TestABindIsHeldToTheDeclaration:
         del table["toy.read_language"]
 
         with pytest.raises(WorldRegistrationError, match=r"missing 'toy\.read_language'"):
-            WorldSession(registry).bind(table)
+            WorldSession(registry, provenance="commissioned").bind(table)
 
     def test_a_table_binding_a_handle_the_declaration_does_not_is_refused(self) -> None:
         registry, _state = _per_cell()
         table = {**toyhost_world()[0].bindings, "toy.read_the_other_cell": lambda: "fr"}
 
         with pytest.raises(WorldRegistrationError, match=r"not declared 'toy\.read_the_other_cell'"):
-            WorldSession(registry).bind(table)
+            WorldSession(registry, provenance="commissioned").bind(table)
 
     def test_a_handle_bound_in_a_shape_its_role_cannot_call_is_refused(self) -> None:
         registry, _state = _per_cell()
@@ -210,24 +210,24 @@ class TestABindIsHeldToTheDeclaration:
         table = {**toyhost_world()[0].bindings, "toy.seed_language": lambda: None}
 
         with pytest.raises(WorldRegistrationError, match=r"seed handle 'toy\.seed_language'"):
-            WorldSession(registry).bind(table)
+            WorldSession(registry, provenance="commissioned").bind(table)
 
     def test_a_non_callable_binding_is_refused(self) -> None:
         registry, _state = _per_cell()
         table = {**toyhost_world()[0].bindings, "toy.read_language": "en"}
 
         with pytest.raises(WorldRegistrationError, match="not callable"):
-            WorldSession(registry).bind(table)
+            WorldSession(registry, provenance="commissioned").bind(table)
 
     async def test_a_session_binds_once_and_only_before_it_seeds(self) -> None:
         registry, _state = _per_cell()
-        bound = WorldSession(registry)
+        bound = WorldSession(registry, provenance="commissioned")
         bound.bind(toyhost_world()[0].bindings)
         with pytest.raises(WorldSessionError, match="already bound"):
             bound.bind(toyhost_world()[0].bindings)
 
         plain, _state = toyhost_world()
-        seeded = WorldSession(plain)
+        seeded = WorldSession(plain, provenance="commissioned")
         await seeded.seed(_seed("de"), attached=_CARRIERS)
         with pytest.raises(WorldSessionError, match="already seeded"):
             seeded.bind(toyhost_world()[0].bindings)
@@ -237,7 +237,7 @@ class TestABindIsHeldToTheDeclaration:
         profile = replace(toyhost_profile(), world=registry)
         assert profile.world is registry
 
-        bound = WorldSession(registry).bind(toyhost_world()[0].bindings)
+        bound = WorldSession(registry, provenance="commissioned").bind(toyhost_world()[0].bindings)
 
         assert bound is not registry
         assert bound.declarations == registry.declarations
