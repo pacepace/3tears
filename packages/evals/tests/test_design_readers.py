@@ -9,7 +9,8 @@ pins the readers of three of them, and the curation write the fourth was missing
   ranked by the declared priority and scoped per question, read off each bar's own ``merit_axis``;
 - ``EvalCampaign.archived`` → :func:`~threetears.evals.run.set_campaign_archived`.
 
-Mutations that turn this file red: comparing ``>`` for ``>=`` in ``_short_cells``; taking the
+Mutations that turn this file red: comparing ``>`` for ``>=`` in ``_short_cells``; reading a cell's
+``repeats_per_case_max`` where it reads the minimum; taking the
 priority order from the bars rather than the declaration in ``_verdict_order``; dropping
 ``merit_axis`` from the bar adjudication; removing the ``NotFoundError`` raise or the idempotence
 check in ``set_campaign_archived``.
@@ -22,12 +23,18 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
+from threetears.evals.analysis import (
+    AnalysisContextBundle,
+    DisclosureBlock,
+    assemble_context_bundle,
+    build_code_only_report,
+)
 from threetears.evals.contracts import NotFoundError
 from threetears.evals.contracts.declaration import Question
 from threetears.evals.run import set_campaign_archived
 from packages.evals.tests.factories import make_campaign, memory_storage
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_QUESTION_ID, toyhost_campaign
+from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 
@@ -42,6 +49,32 @@ def _bundle(**design_updates: Any) -> AnalysisContextBundle:
 
 class TestShortCells:
     """The toy campaign's two cells each run every document three times."""
+
+    def test_the_least_repeated_case_decides_not_the_most(self) -> None:
+        """One case of one cell ran twice and the rest three times: that cell is short of three, the other is not.
+
+        Every case in the toy campaign otherwise runs exactly three times, so min and max agree in every cell
+        and nothing above could tell which the reader takes.
+        """
+        campaign, storage = toyhost_campaign()
+        runs = storage.load_eval_runs(campaign.run_ids, campaign.scope_id)
+        results = {run.id: storage.query_eval_results_by_run(run.id, campaign.scope_id) for run in runs}
+        thinned, other = runs
+        first_case = results[thinned.id][0].test_case_id
+        dropped = next(r for r in results[thinned.id] if r.test_case_id == first_case)
+        results[thinned.id] = [r for r in results[thinned.id] if r.id != dropped.id]
+        design = campaign.declared_design
+        assert design is not None
+        declared = campaign.model_copy(update={"declared_design": design.model_copy(update={"intended_repetitions": 3})})
+
+        bundle = assemble_context_bundle(declared, storage=ToyhostStorage(runs, results), profile=toyhost_profile())
+
+        uneven = next(cell for cell in bundle.cells if cell.repeats_per_case_min != cell.repeats_per_case_max)
+        assert (uneven.repeats_per_case_min, uneven.repeats_per_case_max) == (2, 3), "the fixture is uneven"
+        (short,) = bundle.short_cells
+        assert (short.variant_key, short.apparatus_class_id) == (uneven.variant_key, uneven.apparatus_class_id)
+        assert (short.intended, short.observed) == (3, 2)
+        assert other.id != thinned.id
 
     def test_a_cell_short_of_the_declared_repetitions_is_named_with_its_sentence(self) -> None:
         bundle = _bundle(intended_repetitions=4)
@@ -116,6 +149,48 @@ class TestVerdictOrder:
         order = _bundle(questions=[unscoped, retired]).verdict_order
 
         assert order.questions == []
+
+
+class TestTheDeclaredPriorityReachesTheReport:
+    """A code-only report has no writer, so the tie-break order the campaign declared is stated by code."""
+
+    def test_a_declared_priority_is_disclosed_with_each_tiers_bars(self) -> None:
+        report = build_code_only_report(
+            _bundle(merit_priority=["quality", "latency"]),
+            measures=toyhost_profile().measures,
+            assembled_at="2026-10-05T00:00:00+00:00",
+        )
+        texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
+
+        (sentence,) = [text for text in texts if text.startswith("The campaign ranks its merit axes")]
+        assert "quality (field_accuracy); latency (no adjudicated bar)" in sentence
+        assert "which the order does not place: cost_usd." in sentence
+
+    def test_no_stated_priority_states_none(self) -> None:
+        report = build_code_only_report(
+            _bundle(merit_priority=[]), measures=toyhost_profile().measures, assembled_at="2026-10-05T00:00:00+00:00"
+        )
+        texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
+        assert not [text for text in texts if text.startswith("The campaign ranks its merit axes")]
+
+
+class TestAMeritRankingNamesEachAxisOnce:
+    """A ranking with an axis twice put one bar in two strongest-first tiers; it is refused where it is authored."""
+
+    def test_a_priority_naming_an_axis_twice_is_refused(self) -> None:
+        campaign, _storage = toyhost_campaign()
+        design = campaign.declared_design
+        assert design is not None
+        type(design).model_validate(design.model_dump() | {"merit_priority": ["quality", "latency"]})
+
+        with pytest.raises(ValueError, match="merit_priority names quality more than once"):
+            type(design).model_validate(design.model_dump() | {"merit_priority": ["quality", "quality"]})
+
+    def test_a_question_naming_an_axis_twice_is_refused(self) -> None:
+        Question(id="q", text="accurate and cheap?", merit_axes=["quality", "cost"])
+
+        with pytest.raises(ValueError, match="merit_axes names quality more than once"):
+            Question(id="q", text="accurate?", merit_axes=["quality", "quality"])
 
 
 class TestSetCampaignArchived:

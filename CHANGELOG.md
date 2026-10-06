@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a merit ranking names each axis once, the least-repeated case is pinned, and a code-only report states the declared priority
+
+- **``CampaignDesign.merit_priority`` and ``Question.merit_axes`` refuse an axis named twice.** A repeat put one
+  bar in two "strongest-first" tiers; the reader no longer de-duplicates a question's axes behind the declaration's
+  back. **Breaking:** a declaration with a repeated axis is refused.
+- A short cell's sentence says the repetitions are intended "per case in each cell", and ``short_cells`` is now
+  tested on a cell whose cases ran unevenly, so reading the most-repeated case instead fails.
+- **Every report states the tie-break order the campaign declared** (a methods disclosure naming each ranked axis
+  and its bars, and the bars no ranked axis places). A code-only report has no writer to be told it.
+- ``BarAdjudication.merit_axis`` says its ``None`` has two causes and that ``state`` tells them apart.
+
 ### 3tears-evals: a chart's values-as-drawn table is held to its marks, by the policy and by the renderer conformance check
 
 - **Policy rule 12 now ties the values table to the marks** (``table_disagreements``, exported from

@@ -5181,8 +5181,8 @@ def _short_cells(cells: list[Cell], design: CampaignDesign | None) -> list[Short
                 # to the cell's alias, which a digest spelled into prose would bypass.
                 sentence=(
                     f"This cell ran its least-repeated case {observed} times against the {intended} repetitions "
-                    "the campaign declared it intends per cell, so its estimates rest on less replication than "
-                    "the design set out to buy."
+                    "the campaign declared it intends per case in each cell, so its estimates rest on less "
+                    "replication than the design set out to buy."
                 ),
             )
         )
@@ -5260,10 +5260,8 @@ def _verdict_order(adjudications: list[BarAdjudication], design: CampaignDesign 
     for question in design.live_questions() if design is not None else []:
         if not question.merit_axes:
             continue
-        axes = sorted(
-            dict.fromkeys(question.merit_axes),
-            key=lambda axis: priority.index(axis) if axis in ranked else len(priority),
-        )
+        # Each axis once: the declaration refuses a repeat, so the reader takes the list as it is.
+        axes = sorted(question.merit_axes, key=lambda axis: priority.index(axis) if axis in ranked else len(priority))
         questions.append(
             QuestionScope(
                 question_id=question.id,
