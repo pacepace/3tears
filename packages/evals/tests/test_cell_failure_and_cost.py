@@ -667,13 +667,19 @@ class _ConversingKind(ToyExtractorKind):
 
 
 def _conversing(world: WorldRegistry) -> ToyExtractorKind:
-    return _ConversingKind(client=ScriptedExtractionClient(), world=world)
+    return _ConversingKind(client=ScriptedExtractionClient(), world=world, goal_checks=())
+
+
+def _no_goal_checks() -> EvalTemplate:
+    """The toy template with no goal checks: a conversing kind answers lines and grades no extraction, and the
+    runner holds every kind to grading each check its template declares."""
+    return toyhost_template().model_copy(update={"goal_state_checks": []})
 
 
 async def test_a_conversation_stops_at_the_runs_cap_mid_cell_and_the_run_stops_after_it():
     """Two and a half calls' worth of cap: the third call crosses it, so no fourth call — nor any answer — is bought."""
     cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=True)
-    drive, go = _drive(_conversing, n_cases=3, cap=cap)
+    drive, go = _drive(_conversing, n_cases=3, cap=cap, template=_no_goal_checks())
 
     with pytest.raises(BudgetStoppedError, match="cost cap exceeded") as stopped:
         await go()
@@ -692,7 +698,7 @@ async def test_a_conversation_stops_at_the_runs_cap_mid_cell_and_the_run_stops_a
 async def test_the_cap_reached_in_the_last_cell_still_ends_the_run_budget_stopped():
     """With no next cell, no gate between cells would ever look: the stop is raised after the cut-short cell itself."""
     cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=True)
-    drive, go = _drive(_conversing, n_cases=1, cap=cap)
+    drive, go = _drive(_conversing, n_cases=1, cap=cap, template=_no_goal_checks())
 
     with pytest.raises(BudgetStoppedError):
         await go()
@@ -703,12 +709,12 @@ async def test_an_unpriced_simulator_call_stops_a_capped_conversation_at_once():
     kinds: list[_ConversingKind] = []
 
     def unpriced(world: WorldRegistry) -> ToyExtractorKind:
-        kind = _ConversingKind(client=ScriptedExtractionClient(), world=world, simulator_cost_usd=None)
+        kind = _ConversingKind(client=ScriptedExtractionClient(), world=world, goal_checks=(), simulator_cost_usd=None)
         kinds.append(kind)
         return kind
 
     cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
-    drive, go = _drive(unpriced, n_cases=1, cap=cap)
+    drive, go = _drive(unpriced, n_cases=1, cap=cap, template=_no_goal_checks())
 
     with pytest.raises(BudgetStoppedError, match="could not be priced"):
         await go()
@@ -721,7 +727,7 @@ async def test_an_unpriced_simulator_call_stops_a_capped_conversation_at_once():
 async def test_an_uncapped_conversation_runs_to_its_turn_budget():
     """The accepting side: with enforcement off the same conversation is bounded by its structure alone."""
     cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=False)
-    drive = await _driven(_conversing, n_cases=1, cap=cap)
+    drive = await _driven(_conversing, n_cases=1, cap=cap, template=_no_goal_checks())
 
     (result,) = drive.results
     assert result.stop_cause is ConversationStopCause.MAX_TURNS
