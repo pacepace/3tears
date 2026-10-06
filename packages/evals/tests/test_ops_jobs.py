@@ -8,8 +8,10 @@ job from the record its work writes, and :func:`job_cancel` asks it to stop. Pin
   three ways.
 - **A job outlives the process that ran it as an answer**: a run that reads ``running`` with no live job,
   and a generation that recorded no attempt, both read ``lost``.
-- **Cancel converges**: a held generation cancelled lands ``cancelled``; a run with no live job is
-  repaired to ``cancelled``.
+- **Cancel converges**: a held generation cancelled lands ``cancelled``; a held live run cancelled lands
+  ``cancelled`` through its own boundary; a run with no live job is repaired to ``cancelled``.
+- **A generation is answered only in its scope and campaign**: polled from another scope, or under another
+  campaign, it reads ``lost``; cancelled from there, it is refused and keeps running.
 - **Every refusal fires** — a job id of neither shape, cancelling a job that has ended, a generation on
   a host without generation settings, a second generation of a campaign while one runs (releasing the
   client it built when it loses the race), and generation settings that cannot bound a generation.
@@ -22,12 +24,14 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import ConflictError, ValidationFailedError
+from threetears.evals.actions import eval_catalogue, standard_tools
+from threetears.evals.contracts import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.ops import (
     AnalysisGeneration,
     CampaignDefinition,
     LaunchArguments,
     analyses_list,
+    analysis_archive,
     analysis_generate,
     analysis_job_id,
     campaign_archive,
@@ -42,6 +46,9 @@ from threetears.evals.ops import (
     run_job_id,
     run_launch,
 )
+from threetears.evals.analysis import judge_agreement
+from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
+from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import (
     CALLER,
@@ -144,6 +151,59 @@ async def test_a_held_generation_is_running_refuses_a_second_and_cancels_to_canc
         await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE)
 
 
+@pytest.mark.parametrize(
+    ("scope_id", "forged_campaign"),
+    [("some-other-scope", "not-my-campaign"), ("some-other-scope", None), (TOYHOST_SCOPE, "not-my-campaign")],
+    ids=["other-scope-forged-campaign", "other-scope-real-campaign", "same-scope-forged-campaign"],
+)
+async def test_a_generation_is_neither_polled_nor_cancelled_from_outside_its_campaign_and_scope(
+    scope_id: str, forged_campaign: str | None
+) -> None:
+    """The job manager is process-wide; a generation is live only to the scope and campaign that started it."""
+    gate = asyncio.Event()
+    fixture = ops_fixture(gate=gate)
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    await asyncio.sleep(0)
+    _, _, attempt = parse_job_id(job.job_id)
+    assert attempt is not None
+    probe = analysis_job_id(forged_campaign or fixture.campaign.id, attempt)
+
+    polled = await job_poll(fixture.host, probe, scope_id)
+    assert (polled.state, polled.status) == ("lost", "unrecorded"), "another scope's live generation reads as none"
+    with pytest.raises(ValidationFailedError, match="is not running here"):
+        await job_cancel(fixture.host, probe, scope_id)
+
+    owner = await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)
+    assert owner.state == "running", "the refused cancel left the owner's generation running"
+    gate.set()
+    finished = await settled(fixture.host, job.job_id)
+    assert (finished.state, finished.status) == ("completed", "stored")
+
+
+async def test_a_live_run_is_cancelled_through_the_job_contract_and_converges(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``job_cancel`` asks the live job to stop; its own boundary writes ``cancelled``, which ``job_poll`` then reads."""
+    gate = asyncio.Event()
+    extract = ScriptedExtractionClient.extract
+
+    async def held(self: ScriptedExtractionClient, request: Any) -> Any:
+        await gate.wait()
+        return await extract(self, request)
+
+    monkeypatch.setattr(ScriptedExtractionClient, "extract", held)
+    fixture = ops_fixture()
+    (job,) = (await run_launch(fixture.host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)).jobs
+    async with asyncio.timeout(10):
+        while (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).status != "running":
+            await asyncio.sleep(0.01)
+
+    await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE, reason="operator stop")
+    cancelled = await settled(fixture.host, job.job_id)
+
+    assert (cancelled.state, cancelled.status) == ("cancelled", "cancelled")
+    assert cancelled.detail is not None and "operator stop" in cancelled.detail
+    assert not gate.is_set(), "the run was stopped while held, not after it finished"
+
+
 async def test_a_generation_that_loses_the_race_releases_its_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """Between the check and the start another generation took the key: the client this one built is released."""
     fixture = ops_fixture()
@@ -235,6 +295,75 @@ def test_a_campaign_is_created_archived_and_listed_as_typed_lines() -> None:
     assert campaign_archive(host, created.id, TOYHOST_SCOPE, archived=True).archived
     active = {line.id for line in campaigns_list(host, TOYHOST_SCOPE, archived=False).campaigns}
     assert created.id not in active and fixture.campaign.id in active
+
+
+async def test_an_analysis_is_archived_and_restored_through_the_action_its_delete_points_to() -> None:
+    """``analysis_delete`` says "archive instead"; ``analysis_archive`` is that action, and it is reversible."""
+    fixture = ops_fixture()
+    (job,) = (await analysis_generate(fixture.host, fixture.campaign.id, TOYHOST_SCOPE)).jobs
+    analysis_id = (await settled(fixture.host, job.job_id)).analysis_id
+    assert analysis_id is not None
+    tools = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}
+    deleting = tools["evals_admin"].action("analysis_delete")
+    assert deleting is not None and "archive instead" in deleting.summary
+    assert tools["evals"].action("analysis_archive") is not None, "the action the delete's advice names exists"
+
+    archived = await tools["evals"].call(
+        {"action": "analysis_archive", "analysis_id": analysis_id, "archived": True, "archive_reason": "superseded"},
+        host=fixture.host,
+        caller=CALLER,
+    )
+    assert not archived.is_error and archived.structured is not None and archived.structured["archived"] is True
+    stored = fixture.host.eval_host.storage.load_analysis(analysis_id, TOYHOST_SCOPE)
+    assert stored is not None and stored.archived and stored.archived_reason == "superseded"
+
+    restored = analysis_archive(fixture.host.eval_host, analysis_id, TOYHOST_SCOPE, archived=False)
+    assert not restored.archived
+    with pytest.raises(NotFoundError):
+        analysis_archive(fixture.host.eval_host, "no-such-analysis", TOYHOST_SCOPE, archived=True)
+
+
+async def test_an_agent_rates_through_the_action_and_its_rating_is_never_a_persons() -> None:
+    """``result_rate`` fixes ``rater_kind`` to agent: the judge's agreement with people lists it, never pools it."""
+    fixture = ops_fixture()
+    storage = fixture.host.eval_host.storage
+    (judged,) = [
+        result
+        for run_id in fixture.campaign.run_ids[:1]
+        for result in storage.query_eval_results_by_run(run_id, TOYHOST_SCOPE)[:1]
+    ]
+    assert judged.judge_score(TOYHOST_JUDGED_DIMENSION) is not None, "the toy result is judged on that dimension"
+    tools = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}
+
+    outcome = await tools["evals"].call(
+        {
+            "action": "result_rate",
+            "result_id": judged.id,
+            "rubric_dim": TOYHOST_JUDGED_DIMENSION,
+            "score": 4,
+            "rating_reason": "faithful layout",
+        },
+        host=fixture.host,
+        caller=CALLER,
+    )
+
+    assert not outcome.is_error, outcome.text
+    (rating,) = storage.query_calibration_ratings(TOYHOST_SCOPE, result_id=judged.id)
+    assert (rating.rater, rating.rater_kind, rating.score) == (CALLER.identity, "agent", 4)
+    agreement = judge_agreement([rating], [judged])
+    assert agreement.dimensions == [] and [u.reason for u in agreement.unpaired] == ["rated_by_an_agent"]
+    action = tools["evals"].action("result_rate")
+    assert action is not None and "rater_kind" not in action.params.model_fields, "the caller cannot claim a person"
+
+
+def test_the_launch_action_offers_exactly_the_launchs_own_arguments() -> None:
+    """The action's parameters are derived from the operation's one declaration, so neither can gain a field alone."""
+    actions = {action.name: action for action in eval_catalogue().actions}
+    for name in ("run_launch", "launch_estimate"):
+        params = actions[name].params
+        assert issubclass(params, LaunchArguments)
+        for field_name, declared in LaunchArguments.model_fields.items():
+            assert params.model_fields[field_name].description == declared.description
 
 
 def test_a_run_is_deleted_when_confirm_echoes_its_id() -> None:

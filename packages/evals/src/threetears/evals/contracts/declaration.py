@@ -262,6 +262,15 @@ class Question(EvalDocumentModel):
             "these axes per question (`verdict_order.questions`). Empty means unscoped."
         ),
     )
+
+    @field_validator("merit_axes")
+    @classmethod
+    def _each_axis_once(cls, axes: list[MeritAxis]) -> list[MeritAxis]:
+        """Refuse an axis named twice: the list is a set of axes an answer moves, and a repeat says nothing."""
+        if duplicates := sorted({axis for axis in axes if axes.count(axis) > 1}):
+            raise ValueError(f"merit_axes names {', '.join(duplicates)} more than once; name each axis once")
+        return axes
+
     asked_at: str = Field(default_factory=utc_now_iso, description="When it was asked (ISO-8601).")
     retired_at: str | None = Field(
         default=None,
@@ -460,7 +469,7 @@ class CampaignDesign(EvalDocumentModel):
 
     @model_validator(mode="after")
     def _axes_and_bars_are_keyed_too(self) -> CampaignDesign:
-        """One entry per axis and per measure — the same rule the questions already carry.
+        """One entry per axis, per measure and per ranked merit axis — the same rule the questions already carry.
 
         A declared axis is the denominator of every coverage number and of the typed-answer
         validator's "did the answer address every axis"; a duplicate double-counts it. Two bars
@@ -472,7 +481,7 @@ class CampaignDesign(EvalDocumentModel):
             The validated design.
 
         Raises:
-            ValueError: An axis id or a measure id appears twice.
+            ValueError: An axis id, a measure id or a merit-priority axis appears twice.
         """
         axes = [axis.axis_id for axis in self.axes]
         if duplicates := sorted({axis for axis in axes if axes.count(axis) > 1}):
@@ -485,6 +494,12 @@ class CampaignDesign(EvalDocumentModel):
             raise ValueError(
                 f"more than one bar on: {', '.join(duplicates)} — both would read as this campaign's "
                 f"standard on that measure and nothing decides which one it is held to"
+            )
+        priority = list(self.merit_priority)
+        if duplicates := sorted({axis for axis in priority if priority.count(axis) > 1}):
+            raise ValueError(
+                f"merit_priority names {', '.join(duplicates)} more than once — it is a strongest-first ranking of "
+                "axes, and an axis ranked twice puts its bars in two tiers; name each axis once"
             )
         return self
 

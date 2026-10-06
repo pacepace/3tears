@@ -30,6 +30,7 @@ from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.references import cell_aliases
 
 __all__ = [
+    "FIXTURED_CALL_CEILING_USD",
     "MODEL",
     "PROMPT",
     "PROMPT_ID",
@@ -64,6 +65,10 @@ class FixturedCompletion:
     reasoning_tokens: int | None = None
 
 
+#: What every fixtured call is priced at, at most: above the completion's reported cost, well under any toy cap.
+FIXTURED_CALL_CEILING_USD = 0.05
+
+
 class FixturedClient:
     """A client that returns one prepared completion and records what it was asked."""
 
@@ -76,11 +81,20 @@ class FixturedClient:
         self.completion = FixturedCompletion(content=body)
         self.calls: list[dict[str, str]] = []
         self.closed = 0
+        #: What :meth:`price_ceiling` answers for every call; ``None`` is a client that cannot price.
+        self.ceiling_usd: float | None = FIXTURED_CALL_CEILING_USD
+        #: Every prompt pair priced, in order.
+        self.priced: list[dict[str, str]] = []
 
     @property
     def model_name(self) -> str:
         """The model this client is bound to -- the port the service reads back."""
         return MODEL
+
+    def price_ceiling(self, *, system: str, user: str, response_format: Any = None) -> float | None:
+        """The fixtured ceiling of one call — what a generation is priced against its out-of-run cap by."""
+        self.priced.append({"system": system, "user": user})
+        return self.ceiling_usd
 
     async def generate(
         self, *, system: str, user: str, response_format: Any = None, tools: Any = None

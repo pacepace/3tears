@@ -425,6 +425,138 @@ class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
 
 
 # =============================================================================
+# The schema states every cross-field rule JSON Schema can express; the model holds the three it cannot
+# =============================================================================
+
+
+def _schema_refuses(document: dict[str, Any]) -> bool:
+    return not jsonschema.Draft202012Validator(published_report_schema()).is_valid(document)
+
+
+def _model_refuses(document: dict[str, Any]) -> bool:
+    try:
+        Report.model_validate(document)
+    except ValueError:
+        return True
+    return False
+
+
+def _analysis_document() -> dict[str, Any]:
+    document: dict[str, Any] = json.loads(minimal_report().to_canonical_json())
+    return document
+
+
+def _code_only_document() -> dict[str, Any]:
+    document: dict[str, Any] = json.loads(_code_only().to_canonical_json())
+    return document
+
+
+def _with(document: dict[str, Any], change: Any) -> dict[str, Any]:
+    change(document)
+    return document
+
+
+def _chart_block(**update: Any) -> dict[str, Any]:
+    return {"kind": "chart", "section": "methods", "finding": None, "rests_on": [], "viz_type": "frontier"} | update
+
+
+_TABLE = {
+    "kind": "table",
+    "section": "methods",
+    "finding": None,
+    "rests_on": [],
+    "name": "evidence",
+    "title": "Evidence",
+    "columns": [{"key": "arm", "header": "Arm"}],
+    "rows": [{"arm": "a"}, {"arm": "b"}],
+    "order": "as listed",
+    "total_rows": 2,
+}
+
+
+class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
+    """A host validating against ``schema.json`` alone is refused what the model refuses, but for three rules."""
+
+    def test_the_conforming_documents_pass_both(self) -> None:
+        for document in (_analysis_document(), _code_only_document()):
+            assert not _schema_refuses(document) and not _model_refuses(document)
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            _with(_code_only_document(), lambda d: d["source"].update(analysis_id="a")),
+            _with(_code_only_document(), lambda d: d["source"].update(generator_model="m")),
+            _with(_code_only_document(), lambda d: d.update(headline="the wide chunk is slower")),
+            _with(_code_only_document(), lambda d: d.update(finding_count=3)),
+            _with(
+                _code_only_document(),
+                lambda d: d["blocks"].append(
+                    {
+                        "kind": "text",
+                        "section": "summary",
+                        "finding": None,
+                        "rests_on": [],
+                        "role": "summary",
+                        "body": "words",
+                        "facts": [],
+                    }
+                ),
+            ),
+            _with(_code_only_document(), lambda d: d["blocks"][0].update(finding=7)),
+            _with(_code_only_document(), lambda d: d["blocks"][0].update(rests_on=[99])),
+            _with(_analysis_document(), lambda d: d["source"].update(analysis_id=None)),
+            _with(_analysis_document(), lambda d: d["source"].update(generator_model=None)),
+            _with(_analysis_document(), lambda d: d["blocks"][0].update(finding=None)),
+            _with(_code_only_document(), lambda d: d["blocks"].append(_chart_block(intent=None, error=""))),
+            _with(_code_only_document(), lambda d: d["blocks"].append(_chart_block(intent=None, error="   "))),
+        ],
+        ids=[
+            "code-only-names-an-analysis",
+            "code-only-names-a-model",
+            "code-only-has-a-headline",
+            "code-only-counts-findings",
+            "code-only-holds-a-text-block",
+            "no-findings-but-a-block-names-one",
+            "no-findings-but-a-block-rests-on-one",
+            "analysis-names-no-analysis",
+            "analysis-names-no-model",
+            "a-findings-title-names-no-finding",
+            "a-chart-with-neither-intent-nor-error",
+            "a-chart-whose-error-is-blank",
+        ],
+    )
+    def test_each_rule_the_schema_can_state_refuses_in_the_schema_and_the_model(self, document: dict[str, Any]) -> None:
+        assert _model_refuses(document), "the case must be one the model refuses"
+        assert _schema_refuses(document)
+
+    async def test_a_chart_with_both_an_intent_and_an_error_or_another_types_intent_is_refused(
+        self, toy: tuple[Any, Any, Report]
+    ) -> None:
+        _, _, report = toy
+        drawn = json.loads(report.to_canonical_json())
+        index = next(i for i, block in enumerate(drawn["blocks"]) if block["kind"] == "chart")
+        for change in ({"error": "it cannot be drawn"}, {"viz_type": "frontier"}):
+            document = json.loads(report.to_canonical_json())
+            document["blocks"][index].update(change)
+            assert _model_refuses(document) and _schema_refuses(document), change
+        assert not _schema_refuses(drawn)
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            _with(_analysis_document(), lambda d: d["blocks"][0].update(finding=5)),
+            _with(_code_only_document(), lambda d: d["blocks"].append(_TABLE | {"total_rows": 0})),
+            _with(_code_only_document(), lambda d: d["blocks"].append(_TABLE | {"rows": [{"stray": "x"}]})),
+        ],
+        ids=["a-position-past-finding_count", "total_rows-below-rows-shown", "a-row-keyed-by-no-column"],
+    )
+    def test_the_three_rules_that_compare_siblings_are_the_models_alone(self, document: dict[str, Any]) -> None:
+        """What the README and the model's docstring name as the schema's superset, pinned so it cannot grow."""
+        assert _model_refuses(document)
+        assert not _schema_refuses(document)
+
+
+# =============================================================================
 # The code-only report: the toy campaign, with no analysis generated
 # =============================================================================
 

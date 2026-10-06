@@ -234,7 +234,7 @@ def test_run_exits_one_when_a_run_does_not_complete(capsys: pytest.CaptureFixtur
     assert "failed: planner-lite" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(("given", "launched"), [(["--max-cost-usd", "7.5"], 7.5), ([], None)])
+@pytest.mark.parametrize(("given", "launched"), [(["--max-cost-usd", "0.5"], 0.5), ([], None)])
 def test_run_hands_the_launch_the_max_cost_it_is_given(
     given: list[str], launched: float | None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -254,6 +254,13 @@ def test_run_hands_the_launch_the_max_cost_it_is_given(
 def test_run_relays_the_launchers_refusal_of_a_cap_that_is_not_positive(capsys: pytest.CaptureFixture[str]) -> None:
     assert run_cli([*_courier_run_args("planner-lite"), "--max-cost-usd", "0"], host_factory=courier_launch_host) == 2
     assert "max_cost_usd" in capsys.readouterr().err
+
+
+def test_run_relays_the_launchers_refusal_of_a_cap_above_the_hosts(capsys: pytest.CaptureFixture[str]) -> None:
+    """``--max-cost-usd`` may only lower the host's ceiling: one above it is refused before anything launches."""
+    assert COURIER_LAUNCH_SETTINGS.max_cost_usd < 7.5, "the fixture's ceiling sits below the cap the test names"
+    assert run_cli([*_courier_run_args("planner-lite"), "--max-cost-usd", "7.5"], host_factory=courier_launch_host) == 2
+    assert "max_cost_usd=7.5 is above the host's ceiling" in capsys.readouterr().err
 
 
 # --- an unanticipated error: its own exit code, never "a run did not complete" -----------------------

@@ -96,6 +96,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "run_get": "read",
         "campaign_create": "write",
         "analysis_generate": "spend",
+        "analysis_estimate": "read",
         "analyses_list": "read",
         "report_read": "read",
         "scope_pivot": "read",
@@ -104,6 +105,8 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "scope_export": "read",
         "run_archive": "write",
         "campaign_archive": "write",
+        "analysis_archive": "write",
+        "result_rate": "write",
         "run_delete": "destructive",
         "analysis_delete": "destructive",
     }

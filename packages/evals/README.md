@@ -74,13 +74,14 @@ python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--p
 
 `run` launches, waits and prints each run's summary. Each `--model` is one arm and one run; with no
 `--model` the kind runs one arm on its own default model, and a kind with no default refuses the launch.
-`--k` is the repeats per case (the launch default when omitted); `--max-cost-usd` caps each run in place of
-the host's default; `--n-variations` and `--variation-model` generate that many cases first (priced against
+`--k` is the repeats per case (the launch default when omitted); `--max-cost-usd` caps each run at or
+below the host's ceiling (a launch may only lower that ceiling; a value above it is refused); `--n-variations` and `--variation-model` generate that many cases first (priced against
 the host's out-of-run cap, outside the runs' caps); `--apparatus-settings` sets host-declared apparatus
 values as a JSON object — each as `start_run`'s argument of the same name. `report` prints the campaign's
 report (below) — its analysis, or, when it has none, a code-only report of its evidence; `bundle` prints the
 analysis bundle a generation would read, as JSON. Neither calls a model. `spend` prints what the engine
-spent outside any run in the scope — case generations and rubric proposals — narrowed by its flags.
+spent outside any run in the scope — case generations, rubric proposals and analysis generations — narrowed by
+its flags.
 
 Exit codes: `0` done; `1` a launched run did not complete; `2` refused (a host that cannot be loaded, a
 template that is not there, a launch the engine refuses, a malformed command line); `3` failed on an error
@@ -152,7 +153,9 @@ enforced cap — a host composing its own launch through `launch_as_group` price
 A battery prices each template's arms once, in its pre-flight, prepares every template before starting any,
 and launches each template as it priced it. `launch_estimate` (`quote_launch` in `run`) runs the same steps
 read-only and reports each arm's price and the launch's verdict, word for word; hand its result to a cost
-pivot as `predicted_cost`. A host therefore prices no arm itself: a wrapper that priced assembled runs would
+pivot as `predicted_cost`, and each prediction sits only in the cell of its model and template. Once the launch
+ran, pass its run ids as `launched_run_ids` too, and each predicted cell says how many of its observations came
+from other runs — the history the prediction was drawn from among them. A host therefore prices no arm itself: a wrapper that priced assembled runs would
 be a second rule, and a second pricing of the same arm.
 
 **Setting the rig at launch.** `apparatus_settings` sets host-declared apparatus values — who sits in an
@@ -306,7 +309,7 @@ to the findings it belongs to or rests on. Serialize it three ways:
 from threetears.evals.analysis import analysis_report, report_html, report_markdown
 
 report = analysis_report(host.storage, analysis_id, scope_id)
-report.to_canonical_json()   # validated by the published schema, report/schema.json
+report.to_canonical_json()   # validated by the published schema, report/schema.json (see below)
 report_markdown(report)      # for an agent, or to paste as a memo
 report_html(report)          # a page that reads without a script
 ```
@@ -314,11 +317,20 @@ report_html(report)          # a page that reads without a script
 **The campaign's report** is `campaign_report(host, campaign_id, scope_id)` — the one answer the CLI's
 `report` and the `report_read` action both give: the campaign's newest analysis that is not archived, or,
 when it has none, a **code-only report** of its evidence (`build_code_only_report`). That one has
-`basis="code_only"` and no author's words — no headline, no findings, no text block, which the schema
-refuses — and holds the arm table (every arm unresolved, since nothing decided), the decision surface,
+`basis="code_only"` and no author's words — no headline, no findings, no text block, which the published
+schema and the model both refuse — and holds the arm table (every arm unresolved, since nothing decided), the decision surface,
 the contrasts the evidence tested against the control, a distribution chart per measure and judged
 dimension, and every disclosure the evidence carries, opening with a statement that no analysis was
 generated and what one would add. `Report.basis` says which a report is; `REPORT_VERSION` is 2.
+
+**What the schema checks, and what only the model does.** `schema.json` holds the report's shape and every
+cross-field rule JSON Schema can state: a code-only report names no analysis or model and holds no headline,
+finding or text block; an analysis report names both; a report with no findings links no block to one; a
+finding's own words name their finding; a chart block carries exactly one of an intent and an error, the
+intent of its own type. Three rules compare a value with a sibling's, which JSON Schema cannot: a block's
+finding positions are below `finding_count`, a table's `total_rows` is at least the rows it shows, and a row
+keys only its table's columns. Those only `Report.model_validate` holds, so a host that validates against the
+schema alone accepts exactly those three malformations as well.
 
 A chart block carries the chart's **intent** (`ChartIntent`, from `threetears.evals.analysis.viz`), never
 a charting library's spec: its type from eval's eight, the rows it draws, what each field encodes (identity,
@@ -359,7 +371,10 @@ imports the adapter.
 A host bringing its own renderer implements `ChartRenderer` (`draw(intent)`, and `drawn_data(drawing)`
 reading its drawing back) and runs the one conformance check every renderer passes —
 `assert_renderer_conforms(renderer, intents)`, from `threetears.evals.analysis.viz`: what it draws agrees
-with the intent's values, per row.
+with the intent's marks (`data`), per identity, and the intent's values-as-drawn table agrees with those marks
+(`table_disagreements`, policy rule 12) — so a drawing that passes agrees with the table beside it. A table
+column spelled from a drawn number (a delta's `+72.7%`) or carried only by the table is the builder's to
+spell, and is compared with nothing drawn.
 
 ## Driving it from an agent: operations, actions and MCP
 
@@ -367,7 +382,16 @@ Every surface calls the same **operations** (`threetears.evals.ops`): one functi
 does, over an `OpsHost` — the `LaunchHost`, plus `AnalysisGeneration` (the prompt, output cap and budget a
 background generation runs under) — returning a typed model. Long work is a **job**: `run_launch` and
 `analysis_generate` return `JobsStarted`, and `job_poll` / `job_cancel` take any job id either returned. A
-job id names the durable record its work writes, so it is still answerable after a restart.
+job id names the durable record its work writes, so it is still answerable after a restart. A job is
+answered only in the caller's scope: another scope's generation reads `lost` on poll and is refused on cancel.
+
+Both spend operations are bounded in dollars before they spend. A launch's runs are held to the host's per-run
+ceiling, which a launch's `max_cost_usd` may only lower — one above it is refused on every surface. An analysis
+generation is held to the host's out-of-run cap (`LaunchSettings.max_out_of_run_cost_usd`): its first call is
+priced before the job starts (`analysis_estimate` prices it without spending), its one repair round-trip
+before that is sent, and each call is ledgered under purpose `analysis`, so `scope_out_of_run_spend` reads it.
+A host's own `spend` action carries no such obligation: the class is a label a tool cut splits on, metered only
+as far as the host's handler meters it.
 
 The **action catalogue** (`threetears.evals.actions`) declares each operation once for an agent: a `noun_verb`
 name, a permission class (`read`, `spend`, `write`, `destructive`), flat described parameters, a result and

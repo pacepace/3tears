@@ -10,6 +10,13 @@ handed to an agent stays answerable after a restart — the answer is then that 
 ``analysis:<campaign id>:<attempt id>`` for a generation — the attempt is filed under its campaign, so
 the id carries both. :func:`parse_job_id` is the one reader of that shape.
 
+**A job is answered only inside the caller's scope.** A run job's run is read scoped, and a generation is
+live to a caller only when its task holds the exclusivity key of the campaign AND scope the caller names
+(:func:`generation_key`) — the job manager is process-wide, so asking it "is this attempt live?" alone would
+let any scope that learned an attempt id poll or cancel another scope's generation, and echo back whatever
+campaign it typed as fact. A generation another scope runs therefore reads to this caller exactly as one
+nothing runs: ``lost`` on poll, refused on cancel.
+
 **Liveness is read before the record.** A job ends by writing its record and only then leaving the job
 manager, so asking "is it live?" first and reading the record second never sees a finished job as
 lost; the other order can.
@@ -26,7 +33,7 @@ from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.models import EvalRun
 from threetears.evals.ops.host import OpsHost
-from threetears.evals.run.lifecycle import cancel_run, get_run
+from threetears.evals.run.lifecycle import get_run, repair_abandoned_run, require_cancellable
 from threetears.evals.contracts.offload import run_blocking
 
 #: What a job's work is: a launched run, or an analysis generation.
@@ -92,6 +99,26 @@ class JobStatus(EvalBaseModel):
     campaign_id: str | None = None
     analysis_id: str | None = Field(default=None, description="The analysis a completed generation stored.")
     detail: str | None = Field(default=None, description="Why it ended other than completed, when the record says.")
+
+
+def generation_key(campaign_id: str, scope_id: str) -> str:
+    """The exclusivity key one campaign's generations share: one runs at a time, and only its scope sees it."""
+    return f"analysis-generation:{scope_id}:{campaign_id}"
+
+
+def _live_generation(host: OpsHost, campaign_id: str, attempt_id: str, scope_id: str) -> bool:
+    """Whether this process runs ``attempt_id`` as a generation of ``campaign_id`` in ``scope_id`` — the one scope check.
+
+    Args:
+        host: The host whose job manager runs generations.
+        campaign_id: The campaign the job id names.
+        attempt_id: The attempt the job id names.
+        scope_id: The caller's scope.
+
+    Returns:
+        ``True`` only when the attempt is a live task under that campaign's and scope's key.
+    """
+    return attempt_id in host.launch.job_manager.active_task_ids(generation_key(campaign_id, scope_id))
 
 
 def run_job_id(run_id: str) -> str:
@@ -185,7 +212,7 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
         run = await run_blocking(eval_host.blocking_executor, get_run, eval_host.storage, target_id, scope_id)
         return _run_status(run, live=live)
     assert attempt_id is not None  # parse_job_id names an attempt for every analysis job
-    if manager.is_task_active(attempt_id):
+    if _live_generation(host, target_id, attempt_id, scope_id):
         return JobStatus(
             job_id=job_id, kind="analysis", state="running", status="running", done=False, campaign_id=target_id
         )
@@ -235,15 +262,25 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
         The job's status after the request.
 
     Raises:
-        ValidationFailedError: The id names no job, or the job has already ended.
+        ValidationFailedError: The id names no job, the job has already ended, or it is a generation no task
+            runs under the campaign and scope the caller names (another scope's generation reads as none).
         NotFoundError: A run job whose run is not in the scope.
+        ConflictError: An abandoned run's repair lost its write race; nothing was repaired.
     """
     kind, target_id, attempt_id = parse_job_id(job_id)
+    manager, eval_host = host.launch.job_manager, host.eval_host
     if kind == "run":
-        cancel_run(host.eval_host.storage, target_id, scope_id, job_manager=host.launch.job_manager, reason=reason)
+        # cancel_run's halves, split so its store calls run on the blocking executor and only the job
+        # manager — which belongs to this loop — is asked on the loop.
+        run = await run_blocking(eval_host.blocking_executor, get_run, eval_host.storage, target_id, scope_id)
+        require_cancellable(run)
+        if not manager.cancel_job(target_id, reason=reason):
+            await run_blocking(
+                eval_host.blocking_executor, repair_abandoned_run, eval_host.storage, target_id, scope_id, reason=reason
+            )
         return await job_poll(host, job_id, scope_id)
     assert attempt_id is not None  # parse_job_id names an attempt for every analysis job
-    if not host.launch.job_manager.cancel_task(attempt_id):
+    if not _live_generation(host, target_id, attempt_id, scope_id) or not manager.cancel_task(attempt_id):
         status = await job_poll(host, job_id, scope_id)
         raise ValidationFailedError(
             f"analysis job {job_id!r} is not running here (it reads {status.state}); there is nothing to cancel"
@@ -261,6 +298,7 @@ __all__ = [
     "JobStatus",
     "JobsStarted",
     "analysis_job_id",
+    "generation_key",
     "job_cancel",
     "parse_job_id",
     "job_poll",

@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
 from threetears.evals.analysis.bundle import BundleInspection, CampaignReadStore, assemble_context_bundle
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
-from threetears.evals.analysis.generator import GenerationTally, build_user_message
+from threetears.evals.analysis.generator import MAX_GENERATION_CALLS, GenerationTally, build_user_message, first_request
 from threetears.evals.analysis.generator import generate_analysis as _generate_analysis
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import case_limits, decidable_reporter_case_bank, read_calibration
@@ -50,9 +50,12 @@ from threetears.evals.analysis.report import Report, build_code_only_report, bui
 from threetears.evals.analysis.viz.intent import chart_intent
 from threetears.evals.analysis.viz.payloads import PayloadError
 from threetears.evals.analysis.viz.policy import IntentPolicyError
+from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.campaign import EvalAnalysisAttempt
 from threetears.evals.contracts.errors import NotFoundError, ProviderRefusedError, StorageError, ValidationFailedError
 from threetears.evals.contracts.models import EvalTestCase, utc_now_iso
+from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
+from threetears.evals.contracts.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.contracts.provider import (
     describe_failure,
     log_provider_failure,
@@ -68,7 +71,9 @@ if TYPE_CHECKING:
     from threetears.evals.contracts.campaign import AttemptOutcome, EvalAnalysis, EvalCampaign, EvalInsight
     from threetears.evals.contracts.models import EvalRun, EvalTemplate
     from threetears.evals.contracts.host.eval_host import EvalHost
-    from threetears.evals.contracts.provider import BoundCompletionClient
+    from concurrent.futures import Executor
+
+    from threetears.evals.contracts.provider import BoundCompletionClient, CompletionResult
 
 log = get_logger(__name__)
 
@@ -170,6 +175,9 @@ class PreparedGeneration(NamedTuple):
     client: BoundCompletionClient
     resolved_model: str
     attempt_id: str
+    #: Every call the generation makes is priced and admitted against this before it is sent, and
+    #: ledgered (purpose ``analysis``) after; its first call is already admitted.
+    calls: BudgetedGenerator
 
 
 def _approx_analysis_input_tokens(bundle: AnalysisContextBundle, prompt: str) -> int:
@@ -240,34 +248,108 @@ def _load_campaign(storage: AnalysisStore, campaign_id: str, scope_id: str) -> E
 # ---------------------------------------------------------------------------
 
 
-async def prepare_analysis_generation(
+class BudgetedGenerator:
+    """A generation's calls, each priced and admitted against its out-of-run budget before it is sent, and ledgered.
+
+    The generator is handed this as its client and its :meth:`admit` as its admission hook
+    (:func:`~threetears.evals.analysis.generator.generate_analysis`), so the generator never learns what a
+    cap is while every call it makes — the repair round-trip, whose prompt exists only once the first output
+    is refused, included — goes through :class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`'s one
+    rule: priced on the client before it is made, refused when the price would pass what is left of the cap,
+    and written to the out-of-run ledger however it ends.
+    """
+
+    def __init__(self, budget: OutOfRunBudget, client: BoundCompletionClient) -> None:
+        """Bind the budget to the client every call is priced on and made through.
+
+        Args:
+            budget: The generation's own budget.
+            client: The generator client; this does not own it.
+        """
+        self._budget = budget
+        self._client = client
+        self._pending: AdmittedCall | None = None
+
+    @property
+    def budget(self) -> OutOfRunBudget:
+        """The budget the calls are held to — its cap, what is committed, the rows it wrote."""
+        return self._budget
+
+    def admit(self, system: str, user: str, response_format: dict[str, Any] | None) -> None:
+        """Price and admit the next call, or refuse it before anything is sent.
+
+        A call already admitted with exactly this prompt (the first call, admitted when the generation was
+        prepared) is not priced twice.
+
+        Raises:
+            ValidationFailedError: The call cannot be priced under an enforced cap, or its price would pass
+                what is left of the cap.
+        """
+        call = PlannedCall(system=system, user=user, response_format=response_format)
+        if self._pending is not None and self._pending.call == call:
+            return
+        (self._pending,) = self._budget.admit(self._client, "analysis", [call])
+
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, Any] | None = None
+    ) -> CompletionResult:
+        """Make the admitted call through the budget, which ledgers it whether it returns or raises.
+
+        Raises:
+            ValueError: No call with exactly this prompt was admitted — a call that would go unpriced.
+        """
+        pending, self._pending = self._pending, None
+        if pending is None or pending.call != PlannedCall(system=system, user=user, response_format=response_format):
+            raise ValueError("an analysis generator call was sent without being admitted against its budget")
+        result: CompletionResult = (await self._budget.generate(self._client, pending)).result
+        return result
+
+
+class AnalysisGenerationEstimate(EvalBaseModel):
+    """What a generation would be priced at before it starts, against the cap it would be held to.
+
+    Attributes:
+        campaign_id: The campaign.
+        generator_model: The model the generation would call, as the host's client resolved it.
+        first_call_ceiling_usd: The most the first call can cost, as the client prices it; ``None`` when it
+            cannot say.
+        max_calls: How many calls a generation can make: the first, and the one repair round-trip a refused
+            output buys. The repair's prompt carries the refused output, so it is priced only when it exists —
+            against what is left of the same cap, before it is sent.
+        cap_usd: The out-of-run cap the generation is held to; ``None`` when the host enforces none.
+        would_start: Whether the first call would be admitted.
+        refusal: Why it would not, when it would not.
+    """
+
+    campaign_id: str
+    generator_model: str
+    first_call_ceiling_usd: float | None
+    max_calls: int
+    cap_usd: float | None
+    would_start: bool
+    refusal: str | None = None
+
+
+class _Assembled(NamedTuple):
+    """What a generation reads, checked and built: the bundle, the prompt, the client and its first call."""
+
+    campaign: EvalCampaign
+    bundle: AnalysisContextBundle
+    assembled_at: str
+    prompt: str
+    client: BoundCompletionClient
+    first_call: PlannedCall
+
+
+async def _assemble(
     host: EvalHost,
     campaign_id: str,
     scope_id: str,
     *,
     model: str | None,
     resolve_prompt: Callable[[], Awaitable[str]],
-) -> PreparedGeneration:
-    """Check and build everything a generation needs before it spends anything.
-
-    The refusals a generation documents for a missing campaign, an empty bundle and an unknown
-    preset are all raised here, so a background start raises them to its caller. A host that
-    admits one generation per campaign at a time checks that BEFORE calling this, because
-    preparing builds a client and resolves the prompt, work a refused second request need not pay
-    for.
-
-    Args:
-        host: The host: where the campaign's runs, results and insights are read, the vocabulary
-            the bundle is assembled in, and the client factory the generator is built from.
-        campaign_id: The campaign to analyse.
-        scope_id: The scope the campaign, its member runs and everything generated from it live in.
-        model: The generator model override, or None for the host's default.
-        resolve_prompt: Resolves the generator prompt this generation runs, refusing an unknown
-            preset with ``ValidationFailedError``. Awaited only once the bundle has evidence.
-
-    Returns:
-        The prepared generation. It holds a built generator client, which the run enters and
-        releases; one prepared and never run keeps its transport open until it is collected.
+) -> _Assembled:
+    """Load the campaign, assemble its bundle off the event loop, refuse an empty one, resolve the prompt, build the client.
 
     Raises:
         NotFoundError: No campaign with that id.
@@ -275,14 +357,16 @@ async def prepare_analysis_generation(
         ValueError: The host supplies no completion clients.
     """
     clients = host.completion_clients("an analysis generation")
-    storage = host.storage
-    campaign = _load_campaign(storage, campaign_id, scope_id)
+    storage, executor = host.storage, host.blocking_executor
+    campaign = await run_blocking(executor, _load_campaign, storage, campaign_id, scope_id)
 
     # Stamped BEFORE assembly, because assembly is where the insight ledger is read: an
     # insight observed at or after this instant cannot have been in this bundle, and
     # `inspect_analysis_bundle` re-reads the ledger as of exactly this cutoff.
     assembled_at = utc_now_iso()
-    bundle = assemble_context_bundle(campaign, storage=storage, profile=host.profile)
+    # Assembly reads every member run, its results and the insight ledger — the heaviest read the engine
+    # makes — so it runs on the host's blocking executor, never on the loop a transport serves calls on.
+    bundle = await run_blocking(executor, assemble_context_bundle, campaign, storage=storage, profile=host.profile)
     if not bundle.run_ids:
         # No evidence to analyse: every attached run failed to resolve (destroyed
         # outside the delete cascade), was archived, or none is attached yet. Refuse rather than burn a paid generator call on an empty
@@ -308,21 +392,176 @@ async def prepare_analysis_generation(
         )
 
     prompt = await resolve_prompt()
+    system, user, contract = first_request(bundle, prompt, host.profile)
 
     # The effective model is read back off the built client (its bound ``model_name``) for the
     # pre-spend disclosure log and stored provenance, rather than re-implementing the host's
     # resolution cascade here.
     client = clients("analysis", model)
-    return PreparedGeneration(
-        campaign_id=campaign_id,
-        scope_id=scope_id,
+    return _Assembled(
+        campaign=campaign,
         bundle=bundle,
         assembled_at=assembled_at,
         prompt=prompt,
         client=client,
-        resolved_model=client.model_name,
-        attempt_id=str(uuid.uuid7()),
+        first_call=PlannedCall(system=system, user=user, response_format=contract),
     )
+
+
+def _generation_budget(host: EvalHost, assembled: _Assembled, out_of_run_cap_usd: float | None) -> OutOfRunBudget:
+    """The one budget a generation's calls are held to: the host's out-of-run cap, ledgered in the campaign's scope."""
+    return OutOfRunBudget(
+        store=host.storage,
+        scope_id=assembled.campaign.scope_id,
+        cap_usd=out_of_run_cap_usd,
+        subject_id=assembled.campaign.subject_id,
+        campaign_id=assembled.campaign.id,
+        blocking_executor=host.blocking_executor,
+    )
+
+
+async def _release(client: BoundCompletionClient) -> None:
+    """Release a client the generation built and will not run — only the run would otherwise enter it."""
+    async with client:
+        pass
+
+
+async def estimate_analysis_generation(
+    host: EvalHost,
+    campaign_id: str,
+    scope_id: str,
+    *,
+    model: str | None,
+    resolve_prompt: Callable[[], Awaitable[str]],
+    out_of_run_cap_usd: float | None,
+) -> AnalysisGenerationEstimate:
+    """Price a generation's first call against the cap it would be held to, and make no call.
+
+    The same assembly and the same pricing rule :func:`prepare_analysis_generation` refuses by, so an
+    estimate reading ``would_start`` is the start's own answer.
+
+    Args:
+        host: The host: where the campaign is read and the client is built.
+        campaign_id: The campaign.
+        scope_id: The scope it lives in.
+        model: The generator model override, or ``None`` for the host's default.
+        resolve_prompt: Resolves the generator prompt.
+        out_of_run_cap_usd: The out-of-run cap the generation would be held to; ``None`` when the host
+            enforces none.
+
+    Returns:
+        The estimate.
+
+    Raises:
+        NotFoundError: No campaign with that id.
+        ValidationFailedError: The bundle has no resolvable runs, or the preset does not exist.
+        ValueError: The host supplies no completion clients.
+    """
+    assembled = await _assemble(host, campaign_id, scope_id, model=model, resolve_prompt=resolve_prompt)
+    try:
+        call = assembled.first_call
+        ceiling = assembled.client.price_ceiling(
+            system=call.system, user=call.user, response_format=call.response_format
+        )
+        refusal: str | None = None
+        try:
+            _generation_budget(host, assembled, out_of_run_cap_usd).quote(assembled.client, "analysis", [call])
+        except ValidationFailedError as refused:
+            refusal = str(refused)
+        return AnalysisGenerationEstimate(
+            campaign_id=campaign_id,
+            generator_model=assembled.client.model_name,
+            first_call_ceiling_usd=ceiling,
+            max_calls=MAX_GENERATION_CALLS,
+            cap_usd=out_of_run_cap_usd,
+            would_start=refusal is None,
+            refusal=refusal,
+        )
+    finally:
+        await _release(assembled.client)
+
+
+async def prepare_analysis_generation(
+    host: EvalHost,
+    campaign_id: str,
+    scope_id: str,
+    *,
+    model: str | None,
+    resolve_prompt: Callable[[], Awaitable[str]],
+    out_of_run_cap_usd: float | None,
+) -> PreparedGeneration:
+    """Check and build everything a generation needs before it spends anything, its first call priced and admitted.
+
+    The refusals a generation documents for a missing campaign, an empty bundle, an unknown
+    preset and a first call over the cap (or unpriceable under it) are all raised here, so a background
+    start raises them to its caller. A host that admits one generation per campaign at a time checks that
+    BEFORE calling this, because preparing builds a client and resolves the prompt, work a refused second
+    request need not pay for. Every store read runs on the host's blocking executor.
+
+    Args:
+        host: The host: where the campaign's runs, results and insights are read, the vocabulary
+            the bundle is assembled in, and the client factory the generator is built from.
+        campaign_id: The campaign to analyse.
+        scope_id: The scope the campaign, its member runs and everything generated from it live in.
+        model: The generator model override, or None for the host's default.
+        resolve_prompt: Resolves the generator prompt this generation runs, refusing an unknown
+            preset with ``ValidationFailedError``. Awaited only once the bundle has evidence.
+        out_of_run_cap_usd: The most the generation's calls may together be priced at — the host's
+            out-of-run cap — or ``None`` when the host enforces none (each call is still priced where the
+            client can say, and ledgered). Required, so every caller decides what bounds the spend.
+
+    Returns:
+        The prepared generation. It holds a built generator client, which the run enters and
+        releases; one prepared and never run keeps its transport open until it is collected.
+
+    Raises:
+        NotFoundError: No campaign with that id.
+        ValidationFailedError: The bundle has no resolvable runs, the preset does not exist, or the first call
+            cannot be priced under an enforced cap or is priced above it — the client it built released.
+        ValueError: The host supplies no completion clients.
+    """
+    assembled = await _assemble(host, campaign_id, scope_id, model=model, resolve_prompt=resolve_prompt)
+    calls = BudgetedGenerator(_generation_budget(host, assembled, out_of_run_cap_usd), assembled.client)
+    first = assembled.first_call
+    try:
+        calls.admit(first.system, first.user, first.response_format)
+    except ValidationFailedError:
+        await _release(assembled.client)
+        raise
+    return PreparedGeneration(
+        campaign_id=campaign_id,
+        scope_id=scope_id,
+        bundle=assembled.bundle,
+        assembled_at=assembled.assembled_at,
+        prompt=assembled.prompt,
+        client=assembled.client,
+        resolved_model=assembled.client.model_name,
+        attempt_id=str(uuid.uuid7()),
+        calls=calls,
+    )
+
+
+async def _offloaded[**P](
+    executor: Executor | None, fn: Callable[P, object], /, *args: P.args, **kwargs: P.kwargs
+) -> bool:
+    """Run a store write on ``executor``, waiting for it through a cancellation of the waiter.
+
+    Args:
+        executor: The host's blocking executor.
+        fn: The blocking write.
+        *args: Its positional arguments.
+        **kwargs: Its keyword arguments.
+
+    Returns:
+        Whether a cancellation arrived while it ran — the caller delivers it once it has finished.
+
+    Raises:
+        Exception: Whatever the write raised.
+    """
+    work = asyncio.ensure_future(run_blocking(executor, fn, *args, **kwargs))
+    cancelled = await wait_through_cancellation(work)
+    work.result()
+    return cancelled
 
 
 async def run_analysis_generation(
@@ -352,7 +591,8 @@ async def run_analysis_generation(
         The stored analysis and the insights it minted.
 
     Raises:
-        ValidationFailedError: The generator's output failed the generation contract.
+        ValidationFailedError: The generator's output failed the generation contract, or the repair
+            round-trip it bought was refused by the generation's budget before it was sent.
         StorageError: The analysis or one of its insights could not be stored. An insight fails
             AFTER the attempt is recorded ``stored``, so a background generation's poll reports
             the memo stored while its insight ledger is incomplete; the background task catches
@@ -362,7 +602,7 @@ async def run_analysis_generation(
             logged, both through the host describer, before this is raised in its place. Any other
             failure is recorded ``failed`` and propagates as itself, so its status names no provider.
     """
-    storage, failure_describer = host.storage, host.failure_describer
+    storage, failure_describer, executor = host.storage, host.failure_describer, host.blocking_executor
     campaign_id, scope_id, bundle = prepared.campaign_id, prepared.scope_id, prepared.bundle
     prompt, client, resolved_model = prepared.prompt, prepared.client, prepared.resolved_model
 
@@ -393,8 +633,13 @@ async def run_analysis_generation(
     tally = GenerationTally()
     started_at = utc_now_iso()
 
-    def record(outcome: AttemptOutcome, *, error: str | None = None, analysis_id: str | None = None) -> None:
-        _record_analysis_attempt(
+    async def record(outcome: AttemptOutcome, *, error: str | None = None, analysis_id: str | None = None) -> bool:
+        # On the host's blocking executor, and waited for through a cancellation: the record is how the
+        # attempt ended, so a cancel arriving while it is written must not leave it half-known. Returns
+        # whether a cancellation arrived meanwhile, which the caller delivers once it has finished.
+        return await _offloaded(
+            executor,
+            _record_analysis_attempt,
             storage,
             campaign_id=campaign_id,
             scope_id=scope_id,
@@ -409,6 +654,7 @@ async def run_analysis_generation(
             attempt_id=prepared.attempt_id,
         )
 
+    calls = prepared.calls
     try:
         # The client owns an httpx pool and this generation is its whole
         # lifetime; `async with` releases it on the raising path too, which
@@ -418,16 +664,17 @@ async def run_analysis_generation(
                 bundle,
                 prompt=prompt,
                 model=resolved_model,
-                client=client,
+                client=calls,
                 prompt_id=prompt_id,
                 bundle_assembled_at=prepared.assembled_at,
                 tally=tally,
+                admit=calls.admit,
                 profile=host.profile,
             )
     except GenerationError as e:
         # Both calls' output refused is `refused`; every other generation-contract failure (a
         # call cut short, a precondition refused before any call) is `failed`.
-        record("refused" if isinstance(e, SoundnessRefusal) else "failed", error=str(e))
+        await record("refused" if isinstance(e, SoundnessRefusal) else "failed", error=str(e))
         # A generation-contract violation is caller-restatable (retry, or edit
         # the prompt), not a server fault — surface it as a 422, like the
         # proposer surfaces its own draft-validation failures.
@@ -437,7 +684,7 @@ async def run_analysis_generation(
         # Recorded synchronously, before the cancellation propagates, because this is the
         # ending no exception message ever carries to a caller.
         repairing = ", so the repair round-trip was running" if tally.calls > 1 else ""
-        record(
+        await record(
             "cancelled",
             error=(
                 "cancelled mid-flight by the caller's budget or disconnect, or a shutdown, "
@@ -445,6 +692,15 @@ async def run_analysis_generation(
             ),
         )
         raise
+    except ValidationFailedError as e:
+        # The budget refused a call before it was sent — only the repair round-trip can reach this, since
+        # the first call was admitted when the generation was prepared. Nothing was sent for it, so the
+        # tally counts only what was; what the first call cost is on the record.
+        await record("failed", error=f"the repair round-trip was refused before it was sent: {e}")
+        raise ValidationFailedError(
+            f"analysis generation failed: its output was refused and the one repair round-trip was refused before "
+            f"it was sent ({e}); ${format_number(tally.token_cost)} was billed on the first call and nothing was stored"
+        ) from e
     # prawduct:ok-broad-except — eval names no provider exception type; the host describer classifies what the call raised
     except Exception as e:
         # The exception's own text is not stored on the record: a provider status error stringifies
@@ -454,7 +710,7 @@ async def run_analysis_generation(
         # propagated, because an exception escaping a REST route reaches the web server, which logs
         # its whole traceback; otherwise it propagates as itself and whoever catches it logs it.
         failure = describe_failure(failure_describer, e, logger=log, where="eval.generate_analysis")
-        record("failed", error=failure.description)
+        await record("failed", error=failure.description)
         if traceback_is_safe(failure):
             # Nothing a traceback would print is withheld, so no provider status error is in the
             # chain: most often a defect in the generation itself. It propagates as itself, so its
@@ -472,18 +728,21 @@ async def run_analysis_generation(
 
     # A failed persist of the just-paid artifact is re-raised with what it cost, so
     # the operator reading the 503 knows the spend happened and nothing is stored.
+    # Every write runs on the host's blocking executor and is waited for through a cancellation, so a
+    # cancel arriving while the paid-for analysis is stored cannot leave it stored with no record saying
+    # so; the cancellation is delivered once the analysis, its record and its insights are written.
     try:
-        storage.save_analysis(analysis)
+        cancelled = await _offloaded(executor, storage.save_analysis, analysis)
     except StorageError as e:
-        record("failed", error=f"the generated analysis could not be stored: {e}")
+        await record("failed", error=f"the generated analysis could not be stored: {e}")
         raise StorageError(
             f"failed to persist generated analysis '{analysis.id}' for campaign '{campaign_id}' "
             f"(the generation cost ${format_number(analysis.generation.token_cost)} was already incurred)"
         ) from e
-    record("stored", analysis_id=analysis.id)
+    cancelled = await record("stored", analysis_id=analysis.id) or cancelled
     for insight in insights:
         try:
-            storage.save_insight(insight)
+            cancelled = await _offloaded(executor, storage.save_insight, insight) or cancelled
         except StorageError as e:
             raise StorageError(
                 f"failed to persist insight '{insight.id}' from analysis '{analysis.id}' — the analysis "
@@ -498,6 +757,8 @@ async def run_analysis_generation(
         analysis.generation.token_cost,
         analysis.generation.generator_model,
     )
+    if cancelled:
+        raise asyncio.CancelledError
     return analysis, insights
 
 
@@ -1352,11 +1613,14 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "AnalysisGenerationEstimate",
     "AnalysisStore",
+    "BudgetedGenerator",
     "PreparedGeneration",
     "analysis_report",
     "finding_chart_intent",
     "describe_insight_id_filters",
+    "estimate_analysis_generation",
     "freeze_reporter_case",
     "get_analysis",
     "inspect_analysis_bundle",

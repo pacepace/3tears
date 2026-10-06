@@ -135,7 +135,12 @@ from threetears.evals.run.simulator import (
 )
 from threetears.evals.run.witnessed import WitnessedJudging, record_witnessed_cell, stamp_witnessed_judge
 from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError, CapBreach, EvalRunCostCap
-from threetears.evals.run.ceilings import resolve_ceiling_origin, resolve_effective_ceiling
+from threetears.evals.run.ceilings import (
+    CeilingRaisedError,
+    refuse_raised_ceiling,
+    resolve_ceiling_origin,
+    resolve_effective_ceiling,
+)
 from threetears.evals.run.curation import CurationStore
 from threetears.evals.run.definition_seed import SeedCorpus, SeedOutcome
 from threetears.evals.run.jobs import WorkFn
@@ -165,6 +170,7 @@ __all__ = [
     "BudgetStoppedError",
     "CandidateTurn",
     "CapBreach",
+    "CeilingRaisedError",
     "EvalRunCostCap",
     "CellContext",
     "CheckFlip",
@@ -268,6 +274,7 @@ __all__ = [
     "rejudge_result",
     "reproducible_judge_inputs",
     "require_delete_confirmation",
+    "refuse_raised_ceiling",
     "resolve_ceiling_origin",
     "resolve_constructor",
     "resolve_effective_ceiling",

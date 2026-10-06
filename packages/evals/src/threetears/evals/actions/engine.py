@@ -18,10 +18,13 @@ from pydantic import Field
 
 from threetears.evals.actions import render
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller
-from threetears.evals.contracts import DEFAULT_LAUNCH_K_RUNS, EvalRunStatus
+from threetears.evals.contracts import EvalRunStatus
 from threetears.evals.contracts.base import EvalBaseModel
+from threetears.evals.contracts import OutOfRunPurpose
 from threetears.evals.ops import (
     AnalysisDeleted,
+    AnalysisGenerationEstimate,
+    AnalysisLine,
     AnalysisListing,
     CampaignDefinition,
     CampaignLine,
@@ -36,13 +39,16 @@ from threetears.evals.ops import (
     OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
+    ResultRated,
     RunDeleted,
     RunLine,
     RunListing,
     ScoreExport,
     TemplateListing,
     analyses_list,
+    analysis_archive,
     analysis_delete,
+    analysis_estimate,
     analysis_generate,
     campaign_archive,
     campaign_create,
@@ -51,6 +57,7 @@ from threetears.evals.ops import (
     job_poll,
     launch_estimate,
     report_read,
+    result_rate,
     run_archive,
     run_delete,
     run_get,
@@ -67,42 +74,14 @@ from threetears.evals.run import run_blocking
 # --- the parameters, each declared once ---------------------------------------------------------------
 
 RunId = Annotated[str, Field(min_length=1, description="A run's id, as runs_list or a launch's job names it.")]
-TemplateId = Annotated[str, Field(min_length=1, description="A template's id, as templates_list names it.")]
-SubjectId = Annotated[str, Field(min_length=1, description="The subject the runs measure, as the host names it.")]
+# The launch's own two, taken from its one declaration so an action naming a template or a subject means the
+# same thing a launch does.
+TemplateId = Annotated[str, LaunchArguments.model_fields["template_id"]]
+SubjectId = Annotated[str, LaunchArguments.model_fields["subject_id"]]
 CampaignId = Annotated[str, Field(min_length=1, description="A campaign's id, as campaigns_list names it.")]
 AnalysisId = Annotated[str, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")]
 JobId = Annotated[
     str, Field(min_length=1, description="A job's id, exactly as the action that started it returned it.")
-]
-Models = Annotated[
-    list[str], Field(description="Candidate models, one arm and one run each; empty runs the kind's own default.")
-]
-KRuns = Annotated[int, Field(ge=1, description="Repeats of every case, for pass^k.")]
-Overlays = Annotated[
-    dict[str, Any] | None, Field(description="The knobs this launch turns on the template's kind, by field.")
-]
-ApparatusSettings = Annotated[
-    dict[str, Any] | None,
-    Field(
-        description="Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits "
-        "in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused "
-        "otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two."
-    ),
-]
-MaxCostUsd = Annotated[
-    float | None, Field(gt=0, description="A per-run cost cap in dollars, in place of the host default.")
-]
-JudgeModel = Annotated[str | None, Field(description="The judge model, where the kind is model-judged.")]
-SimulatorModel = Annotated[str | None, Field(description="The simulated user's model, where the kind has one.")]
-NVariations = Annotated[
-    int, Field(ge=0, description="New cases to generate from the template's variation axes; 0 runs its stored cases.")
-]
-VariationModel = Annotated[
-    str | None,
-    Field(
-        description="The model that writes the template's llm variation axes' values; required when n_variations "
-        "generates for such an axis, refused otherwise."
-    ),
 ]
 RunStatus = Annotated[EvalRunStatus | None, Field(description="List only runs with this stored status.")]
 IncludeArchived = Annotated[bool, Field(description="List archived records too; they are left out by default.")]
@@ -147,8 +126,8 @@ RunStatusFilter = Annotated[
 PredictedCost = Annotated[
     dict[str, Any] | None,
     Field(
-        description="A cost pivot's plan: the structured result launch_estimate returned before these runs. Each "
-        "priced arm's model's cell then shows its predicted cost beside the cost observed."
+        description="A cost pivot's plan: the structured result launch_estimate returned before these runs. The "
+        "cell at each priced arm's model and template then shows its predicted cost beside the cost observed."
     ),
 ]
 MinAbsoluteChange = Annotated[
@@ -192,20 +171,12 @@ class RunParams(EvalBaseModel):
     run_id: RunId
 
 
-class RunLaunchParams(EvalBaseModel):
-    """``run_launch``."""
+class RunLaunchParams(LaunchArguments):
+    """``run_launch`` — the launch's own arguments, declared once on :class:`~threetears.evals.ops.LaunchArguments`.
 
-    template_id: TemplateId
-    subject_id: SubjectId
-    models: Models = Field(default_factory=list)
-    k_runs: KRuns = DEFAULT_LAUNCH_K_RUNS
-    n_variations: NVariations = 0
-    variation_model: VariationModel = None
-    overlays: Overlays = None
-    apparatus_settings: ApparatusSettings = None
-    max_cost_usd: MaxCostUsd = None
-    judge_model: JudgeModel = None
-    simulator_model: SimulatorModel = None
+    Derived rather than restated, so a field the operation gains is a parameter the action offers, with the
+    one description and the one bound, and cannot silently take its default on every launch an agent makes.
+    """
 
 
 class JobParams(EvalBaseModel):
@@ -257,8 +228,19 @@ class CampaignParams(EvalBaseModel):
     campaign_id: CampaignId
 
 
+class AnalysisArchiveParams(EvalBaseModel):
+    """``analysis_archive``."""
+
+    analysis_id: AnalysisId
+    archived: Archived
+    archive_reason: Annotated[
+        str | None,
+        Field(description="Why the analysis is archived (it was shown false, or superseded); cleared on restore."),
+    ] = None
+
+
 class AnalysisGenerateParams(EvalBaseModel):
-    """``analysis_generate``."""
+    """``analysis_generate`` and ``analysis_estimate``."""
 
     campaign_id: CampaignId
     model: GeneratorModel = None
@@ -281,6 +263,13 @@ class ScopePivotParams(EvalBaseModel):
     subject_filter: SubjectFilter = None
     run_status: RunStatusFilter = "completed"
     predicted_cost: PredictedCost = None
+    launched_run_ids: Annotated[
+        list[str] | None,
+        Field(
+            description="The runs the estimated launch made (the run ids its jobs name), with predicted_cost: each "
+            "predicted cell then says how many of its observations came from other runs."
+        ),
+    ] = None
 
 
 class ScopeHistoryParams(EvalBaseModel):
@@ -311,8 +300,11 @@ class ScopeOutOfRunSpendParams(EvalBaseModel):
     """``scope_out_of_run_spend`` — what the engine spent outside any run, narrowed or not."""
 
     purpose_filter: Annotated[
-        Literal["variation", "proposer"] | None,
-        Field(description="Only calls made for this purpose: variation (a launch's case generation) or proposer."),
+        OutOfRunPurpose | None,
+        Field(
+            description="Only calls made for this purpose: variation (a launch's case generation), proposer (a "
+            "rubric draft) or analysis (an analysis generation)."
+        ),
     ] = None
     launch_group_filter: Annotated[
         str | None,
@@ -321,6 +313,17 @@ class ScopeOutOfRunSpendParams(EvalBaseModel):
     template_filter: Annotated[
         str | None, Field(min_length=1, description="Only calls made for this template, by id.")
     ] = None
+
+
+class ResultRateParams(EvalBaseModel):
+    """``result_rate``."""
+
+    result_id: Annotated[str, Field(min_length=1, description="A result's id, as a run's results name it.")]
+    rubric_dim: Annotated[
+        str, Field(min_length=1, description="The judged dimension rated, spelled as the result's score spells it.")
+    ]
+    score: Annotated[int, Field(description="The score, on the dimension's scale: 1-5, or 1 (pass) / 0 (fail).")]
+    rating_reason: Annotated[str, Field(min_length=1, description="Why that score, in the rater's own words.")]
 
 
 class RunDeleteParams(EvalBaseModel):
@@ -361,7 +364,7 @@ async def _run_get(host: OpsHost, caller: Caller, params: RunParams) -> EvalSumm
 
 
 async def _run_launch(host: OpsHost, caller: Caller, params: RunLaunchParams) -> JobsStarted:
-    return await run_launch(host, LaunchArguments.model_validate(params.model_dump()), caller.scope_id)
+    return await run_launch(host, params, caller.scope_id)
 
 
 async def _job_poll(host: OpsHost, caller: Caller, params: JobParams) -> JobStatus:
@@ -423,6 +426,23 @@ async def _analysis_generate(host: OpsHost, caller: Caller, params: AnalysisGene
     return await analysis_generate(host, params.campaign_id, caller.scope_id, model=params.model)
 
 
+async def _analysis_estimate(
+    host: OpsHost, caller: Caller, params: AnalysisGenerateParams
+) -> AnalysisGenerationEstimate:
+    return await analysis_estimate(host, params.campaign_id, caller.scope_id, model=params.model)
+
+
+async def _analysis_archive(host: OpsHost, caller: Caller, params: AnalysisArchiveParams) -> AnalysisLine:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(analysis_archive, archived=params.archived, reason=params.archive_reason),
+        eval_host,
+        params.analysis_id,
+        caller.scope_id,
+    )
+
+
 async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) -> ReportDocument:
     eval_host = host.eval_host
     return await run_blocking(
@@ -449,6 +469,7 @@ async def _scope_pivot(host: OpsHost, caller: Caller, params: ScopePivotParams) 
         subject_id=params.subject_filter,
         status=params.run_status,
         predicted_cost=params.predicted_cost,
+        launched_run_ids=params.launched_run_ids or (),
     )
 
 
@@ -503,6 +524,23 @@ async def _launch_estimate(host: OpsHost, caller: Caller, params: LaunchEstimate
         LaunchArguments.model_validate(params.model_dump(exclude={"n_test_cases"})),
         caller.scope_id,
         n_test_cases=params.n_test_cases,
+    )
+
+
+async def _result_rate(host: OpsHost, caller: Caller, params: ResultRateParams) -> ResultRated:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(
+            result_rate,
+            rubric_dim=params.rubric_dim,
+            score=params.score,
+            reason=params.rating_reason,
+            rater=caller.identity,
+        ),
+        eval_host,
+        params.result_id,
+        caller.scope_id,
     )
 
 
@@ -587,7 +625,8 @@ def engine_actions() -> tuple[Action, ...]:
             example={"template_id": "tmpl-1", "subject_id": "subject-1", "models": ["model-a", "model-b"]},
             long_running=True,
             detail=(
-                "Every run spends against its cost cap (the host's, or max_cost_usd when lower). A launch the "
+                "Every run spends against its cost cap: the host's, or max_cost_usd, which may only lower it — a "
+                "max_cost_usd above the host's ceiling is refused. A launch the "
                 "process cannot admit, or the template's kind cannot honour, is refused before anything starts. "
                 "n_variations generates that many new cases first, shared by every arm; a template's llm axis is "
                 "written by variation_model, whose calls run before the runs start and are outside every run's "
@@ -672,7 +711,26 @@ def engine_actions() -> tuple[Action, ...]:
             long_running=True,
             detail=(
                 "Refused before any spend when the campaign has no evidence or a generation of it is already "
-                "running. The job's record is the generation attempt, written however it ends."
+                "running. Every call is priced before it is sent against the host's out-of-run cap: the first here, "
+                "so one over the cap is refused with nothing spent; the one repair round-trip a refused output buys "
+                "when its prompt exists, against what is left. analysis_estimate prices it first without spending. "
+                "Each call is ledgered under purpose analysis, so scope_out_of_run_spend reads it; the job's record "
+                "is the generation attempt, written however it ends."
+            ),
+        ),
+        Action(
+            name="analysis_estimate",
+            summary="Price a campaign's analysis generation against the host's out-of-run cap, without spending.",
+            workflow=ANALYSE,
+            permission="read",
+            params=AnalysisGenerateParams,
+            result=AnalysisGenerationEstimate,
+            handler=_analysis_estimate,
+            render=render.render_analysis_estimate,
+            example={"campaign_id": campaign_id},
+            detail=(
+                "The generation's own assembly and pricing rule, so would_start is analysis_generate's answer. "
+                "Makes no model call."
             ),
         ),
         Action(
@@ -716,7 +774,10 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="scope_out_of_run_spend",
-            summary="List what the engine spent outside any run — case generations and rubric proposals — with totals.",
+            summary=(
+                "List what the engine spent outside any run — case generations, rubric proposals and analysis "
+                "generations — with totals."
+            ),
             workflow=ANALYSE,
             permission="read",
             params=ScopeOutOfRunSpendParams,
@@ -726,7 +787,7 @@ def engine_actions() -> tuple[Action, ...]:
             example={"purpose_filter": "variation"},
             detail=(
                 "Read off the out-of-run ledger, one row per call, returned or raised: the spend no run's results "
-                "carry, since a launch's case generation runs before its runs exist. Totals overall, per purpose and "
+                "carry, since a launch's case generation runs before its runs exist and an analysis after they end. Totals overall, per purpose and "
                 "per launch; a call that reported no cost, or raised, is counted as unpriced and left out of the sum, "
                 "which is then a floor. Narrow by purpose_filter, launch_group_filter (the launch_group_id a launch's runs "
                 "carry) or template_filter. "
@@ -785,6 +846,33 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_campaign_archive,
             render=render.render_campaign,
             example={"campaign_id": campaign_id, "archived": True},
+        ),
+        Action(
+            name="result_rate",
+            summary="Rate one judged dimension of one result, as an agent — kept beside people's ratings, never pooled.",
+            workflow=CURATE,
+            permission="write",
+            params=ResultRateParams,
+            result=ResultRated,
+            handler=_result_rate,
+            render=render.render_result_rated,
+            example={"result_id": "result-1", "rubric_dim": "chat.tone", "score": 4, "rating_reason": "warm, on point"},
+            detail=(
+                "Recorded as the caller's identity with rater_kind agent, fixed here: an agent rating through a tool "
+                "is another model's opinion, so it is listed beside people's ratings and never enters the judge's "
+                "agreement with people. A second rating of the same dimension of the same result replaces the first."
+            ),
+        ),
+        Action(
+            name="analysis_archive",
+            summary="Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed.",
+            workflow=CURATE,
+            permission="write",
+            params=AnalysisArchiveParams,
+            result=AnalysisLine,
+            handler=_analysis_archive,
+            render=render.render_analysis_line,
+            example={"analysis_id": analysis_id, "archived": True, "archive_reason": "superseded"},
         ),
         Action(
             name="run_delete",

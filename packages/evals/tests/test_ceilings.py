@@ -83,6 +83,42 @@ def test_the_override_and_the_default_cannot_be_transposed():
         ceilings.resolve_effective_ceiling(_OVERRIDE_CALLS, _CONFIGURED_CALLS, True)  # type: ignore[misc]
 
 
+class TestAnOverrideMayOnlyLowerTheHostsCeiling:
+    """The one rule every launch surface applies: an override at or below the configured ceiling is a
+    choice; one above it is refused, in both currencies, whether or not enforcement is on.
+    """
+
+    @pytest.mark.parametrize(
+        ("override", "configured"),
+        [(_CONFIGURED_USD + 0.01, _CONFIGURED_USD), (_CONFIGURED_CALLS + 1, _CONFIGURED_CALLS)],
+        ids=["dollars", "calls"],
+    )
+    def test_an_override_above_the_configured_ceiling_is_refused(self, override, configured):
+        with pytest.raises(ceilings.CeilingRaisedError, match="a launch may only lower the host's ceiling"):
+            ceilings.refuse_raised_ceiling(override, configured=configured, name="cap", configured_name="host.cap")
+        with pytest.raises(ceilings.CeilingRaisedError):
+            ceilings.resolve_ceiling(override, configured=configured)
+        for enforcement_enabled in (True, False):
+            with pytest.raises(ceilings.CeilingRaisedError):
+                ceilings.resolve_effective_ceiling(
+                    override, configured=configured, enforcement_enabled=enforcement_enabled
+                )
+
+    @pytest.mark.parametrize("override", [None, _OVERRIDE_USD, _CONFIGURED_USD], ids=["inherit", "lower", "equal"])
+    def test_an_override_at_or_below_the_configured_ceiling_is_a_choice(self, override):
+        ceilings.refuse_raised_ceiling(override, configured=_CONFIGURED_USD, name="cap", configured_name="host.cap")
+        assert ceilings.resolve_ceiling(override, configured=_CONFIGURED_USD) == (
+            _CONFIGURED_USD if override is None else override
+        )
+
+    def test_the_refusal_names_the_argument_and_the_hosts_setting(self):
+        with pytest.raises(ceilings.CeilingRaisedError) as refused:
+            ceilings.refuse_raised_ceiling(
+                500.0, configured=_CONFIGURED_USD, name="max_cost_usd", configured_name="toy.cap"
+            )
+        assert "max_cost_usd=500.0" in str(refused.value) and "toy.cap=91.0" in str(refused.value)
+
+
 class TestBothClassesReadTheOneCascade:
     """Replace a step of the cascade and ask both classes again.
 

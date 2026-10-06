@@ -43,8 +43,9 @@ class BaselineBarProposals:
         variant_key: The incumbent's variant: the baseline's one cell.
         proposals: One per measure with a better end that the host declares, in measure-name order.
             Each carries ``vacuous`` and its ``reason``; nothing is registered.
-        not_proposed: ``{measure: why}`` for every measure the cell carries that no bar could be
-            proposed on — undeclared by the host, directionless, or with no mean to seed from.
+        not_proposed: ``{reading: why}`` for every reading the cell carries that no bar could be proposed on —
+            a measure undeclared by the host, directionless, or with no mean to seed from, and every judged
+            dimension, since a registered bar names a declared measure and a judged dimension is not one.
     """
 
     campaign_id: str
@@ -55,7 +56,12 @@ class BaselineBarProposals:
 
     @property
     def vacuous(self) -> tuple[BarProposal, ...]:
-        """The proposals a person must not adopt as written: every value clears them."""
+        """The proposals a person must not adopt as written — each nothing could fail, in one of two ways.
+
+        Either every value the measure can take clears it (the baseline sat at the permissive end of the
+        declared range), or a bar is already registered and the proposal would not tighten it, so adopting it
+        would loosen the standard. Each proposal's ``reason`` says which.
+        """
         return tuple(proposal for proposal in self.proposals if proposal.vacuous)
 
 
@@ -120,6 +126,11 @@ def propose_bars(host: EvalHost, baseline_campaign_id: str, *, scope_id: str) ->
                     f"observations of {summary.n_independent} cases in campaign {campaign.id}"
                 ),
             )
+        )
+    for judged in cell.judged:
+        not_proposed[judged.dimension] = (
+            "it is a judged dimension, and a registered bar names a measure the host declares — a judge's score is "
+            "not one"
         )
     log.info(
         "eval.propose_bars campaign=%s scope=%s behavior=%s proposed=%d vacuous=%d not_proposed=%d",

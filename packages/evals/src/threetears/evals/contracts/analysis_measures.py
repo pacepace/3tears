@@ -298,8 +298,10 @@ class BarAdjudication(EvalDocumentModel):
         description=(
             "The merit axis the bar's measure serves, read off the descriptor the bar name resolved to — the "
             "host's declaration, never inferred from the name. None when the name did not resolve (no verdict "
-            "exists, so it ranks nowhere) or the measure serves no axis. What the campaign's `merit_priority` "
-            "and each question's `merit_axes` are matched against (`verdict_order`)."
+            "exists, so it ranks nowhere) or the measure serves no axis — two causes one value cannot tell apart, "
+            "so a reader takes which from `state` (`unreadable_name` for the first), never from this field alone. "
+            "What the campaign's `merit_priority` and each question's `merit_axes` are matched against "
+            "(`verdict_order`)."
         ),
     )
     reason: str | None = Field(default=None, description="Why no verdict exists, for the two non-adjudicated states.")

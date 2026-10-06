@@ -17,8 +17,9 @@ then never name the host::
   ``--model`` is one arm and one run; with none, the kind runs one arm on its own default model, and a
   kind with no default refuses the launch. ``--k`` is the repeats per case (the launch default when
   omitted).
-  ``--max-cost-usd`` caps each run in place of the host's default, as ``run_launch``'s ``max_cost_usd``
-  does — the way to launch under a cap the host's inherited one would refuse. ``--n-variations`` and
+  ``--max-cost-usd`` caps each run at or below the host's ceiling, as ``run_launch``'s ``max_cost_usd``
+  does — it may only lower the host's ceiling, never raise it, and naming it is how a launch chooses
+  the cap an unpriceable arm runs under rather than inheriting one nobody chose. ``--n-variations`` and
   ``--variation-model`` generate the cases first, as ``run_launch``'s ``n_variations`` and
   ``variation_model`` do; the generation calls run before the runs and are outside their cost cap,
   so they are priced against the host's out-of-run cap before they are made. ``--apparatus-settings``
@@ -32,8 +33,8 @@ then never name the host::
 - ``bundle`` prints the campaign's analysis bundle as JSON
   (:func:`~threetears.evals.analysis.inspect_campaign_bundle`): what a generation would read, assembled
   without calling any model.
-- ``spend`` prints what the engine spent outside any run in the scope — case generations and rubric
-  proposals, call by call, with totals overall, per purpose and per launch
+- ``spend`` prints what the engine spent outside any run in the scope — case generations, rubric
+  proposals and analysis generations, call by call, with totals overall, per purpose and per launch
   (:func:`~threetears.evals.ops.scope_out_of_run_spend`, the read the ``scope_out_of_run_spend`` action
   makes). ``--purpose``, ``--launch-group`` and ``--template`` narrow it.
 
@@ -229,7 +230,7 @@ def build_parser(
         type=float,
         default=None,
         metavar="DOLLARS",
-        help="a per-run cost cap in dollars, in place of the host default (as run_launch's max_cost_usd)",
+        help="a per-run cost cap in dollars, at or below the host's ceiling (as run_launch's max_cost_usd)",
     )
     run.add_argument(
         "--n-variations",
@@ -268,7 +269,9 @@ def build_parser(
     report.add_argument("--out", type=Path, metavar="PATH", help="write the report to PATH instead of stdout")
     bundle = command("bundle", "Print a campaign's analysis bundle as JSON — what a generation would read.")
     bundle.add_argument("campaign", help="the campaign, by id")
-    spend = command("spend", "Print what the engine spent outside any run — case generations, rubric proposals.")
+    spend = command(
+        "spend", "Print what the engine spent outside any run — case generations, rubric proposals, analyses."
+    )
     spend.add_argument("--purpose", choices=get_args(OutOfRunPurpose), default=None, help="only this purpose's calls")
     spend.add_argument("--launch-group", default=None, metavar="ID", help="only one launch's case generation")
     spend.add_argument("--template", default=None, metavar="ID", help="only calls made for this template")

@@ -29,6 +29,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -47,6 +48,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.reporting import ScoreProjection
 from threetears.evals.contracts import ValidationFailedError
 from threetears.evals.ops import (
+    job_poll,
     LaunchArguments,
     LaunchEstimate,
     history_launch_pricer,
@@ -290,6 +292,38 @@ async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_ob
     assert "; predicted 0.2 [" in outcome.text
 
 
+async def test_after_the_launch_each_predicted_cell_says_how_much_of_it_the_launch_made(evals: MountedTool) -> None:
+    fixture = _priced(ops_fixture())
+    template_id = toyhost_template().id
+    launching = _launching(template_id, PRICED_MODEL, k_runs=1)
+    estimated = await _call(evals, fixture, {"action": "launch_estimate", **launching})
+    (job,) = (await run_launch(fixture.host, LaunchArguments(**launching), TOYHOST_SCOPE)).jobs
+    async with asyncio.timeout(10):
+        while (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).state == "running":
+            await asyncio.sleep(0.01)
+    arguments = {"row_factor": "template_id", "column_factor": "model", "metric": "cost_usd"}
+
+    outcome = await _call(
+        evals,
+        fixture,
+        {
+            "action": "scope_pivot",
+            **arguments,
+            "predicted_cost": estimated.structured,
+            "launched_run_ids": [job.target_id],
+        },
+    )
+
+    assert not outcome.is_error, outcome.text
+    table = PivotTable.model_validate(outcome.structured)
+    (cell,) = [c for c in table.cells if (c.row, c.column) == (template_id, PRICED_MODEL)]
+    assert cell.predicted is not None
+    assert cell.n_unplanned == len(PRICED_COSTS), "the priced history pools in beside the launch's own results"
+    assert f"{len(PRICED_COSTS)} observation(s) here are from runs the plan did not make" in outcome.text
+    with pytest.raises(ValidationFailedError, match="no predicted_cost was given"):
+        scope_pivot(fixture.host.eval_host, TOYHOST_SCOPE, **arguments, launched_run_ids=[job.target_id])
+
+
 # =============================================================================
 # Refusals that teach
 # =============================================================================
@@ -303,6 +337,24 @@ async def test_a_case_count_below_one_is_refused_naming_it(evals: MountedTool) -
     )
     assert outcome.is_error and "launch_estimate was called with values it cannot take" in outcome.text
     assert "- n_test_cases:" in outcome.text
+
+
+@pytest.mark.parametrize("action", ["run_launch", "launch_estimate"])
+async def test_a_cap_above_the_hosts_is_refused_by_the_operation_and_the_action(
+    evals: MountedTool, action: str
+) -> None:
+    """``max_cost_usd`` may only lower the host's ceiling — on the operation and on the action an agent calls."""
+    fixture = _priced(ops_fixture())
+    above = TOYHOST_COST_CEILING_USD + 1.0
+    arguments = _launching(toyhost_template().id, PRICED_MODEL, max_cost_usd=above)
+    operation = {"run_launch": run_launch, "launch_estimate": launch_estimate}[action]
+
+    with pytest.raises(ValidationFailedError, match=f"max_cost_usd={above} is above the host's ceiling"):
+        await operation(fixture.host, LaunchArguments(**arguments), TOYHOST_SCOPE)
+    outcome = await _call(evals, fixture, {"action": action, **arguments})
+
+    assert outcome.is_error and "a launch may only lower the host's ceiling" in outcome.text
+    assert fixture.host.launch.job_manager.admitted_count == 0
 
 
 async def test_a_status_no_run_carries_is_refused_naming_it(evals: MountedTool) -> None:

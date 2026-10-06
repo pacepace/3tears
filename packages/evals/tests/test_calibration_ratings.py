@@ -310,9 +310,73 @@ class TestJudgeAgreement:
         assert (tone.rubric_dim, tone.scale, tone.judge_model, tone.n) == (TONE, "ordinal", "judge-a", 6)
         assert tone.raters == ["guest", "host"]
         assert tone.exact_agreement == pytest.approx(4 / 6)
-        assert tone.kappa == pytest.approx(cohen_kappa(list(zip([1, 1, 2, 2, 3, 3], people)), [1, 2, 3, 4, 5]))
-        assert tone.weighted_kappa is not None
+        judged = [1, 1, 2, 2, 3, 3]
+        guest = [(judged[i], people[i]) for i in range(0, 6, 2)]
+        host = [(judged[i], people[i]) for i in range(1, 6, 2)]
+        scale = [1, 2, 3, 4, 5]
+        # Each person's kappa over the results they rated, averaged: Light's kappa.
+        assert tone.kappa == pytest.approx((cohen_kappa(guest, scale) + cohen_kappa(host, scale)) / 2)
+        assert tone.weighted_kappa == pytest.approx(
+            (cohen_kappa(guest, scale, weights="quadratic") + cohen_kappa(host, scale, weights="quadratic")) / 2
+        )
         assert (agreement.ratings_read, agreement.unpaired) == (6, [])
+
+    def test_the_weighted_kappa_is_the_quadratic_one_over_the_full_scale(self) -> None:
+        """Pinned to its value, on pairs where it differs from the unweighted kappa and from one over seen scores.
+
+        The scores seen are 1, 2 and 5, unevenly spaced, so a kappa weighting the seen scores as if adjacent differs.
+        """
+        pairs = [(1, 1), (1, 1), (2, 2), (2, 1), (5, 5), (5, 2)]
+        results = [_result(f"r-{i}", _tone(judge)) for i, (judge, _) in enumerate(pairs)]
+        ratings = [_rating(result_id=f"r-{i}", score=person) for i, (_, person) in enumerate(pairs)]
+
+        (tone,) = judge_agreement(ratings, results).dimensions
+
+        full = cohen_kappa(pairs, [1, 2, 3, 4, 5], weights="quadratic")
+        assert tone.weighted_kappa == pytest.approx(full)
+        assert tone.weighted_kappa != pytest.approx(cohen_kappa(pairs, [1, 2, 3, 4, 5])), "not the unweighted one"
+        assert tone.weighted_kappa != pytest.approx(cohen_kappa(pairs, [1, 2, 5], weights="quadratic")), (
+            "not over the observed scores alone"
+        )
+
+    def test_two_people_rating_one_result_enter_no_kappa_twice(self) -> None:
+        """Pooled, the judge's score would be counted twice and the people's disagreement read as the judge's."""
+        judged = [1, 2, 3, 4, 5]
+        alice = [1, 2, 3, 4, 5]
+        bob = [2, 1]  # bob rated the first two results, which alice rated too
+        results = [_result(f"r-{i}", _tone(judge)) for i, judge in enumerate(judged)]
+        ratings = [
+            *(_rating(result_id=f"r-{i}", score=score, rater="alice") for i, score in enumerate(alice)),
+            *(_rating(result_id=f"r-{i}", score=score, rater="bob") for i, score in enumerate(bob)),
+        ]
+
+        (tone,) = judge_agreement(ratings, results).dimensions
+
+        scale = [1, 2, 3, 4, 5]
+        per_person = (cohen_kappa(list(zip(judged, alice)), scale) + cohen_kappa(list(zip(judged[:2], bob)), scale)) / 2
+        pooled = cohen_kappa(list(zip(judged + judged[:2], alice + bob)), scale)
+        assert tone.n == 7 and tone.raters == ["alice", "bob"]
+        assert tone.kappa == pytest.approx(per_person)
+        assert per_person != pytest.approx(pooled), "the fixture separates averaging from pooling"
+
+    def test_a_person_whose_kappa_is_undefined_is_left_out_of_the_mean(self) -> None:
+        results = [
+            _result("r-0", _tone(3)),
+            _result("r-1", _tone(3)),
+            _result("r-2", _tone(1)),
+            _result("r-3", _tone(5)),
+        ]
+        ratings = [
+            _rating(result_id="r-0", score=3, rater="same"),
+            _rating(result_id="r-1", score=3, rater="same"),
+            _rating(result_id="r-2", score=2, rater="varied"),
+            _rating(result_id="r-3", score=5, rater="varied"),
+        ]
+
+        (tone,) = judge_agreement(ratings, results).dimensions
+
+        assert cohen_kappa([(3, 3), (3, 3)], [1, 2, 3, 4, 5]) is None
+        assert tone.kappa == pytest.approx(cohen_kappa([(1, 2), (5, 5)], [1, 2, 3, 4, 5]))
 
     def test_each_judge_is_read_separately(self) -> None:
         """Pooling two judges would credit one with the other's calibration — the judge-swap question."""

@@ -32,8 +32,7 @@ from threetears.evals.contracts.errors import AdmissionRefusedError, ConflictErr
 from threetears.evals.contracts.models import TERMINAL_RUN_STATUSES, EvalRun
 from threetears.evals.contracts.scoring import summarize_completeness
 from threetears.evals.contracts.storage import JobStore
-from threetears.evals.contracts.offload import run_blocking
-from threetears.evals.run.offload import wait_through_cancellation
+from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
 from threetears.evals.run.run_document import update_eval_run
 from threetears.observe import get_logger
 

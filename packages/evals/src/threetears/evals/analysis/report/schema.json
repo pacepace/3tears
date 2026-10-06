@@ -46,7 +46,267 @@
     },
     "ChartBlock": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "viz_type": {
+                "const": "delta_table"
+              }
+            },
+            "required": [
+              "viz_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "intent": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "properties": {
+                      "type": {
+                        "const": "delta_table"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "viz_type": {
+                "const": "frontier"
+              }
+            },
+            "required": [
+              "viz_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "intent": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "properties": {
+                      "type": {
+                        "const": "frontier"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "viz_type": {
+                "const": "timeseries"
+              }
+            },
+            "required": [
+              "viz_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "intent": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "properties": {
+                      "type": {
+                        "const": "timeseries"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "viz_type": {
+                "const": "distribution"
+              }
+            },
+            "required": [
+              "viz_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "intent": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "properties": {
+                      "type": {
+                        "const": "distribution"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "viz_type": {
+                "const": "null_result"
+              }
+            },
+            "required": [
+              "viz_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "intent": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "properties": {
+                      "type": {
+                        "const": "null_result"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "viz_type": {
+                "const": "breakdown"
+              }
+            },
+            "required": [
+              "viz_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "intent": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "properties": {
+                      "type": {
+                        "const": "breakdown"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "viz_type": {
+                "const": "attribution"
+              }
+            },
+            "required": [
+              "viz_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "intent": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "properties": {
+                      "type": {
+                        "const": "attribution"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "viz_type": {
+                "const": "sweep_ranking"
+              }
+            },
+            "required": [
+              "viz_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "intent": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "properties": {
+                      "type": {
+                        "const": "sweep_ranking"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
       "description": "A chart: a finding's (its intent, or why the stored chart cannot be drawn), or one code chose.\n\nA chart code chose — on a code-only report, one per measure the surface can draw — names no finding.",
+      "else": {
+        "properties": {
+          "error": {
+            "pattern": "^\\s*$",
+            "type": "string"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "intent": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "intent"
+        ]
+      },
       "properties": {
         "error": {
           "default": "",
@@ -129,6 +389,14 @@
         "section",
         "viz_type"
       ],
+      "then": {
+        "properties": {
+          "error": {
+            "pattern": "\\S",
+            "type": "string"
+          }
+        }
+      },
       "title": "ChartBlock",
       "type": "object"
     },
@@ -862,6 +1130,21 @@
     "TextBlock": {
       "additionalProperties": false,
       "description": "What the analysis's author wrote, exactly as written, with the facts code states beside it.",
+      "if": {
+        "properties": {
+          "role": {
+            "enum": [
+              "carried_forward",
+              "caveat",
+              "finding_body",
+              "finding_title"
+            ]
+          }
+        },
+        "required": [
+          "role"
+        ]
+      },
       "properties": {
         "body": {
           "description": "The author's words, Markdown allowed; empty where the author left a required field blank.",
@@ -942,12 +1225,117 @@
         "role",
         "body"
       ],
+      "then": {
+        "properties": {
+          "finding": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "finding"
+        ]
+      },
       "title": "TextBlock",
       "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "source": {
+            "properties": {
+              "analysis_id": {
+                "type": "string"
+              },
+              "generator_model": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "analysis_id",
+              "generator_model"
+            ]
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "basis": {
+            "const": "code_only"
+          }
+        },
+        "required": [
+          "basis"
+        ]
+      },
+      "then": {
+        "properties": {
+          "blocks": {
+            "items": {
+              "not": {
+                "properties": {
+                  "kind": {
+                    "const": "text"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            }
+          },
+          "finding_count": {
+            "const": 0
+          },
+          "headline": {
+            "pattern": "^\\s*$",
+            "type": "string"
+          },
+          "source": {
+            "properties": {
+              "analysis_id": {
+                "type": "null"
+              },
+              "generator_model": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "finding_count": {
+            "const": 0
+          }
+        },
+        "required": [
+          "finding_count"
+        ]
+      },
+      "then": {
+        "properties": {
+          "blocks": {
+            "items": {
+              "properties": {
+                "finding": {
+                  "type": "null"
+                },
+                "rests_on": {
+                  "maxItems": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "description": "One analysis, as a document every surface renders. See the module docstring for the contract.",
   "properties": {
     "basis": {

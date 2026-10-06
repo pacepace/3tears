@@ -144,7 +144,6 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/launch.py": {},
     "run/lifecycle.py": {},
     "run/metering.py": {},
-    "run/offload.py": {},
     "run/ratings.py": {},
     "run/reads.py": {},
     "run/recheck.py": {},

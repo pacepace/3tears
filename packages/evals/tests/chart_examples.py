@@ -210,30 +210,30 @@ def timeseries_ci(mean: float, half: float = 50.0) -> dict[str, Any]:
 
 
 def timeseries_payload(**update: Any) -> dict[str, Any]:
-    """Two series over three days, the second missing the middle one as a stated gap; ``update`` applied over it."""
+    """Two series over three UTC days, the second missing the middle one as a stated gap; ``update`` applied over it."""
     payload: dict[str, Any] = {
         "metric": "total_ms",
         "unit": "ms",
         "basis": "date",
-        "positions": ["d1", "d2", "d3"],
+        "positions": ["2026-03-14", "2026-03-15", "2026-03-16"],
         "series": [
             {
                 "label": "narrow",
                 "points": [
-                    {"position": "d1", "ci": timeseries_ci(900.0), "n": 6},
-                    {"position": "d2", "ci": timeseries_ci(990.0), "n": 6},
-                    {"position": "d3", "ci": timeseries_ci(1080.0), "n": 6},
+                    {"position": "2026-03-14", "ci": timeseries_ci(900.0), "n": 6},
+                    {"position": "2026-03-15", "ci": timeseries_ci(990.0), "n": 6},
+                    {"position": "2026-03-16", "ci": timeseries_ci(1080.0), "n": 6},
                 ],
             },
             {
                 "label": "wide",
                 "points": [
-                    {"position": "d1", "ci": timeseries_ci(1400.0), "n": 6},
-                    {"position": "d3", "ci": timeseries_ci(1500.0), "n": 6},
+                    {"position": "2026-03-14", "ci": timeseries_ci(1400.0), "n": 6},
+                    {"position": "2026-03-16", "ci": timeseries_ci(1500.0), "n": 6},
                 ],
             },
         ],
-        "gaps": [{"series": "wide", "position": "d2", "reason": "the cell was not measured there"}],
+        "gaps": [{"series": "wide", "position": "2026-03-15", "reason": "the cell was not measured there"}],
     }
     payload.update(update)
     return payload

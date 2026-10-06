@@ -58,14 +58,14 @@ from threetears.evals.contracts.models import (
 from threetears.evals.contracts.out_of_run import OutOfRunBudget, plan_variation_calls
 from threetears.evals.run.authoring import validated_kind_spec
 from threetears.evals.run.budget import EvalRunCostCap
+from threetears.evals.run.ceilings import CeilingRaisedError, refuse_raised_ceiling
 from threetears.evals.contracts.cassettes import CassetteMode
 from threetears.evals.run.jobs import MAX_CONCURRENT_JOBS, EvalJobManager, JobTimeoutFactory, adaptive_job_timeout_s
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.metering import MeteredCallLedger
-from threetears.evals.contracts.offload import run_blocking
-from threetears.evals.run.offload import wait_through_cancellation
+from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
 from threetears.evals.run.runner import DEFAULT_CELL_TIMEOUT_S, KindFactory, RunCallbacks, RunnerOptions, execute_run
 from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
 from threetears.observe import get_logger
@@ -119,7 +119,9 @@ class LaunchSettings(BaseModel):
             made (:class:`~threetears.evals.contracts.out_of_run.OutOfRunBudget`). Enforced exactly when
             ``enforcement_enabled`` is. Per LAUNCH, as ``max_cost_usd`` is per run: a battery is one launch
             per template, so a battery of N generating templates may spend up to N times this out of run,
-            as its runs may spend up to their count times their cap.
+            as its runs may spend up to their count times their cap. An analysis generation is held to it
+            too, per generation (:func:`~threetears.evals.ops.analysis_generate`): its calls run after the
+            runs it reads, under no run's cap.
         judge_alternate_model: The judge a launch's arms are scored by instead of the judge role's default
             when that default IS one of the launch's candidate models — a model grading its own output —
             provided it is itself none of them (:func:`resolve_judge_pin`), spelled as the host's clients name
@@ -1456,8 +1458,10 @@ async def start_run(
             (:attr:`LaunchableKind.apparatus_settings`), valued a string, a bool or a finite number. So one
             template can be run at two values of, say, an adjudicator's seat and the runs compared. Every
             run records them (``EvalRun.apparatus_settings``), and they are part of its measurement context.
-        max_cost_usd: Optional per-run cost-cap override; must be ``> 0``.
-        max_metered_calls: Optional per-run metered-call ceiling override; must be ``> 0``.
+        max_cost_usd: Optional per-run cost-cap override; must be ``> 0`` and at most the host's configured
+            ``max_cost_usd`` — a launch may only lower the host's ceiling.
+        max_metered_calls: Optional per-run metered-call ceiling override; must be ``> 0`` and at most the
+            host's configured ``max_metered_calls``.
         scope_id: The scope the template is read in and the launch's runs live in.
         launch_group: Prepare the runs into this launch instead of starting them; the caller starts
             the group once every arm is prepared. When omitted, this call is the whole launch: it
@@ -1488,7 +1492,7 @@ async def start_run(
         ValidationFailedError: A model named twice, more runs than one launch may start, a negative
             ``n_variations``, a variation model the generation needs and the launch does not name or one
             nothing would call, a ``k_runs`` outside the run's bounds, a non-positive ``max_cost_usd``
-            or ``max_metered_calls`` (or any ``max_metered_calls`` on a host declaring no metered tools),
+            or ``max_metered_calls`` or one above the host's configured ceiling (or any ``max_metered_calls`` on a host declaring no metered tools),
             a ``cassette_mode`` that is not a mode, a replay naming no corpus
             or a corpus that is no capture of this template in this scope, a template naming a
             kind with no launcher, a launch argument that kind cannot honour, an overlay the kind's
@@ -1523,6 +1527,42 @@ async def start_run(
     )
 
 
+def _refuse_raised_ceilings(
+    settings: LaunchSettings, *, max_cost_usd: float | None, max_metered_calls: int | None
+) -> None:
+    """Refuse a launch whose per-run override would RAISE the host's ceiling, before anything is paid for.
+
+    The rule is :func:`~threetears.evals.run.ceilings.refuse_raised_ceiling`, stated once for both
+    currencies; this applies it to a launch's two overrides against its one settings snapshot and
+    turns its refusal into the launch's own error. Every launch surface — a single launch, its quote and
+    a battery — reaches it, so none can admit a raised ceiling another refuses.
+
+    Args:
+        settings: The launch's settings snapshot.
+        max_cost_usd: The per-run cost-cap override.
+        max_metered_calls: The per-run metered-call ceiling override.
+
+    Raises:
+        ValidationFailedError: Either override is above the host's configured ceiling.
+    """
+    try:
+        refuse_raised_ceiling(
+            max_cost_usd,
+            configured=settings.max_cost_usd,
+            name="max_cost_usd",
+            configured_name=settings.name_of("max_cost_usd"),
+        )
+        if settings.max_metered_calls is not None:
+            refuse_raised_ceiling(
+                max_metered_calls,
+                configured=settings.max_metered_calls,
+                name="max_metered_calls",
+                configured_name=settings.name_of("max_metered_calls"),
+            )
+    except CeilingRaisedError as refused:
+        raise ValidationFailedError(str(refused)) from refused
+
+
 def _refuse_launch_arguments(
     host: LaunchHost,
     settings: LaunchSettings,
@@ -1549,8 +1589,9 @@ def _refuse_launch_arguments(
 
     Raises:
         ValidationFailedError: A non-positive ``max_cost_usd`` or ``max_metered_calls`` (or any
-            ``max_metered_calls`` on a host declaring no metered tools), a ``k_runs`` outside the run's bounds,
-            a ``cassette_mode`` that is not a mode, or a corpus the mode cannot use.
+            ``max_metered_calls`` on a host declaring no metered tools), either one above the host's configured
+            ceiling, a ``k_runs`` outside the run's bounds, a ``cassette_mode`` that is not a mode, or a corpus
+            the mode cannot use.
     """
     # Per-run cost-cap override: a non-positive cap would stop the
     # run before the first result — reject it as a run-parameter error up
@@ -1569,6 +1610,7 @@ def _refuse_launch_arguments(
             f"{host.eval_host.profile.host_id!r} declares no metered tools, so it would bound nothing; launch "
             "without max_metered_calls"
         )
+    _refuse_raised_ceilings(settings, max_cost_usd=max_cost_usd, max_metered_calls=max_metered_calls)
     # The run model bounds k_runs, but it is built after the cases are resolved — so an out-of-range
     # value from a surface that does not bound it at the wire would be refused after generation had
     # been paid for. Checked against the model's own field, so the bound is stated once.
@@ -2072,15 +2114,22 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
             "refused",
             f"{what} cannot be priced: {price.basis}. Its cost is unknown, not $0, and its ${cap:.2f} cap is "
             f"inherited from {request.settings.name_of('max_cost_usd')}, which nobody chose for it. Launch it naming "
-            "max_cost_usd — the most you will risk on a run nobody can price; what it costs then prices the next "
+            f"max_cost_usd (at most ${request.settings.max_cost_usd:.2f}; a launch may only lower the host's "
+            "ceiling) — the most you will risk on a run nobody can price; what it costs then prices the next "
             f"launch.{unplanned} {refused}",
         )
     if price.predicted_usd > cap:
+        ceiling = request.settings.max_cost_usd
+        raise_it = (
+            f"a larger max_cost_usd, up to the host's ${ceiling:.2f} ceiling, raises the cap"
+            if cap < ceiling
+            else f"the cap is the host's ceiling, which a launch cannot raise — only the host's operator can, through "
+            f"{request.settings.name_of('max_cost_usd')}"
+        )
         return verdict(
             "refused",
             f"{what} is predicted to cost ${price.predicted_usd:.2f} ({price.basis}), above its ${cap:.2f} cap. "
-            "Fewer cases, a smaller k_runs or a cheaper model brings it under; a larger max_cost_usd raises the "
-            f"cap. {refused}",
+            f"Fewer cases, a smaller k_runs or a cheaper model brings it under; {raise_it}. {refused}",
         )
     return verdict("admitted")
 
@@ -3102,8 +3151,8 @@ async def start_universal_battery(
             :func:`start_run` takes them — refused before anything launches when any template's kind
             does not honour one.
         max_cost_usd: Optional per-run cost-cap override for every run the battery launches, as
-            :func:`start_run` takes it; must be ``> 0``. Also the cap each template's arms are
-            priced against before anything launches.
+            :func:`start_run` takes it; must be ``> 0`` and at most the host's configured ceiling. Also the cap
+            each template's arms are priced against before anything launches.
         preflight: The host's pre-flight, prepared once for the subject and models and then asked
             of every template before any launches, after the engine's own pricing. It checks what only the
             host's launchers know; a generation's calls and every template's arms the battery prices itself.
@@ -3117,7 +3166,8 @@ async def start_universal_battery(
             ceiling — raised once the set is listed and before any subject is read or arm prepared,
             so nothing launches.
         ValidationFailedError: An unrecognised ``cassette_mode``, ``'replay'`` (a corpus serves one
-            template, and a battery runs many), a non-positive ``max_cost_usd``, a generating template whose
+            template, and a battery runs many), a non-positive ``max_cost_usd`` or one above the host's configured
+            ceiling, a generating template whose
             writer's calls cannot be priced under an enforced out-of-run cap or are priced above it, or any
             refusal a template or its arm would make at launch — raised before any template launches, so
             nothing does.
@@ -3138,6 +3188,10 @@ async def start_universal_battery(
     settings = host.settings()
     if max_cost_usd is not None and max_cost_usd <= 0:
         raise ValidationFailedError(_battery_refusal(ValueError(f"max_cost_usd must be > 0 (got {max_cost_usd})")))
+    try:
+        _refuse_raised_ceilings(settings, max_cost_usd=max_cost_usd, max_metered_calls=None)
+    except ValidationFailedError as refused:
+        raise ValidationFailedError(_battery_refusal(refused)) from refused
     # Every template is one launch of one run per model, so a launch's own argument refusals — a model named
     # twice, more arms than one launch may start — read the battery's arguments alone, and are made here once.
     try:

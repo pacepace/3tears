@@ -121,6 +121,28 @@ def test_markup_an_author_wrote_is_text_not_markup() -> None:
     assert any("<script>alert(1)</script>" in text for text in _parsed(page).text), "the words survive as text"
 
 
+def test_a_closed_value_that_bypassed_validation_is_escaped_too() -> None:
+    """``basis``, a text block's ``role`` and a disclosure's ``source`` are closed vocabularies, and still escaped.
+
+    A report built without validation (``model_construct``, ``model_copy``) can carry anything in them, and the
+    page's "every attribute escaped" holds of the page, not of the model that usually guards it.
+    """
+    breakout = '"><script>alert(1)</script><p x="'
+    report = _hostile_report()
+    blocks = [
+        block.model_copy(update={"role": breakout})
+        if block.kind == "text"
+        else block.model_copy(update={"source": breakout})
+        if block.kind == "disclosure"
+        else block
+        for block in report.blocks
+    ]
+    page = report_html(report.model_copy(update={"basis": breakout, "blocks": blocks}))
+
+    assert _what_runs(page) == []
+    assert any(dict(attrs).get("data-basis") == breakout for tag, attrs in _parsed(page).tags if tag == "article")
+
+
 def test_the_markdown_a_memo_uses_still_renders() -> None:
     """Escaping first is not escaping everything: a list, bold and code still become structure."""
     tags = [tag for tag, _ in _parsed(report_html(_hostile_report())).tags]

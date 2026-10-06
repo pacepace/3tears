@@ -40,7 +40,10 @@ from threetears.evals.analysis.report.serialize_html import report_html
 from threetears.evals.analysis.report.serialize_md import report_markdown
 
 #: The published schema, generated from :class:`Report` and committed beside it so a host can read it
-#: without importing the package. ``tests/test_report.py`` holds the file to the model.
+#: without importing the package. ``tests/test_report.py`` holds the file to the model. It states the shape and
+#: every cross-field rule JSON Schema can express; the three that compare a value with a sibling's (a finding
+#: position against ``finding_count``, ``total_rows`` against the rows shown, a row's keys against the columns)
+#: only the model's validators hold — :mod:`model`'s docstring names them.
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.json"
 
 #: The JSON Schema dialect the published schema declares.

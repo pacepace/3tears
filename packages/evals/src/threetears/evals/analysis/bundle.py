@@ -1221,7 +1221,14 @@ class ComparisonFamily(EvalDocumentModel):
     axes) are adjusted together, and a verdict stands only on the adjusted p.
     """
 
-    question_id: str = Field(min_length=1, description="The live declared question this family serves.")
+    question_id: str | None = Field(
+        min_length=1,
+        description=(
+            "The live declared question this family serves. None for the campaign-wide family a campaign declaring no "
+            "question gets: every comparison it holds, on every reading, corrected as one — so a chance difference is "
+            "no more a finding for a campaign that asked nothing than for one that asked."
+        ),
+    )
     merit_axes: list[MeritAxis] = Field(
         default_factory=list,
         description="The axes the question names. Empty = an unscoped question, whose family covers every axis.",
@@ -1243,14 +1250,21 @@ class ComparisonFamily(EvalDocumentModel):
 
 
 class MultipleComparisons(EvalDocumentModel):
-    """The campaign's comparisons, one corrected family per live declared question."""
+    """The campaign's comparisons, one corrected family per live declared question — or one for the whole campaign."""
 
     families: list[ComparisonFamily] = Field(
-        default_factory=list, description="One per live declared question, in declaration order."
+        default_factory=list,
+        description=(
+            "One per live declared question, in declaration order; with no question declared, one campaign-wide "
+            "family over every reading (`question_id` None)."
+        ),
     )
     withheld: str | None = Field(
         default=None,
-        description="Why there is no family at all — no question declared, or no control to compare against. None when families exist.",
+        description=(
+            "Why there is no family at all — no control to compare a contrast against, so no separation between "
+            "arms is tested and none may be claimed. None when families exist."
+        ),
     )
 
 
@@ -5181,8 +5195,8 @@ def _short_cells(cells: list[Cell], design: CampaignDesign | None) -> list[Short
                 # to the cell's alias, which a digest spelled into prose would bypass.
                 sentence=(
                     f"This cell ran its least-repeated case {observed} times against the {intended} repetitions "
-                    "the campaign declared it intends per cell, so its estimates rest on less replication than "
-                    "the design set out to buy."
+                    "the campaign declared it intends per case in each cell, so its estimates rest on less "
+                    "replication than the design set out to buy."
                 ),
             )
         )
@@ -5260,10 +5274,8 @@ def _verdict_order(adjudications: list[BarAdjudication], design: CampaignDesign 
     for question in design.live_questions() if design is not None else []:
         if not question.merit_axes:
             continue
-        axes = sorted(
-            dict.fromkeys(question.merit_axes),
-            key=lambda axis: priority.index(axis) if axis in ranked else len(priority),
-        )
+        # Each axis once: the declaration refuses a repeat, so the reader takes the list as it is.
+        axes = sorted(question.merit_axes, key=lambda axis: priority.index(axis) if axis in ranked else len(priority))
         questions.append(
             QuestionScope(
                 question_id=question.id,
@@ -5281,9 +5293,10 @@ def _verdict_order(adjudications: list[BarAdjudication], design: CampaignDesign 
 
 
 #: Why a bundle carries no family of comparisons, one sentence per cause.
-_NO_QUESTION_TO_CORRECT_FOR = (
-    "This campaign declares no live question, so there is no family of comparisons to correct and no separation "
-    "between arms is tested here."
+#: Opens the campaign-wide family's disclosure, where the campaign declares no question.
+_NO_QUESTION_FAMILY = (
+    "This campaign declares no live question, so every comparison it holds — each contrast against the control, "
+    "on every reading — is corrected as one family."
 )
 _NO_CONTROL_TO_COMPARE_AGAINST = (
     "No control resolved, so there is no arm for a contrast to be tested against and no separation between arms is "
@@ -5423,19 +5436,20 @@ def _compare(
     return comparison, p_raw
 
 
-def _family_disclosure(family_size: int, n_untested: int, alpha: float) -> str:
+def _family_disclosure(family_size: int, n_untested: int, alpha: float, *, campaign_wide: bool = False) -> str:
     """The sentence a writer quotes about one family, composed from what the family holds."""
+    asked = "the campaign holds" if campaign_wide else "this question asks about"
     if family_size == 0:
-        sentence = "No comparison this question asks about carried a p, so it supports no separation between arms."
+        sentence = f"No comparison {asked} carried a p, so it supports no separation between arms."
     else:
         sentence = (
-            f"{family_size} comparison{'s' if family_size != 1 else ''} this question asks about carried a p and "
+            f"{family_size} comparison{'s' if family_size != 1 else ''} {asked} carried a p and "
             f"{'were' if family_size != 1 else 'was'} corrected together by Holm's method at "
             f"α={format_number(alpha)}; a separation stands only where the adjusted p is below it."
         )
     if n_untested:
         sentence += f" {n_untested} more could not be tested; each says why."
-    return sentence
+    return f"{_NO_QUESTION_FAMILY} {sentence}" if campaign_wide else sentence
 
 
 def _multiple_comparisons(
@@ -5448,7 +5462,7 @@ def _multiple_comparisons(
     judged_measures: list[JudgedMeasure],
     profile: HostProfile,
 ) -> MultipleComparisons:
-    """Test each contrast against the control, per live question, and correct each question's family.
+    """Test each contrast against the control, per live question — or campaign-wide — and correct each family.
 
     A question's family is every comparison it could draw a verdict from: each contrast cell against
     the control cell under the same rig (a contrast across rigs differs by its instrument too, so it is
@@ -5466,14 +5480,17 @@ def _multiple_comparisons(
         profile: The host whose vocabulary this reads.
 
     Returns:
-        One family per live question, in declaration order; or none, with the reason, when the campaign
-        declares no live question or no control resolved.
+        One family per live question, in declaration order; one campaign-wide family over every reading when
+        the campaign declares no live question; or none, with the reason, when no control resolved.
     """
-    questions = declared.live_questions() if declared is not None else []
-    if not questions:
-        return MultipleComparisons(withheld=_NO_QUESTION_TO_CORRECT_FOR)
     if realized.control_arm is None:
         return MultipleComparisons(withheld=_NO_CONTROL_TO_COMPARE_AGAINST)
+    questions = declared.live_questions() if declared is not None else []
+    # A campaign that asked nothing is not thereby licensed to report chance differences: its family is every
+    # comparison it holds, on every reading, corrected as one.
+    scopes: list[tuple[str | None, list[MeritAxis]]] = (
+        [(question.id, list(question.merit_axes)) for question in questions] if questions else [(None, [])]
+    )
     control_variant = realized.control_arm.variant_key
 
     judged_rows: dict[str, list[ScoreRecord]] = {}
@@ -5489,8 +5506,7 @@ def _multiple_comparisons(
     ]
 
     families = []
-    for question in questions:
-        axes = list(dict.fromkeys(question.merit_axes))
+    for question_id, axes in scopes:
         readings = _family_readings(axes, catalog, judged_measures)
         tested: list[tuple[FamilyComparison, float | None]] = []
         for reading in sorted(readings):
@@ -5522,12 +5538,14 @@ def _multiple_comparisons(
         n_untested = sum(1 for comparison in comparisons if comparison.verdict == "untested")
         families.append(
             ComparisonFamily(
-                question_id=question.id,
+                question_id=question_id,
                 merit_axes=axes,
                 family_size=family_size,
                 n_untested=n_untested,
                 comparisons=comparisons,
-                disclosure=_family_disclosure(family_size, n_untested, SIGNIFICANCE_ALPHA),
+                disclosure=_family_disclosure(
+                    family_size, n_untested, SIGNIFICANCE_ALPHA, campaign_wide=question_id is None
+                ),
             )
         )
     return MultipleComparisons(families=families)
@@ -5705,16 +5723,27 @@ def _time_positions(
         declared = profile.sweepables.get(profile.release_label)
         if declared is None:
             raise RuntimeError(f"release_label {profile.release_label!r} names no registered input")
-        values = {run.id: declared.read(run, results_by_run[run.id]) for run in runs}
-        unrecorded = [run.id for run in runs if values[run.id] is None or not str(values[run.id]).strip()]
+        # Normalised ONCE, and every check below reads the normalised label: a position's key is stripped
+        # where it is stored (the base stance), so two labels that differ only in whitespace — a version read
+        # from a file with its trailing newline — are one build, and grouping them as two would hand the axis
+        # two positions it then refuses as repeated.
+        values = {run.id: _release_label(declared.read(run, results_by_run[run.id])) for run in runs}
+        unrecorded = [run.id for run in runs if values[run.id] is None]
         if unrecorded:
             named = ", ".join(sorted(unrecorded))
             release_why = f"{len(unrecorded)} of {len(runs)} runs recorded no {profile.release_label} ({named})"
-        elif len({str(value) for value in values.values()}) > 1:
-            return "release", _group_in_order(runs, lambda run: str(values[run.id])), ""
+        elif len(set(values.values())) > 1:
+            return "release", _group_in_order(runs, lambda run: values[run.id] or ""), ""
         else:
             release_why = f"every run recorded one {profile.release_label} ({next(iter(values.values()))})"
     return "date", _group_in_order(runs, _utc_day), release_why
+
+
+def _release_label(value: object) -> str | None:
+    """A run's release label as a time position keys it: stripped, and ``None`` when it recorded none or only blanks."""
+    if value is None:
+        return None
+    return str(value).strip() or None
 
 
 def _group_in_order(runs: list[EvalRun], key: Callable[[EvalRun], str]) -> list[tuple[str, list[EvalRun]]]:

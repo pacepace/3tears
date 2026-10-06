@@ -529,7 +529,7 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
             reading = f"{comparison.name} (judged)" if comparison.reading == "judged" else comparison.name
             rows.append(
                 {
-                    "question": family.question_id,
+                    "question": family.question_id if family.question_id is not None else "(campaign-wide)",
                     "reading": reading,
                     "contrast": arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id),
                     "control": arm(comparison.control.variant_key, comparison.control.apparatus_class_id),
@@ -648,6 +648,27 @@ def _listed(ids: Sequence[str]) -> str:
     return ", ".join(ids)
 
 
+def _verdict_order_sentence(bundle: AnalysisContextBundle) -> str | None:
+    """The tie-break order the campaign declared over its merit axes, with the bars each tier holds — or nothing.
+
+    The writer is told this order; a reader of a code-only report, which has no writer, would otherwise never
+    see the priority the campaign stated.
+    """
+    order = bundle.verdict_order
+    if not order.merit_priority:
+        return None
+    tiers = "; ".join(
+        f"{tier.axis} ({_listed(tier.bar_measure_ids) if tier.bar_measure_ids else 'no adjudicated bar'})"
+        for tier in order.tiers
+    )
+    unranked = (
+        f" Bars on no ranked axis, which the order does not place: {_listed(order.unranked_bar_measure_ids)}."
+        if order.unranked_bar_measure_ids
+        else ""
+    )
+    return f"The campaign ranks its merit axes, strongest first, to break a tie no bar decides: {tiers}.{unranked}"
+
+
 def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
     """Every disclosure the evidence bundle carries about its runs, how they were measured, and the rig."""
     blocks: list[ReportBlock] = []
@@ -687,6 +708,7 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
         )
     for cell in bundle.short_cells:
         say("runs", cell.sentence)
+    say("surface", _verdict_order_sentence(bundle))
     say("measurement", bundle.launch_disclosure)
     say("measurement", bundle.measurement_window_disclosure)
     for instability in bundle.subject_key_instabilities:

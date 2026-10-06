@@ -65,8 +65,9 @@ def _bundle(
     matched: tuple[Sequence[bool], Sequence[bool]] | None = None,
     accuracy: tuple[Sequence[float], Sequence[float]] | None = None,
     profile: HostProfile | None = None,
+    rigs: Sequence[str] = ("",),
 ) -> AnalysisContextBundle:
-    """A control and one contrast, scored on one judged dimension per entry of ``differences``.
+    """A control and one contrast, scored on one judged dimension per entry of ``differences``, on each of ``rigs``.
 
     The control scores 3 on every dimension of every case; the contrast scores ``3 + difference``.
     Results carry no goal check and no cost, so the judged dimensions are the whole family — unless
@@ -76,12 +77,14 @@ def _bundle(
     dims = _dims(len(differences))
     runs = []
     results: dict[str, list[EvalResult]] = {}
-    for model in (CONTROL, CONTRAST):
-        run = make_eval_run(status="completed", candidate_model=model)
+    for model, rig in ((model, rig) for model in (CONTROL, CONTRAST) for rig in rigs):
+        # A rig is the reviewer pool the toy host records as apparatus; "" leaves the run on the default one.
+        payload = {"toyhost": {"reviewer_pool": rig}} if rig else {}
+        run = make_eval_run(status="completed", candidate_model=model, host_payload=payload)
         runs.append(run)
         results[run.id] = [
             make_eval_result(
-                id=f"{model}-{case}",
+                id=f"{model}-{rig}-{case}",
                 eval_run_id=run.id,
                 scope_id=run.scope_id,
                 model=model,
@@ -248,17 +251,53 @@ class TestWhatAFamilyCovers:
         assert family.merit_axes == ["cost"]
         assert not [c for c in family.comparisons if c.reading == "judged"]
 
-    def test_no_question_means_no_family(self) -> None:
-        bundle = _bundle([CLEAR], questions=False)
-        assert bundle.multiple_comparisons.families == []
-        assert bundle.multiple_comparisons.withheld is not None
-        assert "no live question" in bundle.multiple_comparisons.withheld
+    def test_no_question_means_one_campaign_wide_family_over_every_reading(self) -> None:
+        """A campaign that asked nothing is not licensed to report chance differences: every comparison is one family."""
+        bundle = _bundle([CLEAR, *[NOISE] * 9], questions=False)
+
+        family = _family(bundle)
+        assert bundle.multiple_comparisons.withheld is None
+        assert (family.question_id, family.merit_axes, family.family_size) == (None, [], 10)
+        assert family.disclosure.startswith("This campaign declares no live question, so every comparison")
+
+    def test_a_chance_difference_in_a_campaign_with_no_question_does_not_separate(self) -> None:
+        """The Done-when case, with no question declared: raw p ≈ 0.026 separates alone and not among ten."""
+        borderline = next(
+            c
+            for c in _family(_bundle([BORDERLINE, *[NOISE] * 9], questions=False)).comparisons
+            if c.name.endswith("d0")
+        )
+        assert borderline.p_raw is not None and borderline.p_raw < 0.05
+        assert borderline.verdict == "not_separated"
+        assert borderline.p_adjusted is not None and borderline.p_adjusted >= 0.05
 
     def test_no_control_means_no_family(self) -> None:
         bundle = _bundle([CLEAR], control=None)
         assert bundle.multiple_comparisons.families == []
         assert bundle.multiple_comparisons.withheld is not None
         assert "No control resolved" in bundle.multiple_comparisons.withheld
+
+    def test_the_writer_is_not_licensed_to_separate_arms_without_a_family(self) -> None:
+        """The prompt once let a no-family campaign separate arms on a dimension's own sem, with no correction."""
+        assert "in a campaign with no family, where it clears that dimension's own noise floor" not in (
+            EVAL_ANALYSIS_GEN_DEFAULT
+        )
+        assert (
+            "Where the bundle carries no family (`multiple_comparisons.withheld` says why), no comparison between arms is separated"
+            in (EVAL_ANALYSIS_GEN_DEFAULT)
+        )
+        assert "in a campaign that declares no question, on every reading, as one campaign-wide family" in (
+            EVAL_ANALYSIS_GEN_DEFAULT
+        )
+
+    def test_a_contrast_is_paired_with_the_control_on_its_own_rig_only(self) -> None:
+        """Two rigs: each contrast cell meets the control cell of its rig, never the other's."""
+        family = _family(_bundle([CLEAR], rigs=("pool-a", "pool-b")))
+
+        rigs = {c.control.apparatus_class_id for c in family.comparisons}
+        assert len(rigs) == 2, "the fixture puts the cells on two rigs"
+        assert all(c.control.apparatus_class_id == c.contrast.apparatus_class_id for c in family.comparisons)
+        assert family.family_size == 1 * 1 * 2, "one contrast arm x one reading x two rigs"
 
     def test_the_bundle_test_and_the_stats_test_are_one_computation(self) -> None:
         family = _family(_bundle([BORDERLINE]))

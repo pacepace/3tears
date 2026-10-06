@@ -84,7 +84,7 @@ def report_html(report: Report) -> str:
         f"<style>{_STYLE}</style>",
         "</head>",
         "<body>",
-        f'<article data-basis="{report.basis}">',
+        f'<article data-basis="{_escape(report.basis)}">',
         f"<h1>{_inline(_one_line(title))}</h1>",
         f'<p class="source">{_escape(_one_line(report_byline(report)))}</p>',
     ]
@@ -134,7 +134,7 @@ def _text(block: TextBlock) -> str:
     )
     body = "" if lead else _markdown(block.body)
     return (
-        f'<div data-role="{block.role}">{lead}{body}'
+        f'<div data-role="{_escape(block.role)}">{lead}{body}'
         + (f'<p class="facts">{facts}</p>' if facts else "")
         + f"{rests}</div>"
     )
@@ -165,7 +165,7 @@ def _chart(block: ChartBlock) -> str:
 
 def _disclosure(block: DisclosureBlock) -> str:
     """Something code had to say, set apart from the author's words."""
-    return f'<div class="disclosure" data-source="{block.source}">{_escape(block.text)}</div>'
+    return f'<div class="disclosure" data-source="{_escape(block.source)}">{_escape(block.text)}</div>'
 
 
 def _table(block: TableBlock) -> str:

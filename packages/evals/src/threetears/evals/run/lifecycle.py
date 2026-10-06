@@ -172,8 +172,7 @@ def cancel_run(
             the canonical wiring, which is the only place that can see live tasks.
     """
     run = get_run(storage, run_id, scope_id)
-    if run.status not in NON_TERMINAL_RUN_STATUSES:
-        raise ValidationFailedError(f"run '{run_id}' is {run.status} — only pending/running runs can be cancelled")
+    require_cancellable(run)
     if job_manager is None:
         raise RuntimeError("cancel_run requires job_manager — without one, whether a run is live is unanswerable")
 
@@ -185,7 +184,43 @@ def cancel_run(
             reason or "(none)",
         )
         return get_run(storage, run_id, scope_id)
+    return repair_abandoned_run(storage, run_id, scope_id, reason=reason)
 
+
+def require_cancellable(run: EvalRun) -> None:
+    """Refuse a cancel of a run that has already ended — :func:`cancel_run`'s first check, for a caller that splits it.
+
+    Args:
+        run: The run as read.
+
+    Raises:
+        ValidationFailedError: The run is already terminal.
+    """
+    if run.status not in NON_TERMINAL_RUN_STATUSES:
+        raise ValidationFailedError(f"run '{run.id}' is {run.status} — only pending/running runs can be cancelled")
+
+
+def repair_abandoned_run(storage: RunRecordStore, run_id: str, scope_id: str, *, reason: str | None) -> EvalRun:
+    """Repair a non-terminal run no live task is running to ``cancelled`` — :func:`cancel_run`'s no-live-task half.
+
+    Every store call :func:`cancel_run` makes beyond its first read is here, so a caller serving an event
+    loop can ask the job manager on the loop and run this on its blocking executor
+    (:func:`~threetears.evals.ops.job_cancel` does).
+
+    Args:
+        storage: The run's store.
+        run_id: The run.
+        scope_id: The partition it lives in.
+        reason: The operator-facing reason, recorded on the run.
+
+    Returns:
+        The run as persisted after the repair.
+
+    Raises:
+        NotFoundError: No run with that id in the scope.
+        ValidationFailedError: The run is terminal on the authoritative re-read.
+        ConflictError: The conditional write lost its race; nothing was repaired.
+    """
     # No live task for a non-terminal run: the eval process restarted (or
     # crashed) while it was in flight, leaving the document stuck. Repair
     # it directly — the truthful terminal state is "cancelled by operator".
@@ -193,11 +228,10 @@ def cancel_run(
     current, etag = storage.load_eval_run_with_etag(run_id, scope_id)
     if current is None:
         raise NotFoundError("run", run_id)
-    if current.status not in NON_TERMINAL_RUN_STATUSES:
-        # Self-defense, not just the earlier gate: the ETag reload is the
-        # authoritative read for this write, so the invariant is enforced
-        # on it rather than assumed from the await-free window above.
-        raise ValidationFailedError(f"run '{run_id}' is {current.status} — only pending/running runs can be cancelled")
+    # Self-defense, not just the earlier gate: the ETag reload is the
+    # authoritative read for this write, so the invariant is enforced on it
+    # rather than assumed from whatever window separated the first read from this one.
+    require_cancellable(current)
     data = current.to_dict()
     data["status"] = "cancelled"
     data["cancellation_reason"] = detail
@@ -654,5 +688,7 @@ __all__ = [
     "get_run",
     "record_completeness",
     "rejudge_result",
+    "repair_abandoned_run",
+    "require_cancellable",
     "sweep_abandoned_runs",
 ]

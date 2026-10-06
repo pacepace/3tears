@@ -31,7 +31,9 @@ from threetears.evals.analysis.viz import (
     ChartRenderer,
     assert_renderer_conforms,
     chart_intent,
+    check_intent,
     renderer_disagreements,
+    table_disagreements,
 )
 from threetears.evals.contracts.campaign import VizType
 from threetears.evals.contracts.host import StyleProfile
@@ -182,6 +184,56 @@ def test_a_drawing_of_an_identity_the_intent_does_not_hold_disagrees() -> None:
         _Tampered(palette=packaged_palette("dark"), edit=add_a_row), _intent("breakdown")
     )
     assert "drew 'invented', which the intent does not hold" in disagreements
+
+
+def _table_spelled(intent: ChartIntent, value: Any) -> ChartIntent:
+    """``intent`` with every non-identity cell of its values table replaced by ``value`` — the drawing untouched."""
+    field = intent.identity.field if intent.identity is not None else None
+    rows = [{key: (cell if key == field else value) for key, cell in row.items()} for row in intent.rows]
+    return intent.model_copy(update={"rows": rows})
+
+
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_a_values_table_that_disagrees_with_the_marks_is_refused_by_the_policy_and_the_conformance_run(
+    case: str,
+) -> None:
+    """A builder that spelled a row from the wrong value: the drawing is faithful, the table beside it is not."""
+    intent = _intent(case)
+    assert check_intent(intent) == [] and renderer_disagreements(VegaRenderer.packaged("dark"), intent) == []
+
+    tampered = _table_spelled(intent, "999999")
+
+    assert any("values table" in violation for violation in check_intent(tampered))
+    assert any("values table" in d for d in renderer_disagreements(VegaRenderer.packaged("dark"), tampered))
+
+
+def test_one_number_moved_in_one_row_is_named() -> None:
+    intent = _intent("timeseries")
+    rows = copy.deepcopy(intent.rows)
+    rows[1]["mean"] = rows[1]["mean"] + 1.0
+    tampered = intent.model_copy(update={"rows": rows})
+
+    violations = table_disagreements(tampered)
+    assert any(f"row for {rows[1]['series']!r} states mean={rows[1]['mean']!r}" in v for v in violations), violations
+    assert any(f"the chart draws {rows[1]['series']!r} at mean=" in v for v in violations), "the mark it left unstated"
+
+
+def test_a_sweep_whose_drawn_configuration_the_table_misstates_is_refused() -> None:
+    """A sweep's rows show the levels, not the configuration's name: the drawn mark finds no row stating it."""
+    intent = _intent("sweep_ranking")
+    rows = copy.deepcopy(intent.rows)
+    rows[0]["ranked"] = rows[0]["ranked"] + 0.5
+    (violation,) = table_disagreements(intent.model_copy(update={"rows": rows}))
+    assert violation.startswith(f"the chart draws {intent.data[0]['config']!r} at ranked=")
+
+
+def test_a_withheld_row_with_no_mark_is_not_a_disagreement() -> None:
+    """A row the table states and the chart deliberately does not draw contradicts no mark."""
+    intent = _intent("attribution-withheld")
+    field = intent.identity.field if intent.identity is not None else ""
+    drawn = {datum.get(field) for datum in intent.data}
+    assert any(row.get(field) not in drawn for row in intent.rows), "the fixture withholds a row"
+    assert table_disagreements(intent) == []
 
 
 def test_the_conformance_run_raises_on_a_disagreement() -> None:

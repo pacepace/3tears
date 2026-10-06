@@ -6,6 +6,130 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a launch's predicted cost sits only beside its own template's cell, a campaign with no question still corrects its comparisons, and the same-rig and lower-is-better guards are pinned
+
+- **``PlannedCost`` carries ``template_id`` and ``run_ids``, and a cost pivot places a prediction only in a cell
+  whose observations are all its template's at its model.** A launch's prediction sat in every cell at the model
+  — another template's 5.5 beside a 0.2 predicted for this one. With ``run_ids`` (``LaunchEstimate.planned_costs``
+  and ``CostEstimate.planned_costs`` take them; ``scope_pivot`` and its action take ``launched_run_ids``), each
+  predicted cell says how many of its observations the plan did not make (``PivotCell.n_unplanned``), which is
+  the history the prediction was drawn from. A plan that lands in no cell is named
+  (``unplaced_predicted_models``, now ``model`` or ``model (template)``); one model planned twice on one template
+  is refused. **Breaking:** ``unplaced_predicted_models`` entries may name a template.
+- **A campaign that declares no question gets one campaign-wide family**: every contrast against the control, on
+  every reading, corrected by Holm's method together (``ComparisonFamily.question_id`` ``None``). It got no family,
+  and the generator prompt let it call separations on a dimension's own ``sem`` with no correction at all. The
+  prompt now says a comparison is separated only where ``multiple_comparisons`` separates it, and that with no
+  family (no control resolved) nothing is. **Breaking:** ``ComparisonFamily.question_id`` is nullable;
+  ``multiple_comparisons.withheld`` now only means no control resolved.
+- The same-rig pairing of a family is tested on a two-rig campaign; a lower-is-better bar at its floor is tested
+  as discriminating; ``propose_bars`` names each judged dimension in ``not_proposed``; ``PredictedValue`` names both
+  of its writers; the ``directional`` tier's comment says judge agreement is measured but sets no tier.
+
+### 3tears-evals: judge agreement averages a kappa per person when several people rate, the weighted kappa is pinned, and an agent rates through the catalogue
+
+- **With several people rating, a dimension's kappa is Light's kappa**: Cohen's kappa of the judge against each
+  person over the results that person rated, averaged (a person whose kappa is undefined is left out). Pooling
+  every (judge, person) pair entered a result two people rated twice and read their disagreement with each other
+  as the judge's. With one person nothing changes. ``weighted_kappa`` is averaged the same way and now pinned to
+  its value on a fixture where it differs from the unweighted kappa and from one weighted over the scores seen.
+- **New ``result_rate`` operation and write action** — an agent's rating, with ``rater_kind`` fixed to ``agent``
+  and the caller's identity as the rater, so every host's agent surface shares one write instead of
+  re-implementing it and its rule.
+- The rating's id is documented as derived from result, dimension, rater and kind of rater, and
+  ``CalibrationRating`` says it holds a person's or an agent's score.
+
+### 3tears-evals: a merit ranking names each axis once, the least-repeated case is pinned, and a code-only report states the declared priority
+
+- **``CampaignDesign.merit_priority`` and ``Question.merit_axes`` refuse an axis named twice.** A repeat put one
+  bar in two "strongest-first" tiers; the reader no longer de-duplicates a question's axes behind the declaration's
+  back. **Breaking:** a declaration with a repeated axis is refused.
+- A short cell's sentence says the repetitions are intended "per case in each cell", and ``short_cells`` is now
+  tested on a cell whose cases ran unevenly, so reading the most-repeated case instead fails.
+- **Every report states the tie-break order the campaign declared** (a methods disclosure naming each ranked axis
+  and its bars, and the bars no ranked axis places). A code-only report has no writer to be told it.
+- ``BarAdjudication.merit_axis`` says its ``None`` has two causes and that ``state`` tells them apart.
+
+### 3tears-evals: a chart's values-as-drawn table is held to its marks, by the policy and by the renderer conformance check
+
+- **Policy rule 12 now ties the values table to the marks** (``table_disagreements``, exported from
+  ``analysis.viz``): a row's value under a key a mark of its identity carries is that mark's value — the same
+  number, the same text, or text spelling the number to the precision written (``-31.8 s``; ``+72.7%`` for
+  0.727) — and every drawn mark has a row that states it. Before, the conformance check compared the drawing
+  with ``data`` only, so an intent whose table disagreed with its picture passed the policy and every renderer.
+  ``renderer_disagreements`` reports these too, which makes the intent docstring's claim — a renderer is held to
+  the table — true. A column only the table carries (a delta table's arm values) is the builder's to spell.
+
+### 3tears-evals: the report's published schema states every cross-field rule JSON Schema can, and says which three it cannot
+
+- **``schema.json`` now refuses what the model refuses, but for three rules.** It accepted a code-only report with
+  a headline, an analysis id, a model and findings; a block linked to findings a report without any does not
+  hold; a finding title naming no finding; and a chart block with neither an intent nor an error. Each is now an
+  ``if``/``then`` in the schema (generated from the model through ``json_schema_extra``), as is a chart intent of
+  another type than its block. The three that compare a value with a sibling's — a finding position against
+  ``finding_count``, ``total_rows`` against the rows shown, a row's keys against the columns — JSON Schema cannot
+  state; the README and the model's docstring now say the model alone holds them, and a test pins that the
+  schema's superset is exactly those three.
+- The HTML serializer escapes ``basis``, a text block's ``role`` and a disclosure's ``source`` like every other
+  attribute, so a report built without validation cannot break out of one.
+
+### 3tears-evals: a timeseries survives a whitespace-variant release label, states every gap, holds a date axis to calendar days, and names interleaved builds
+
+- **A release label is normalised once, for every check.** Two runs recording ``v1`` and ``v1 `` (a version read
+  with its trailing newline) were two builds to the grouping and one to the stored position key, so the axis
+  refused its own positions as repeated and the whole bundle — analysis and report with it — failed to assemble.
+  They are one build now; a label of only whitespace counts as unrecorded.
+- **``TimeseriesPayload`` refuses a series with no point and no stated gap at a position**, and a gap naming a
+  series it does not draw. "A gap is stated, never bridged" held only for payloads the builder made.
+- **A ``date`` axis's positions must be ISO days in calendar order**, which its disclosure ("Days are UTC, in
+  calendar order") already claimed.
+- **Interleaved builds are disclosed.** A release axis whose build went on being run after the next build began
+  (``v1``, ``v2``, ``v1`` again) pooled both sides of the step under ``v1`` and read as a clean before/after; the
+  payload's new ``interleaved`` names each such build and the chart says so.
+
+### 3tears-evals: a launch may only lower the host's per-run ceiling; a job is answered only in its scope; an analysis generation is priced, capped and ledgered
+
+- **A launch's ``max_cost_usd`` (and ``max_metered_calls``) may only LOWER the host's configured ceiling, never
+  raise it.** ``run_launch``'s help said so; the code let an override replace the ceiling, so any caller with the
+  spend tool could raise it without limit. The rule lives once, in ``run.ceilings.refuse_raised_ceiling`` (new;
+  raises the new ``CeilingRaisedError``), which ``resolve_ceiling`` applies too, and every launch surface refuses
+  before anything is priced: ``start_run``, ``quote_launch``, ``start_universal_battery``, the ``run_launch`` /
+  ``launch_estimate`` operations and actions, the FastMCP transport and the command line's ``--max-cost-usd``. It
+  holds with enforcement off. An over-cap arm's refusal now says whether a larger ``max_cost_usd`` can help (only
+  up to the host's ceiling) or only the host's operator can. **Breaking:** a launch naming a cap above the host's
+  is refused. **Adopters:** a launch that raised the cap must lower it, or the host's setting must rise.
+- **``job_poll`` and ``job_cancel`` answer a generation only to the scope and campaign that started it.** The job
+  manager is process-wide, and both read liveness by attempt id alone, so another scope that learned an attempt id
+  could poll it (its typed campaign echoed back as fact) and cancel it. A generation is now live to a caller only
+  under ``generation_key(campaign, scope)`` (moved to ``ops.jobs``, still exported from ``ops``): from anywhere
+  else it reads ``lost`` and a cancel is refused.
+- **No store call of ``analysis_generate`` or ``job_cancel`` runs on the event loop.** Loading the campaign and
+  assembling the bundle, and storing the analysis, its attempt record, its insights and every ledger row, run on
+  the host's blocking executor; a cancel arriving mid-write is delivered once the write is recorded. A run cancel's
+  read and abandoned-run repair are split out of ``cancel_run`` as ``run.lifecycle.require_cancellable`` and
+  ``repair_abandoned_run`` so only the job manager is asked on the loop. ``wait_through_cancellation`` moves to
+  ``contracts.offload`` (``run.offload`` is gone) so the analysis package can use it.
+- **An analysis generation is held to the host's out-of-run cap (``LaunchSettings.max_out_of_run_cost_usd``) and
+  ledgered under the new purpose ``analysis``.** Every generator call goes through ``OutOfRunBudget``: the first is
+  priced before the job starts, so one over the cap, or unpriceable under it, is refused with nothing spent; the
+  one repair round-trip is priced when its prompt exists, against what is left, and refused before it is sent;
+  each call is ledgered, so ``scope_out_of_run_spend`` reads analysis spend beside case generations and rubric
+  proposals. ``OutOfRunSpend`` and ``OutOfRunBudget`` gain ``campaign_id``. New ``analysis_estimate`` operation and
+  read action (``analysis.estimate_analysis_generation``, ``AnalysisGenerationEstimate``) price a generation
+  without calling a model. ``generate_analysis`` takes an optional ``admit`` hook (``CallAdmission``) asked before
+  each call is counted or sent. **Breaking:** ``prepare_analysis_generation`` takes a required keyword
+  ``out_of_run_cap_usd``; a generation on a client that cannot price (``price_ceiling`` returns ``None``) under an
+  enforced cap is refused. **Adopters:** pass the host's out-of-run cap (``None`` with enforcement off) and give
+  the analysis client a rate.
+- **New ``analysis_archive`` operation and write action** — the reversible answer ``analysis_delete``'s help already
+  pointed to (``archive_reason`` is recorded, cleared on restore).
+- **The launch's arguments are declared once.** ``ops.LaunchArguments`` carries every field's bound and
+  description; the ``run_launch`` and ``launch_estimate`` actions' parameters derive from it, so a field added to
+  one cannot silently take its default through the other. ``LaunchArguments`` now refuses what the action always
+  did (an empty id, ``k_runs`` below 1, a non-positive cap).
+- The ``spend`` permission class is documented as a label, not a promise the engine meters a host's own action.
+  The ``fastmcp`` floor is tested by running the transport's tests against it (the command is in ``pyproject``).
+
 ### 3tears-evals: a WorldSession says whose apparatus it records — a host grading a witnessed cell through one gets the witnessed rule, and a witnessed cell refuses a rig's events
 
 - **``WorldSession`` takes a required keyword ``provenance``** (the run's ``apparatus_provenance``), which its

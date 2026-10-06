@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeIs, get_args
 
 from pydantic import BaseModel, Field, ValidationError
@@ -164,6 +165,12 @@ def analysis_gen_request_settings_for(
         max_tokens=reasoning_budget_tokens + answer_budget_tokens,
         reasoning_max_tokens=reasoning_budget_tokens,
     )
+
+
+#: Asked before each generator call is counted or sent, with ``(system, user, response_format)``; raises
+#: to refuse that call. How a caller holds a generation's calls to a cap without the generator knowing
+#: what a cap is (:func:`generate_analysis`'s ``admit``).
+CallAdmission = Callable[[str, str, "dict[str, Any] | None"], None]
 
 
 #: Provider requests one generation can send: the generation, and the one repair round-trip a
@@ -319,6 +326,7 @@ async def generate_analysis(
     bundle_assembled_at: str,
     prompt_version: str | None = None,
     tally: GenerationTally | None = None,
+    admit: CallAdmission | None = None,
     profile: HostProfile,
 ) -> tuple[EvalAnalysis, list[EvalInsight]]:
     """Generate one campaign's analysis from its context bundle, in one LLM call or two.
@@ -357,6 +365,11 @@ async def generate_analysis(
         tally: A caller-owned record of what this generation sent, spent and was refused, written as
             it goes so it is exact however the call ends — return, raise or cancellation. The
             caller's record of a FAILED attempt is read from it, since a failure returns nothing.
+        admit: Asked with each call's system prompt, user message and contract BEFORE the call is counted
+            or sent — the repair round-trip's included, whose prompt exists only once the first output is
+            refused. It raises to refuse the call, and the refusal propagates with nothing sent and nothing
+            counted for that call. ``None`` admits every call; a caller that prices calls against a cap
+            (:func:`~threetears.evals.analysis.service.run_analysis_generation`) passes its budget's.
         profile: The host whose vocabulary this reads.
 
     Returns:
@@ -389,6 +402,8 @@ async def generate_analysis(
         else prompt_content_version(prompt, profile, time_axis=bundle.time_axis is not None)
     )
     tally.prompt_version = resolved_prompt_version
+    if admit is not None:
+        admit(system_prompt, user_message, contract)
     tally.calls += 1
     result = await client.generate(system=system_prompt, user=user_message, response_format=contract)
     _log_generation(bundle, result, model, attempt="initial", tally=tally)
@@ -463,14 +478,13 @@ async def generate_analysis(
 
     # Reached only via the `except` above, since the `try` returns on success. A second
     # refusal propagates from here exactly as the first one used to — one attempt, then fail.
-    tally.calls += 1
-    repair_result = await client.generate(
-        system=system_prompt,
-        user=_repair_user_message(
-            user_message, writer_refusal, result.content or "(the generator returned no content)"
-        ),
-        response_format=contract,
+    repair_message = _repair_user_message(
+        user_message, writer_refusal, result.content or "(the generator returned no content)"
     )
+    if admit is not None:
+        admit(system_prompt, repair_message, contract)
+    tally.calls += 1
+    repair_result = await client.generate(system=system_prompt, user=repair_message, response_format=contract)
     _log_generation(bundle, repair_result, model, attempt="repair", tally=tally)
     try:
         return _assemble_and_validate(

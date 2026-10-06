@@ -16,9 +16,11 @@ measured against; colour is a named SLOT in a scheme, never a value.
 
 **Two tables, deliberately.** ``data`` holds the marks' values, numeric and in drawn order — what a
 renderer places. ``columns``/``rows`` are the values as drawn: the same chart as a table a reader can
-check the picture against, each header carrying its unit, each cell already spelled for reading. A
-renderer is held to agree with the second by its conformance test; a surface that cannot draw shows
-the second and loses nothing the chart claims.
+check the picture against, each header carrying its unit, each cell already spelled for reading. The
+second is held to the first by policy rule 12 (a row's value under a key a mark of its identity carries is
+that mark's value), and a renderer to the first by its conformance test, which reports both — so a picture
+that passes agrees with the table beside it. A surface that cannot draw shows the second and loses nothing
+the chart claims.
 
 **The policy rules read this, not a renderer's output** (:mod:`threetears.evals.analysis.viz.policy`),
 so they hold whatever draws the chart.

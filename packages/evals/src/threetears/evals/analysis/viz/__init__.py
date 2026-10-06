@@ -38,7 +38,7 @@ from threetears.evals.analysis.viz.intent import (
     chart_intent,
 )
 from threetears.evals.analysis.viz.payloads import SERIES_SLOTS, VALIDATED_SLOTS, PayloadError
-from threetears.evals.analysis.viz.policy import IntentPolicyError, check_intent
+from threetears.evals.analysis.viz.policy import IntentPolicyError, check_intent, table_disagreements
 from threetears.evals.analysis.viz.renderer import ChartRenderer, assert_renderer_conforms, renderer_disagreements
 
 __all__ = [
@@ -62,4 +62,5 @@ __all__ = [
     "chart_intent",
     "check_intent",
     "renderer_disagreements",
+    "table_disagreements",
 ]
