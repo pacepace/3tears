@@ -231,7 +231,9 @@ class DocumentStore(Protocol):
                 meaning :func:`omit_paths` gives them. For a bulk read whose consumer needs
                 the documents but not a heavy value inside them; the store drops it before
                 the document is shipped, so the value is never materialised at all.
-            **field_eq: Field-equality predicates over the document's other fields. A
+            **field_eq: Field-equality predicates over the document's other fields, compared on
+                the stored JSON type: a number never equals its text, and ``True`` never equals
+                ``1`` (nor ``False`` ``0``), as no JSON column's boolean equals a number. A
                 ``None`` value matches documents where the field is absent or null. Values are
                 scalars (``str``, ``int``, ``float``, ``bool``, ``None``): a store whose backend
                 compares an object or list by its serialised text cannot match one, so it may

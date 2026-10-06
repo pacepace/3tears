@@ -10,14 +10,15 @@ Three things are proved here:
   nothing, and the kit is only worth what it can catch in someone else's adapter.
 * **What is the reference store's own**, beyond the port: a document without its scope or id is
   refused, a sweep may delete as it iterates, and a conditional write's compare and write happen under
-  one lock, so two threads holding one etag cannot both land.
+  one lock, so the kit's racing-writers case holds even with every write slowed down.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import itertools
-import threading
+import json
 import time
 from collections.abc import Iterator, Sequence
 from typing import Any
@@ -231,6 +232,16 @@ class _PredicatesCompareText(InMemoryDocumentStore):
         return [d for d in rows if all(str(d.get(key)) == str(value) for key, value in predicates.items())]
 
 
+class _PredicatesComparePythonEquality(InMemoryDocumentStore):
+    """``by_doc_type`` compares predicates with Python ``==``, so ``True`` matches ``1`` and ``False`` matches ``0``."""
+
+    def by_doc_type(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+        names = {"order_by", "descending", "limit", "exclude"}
+        predicates = {key: value for key, value in kwargs.items() if key not in names}
+        rows = super().by_doc_type(doc_type, scope_id, **{key: kwargs[key] for key in names & kwargs.keys()})
+        return [d for d in rows if all(d.get(key) == value for key, value in predicates.items())]
+
+
 class _NoneMatchesOnlyNull(InMemoryDocumentStore):
     """A ``None`` predicate matches a field stored as null, but not one that is absent."""
 
@@ -342,6 +353,25 @@ class _EtagIsAVersionFromOne(InMemoryDocumentStore):
         return super().delete(doc_id, scope_id)
 
 
+class _EtagIsAContentHash(InMemoryDocumentStore):
+    """The etag is a digest of the document, so rewriting the same content keeps it and re-creating it revives it."""
+
+    def _mint_etag(self, key: tuple[str, str]) -> None:
+        self._etags[key] = hashlib.sha256(json.dumps(self.documents[key], sort_keys=True).encode()).hexdigest()
+
+
+class _ComparesThenWritesApart(InMemoryDocumentStore):
+    """A conditional write compares the etag, then writes in a second step, so racing writers all pass the compare."""
+
+    def upsert(self, document: dict[str, Any], *, if_match: str | None = None) -> None:
+        if if_match is not None:
+            _, etag = self.get_with_etag(document["id"], document["scope_id"])
+            if etag != if_match:
+                raise StoreConflict("stale etag")
+            time.sleep(0.005)  # the gap between the compare and the write, where another writer arrives
+        super().upsert(document)
+
+
 class _RefusesUnconditionalOverwrite(InMemoryDocumentStore):
     """A write without ``if_match`` to a document that exists is refused."""
 
@@ -418,6 +448,7 @@ _FAULTS: dict[type[InMemoryDocumentStore], frozenset[str]] = {
     _AcceptsKeepAndExclude: frozenset({"projection.keep_and_exclude_refused"}),
     _GetManyRepeats: frozenset({"projection.get_many_absent_and_repeated"}),
     _PredicatesCompareText: frozenset({"query.predicates_are_anded"}),
+    _PredicatesComparePythonEquality: frozenset({"query.predicates_are_anded"}),
     _NoneMatchesOnlyNull: frozenset({"query.none_matches_absent_or_null"}),
     _OrdersAsText: frozenset({"order.by_stored_type"}),
     _MissingSortsHighest: frozenset({"order.missing_sorts_lowest"}),
@@ -425,6 +456,7 @@ _FAULTS: dict[type[InMemoryDocumentStore], frozenset[str]] = {
     _NoEtags: frozenset({"etag.found_document_has_one", "etag.stale_write_is_refused"}),
     _IgnoresIfMatch: frozenset(
         {
+            "etag.racing_writers_one_lands",
             "etag.stale_write_is_refused",
             "etag.current_write_lands",
             "etag.gone_document_is_refused",
@@ -437,6 +469,8 @@ _FAULTS: dict[type[InMemoryDocumentStore], frozenset[str]] = {
     _MergeKeepsTheEtag: frozenset({"etag.merge_moves_it"}),
     _EtagSurvivesDelete: frozenset({"etag.gone_document_is_refused"}),
     _EtagIsAVersionFromOne: frozenset({"etag.recreated_document_is_new"}),
+    _EtagIsAContentHash: frozenset({"etag.current_write_lands", "etag.recreated_document_is_new"}),
+    _ComparesThenWritesApart: frozenset({"etag.racing_writers_one_lands"}),
     _RefusesUnconditionalOverwrite: frozenset({"etag.unconditional_write_lands"}),
     _MergeReplaces: frozenset({"merge.sets_fields_keeps_rest"}),
     _MergeSetsLocatingFields: frozenset({"merge.refuses_empty_and_locating"}),
@@ -500,36 +534,16 @@ class _SlowWrites(dict[tuple[str, str], dict[str, Any]]):
     """A documents table whose every write takes long enough for another thread to arrive."""
 
     def __setitem__(self, key: tuple[str, str], value: dict[str, Any]) -> None:
-        time.sleep(0.05)
+        time.sleep(0.01)
         super().__setitem__(key, value)
 
 
-def test_two_threads_holding_one_etag_cannot_both_land() -> None:
-    """The compare and the write are one step: of two writers presenting one etag, exactly one lands.
+def test_the_racing_writers_case_holds_when_every_write_is_slow() -> None:
+    """The kit's race case, made deterministic for the reference store: its compare and write are one locked step.
 
-    Without the lock both pass the compare during the other's slow write, both land, and the first
-    writer's change is lost with no conflict raised.
+    With each write slowed, a store that compared outside the lock would let every writer pass the compare
+    during another's write; the reference store still lands exactly one per round.
     """
     store = InMemoryDocumentStore()
-    store.upsert(_doc("d1", v=0))
-    _, etag = store.get_with_etag("d1", _SCOPE)
     store.documents = _SlowWrites(store.documents)
-    barrier = threading.Barrier(2)
-    outcomes: list[str] = []
-
-    def write(value: int) -> None:
-        barrier.wait()
-        try:
-            store.upsert(_doc("d1", v=value), if_match=etag)
-        except StoreConflict:
-            outcomes.append("conflict")
-        else:
-            outcomes.append("landed")
-
-    threads = [threading.Thread(target=write, args=(value,)) for value in (1, 2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
-    assert sorted(outcomes) == ["conflict", "landed"]
+    _CASES["etag.racing_writers_one_lands"].run(store)

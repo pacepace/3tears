@@ -9,7 +9,8 @@ here, from the public roots, on the terms the engine already sets:
   are the grade — and seeds no world.
 - **The host**, when none is given, is :func:`callable_host`: the shared sweepable core, one measure
   per scorer, no world, and the in-memory reference store. Given one, its storage and vocabulary are
-  used and every scorer must already be a measure it declares.
+  used: every scorer must already be a measure it declares, and it must declare a contract for the
+  callable kind that seats no judge, simulator or spend ceiling.
 - **The launch** goes through :func:`~threetears.evals.run.start_run`, the path a product serving
   launches takes, so the run is assembled, stamped and identified exactly as any other run is; the
   call then waits for its job and reads the stored run back.
@@ -90,8 +91,21 @@ _CASE_KEY = "case"
 #: The callable kind's contract: no overlays, no spec, and no rig seat — nothing in a ``run_eval`` run is
 #: graded by a model or talks to a simulated user. Without the empty seats each blank judge and simulator
 #: dimension would read as an unrecoverable judge or simulator and confound every comparison of two such
-#: runs. A host whose store receives ``run_eval`` runs declares the callable kind's seats on its own profile.
+#: runs. A host of the caller's own declares a contract for the callable kind on its profile too —
+#: this one, or one seating apparatus of its own the runs do read — and :func:`run_eval` refuses a host
+#: that does not (:data:`CALLABLE_UNSEATED`).
 CALLABLE_KIND_CONTRACT = KindContract(CALLABLE_KIND, seats=frozenset())
+
+#: What a ``run_eval`` run never has, whatever host it runs in, so a callable-kind contract may seat none of
+#: it: the engine's judge and simulator (by role or by any pinned dimension) — the callable kind is unjudged
+#: and simulates nobody — and the spend ceiling, which the one-call launch leaves off. A seat here would make
+#: every blank such dimension an unrecoverable level, and every comparison of two ``run_eval`` runs ``undecided``.
+CALLABLE_UNSEATED: frozenset[str] = frozenset(
+    {
+        *(name for role in SHARED_CORE.roles for name in (role.name, *role.pins)),
+        "max_cost_usd",
+    }
+)
 
 
 def _launch_settings() -> LaunchSettings:
@@ -291,6 +305,38 @@ def _refuse_unnamed_or_repeated(scorers: Sequence[Scorer]) -> None:
         raise ValueError(f"scorers named {', '.join(repeated)} more than once; each name is one measure")
 
 
+def _refuse_an_undeclared_callable_contract(host: EvalHost) -> None:
+    """Refuse a caller's host that has not declared what a ``run_eval`` run's rig holds.
+
+    A host with no contract for the callable kind holds its runs to every apparatus dimension
+    (:meth:`~threetears.evals.contracts.host.profile.HostProfile.kind_contract`), so the blank judge and
+    simulator of every such run reads as an unrecoverable one and confounds every comparison of two of
+    them, silently. Refused here, before anything is stored, rather than discovered in an analysis.
+    """
+    profile = host.profile
+    contract = next((declared for declared in profile.kinds if declared.kind == CALLABLE_KIND), None)
+    remedy = (
+        f"declare the callable kind's contract on its profile's kinds — CALLABLE_KIND_CONTRACT, or a "
+        f"KindContract({CALLABLE_KIND!r}, seats=...) seating only apparatus of the host's own that the runs read"
+    )
+    if contract is None or contract.seats is None:
+        what = "no contract" if contract is None else "a contract that declares no seats"
+        raise ValueError(
+            f"host {profile.host_id!r} has {what} for the {CALLABLE_KIND!r} kind, so every run_eval run would be "
+            f"held to the judge and simulator it never has and every comparison of two would read undecided; {remedy}"
+        )
+    if seated := sorted(contract.seats & CALLABLE_UNSEATED):
+        raise ValueError(
+            f"host {profile.host_id!r} seats {', '.join(seated)} for the {CALLABLE_KIND!r} kind, which a run_eval run "
+            f"never has — it is unjudged, simulates nobody and runs uncapped; {remedy}"
+        )
+    if contract.overlays is not None or contract.spec is not None:
+        raise ValueError(
+            f"host {profile.host_id!r} declares overlays or a spec for the {CALLABLE_KIND!r} kind, which run_eval "
+            f"neither turns nor states; {remedy}"
+        )
+
+
 def _refuse_undeclared_measures(host: EvalHost, scorers: Sequence[Scorer]) -> None:
     measures = host.profile.measures
     if undeclared := [name for scorer in scorers if measures.get(name := _scorer_name(scorer)) is None]:
@@ -377,7 +423,8 @@ async def run_eval(
         scope_id: The scope the template, cases and run are stored in. The engine never defaults it.
         host: Where to run and store: ``None`` builds :func:`callable_host` over the scorers, whose
             in-memory store lives only as long as this call. A host of the caller's own must declare
-            a measure for every scorer.
+            a measure for every scorer, and a contract for the callable kind (:data:`CALLABLE_KIND_CONTRACT`,
+            or one seating only apparatus of its own — never anything in :data:`CALLABLE_UNSEATED`).
         k: Repeats per case.
         model: The arm's label, stored as the run's candidate model and keyed into its variant;
             ``None`` takes the candidate's ``__name__``.
@@ -387,8 +434,9 @@ async def run_eval(
 
     Raises:
         ValueError: No cases, a case that is not a JSON object with string keys, no scorers, a
-            scorer with no name or a repeated one, a scorer the given host declares no measure for,
-            or no ``model`` for a candidate that has no ``__name__``.
+            scorer with no name or a repeated one, a given host that declares no callable-kind contract
+            (or one with no seats, a seat in :data:`CALLABLE_UNSEATED`, overlays or a spec), a scorer
+            the given host declares no measure for, or no ``model`` for a candidate that has no ``__name__``.
         ValidationFailedError: The launch refused: a ``k`` outside the run's bounds.
     """
     template_id, plain_cases = _case_set(cases)
@@ -396,6 +444,7 @@ async def run_eval(
     if host is None:
         host = callable_host(scorers)
     else:
+        _refuse_an_undeclared_callable_contract(host)
         _refuse_undeclared_measures(host, scorers)
     if model is None:
         model = getattr(candidate, "__name__", None)
@@ -442,6 +491,7 @@ __all__ = [
     "CALLABLE_HOST_ID",
     "CALLABLE_KIND",
     "CALLABLE_KIND_CONTRACT",
+    "CALLABLE_UNSEATED",
     "CallableKind",
     "Candidate",
     "Scorer",

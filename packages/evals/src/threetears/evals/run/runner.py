@@ -94,6 +94,7 @@ from threetears.evals.contracts.models import (
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
     CellTermination,
+    ConversationStopCause,
     EvalResult,
     EvalRun,
     EvalTemplate,
@@ -537,6 +538,17 @@ def _judge_record(
     )
 
 
+def _budget_stopped_cell_error(breach: CapBreach | None) -> str:
+    """The infra error a cell the run's cost cap cut short carries, naming the numbers it was stopped on."""
+    if breach is None:
+        return "the run's cost cap was reached inside the cell, which stopped making paid calls"
+    unpriced = f" and {breach.unpriced_results} unpriced" if breach.unpriced_results else ""
+    return (
+        f"the run's cost cap was reached inside the cell (${breach.accumulated_usd:.4f} priced{unpriced} against a "
+        f"${breach.max_cost_usd:.4f} cap), which stopped making paid calls"
+    )
+
+
 @dataclass
 class _CellSink:
     """The engine's record of one cell as it runs — everything a deadline's record is built from.
@@ -585,6 +597,12 @@ class _CellSink:
     #: built by the engine rather than the kind, so every exit records what fired before it and the
     #: end state if it was read: the session survives a cancel that destroys the kind's frame.
     world: WorldSession | None = None
+    #: The run's cost cap, as :func:`execute_run` was handed it — what :meth:`cost_cap_reached` asks.
+    #: ``None`` for a run with no cap wired, which nothing inside a cell can reach.
+    budget_gate: Callable[[float | None], CapBreach | None] | None = None
+    #: The breach the kind's own question reached, once it has — the cell is then cut short by the
+    #: run's ceiling, and the run stops ``budget_stopped`` once the cell is saved.
+    budget_breach: CapBreach | None = None
     #: The one reading taken, once :meth:`side` has taken it.
     _read: CandidateOutput | None = None
 
@@ -624,6 +642,26 @@ class _CellSink:
             read: What ``invoke`` would return if the cell ended now.
         """
         self.progress = read
+
+    def cost_cap_reached(self, spent_usd: float | None) -> bool:
+        """Whether the run's cost cap is reached once the cell's uncounted ``spent_usd`` is added.
+
+        Records the breach the first time it is reached, so the run loop stops the run on the numbers
+        the kind was stopped on even if it never asks again.
+
+        Args:
+            spent_usd: The cell's spend so far that its result has not yet reported; ``None`` when part
+                of it could not be priced.
+
+        Returns:
+            ``True`` once the cap is reached; always ``False`` for a run with no cap wired.
+        """
+        if self.budget_gate is None:
+            return False
+        breach = self.budget_gate(spent_usd)
+        if breach is not None and self.budget_breach is None:
+            self.budget_breach = breach
+        return breach is not None
 
     def begin_judging(self, phase: _JudgePhase) -> None:
         """Mark the judge phase begun: the cell now waits on the judge, and the phase is on record.
@@ -1129,6 +1167,12 @@ async def run_one_result(
         # cut-short record closes it too (idempotently), for the exits that are built before this runs.
         if cell_cassettes is not None:
             cell_cassettes.close()
+    if sink.budget_breach is not None or candidate.stop_cause is ConversationStopCause.BUDGET_STOPPED:
+        # The run's cost cap cut the cell short: what it holds is a truncated measurement, never the
+        # candidate's failure, so it is excluded on the rig's side and named for what stopped it.
+        candidate = candidate.model_copy(
+            update={"infra_errors": [*candidate.infra_errors, _budget_stopped_cell_error(sink.budget_breach)]}
+        )
     sink.adopt(candidate)
     if cell_cassettes is not None:
         cell_cassettes.hold(candidate.async_deliveries, complete=True)
@@ -2537,7 +2581,7 @@ async def execute_run(
     judge_service: JudgeService | None,
     options: RunnerOptions,
     callbacks: RunCallbacks | None = None,
-    budget_gate: Callable[[], CapBreach | None] | None = None,
+    budget_gate: Callable[[float | None], CapBreach | None] | None = None,
     on_cost: Callable[[float | None], None] | None = None,
     cell_sink: list[CellSummary] | None = None,
 ) -> list[CellSummary]:
@@ -2584,7 +2628,11 @@ async def execute_run(
     has exceeded its cap, or a result's spend could not be priced) the loop stops GRACEFULLY by raising
     :class:`~threetears.evals.run.budget.BudgetStoppedError`, carrying that breach so the
     stop reports the ceiling and the spend that crossed it rather than asserting
-    that one did. ``None`` from the gate means the run may proceed.
+    that one did. ``None`` from the gate means the run may proceed. The gate takes the spend
+    pending beyond what it has recorded — ``0.0`` between cells — because a running cell asks it
+    too, through its sink (:meth:`_CellSink.cost_cap_reached`), counting what it has spent so far: a
+    cell the cap stops that way is recorded excluded, and the loop raises
+    :class:`~threetears.evals.run.budget.BudgetStoppedError` once that cell is saved.
     Every already-run cell is saved before its successor's check, so nothing
     produced is lost; the job manager translates the raise into the
     ``budget_stopped`` status. ``on_cost`` is invoked with each saved result's
@@ -2615,7 +2663,7 @@ async def execute_run(
         ValueError: ``judge_service`` and ``run.judge_model`` disagree about whether this run is
             judged — one is set and the other is not. Refused before any cell runs, so nothing
             has been spent.
-        BudgetStoppedError: The cost cap tripped before a cell.
+        BudgetStoppedError: The cost cap tripped before a cell, or inside one.
         AccountExhaustedError: A cell's call was refused for the calling account.
         EveryCellApparatusFailedError: An apparatus fault excluded every cell the run produced.
         asyncio.CancelledError: The run was cancelled; the cell it struck is recorded first.
@@ -2673,7 +2721,7 @@ async def execute_run(
         # cell if this run's accumulated cost has exceeded its cap. Results
         # already saved below are preserved; the raise becomes a
         # ``budget_stopped`` run.
-        breach = budget_gate() if budget_gate is not None else None
+        breach = budget_gate(0.0) if budget_gate is not None else None
         if breach is not None:
             log.warning(
                 "Eval run %s stopping: $%.4f priced spend and %d unpriced result(s) against its $%.4f cap "
@@ -2694,7 +2742,7 @@ async def execute_run(
         # What the record needs survives on ``sink``, which this loop owns, the kind reports
         # into, and the timeout arm reads: the spend already billed, the
         # per-role rows, the output so far, and what the cell was waiting on when it struck.
-        sink = _CellSink()
+        sink = _CellSink(budget_gate=budget_gate)
         cancelled_in_cell = False
         try:
             async with host.cell_timeout(options.cell_timeout_s):
@@ -2866,6 +2914,24 @@ async def execute_run(
             raise AccountExhaustedError(
                 done, total, accumulated_usd=accumulated_usd, unpriced_results=unpriced_results, detail=refusal
             )
+        # The cell asked the cap mid-cell and was told it was reached, so it stopped making calls and
+        # was recorded excluded. The run stops here rather than at the next cell's gate, so a cut-short
+        # LAST cell still ends the run ``budget_stopped`` rather than ``completed``. The breach the gate
+        # reports now counts the whole cell, which ``on_cost`` has recorded; the one the cell was
+        # stopped on stands in only should that read come back inside the cap.
+        if sink.budget_breach is not None:
+            breach = (budget_gate(0.0) if budget_gate is not None else None) or sink.budget_breach
+            log.warning(
+                "Eval run %s stopping: its cost cap was reached inside a cell — $%.4f priced spend and %d unpriced "
+                "result(s) against its $%.4f cap after %d/%d results",
+                run.id,
+                breach.accumulated_usd,
+                breach.unpriced_results,
+                breach.max_cost_usd,
+                done,
+                total,
+            )
+            raise BudgetStoppedError(done, total, breach)
 
     # Every cell was excluded by an apparatus fault: the rig never worked, so the run measured
     # nothing at all. Ending it ``completed`` would publish a run with no measurement as a

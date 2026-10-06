@@ -11,7 +11,8 @@ Architecture
 
 A conversation is a sequence of **speaker rounds**. In each round one or more simulated actors
 speak, then the candidate answers the round once. A kind normally hands the loop to
-:func:`~threetears.evals.run.conversation.drive_conversation`, which is this, written once::
+:func:`~threetears.evals.run.conversation.drive_conversation`, which is this, written once — less the
+run's cost cap, asked before every paid call, and the answer the last actor's departure still gets::
 
    opener = driver.initial_utterance()          # the first actor's template, if any
    while driver.should_continue():
@@ -64,7 +65,22 @@ Spend
 Every simulator-role call this driver makes, utterance or scheduling, is one :class:`SimulatorCall`
 in :attr:`TurnDriver.calls`, attributed to the actor it produced or chose, and recorded before its
 reply is validated: a malformed reply was billed like any other. That list is the one record of the
-simulator's spend; :meth:`TurnDriver.fold_usage` folds it into the cell's ``simulator`` ledger.
+simulator's spend; :meth:`TurnDriver.fold_usage` folds it into the cell's ``simulator`` ledger, one
+stored row per actor and purpose (``RoleUsage.actor_id`` and ``RoleUsage.purpose``), so what each
+actor's lines and each pick of the scheduler cost survives the cell. :attr:`TurnDriver.cost_usd` is
+its total, which :func:`~threetears.evals.run.conversation.drive_conversation` asks the run's cost cap
+about before every further call.
+
+**The worst case one conversation can spend.** With ``T = max_turns``, ``S = max_speakers_per_round``
+and ``A`` actors: at most ``T·S`` lines are delivered and at most ``A`` replies are departures, so at most
+``T·S + A`` utterance calls are made; every ``llm_decided`` decision ends in one of those or in one
+``round_done`` per round, and makes at most :data:`SCHEDULER_CALL_ATTEMPTS` calls, so at most
+``2·(T·S + A + T)`` scheduling calls. That is ``3·(T·S + A) + 2·T`` simulator calls under ``llm_decided``
+(``T·S + A`` under ``round_robin``) — at the schema's maxima (``T = 100``, ``S = 20``) over 6,000 calls,
+each capped at :data:`SIMULATOR_REQUEST_SETTINGS`'s ``max_tokens``. Under an enforcing cost cap the run's
+ceiling binds first: the loop stops ``budget_stopped`` before any call once the run's recorded spend
+plus this conversation's simulator spend exceeds the cap, so the overshoot is one simulator call plus
+the cell's candidate spend. With no cap enforced, the structure above is the only bound.
 
 Why this is engine API
 ----------------------
@@ -83,7 +99,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -96,6 +112,7 @@ from threetears.evals.contracts.models import (
     ClientRequestSettings,
     ConversationSpec,
     ConversationStopCause,
+    SimulatorPurpose,
 )
 from threetears.evals.contracts.provider import SimulatorLLM
 from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
@@ -230,7 +247,7 @@ class SimulatorCall:
     off the response whatever the reply held, with ``None`` fields where the client reported nothing.
     """
 
-    purpose: Literal["utterance", "schedule"]
+    purpose: SimulatorPurpose
     actor_id: str | None
     round_index: int
     usage: CallUsage
@@ -524,8 +541,23 @@ class TurnDriver:
 
     # ---- Spend --------------------------------------------------------------
 
+    @property
+    def cost_usd(self) -> float | None:
+        """What every call in :attr:`calls` cost, or ``None`` once any one of them went unpriced.
+
+        Unpriced is a state, never zero (:func:`~threetears.evals.contracts.usage_capture.blended_cost`):
+        a total over a call nobody priced is unknown, and a cost cap stops on it rather than counting it free.
+        """
+        if any(call.usage.cost_usd is None for call in self.calls):
+            return None
+        return sum(call.usage.cost_usd or 0.0 for call in self.calls)
+
     def fold_usage(self, ledger: RoleUsageLedger) -> None:
-        """Fold every call in :attr:`calls` into the cell's ``simulator`` ledger.
+        """Fold every call in :attr:`calls` into the cell's ``simulator`` ledger, one row per actor and purpose.
+
+        Each call lands under the actor it spoke for or chose and its purpose (``utterance`` or
+        ``schedule``), so the stored rows say what each actor and the scheduler spent; a pick that chose
+        nobody (``round_done``, a refused reply) lands under no actor.
 
         Args:
             ledger: The cell's simulator-role ledger.
@@ -537,7 +569,7 @@ class TurnDriver:
         if ledger.role != "simulator":
             raise ValueError(f"simulator calls fold into the simulator ledger, not the {ledger.role!r} one")
         for call in self.calls:
-            ledger.add_llm_result(call.usage)
+            ledger.add_llm_result(call.usage, actor_id=call.actor_id, purpose=call.purpose)
 
 
 def _call_usage(response: Any) -> CallUsage:

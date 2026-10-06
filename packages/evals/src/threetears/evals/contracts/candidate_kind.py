@@ -431,7 +431,8 @@ class CellSink(Protocol):
     of the cancelled frame dies with it — so a cell's spend and what it was waiting on cannot be
     taken from what :meth:`CandidateKind.invoke` returns, because on that exit it returns nothing.
     The runner owns one of these per cell, hands it to ``invoke``, and reads it after the cancel.
-    It is the only thing the deadline's record is built from.
+    It is the only thing the deadline's record is built from. It is also how a running cell asks
+    whether the run's cost cap leaves room for another paid call (:meth:`cost_cap_reached`).
 
     A kind is handed one per cell, like ``span_window``, and uses it for that cell alone.
     """
@@ -467,6 +468,27 @@ class CellSink(Protocol):
 
         Args:
             read: The candidate side so far.
+        """
+        ...  # pragma: no cover — protocol
+
+    def cost_cap_reached(self, spent_usd: float | None) -> bool:
+        """Whether the run's cost cap is reached once ``spent_usd`` more is counted against it.
+
+        The run's cap otherwise counts a cell's spend only once the cell's result lands, so a cell that
+        makes many paid calls of its own — a conversation's simulator above all — could spend far past the
+        cap before anything looked. A kind asks before each further paid call, passing what the cell has
+        spent so far that the cap has not yet counted, and stops making calls when this is ``True``;
+        :func:`~threetears.evals.run.conversation.drive_conversation` asks it with the simulator's spend.
+        The cap's own rule decides: priced spend above the ceiling, or any spend that could not be priced
+        (``None``), reaches an enforcing cap; a run that enforces no cap is never reached.
+
+        Args:
+            spent_usd: The cell's spend so far that its result has not yet reported, ``None`` when part of
+                it could not be priced.
+
+        Returns:
+            ``True`` once the run's cap is reached. The runner then excludes the cell and stops the run
+            ``budget_stopped`` once the cell is saved.
         """
         ...  # pragma: no cover — protocol
 

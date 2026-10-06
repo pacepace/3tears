@@ -6,6 +6,54 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a conversation is held to the run's cost cap and answers its last round, simulator spend is stored per actor, run_eval refuses a host with no callable contract, the CLI's own exit code for an unanticipated error, and three store-kit gaps
+
+- **A conversation asks the run's cost cap before every paid call.** **Breaking:** ``drive_conversation`` takes a
+  required keyword ``sink`` (the cell's ``CellSink``). Before each scheduling pick, utterance and candidate answer it
+  asks ``sink.cost_cap_reached(driver.cost_usd)`` — new on the ``CellSink`` protocol, answered by the run's cap
+  counting the simulator's spend so far (unpriced spend reaches an enforcing cap) — and when the cap is reached it
+  stops under the new ``ConversationStopCause.BUDGET_STOPPED`` without making the call. The runner puts an infra
+  error naming the breach on that cell, which excludes it, and raises ``BudgetStoppedError`` once the cell is saved,
+  so a cut-short last cell still ends the run ``budget_stopped``. Before, the cap was looked at only between cells, and
+  one conversation could make over 6,000 simulator calls at the schema's maxima after a sibling had tripped it; the
+  worst case is now written in the simulator module's *Spend*, and the overshoot is one simulator call plus the cell's
+  candidate spend. ``EvalRunCostCap.check`` takes an optional ``pending_usd`` (the running cell's uncounted spend),
+  and ``execute_run``'s ``budget_gate`` is called with it (``0.0`` between cells). New ``TurnDriver.cost_usd``. A
+  witnessed cell refuses ``budget_stopped`` beside the simulator's two causes. **Adopters:** pass ``sink=sink`` to
+  ``drive_conversation``.
+- **The last actor leaving mid-round is answered first.** When the last actor present said ``done`` after others had
+  spoken in the same round, the conversation ended ``user_done`` with those lines never answered — a transcript ending
+  on a player's line, possibly with no candidate turn at all. The candidate now answers the round before the
+  conversation ends; a round that delivered nothing is still not answered.
+- **Simulator spend is stored per actor and purpose.** ``RoleUsage`` gains optional ``actor_id`` and ``purpose`` (new
+  ``SimulatorPurpose``: ``"utterance"`` / ``"schedule"``), refused on any role but ``simulator``;
+  ``RoleUsageLedger.add`` and ``add_llm_result`` take them and key rows on them, and ``TurnDriver.fold_usage`` lands
+  one row per actor and purpose, so what each actor's lines and each ``llm_decided`` pick cost survives the cell
+  (a pick that chose nobody lands under no actor). Stored shape: added optional fields, so ``EVAL_SCHEMA_VERSION`` is
+  unchanged. A cell's ``simulator`` usage is now several rows where it was one; sum by role, as every cost view does.
+- **``run_eval`` refuses a caller's host that declares no callable-kind contract.** Without one the host holds every
+  ``run_eval`` run to every apparatus dimension, so each blank judge and simulator read as unrecoverable and no two such
+  runs compared. A host is now refused, before anything is stored, when it declares no ``KindContract`` for the
+  ``callable`` kind, one with ``seats=None``, one seating anything in the new ``CALLABLE_UNSEATED`` (the engine's judge
+  and simulator roles and their pins, and ``max_cost_usd``, which the one-call launch leaves off), or one with overlays
+  or a spec. ``CALLABLE_KIND_CONTRACT`` and ``CALLABLE_UNSEATED`` are now exported from ``threetears.evals.quick``.
+  **Adopters:** a host passed to ``run_eval`` declares ``CALLABLE_KIND_CONTRACT`` (or a contract seating only its own
+  apparatus) on its profile's ``kinds``.
+- **The CLI exits 3 on an unanticipated error.** A host factory, a kind's launcher or a host command raising anything
+  but a refusal used to escape as a traceback and exit 1, the code for "a launched run did not complete". It now prints
+  the traceback to stderr and exits ``EXIT_FAILED`` (3). The exit codes are exported from ``threetears.evals.quick``
+  (``EXIT_OK``, ``EXIT_RUN_DID_NOT_COMPLETE``, ``EXIT_REFUSED``, ``EXIT_FAILED``). The README's CLI section now lists
+  ``spend``, every ``run`` flag and the exit codes, and says — as ``--model``'s help now does — that with no ``--model``
+  the kind runs one arm on its own default model and a kind with none refuses.
+- **Store conformance kit.** ``query.predicates_are_anded`` pins that ``True`` never matches ``1`` nor ``False`` ``0``,
+  and the in-memory store now compares a predicate on the stored JSON type as a SQL/JSON store does (it matched
+  ``True`` against ``1``); the port says so. ``etag.current_write_lands`` and ``etag.recreated_document_is_new`` rewrite
+  identical content, so an etag derived from the content alone fails them. New case ``etag.racing_writers_one_lands``:
+  writers on several threads presenting one etag at once, exactly one lands and the rest raise ``StoreConflict`` —
+  probabilistic, catching a two-step compare-then-write when threads interleave, never failing a correct store.
+  **Adopters:** a store run through ``STORE_CONFORMANCE_CASES`` must now be callable from several threads at once, as
+  the engine's blocking executor already calls it.
+
 ### 3tears-evals: an unjudged run's judge-config seat, directionless measures named for what they are, case generation's store calls off the loop, a rating's id carries its rater's kind
 
 - **An unjudged run has no judge-config seat.** ``judge_config_ids`` joins the judge inputs a run naming no

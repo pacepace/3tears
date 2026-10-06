@@ -36,6 +36,17 @@ __all__ = ["InMemoryDocumentStore"]
 _LOCATING_FIELDS = frozenset({"id", "scope_id", "doc_type"})
 
 
+def _stored_equal(stored: Any, wanted: Any) -> bool:
+    """Equality on the stored JSON type, as a SQL/JSON store compares: ``true`` is not ``1``.
+
+    Python's ``==`` reads ``True == 1`` and ``False == 0``, which no JSON column does, so a predicate
+    compared that way matches documents a real adapter would not return.
+    """
+    if isinstance(stored, bool) or isinstance(wanted, bool):
+        return type(stored) is type(wanted) and stored == wanted
+    return bool(stored == wanted)
+
+
 class InMemoryDocumentStore:
     """A :class:`~threetears.evals.contracts.store_port.DocumentStore` over one dict.
 
@@ -134,7 +145,8 @@ class InMemoryDocumentStore:
     ) -> list[dict[str, Any]]:
         """Return documents of one type within a scope, matching ANDed equality predicates.
 
-        A ``None`` predicate matches a field that is absent or null. Under ``order_by``, documents
+        A predicate compares on the stored JSON type: ``True`` matches only ``true``, never ``1``, and a
+        number never matches its text. A ``None`` predicate matches a field that is absent or null. Under ``order_by``, documents
         without the field (or with it null) sort as lower than every document that has it.
 
         Args:
@@ -155,7 +167,7 @@ class InMemoryDocumentStore:
                 for (scope, _), document in self.documents.items()
                 if scope == scope_id
                 and document.get("doc_type") == doc_type
-                and all(document.get(field) == value for field, value in field_eq.items())
+                and all(_stored_equal(document.get(field), value) for field, value in field_eq.items())
             ]
             if order_by is not None:
                 rows.sort(

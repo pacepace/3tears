@@ -13,7 +13,10 @@ then never name the host::
     python -m threetears.evals spend --host myapp.evals:build_host --scope dev --purpose variation
 
 - ``run`` launches through :func:`~threetears.evals.run.start_run`, waits for the runs' jobs, and
-  prints each run's summary. It exits 0 when every run completed and 1 when any did not.
+  prints each run's summary. It exits 0 when every run completed and 1 when any did not. Each
+  ``--model`` is one arm and one run; with none, the kind runs one arm on its own default model, and a
+  kind with no default refuses the launch. ``--k`` is the repeats per case (the launch default when
+  omitted).
   ``--max-cost-usd`` caps each run in place of the host's default, as ``run_launch``'s ``max_cost_usd``
   does — the way to launch under a cap the host's inherited one would refuse. ``--n-variations`` and
   ``--variation-model`` generate the cases first, as ``run_launch``'s ``n_variations`` and
@@ -41,6 +44,14 @@ and handed the host the factory built. A name the engine already uses is refused
 A refusal — a host that cannot be loaded, a template or campaign that is not there, a launch the
 engine refuses — prints its reason to stderr and exits 2, which is also argparse's code for a
 malformed command line.
+
+Any other exception — a host factory, a kind's launcher or a host command's handler raising something
+the engine did not anticipate, or the engine failing itself — prints its traceback to stderr and exits
+3, never 1: a script branching on the exit code must not read a broken host as runs that finished and
+did not complete.
+
+Exit codes, in full: 0 done; 1 a launched run did not complete; 2 refused; 3 failed with an
+unanticipated error.
 """
 
 from __future__ import annotations
@@ -50,6 +61,7 @@ import asyncio
 import importlib
 import json
 import sys
+import traceback
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,10 +131,13 @@ def _refuse_colliding_commands(commands: Sequence[HostCommand]) -> None:
 DEFAULT_PROG = "python -m threetears.evals"
 
 #: Exit codes: every run completed (or the command read what it was asked for); a run did not
-#: complete; the command was refused before it could do anything.
+#: complete; the command was refused before it could do anything; the command failed on an error
+#: nothing anticipated — a host factory, a launcher or a handler raising, or the engine's own fault —
+#: which is never 1, so a broken host cannot read as runs that finished.
 EXIT_OK = 0
 EXIT_RUN_DID_NOT_COMPLETE = 1
 EXIT_REFUSED = 2
+EXIT_FAILED = 3
 
 
 def _say(line: str) -> None:
@@ -194,7 +209,15 @@ def build_parser(
     run = command("run", "Launch a template's runs, wait for them, and print each run's summary.")
     run.add_argument("--template", required=True, help="the template to run, by id")
     run.add_argument("--subject", required=True, help="the subject the runs measure, as the host names it")
-    run.add_argument("--model", action="append", default=[], help="a candidate model; repeat for one arm each")
+    run.add_argument(
+        "--model",
+        action="append",
+        default=[],
+        help=(
+            "a candidate model; repeat for one arm each. Omitted, the kind runs one arm on its own default "
+            "model, and a kind with no default refuses the launch"
+        ),
+    )
     run.add_argument(
         "--k",
         type=int,
@@ -287,8 +310,9 @@ def run_cli(
             one's handler is handed the host the factory built.
 
     Returns:
-        The exit code: 0, 1 when a launched run did not complete, 2 when the command was refused, or
-        whatever a host command's handler returned.
+        The exit code: 0, 1 when a launched run did not complete, 2 when the command was refused, 3 when
+        it failed on an error nothing anticipated (its traceback is printed to stderr), or whatever a
+        host command's handler returned.
 
     Raises:
         ValueError: A host command's name is an engine command's, or two host commands share one —
@@ -335,6 +359,11 @@ def run_cli(
     except (_Refused, EvalServiceError) as refused:
         sys.stderr.write(f"{prog} {args.command}: {refused}\n")
         return EXIT_REFUSED
+    except Exception:
+        # NOSILENT: printed whole to stderr; the distinct exit code is the point — uncaught, Python exits 1,
+        # which is the code for runs that finished and did not complete.
+        sys.stderr.write(f"{prog} {args.command}: failed on an unanticipated error\n{traceback.format_exc()}")
+        return EXIT_FAILED
 
 
 async def _launch(host: LaunchHost, args: argparse.Namespace) -> int:
@@ -401,4 +430,15 @@ def _list(host: EvalHost, scope_id: str) -> None:
         _say(f"  {campaign.id}  {campaign.name}  {len(campaign.run_ids)} run(s)")
 
 
-__all__ = ["DEFAULT_PROG", "ENGINE_COMMANDS", "HostCommand", "HostFactory", "build_parser", "run_cli"]
+__all__ = [
+    "DEFAULT_PROG",
+    "ENGINE_COMMANDS",
+    "EXIT_FAILED",
+    "EXIT_OK",
+    "EXIT_REFUSED",
+    "EXIT_RUN_DID_NOT_COMPLETE",
+    "HostCommand",
+    "HostFactory",
+    "build_parser",
+    "run_cli",
+]
