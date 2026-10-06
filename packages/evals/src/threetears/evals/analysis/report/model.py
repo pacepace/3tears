@@ -327,13 +327,18 @@ class Report(EvalBaseModel):
                             "source": {
                                 "properties": {"analysis_id": {"type": "null"}, "generator_model": {"type": "null"}}
                             },
-                            "blocks": {"items": {"not": {"properties": {"kind": {"const": "text"}}, "required": ["kind"]}}},
+                            "blocks": {
+                                "items": {"not": {"properties": {"kind": {"const": "text"}}, "required": ["kind"]}}
+                            },
                         }
                     },
                     "else": {
                         "properties": {
                             "source": {
-                                "properties": {"analysis_id": {"type": "string"}, "generator_model": {"type": "string"}},
+                                "properties": {
+                                    "analysis_id": {"type": "string"},
+                                    "generator_model": {"type": "string"},
+                                },
                                 "required": ["analysis_id", "generator_model"],
                             }
                         }
@@ -345,7 +350,9 @@ class Report(EvalBaseModel):
                     "if": {"properties": {"finding_count": {"const": 0}}, "required": ["finding_count"]},
                     "then": {
                         "properties": {
-                            "blocks": {"items": {"properties": {"finding": {"type": "null"}, "rests_on": {"maxItems": 0}}}}
+                            "blocks": {
+                                "items": {"properties": {"finding": {"type": "null"}, "rests_on": {"maxItems": 0}}}
+                            }
                         }
                     },
                 },

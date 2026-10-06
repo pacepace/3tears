@@ -76,7 +76,9 @@ class LaunchArguments(EvalBaseModel):
     )
     k_runs: int = Field(default=DEFAULT_LAUNCH_K_RUNS, ge=1, description="Repeats of every case, for pass^k.")
     n_variations: int = Field(
-        default=0, ge=0, description="New cases to generate from the template's variation axes; 0 runs its stored cases."
+        default=0,
+        ge=0,
+        description="New cases to generate from the template's variation axes; 0 runs its stored cases.",
     )
     variation_model: str | None = Field(
         default=None,
@@ -99,9 +101,7 @@ class LaunchArguments(EvalBaseModel):
         "and a value above it is refused.",
     )
     judge_model: str | None = Field(default=None, description="The judge model, where the kind is model-judged.")
-    simulator_model: str | None = Field(
-        default=None, description="The simulated user's model, where the kind has one."
-    )
+    simulator_model: str | None = Field(default=None, description="The simulated user's model, where the kind has one.")
 
 
 class RunDeleted(EvalBaseModel):
@@ -251,7 +251,9 @@ class ResultRated(EvalBaseModel):
     rubric_dim: str
     score: int
     rater: str
-    rater_kind: str = Field(description="Always `agent` through an action: the agent rated, whatever account it acts for.")
+    rater_kind: str = Field(
+        description="Always `agent` through an action: the agent rated, whatever account it acts for."
+    )
 
 
 def result_rate(

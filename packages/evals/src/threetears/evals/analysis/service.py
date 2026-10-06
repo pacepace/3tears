@@ -459,7 +459,9 @@ async def estimate_analysis_generation(
     assembled = await _assemble(host, campaign_id, scope_id, model=model, resolve_prompt=resolve_prompt)
     try:
         call = assembled.first_call
-        ceiling = assembled.client.price_ceiling(system=call.system, user=call.user, response_format=call.response_format)
+        ceiling = assembled.client.price_ceiling(
+            system=call.system, user=call.user, response_format=call.response_format
+        )
         refusal: str | None = None
         try:
             _generation_budget(host, assembled, out_of_run_cap_usd).quote(assembled.client, "analysis", [call])
@@ -538,7 +540,9 @@ async def prepare_analysis_generation(
     )
 
 
-async def _offloaded[**P](executor: Executor | None, fn: Callable[P, object], /, *args: P.args, **kwargs: P.kwargs) -> bool:
+async def _offloaded[**P](
+    executor: Executor | None, fn: Callable[P, object], /, *args: P.args, **kwargs: P.kwargs
+) -> bool:
     """Run a store write on ``executor``, waiting for it through a cancellation of the waiter.
 
     Args:

@@ -270,6 +270,7 @@ class Question(EvalDocumentModel):
         if duplicates := sorted({axis for axis in axes if axes.count(axis) > 1}):
             raise ValueError(f"merit_axes names {', '.join(duplicates)} more than once; name each axis once")
         return axes
+
     asked_at: str = Field(default_factory=utc_now_iso, description="When it was asked (ISO-8601).")
     retired_at: str | None = Field(
         default=None,

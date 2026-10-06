@@ -353,16 +353,19 @@ class TestJudgeAgreement:
         (tone,) = judge_agreement(ratings, results).dimensions
 
         scale = [1, 2, 3, 4, 5]
-        per_person = (
-            cohen_kappa(list(zip(judged, alice)), scale) + cohen_kappa(list(zip(judged[:2], bob)), scale)
-        ) / 2
+        per_person = (cohen_kappa(list(zip(judged, alice)), scale) + cohen_kappa(list(zip(judged[:2], bob)), scale)) / 2
         pooled = cohen_kappa(list(zip(judged + judged[:2], alice + bob)), scale)
         assert tone.n == 7 and tone.raters == ["alice", "bob"]
         assert tone.kappa == pytest.approx(per_person)
         assert per_person != pytest.approx(pooled), "the fixture separates averaging from pooling"
 
     def test_a_person_whose_kappa_is_undefined_is_left_out_of_the_mean(self) -> None:
-        results = [_result("r-0", _tone(3)), _result("r-1", _tone(3)), _result("r-2", _tone(1)), _result("r-3", _tone(5))]
+        results = [
+            _result("r-0", _tone(3)),
+            _result("r-1", _tone(3)),
+            _result("r-2", _tone(1)),
+            _result("r-3", _tone(5)),
+        ]
         ratings = [
             _rating(result_id="r-0", score=3, rater="same"),
             _rating(result_id="r-1", score=3, rater="same"),

@@ -26,7 +26,12 @@ from threetears.evals.contracts import MetricDescriptor
 from threetears.evals.contracts.host import EvalHost, MeasureRegistry
 from threetears.evals.contracts.host.bars import BarRegistrationError
 from packages.evals.tests.factories import memory_storage
-from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, toyhost_batch, toyhost_measurements
+from packages.evals.tests.fixtures.toyhost.corpus import (
+    TOYHOST_JUDGED_DIMENSION,
+    TOYHOST_SCOPE,
+    toyhost_batch,
+    toyhost_measurements,
+)
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import (
     FIELD_COUNT_ERROR,

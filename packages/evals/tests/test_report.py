@@ -491,8 +491,15 @@ class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
             _with(
                 _code_only_document(),
                 lambda d: d["blocks"].append(
-                    {"kind": "text", "section": "summary", "finding": None, "rests_on": [], "role": "summary",
-                     "body": "words", "facts": []}
+                    {
+                        "kind": "text",
+                        "section": "summary",
+                        "finding": None,
+                        "rests_on": [],
+                        "role": "summary",
+                        "body": "words",
+                        "facts": [],
+                    }
                 ),
             ),
             _with(_code_only_document(), lambda d: d["blocks"][0].update(finding=7)),
@@ -518,9 +525,7 @@ class TestTheSchemaHoldsTheCrossFieldRulesItCanState:
             "a-chart-whose-error-is-blank",
         ],
     )
-    def test_each_rule_the_schema_can_state_refuses_in_the_schema_and_the_model(
-        self, document: dict[str, Any]
-    ) -> None:
+    def test_each_rule_the_schema_can_state_refuses_in_the_schema_and_the_model(self, document: dict[str, Any]) -> None:
         assert _model_refuses(document), "the case must be one the model refuses"
         assert _schema_refuses(document)
 

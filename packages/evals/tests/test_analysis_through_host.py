@@ -67,5 +67,5 @@ async def test_a_host_with_no_client_factory_is_refused_before_anything_is_built
 
     with pytest.raises(ValueError, match="an analysis generation calls a model"):
         await prepare_analysis_generation(
-        host, campaign_id, scope_id, model=None, resolve_prompt=_prompt, out_of_run_cap_usd=None
-    )
+            host, campaign_id, scope_id, model=None, resolve_prompt=_prompt, out_of_run_cap_usd=None
+        )

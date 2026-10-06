@@ -234,7 +234,8 @@ class AnalysisArchiveParams(EvalBaseModel):
     analysis_id: AnalysisId
     archived: Archived
     archive_reason: Annotated[
-        str | None, Field(description="Why the analysis is archived (it was shown false, or superseded); cleared on restore.")
+        str | None,
+        Field(description="Why the analysis is archived (it was shown false, or superseded); cleared on restore."),
     ] = None
 
 

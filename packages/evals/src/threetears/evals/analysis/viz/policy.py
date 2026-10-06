@@ -301,7 +301,9 @@ def table_disagreements(intent: ChartIntent) -> list[str]:
         if rows and all(_differing(row, datum, field) for row in rows):
             closest = min((_differing(row, datum, field) for row in rows), key=len)
             drawn = ", ".join(f"{key}={datum[key]!r}" for key in closest)
-            disagreements.append(f"the chart draws {datum.get(field)!r} at {drawn}, which no row of the values table states")
+            disagreements.append(
+                f"the chart draws {datum.get(field)!r} at {drawn}, which no row of the values table states"
+            )
     return disagreements
 
 

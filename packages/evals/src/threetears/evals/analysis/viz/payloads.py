@@ -1473,7 +1473,9 @@ class TimeseriesPayload(_VizPayload):
         # The other half of "a gap is stated, never bridged": a position a series has no point at is a gap,
         # and an unstated one is a line broken with nothing saying why.
         for line in self.series:
-            if unstated := [p for p in self.positions if (line.label, p) not in drawn and (line.label, p) not in stated]:
+            if unstated := [
+                p for p in self.positions if (line.label, p) not in drawn and (line.label, p) not in stated
+            ]:
                 raise ValueError(
                     f"series {line.label!r} has no point at {', '.join(unstated)} and no gap saying why; a "
                     "position a series was not measured at is a stated gap"

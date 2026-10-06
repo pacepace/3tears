@@ -306,7 +306,12 @@ async def test_after_the_launch_each_predicted_cell_says_how_much_of_it_the_laun
     outcome = await _call(
         evals,
         fixture,
-        {"action": "scope_pivot", **arguments, "predicted_cost": estimated.structured, "launched_run_ids": [job.target_id]},
+        {
+            "action": "scope_pivot",
+            **arguments,
+            "predicted_cost": estimated.structured,
+            "launched_run_ids": [job.target_id],
+        },
     )
 
     assert not outcome.is_error, outcome.text

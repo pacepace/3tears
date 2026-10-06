@@ -3471,7 +3471,9 @@ def _planned_cost_per_observation(
                 predicted=cell.predicted.model_copy(
                     update={
                         "value": cell.predicted.value / n,
-                        "interval_low": None if cell.predicted.interval_low is None else cell.predicted.interval_low / n,
+                        "interval_low": None
+                        if cell.predicted.interval_low is None
+                        else cell.predicted.interval_low / n,
                         "interval_high": None
                         if cell.predicted.interval_high is None
                         else cell.predicted.interval_high / n,
@@ -3500,9 +3502,9 @@ def _plan_for(
         templates = {record.template_id for record in records}
     template = next(iter(templates)) if len(templates) == 1 else None
     at_model = [plan for plan in plans if plan.model == model]
-    return next((plan for plan in at_model if plan.template_id is not None and plan.template_id == template), None) or next(
-        (plan for plan in at_model if plan.template_id is None), None
-    )
+    return next(
+        (plan for plan in at_model if plan.template_id is not None and plan.template_id == template), None
+    ) or next((plan for plan in at_model if plan.template_id is None), None)
 
 
 # =============================================================================

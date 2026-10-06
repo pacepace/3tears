@@ -28,7 +28,6 @@ from threetears.evals.analysis import (
     ComparisonFamily,
     assemble_context_bundle,
 )
-from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.stats import composite_significance, holm_adjust
 from threetears.evals.contracts import EvalCampaign, EvalResult, Question, RubricScore
@@ -264,7 +263,9 @@ class TestWhatAFamilyCovers:
     def test_a_chance_difference_in_a_campaign_with_no_question_does_not_separate(self) -> None:
         """The Done-when case, with no question declared: raw p ≈ 0.026 separates alone and not among ten."""
         borderline = next(
-            c for c in _family(_bundle([BORDERLINE, *[NOISE] * 9], questions=False)).comparisons if c.name.endswith("d0")
+            c
+            for c in _family(_bundle([BORDERLINE, *[NOISE] * 9], questions=False)).comparisons
+            if c.name.endswith("d0")
         )
         assert borderline.p_raw is not None and borderline.p_raw < 0.05
         assert borderline.verdict == "not_separated"
@@ -281,8 +282,9 @@ class TestWhatAFamilyCovers:
         assert "in a campaign with no family, where it clears that dimension's own noise floor" not in (
             EVAL_ANALYSIS_GEN_DEFAULT
         )
-        assert "Where the bundle carries no family (`multiple_comparisons.withheld` says why), no comparison between arms is separated" in (
-            EVAL_ANALYSIS_GEN_DEFAULT
+        assert (
+            "Where the bundle carries no family (`multiple_comparisons.withheld` says why), no comparison between arms is separated"
+            in (EVAL_ANALYSIS_GEN_DEFAULT)
         )
         assert "in a campaign that declares no question, on every reading, as one campaign-wide family" in (
             EVAL_ANALYSIS_GEN_DEFAULT

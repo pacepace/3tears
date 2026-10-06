@@ -65,7 +65,9 @@ class TestShortCells:
         results[thinned.id] = [r for r in results[thinned.id] if r.id != dropped.id]
         design = campaign.declared_design
         assert design is not None
-        declared = campaign.model_copy(update={"declared_design": design.model_copy(update={"intended_repetitions": 3})})
+        declared = campaign.model_copy(
+            update={"declared_design": design.model_copy(update={"intended_repetitions": 3})}
+        )
 
         bundle = assemble_context_bundle(declared, storage=ToyhostStorage(runs, results), profile=toyhost_profile())
 

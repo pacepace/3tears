@@ -269,7 +269,9 @@ def build_parser(
     report.add_argument("--out", type=Path, metavar="PATH", help="write the report to PATH instead of stdout")
     bundle = command("bundle", "Print a campaign's analysis bundle as JSON — what a generation would read.")
     bundle.add_argument("campaign", help="the campaign, by id")
-    spend = command("spend", "Print what the engine spent outside any run — case generations, rubric proposals, analyses.")
+    spend = command(
+        "spend", "Print what the engine spent outside any run — case generations, rubric proposals, analyses."
+    )
     spend.add_argument("--purpose", choices=get_args(OutOfRunPurpose), default=None, help="only this purpose's calls")
     spend.add_argument("--launch-group", default=None, metavar="ID", help="only one launch's case generation")
     spend.add_argument("--template", default=None, metavar="ID", help="only calls made for this template")

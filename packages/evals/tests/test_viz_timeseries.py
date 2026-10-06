@@ -539,22 +539,31 @@ class TestThePayloadRefusesWhatCannotBeDrawn:
             (_payload(series=[], gaps=[]), "at least 1 series"),
             (_payload(series=[_payload()["series"][0], _payload()["series"][0]]), "duplicated: narrow"),
             (
-                _with_points(0, [{"position": "2026-03-20", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(1.0)}]),
+                _with_points(
+                    0, [{"position": "2026-03-20", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(1.0)}]
+                ),
                 "2026-03-20, which the axis",
             ),
             (
-                _with_points(0, [{"position": "2026-03-14", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(2.0)}]),
+                _with_points(
+                    0, [{"position": "2026-03-14", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(2.0)}]
+                ),
                 "more than one point at 2026-03-14",
             ),
             (
-                _with_points(0, [{"position": "2026-03-16", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(2.0)}]),
+                _with_points(
+                    0, [{"position": "2026-03-16", "ci": _ci(1.0)}, {"position": "2026-03-14", "ci": _ci(2.0)}]
+                ),
                 "out of the axis's order",
             ),
             (
                 _payload(series=[{"label": "narrow", "points": [{"position": "2026-03-14", "ci": _ci(1.0)}]}], gaps=[]),
                 "no series has points at two positions",
             ),
-            (_payload(gaps=[{"series": "wide", "position": "2026-03-20", "reason": "x"}]), "gap names position '2026-03-20'"),
+            (
+                _payload(gaps=[{"series": "wide", "position": "2026-03-20", "reason": "x"}]),
+                "gap names position '2026-03-20'",
+            ),
             (_payload(gaps=[]), "series 'wide' has no point at 2026-03-15 and no gap saying why"),
             (
                 _payload(gaps=[*_payload()["gaps"], {"series": "absent", "position": "2026-03-15", "reason": "x"}]),
@@ -588,7 +597,10 @@ class TestThePayloadRefusesWhatCannotBeDrawn:
                 ),
                 "calendar order, earliest first",
             ),
-            (_payload(gaps=[{"series": "wide", "position": "2026-03-14", "reason": "x"}]), "both a point and a gap at '2026-03-14'"),
+            (
+                _payload(gaps=[{"series": "wide", "position": "2026-03-14", "reason": "x"}]),
+                "both a point and a gap at '2026-03-14'",
+            ),
             (_payload(basis="release"), "names its release_label"),
             (_payload(release_label="app_version"), "names its release_label"),
             (_with_points(1, [{"position": "2026-03-14"}, {"position": "2026-03-16", "ci": _ci(1.0)}]), "ci"),
@@ -603,12 +615,15 @@ class TestThePayloadRefusesWhatCannotBeDrawn:
         assert parse_payload("timeseries", _payload()) is not None
         assert parse_payload("timeseries", _payload(basis="release", release_label="app_version")) is not None
         renamed = json.loads(
-            json.dumps(_payload()).replace("2026-03-14", "0.9").replace("2026-03-15", "0.10").replace("2026-03-16", "0.11")
+            json.dumps(_payload())
+            .replace("2026-03-14", "0.9")
+            .replace("2026-03-15", "0.10")
+            .replace("2026-03-16", "0.11")
         )
         assert renamed["positions"] == ["0.9", "0.10", "0.11"]
-        assert parse_payload("timeseries", renamed | {"basis": "release", "release_label": "app_version"}) is not None, (
-            "a release axis is ordered by when each build first ran, never by its name"
-        )
+        assert (
+            parse_payload("timeseries", renamed | {"basis": "release", "release_label": "app_version"}) is not None
+        ), "a release axis is ordered by when each build first ran, never by its name"
 
 
 class TestTheIntent:
