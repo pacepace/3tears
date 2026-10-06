@@ -93,6 +93,41 @@ def signed_with_unit(value: float | None, unit: str) -> str:
     return f"{'+' if value > 0 else ''}{with_unit(value, unit)}"
 
 
+def relative_change_text(change: float | None) -> str:
+    """A relative change — a signed FRACTION of the baseline — as the percent a reader is told.
+
+    The one spelling for a unitless change from a baseline (``+72.7%`` for 0.727). A quantity already
+    measured in percentage points is not this: it carries the unit ``%`` and reads through
+    :func:`with_unit` (``-12%`` for -12).
+    """
+    if change is None or not math.isfinite(change):
+        return "—"
+    return f"{change:+.1%}"
+
+
+def table_spellings(value: float, unit: str) -> frozenset[str]:
+    """Every text a values table writes for a drawn ``value`` stated in ``unit``.
+
+    The table's builders spell a drawn number through :func:`with_unit`, :func:`signed_with_unit` and,
+    for a unitless relative change, :func:`relative_change_text`; this returns what each of them writes
+    for ``value``, so a check that a cell states a mark's value formats the mark through the same
+    functions and compares the text, rather than reading the cell back as a number. Which spellings are
+    candidates is decided by ``unit``, never by a glyph in the cell: under ``%`` the value is already in
+    percentage points, and only a unitless value may be a fraction spelled as a percent.
+
+    Args:
+        value: The drawn value, in the unit drawn.
+        unit: The unit it is drawn in; empty when it has none.
+
+    Returns:
+        The texts that state ``value``.
+    """
+    spelled = {with_unit(value, unit), signed_with_unit(value, unit)}
+    if not unit:
+        spelled.add(relative_change_text(value))
+    return frozenset(spelled)
+
+
 def interval_disclosures(intervals: Iterable[ConfidenceInterval | None]) -> list[str]:
     """Qualify a chart's intervals: what they cover, and what they vary over.
 
@@ -246,8 +281,10 @@ __all__ = [
     "interval_disclosures",
     "interval_sources",
     "interval_statement",
+    "relative_change_text",
     "render_cell",
     "signed_with_unit",
     "strip_common_prefix",
+    "table_spellings",
     "with_unit",
 ]

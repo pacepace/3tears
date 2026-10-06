@@ -230,7 +230,9 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
             campaign_id=target_id,
             detail=(
                 "no generation in this process is running it and it recorded no attempt — the process that "
-                "started it ended mid-generation, so what it spent is recorded nowhere"
+                "started it ended mid-generation, before writing its attempt record. Each model call it made is "
+                "on the out-of-run spend ledger (purpose 'analysis', carrying this campaign's id), which "
+                "scope_out_of_run_spend reads"
             ),
         )
     state = _ATTEMPT_STATES[attempt.outcome]

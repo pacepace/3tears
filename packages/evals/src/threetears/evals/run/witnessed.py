@@ -125,7 +125,8 @@ def stamp_witnessed_judge(
             names none (a launching host's ``LaunchSettings.max_cost_usd``).
         enforcement_enabled: Whether the host enforces eval ceilings; when it does not, the run records
             none and its judging is unbounded, as a launched run's is.
-        max_cost_usd: Optional per-run override; must be ``> 0``.
+        max_cost_usd: Optional per-run override; must be ``> 0`` and may only LOWER
+            ``configured_max_cost_usd``, never raise it.
 
     Returns:
         A copy of the run carrying the judge and its ceiling.
@@ -136,6 +137,9 @@ def stamp_witnessed_judge(
             declares a kind no judge reads; or the host supplies no completion clients.
         ValidationFailedError: ``selection`` names an unscored dim, a config that does not load, or one
             authored for another dim; or ``max_cost_usd`` is not positive.
+        CeilingRaisedError: ``max_cost_usd`` is above ``configured_max_cost_usd`` — an override may only
+            lower the host's ceiling (:func:`~threetears.evals.run.ceilings.refuse_raised_ceiling`). It is a
+            ``ValueError``, and it is raised whether or not the host enforces ceilings.
     """
     if max_cost_usd is not None and max_cost_usd <= 0:
         raise ValidationFailedError(f"max_cost_usd must be > 0 (got {max_cost_usd})")

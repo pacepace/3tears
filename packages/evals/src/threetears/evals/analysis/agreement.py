@@ -16,11 +16,14 @@ same dimension of the same result and reads the pairs per dimension:
 is a two-rater statistic. Pooling every (judge, person) pair into one table would enter a result two people
 rated twice — the judge's score duplicated, the items no longer independent — and read the people's
 disagreement with each other as the judge's with them. So each person's kappa is computed over the results
-that person rated, and the dimension's kappa (and weighted kappa) is their mean: Light's kappa (Light, 1971),
-the standard extension of Cohen's kappa to several raters, here over the judge-person pairs. With one person it
-is Cohen's kappa. A person whose kappa is undefined (every pair one score) is left out of the mean, and the
-dimension's kappa is undefined only when every person's is. ``n`` and ``exact_agreement`` stay per rating —
-counts, which nothing double-weights.
+that person rated, and the dimension's kappa (and weighted kappa) is the UNWEIGHTED mean of those per-person
+kappas. Every rater counts once, however many results they rated: a person with 2 ratings moves the mean as
+much as one with 200. Each person's kappa is over their own subset of results, so this is a Light-style
+average (after Light, 1971), not Light's statistic over one common item set. With one person it is Cohen's
+kappa. A person whose kappa is undefined (every pair one score — which includes a person who agreed with the
+judge perfectly on a constant score) is EXCLUDED from the mean rather than counted, so such agreement does not
+raise it; the dimension's kappa is undefined only when every person's is. ``n`` and ``exact_agreement`` stay
+per rating — counts, which nothing double-weights.
 
 **One group per dimension, scale and judge.** The judge is the model that served the score
 (:attr:`~threetears.evals.contracts.models.RubricScore.served_model`), so a campaign sweeping its
@@ -87,8 +90,9 @@ class DimensionAgreement(EvalDocumentModel):
     kappa: float | None = Field(
         description=(
             "Cohen's kappa, unweighted, of the judge against each person over the results that person rated, "
-            "averaged over people (Light's kappa; with one person, Cohen's kappa). A person whose kappa is "
-            "undefined is left out of the mean. None when every person's is undefined — chance alone predicts no "
+            "then the unweighted mean over people: each person counts once, however many results they rated "
+            "(a Light-style average; with one person, Cohen's kappa). A person whose kappa is undefined is "
+            "excluded from the mean. None when every person's is undefined — chance alone predicts no "
             "disagreement, judge and person giving one and the same score to every pair — where it is undefined, "
             "not perfect."
         ),
@@ -226,7 +230,7 @@ def _dimension_agreement(
 
 
 def _mean_kappa(kappas: Sequence[float | None]) -> float | None:
-    """The mean of the defined per-person kappas — Light's kappa — or None when none is defined."""
+    """The unweighted mean of the defined per-person kappas (each person once; undefined ones excluded), or None."""
     defined = [kappa for kappa in kappas if kappa is not None]
     return sum(defined) / len(defined) if defined else None
 

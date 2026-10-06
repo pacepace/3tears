@@ -598,7 +598,8 @@ class EvalJobManager:
         folded into a success: a RUN keeps its non-terminal status in storage until a later process
         relabels it abandoned, while a detached TASK (:meth:`start_task`) has no stored status at all
         — its work had not recorded its ending (a generation writes no attempt), nothing at the next
-        boot repairs it, and what it spent is recorded nowhere.
+        boot repairs it, and what it spent is only where its work recorded each call as it went (an
+        analysis generation writes every model call to the out-of-run spend ledger).
 
         Args:
             timeout: Seconds to wait for every cancelled job to finish.
