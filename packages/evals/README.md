@@ -52,21 +52,40 @@ print(summary.render())
 `run_eval` builds the rest — a kind over the function, a host with one measure per scorer, the
 in-memory store — launches one run through the engine's own launch path, and returns its
 `EvalSummary`. A candidate that raises fails its cell; a scorer that raises excludes it. Pass
-`host=callable_host(scorers)` (or your own host, declaring a measure per scorer) to keep the store
-and compare several candidates' runs. `examples/rung_zero.py` is the whole thing in one file.
+`host=callable_host(scorers)` to keep the store and compare several candidates' runs, or your own host:
+it must declare a measure per scorer and a contract for the callable kind — `CALLABLE_KIND_CONTRACT`, or
+a `KindContract(CALLABLE_KIND, seats=...)` seating only apparatus of your own that the runs read, never the
+judge, the simulator or the spend ceiling (`CALLABLE_UNSEATED`) — or `run_eval` refuses it, since without
+one every such run's blank judge and simulator read as unrecoverable and no two of them compare.
+`examples/rung_zero.py` is the whole thing in one file.
 
 **The command line** works in a host you name as `module:factory` — a zero-argument callable
 returning an `EvalHost`, or a `LaunchHost` for `run`:
 
 ```
-python -m threetears.evals run    --host myapp.evals:build_host --scope dev --template T --subject S --model M
+python -m threetears.evals run    --host myapp.evals:build_host --scope dev --template T --subject S [--model M ...]
+                                  [--k N] [--max-cost-usd DOLLARS] [--n-variations N] [--variation-model MODEL]
+                                  [--apparatus-settings JSON]
 python -m threetears.evals ls     --host myapp.evals:build_host --scope dev
 python -m threetears.evals report CAMPAIGN --host myapp.evals:build_host --scope dev [--format markdown|html|json] [--out PATH]
 python -m threetears.evals bundle CAMPAIGN --host myapp.evals:build_host --scope dev
+python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--purpose P] [--launch-group ID] [--template ID]
 ```
 
-`report` prints the campaign's report (below) — its analysis, or, when it has none, a code-only report of
-its evidence; `bundle` prints the analysis bundle a generation would read, as JSON. Neither calls a model.
+`run` launches, waits and prints each run's summary. Each `--model` is one arm and one run; with no
+`--model` the kind runs one arm on its own default model, and a kind with no default refuses the launch.
+`--k` is the repeats per case (the launch default when omitted); `--max-cost-usd` caps each run in place of
+the host's default; `--n-variations` and `--variation-model` generate that many cases first (priced against
+the host's out-of-run cap, outside the runs' caps); `--apparatus-settings` sets host-declared apparatus
+values as a JSON object — each as `start_run`'s argument of the same name. `report` prints the campaign's
+report (below) — its analysis, or, when it has none, a code-only report of its evidence; `bundle` prints the
+analysis bundle a generation would read, as JSON. Neither calls a model. `spend` prints what the engine
+spent outside any run in the scope — case generations and rubric proposals — narrowed by its flags.
+
+Exit codes: `0` done; `1` a launched run did not complete; `2` refused (a host that cannot be loaded, a
+template that is not there, a launch the engine refuses, a malformed command line); `3` failed on an error
+nothing anticipated — a host factory, launcher or host command raising — with its traceback on stderr.
+They are `EXIT_OK`, `EXIT_RUN_DID_NOT_COMPLETE`, `EXIT_REFUSED` and `EXIT_FAILED` in `threetears.evals.quick`.
 
 Mount the same commands under your own CLI with `run_cli(argv, host_factory=build_host, prog="myapp
 evals")`; your users then never name the host.
@@ -209,7 +228,13 @@ conversation, the transcript as your kind writes it). The engine places those st
 of them, so hidden information and per-player visibility are your kind's rules. The evidence is
 stored on the cell's `EvalTrace`, and a re-judge sends exactly what the first judge read. A
 conversing kind's template carries a `ConversationSpec`: its simulated actors, who speaks next, and
-the turn limit. A document or classifier template carries none.
+the turn limit. A document or classifier template carries none. The kind runs it with
+`drive_conversation(driver, candidate_turn, post_user_turn, llm=..., sink=sink)`, handing over its cell's
+sink: before every paid call the loop asks the run's cost cap whether the simulator's spend so far
+reaches it (`CellSink.cost_cap_reached`), and stops `budget_stopped` when it does — the runner excludes
+that cell and ends the run `budget_stopped`, so one conversation (thousands of simulator calls at the
+schema's maxima) cannot run far past the cap. Fold the driver's calls with `fold_usage`: the stored
+`simulator` rows are one per actor and purpose (`RoleUsage.actor_id`, `RoleUsage.purpose`).
 
 **Background work, payloads and spend.** Work a candidate hands off and gets back turns later is
 recorded as `async_deliveries`, one `AsyncDelivery` each: who asked, when it was acknowledged and

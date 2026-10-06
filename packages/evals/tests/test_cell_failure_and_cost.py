@@ -58,6 +58,10 @@ from threetears.evals.contracts.usage_capture import RoleUsageLedger
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run
 from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.scripted_table import ScriptedTable, actor
+from threetears.evals.contracts.models import ConversationSpec, ConversationStopCause
+from threetears.evals.run import drive_conversation
+from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -599,6 +603,109 @@ async def test_an_uncapped_run_carries_on_through_unpriced_cells_and_counts_them
 
     assert len(drive.results) == 3
     assert cap.unpriced_results == 3
+
+
+# --- a conversation's simulator spend, against the run's cost cap mid-cell ---------------------------
+
+#: What each scripted simulator call costs here.
+_SIMULATOR_CALL_USD = 0.001
+
+
+class _ConversingKind(ToyExtractorKind):
+    """A toy extractor that holds a one-actor conversation first, its simulator calls priced at a tenth of a cent.
+
+    The conversation runs through the engine's own loop with the cell's own sink, so the run's cap is
+    asked exactly as it would be for a product's conversing kind; its spend lands on the simulator row.
+    """
+
+    def __init__(self, *args: Any, simulator_cost_usd: float | None = _SIMULATOR_CALL_USD, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.simulator_cost_usd = simulator_cost_usd
+        self.tables: list[ScriptedTable] = []
+
+    async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
+        driver = TurnDriver(conversation=ConversationSpec(actors=[actor("a")], max_turns=5), variation={})
+        table = ScriptedTable(lines={"a": [f"a{n}" for n in range(1, 6)]}, cost_usd=self.simulator_cost_usd)
+        self.tables.append(table)
+        answered: list[str] = []
+
+        async def answer(round_turns: Any) -> CandidateTurn:
+            answered.append(round_turns[-1].content)
+            return CandidateTurn(content=f"answer {len(answered)}")
+
+        async def post(_turn: SimulatorTurn) -> None:
+            return None
+
+        stop = await drive_conversation(driver, answer, post, llm=table, sink=sink)
+        simulator = RoleUsageLedger(role="simulator")
+        driver.fold_usage(simulator)
+        return CandidateOutput(
+            output=[{"answered": answered}], telemetry=CandidateTelemetry(usage=simulator.rows()), stop_cause=stop
+        )
+
+
+def _conversing(world: WorldRegistry) -> ToyExtractorKind:
+    return _ConversingKind(client=ScriptedExtractionClient(), world=world)
+
+
+async def test_a_conversation_stops_at_the_runs_cap_mid_cell_and_the_run_stops_after_it():
+    """Two and a half calls' worth of cap: the third call crosses it, so no fourth call — nor any answer — is bought."""
+    cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=True)
+    drive, go = _drive(_conversing, n_cases=3, cap=cap)
+
+    with pytest.raises(BudgetStoppedError, match="cost cap exceeded") as stopped:
+        await go()
+
+    assert stopped.value.completed == 1, "no cell was launched after the one the cap cut short"
+    assert stopped.value.breach.accumulated_usd == pytest.approx(3 * _SIMULATOR_CALL_USD)
+    (result,) = drive.results
+    assert result.stop_cause is ConversationStopCause.BUDGET_STOPPED
+    assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE, "a conversation the cap cut short is not scored"
+    assert "cost cap was reached inside the cell" in (result.runner_error or "")
+    (row,) = [row for row in result.usage if row.role == "simulator"]
+    assert row.call_count == 3
+    assert row.cost_usd == pytest.approx(3 * _SIMULATOR_CALL_USD)
+
+
+async def test_the_cap_reached_in_the_last_cell_still_ends_the_run_budget_stopped():
+    """With no next cell, no gate between cells would ever look: the stop is raised after the cut-short cell itself."""
+    cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=True)
+    drive, go = _drive(_conversing, n_cases=1, cap=cap)
+
+    with pytest.raises(BudgetStoppedError):
+        await go()
+    assert len(drive.results) == 1
+
+
+async def test_an_unpriced_simulator_call_stops_a_capped_conversation_at_once():
+    kinds: list[_ConversingKind] = []
+
+    def unpriced(world: WorldRegistry) -> ToyExtractorKind:
+        kind = _ConversingKind(client=ScriptedExtractionClient(), world=world, simulator_cost_usd=None)
+        kinds.append(kind)
+        return kind
+
+    cap = EvalRunCostCap("toy-run", 100.0, enabled=True)
+    drive, go = _drive(unpriced, n_cases=1, cap=cap)
+
+    with pytest.raises(BudgetStoppedError, match="could not be priced"):
+        await go()
+    (table,) = kinds[0].tables
+    assert table.utterance_calls == ["a"], "the first unpriced call is the last one made under an enforcing cap"
+    (result,) = drive.results
+    assert result.stop_cause is ConversationStopCause.BUDGET_STOPPED
+
+
+async def test_an_uncapped_conversation_runs_to_its_turn_budget():
+    """The accepting side: with enforcement off the same conversation is bounded by its structure alone."""
+    cap = EvalRunCostCap("toy-run", 2.5 * _SIMULATOR_CALL_USD, enabled=False)
+    drive = await _driven(_conversing, n_cases=1, cap=cap)
+
+    (result,) = drive.results
+    assert result.stop_cause is ConversationStopCause.MAX_TURNS
+    assert classify_result(result) is ResultOutcome.OK
+    (row,) = [row for row in result.usage if row.role == "simulator"]
+    assert row.call_count == 5
 
 
 def test_the_program_budget_leaves_unpriced_spend_out_of_its_dollars_and_counts_it():

@@ -26,15 +26,17 @@ fails it for any type it has no route for. **When the engine adds a document typ
 adopter's store learns of it**: the type joins :data:`~threetears.evals.contracts.storage.EVAL_DOC_TYPES`
 and the case goes red until the store routes it.
 
-**What it cannot see.** Behaviour under real concurrency (two processes, one database) — the cases
-drive one store from one thread, so a conditional write that is compared and written in two steps
-passes here and loses a race in production; make the compare and the write one statement. Scale,
-and a backend's own failure modes: a genuine failure must raise rather than read as a miss, and no
-in-process check can make a backend fail.
+**What it cannot see.** Concurrency is checked only within one process, and only probabilistically:
+``etag.racing_writers_one_lands`` races several threads holding one etag, which catches a conditional
+write compared and written in two steps when the threads interleave between them — it can pass by luck,
+never fail by it — and says nothing about two processes on one database; make the compare and the write
+one statement. Scale, and a backend's own failure modes: a genuine failure must raise rather than read as
+a miss, and no in-process check can make a backend fail.
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -295,17 +297,27 @@ def _predicates_are_anded_equalities(store: DocumentStore) -> None:
     store.upsert(_doc("model_only", run="r2", model="m1"))
     store.upsert(_doc("text_one", run="r1", model="m1", n="1"))
     store.upsert(_doc("int_one", run="r1", model="m1", n=1))
+    store.upsert(_doc("bool_true", run="r1", model="m1", n=True))
+    store.upsert(_doc("int_zero", run="r2", model="m2", n=0))
+    store.upsert(_doc("bool_false", run="r2", model="m2", n=False))
     _expect_equal(
         sorted(_ids(store.by_doc_type(_TYPE, _SCOPE, run="r1", model="m1"))),
-        ["both", "int_one", "text_one"],
+        ["bool_true", "both", "int_one", "text_one"],
         "by_doc_type(run='r1', model='m1')",
     )
     _expect_equal(
-        _ids(store.by_doc_type(_TYPE, _SCOPE, n=1)), ["int_one"], "by_doc_type(n=1) — a number never equals its text"
+        _ids(store.by_doc_type(_TYPE, _SCOPE, n=1)),
+        ["int_one"],
+        "by_doc_type(n=1) — a number never equals its text, nor a boolean",
+    )
+    _expect_equal(_ids(store.by_doc_type(_TYPE, _SCOPE, n=True)), ["bool_true"], "by_doc_type(n=True) — true is not 1")
+    _expect_equal(_ids(store.by_doc_type(_TYPE, _SCOPE, n=0)), ["int_zero"], "by_doc_type(n=0) — 0 is not false")
+    _expect_equal(
+        _ids(store.by_doc_type(_TYPE, _SCOPE, n=False)), ["bool_false"], "by_doc_type(n=False) — false is not 0"
     )
     _expect_equal(
         sorted(_ids(store.by_doc_type(_TYPE, _SCOPE, run="r1"))),
-        ["both", "int_one", "run_only", "text_one"],
+        ["bool_true", "both", "int_one", "run_only", "text_one"],
         "by_doc_type(run='r1')",
     )
 
@@ -393,12 +405,13 @@ def _a_stale_etag_is_refused_and_the_winner_kept(store: DocumentStore) -> None:
 
 
 def _the_current_etag_lands_and_moves_on(store: DocumentStore) -> None:
+    # The same content again, so an etag derived from the content alone — which would not move — fails.
     store.upsert(_doc("d1", v=1))
     first = _etag(store, "d1")
-    store.upsert(_doc("d1", v=2), if_match=first)
-    _expect_equal(store.get("d1", _SCOPE), _doc("d1", v=2), "the document after a write presenting the current etag")
+    store.upsert(_doc("d1", v=1), if_match=first)
+    _expect_equal(store.get("d1", _SCOPE), _doc("d1", v=1), "the document after a write presenting the current etag")
     second = _etag(store, "d1")
-    _expect(second != first, f"the etag did not move on after a write (still {first!r})")
+    _expect(second != first, f"the etag did not move on after a write of the same content (still {first!r})")
     _expect_conflict(lambda: store.upsert(_doc("d1", v=3), if_match=first), "a second write presenting the first etag")
 
 
@@ -415,10 +428,11 @@ def _a_conditional_write_to_a_gone_document_is_refused(store: DocumentStore) -> 
 
 
 def _a_recreated_document_does_not_honour_an_old_etag(store: DocumentStore) -> None:
+    # Re-created with the same content, so an etag derived from the content alone — which would come back — fails.
     store.upsert(_doc("d1", v=1))
     old = _etag(store, "d1")
     store.delete("d1", _SCOPE)
-    store.upsert(_doc("d1", v=2))
+    store.upsert(_doc("d1", v=1))
     _expect(_etag(store, "d1") != old, f"a deleted and re-created document carries its old etag {old!r}")
     _expect_conflict(
         lambda: store.upsert(_doc("d1", v=3), if_match=old), "a write presenting the etag of the deleted predecessor"
@@ -456,6 +470,57 @@ def _a_lost_race_is_recovered_by_rereading(store: DocumentStore) -> None:
     _expect_equal(
         store.get("d1", _SCOPE), _doc("d1", counter=1, tags=["theirs"]), "the document after the re-applied write"
     )
+
+
+#: How many writers race in :func:`_one_of_many_racing_writers_lands`, and how many times. A store whose
+#: compare and write are two steps loses the race only when two threads interleave between them, so the
+#: case gives it many chances; a pass is evidence, a failure is proof.
+_RACING_WRITERS = 8
+_RACE_ROUNDS = 25
+
+
+def _one_of_many_racing_writers_lands(store: DocumentStore) -> None:
+    # The engine calls its store from a blocking-I/O executor's threads, so a store is driven from several
+    # threads at once in production; this one drives it from several in one process.
+    store.upsert(_doc("d1", v=-1))
+    for round_number in range(_RACE_ROUNDS):
+        etag = _etag(store, "d1")
+        barrier = threading.Barrier(_RACING_WRITERS)
+        landed: list[int] = []
+        refused: list[int] = []
+        failed: list[BaseException] = []
+
+        def write(writer: int, held: str = etag) -> None:
+            barrier.wait()
+            try:
+                store.upsert(_doc("d1", v=writer, round=round_number), if_match=held)
+            except StoreConflict:
+                # NOSILENT: a refusal is the outcome every losing writer must get; it is counted below
+                refused.append(writer)
+            except Exception as error:
+                # NOSILENT: carried to the checking thread, which re-raises it as itself
+                failed.append(error)
+            else:
+                landed.append(writer)
+
+        threads = [threading.Thread(target=write, args=(writer,)) for writer in range(_RACING_WRITERS)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if failed:
+            raise failed[0]
+        _expect(
+            len(landed) == 1,
+            f"round {round_number}: {len(landed)} of {_RACING_WRITERS} writers holding one etag landed "
+            f"({sorted(landed)}); the compare and the write must be one step",
+        )
+        _expect_equal(len(refused), _RACING_WRITERS - 1, f"round {round_number}: writers refused with StoreConflict")
+        _expect_equal(
+            store.get("d1", _SCOPE),
+            _doc("d1", v=landed[0], round=round_number),
+            f"round {round_number}: the stored document after the race",
+        )
 
 
 # --- merge_fields -----------------------------------------------------------------------------------
@@ -642,6 +707,12 @@ STORE_CONFORMANCE_CASES: tuple[StoreConformanceCase, ...] = (
         "etag.merge_moves_it",
         "merge_fields mints a new etag, so a writer holding the old one is refused",
         _merge_fields_moves_the_etag,
+    ),
+    StoreConformanceCase(
+        "etag.racing_writers_one_lands",
+        "of writers on several threads presenting one etag at once, exactly one lands and every other raises "
+        "StoreConflict — probabilistic: a two-step compare-then-write can pass by luck, never fail by it",
+        _one_of_many_racing_writers_lands,
     ),
     StoreConformanceCase(
         "retry.reread_recovers_a_lost_race",

@@ -259,8 +259,12 @@ async def test_a_cell_that_does_not_belong_to_a_witnessed_run_is_refused(
         await _record(host, run, case, _output(), **call_overrides)
 
 
-@pytest.mark.parametrize("cause", [ConversationStopCause.USER_DONE, ConversationStopCause.SIMULATOR_ERROR])
-async def test_a_simulators_stop_cause_is_refused_on_a_session_with_no_simulator(cause: ConversationStopCause) -> None:
+@pytest.mark.parametrize(
+    "cause",
+    [ConversationStopCause.USER_DONE, ConversationStopCause.SIMULATOR_ERROR, ConversationStopCause.BUDGET_STOPPED],
+)
+async def test_an_engine_driven_stop_cause_is_refused_on_an_observed_session(cause: ConversationStopCause) -> None:
+    """The simulator's two causes and the run's cost cap cutting a conversation short all need a conversation the engine drove."""
     host, run, case = _witnessed_run()
     with pytest.raises(ValueError, match=f"cannot have stopped on '{cause.value}'"):
         await _record(host, run, case, _output(stop_cause=cause))

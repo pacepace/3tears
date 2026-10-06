@@ -77,9 +77,11 @@ from threetears.evals.run.runner import (
     refuse_inner_agent_usage,
 )
 
-#: The stop causes only the engine's simulator produces, which a witnessed session — no simulator in it —
-#: cannot carry (:func:`record_witnessed_cell`).
-_SIMULATOR_STOP_CAUSES = frozenset({ConversationStopCause.USER_DONE, ConversationStopCause.SIMULATOR_ERROR})
+#: The stop causes only a conversation the engine drove produces — its simulator's two, and its run's cost cap
+#: cutting it short — which a witnessed session, observed rather than driven, cannot carry (:func:`record_witnessed_cell`).
+_ENGINE_DRIVEN_STOP_CAUSES = frozenset(
+    {ConversationStopCause.USER_DONE, ConversationStopCause.SIMULATOR_ERROR, ConversationStopCause.BUDGET_STOPPED}
+)
 
 
 def stamp_witnessed_judge(
@@ -248,8 +250,8 @@ async def record_witnessed_cell(
     ``host.storage.save_test_case`` — re-check and re-judge read it back by id, and no launch will run it,
     because a launch refuses a case whose template is not its own. Its run's ``template_id`` is None too,
     unless the run is judged, when it names the template the judge reads. A conversation its real participants
-    ended carries ``stop_cause=participants_ended``; the simulator's two causes (``user_done``,
-    ``simulator_error``) are refused here. The run's terminal state is the host's to write too, as the
+    ended carries ``stop_cause=participants_ended``; the causes only an engine-driven conversation produces
+    (``user_done``, ``simulator_error``, ``budget_stopped``) are refused here. The run's terminal state is the host's to write too, as the
     job manager writes a commissioned run's: ``status="completed"`` and
     ``completeness=summarize_completeness(run, cells)``, ``cells`` being one
     ``CellSummary.from_result(result, persisted=...)`` per cell the capture recorded, the ``persisted``
@@ -323,11 +325,11 @@ async def record_witnessed_cell(
         )
     if not 1 <= k_iteration <= run.k_runs:
         raise ValueError(f"k_iteration {k_iteration} is outside run {run.id}'s repeats (1..{run.k_runs})")
-    if output.stop_cause in _SIMULATOR_STOP_CAUSES:
+    if output.stop_cause in _ENGINE_DRIVEN_STOP_CAUSES:
         raise ValueError(
             f"a witnessed cell's conversation cannot have stopped on {output.stop_cause.value!r}: that cause names the "
-            "engine's simulator, and a witnessed session has none. A session its people ended is "
-            "'participants_ended'"
+            "engine's simulator or its run's cost cap, which drive only a conversation the engine ran, and a "
+            "witnessed session was observed. A session its people ended is 'participants_ended'"
         )
     # Read once: the kind the run stamped at its creation, and so the kind the cell is recorded under.
     candidate_kind = run.candidate_kind

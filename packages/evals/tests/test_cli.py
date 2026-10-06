@@ -23,7 +23,15 @@ import pytest
 from threetears.evals.analysis import NO_ANALYSIS, published_report_schema
 from threetears.evals.contracts import CandidateOutput, EvalRun, EvalTestCase, JudgedArtifact
 from threetears.evals.ops import report_read
-from threetears.evals.quick import callable_host, run_cli, run_eval
+from threetears.evals.quick import (
+    EXIT_FAILED,
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_RUN_DID_NOT_COMPLETE,
+    callable_host,
+    run_cli,
+    run_eval,
+)
 from threetears.evals.quick import cli as quick_cli
 from threetears.evals.run import (
     KindWiring,
@@ -246,6 +254,58 @@ def test_run_hands_the_launch_the_max_cost_it_is_given(
 def test_run_relays_the_launchers_refusal_of_a_cap_that_is_not_positive(capsys: pytest.CaptureFixture[str]) -> None:
     assert run_cli([*_courier_run_args("planner-lite"), "--max-cost-usd", "0"], host_factory=courier_launch_host) == 2
     assert "max_cost_usd" in capsys.readouterr().err
+
+
+# --- an unanticipated error: its own exit code, never "a run did not complete" -----------------------
+
+
+def _factory_that_raises() -> Any:
+    raise ValueError("the host's config file is missing")
+
+
+def _launch_host_whose_launcher_raises() -> LaunchHost:
+    eval_host = courier_host()
+    world = eval_host.profile.world
+    assert world is not None
+    eval_host.storage.save_template(courier_template())
+
+    async def launch(request: LaunchRequest) -> EvalRun:
+        raise ValueError("the launcher tripped over its own config")
+
+    return LaunchHost(
+        eval_host=eval_host,
+        kinds={COURIER_KIND: LaunchableKind(launch=launch)},
+        settings=lambda: COURIER_LAUNCH_SETTINGS,
+        job_timeout_factory=default_job_timeout,
+        world_placements=lambda _run: world.place(seeded=(), carriers=()),
+    )
+
+
+@pytest.mark.parametrize(
+    ("argv", "factory", "said"),
+    [
+        (["ls", "--scope", COURIER_SCOPE], _factory_that_raises, "the host's config file is missing"),
+        (_courier_run_args("planner-lite"), _factory_that_raises, "the host's config file is missing"),
+        (
+            _courier_run_args("planner-lite"),
+            _launch_host_whose_launcher_raises,
+            "the launcher tripped over its own config",
+        ),
+    ],
+    ids=["a factory raising, for ls", "a factory raising, for run", "a launcher raising"],
+)
+def test_an_unanticipated_error_exits_three_with_its_traceback(
+    argv: list[str], factory: Any, said: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Not 1: a script branching on the code must not read a broken host as runs that finished and did not complete."""
+    assert run_cli(argv, host_factory=factory) == EXIT_FAILED == 3
+    err = capsys.readouterr().err
+    assert "failed on an unanticipated error" in err
+    assert "Traceback (most recent call last)" in err and f"ValueError: {said}" in err
+
+
+def test_the_exit_codes_are_four_distinct_values() -> None:
+    assert len({EXIT_OK, EXIT_RUN_DID_NOT_COMPLETE, EXIT_REFUSED, EXIT_FAILED}) == 4
 
 
 def _graded(case: Mapping[str, Any], answer: Any) -> float:

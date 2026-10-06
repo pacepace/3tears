@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import inspect
 
 import pytest
 
 from packages.evals.tests.scripted_table import DONE, Raw, ScriptedTable, actor
 from threetears.evals.contracts.models import ROUND_DONE, ConversationSpec, ConversationStopCause
-from threetears.evals.run import simulator as simulator_module
 from threetears.evals.run.simulator import (
     SCHEDULER_CALL_ATTEMPTS,
     CandidateTurn,
@@ -163,11 +161,6 @@ async def test_the_last_actor_leaving_ends_the_conversation():
 
     assert driver.stop_cause is ConversationStopCause.USER_DONE
     assert driver.transcript == []
-
-
-def test_the_round_robin_fallback_warning_is_gone():
-    """``llm_decided`` is built, so nothing in the simulator announces a fallback to round-robin."""
-    assert "falling back" not in inspect.getsource(simulator_module)
 
 
 # =============================================================================

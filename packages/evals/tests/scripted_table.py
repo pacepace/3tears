@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from threetears.evals.contracts.candidate_kind import CandidateOutput, CellPending
 from threetears.evals.contracts.models import ActorPolicy
 
-__all__ = ["DONE", "Raw", "ScriptedResponse", "ScriptedTable", "actor"]
+__all__ = ["DONE", "FakeCellSink", "Raw", "ScriptedResponse", "ScriptedTable", "actor"]
 
 #: A line that says the actor is done with the conversation.
 DONE = object()
@@ -57,6 +59,8 @@ class ScriptedTable:
     schedule_calls: list[tuple[str, list[str]]] = field(default_factory=list)
     #: The actor each utterance call spoke for, in order.
     utterance_calls: list[str] = field(default_factory=list)
+    #: What every response reports it cost; ``None`` is a client that prices nothing.
+    cost_usd: float | None = 0.001
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
         assert response_format is not None, "every simulator-role call sends a schema"
@@ -66,7 +70,9 @@ class ScriptedTable:
             self.schedule_calls.append((user, list(enum)))
             assert self.picks, "the driver asked the scheduler more often than the script expected"
             pick = self.picks.pop(0)
-            return ScriptedResponse(pick if isinstance(pick, Raw) else json.dumps({"next": pick}))
+            return ScriptedResponse(
+                pick if isinstance(pick, Raw) else json.dumps({"next": pick}), cost_usd=self.cost_usd
+            )
         assert name == "simulated_user_reply", name
         match = re.search(r"You speak as (\S+)\.", system)
         assert match is not None, "these suites' actors name themselves in their policy"
@@ -76,7 +82,34 @@ class ScriptedTable:
         assert script, f"{speaker} was asked to speak more often than the script expected"
         line = script.pop(0)
         if isinstance(line, Raw):
-            return ScriptedResponse(line)
+            return ScriptedResponse(line, cost_usd=self.cost_usd)
         if line is DONE:
-            return ScriptedResponse(json.dumps({"utterance": "I'm done here.", "done": True}))
-        return ScriptedResponse(json.dumps({"utterance": line, "done": False}))
+            return ScriptedResponse(json.dumps({"utterance": "I'm done here.", "done": True}), cost_usd=self.cost_usd)
+        return ScriptedResponse(json.dumps({"utterance": line, "done": False}), cost_usd=self.cost_usd)
+
+
+# parity-with: threetears.evals.contracts.candidate_kind.CellSink
+@dataclass
+class FakeCellSink:
+    """A cell's sink whose cost cap is ``cap_usd`` of simulator spend (``None``: no cap), recording every ask.
+
+    The cap's rule is the engine's: reached once the spend asked about exceeds the cap, or could not be
+    priced (``None``) — which it never is in these suites unless a test scripts it.
+    """
+
+    cap_usd: float | None = None
+    #: Every spend ``cost_cap_reached`` was asked about, in order.
+    asked: list[float | None] = field(default_factory=list)
+    pending: list[CellPending] = field(default_factory=list)
+
+    def waiting_on(self, pending: CellPending) -> None:
+        self.pending.append(pending)
+
+    def report_progress(self, read: Callable[[], CandidateOutput]) -> None:
+        del read
+
+    def cost_cap_reached(self, spent_usd: float | None) -> bool:
+        self.asked.append(spent_usd)
+        if self.cap_usd is None:
+            return False
+        return spent_usd is None or spent_usd > self.cap_usd

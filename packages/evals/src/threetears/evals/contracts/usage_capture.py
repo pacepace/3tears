@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.host.spend import ExternalSpend
-from threetears.evals.contracts.models import CellTermination, RoleUsage, UsageRole
+from threetears.evals.contracts.models import CellTermination, RoleUsage, SimulatorPurpose, UsageRole
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.spend import ExternalRateTable, reported_price_source
 from threetears.observe import get_logger
@@ -167,6 +167,10 @@ class _ModelTotals:
     provider_units: int | None = None
 
 
+#: One ledger row's key: ``(model, provider, provider_unit, price_source, actor_id, purpose)``.
+_RowKey = tuple[str | None, str | None, str | None, str | None, str | None, SimulatorPurpose | None]
+
+
 @dataclass
 class RoleUsageLedger:
     """Accumulates one role's LLM spend across every call it makes in a cell.
@@ -181,12 +185,11 @@ class RoleUsageLedger:
     #: ``None`` on every token-metered role and on an external role whose run declared no
     #: usable rates — then the calls are counted and nothing else is claimed about them.
     rate_table: ExternalRateTable | None = None
-    #: Keyed by ``(model, provider, provider_unit, price_source)``. There is no ledger-wide
-    #: price source: each contribution names its own, so a row's provenance is what its
-    #: contributions reported rather than what the ledger was built expecting.
-    _totals: dict[tuple[str | None, str | None, str | None, str | None], _ModelTotals] = field(
-        default_factory=dict, init=False
-    )
+    #: Keyed by ``(model, provider, provider_unit, price_source, actor_id, purpose)``. There is no
+    #: ledger-wide price source: each contribution names its own, so a row's provenance is what its
+    #: contributions reported rather than what the ledger was built expecting. The last two are the
+    #: simulator's attribution and ``None`` on every other role.
+    _totals: dict[_RowKey, _ModelTotals] = field(default_factory=dict, init=False)
 
     @classmethod
     def for_external(cls, rate_table: ExternalRateTable | None) -> RoleUsageLedger:
@@ -217,6 +220,8 @@ class RoleUsageLedger:
         provider: str | None = None,
         provider_unit: str | None = None,
         price_source: str | None = None,
+        actor_id: str | None = None,
+        purpose: SimulatorPurpose | None = None,
     ) -> None:
         """Fold one call's usage into this role's totals.
 
@@ -244,8 +249,18 @@ class RoleUsageLedger:
         same reason: dollars priced two ways in one row could not be re-derived from it.
         Token-metered roles pass no provider, so their key degenerates to the model and the
         source its client named.
+
+        ``actor_id`` and ``purpose`` are the simulator's attribution — the simulated actor a call spoke
+        for or chose, and whether it was an ``utterance`` or a ``schedule`` pick — and key the row too,
+        so what each actor and the scheduler spent is a stored row of its own. Every other role passes
+        neither.
+
+        Raises:
+            ValueError: ``actor_id`` or ``purpose`` was given to a role other than ``simulator``.
         """
-        key = (model or None, provider, provider_unit, price_source)
+        if (actor_id is not None or purpose is not None) and self.role != "simulator":
+            raise ValueError(f"actor_id and purpose attribute simulator calls, not the {self.role!r} role's")
+        key = (model or None, provider, provider_unit, price_source, actor_id, purpose)
         totals = self._totals.setdefault(key, _ModelTotals())
         totals.call_count = sum_optional_tokens(totals.call_count, calls)
         totals.provider_units = sum_optional_tokens(totals.provider_units, provider_units)
@@ -260,13 +275,21 @@ class RoleUsageLedger:
         else:
             totals.cost_unpriced = True
 
-    def add_llm_result(self, result: Any) -> None:
+    def add_llm_result(
+        self, result: Any, *, actor_id: str | None = None, purpose: SimulatorPurpose | None = None
+    ) -> None:
         """Fold an ``LLMResult``-shaped response (judge / simulator / generator clients).
 
         Read defensively via ``getattr``: the judge and simulator accept any object
         satisfying their narrow client protocols, and test doubles legitimately supply only
         the fields they exercise. An absent ``reasoning_tokens`` attribute is the same
         statement as an unreported one — unknown, not zero.
+
+        Args:
+            result: The response, or a :class:`CallUsage` standing for one.
+            actor_id: The simulated actor the call spoke for or chose; simulator role only.
+            purpose: Whether the simulator call was an ``utterance`` or a ``schedule`` pick; simulator
+                role only.
         """
         self.add(
             model=getattr(result, "model", None) or None,
@@ -278,6 +301,8 @@ class RoleUsageLedger:
             # always exactly one call.
             calls=getattr(result, "calls", 1),
             price_source=getattr(result, "price_source", None),
+            actor_id=actor_id,
+            purpose=purpose,
         )
 
     def add_external(self, spend: ExternalSpend) -> None:
@@ -359,7 +384,7 @@ class RoleUsageLedger:
         )
 
     def rows(self) -> list[RoleUsage]:
-        """Build this role's persisted rows — one per ``(model, provider, unit)``, first-seen order.
+        """Build this role's persisted rows — one per ledger key (:meth:`add`), first-seen order.
 
         ``provider_units`` is the SUM of what each contribution REPORTED, never the call
         count multiplied by one rate: deriving a total from one units-per-call figure is
@@ -378,7 +403,7 @@ class RoleUsageLedger:
             when the role never ran.
         """
         rows: list[RoleUsage] = []
-        for (model, provider, provider_unit, price_source), totals in self._totals.items():
+        for (model, provider, provider_unit, price_source, actor_id, purpose), totals in self._totals.items():
             rows.append(
                 RoleUsage(
                     role=self.role,
@@ -392,6 +417,8 @@ class RoleUsageLedger:
                     provider=provider,
                     provider_unit=provider_unit,
                     provider_units=totals.provider_units,
+                    actor_id=actor_id,
+                    purpose=purpose,
                 )
             )
         return rows

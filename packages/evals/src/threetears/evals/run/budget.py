@@ -14,6 +14,11 @@ ONE run:
   the run is marked ``budget_stopped`` (a distinct, honest terminal status, not
   an infra ``failed``) by raising :class:`BudgetStoppedError`, which the job
   manager translates.
+- Inside a cell, a kind that makes many paid calls of its own asks the same cap through its sink
+  before each further one, counting what the cell has spent so far
+  (:meth:`~threetears.evals.contracts.candidate_kind.CellSink.cost_cap_reached`): a conversation's
+  simulator does (:func:`~threetears.evals.run.conversation.drive_conversation`). A cell stopped
+  that way is excluded, and the run stops ``budget_stopped`` once it is saved.
 - :class:`AccountExhaustedError` is the account-side twin: the provider account behind the
   run refused a candidate call (out of credit, or the key refused), so the run stops after
   that cell and is marked ``exhausted``. Nothing configures it; a cell observes it.
@@ -51,9 +56,11 @@ class CapBreach:
 
     Attributes:
         max_cost_usd: The ceiling that bound the run.
-        accumulated_usd: This run's PRICED spend at the moment the cap tripped.
-        unpriced_results: Results whose spend could not be priced. Non-zero is a breach on its
-            own: the cap cannot say the run is inside a ceiling it cannot count against.
+        accumulated_usd: This run's PRICED spend at the moment the cap tripped — a running cell's
+            pending spend included, when a cell asked.
+        unpriced_results: Results whose spend could not be priced, counting a running cell's unpriced
+            pending spend as one. Non-zero is a breach on its own: the cap cannot say the run is inside
+            a ceiling it cannot count against.
     """
 
     max_cost_usd: float
@@ -296,26 +303,36 @@ class EvalRunCostCap:
         """True once enforcement is on and priced spend exceeds the cap, or any spend went unpriced."""
         return self._enabled and (self._accumulated_usd > self._max_cost_usd or self._unpriced_results > 0)
 
-    def check(self) -> CapBreach | None:
+    def check(self, pending_usd: float | None = 0.0) -> CapBreach | None:
         """Report whether the run may proceed, and on what numbers if it may not.
 
-        The gate :func:`~threetears.evals.run.runner.execute_run` calls before each cell.
-        It returns the observation rather than a bare boolean because the run loop
-        is where the stop is raised and the cap is the only thing that knows the
-        ceiling and the spend — a ``False`` there reaches the operator as an
-        unattributed assertion.
+        The gate :func:`~threetears.evals.run.runner.execute_run` calls before each cell, with nothing
+        pending, and the one a running cell asks through its sink
+        (:meth:`~threetears.evals.contracts.candidate_kind.CellSink.cost_cap_reached`) with the spend it
+        has made that its result has not yet reported — a conversation's simulator calls
+        (:func:`~threetears.evals.run.conversation.drive_conversation`). One rule for both, so the
+        cap a cell is stopped by inside is the cap the run is stopped by between cells. Nothing is
+        recorded here: a cell's whole spend is recorded once, by :meth:`record`, when its result lands.
+        It returns the observation rather than a bare boolean because the run loop is where the stop is
+        raised and the cap is the only thing that knows the ceiling and the spend — a ``False`` there
+        reaches the operator as an unattributed assertion.
+
+        Args:
+            pending_usd: Spend a running cell has made that is not yet recorded; ``0.0`` between
+                cells. ``None`` is pending spend that could not be priced, which breaches an enforcing
+                cap as an unpriced result does.
 
         Returns:
-            ``None`` while the run is within its cap (including when enforcement
+            ``None`` while the run is within its cap counting that spend (including when enforcement
             is disabled, which is uncapped), or the :class:`CapBreach` that stops it.
         """
-        if not self.exceeded:
+        if not self._enabled:
             return None
-        return CapBreach(
-            max_cost_usd=self._max_cost_usd,
-            accumulated_usd=self._accumulated_usd,
-            unpriced_results=self._unpriced_results,
-        )
+        accumulated = self._accumulated_usd + (pending_usd or 0.0)
+        unpriced = self._unpriced_results + (1 if pending_usd is None else 0)
+        if accumulated <= self._max_cost_usd and not unpriced:
+            return None
+        return CapBreach(max_cost_usd=self._max_cost_usd, accumulated_usd=accumulated, unpriced_results=unpriced)
 
     def record(self, cost_usd: float | None) -> None:
         """Add one delivered result's cost to this run's running total.

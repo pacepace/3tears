@@ -2893,6 +2893,11 @@ class AsyncDelivery(EvalDocumentModel):
 UsageRole = Literal["candidate", "judge", "simulator", "inner_agent", "external"]
 
 
+#: What one simulator-role call was for: an actor's line, or the ``llm_decided`` scheduler's pick of
+#: who speaks next. Carried on the ``simulator`` role's :class:`RoleUsage` rows.
+SimulatorPurpose = Literal["utterance", "schedule"]
+
+
 class RoleUsage(EvalDocumentModel):
     """Per-role token + cost observation for one :class:`EvalResult`.
 
@@ -2989,6 +2994,28 @@ class RoleUsage(EvalDocumentModel):
             "not knowable — never 0, which would claim a free call."
         ),
     )
+    actor_id: str | None = Field(
+        default=None,
+        description=(
+            "The simulated actor this simulator row's calls spoke for, or — for scheduling picks — chose to "
+            "speak next. None on every other role, and on scheduling picks that chose nobody (the round "
+            "ending, a refused reply)."
+        ),
+    )
+    purpose: SimulatorPurpose | None = Field(
+        default=None,
+        description=(
+            "Which simulator calls this row counts: an actor's 'utterance', or a 'schedule' pick by the "
+            "llm_decided turn scheduler. None on every other role."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _simulator_attribution_is_the_simulators(self) -> RoleUsage:
+        """Refuse an actor or a purpose on a row of any role but ``simulator``, which alone has them."""
+        if (self.actor_id is not None or self.purpose is not None) and self.role != "simulator":
+            raise ValueError(f"actor_id and purpose attribute simulator calls, not the {self.role!r} role's")
+        return self
 
 
 # =============================================================================
@@ -3094,6 +3121,14 @@ class ConversationStopCause(StrEnum):
       ``apparatus_error``  the eval apparatus failed during a turn or a delivery drain.
       ``candidate_error``  the candidate's turn raised out of the harness boundary.
 
+    One is the run's own ceiling, and it too excludes the cell:
+
+      ``budget_stopped``   the run's cost cap was reached mid-conversation, counting the simulator's spend
+                           so far (:func:`~threetears.evals.run.conversation.drive_conversation`), so no
+                           further paid call was made. The conversation is cut short rather than finished, so
+                           the runner puts an infra error on the result, which excludes it, and the run stops
+                           ``budget_stopped`` after the cell is saved. Never a judgement of the candidate.
+
     There is deliberately no member for a refusal. Whether the candidate refused well is a
     judged property of the transcript, and stopping on the words of a refusal truncated exactly
     the conversations whose refusals the rubric exists to grade. Nor is there one for goal checks
@@ -3107,6 +3142,7 @@ class ConversationStopCause(StrEnum):
     SIMULATOR_ERROR = "simulator_error"
     APPARATUS_ERROR = "apparatus_error"
     CANDIDATE_ERROR = "candidate_error"
+    BUDGET_STOPPED = "budget_stopped"
 
 
 class JudgedArtifact(StrEnum):

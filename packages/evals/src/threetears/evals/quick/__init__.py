@@ -16,14 +16,39 @@ and only the names in ``__all__``.
 
 from __future__ import annotations
 
-from threetears.evals.quick.cli import DEFAULT_PROG, ENGINE_COMMANDS, HostCommand, HostFactory, build_parser, run_cli
-from threetears.evals.quick.one_call import CALLABLE_KIND, Candidate, Scorer, callable_host, run_eval
+from threetears.evals.quick.cli import (
+    DEFAULT_PROG,
+    ENGINE_COMMANDS,
+    EXIT_FAILED,
+    EXIT_OK,
+    EXIT_REFUSED,
+    EXIT_RUN_DID_NOT_COMPLETE,
+    HostCommand,
+    HostFactory,
+    build_parser,
+    run_cli,
+)
+from threetears.evals.quick.one_call import (
+    CALLABLE_KIND,
+    CALLABLE_KIND_CONTRACT,
+    CALLABLE_UNSEATED,
+    Candidate,
+    Scorer,
+    callable_host,
+    run_eval,
+)
 from threetears.evals.ops.summary import EvalSummary, MeasureSummary, summarize_run
 
 __all__ = [
     "CALLABLE_KIND",
+    "CALLABLE_KIND_CONTRACT",
+    "CALLABLE_UNSEATED",
     "DEFAULT_PROG",
     "ENGINE_COMMANDS",
+    "EXIT_FAILED",
+    "EXIT_OK",
+    "EXIT_REFUSED",
+    "EXIT_RUN_DID_NOT_COMPLETE",
     "Candidate",
     "EvalSummary",
     "HostCommand",

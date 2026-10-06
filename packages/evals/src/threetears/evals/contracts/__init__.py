@@ -298,6 +298,7 @@ from threetears.evals.contracts.models import (
     PreconditionOutcome,
     ProposedDimSuggestion,
     ProposedTemplate,
+    SimulatorPurpose,
     UsageRole,
     VariationAxis,
 )
@@ -547,6 +548,7 @@ __all__ = [
     "SeedSection",
     "SeedTemplate",
     "SimulatorLLM",
+    "SimulatorPurpose",
     "StopReason",
     "StorageError",
     "StoreConflict",

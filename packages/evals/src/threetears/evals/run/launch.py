@@ -2902,7 +2902,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                     callbacks=RunCallbacks(on_progress=progress_fn),
                     # Mid-run cap: accumulate each delivered result's cost
                     # in memory and stop gracefully once this run's total exceeds its
-                    # cap. Pure arithmetic — no budget-layer / DB I/O in the gate path.
+                    # cap — checked between cells, and asked from inside a cell (a
+                    # conversation's simulator spend) through the cell's sink. Pure
+                    # arithmetic — no budget-layer / DB I/O in the gate path.
                     budget_gate=cost_cap.check,
                     on_cost=cost_cap.record,
                     cell_sink=cells,

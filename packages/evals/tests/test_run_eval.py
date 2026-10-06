@@ -12,6 +12,7 @@ repeat; the default repeat count is pinned in ``test_launch_k_default.py``.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import math
 from collections.abc import Mapping
@@ -20,7 +21,8 @@ from typing import Any
 import pytest
 
 from threetears.evals.contracts import ValidationFailedError
-from threetears.evals.quick import callable_host, run_eval
+from threetears.evals.contracts.host import EvalHost, KindContract
+from threetears.evals.quick import CALLABLE_KIND, CALLABLE_KIND_CONTRACT, callable_host, run_eval
 from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
 from packages.evals.tests.fixtures.courierhost import ON_TIME_RATE, courier_host
 
@@ -185,6 +187,45 @@ async def test_a_scorer_the_callers_host_declares_no_measure_for_is_refused() ->
     with pytest.raises(ValueError, match="declares no measure named even"):
         await run_eval(CASES, double, [even], scope_id=SCOPE, host=host)
     assert list_templates(host.storage, SCOPE) == []
+
+
+def _host_whose_callable_contract_is(contract: KindContract | None) -> EvalHost:
+    """``callable_host([even])`` with its callable-kind contract replaced, or dropped for ``None``."""
+    host = callable_host([even])
+    kinds = () if contract is None else (contract,)
+    return dataclasses.replace(host, profile=dataclasses.replace(host.profile, kinds=kinds))
+
+
+@pytest.mark.parametrize(
+    ("contract", "said"),
+    [
+        (None, "has no contract for the 'callable' kind"),
+        (KindContract(CALLABLE_KIND), "a contract that declares no seats"),
+        (KindContract(CALLABLE_KIND, seats=frozenset({"judge"})), "seats judge for the 'callable' kind"),
+        (KindContract(CALLABLE_KIND, seats=frozenset({"simulator_model"})), "seats simulator_model"),
+        (KindContract(CALLABLE_KIND, seats=frozenset({"max_cost_usd"})), "seats max_cost_usd"),
+    ],
+    ids=["no contract", "no seats declared", "the judge role", "a simulator pin", "the spend ceiling"],
+)
+async def test_a_callers_host_must_declare_what_a_run_eval_runs_rig_holds(
+    contract: KindContract | None, said: str
+) -> None:
+    """Without it every blank judge and simulator reads as unrecoverable, and two run_eval runs never compare."""
+    host = _host_whose_callable_contract_is(contract)
+    with pytest.raises(ValueError, match=said):
+        await run_eval(CASES, double, [even], scope_id=SCOPE, host=host)
+    assert list_templates(host.storage, SCOPE) == []
+
+
+async def test_a_callers_host_declaring_the_callable_contract_runs_and_its_runs_omit_the_simulator() -> None:
+    """The accepting side, and why it matters: the simulator axis of a run_eval run is omitted, not undecided."""
+    host = _host_whose_callable_contract_is(CALLABLE_KIND_CONTRACT)
+    summary = await run_eval(CASES, double, [even], scope_id=SCOPE, host=host, k=1)
+    assert summary.status == "completed"
+    (run,) = list_runs(host, SCOPE)
+    assert run.max_cost_usd is None, "the one-call launch runs uncapped, which is why the ceiling is unseated"
+    assert host.profile.omits_apparatus("simulator_model", [(run, None)])
+    assert host.profile.omits_apparatus("judge_model", [(run, None)])
 
 
 async def test_a_candidate_with_no_name_needs_a_model_label() -> None:

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from threetears.evals.contracts.models import ActorPolicy, ConversationSpec, ConversationStopCause
+from threetears.evals.contracts.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
 from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
@@ -574,6 +574,20 @@ async def test_fold_usage_lands_every_call_on_the_simulator_ledger():
     [row] = ledger.rows()
     assert row.call_count == 2
     assert row.cost_usd == pytest.approx(0.008)
+    assert (row.actor_id, row.purpose) == (driver.conversation.actors[0].id, "utterance")
+    assert driver.cost_usd == pytest.approx(0.008)
+
+
+def test_an_actor_or_purpose_belongs_on_a_simulator_row_only():
+    """The attribution names a simulated actor, which only the simulator role has; refused on every other row."""
+    assert RoleUsage(role="simulator", actor_id="a", purpose="schedule").actor_id == "a"
+    for fields in ({"actor_id": "a"}, {"purpose": "utterance"}):
+        with pytest.raises(ValueError, match="attribute simulator calls"):
+            RoleUsage(role="candidate", **fields)
+        with pytest.raises(ValueError, match="attribute simulator calls"):
+            RoleUsageLedger(role="judge").add(
+                model="m", prompt_tokens=None, completion_tokens=None, reasoning_tokens=None, cost_usd=None, **fields
+            )
 
 
 @pytest.mark.parametrize("role", ["candidate", "judge"])
