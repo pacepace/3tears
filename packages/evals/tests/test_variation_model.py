@@ -186,7 +186,6 @@ def _generating_host(
     )
     world = host.eval_host.profile.world
     assert world is not None
-    kind = ToyExtractorKind(client=ScriptedExtractionClient(), world=world)
     handed: list[LaunchRequest] = []
 
     async def launch(request: LaunchRequest) -> EvalRun:
@@ -223,7 +222,10 @@ def _generating_host(
             generating,
             request,
             KindWiring(
-                kind_factory=lambda _cell: kind,
+                # Built per cell from the cell's template, so the kind grades the checks the template declares.
+                kind_factory=lambda cell: ToyExtractorKind(
+                    client=ScriptedExtractionClient(), world=world, goal_checks=tuple(cell.template.goal_state_checks)
+                ),
                 subject=TOYHOST_SUBJECT,
                 test_cases=generation.cases,
                 variation_counts=generation.counts,

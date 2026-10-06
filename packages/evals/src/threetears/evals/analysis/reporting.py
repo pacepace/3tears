@@ -851,9 +851,9 @@ class ScoreRecord(EvalBaseModel):
     # --- The kind's own grade, for a kind whose scoring is code rather than a judge ---
     #
     # `EvalResult.host_measures` carried straight through: the mechanical grade the
-    # candidate kind computed itself, by registered measure name. A classifier reports
-    # `classifier_accuracy` and `parse_failure_rate` here; a judge-graded kind reports
-    # nothing and the map is empty.
+    # candidate kind computed itself, by registered measure name. An extractor reports
+    # `field_accuracy` here (a classifier reports `match` and `confusion_cell`, from which the
+    # engine derives accuracy itself); a judge-graded kind reports nothing and the map is empty.
     #
     # It exists because this projection was judge-centric — composite, cost, per-dimension
     # score — and a code-graded run has none of those. Its composite is null (there are no
@@ -5621,7 +5621,7 @@ def export_records_csv(records: list[ScoreRecord] | list[dict[str, Any]]) -> str
     such a key does.
 
     **A code-graded run's grade flattens the same way**, under
-    :data:`_HOST_MEASURE_COLUMN_PREFIX` — ``host_measure:classifier_accuracy`` — so a kind
+    :data:`_HOST_MEASURE_COLUMN_PREFIX` — ``host_measure:field_accuracy`` — so a kind
     that grades on two axes is two columns rather than a second export shape. The columns
     exist only when some record carries one, so an export of judge-graded runs alone is
     byte-identical to what it was before the grade had anywhere to go.

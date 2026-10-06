@@ -124,8 +124,9 @@ Outcome = Literal["passed", "failed", "unavailable"]
 #:   another door. Recorded rather than passed for the reason every other gap here is: "every
 #:   path resolved" over no paths at all is vacuously true and renders identically to a corpus
 #:   that was actually checked.
-#: * ``seeding_did_not_take`` — the check's own setup did not land, so it never reached the
-#:   question it exists to ask. Recorded rather than reported as a failure of THIS check, because
+#: * ``seeding_did_not_take`` — the check's own setup did not land, or the base world it composes
+#:   over did not (a base value that did not read back), so it never reached the question it exists
+#:   to ask. Recorded rather than reported as a failure of THIS check, because
 #:   round-trip already names that defect and a second verdict would blame the wrong thing: a
 #:   perception check whose seed never landed reads as a deleted renderer, and an independence
 #:   check whose seed never landed reads as an innocent sibling clobbering it.
@@ -430,7 +431,9 @@ async def _round_trip(registry: WorldRegistry, declared: WorldDimension) -> Conf
         return unattended
     read = declared.read
     assert read is not None, "a seedable dimension has a read handle — the registry refuses one without"
-    await _rebase(registry)
+    unlanded = [name for name in await _rebase(registry) if name != declared.name]
+    if blocked := _base_never_landed("round_trip", declared, unlanded):
+        return blocked
     before = await registry.call(read)
     try:
         value = await _a_value_other_than(registry, declared, before)
@@ -712,7 +715,8 @@ async def _sweep(
     """
     view = registry.subject_view
     assert view is not None, "callers have a surface to render, which the registry refuses without a subject_view"
-    await _rebase(registry)
+    if blocked := _base_never_landed(check, declared, await _rebase(registry)):
+        return blocked
     try:
         pair = await _distinct_held_values(registry, declared, 2)
     except _SchemaTooNarrow as narrow:
@@ -794,7 +798,8 @@ async def _ambient_isolation(registry: WorldRegistry) -> ConformanceResult:
                 "movement in the subject view could not be attributed to declared state or to the surroundings"
             ),
         )
-    await _rebase(registry)
+    if blocked := _base_never_landed("ambient_isolation", None, await _rebase(registry)):
+        return blocked
     base = registry.base_world
     for declared in registry.declarations:
         if declared.name in base:
@@ -875,7 +880,8 @@ async def _independence(registry: WorldRegistry, declared: WorldDimension) -> Co
         return unattended
     read = declared.read
     assert read is not None, "a seedable dimension has a read handle — the registry refuses one without"
-    await _rebase(registry)
+    if blocked := _base_never_landed("independence", declared, await _rebase(registry)):
+        return blocked
     current = await registry.call(read)
     try:
         mine = await _a_value_other_than(registry, declared, current)
@@ -1000,7 +1006,8 @@ async def _compose_beside_another(
     for candidate in _synthesize(declared.schema, _VALUE_ATTEMPTS, named=declared.name):
         if any(json_equal(candidate, spent) for spent in tried):
             continue
-        await _rebase(registry)
+        if blocked := _base_never_landed("independence", declared, await _rebase(registry)):
+            return blocked
         if await _incoherence(registry, declared, candidate):
             continue
         if qualification := await _put(registry, declared, candidate):
@@ -1311,19 +1318,64 @@ def _condition_of(declared: WorldDimension) -> str:
     return when.condition if isinstance(when, Triggered) else ""
 
 
-async def _rebase(registry: WorldRegistry) -> None:
-    """Put every dimension the host's base world names at its base value, so a check starts from that world.
+async def _rebase(registry: WorldRegistry) -> tuple[str, ...]:
+    """Put every dimension the host's base world names at its base value, and read each back.
 
-    Believed rather than verified: a base value that does not land is the round trip's to report for that
-    dimension, and it does.
+    Verified rather than believed. Every check composing over the base world reads its other values beside
+    it — the coherence handle answers against it — so a base value that did not land makes every such check
+    read a world nobody named: a dead seeder on one base dimension would turn independence, perception and
+    the other dimensions' round trips red, each blaming innocent code. The caller hands what did not land to
+    :func:`_base_never_landed`, which records the check as unable to start; the round trip of that dimension
+    is the one verdict that names the defect.
 
     Args:
         registry: The host's registry.
+
+    Returns:
+        The base dimensions whose value did not read back, in base-world order; empty when all landed.
     """
+    unlanded: list[str] = []
     for name, value in registry.base_world.items():
         declared = registry.get(name)
         assert declared is not None, "the registry refuses a base world naming an undeclared dimension"
-        await _apply(registry, declared, value)
+        # The registry refuses a triggered or unsettable base dimension, so a qualification here is always
+        # a value that did not read back.
+        if await _put(registry, declared, value) is not None:
+            unlanded.append(name)
+    return tuple(unlanded)
+
+
+def _base_never_landed(
+    check: CheckName, declared: WorldDimension | None, unlanded: Sequence[str]
+) -> ConformanceResult | None:
+    """The answer for a check whose base world did not land, or None when it did (or only its own dimension did not).
+
+    Never ``failed``, for the reason :func:`_setup_never_landed` gives: this check never reached its question,
+    and the defect belongs to the round trip of each base dimension named. A round trip's own dimension is left
+    out of ``unlanded`` by its caller — that one IS the question it asks.
+
+    Args:
+        check: The check that could not start.
+        declared: The dimension it speaks for, or None for a registry-wide check.
+        unlanded: The base dimensions whose value did not read back.
+
+    Returns:
+        The recorded answer, or None.
+    """
+    if not unlanded:
+        return None
+    named = ", ".join(unlanded)
+    return ConformanceResult(
+        check=check,
+        outcome="unavailable",
+        dimension=declared.name if declared is not None else None,
+        qualification="seeding_did_not_take",
+        detail=(
+            f"the base world this check composes over did not land — {named} did not read back its base value, "
+            f"which the round-trip verdict for {named} names; until it does, every value read here is read "
+            "beside a world nobody named"
+        ),
+    )
 
 
 async def _incoherence(registry: WorldRegistry, declared: WorldDimension, value: Any) -> list[str]:

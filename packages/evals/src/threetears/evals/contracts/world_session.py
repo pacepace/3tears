@@ -11,7 +11,10 @@ record it whatever way the cell ends — the same reason a cell's spend goes thr
    awaited before the candidate's first turn. Seeding a triggered dimension ARMS it, and its seed
    handle returns the host's identity of the event it armed, which the session keeps.
 2. :meth:`WorldSession.at_turn` — before each candidate turn, the ambient perturbation the seed
-   scheduled for that turn, if any.
+   scheduled for that turn, if any. A kind announces every turn it takes, from 1 and without a gap,
+   whenever the seed schedules perturbation: the runner refuses a cell that left its schedule unannounced
+   (:meth:`WorldSession.require_schedule_announced`), since the run is keyed as perturbed and only the
+   kind's announcement makes that true.
 3. :meth:`WorldSession.fire` / :meth:`WorldSession.observe` — a triggered dimension's condition
    happening: made to happen by the rig through the host's ``fire`` handle, or seen happening in the
    world and recorded. Each is a :class:`~threetears.evals.contracts.world_events.WorldEvent` naming the
@@ -100,6 +103,7 @@ class WorldSession:
         self._armed_events: dict[str, str] = {}
         self._ambient_turns: frozenset[int] = frozenset()
         self._perturbed: set[int] = set()
+        self._announced: set[int] = set()
         self._events: list[WorldEvent] = []
         self._end_state: dict[str, Any] | None = None
 
@@ -267,6 +271,7 @@ class WorldSession:
             WorldSessionError: The world is not open, or is already closed.
         """
         self._require_open("announce a turn")
+        self._announced.add(turn)
         if turn not in self._ambient_turns or turn in self._perturbed:
             return None
         handle = self._registry.perturb_ambient
@@ -282,6 +287,42 @@ class WorldSession:
         )
         self._events.append(event)
         return event
+
+    @property
+    def announced_turns(self) -> tuple[int, ...]:
+        """The turns the kind announced through :meth:`at_turn`, ascending."""
+        return tuple(sorted(self._announced))
+
+    def require_schedule_announced(self) -> None:
+        """Refuse a cell whose kind never told the session which turns it took, when the seed scheduled perturbation.
+
+        The run's identity keys its condition on the scheduled turns
+        (``EvalRun.resolved_ambient_perturbation_turns``), and the only thing that applies one is the kind
+        announcing that turn. A kind that never calls :meth:`at_turn` would produce cells under a condition
+        keyed "perturbed" with nothing perturbed; one that announces turn 3 and not turn 2 would skip the
+        perturbation due before turn 2 while having taken it. Either is the kind's code, so every cell would
+        do the same. A scheduled turn past the last one announced is a turn the cell never reached, which is
+        an honest outcome — the result's ``world_events`` carry each perturbation actually applied.
+
+        Called by the runner once ``invoke`` has returned, for a world the kind opened.
+
+        Raises:
+            WorldSessionError: The seed scheduled perturbation and the kind announced no turn, or announced
+                turns with a gap (they must run 1, 2, … without one).
+        """
+        if not self._ambient_turns:
+            return
+        if not self._announced:
+            raise WorldSessionError(
+                "the seed schedules ambient perturbation before turn(s) "
+                f"{sorted(self._ambient_turns)!r}, and the kind announced no turn through at_turn(), so none was "
+                "applied while the run is keyed as perturbed; a kind calls world.at_turn(n) before each turn it takes"
+            )
+        if gaps := sorted(set(range(1, max(self._announced) + 1)) - self._announced):
+            raise WorldSessionError(
+                f"the kind announced turns {sorted(self._announced)!r} and skipped {gaps!r}; a kind announces every "
+                "turn it takes, from 1, or a perturbation scheduled for a skipped turn is never applied"
+            )
 
     async def fire(self, dimension: str, *, turn: int | None = None) -> WorldEvent:
         """Make a triggered dimension's condition happen, through the host's ``fire`` handle, and record it.

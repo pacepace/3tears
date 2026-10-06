@@ -808,6 +808,46 @@ class TestRepresentabilityOnTheProfile:
         assert "declares none" in answer.reason
         assert toyhost_profile().addressable("scan_quality").state == "covered"
 
+    def test_a_goal_check_over_a_dimension_nothing_reads_back_is_refused(self) -> None:
+        """A perceived, unseedable dimension may declare no ``read``; the end state is read through ``read``
+        alone, so no cell ever holds it and a check over it could never be established.
+
+        The readable sibling on the same registry is covered, so the refusal is the missing handle and
+        not the dimension's quadrant.
+        """
+        profile = HostProfile(
+            host_id="glimpsed",
+            host_sweepables=toyhost_profile().sweepables,
+            measures=toyhost_profile().measures,
+            world=WorldRegistry(
+                [
+                    WorldDimension(
+                        name="tv_channel",
+                        carrier="tv",
+                        schema={"type": "string"},
+                        matters="what the television shows the subject",
+                        perceived_by=("screen",),
+                    ),
+                    WorldDimension(
+                        name="tv_volume",
+                        carrier="tv",
+                        schema={"type": "integer"},
+                        matters="how loud the television is",
+                        read="tv.volume",
+                        perceived_by=("screen",),
+                    ),
+                ],
+                bindings={"tv.volume": lambda: 3, "tv.view": lambda surfaces=None: {"screen": ""}},
+                subject_view="tv.view",
+            ),
+        )
+
+        refused = profile.addressable("tv_channel")
+
+        assert refused.state == "uncovered"
+        assert "declares no read handle" in refused.reason
+        assert profile.addressable("tv_volume").state == "covered"
+
 
 class TestTheWorldIsRealRatherThanAShape:
     """Seeding moves the object the subject view renders from, on one path."""

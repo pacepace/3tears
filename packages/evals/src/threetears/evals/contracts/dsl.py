@@ -2,9 +2,10 @@
 
 Expressions are evaluated against a cell's end state (``state``: declared world dimension name →
 value), its :class:`~threetears.evals.contracts.call_ledger.CallLedger` (read by the call
-predicates), and a variation parameter dict (``variation``). They return a :class:`bool` (or
-:class:`Missing` if a path resolution fails — comparisons against ``Missing`` always return
-``False`` rather than raising).
+predicates), and a variation parameter dict (``variation``). The evaluation is three-valued: True,
+False, or :data:`Missing` — *not established* — when it rests on a value the end state does not hold.
+A check whose value is ``Missing`` is never a pass; the grader records it as failed with a detail
+saying it was not established and naming the path that held nothing (see *Missing values* below).
 
 Surface
 -------
@@ -66,6 +67,28 @@ Boolean composition::
     state.inventory.orders.length >= 1 and any(it.sku == "X" for it in state.inventory.orders)
     not state.support.messages[-1].content == ""
 
+Missing values
+--------------
+
+A path that resolves to nothing — a dimension the end state does not hold, an index past the end,
+a field a value does not carry — is :data:`Missing`: *unknown*, not *absent* and not *empty*. It
+propagates by Kleene's three-valued logic, so negating a question never turns "unknown" into "yes":
+
+* a comparison with a ``Missing`` side is ``Missing`` (and so is ``contains``/``intersects`` over one,
+  and ``.length``/``length()`` of one);
+* ``not Missing`` is ``Missing``;
+* ``a and b`` is False when any operand is False, else ``Missing`` when any is ``Missing``, else True;
+  ``a or b`` is True when any operand is True, else ``Missing`` when any is ``Missing``, else False;
+* ``any(...)``/``all(...)`` over a ``Missing`` iterable is ``Missing``; over elements, ``any`` is True
+  when some element's body is True, else ``Missing`` when some is ``Missing``, and ``all`` the dual.
+
+So ``not state.support.messages[-1].content == ""`` holds when the last message has content, fails
+when it is empty, and is *not established* when there are no messages at all — exactly as
+``state.support.messages[-1].content != ""`` is. A top-level ``Missing`` is never a pass:
+:func:`evaluate` returns False for it and :func:`evaluate_with_detail` says it was not established.
+Note that ``.length`` is always ``len()`` of the value, so a mapping field literally named
+``length`` cannot be reached by path.
+
 Static extraction
 -----------------
 
@@ -120,7 +143,7 @@ import ast
 import copy
 import itertools
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.contracts.call_ledger import CallLedger
@@ -138,9 +161,11 @@ class DSLError(ValueError):
 class _Missing:
     """Sentinel for unresolved paths.
 
-    Compares unequal to everything (including itself for ordering operators)
-    so a missing path does not silently match anything. Equality against
-    ``None`` returns False (Missing is *unknown*, not *known-absent*).
+    *Unknown*, not *known-absent*: the evaluator never asks it a question. Every operator in the
+    language checks for it first and propagates it three-valued (the module's *Missing values*), so
+    neither a comparison nor its negation can be satisfied by a path that resolved to nothing. The
+    dunders below answer False only so that Python code holding the sentinel outside the evaluator
+    cannot mistake it for a match either.
     """
 
     _instance: _Missing | None = None
@@ -238,6 +263,7 @@ class _EvalContext:
     binding: dict[str, Any]  # `it` -> current element inside any()/all()
     world: WorldRegistry | None  # how `state.<dimension>` resolves a name; None declares no world at all
     fired: Firings | None  # what fired, and which firings were armed; None when no world events were recorded
+    unresolved: list[str] = field(default_factory=list)  # the paths that resolved to Missing, for the detail
 
 
 # =============================================================================
@@ -303,8 +329,12 @@ def _validate(tree: ast.AST) -> None:
         raise DSLError(f"Disallowed node type in expression: {type(node).__name__}")
 
     # Additional structural checks
+    called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if node.id in _BUILTINS and id(node) not in called:
+                # A builtin is not a value: used as one it would parse here and fail only at evaluation.
+                raise DSLError(f"{node.id} is a DSL function, not a value: call it ({node.id}(...)).")
             # Allowed: root names (state/variation/it), builtins, or loop targets.
             if node.id in _ALLOWED_ROOTS or node.id in _BUILTINS:
                 continue
@@ -319,10 +349,17 @@ def _validate(tree: ast.AST) -> None:
             if not isinstance(node.func, ast.Name) or node.func.id not in _BUILTINS:
                 func_repr = getattr(node.func, "id", None) or ast.dump(node.func)
                 raise DSLError(f"Unknown function call: {func_repr!r}")
-            if node.func.id == "calls" and "." not in (_calls_spec(node) or ""):
-                # A computed spec would leave the authoring gate unable to name the action whose
-                # schema says which parameters are free text, so it could neither refuse nor admit.
-                raise DSLError("calls() takes one 'tool.action' string literal.")
+            if node.func.id in _ACTION_BUILTINS and not (
+                node.args
+                and all(
+                    isinstance(arg, ast.Constant) and isinstance(arg.value, str) and "." in arg.value
+                    for arg in node.args
+                )
+            ):
+                # A computed spec would leave the authoring gate unable to name the action — to ask
+                # whether the host defines it, or, for calls(), whose schema says which parameters are
+                # free text — so a typo would score False on every trial.
+                raise DSLError(f"{node.func.id}() takes 'tool.action' string literals, never a computed spec.")
             if node.func.id in _FIRE_PREDICATES and _fired_name(node) is None:
                 # A computed name would leave the authoring gate unable to ask whether the dimension is a
                 # triggered one this host declares, so a typo would score False on every trial.
@@ -335,6 +372,29 @@ def _validate(tree: ast.AST) -> None:
                 raise DSLError("any/all generators may not have 'if' filters in this DSL.")
             if not (isinstance(gen.target, ast.Name) and gen.target.id == "it"):
                 raise DSLError("any/all generators must bind to the variable 'it'.")
+
+
+def speaks_the_goal_language(expression: str) -> bool:
+    """Whether ``expression`` is written in this language's words, whether or not today's rules admit it.
+
+    True when it is Python expression syntax naming no identifier but the language's roots and
+    builtins. A re-check asks this of a stored outcome :func:`parse` refuses, to tell a goal check
+    written under an older, looser rule — which it must name as refused today — from a fact a kind
+    computed and reported in its own words (``field_accuracy >= 0.92``), which was never a goal check.
+
+    Args:
+        expression: A stored outcome's expression.
+
+    Returns:
+        Whether it names only the language's own words.
+    """
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return False
+    return all(
+        node.id in _ALLOWED_ROOTS or node.id in _BUILTINS for node in ast.walk(tree) if isinstance(node, ast.Name)
+    )
 
 
 # =============================================================================
@@ -1060,13 +1120,14 @@ def evaluate(
             say nothing fired.
 
     Returns:
-        ``True`` if the expression's value is truthy after coercion;
-        ``False`` otherwise (including ``Missing`` results).
+        ``True`` if the expression's value is truthy after coercion; ``False`` otherwise, including
+        when it is :data:`Missing` — not established, which is never a pass.
 
     Raises:
         DSLError: For malformed expressions, for a ``state`` path on a host that declares no world,
-            and for ``fired()`` or ``fired_armed()`` with no world events recorded. A path that names no declared dimension, or that does not resolve inside one,
-            returns ``False`` via :data:`Missing` semantics instead.
+            and for ``fired()`` or ``fired_armed()`` with no world events recorded. A path that names no
+            declared dimension, or that does not resolve inside one, is :data:`Missing` instead, and
+            propagates three-valued (the module's *Missing values*).
     """
     tree = parse(expression)
     ctx = _EvalContext(
@@ -1092,8 +1153,8 @@ def evaluate_with_detail(
     The detail string captures the resolved value(s) so the goal-state
     outcomes panel can show *why* a check passed or failed. Examples::
 
-        ("queue.length=2 satisfies >= 1", True)
-        ("messages[-1] = Missing", False)
+        (True, "True")
+        (False, "not established: state.support.messages resolved to nothing")
 
     Args:
         expression: DSL expression text.
@@ -1104,7 +1165,8 @@ def evaluate_with_detail(
         fired: What fired, as :func:`evaluate` takes it.
 
     Returns:
-        The boolean result and the resolved value's ``repr``, or ``"<Missing>"``.
+        The boolean result and the resolved value's ``repr``; for a :data:`Missing` value, ``False``
+        and a detail starting ``"not established"`` that names the paths that resolved to nothing.
 
     Raises:
         DSLError: As :func:`evaluate` raises it.
@@ -1115,15 +1177,37 @@ def evaluate_with_detail(
     )
     value = _eval_node(tree.body, ctx)
     if value is Missing:
-        return False, "<Missing>"
+        return False, not_established_detail(ctx.unresolved)
     return bool(value), repr(value)
+
+
+#: The prefix of every detail recording a check that rested on a value the world did not hold. A
+#: reader tells "not established" from "evaluated and false" by it, since both are ``passed=False``.
+NOT_ESTABLISHED = "not established"
+
+
+def not_established_detail(unresolved: list[str]) -> str:
+    """The detail for a check whose value is :data:`Missing`, naming what resolved to nothing.
+
+    Args:
+        unresolved: The paths that resolved to :data:`Missing` while the expression was evaluated,
+            in the order met; repeats are dropped.
+
+    Returns:
+        ``"not established: ..."`` naming each path, or saying a value resolved to nothing when no
+        path did (``length()`` of a value that has no length).
+    """
+    named = list(dict.fromkeys(unresolved))
+    if not named:
+        return f"{NOT_ESTABLISHED}: a value it reads resolved to nothing"
+    return f"{NOT_ESTABLISHED}: {', '.join(named)} resolved to nothing"
 
 
 def _eval_node(node: ast.AST, ctx: _EvalContext) -> Any:
     """Walk one node of the parsed AST and return its value.
 
-    Path resolution failures produce :data:`Missing`; comparisons against
-    Missing return False without raising.
+    Path resolution failures produce :data:`Missing`, which every operator propagates three-valued
+    (the module's *Missing values*) rather than reading as False.
     """
     if isinstance(node, ast.Constant):
         return node.value
@@ -1175,10 +1259,15 @@ def _resolve_attr(node: ast.Attribute, ctx: _EvalContext) -> Any:
                 f"state.{'.'.join(segments)} reads world state, and this host declares no world: "
                 "a state path names a declared world dimension, and there is none to name"
             )
-        return _resolve_dimension_path(segments, ctx.world, ctx.end_state)
+        resolved = _resolve_dimension_path(segments, ctx.world, ctx.end_state)
+        if resolved is Missing:
+            ctx.unresolved.append("state." + ".".join(segments))
+        return resolved
     base = _eval_node(node.value, ctx)
-    attr = node.attr
-    return _lookup(base, attr)
+    found = _lookup(base, node.attr)
+    if found is Missing and base is not Missing:
+        ctx.unresolved.append(ast.unparse(node))
+    return found
 
 
 def _resolve_subscript(node: ast.Subscript, ctx: _EvalContext) -> Any:
@@ -1190,6 +1279,7 @@ def _resolve_subscript(node: ast.Subscript, ctx: _EvalContext) -> Any:
     try:
         return base[key]
     except KeyError, IndexError, TypeError:
+        ctx.unresolved.append(ast.unparse(node))
         return Missing
 
 
@@ -1271,57 +1361,57 @@ def _resolve_dimension_path(segments: list[str], world: WorldRegistry, end_state
 
 
 def _eval_unary(node: ast.UnaryOp, ctx: _EvalContext) -> Any:
-    """Evaluate unary not/+/-."""
+    """Evaluate unary not/+/-; each keeps :data:`Missing` as Missing, so ``not`` never turns unknown into True."""
     val = _eval_node(node.operand, ctx)
+    if val is Missing:
+        return Missing
     if isinstance(node.op, ast.Not):
-        if val is Missing:
-            return Missing
         return not val
-    if isinstance(node.op, ast.USub):
-        if val is Missing:
-            return Missing
-        return -val
-    if isinstance(node.op, ast.UAdd):
-        if val is Missing:
-            return Missing
-        return +val
+    if isinstance(node.op, ast.USub | ast.UAdd):
+        try:
+            return -val if isinstance(node.op, ast.USub) else +val
+        except TypeError as mismatch:
+            # The world holding a value the template cannot negate is the template's or the rig's fault,
+            # raised like a comparison's type mismatch, so the cell is excluded rather than scored.
+            raise DSLError(f"cannot apply unary {type(node.op).__name__} to {type(val).__name__}") from mismatch
     raise DSLError(f"Unhandled unary operator: {type(node.op).__name__}")
 
 
 def _eval_boolop(node: ast.BoolOp, ctx: _EvalContext) -> Any:
-    """Evaluate ``and``/``or`` with short-circuit semantics.
+    """Evaluate ``and``/``or`` by Kleene's three-valued logic, short-circuiting on the deciding value.
 
-    Missing values are treated as falsy in `and`/`or` (don't propagate as
-    Missing — that would collapse `true or missing` to Missing). This matches
-    user intent: missing as 'cannot confirm', which is falsy in propositional
-    logic.
+    ``and`` is False as soon as an operand is False, else :data:`Missing` if any operand was, else
+    True; ``or`` is the dual. Reading ``Missing`` as False here — the obvious shortcut — is what lets
+    ``not (a and b)`` hold over a world that holds neither ``a`` nor ``b``.
     """
-    if isinstance(node.op, ast.And):
-        result: Any = True
-        for v in node.values:
-            value = _eval_node(v, ctx)
-            if value is Missing or not value:
-                return False
-            result = value
-        return bool(result)
-    if isinstance(node.op, ast.Or):
-        for v in node.values:
-            value = _eval_node(v, ctx)
-            if value is Missing:
-                continue
-            if value:
-                return True
-        return False
-    raise DSLError(f"Unhandled boolean operator: {type(node.op).__name__}")
+    if not isinstance(node.op, ast.And | ast.Or):
+        raise DSLError(f"Unhandled boolean operator: {type(node.op).__name__}")
+    deciding = isinstance(node.op, ast.Or)  # the truth value that settles the whole expression
+    unknown = False
+    for v in node.values:
+        value = _eval_node(v, ctx)
+        if value is Missing:
+            unknown = True
+        elif bool(value) is deciding:
+            return deciding
+    return Missing if unknown else not deciding
 
 
 def _eval_compare(node: ast.Compare, ctx: _EvalContext) -> Any:
-    """Evaluate chained comparisons (a < b < c is two pairwise comparisons)."""
+    """Evaluate chained comparisons (a < b < c is two pairwise comparisons, joined by ``and``).
+
+    A pair with a :data:`Missing` side is Missing, not False: the comparison was not established, and
+    answering False would make its negation True. A chain is False when any pair is False, else
+    Missing when any pair was, else True — the same Kleene ``and`` as :func:`_eval_boolop`.
+    """
     left = _eval_node(node.left, ctx)
+    unknown = False
     for op, comparator in zip(node.ops, node.comparators):
         right = _eval_node(comparator, ctx)
         if left is Missing or right is Missing:
-            return False
+            unknown = True
+            left = right
+            continue
         try:
             if isinstance(op, ast.Eq):
                 ok = left == right
@@ -1346,7 +1436,7 @@ def _eval_compare(node: ast.Compare, ctx: _EvalContext) -> Any:
         if not ok:
             return False
         left = right
-    return True
+    return Missing if unknown else True
 
 
 # =============================================================================
@@ -1417,14 +1507,14 @@ def _check_arity(name: str, args: list[Any], expected: int) -> list[Any]:
     return args
 
 
-def _builtin_contains(haystack: Any, needle: Any) -> bool:
-    """True when ``needle`` is in ``haystack``. Strings: substring; iterables: membership.
+def _builtin_contains(haystack: Any, needle: Any) -> Any:
+    """Whether ``needle`` is in ``haystack`` — substring over a string, membership otherwise; :data:`Missing` over one.
 
     The substring half is refused over model prose where a template is AUTHORED, not here — see
     the module's *Text matches over model prose* — so a stored template evaluates as it always did.
     """
     if haystack is Missing or needle is Missing:
-        return False
+        return Missing
     try:
         return needle in haystack
     except TypeError as mismatch:
@@ -1433,10 +1523,10 @@ def _builtin_contains(haystack: Any, needle: Any) -> bool:
         ) from mismatch
 
 
-def _builtin_intersects(a: Any, b: Any) -> bool:
-    """True when sets-of-elements share at least one element."""
+def _builtin_intersects(a: Any, b: Any) -> Any:
+    """Whether two sets-of-elements share at least one element; :data:`Missing` when either is Missing."""
     if a is Missing or b is Missing:
-        return False
+        return Missing
     try:
         set_a = set(a) if not isinstance(a, str) else {a}
         set_b = set(b) if not isinstance(b, str) else {b}
@@ -1540,38 +1630,47 @@ def _builtin_calls(ledger: CallLedger, spec: Any) -> list[dict[str, Any]]:
 # ---- any() / all() generators ------------------------------------------------
 
 
-def _eval_any_all(func_name: str, node: ast.Call, ctx: _EvalContext) -> bool:
-    """Evaluate ``any(<body> for it in <path>)`` / ``all(...)``."""
+def _eval_any_all(func_name: str, node: ast.Call, ctx: _EvalContext) -> Any:
+    """Evaluate ``any(<body> for it in <path>)`` / ``all(...)`` three-valued.
+
+    :data:`Missing` over a Missing iterable. Over elements, ``any`` is the Kleene ``or`` of the bodies
+    and ``all`` the Kleene ``and``: an element whose body is Missing leaves the answer unknown unless
+    another element settles it.
+    """
     if len(node.args) != 1 or not isinstance(node.args[0], ast.GeneratorExp):
         raise DSLError(f"{func_name}() takes one generator expression argument.")
     genexp = node.args[0]
     gen = genexp.generators[0]
     iterable = _eval_node(gen.iter, ctx)
     if iterable is Missing:
-        return False
+        return Missing
     try:
         items = list(iterable)
     except TypeError as mismatch:
         raise DSLError(f"{func_name}(): cannot iterate a {type(iterable).__name__}") from mismatch
 
-    aggregator = any if func_name == "any" else all
+    deciding = func_name == "any"  # the element verdict that settles the whole expression
     body = genexp.elt
 
-    def _eval_with_binding(item: Any) -> bool:
+    def _eval_with_binding(item: Any) -> Any:
         previous = ctx.binding.get("it", _SENTINEL)
         ctx.binding["it"] = item
         try:
-            value = _eval_node(body, ctx)
-            if value is Missing:
-                return False
-            return bool(value)
+            return _eval_node(body, ctx)
         finally:
             if previous is _SENTINEL:
                 ctx.binding.pop("it", None)
             else:
                 ctx.binding["it"] = previous
 
-    return aggregator(_eval_with_binding(it) for it in items)
+    unknown = False
+    for item in items:
+        value = _eval_with_binding(item)
+        if value is Missing:
+            unknown = True
+        elif bool(value) is deciding:
+            return deciding
+    return Missing if unknown else not deciding
 
 
 _SENTINEL = object()
@@ -1586,12 +1685,15 @@ __all__ = [
     "call_parameter_matches",
     "evaluate",
     "evaluate_with_detail",
+    "NOT_ESTABLISHED",
+    "not_established_detail",
     "extract_paths",
     "extract_text_matches",
     "parse",
     "reads_call_ledger",
     "referenced_actions",
     "referenced_fires",
+    "speaks_the_goal_language",
     "undefined_action",
     "undefined_call_references",
     "undefined_fire_references",

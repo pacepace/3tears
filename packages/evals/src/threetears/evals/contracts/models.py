@@ -303,7 +303,8 @@ class WorldSeed(EvalDocumentModel):
             "state no dimension declares — so a run, and not only the conformance kit, exposes a candidate that "
             "perceives undeclared state. Empty perturbs nothing. Applied by the cell's world session when the "
             "kind reaches each turn (``WorldSession.at_turn``) and recorded on the result's ``world_events``; a "
-            "turn the cell never reached is never applied. Refused at authoring on a host whose world has no "
+            "turn the cell never reached is never applied, and a cell whose kind announced no turn (or skipped "
+            "one) is refused rather than recorded as perturbed. Refused at authoring on a host whose world has no "
             "ambient-perturbation handle, and frozen onto the run beside the namespaces "
             "(``EvalRun.resolved_ambient_perturbation_turns``)."
         ),

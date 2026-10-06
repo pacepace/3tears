@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any, get_args
 
+import dataclasses
+
 import pytest
 
 from threetears.evals.contracts.host.world import WorldDimension, WorldRegistry
@@ -1957,3 +1959,54 @@ class TestAListOfShapesIsPerceivedInEveryShape:
         result = _verdict((await check_world_conformance(_tray_world())).results, "perception_ab", "tray")
 
         assert result.outcome == "passed", result.detail
+
+
+# =============================================================================
+# One defect, one finding — over every fault the toy world can suffer
+# =============================================================================
+
+#: Each fault, and the one verdict it must turn red. The kit's honesty claim is this table: a fault that also
+#: turns another check red sends the host to fix correct code.
+_FAULT_RED_SETS: dict[str, list[tuple[str, str | None]]] = {
+    "seeding_vendor_template_does_nothing": [("round_trip", "vendor_template")],
+    "document_header_drops_language": [("perception_ab", "document_language")],
+    "operator_context_reads_the_processing_shift": [("ambient_isolation", None)],
+    "operator_context_shows_vendor_template": [("perception_stillness", "vendor_template")],
+    "document_header_shows_payment_hold": [("perception_stillness", "payment_hold")],
+    "seeding_scan_quality_resets_language": [("independence", "document_language")],
+    "arming_payment_hold_names_no_event": [("round_trip", "payment_hold")],
+}
+
+
+def test_the_red_set_table_names_every_fault() -> None:
+    """A fault added to the toy world without a row here would go unchecked while the table claims every one."""
+    assert set(_FAULT_RED_SETS) == {field.name for field in dataclasses.fields(ToyWorldFaults)}
+
+
+@pytest.mark.parametrize("fault", sorted(_FAULT_RED_SETS))
+async def test_each_fault_turns_exactly_its_owning_verdict_red(fault: str) -> None:
+    """The sound world turns nothing red, so the red set below is the fault's and nothing else's."""
+    assert (await check_world_conformance(toyhost_world()[0])).failures == ()
+
+    report = await check_world_conformance(toyhost_world(faults=ToyWorldFaults(**{fault: True}))[0])
+
+    assert [(result.check, result.dimension) for result in report.failures] == _FAULT_RED_SETS[fault]
+
+
+async def test_a_base_value_that_never_lands_leaves_every_check_composing_over_it_unable_to_start() -> None:
+    """The dead vendor_template seeder: the base world's acme-2019 never lands, so the coherence handle answers
+    against a world nobody named. Every check composing over the base world records that, naming the base
+    dimension, instead of failing on another dimension's account."""
+    results = await _report(faults=ToyWorldFaults(seeding_vendor_template_does_nothing=True))
+
+    for check, dimension in [
+        ("round_trip", "scan_quality"),
+        ("perception_ab", "scan_quality"),
+        ("perception_stillness", "scan_quality"),
+        ("independence", "scan_quality"),
+        ("independence", "document_language"),
+        ("ambient_isolation", None),
+    ]:
+        result = _verdict(results, check, dimension)  # type: ignore[arg-type]
+        assert (result.outcome, result.qualification) == ("unavailable", "seeding_did_not_take"), (check, dimension)
+        assert "vendor_template did not read back its base value" in result.detail

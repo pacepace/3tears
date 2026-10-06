@@ -63,6 +63,7 @@ from threetears.evals.contracts.host import ApparatusError, SeedRefused, Subject
 from threetears.evals.run import GoalCheckUnevaluable, grade_goal_checks
 from packages.evals.tests.fixtures.toyhost.product import ExtractionRequest, extraction_request
 from packages.evals.tests.fixtures.toyhost.tracing import OP_HOST_GRADE, OP_MODEL_CALL, OP_TURN_ROOT, toy_span
+from packages.evals.tests.fixtures.toyhost.world import toyhost_world
 
 #: The name a toy-host template carries on ``EvalTemplate.candidate_kind``, and the key the run
 #: wires this kind under on ``RunnerOptions.candidate_kinds``. Opaque to the engine, which
@@ -313,7 +314,7 @@ class ToyExtractorKind:
         documents: tuple[ToyDocument, ...] = TOY_DOCUMENTS,
         judged: bool = False,
         graded_fields: tuple[str, ...] = INVOICE_FIELDS,
-        goal_checks: tuple[str, ...] = (),
+        goal_checks: tuple[str, ...],
     ) -> None:
         """Wire the extractor's collaborators.
 
@@ -332,9 +333,11 @@ class ToyExtractorKind:
                 judge wired to it.
             graded_fields: The invoice fields ``field_accuracy`` is computed over — what a template's
                 ``kind_spec`` states (``contract.py``'s ``ExtractorSpec``). Every field, by default.
-            goal_checks: The template's goal checks, graded at each cell's end against the call ledger
-                this kind fills and the world it read back — through the engine's
-                :func:`~threetears.evals.run.grade_goal_checks`, the one evaluation every kind uses.
+            goal_checks: The template's goal checks (``template.goal_state_checks``), graded at each cell's
+                end against the call ledger this kind fills and the world it read back — through the
+                engine's :func:`~threetears.evals.run.grade_goal_checks`, the one evaluation every kind
+                uses. Required, with no default: a kind that grades none of them completes cells the
+                runner refuses, so the template's checks are a construction decision, never an omission.
         """
         self._client = client
         #: The extraction is a document, judged against the invoice it was read from — or, unjudged,
@@ -352,7 +355,8 @@ class ToyExtractorKind:
         #: onto one entry and this ledger cannot be mistaken for a per-observation record.
         self.measures: dict[tuple[str, str], dict[str, float]] = {}
 
-    def seedable_dimensions(self, seed: WorldSeed) -> tuple[str, ...]:
+    @staticmethod
+    def seedable_dimensions(seed: WorldSeed) -> tuple[str, ...]:
         """Which declared dimensions a seed asks this kind to set.
 
         The run records this on ``EvalRun.world_placements`` through
@@ -395,8 +399,9 @@ class ToyExtractorKind:
             world_seed: The world state this scenario presumes, keyed by carrier.
             span_window: This cell's tracing windows, carried out on the instance.
             cassettes: Unwired — the extractor calls no tool, so a cassette run of it is refused.
-            world: This cell's world session, over the same registry the kind was built with. The toy
-                host always declares a world, so it is never ``None`` here.
+            world: This cell's world session, over the same registry the kind was built with, which this
+                binds to a fresh toy world of its own before seeding. The toy host always declares a world,
+                so it is never ``None`` here.
 
         Returns:
             The prepared extractor.
@@ -408,6 +413,13 @@ class ToyExtractorKind:
                 rather than to the subject factory.
         """
         assert world is not None and world.registry is self._world, "the cell's world is the one this kind seeds"
+        # One world per cell: the profile's registry is the declaration, and its table is the conformance
+        # kit's. Seeding it for every cell would leave whatever one cell fired — the payment hold — in force
+        # for the next, whose end state would then record the previous cell's world. So each cell binds a
+        # fresh toy world built in the profile's own shape (the toy registers its optional capabilities
+        # together, so an ambient handle says which shape it was built in; ``bind`` refuses any other table).
+        cell_world, _state = toyhost_world(optional_capabilities=self._world.perturb_ambient is not None)
+        world.bind(cell_world.bindings)
         try:
             await world.seed(world_seed, attached=self.CARRIERS)
         except SeedRefused as refused:
@@ -418,8 +430,8 @@ class ToyExtractorKind:
         # declared dimension, not just the seeded ones — the witnessed one is state this cell
         # observed and did not choose, and that is a fact about the cell.
         seeded_world = {
-            declared.name: await self._world.call(declared.read)
-            for declared in self._world.declarations
+            declared.name: await world.registry.call(declared.read)
+            for declared in world.registry.declarations
             if declared.read is not None
         }
         return ToyExtractorInstance(
@@ -505,7 +517,7 @@ class ToyExtractorKind:
                         end_state=end_state,
                         fired=session.fired,
                         variation=test_case.variation_params,
-                        world=self._world,
+                        world=session.registry,
                     )
                 except GoalCheckUnevaluable as unevaluable:
                     raise ApparatusError(str(unevaluable)) from unevaluable

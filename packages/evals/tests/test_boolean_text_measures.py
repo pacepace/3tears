@@ -173,8 +173,45 @@ def test_per_label_precision_recall_and_f1_come_from_the_confusion_counts() -> N
     assert (recall_attack.rate, recall_attack.n) == (pytest.approx(2 / 3), 3)
     precision_move = summaries[classifier_label_measure("precision", "move")]
     assert (precision_move.rate, precision_move.n) == (0.5, 2)
-    assert summaries[classifier_label_measure("f1", "attack")].mean == pytest.approx(0.8)
-    assert summaries[classifier_label_measure("f1", "move")].mean == pytest.approx(2 / 3)
+    f1_attack = summaries[classifier_label_measure("f1", "attack")]
+    assert (f1_attack.mean, f1_attack.n) == (pytest.approx(0.8), 3), "n is the label's support: predicted or expected"
+    f1_move = summaries[classifier_label_measure("f1", "move")]
+    assert (f1_move.mean, f1_move.n) == (pytest.approx(2 / 3), 2)
+
+
+def test_a_label_predicted_but_never_expected_has_no_recall_and_no_f1() -> None:
+    """F1 is the harmonic mean of precision and recall, so a label missing recall has none — never a mean of 0.0
+    stated over n=0. Its precision exists (0 of 1), and is reported."""
+    cells = [("attack", "attack"), ("attack", "move")]
+    results = [
+        _result(f"c{i}", match=expected == predicted, confusion_cell=confusion_cell(expected, predicted))
+        for i, (expected, predicted) in enumerate(cells)
+    ]
+
+    summaries = _summaries(results)
+
+    assert summaries[classifier_label_measure("precision", "move")].rate == 0.0
+    assert classifier_label_measure("recall", "move") not in summaries
+    assert classifier_label_measure("f1", "move") not in summaries
+    assert summaries[classifier_label_measure("f1", "attack")].mean == pytest.approx(2 / 3)
+
+
+def test_an_f1_reading_states_that_it_has_no_spread_by_construction() -> None:
+    """ "Unestimable at n=…" implies more data would supply a spread; F1 is one value from one matrix, at any n."""
+    cells = [("attack", "attack"), ("attack", "attack"), ("attack", "move"), ("move", "move")]
+    results = [
+        _result(f"c{i}", match=expected == predicted, confusion_cell=confusion_cell(expected, predicted))
+        for i, (expected, predicted) in enumerate(cells)
+    ]
+    summaries = _summaries(results)
+    f1 = classifier_label_measure("f1", "attack")
+    recall = classifier_label_measure("recall", "attack")
+    surface = _surface({"cell": {f1: summaries[f1], recall: summaries[recall]}})
+
+    assert resolve_reading(surface, cell_ref("cell", "rig"), f1, "measure").dispersion.startswith(
+        "none by construction"
+    )
+    assert "CI" in resolve_reading(surface, cell_ref("cell", "rig"), recall, "measure").dispersion
 
 
 def test_accuracy_is_derived_from_match_as_the_classifier_s_quality_reading() -> None:

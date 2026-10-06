@@ -536,7 +536,12 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
                     "delta": comparison.delta,
                     "p_adjusted": comparison.p_adjusted,
                     "verdict": COMPARISON_VERDICT_WORDS[comparison.verdict]
-                    + (f" ({comparison.untested_reason})" if comparison.untested_reason else ""),
+                    + (f" ({comparison.untested_reason})" if comparison.untested_reason else "")
+                    + (
+                        " — immaterial: below the host's materiality threshold, too small to act on"
+                        if comparison.materiality == "immaterial"
+                        else ""
+                    ),
                 }
             )
     blocks: list[ReportBlock] = [

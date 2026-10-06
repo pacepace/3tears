@@ -3250,7 +3250,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
             test_case_id=cls.RIGHT,
             rubric_scores=[],
             goal_state_outcomes=[GoalStateOutcome(expression="classifier.label == expected", passed=True)],
-            host_measures={"classifier_accuracy": 1.0, "parse_failure_rate": 0.0},
+            host_measures={"field_accuracy": 1.0, "parse_failure_rate": 0.0},
         )
         wrong = make_eval_result(
             eval_run_id=run.id,
@@ -3258,7 +3258,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
             test_case_id=cls.WRONG,
             rubric_scores=[],
             goal_state_outcomes=[GoalStateOutcome(expression="classifier.label == expected", passed=False)],
-            host_measures={"classifier_accuracy": 0.0, "parse_failure_rate": 0.0},
+            host_measures={"field_accuracy": 0.0, "parse_failure_rate": 0.0},
         )
         return run, [right, wrong]
 
@@ -3285,7 +3285,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         missed = [
             row["test_case_id"]
             for row in rows
-            if row["metric"] == "composite" and row["host_measure:classifier_accuracy"] == "0.0"
+            if row["metric"] == "composite" and row["host_measure:field_accuracy"] == "0.0"
         ]
         assert missed == [self.WRONG]
 
@@ -3295,10 +3295,10 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
 
         rows = self._exported_rows(run, results)
 
-        graded = [row for row in rows if row["host_measure:classifier_accuracy"] != ""]
+        graded = [row for row in rows if row["host_measure:field_accuracy"] != ""]
         assert len(graded) == len(results), "exactly one row per result carries the grade"
         assert all(row["metric"] == "composite" for row in graded), "and it is the result's quality row"
-        assert sum(float(row["host_measure:classifier_accuracy"]) for row in graded) / len(graded) == 0.5
+        assert sum(float(row["host_measure:field_accuracy"]) for row in graded) / len(graded) == 0.5
 
     def test_a_second_graded_axis_is_another_column_and_not_another_shape(self):
         """The host catalogue is open, so a kind that grades on two axes must cost no export work."""
@@ -3320,8 +3320,8 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         composites = [row for row in rows if row["metric"] == "composite"]
         judged = next(row for row in composites if row["run_id"] == judged_run.id)
         code = next(row for row in composites if row["test_case_id"] == self.WRONG)
-        assert judged["value"] != "" and judged["host_measure:classifier_accuracy"] == ""
-        assert code["value"] == "" and code["host_measure:classifier_accuracy"] == "0.0"
+        assert judged["value"] != "" and judged["host_measure:field_accuracy"] == ""
+        assert code["value"] == "" and code["host_measure:field_accuracy"] == "0.0"
 
     def test_a_judge_graded_export_is_unchanged(self):
         """No grade column exists at all when nothing carries one, so saved pipelines keep their header."""
@@ -3357,7 +3357,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
                 k_iteration=1,
                 metric="cost_usd",
                 value=0.01,
-                host_measures={"classifier_accuracy": 1.0},
+                host_measures={"field_accuracy": 1.0},
                 outcome="ok",
             )
 

@@ -18,6 +18,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 
 import pytest
 
@@ -30,10 +31,11 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.generator import build_user_message
 from threetears.evals.analysis.stats import composite_significance, holm_adjust
 from threetears.evals.contracts import EvalCampaign, EvalResult, Question, RubricScore
+from threetears.evals.contracts.host import HostProfile, MeasureRegistry
 from threetears.evals.contracts.metrics import MeritAxis
 from packages.evals.tests.factories import fixture_variant_key, make_eval_result, make_eval_run, minimal_declaration
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 
 #: Per-case score differences, contrast minus control, over twelve cases. Raw paired p ≈ 0.026: a
 #: separation at α=0.05 when tested alone, and not once nine other comparisons share its family.
@@ -61,12 +63,15 @@ def _bundle(
     questions: bool = True,
     cases: int = 12,
     matched: tuple[Sequence[bool], Sequence[bool]] | None = None,
+    accuracy: tuple[Sequence[float], Sequence[float]] | None = None,
+    profile: HostProfile | None = None,
 ) -> AnalysisContextBundle:
     """A control and one contrast, scored on one judged dimension per entry of ``differences``.
 
     The control scores 3 on every dimension of every case; the contrast scores ``3 + difference``.
     Results carry no goal check and no cost, so the judged dimensions are the whole family — unless
-    ``matched`` gives each side's per-case classifier verdicts, landed as ``match``.
+    ``matched`` gives each side's per-case classifier verdicts, landed as ``match``, or ``accuracy`` each side's
+    per-case ``field_accuracy``.
     """
     dims = _dims(len(differences))
     runs = []
@@ -83,7 +88,13 @@ def _bundle(
                 test_case_id=f"tc-{case:02d}",
                 goal_state_outcomes=[],
                 cost_usd=None,
-                host_measures={} if matched is None else {"match": matched[model == CONTRAST][case]},
+                host_measures=(
+                    {"match": matched[model == CONTRAST][case]}
+                    if matched is not None
+                    else {"field_accuracy": accuracy[model == CONTRAST][case]}
+                    if accuracy is not None
+                    else {}
+                ),
                 rubric_scores=[
                     RubricScore(dim=dim, score=3 + (diffs[case] if model == CONTRAST else 0), scale="ordinal")
                     for dim, diffs in zip(dims, differences, strict=True)
@@ -110,7 +121,9 @@ def _bundle(
         declared_design=declaration,
         created_by="test:fixture",
     )
-    return assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=toyhost_profile())
+    return assemble_context_bundle(
+        campaign, storage=ToyhostStorage(runs, results), profile=profile if profile is not None else toyhost_profile()
+    )
 
 
 def _family(bundle: AnalysisContextBundle) -> ComparisonFamily:
@@ -267,3 +280,50 @@ class TestWhatAFamilyCovers:
 
         cost = _family(_bundle([], matched=(control, contrast), merit_axes=["cost"]))
         assert not [c for c in cost.comparisons if c.name == "accuracy"], "it sits on quality, not on every axis"
+
+
+# --- materiality: a separated difference too small to act on is labelled so -----------------------------
+
+
+def _accuracy_threshold(threshold: float | None) -> HostProfile:
+    profile = toyhost_profile()
+    measures = tuple(
+        descriptor.model_copy(update={"materiality_threshold": threshold})
+        if descriptor.name == "field_accuracy"
+        else descriptor
+        for descriptor in TOYHOST_MEASURES
+    )
+    return replace(profile, measures=MeasureRegistry(measures, families=profile.measures.families))
+
+
+#: The contrast extracts about two points better on every case, with spread: separated after any correction.
+_ACCURACY = ([0.80, 0.81, 0.79, 0.80] * 3, [0.82, 0.83, 0.82, 0.82] * 3)
+
+
+@pytest.mark.parametrize(("threshold", "expected"), [(0.05, "immaterial"), (0.01, "material"), (None, "material")])
+def test_a_separated_comparison_carries_the_materiality_of_its_delta(threshold: float | None, expected: str) -> None:
+    """The verdict says the arms separated; materiality says whether the separation is worth acting on — the
+    host's threshold read by the one predicate every surface uses, so a memo cannot crown a winner on a
+    difference the host declared too small to matter."""
+    family = _family(_bundle([], accuracy=_ACCURACY, profile=_accuracy_threshold(threshold)))
+    (comparison,) = [c for c in family.comparisons if c.name == "field_accuracy"]
+
+    assert comparison.verdict == "improved"
+    assert comparison.delta == pytest.approx(0.02, abs=0.005)
+    assert comparison.materiality == expected
+
+
+def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
+    """Both surfaces that list a comparison's verdict: the report's contrast table and the analysis writer's bundle."""
+    from threetears.evals.analysis.report.build import build_code_only_report
+
+    profile = _accuracy_threshold(0.05)
+    bundle = _bundle([], accuracy=_ACCURACY, profile=profile)
+    report = build_code_only_report(bundle, measures=profile.measures, assembled_at="2026-10-06T00:00:00Z")
+    (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+    (row,) = [row for row in table.rows if row["reading"] == "field_accuracy"]  # type: ignore[attr-defined]
+
+    assert (
+        row["verdict"].startswith("improved") and "immaterial: below the host's materiality threshold" in row["verdict"]
+    )
+    assert '"materiality":"immaterial"' in build_user_message(bundle).replace(" ", "")

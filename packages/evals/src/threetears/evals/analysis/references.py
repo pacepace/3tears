@@ -48,7 +48,7 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.contracts.analysis_measures import MeasureSummary
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.campaign import ReadingKind
-from threetears.evals.contracts.metrics import MeritAxis
+from threetears.evals.contracts.metrics import MeritAxis, classifier_label_of
 from threetears.evals.contracts.surface import (
     CellFacts,
     DecisionSurface,
@@ -284,7 +284,13 @@ def _resolve_measure(surface: DecisionSurface, cell: CellFacts, ref: str, measur
         unit=facts.unit,
         higher_is_better=summary.higher_is_better,
         merit_axis=facts.merit_axis,
-        dispersion=_dispersion(summary.sem, summary.ci_low, summary.ci_high, summary.n, summary.n_independent or None),
+        dispersion=(
+            # F1 is a function of one confusion matrix: there is no spread to estimate at any n, so "unestimable at
+            # n=…" would imply more data could supply one.
+            "none by construction: one value computed from the cell's confusion counts"
+            if (label := classifier_label_of(measure_id)) is not None and label[0] == "f1"
+            else _dispersion(summary.sem, summary.ci_low, summary.ci_high, summary.n, summary.n_independent or None)
+        ),
     )
 
 
@@ -380,11 +386,13 @@ def _dispersion(sem: float | None, ci_low: float | None, ci_high: float | None, 
     Returns:
         The dispersion text an evidence row carries.
     """
-    if sem is None or ci_low is None or ci_high is None:
+    if ci_low is None or ci_high is None:
         return f"unestimable at n={n}"
-    text = (
-        f"sem {format_number(sem)}; {stats.INTERVAL_LEVEL:.0%} CI [{format_number(ci_low)}, {format_number(ci_high)}]"
-    )
+    # A rate carries its Wilson interval and no standard error, and its interval is its spread: stated, never
+    # reported as unestimable because the sem it does not have is absent.
+    text = f"{stats.INTERVAL_LEVEL:.0%} CI [{format_number(ci_low)}, {format_number(ci_high)}]"
+    if sem is not None:
+        text = f"sem {format_number(sem)}; {text}"
     if n_cases is not None and n_cases < n:
         # Short on purpose: it rides on every reading of a clustered cell, in every table a reader scans.
         text += f"; {n} obs over {n_cases} cases, interval too narrow"

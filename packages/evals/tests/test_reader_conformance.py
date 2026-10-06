@@ -153,6 +153,11 @@ _FAULTS: tuple[tuple[str, Callable[[], HostProfile], str], ...] = (
         "open_family.member_map",
     ),
     (
+        "a family resolving members with no membership test",
+        lambda: _with_declaration("retrieval_overrides", owns_member=None),
+        "open_family.member_map",
+    ),
+    (
         "a residual returning a set",
         lambda: _with_declaration("retrieval_overrides", read_residual=lambda _r, _s, _removed: {"x"}),
         "open_family.residual_json_safe",
@@ -177,16 +182,49 @@ def test_every_case_is_turned_red_by_some_fault() -> None:
     assert reached == {case.name for case in READER_CONFORMANCE_CASES}
 
 
-def test_a_fault_turns_only_the_cases_it_breaks_red() -> None:
-    """A JSON fault is not also an ordering fault: the cases each name one promise, not a pile of them."""
-    sample = _sample(_with_reader("batch_label", _first_result))
-    red = set()
-    for case in READER_CONFORMANCE_CASES:
+def _red_cases(sample: ReaderSample, cases: Sequence[ReaderConformanceCase]) -> list[str]:
+    """Every case run over ONE sample in the order given, and the ones that went red, in that order."""
+    red = []
+    for case in cases:
         try:
             case.run(sample)
         except ReaderConformanceFailure:
-            red.add(case.name)
-    assert red == {"sweepable.order_independent"}
+            red.append(case.name)
+    return red
+
+
+@pytest.mark.parametrize("order", ["forward", "reversed"])
+@pytest.mark.parametrize(("fault", "build", "case_name"), _FAULTS, ids=[fault for fault, _, _ in _FAULTS])
+def test_each_fault_turns_exactly_its_owning_case_red_over_one_shared_sample(
+    fault: str, build: Callable[[], HostProfile], case_name: str, order: str
+) -> None:
+    """One broken promise, one red case — over one sample shared by every case, in either order.
+
+    Shared because a host builds its sample once (a module-scoped fixture, recorded runs are expensive): a
+    reader that writes to the run would otherwise do its damage in whichever case ran first, and
+    ``mutates_nothing`` would compare the mutated state against itself and pass. Exactly the owner, because
+    a JSON fault reported again as an ordering fault — or a list-reading family surfacing as an engine
+    ``ValueError`` under the variant-key case — sends the host to the wrong reader. No case raises anything
+    but its own failure: an escaping exception fails this test outright.
+    """
+    sample = _sample(build())
+    cases = READER_CONFORMANCE_CASES if order == "forward" else tuple(reversed(READER_CONFORMANCE_CASES))
+
+    assert _red_cases(sample, cases) == [case_name]
+
+
+def test_no_case_mutates_the_sample_it_was_handed() -> None:
+    """The kit reads copies: the caller's runs are untouched even by a reader that writes to every run it reads."""
+    sample = _sample(_with_reader("batch_label", _mutating))
+    before = [
+        (run.model_dump(mode="json"), [r.model_dump(mode="json") for r in results]) for run, results in sample.runs
+    ]
+
+    _red_cases(sample, READER_CONFORMANCE_CASES)
+
+    assert [
+        (run.model_dump(mode="json"), [r.model_dump(mode="json") for r in results]) for run, results in sample.runs
+    ] == before
 
 
 def test_a_sweepable_declaration_is_what_the_kit_reads() -> None:

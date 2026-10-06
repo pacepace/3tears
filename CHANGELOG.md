@@ -6,6 +6,77 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: goal checks are three-valued, a kind is held to grading the template's checks, one defect is one finding in world conformance and the reader kit, comparisons carry materiality
+
+- **A goal check over a missing value is never a pass, negated or not.** The DSL read a comparison against a
+  ``Missing`` value as ``False``, so ``not state.x == "y"`` (and ``not (a and b)``, ``not contains(...)``,
+  ``not any(...)``…) held over an end state that did not hold ``x`` — the module's own example passed with no
+  messages at all. Evaluation is now Kleene three-valued: a comparison, ``contains``, ``intersects`` or
+  ``length`` over ``Missing`` is ``Missing``; ``not`` keeps it; ``and``/``or`` are decided by a deciding operand
+  and otherwise ``Missing``; ``any``/``all`` are the ``or``/``and`` over their elements. A check whose value is
+  ``Missing`` is graded **failed** with a detail starting ``not established`` (new ``dsl.NOT_ESTABLISHED``,
+  ``dsl.not_established_detail``) that names each path that resolved to nothing — the package's binary
+  pass/fail model, the precedent the deadline's unevaluated checks already follow, so no stored shape changes.
+  A precondition resting on a missing value does not hold. **Adopters (goal-check semantics):** a negated
+  check over a dimension your kind's end state does not hold — an unattached carrier, a dimension with no
+  ``read`` handle, a missing call parameter under ``it`` — used to pass and now fails as not established;
+  ``all(...)`` over elements one of which lacks the field fails as not established rather than as False
+  (same verdict); a check whose deciding operand is known is unchanged. ``recheck_goal_states`` is how this
+  reaches stored results.
+- **The goal language refuses more at authoring.** A builtin used as a value (``contains == 1``) and a computed
+  ``tool.action`` spec in any call builtin (``called_before(variation.a, "x.y")``, ``call_count(state.x)``) are
+  ``DSLError`` at parse — before, only ``calls()`` required a literal, and the others failed only at evaluation
+  or scored a typo False every trial. A unary ``-``/``+`` over a value it cannot apply to raises ``DSLError``
+  rather than a raw ``TypeError``. ``HostProfile.addressable`` refuses a goal-check path over a dimension that
+  declares no ``read`` handle (no end state ever holds one). Whether a kind attaches a dimension's carrier is
+  the kind's code, which no authoring gate can see, so that case is graded not established at run time instead.
+- **Re-checking keeps a verdict when the vocabulary moved.** ``recheck_result`` keeps a stored outcome, with a
+  reason, when today's registry no longer resolves its world path, or resolves it to a dimension other than
+  the one the cell stored it under — a rename or removal no longer rewrites stored passes as failures. A
+  dimension today's registry resolves and the cell never held under any name is re-graded (as not
+  established). A stored check today's language refuses at parse is kept and named as refused
+  (``dsl.speaks_the_goal_language`` tells it from a kind's own fact).
+- **A completed cell is held to grading the template's goal checks.** New ``runner.hold_to_goal_checks``: a cell
+  with neither error must carry an outcome for every ``template.goal_state_checks`` expression (a kind's own
+  facts neither cover nor need one); otherwise the run is refused with ``ValueError`` naming the ungraded
+  checks. A failed candidate's ungraded checks are carried as failed and not evaluated, so per-check rates
+  count it; an excluded cell is stored as reported. **Adopters:** construct your kind with the template's
+  checks (the toy extractor's ``goal_checks`` is now required, with no default).
+- **A perturbation schedule the kind never announced is refused.** New ``WorldSession.require_schedule_announced``
+  (the runner calls it after ``invoke`` for an opened world) and ``WorldSession.announced_turns``: when the seed
+  schedules ambient perturbation, a kind that announced no turn through ``at_turn`` — or announced turns with a
+  gap — ends the run with ``WorldSessionError`` instead of recording an unperturbed cell under a perturbed
+  condition. A scheduled turn past the last one announced is a turn the cell never reached, as before.
+  **Adopters:** a kind running under a schedule calls ``world.at_turn(n)`` before every turn it takes, from 1.
+- **World conformance verifies its base world.** Every check composing over the base world reads each base value
+  back; one that did not land records the check ``unavailable`` / ``seeding_did_not_take`` naming the base
+  dimension, so a dead seeder on a base dimension is one finding (its round trip) rather than nine across five
+  dimensions blaming correct code. Each toy fault's exact red set is now pinned.
+- **The reader conformance kit is order-proof and one fault turns one case red.** Every case reads its own deep
+  copy of the sample, so cases may share one sample in any order and ``mutates_nothing`` still sees an
+  idempotent write. The determinism and order cases defer to ``json_safe`` for an unencodable answer, the order
+  case to ``deterministic`` for a reader that changes its answer, and the variant-key case to ``member_map`` for a
+  family that does not read a map (no raw engine ``ValueError``). ``open_family.member_map`` now fails a family
+  that resolves members while declaring no ``owns_member``.
+- **A comparison verdict carries materiality.** ``FamilyComparison.materiality`` (optional; ``None`` when there
+  is no delta) applies the one ``materiality`` predicate to the comparison's delta and the measure's threshold;
+  the report's contrast table labels an immaterial verdict and the analysis writer sees the field, so a memo
+  cannot name a winner on a difference the host declared too small to act on.
+- **Smaller corrections.** A per-label F1 is reported only where the label has both precision and recall, with
+  ``n`` its support (``predicted + expected - hits``) rather than ``n=expected`` (which put ``mean=0.0`` over
+  ``n=0``); an F1 reading's dispersion says it has none by construction, and a rate's reading states its Wilson
+  interval instead of "unestimable" for want of a standard error. ``HostProfile`` refuses an
+  ``observed_model_levers`` value that is not a usage role. The toy kind binds a fresh world per cell. The
+  controls gate and ``world_events`` docstrings no longer claim the session advances turn triggers (a kind
+  fires them; the gate assumes the worst case, which over-refuses). The per-kind seat qualification is
+  recorded: a new core dimension cannot make a host undecided only for a kind that declares its seats; a kind
+  declaring none is held to every seat. Stale ``classifier_accuracy`` examples replaced.
+- **Identity and schema:** no ``IDENTITY_VERSION`` or ``EVAL_SCHEMA_VERSION`` change — goal-check semantics are
+  not part of the variant key, and ``GoalStateOutcome`` is unchanged. The analysis bundle's shape grows by
+  ``FamilyComparison.materiality`` and its F1 summaries change, so a campaign with comparisons or classifier
+  labels assembles a bundle with a new ``bundle_fingerprint``: an analysis stored before reads as generated
+  over a different bundle, which is true.
+
 ### 3tears-evals: an unjudged run's judge-config seat, directionless measures named for what they are, case generation's store calls off the loop, a rating's id carries its rater's kind
 
 - **An unjudged run has no judge-config seat.** ``judge_config_ids`` joins the judge inputs a run naming no

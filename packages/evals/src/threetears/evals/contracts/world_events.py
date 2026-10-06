@@ -5,7 +5,7 @@ facts about the cell that a reader of its result needs and that its end state al
 
 * **a triggered dimension firing.** Seeding a triggered dimension arms it; its condition fires it.
   The condition may be made to happen by the rig through the host's ``fire`` handle (a turn
-  trigger the session advances), or it may happen in the world on its own account (an event the
+  trigger the kind fires as its turns pass — the session advances no clock of its own), or it may happen in the world on its own account (an event the
   candidate's own action brought about; a ruling only a person can make) and be recorded by the
   kind that saw it. Which of the two it was is recorded, never inferred: a rig firing a condition
   and a candidate bringing it about are different findings about the candidate.

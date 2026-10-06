@@ -20,6 +20,11 @@ expression is a goal-state expression whose every input is stored. It leaves as 
   land);
 * an expression that reads world state, for a cell whose end state was not stored, or a re-check given
   no world registry to resolve ``state.<dimension>`` through;
+* an expression reading a world path that today's registry no longer resolves, or resolves to a
+  dimension the cell's stored end state does not hold — the dimension was renamed or removed since
+  the cell was graded, so re-grading would score the vocabulary change as the candidate's failure;
+* an expression today's language refuses although it was written in the language's words — a goal
+  check stored under an older, looser rule, named as refused rather than mistaken for a kind's fact;
 * an expression that reads ``fired()`` or ``fired_armed()``, for a cell that recorded no world events;
 * an outcome that is not a goal-state expression at all — a fact a kind computed itself and
   reported under its own wording (``field_accuracy >= 0.92`` names no root the language admits);
@@ -44,7 +49,13 @@ from threetears.evals.contracts.call_ledger import CallLedger
 from pydantic import Field
 
 from threetears.evals.contracts.base import EvalBaseModel
-from threetears.evals.contracts.dsl import DSLError, extract_paths, reads_call_ledger, referenced_fires
+from threetears.evals.contracts.dsl import (
+    DSLError,
+    extract_paths,
+    reads_call_ledger,
+    referenced_fires,
+    speaks_the_goal_language,
+)
 from threetears.evals.contracts.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.contracts.models import NON_TERMINAL_RUN_STATUSES, GoalStateOutcome
 from threetears.evals.contracts.world_events import Firings
@@ -183,7 +194,9 @@ def recheck_result(
     flips: list[CheckFlip] = []
     kept: list[KeptOutcome] = []
     for stored in result.goal_state_outcomes:
-        reason = _kept_reason(stored.expression, stored_inputs)
+        reason = _kept_reason(stored.expression, stored_inputs) or _vocabulary_moved(
+            stored.expression, end_state=end_state, world=world
+        )
         if reason is not None:
             kept.append(KeptOutcome(expression=stored.expression, reason=reason))
             outcomes.append(stored)
@@ -239,7 +252,9 @@ def _kept_reason(expression: str, inputs: _StoredInputs) -> str | None:
         paths = extract_paths(expression)
         reads_calls = reads_call_ledger(expression)
         reads_fired = bool(referenced_fires(expression))
-    except DSLError:
+    except DSLError as refused:
+        if speaks_the_goal_language(expression):
+            return f"a goal check today's language refuses, so it cannot be re-graded under today's rules: {refused}"
         return "not a goal-state expression — a fact its kind computed and reported in its own words"
     if reads_calls and not inputs.has_ledger:
         return "it reads the call ledger, and no call ledger is stored for its cell — its kind keeps none"
@@ -251,6 +266,47 @@ def _kept_reason(expression: str, inputs: _StoredInputs) -> str | None:
         return "it reads what fired, and its cell recorded no world events"
     if paths.variation and not inputs.has_variation:
         return "it reads the case's variation, and the test case no longer resolves"
+    return None
+
+
+def _vocabulary_moved(
+    expression: str, *, end_state: Mapping[str, Any] | None, world: WorldRegistry | None
+) -> str | None:
+    """Why a world-reading check cannot be re-graded against today's vocabulary, or None when it can.
+
+    Re-grading reads ``state.<path>`` through the registry the re-check was given, which is today's.
+    When the dimension a path resolves to TODAY differs from the one the cell stored it under — the
+    path names no declared dimension any more, or names one other than the stored end state's key
+    for it — re-grading would read Missing and rewrite the stored verdict as a check the candidate did
+    not establish, when what changed was the host's vocabulary. Such an outcome is kept as stored.
+
+    A path whose dimension today's registry resolves, and which the stored end state never held
+    under any name (its carrier was not attached), is NOT a vocabulary change: the cell never had the
+    value, and re-grading it as not established is the language's rule reaching a stored result.
+
+    Args:
+        expression: A stored outcome's expression, which :func:`_kept_reason` has already admitted.
+        end_state: Its cell's stored end state (present whenever the expression reads world state).
+        world: Today's world registry (present whenever the expression reads world state).
+
+    Returns:
+        The reason, or None.
+    """
+    if end_state is None or world is None:
+        return None
+    for path in extract_paths(expression).world:
+        today = world.resolve_path(path)
+        stored = max((name for name in end_state if path == name or path.startswith(f"{name}.")), key=len, default=None)
+        if today is None:
+            return (
+                f"it reads state.{path}, which names no dimension today's world declares — renamed or removed "
+                "since the cell was graded, so its stored verdict stands"
+            )
+        if stored is not None and stored != today:
+            return (
+                f"it reads state.{path}, which its cell stored under {stored} and today's world resolves to "
+                f"{today} — the vocabulary moved since the cell was graded, so its stored verdict stands"
+            )
     return None
 
 

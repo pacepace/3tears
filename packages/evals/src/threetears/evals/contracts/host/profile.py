@@ -84,7 +84,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from threetears.evals.contracts.host.bars import BarRegistry
 from threetears.evals.contracts.host.kinds import KindContract
@@ -251,8 +251,9 @@ class HostProfile:
 
     ``{lever name in the REGISTRY's vocabulary: the usage role whose ``model`` records its value}``.
     A key must be a lever a campaign could declare it swept — a fixed lever, or a member an open
-    family recognises — and anything else is refused at registration: a misspelled key would resolve
-    against nothing and leave the lever reading ``unknown`` with no error anywhere.
+    family recognises — and a value must be a usage role (``RoleUsage.role``); anything else is refused
+    at registration: a misspelled key or role would resolve against nothing and leave the lever reading
+    ``unknown`` with no error anywhere.
     A launch that did not name the lever as an overlay still ran at *some* value, and for a
     model-valued lever the role that spent the tokens is the record of which. The analysis
     bundle's effective-configuration lens reads this to distinguish ``inherited`` from
@@ -582,9 +583,25 @@ class HostProfile:
         axis (:meth:`~threetears.evals.contracts.host.sweepables.SweepableRegistry.refuse_as_axis`) — a
         fixed lever, or a member an open family recognises.
 
+        The value is held to the same rule: it names the usage role whose rows record the lever's model,
+        and usage roles are a closed set (``RoleUsage.role``), so a misspelled role recovers nothing in
+        exactly the same silent way.
+
         Raises:
-            ProfileRegistrationError: A key names no declarable lever, with the remedy the registry prints.
+            ProfileRegistrationError: A key names no declarable lever, with the remedy the registry prints;
+                or a value names no usage role.
         """
+        # Imported here: the models module imports from this package, so a module-level import would cycle.
+        from threetears.evals.contracts.models import UsageRole
+
+        roles = get_args(UsageRole)
+        if misnamed := {name: role for name, role in sorted(self.observed_model_levers.items()) if role not in roles}:
+            raise ProfileRegistrationError(
+                f"host {self.host_id!r} declares observed_model_levers recovering "
+                + ", ".join(f"{name} from role {role!r}" for name, role in misnamed.items())
+                + f", which is no usage role (roles: {', '.join(roles)}) — the lens would recover nothing and the "
+                "lever would read unknown everywhere"
+            )
         unknown = {
             name: reason
             for name in sorted(self.observed_model_levers)
@@ -865,15 +882,18 @@ class HostProfile:
         correct thing for one to do.
 
         Asked at authoring because nothing else asks it. A goal check reading a path nothing
-        declares resolves to ``Missing`` at evaluation, comparisons against ``Missing`` are
-        ``False``, and the subject is scored down for a typo that reports as a failed check.
+        declares resolves to ``Missing`` at evaluation, so the check is never established, and the
+        subject is scored down for a typo that reports as a failed check. The same holds for a
+        declared dimension with no ``read`` handle: the end state is read through ``read`` alone,
+        so no cell's end state ever holds it and a check over it can never be established.
 
         Args:
             path: A dotted path into the world, with the language's own root already stripped.
 
         Returns:
-            ``covered`` when a declared dimension covers the path; ``uncovered`` naming the path
-            otherwise — including on a host that instantiates no world at all. The goal language
+            ``covered`` when a declared dimension covers the path and declares a ``read`` handle;
+            ``uncovered`` naming the path otherwise — including on a host that instantiates no world
+            at all, and for a dimension nothing reads back. The goal language
             roots ``state`` at declared dimensions only, so on such a host a state path names
             nothing a run could ever read, and a check over it is a typo or a check written for
             another host, not an inapplicable question.
@@ -884,8 +904,16 @@ class HostProfile:
                 f"{path} reads world state, and this host instantiates no simulated world — a state path "
                 "names a declared world dimension, and this host declares none",
             )
-        if self.world.resolve_path(path) is None:
+        dimension = self.world.resolve_path(path)
+        if dimension is None:
             return Coverage("uncovered", f"{path} addresses no dimension this host's world declares")
+        declared = self.world.get(dimension)
+        if declared is not None and declared.read is None:
+            return Coverage(
+                "uncovered",
+                f"{path} addresses {dimension}, which declares no read handle — no cell's end state ever holds "
+                "it, so a check over it is never established",
+            )
         return Coverage("covered")
 
     def presumable(self, path: str) -> Coverage:

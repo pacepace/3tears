@@ -146,13 +146,12 @@ def toyhost_launch_host(
     world = eval_host.profile.world
     assert world is not None, "the toy host declares a world"
     client = ScriptedExtractionClient()
-    kind = ToyExtractorKind(client=client, world=world)
 
     def place(run: EvalRun) -> dict[str, WorldPlacement]:
         # The algebra over what this run's kind can actually do: the dimensions its seed sets,
         # through the carriers the extractor attaches.
         seed = WorldSeed(namespaces=run.resolved_world_seed or {})
-        return world.place(seeded=kind.seedable_dimensions(seed), carriers=ToyExtractorKind.CARRIERS)
+        return world.place(seeded=ToyExtractorKind.seedable_dimensions(seed), carriers=ToyExtractorKind.CARRIERS)
 
     async def launch(request: LaunchRequest) -> EvalRun:
         # The subject the launch names, as this host captures it — never a constant, or every launch

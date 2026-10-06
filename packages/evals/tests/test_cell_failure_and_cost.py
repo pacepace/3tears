@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.contracts import EvalResult, EvalStorage, WorldSession
+from threetears.evals.contracts import CallLedger, EvalResult, EvalStorage, WorldSession
 from threetears.evals.contracts.candidate_kind import (
     CandidateOutput,
     CandidateTelemetry,
@@ -56,7 +56,7 @@ from threetears.evals.analysis.reporting import compute_estimate_cost, compute_o
 from threetears.evals.contracts.campaign import EvalCampaign
 from threetears.evals.contracts.usage_capture import RoleUsageLedger
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
-from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run
+from threetears.evals.run.runner import EveryCellApparatusFailedError, RunnerOptions, execute_run, grade_goal_checks
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -113,6 +113,10 @@ class _Drive:
 KindFor = Callable[[WorldRegistry], ToyExtractorKind]
 
 
+#: The toy template's goal checks, which every toy extractor below grades.
+_TOY_CHECKS = tuple(toyhost_template().goal_state_checks)
+
+
 def _drive(
     kind_for: KindFor | None = None,
     *,
@@ -147,13 +151,18 @@ def _drive(
     host = toyhost_host(clients=(lambda _role, _model, *, temperature=None: judge) if judge is not None else None)
     world = host.profile.world
     assert world is not None
+    if template is None:
+        template = toyhost_judged_template() if judge is not None else toyhost_template()
     kind = (
         kind_for(world)
         if kind_for is not None
-        else ToyExtractorKind(client=ScriptedExtractionClient(), world=world, judged=judge is not None)
+        else ToyExtractorKind(
+            client=ScriptedExtractionClient(),
+            world=world,
+            judged=judge is not None,
+            goal_checks=tuple(template.goal_state_checks),
+        )
     )
-    if template is None:
-        template = toyhost_judged_template() if judge is not None else toyhost_template()
     cases = toyhost_test_cases(template)[:n_cases]
     host.storage.save_template(template)
     for case in cases:
@@ -334,7 +343,7 @@ class _RigBreaksUnderKind(ToyExtractorKind):
 
 def _breaking_on(*documents: str) -> KindFor:
     return lambda world: _RigBreaksUnderKind(
-        client=ScriptedExtractionClient(), world=world, breaks_on=frozenset(documents)
+        client=ScriptedExtractionClient(), world=world, breaks_on=frozenset(documents), goal_checks=_TOY_CHECKS
     )
 
 
@@ -390,7 +399,8 @@ class _RigFailsToPrepareKind(ToyExtractorKind):
 
 async def test_an_apparatus_fault_in_prepare_excludes_that_cell_and_the_run_goes_on():
     drive = await _driven(
-        lambda world: _RigFailsToPrepareKind(client=ScriptedExtractionClient(), world=world), n_cases=2
+        lambda world: _RigFailsToPrepareKind(client=ScriptedExtractionClient(), world=world, goal_checks=_TOY_CHECKS),
+        n_cases=2,
     )
 
     assert sorted(result.termination for result in drive.results) == ["apparatus_failed", "completed"]
@@ -507,7 +517,7 @@ async def test_a_cancel_mid_cell_records_the_cells_spend_before_ending_the_run()
     kinds: list[_StillWorkingKind] = []
 
     def kind_for(world: WorldRegistry) -> ToyExtractorKind:
-        kinds.append(_StillWorkingKind(client=ScriptedExtractionClient(), world=world))
+        kinds.append(_StillWorkingKind(client=ScriptedExtractionClient(), world=world, goal_checks=_TOY_CHECKS))
         return kinds[-1]
 
     drive, go = _drive(kind_for, n_cases=2)
@@ -544,11 +554,23 @@ class _PartlyUnpricedKind(ToyExtractorKind):
             ledger.add(
                 model=instance.model, prompt_tokens=200, completion_tokens=30, reasoning_tokens=None, cost_usd=cost
             )
-        return CandidateOutput(output=[{"fields": {}}], telemetry=CandidateTelemetry(usage=ledger.rows()))
+        session = instance.world_session
+        # It emitted nothing, and grades the template's checks over that, as every kind grades them.
+        graded = grade_goal_checks(
+            self.goal_checks,
+            ledger=CallLedger(),
+            end_state=await session.end_state(),
+            fired=session.fired,
+            variation=test_case.variation_params,
+            world=session.registry,
+        )
+        return CandidateOutput(
+            output=[{"fields": {}}], mechanical_facts=graded, telemetry=CandidateTelemetry(usage=ledger.rows())
+        )
 
 
 def _partly_unpriced(world: WorldRegistry) -> ToyExtractorKind:
-    return _PartlyUnpricedKind(client=ScriptedExtractionClient(), world=world)
+    return _PartlyUnpricedKind(client=ScriptedExtractionClient(), world=world, goal_checks=_TOY_CHECKS)
 
 
 async def test_a_cell_whose_model_call_went_unpriced_costs_unknown_not_its_priced_part():

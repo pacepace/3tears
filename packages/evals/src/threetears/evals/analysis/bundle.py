@@ -1202,6 +1202,15 @@ class FamilyComparison(EvalDocumentModel):
     untested_reason: str | None = Field(
         default=None, description="Why no test could run, when `verdict` is untested. None otherwise."
     )
+    materiality: Materiality | None = Field(
+        default=None,
+        description=(
+            "`delta` read against the host's declared materiality threshold for this measure: `immaterial` when it "
+            "is smaller than the threshold — too small to act on, whatever `verdict` says about its separation — "
+            "and `material` otherwise, including when no threshold is declared (a judged dimension declares none). "
+            "No finding names a winner on an immaterial delta. None when `delta` is None."
+        ),
+    )
 
 
 class ComparisonFamily(EvalDocumentModel):
@@ -2588,14 +2597,17 @@ def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummar
     pooled, over the same population, never re-read from the results. Precision and recall are
     proportions, so each is a boolean-shaped summary: its rate, the count behind it, and the Wilson
     interval. F1 is not a proportion of anything, so it is a numeric summary with a mean and no
-    spread — none is estimable from one matrix.
+    spread — it has none by construction, at any n. It is the harmonic mean of precision and recall, so a
+    label missing either has no F1 either, rather than an F1 of 0.0 stated over no evidence; its ``n`` is
+    the label's support across both — the observations predicted or expected as it
+    (``predicted + expected - hits``), which is what its value is computed over.
 
     Args:
         confusion: The ``confusion_cell`` summary.
 
     Returns:
         The derived summaries, named by :func:`~threetears.evals.contracts.metrics.classifier_label_measure`.
-        A label never predicted has no precision; one never expected has no recall.
+        A label never predicted has no precision; one never expected has no recall; either has no F1.
     """
     pairs: dict[tuple[str, str], int] = {}
     for cell, count in confusion.categories.items():
@@ -2623,16 +2635,17 @@ def _classifier_label_summaries(confusion: MeasureSummary) -> list[MeasureSummar
                         ci_high=None if interval is None else interval[1],
                     )
                 )
-        derived.append(
-            MeasureSummary(
-                name=classifier_label_measure("f1", label),
-                attribution_scope=confusion.attribution_scope,
-                higher_is_better=True,
-                population=confusion.population,
-                n=expected,
-                mean=2 * hits / (predicted + expected),
+        if predicted and expected:
+            derived.append(
+                MeasureSummary(
+                    name=classifier_label_measure("f1", label),
+                    attribution_scope=confusion.attribution_scope,
+                    higher_is_better=True,
+                    population=confusion.population,
+                    n=predicted + expected - hits,
+                    mean=2 * hits / (predicted + expected),
+                )
             )
-        )
     return derived
 
 
@@ -5350,11 +5363,22 @@ def _compare(
     higher_is_better: bool,
     control: tuple[_CellKey, dict[str, float]],
     contrast: tuple[_CellKey, dict[str, float]],
+    *,
+    threshold: float | None,
 ) -> tuple[FamilyComparison, float | None]:
     """Test one contrast against the control on one reading, before correction.
 
     Paired over the cases both cells ran when they share at least two — far more powerful, and the
     design a fixed case set exists for — else Welch's test over each side's per-case values.
+
+    Args:
+        reading: The reading's kind and name.
+        higher_is_better: Which way is better on it.
+        control: The control cell and its per-case values.
+        contrast: The contrast cell and its per-case values.
+        threshold: The measure's declared materiality threshold, which labels the delta through the one
+            predicate every surface uses (:func:`~threetears.evals.contracts.metrics.materiality`); None for a
+            measure that declared none and for a judged dimension.
 
     Returns:
         The comparison with its adjusted p and verdict still unset, and its raw p (None when the test
@@ -5378,6 +5402,7 @@ def _compare(
             untested_reason = "every shared case moved by the same amount, so the differences have no spread to test"
         else:
             untested_reason = "each side's values are constant, so there is no spread to test"
+    delta = None if mean_a is None or mean_b is None else mean_b - mean_a
     comparison = FamilyComparison(
         reading=reading[0],
         name=reading[1],
@@ -5388,11 +5413,12 @@ def _compare(
         contrast=ComparedCell(
             variant_key=contrast_key[0], apparatus_class_id=contrast_key[1], n_cases=len(b), mean=mean_b
         ),
-        delta=None if mean_a is None or mean_b is None else mean_b - mean_a,
+        delta=delta,
         test=None if significant is None else ("paired" if paired else "unpaired"),
         p_raw=p_raw,
         verdict="untested" if significant is None else "not_separated",
         untested_reason=untested_reason,
+        materiality=None if delta is None else materiality(threshold, delta),
     )
     return comparison, p_raw
 
@@ -5479,6 +5505,7 @@ def _multiple_comparisons(
                         readings[reading],
                         (control_key, control_values),
                         (contrast_key, contrast_values),
+                        threshold=catalog[reading[1]].materiality_threshold if reading[0] == "measure" else None,
                     )
                 )
         adjusted = iter(holm_adjust([p for _, p in tested if p is not None]))

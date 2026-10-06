@@ -1116,6 +1116,9 @@ async def run_one_result(
             # session reads once. Here rather than in each kind, so a kind that never thought to read
             # its world still stores what its candidate left behind, and none can store the seed instead.
             sink.waiting_on("apparatus")
+            # A perturbation schedule the kind never announced its turns for would leave a cell keyed as
+            # perturbed with nothing perturbed: the kind's code, so refused here rather than recorded.
+            world_session.require_schedule_announced()
             await world_session.end_state()
     except ApparatusError as fault:
         # The rig broke under the candidate — a replay miss, a corrupt recording, a harness fault
@@ -1141,7 +1144,7 @@ async def run_one_result(
     # because for every kind so far they are the same one.
     telemetry = candidate.telemetry
     trace = candidate.output
-    goal_outcomes = candidate.mechanical_facts
+    goal_outcomes = hold_to_goal_checks(candidate_kind_name, template.goal_state_checks, candidate)
     # Refused HERE, before the judge phase is paid for, though the rows are folded only when the
     # cell is assembled: a kind double-reporting its background work's spend is its own code, so
     # every cell would do it, and judging the cell first would spend on a record that cannot be built.
@@ -1407,6 +1410,60 @@ def hold_to_declaration(kind_name: str, judged_artifact: JudgedArtifact, output:
         contradicts = bool(output.output) and not has_evidence
     if contradicts:
         raise CandidateKindDefect(kind_name, declared=judged_artifact, has_evidence=has_evidence)
+
+
+def hold_to_goal_checks(kind_name: str, goal_checks: Sequence[str], output: CandidateOutput) -> list[GoalStateOutcome]:
+    """The mechanical facts a completed cell stores, held to grading every goal check its template declares.
+
+    The engine knows the set — ``template.goal_state_checks`` — and a kind grades it
+    (:func:`grade_goal_checks`); nothing else notices a kind that grades a subset or none. Unnoticed,
+    its cells carry no outcome for the checks it skipped, and every per-check rate is computed over
+    the cells that happened to grade them while reading as though it covered the run.
+
+    - **An excluded cell** (any ``infra_errors``) is in no rate (:func:`~threetears.evals.contracts.result_condition.counted_goal_verdicts`),
+      so what it graded is stored as reported.
+    - **A failed candidate** (any ``candidate_errors``) may stop before its kind grades anything. A candidate
+      failure counts every check as failed — but only the checks a result carries — so each check it did
+      not grade is carried here as failed and not evaluated, the rule a candidate-charged deadline already
+      follows (:func:`_unevaluated_goal_checks`).
+    - **Otherwise** the kind graded the checks it chose to, which is the kind's own code and so every cell
+      would do the same: refused, naming what it did not grade.
+
+    A kind's own facts ride beside the checks untouched: only the template's expressions are counted, so
+    ``field_accuracy >= 0.92`` neither covers a check nor needs one.
+
+    Args:
+        kind_name: The kind, for the refusal's message.
+        goal_checks: The template's goal checks, in order.
+        output: What the kind returned.
+
+    Returns:
+        The facts to store: ``output.mechanical_facts``, plus an unevaluated, failed outcome per check a
+        failed candidate's kind did not grade.
+
+    Raises:
+        ValueError: A cell with neither error graded fewer of the template's goal checks than it declares.
+    """
+    facts = list(output.mechanical_facts)
+    if output.infra_errors:
+        return facts
+    ungraded = Counter(goal_checks) - Counter(fact.expression for fact in facts)
+    if not ungraded:
+        return facts
+    if output.candidate_errors:
+        detail = "not evaluated: the candidate failed before its kind graded this check, which fails the candidate"
+        # In the template's order: one per ungraded occurrence, so a check written twice is carried twice.
+        for expression in goal_checks:
+            if ungraded[expression] > 0:
+                ungraded[expression] -= 1
+                facts.append(GoalStateOutcome(expression=expression, passed=False, detail=detail))
+        return facts
+    raise ValueError(
+        f"candidate kind {kind_name!r} completed a cell without grading the template's goal check(s) "
+        f"{', '.join(map(repr, ungraded.elements()))}; a kind grades every one of template.goal_state_checks "
+        "through grade_goal_checks (construct it with the template's checks), or every per-check rate is "
+        "computed over cells that never graded the check"
+    )
 
 
 def refuse_inner_agent_usage(usage: Sequence[RoleUsage]) -> None:
@@ -2146,7 +2203,10 @@ def assert_preconditions(
     missing-value semantics this whole contract exists to end. Parse errors cannot reach here
     (``Precondition`` refuses them where the template is written) and a path naming no declared
     dimension cannot either (``resolve_preconditions`` refuses that where the template is used),
-    so what is left is a genuine evaluation fault and it belongs on the excluded record.
+    so what is left is a genuine evaluation fault and it belongs on the excluded record. **A
+    presumption that is not established — one resting on a value the seeded world does not hold —
+    does not hold either**, negated or not: the DSL keeps an unknown unknown through ``not``, so
+    ``not state.x == "y"`` over a world holding no ``x`` is not a presumption the world satisfied.
 
     **Engine API, for every kind that seeds a world.**
     ``EvalTemplate.preconditions`` is a field of the engine's own template, evaluated by the
@@ -2178,9 +2238,8 @@ def assert_preconditions(
                 world=world,
                 variation=dict(test_case.variation_params),
             )
-        except (
-            Exception
-        ) as e:  # prawduct:ok-broad-except — DSL evaluation boundary; an unevaluable presumption excludes
+        # prawduct:ok-broad-except — DSL evaluation boundary; an unevaluable presumption excludes
+        except Exception as e:
             held, detail = False, f"<error: {e}>"
         outcomes.append(
             PreconditionOutcome(
@@ -2309,7 +2368,10 @@ def grade_goal_checks(
             authoring gate resolved it to.
 
     Returns:
-        One outcome per expression, in order.
+        One outcome per expression, in order. A check whose value rests on something the end state
+        does not hold is *not established* — never a pass, negated or not — and is recorded failed
+        with a detail starting :data:`~threetears.evals.contracts.dsl.NOT_ESTABLISHED` that names
+        the paths that resolved to nothing, so a reader can tell it from a check that evaluated False.
 
     Raises:
         GoalCheckUnevaluable: An expression raised while being evaluated.

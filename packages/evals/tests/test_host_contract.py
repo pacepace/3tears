@@ -1263,4 +1263,11 @@ def test_an_observed_model_lever_naming_apparatus_is_refused() -> None:
 def test_an_observed_model_lever_naming_a_fixed_lever_or_an_owned_member_is_admitted() -> None:
     assert replace(toyhost_profile(), observed_model_levers={"chunk_tokens": "inner_agent"}).observed_model_levers
     tunable = toyhost_profile(tunable_retrieval=True)
-    assert replace(tunable, observed_model_levers={"retrieval.rerank_depth": "reranker"}).observed_model_levers
+    assert replace(tunable, observed_model_levers={"retrieval.rerank_depth": "inner_agent"}).observed_model_levers
+
+
+def test_an_observed_model_lever_recovered_from_no_usage_role_is_refused() -> None:
+    """The value names the usage role whose rows record the lever's model; roles are a closed set, so a
+    misspelled one would recover nothing and leave the lever reading unknown exactly as a misspelled key does."""
+    with pytest.raises(ProfileRegistrationError, match="chunk_tokens from role 'inner_agnt', which is no usage role"):
+        replace(toyhost_profile(), observed_model_levers={"chunk_tokens": "inner_agnt"})

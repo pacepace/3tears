@@ -354,7 +354,7 @@ def test_a_dimension_added_to_the_rig_later_makes_no_kind_undecided() -> None:
     )
 
 
-def test_the_same_growth_reaches_a_kind_that_declared_no_seats() -> None:
+def test_the_same_growth_reaches_a_kind_that_declared_nothing_about_seats() -> None:
     """The inverse on the same fixture: a kind held to every seat does get the new dimensions, as undecided."""
     profile = replace(toyhost_profile(every_seat=True), host_sweepables=_a_rig_that_grew())
 
