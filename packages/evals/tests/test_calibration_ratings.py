@@ -68,9 +68,11 @@ class TestTheDocument:
         first = _rating(score=2, reason="cold")
         again = _rating(score=4, reason="on reflection, warm")
         other_rater = _rating(rater="second reader")
+        same_rater_as_agent = _rating(rater_kind="agent")
 
         assert first.id == again.id, "a re-rating is a correction, and lands on the same row"
         assert other_rater.id != first.id, "two raters are two ratings"
+        assert same_rater_as_agent.id != first.id, "one identity as a person and as an agent is two ratings"
         assert first.id.startswith("rating:") and first.id != first.result_id
 
     def test_an_id_its_fields_do_not_derive_is_refused(self) -> None:
@@ -392,6 +394,38 @@ class TestJudgeAgreement:
         assert agreement.ratings_read == 3
         people_only = judge_agreement([ratings[0]], results)
         assert people_only.dimensions == agreement.dimensions, "the agent's ratings move no human figure"
+
+    def test_a_person_and_an_agent_under_one_identity_are_two_ratings_and_only_the_person_pairs(self) -> None:
+        """An agent acting as the account it serves writes beside that person's rating, never over it.
+
+        Both orders are driven through the write, so neither kind can silently replace the other, and the
+        agent disagrees with the person so a pooled read would move the human figures.
+        """
+        for first, second in (("person", "agent"), ("agent", "person")):
+            storage, _ = memory_storage()
+            storage.save_eval_result(_result("r-1", _tone(4)))
+            scores = {"person": 4, "agent": 1}
+            for kind in (first, second):
+                rate_result(
+                    storage,
+                    result_id="r-1",
+                    scope_id="uni-1",
+                    rubric_dim=TONE,
+                    rater="owner",
+                    rater_kind=kind,
+                    score=scores[kind],
+                    reason=f"as {kind}",
+                )
+
+            stored = storage.query_calibration_ratings("uni-1", result_id="r-1")
+            assert sorted((r.rater, r.rater_kind, r.score) for r in stored) == [
+                ("owner", "agent", 1),
+                ("owner", "person", 4),
+            ], f"{first} then {second}: both documents stand"
+            agreement = judge_agreement(stored, [_result("r-1", _tone(4))])
+            (tone,) = agreement.dimensions
+            assert (tone.n, tone.raters, tone.exact_agreement) == (1, ["owner"], 1.0), "only the person pairs"
+            assert [(u.rater, u.reason) for u in agreement.unpaired] == [("owner", "rated_by_an_agent")]
 
     def test_rate_result_records_who_kind_of_rater_wrote_it(self) -> None:
         storage, _ = memory_storage()

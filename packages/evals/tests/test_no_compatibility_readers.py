@@ -234,7 +234,9 @@ class _ScriptedClient(ReleasableClientMixin):
 
 
 def _budget() -> OutOfRunBudget:
-    return OutOfRunBudget(EvalStorage(InMemoryDocumentStore()), scope_id="proposals", cap_usd=1.0)
+    return OutOfRunBudget(
+        EvalStorage(InMemoryDocumentStore()), scope_id="proposals", cap_usd=1.0, blocking_executor=None
+    )
 
 
 def _draft(name: str, *, scale: str | None = "pass_fail") -> str:

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
 from threetears.evals.contracts.host.attribution import HostAttributed
 
@@ -304,7 +304,7 @@ class BarRegistry(HostAttributed):
         so this is the check — called from :class:`~threetears.evals.contracts.host.profile.HostProfile` at
         construction, where both registries are in hand.
 
-        A bar on a measure with no better end — a diagnostic or a raw count — is refused here as
+        A bar on a measure with no better end — a diagnostic, a raw count, a text measure — is refused here as
         :meth:`propose` refuses to seed one, through the same predicate (:func:`no_better_end`):
         nothing ever reads it, so registering it would only make a sentence look like a standard.
 
@@ -374,30 +374,44 @@ def contradicts_descriptor(descriptor: MetricDescriptor | None, higher_is_better
 
 
 def no_better_end(descriptor: MetricDescriptor) -> str | None:
-    """Say which directionless shape a measure is — ``"a diagnostic"`` or ``"a raw count"`` — or None.
+    """Say what kind of directionless measure this is — ``"a raw count"``, ``"a text measure"``, … — or None.
 
     **The one predicate for "a bar on this can never be cleared".** A threshold means something only
     against a better end, so every place that admits a bar asks this: registration
-    (:meth:`BarRegistry.validate_against`), the ratchet (:meth:`BarRegistry.propose`) and the
-    campaign gate (:func:`~threetears.evals.contracts.declaration.resolve_bar_name`). Each frames its
-    own refusal around the answer; none restates the rule, so they cannot come to disagree about
-    which measures it covers or what to call them.
+    (:meth:`BarRegistry.validate_against`), the ratchet (:meth:`BarRegistry.propose`), the baseline
+    proposer (:func:`~threetears.evals.analysis.propose_bars`) and the campaign gate
+    (:func:`~threetears.evals.contracts.declaration.resolve_bar_name`). Each frames its own refusal
+    around the answer; none restates the rule, so they cannot come to disagree about which measures it
+    covers or what to call them.
 
-    The two names come off the descriptor's own declaration, never off the values: a directionless
-    measure that declares
-    :attr:`~threetears.evals.contracts.metrics.MetricDescriptor.diagnostic` is one, and any other is
-    a raw count — the same split the bundle makes when it decides which directionless measures it
-    carries.
+    The name comes off the descriptor's own declaration, never off the values: its ``data_type`` says
+    what the measure IS, and only a numeric one splits further, on
+    :attr:`~threetears.evals.contracts.metrics.MetricDescriptor.diagnostic` — a declared diagnostic, or
+    else a raw count (the same split the bundle makes when it decides which directionless measures it
+    carries). A text, categorical or boolean measure is not a count of anything, and calling one that
+    sends an operator looking for a number that was never recorded.
 
     Args:
         descriptor: The measure's descriptor.
 
     Returns:
-        ``"a diagnostic"`` or ``"a raw count"`` when the measure declares no better end, else None.
+        A noun phrase naming the measure's kind when it declares no better end, else None.
     """
     if descriptor.higher_is_better is not None:
         return None
-    return "a diagnostic" if descriptor.diagnostic else "a raw count"
+    match descriptor.data_type:
+        case "numeric":
+            return "a diagnostic" if descriptor.diagnostic else "a raw count"
+        case "text":
+            return "a text measure"
+        case "categorical":
+            return "a categorical measure"
+        case "boolean":
+            return "a boolean condition"
+        case None:
+            return "an undescribed measure, whose type was never declared"
+        case unreachable:
+            assert_never(unreachable)
 
 
 __all__ = ["Bar", "BarProposal", "BarRegistrationError", "BarRegistry", "contradicts_descriptor"]

@@ -20,6 +20,7 @@ extractor driven by a launcher that generates the way an adopter's does (once pe
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -195,11 +196,15 @@ def _generating_host(
             factory = generating.eval_host.completion_clients("a variation generation")
             if request.variation_model is None:
                 return await generate_variations(
-                    request.template, request.n_variations, storage=storage, scope_id=request.scope_id
+                    request.template,
+                    request.n_variations,
+                    storage=storage,
+                    scope_id=request.scope_id,
+                    blocking_executor=None,
                 )
             budget = request.generation_budget
             if not budgeted:
-                budget = OutOfRunBudget(storage, scope_id=request.scope_id, cap_usd=None)
+                budget = OutOfRunBudget(storage, scope_id=request.scope_id, cap_usd=None, blocking_executor=None)
             async with factory("variation", request.variation_model) as writer:
                 return await generate_variations(
                     request.template,
@@ -208,6 +213,7 @@ def _generating_host(
                     scope_id=request.scope_id,
                     llm=writer,
                     budget=budget,
+                    blocking_executor=None,
                 )
 
         generation = await request.launch_group.resolve_once(
@@ -276,6 +282,20 @@ async def test_a_launch_generates_with_the_named_writer_and_every_arm_records_it
         assert stored.variation_counts == VariationCounts(requested=2, kept=2, reused=0, variation_model=WRITER)
         assert stored.simulator_model is None and stored.simulator_request_settings is None
         assert "simulator" not in (stored.model_role_provenance or {})
+
+
+async def test_a_launch_s_generation_budget_writes_its_ledger_where_the_host_s_storage_calls_run():
+    """The budget a launch hands its launcher names the host's executor, so its ledger rows leave the loop there."""
+    template = _template(LLM_AXIS)
+    host, _storage, _clients, handed = _generating_host(template)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pooled = replace(host, eval_host=replace(host.eval_host, blocking_executor=pool))
+        runs = await _launch(pooled, template, n_variations=2, variation_model=WRITER)
+        await _settled(pooled, [run.id for run in runs])
+
+    budgets = {id(request.generation_budget): request.generation_budget for request in handed}
+    assert budgets and all(budget is not None for budget in budgets.values())
+    assert all(budget.blocking_executor is pool for budget in budgets.values() if budget is not None)
 
 
 async def test_a_generation_no_model_writes_records_no_writer_and_asks_for_no_client():

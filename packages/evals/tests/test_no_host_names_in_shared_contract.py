@@ -255,6 +255,10 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # model is the host's word carried as data, so a host noun here would be one host's rate or model
     # written into the cap every host's generation is held to.
     "contracts/out_of_run.py",
+    # How the engine hands a blocking call to an executor its host chooses — here because the shared
+    # contract's own coroutines (the out-of-run ledger, case generation) make store calls. A host noun
+    # here would be the engine choosing one host's pool for every host.
+    "contracts/offload.py",
     # The seeder, not the corpus it ships. It resolves occupancy by each type's natural key and
     # writes through the storage port; the host-specific part is the corpus a host hands it.
     # A host noun appearing HERE would mean the empty-slots-only rule
@@ -272,9 +276,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # host's world and tools only through the profile it is handed, so a host noun here would be one
     # host's vocabulary written into the proof every host's checks must pass.
     "run/check_controls.py",
-    # How the engine hands a blocking call to an executor its host chooses. Shared contract by
-    # construction: it exists so the engine names no executor, pool or config of its own, and a
-    # host noun here would be the engine choosing one host's pool for every host.
+    # How the runner waits on a blocking call handed to the host's executor, through a cancellation
+    # of the waiter. Shared contract by construction: a host noun here would be one host's
+    # cancellation rule written into every host's runner.
     "run/offload.py",
     # The run listing and the result reads every read surface stands on. They take the scope as
     # ``scope_id``, so nothing here names the host's partition, and a host noun arriving would be a

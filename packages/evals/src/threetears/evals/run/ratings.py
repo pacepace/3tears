@@ -12,8 +12,10 @@ compared to; both are refused here rather than surfacing later as an unpaired ra
 
 Read back through ``AnalysisContextBundle.judge_agreement`` (and a reporter run's
 ``ReporterCalibration.rating_agreement``), which pair each rating with the result's judge score at
-read time. A rater who rates the same dimension of the same result again replaces their earlier
-rating: the document's id is derived from the three.
+read time. A rater who rates the same dimension of the same result again, as the same kind of rater,
+replaces their earlier rating: the document's id is derived from the result, the dimension, the rater
+and the rater's kind — so an agent rating under a person's identity stands beside that person's rating
+rather than overwriting it.
 
 **Deleting a result does not delete its ratings.** They stay, and every agreement read lists them as
 ``result_unresolved`` — a person's judgement is not regenerable, and a rating that silently
@@ -76,8 +78,8 @@ def rate_result(
         reason: The rater's own words for the score.
 
     Returns:
-        The rating as written. A second rating by the same rater of the same dimension of the same
-        result replaces the first.
+        The rating as written. A second rating by the same rater, of the same kind, of the same
+        dimension of the same result replaces the first.
 
     Raises:
         NotFoundError: No such result in the scope.

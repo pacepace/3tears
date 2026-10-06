@@ -6,6 +6,40 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: an unjudged run's judge-config seat, directionless measures named for what they are, case generation's store calls off the loop, a rating's id carries its rater's kind
+
+- **An unjudged run has no judge-config seat.** ``judge_config_ids`` joins the judge inputs a run naming no
+  ``judge_model`` does not have, so an unjudged run with no scored results — whose reader returns ``[]`` — reads
+  ``UNSEATED_LEVEL`` beside a judged run instead of ``undecided``, and a cohort of such runs omits the dimension.
+  A config a code grader or a person did record on an unjudged run still shows as its level and is reported. A
+  level recorded on a seat only the run's own record narrowed away no longer logs the "has no seat for apparatus
+  dimension" contradiction; that warning now fires only where the KIND declares no seat. **Identity:** still the
+  unreleased ``IDENTITY_VERSION`` 23 — an unjudged run whose ``judge_config_ids`` is ``{}`` now leaves that input
+  out of the ``roles`` pre-image, as ``None`` already did, so the two hash alike (they were one condition split
+  in two). No golden moved.
+- **A directionless measure is described by its declared kind.** ``no_better_end`` — behind ``propose_bars``'s
+  not-proposed reasons, ``BarRegistry.propose``, bar registration and the campaign bar gate — called every
+  directionless measure that was not a diagnostic "a raw count", text, categorical and boolean ones included. It
+  now reads the descriptor's ``data_type``: "a raw count" or "a diagnostic" for a numeric measure, "a text
+  measure", "a categorical measure", "a boolean condition", or "an undescribed measure" when no type was declared.
+- **Case generation makes no store call on the event loop.** **Breaking:** ``generate_variations`` and
+  ``price_variations`` take a required keyword ``blocking_executor`` (``Executor | None``, no default, as on
+  ``EvalHost``); the dedup read and every case save run there through ``run_blocking``, while the writer's model
+  calls stay on the loop its client is bound to. ``OutOfRunBudget`` gains a required keyword-only field
+  ``blocking_executor``, and its ledger writes (``generate_variations``'s spend rows and ``propose_draft``'s)
+  run there; ``recorded`` lists every row written even when the awaiting coroutine is cancelled. The launch's
+  ``request.generation_budget`` carries the host's ``EvalHost.blocking_executor``. ``run_blocking`` now lives in
+  ``threetears.evals.contracts.offload`` (the shared contract's coroutines need it and may not import the run
+  package); ``threetears.evals.run`` still exports it. **Adopters:** pass ``blocking_executor=host.blocking_executor``
+  to ``generate_variations`` / ``price_variations`` and to any ``OutOfRunBudget`` you construct.
+- **A person's and an agent's rating under one identity are two ratings.** ``CalibrationRating.id`` was derived
+  from result, dimension and rater only, so an agent rating under the account it serves (``rater_kind="agent"``)
+  and that person's own rating of the same dimension shared an id and the later write silently replaced the
+  earlier. The id now digests ``rater_kind`` too; a re-rating by the same rater of the same kind still replaces
+  its earlier one, and agreement still pairs people's ratings only. Still the unreleased
+  ``EVAL_SCHEMA_VERSION`` 7: a rating stored under the old derivation fails its derived-id check, and the v6 → 7
+  bump already drops stored eval documents.
+
 ### 3tears-evals: a candidate does not judge itself where an alternate stands ready; a rating says whether a person wrote it
 
 - **An inherited judge on a candidate's model steps to the host's alternate.** ``LaunchGroup.candidate_models``

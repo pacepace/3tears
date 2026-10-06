@@ -95,7 +95,9 @@ mode, overlays, spec, world seed, tool bound, ceilings — and refuses a wiring 
 
 **Generating cases at launch.** A launch with `n_variations` > 0 asks for that many new cases from the
 template's variation axes, generated once for every arm: call `generate_variations` inside
-`request.launch_group.resolve_once(...)` and hand its counts on as `KindWiring(variation_counts=...)`. An
+`request.launch_group.resolve_once(...)`, passing `blocking_executor=host.blocking_executor` (its case reads
+and writes run there; its model calls stay on the loop), and hand its counts on as
+`KindWiring(variation_counts=...)`. An
 `llm` axis is written by the model the launch names as `variation_model` — required then, refused when
 nothing would call it — which the launcher asks of the host's client factory in the `variation` role
 (`clients("variation", request.variation_model)`), never the simulator's. The run records the model the
@@ -106,7 +108,8 @@ arm before any launcher runs (below). The launcher hands `generate_variations` t
 `budget=request.generation_budget`: every `llm` axis's call is priced on the writer's client
 (`price_ceiling`, the host's answer) against `LaunchSettings.max_out_of_run_cost_usd` before the first
 is made, and each is ledgered as an `OutOfRunSpend` document (`EvalStorage.query_out_of_run_spend`)
-under the launch's group. `propose_draft` takes a budget the same way. A battery prices every
+under the launch's group, written on the host's blocking executor (an `OutOfRunBudget` names its
+`blocking_executor`, as an `EvalHost` does). `propose_draft` takes a budget the same way. A battery prices every
 template's arms and every template's writer calls (on the host's `variation` client, against the budget
 each launch will be held to) before any template launches, so it pays for no template's cases until all
 have been priced; its caps are per launch, as a launch's are (`start_universal_battery(max_cost_usd=...)`

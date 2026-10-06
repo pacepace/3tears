@@ -68,7 +68,9 @@ class _RecordingClient(ReleasableClientMixin):
 
 def _budget(*, cap_usd: float | None = 1.0, subject_id: str | None = None) -> tuple[OutOfRunBudget, EvalStorage]:
     storage = EvalStorage(InMemoryDocumentStore())
-    return OutOfRunBudget(storage, scope_id=_SCOPE, cap_usd=cap_usd, subject_id=subject_id), storage
+    return OutOfRunBudget(
+        storage, scope_id=_SCOPE, cap_usd=cap_usd, subject_id=subject_id, blocking_executor=None
+    ), storage
 
 
 def _draft(*, suggestion_axis: str) -> str:
