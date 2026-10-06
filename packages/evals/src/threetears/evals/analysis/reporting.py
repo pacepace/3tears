@@ -2750,9 +2750,12 @@ class PredictedValue(EvalBaseModel):
     failure the separation prevents. So a prediction never occupies an observed slot — it has its
     own field wherever it appears, and a surface shows the two side by side.
 
-    One estimator writes these today: :func:`compute_estimate_cost` (``method_id``
-    :data:`COST_PREDICTION_METHOD`), one per planned cell, predicting that cell's total cost from
-    the corpus's usage history; :func:`compute_pivot` sets it beside each observed cost it planned.
+    Two writers: :func:`compute_estimate_cost` (``method_id`` :data:`COST_PREDICTION_METHOD`), one per
+    planned cell, predicting that cell's total cost from the corpus's usage history; and
+    :meth:`~threetears.evals.ops.LaunchEstimate.planned_costs`, one per priced arm of a launch, from the host's
+    launch pricer — whose ``method_id`` is the pricer's own (``usage-history`` for the engine's
+    :func:`~threetears.evals.ops.history_launch_pricer`) or ``launch-pricer`` for a pricer that names none.
+    :func:`compute_pivot` sets either beside each observed cost its plan describes.
 
     ``value`` is the point estimate, ``interval_low`` / ``interval_high`` its uncertainty band
     (absent for a point-only method, or where the basis is too thin for one), ``method_id``
@@ -2781,6 +2784,10 @@ class PivotCell(EvalBaseModel):
     # pivot handed the estimate made before launch (`compute_pivot(predicted_cost=...)`). Kept beside
     # `value` rather than folded into it so a prediction can never be mistaken for an observation.
     predicted: PredictedValue | None = None
+    # Beside a prediction, how many of the cell's observations came from runs the plan did not make — the earlier
+    # history its prediction may have been drawn from among them. None when there is no prediction, or when the
+    # plan names no launched runs (it had not launched), so every observation here is one it did not make.
+    n_unplanned: int | None = None
     # Observations that carried a value, and the distinct test cases they span.
     # Under equal-per-scenario weighting `n_cases` is the denominator the value
     # was divided by, so showing both is what lets a reader see that a cell's
@@ -2857,9 +2864,10 @@ class PivotTable(EvalBaseModel):
     #: How many of ``n_observations`` came from those runs. The weight the caveat
     #: carries: two of two hundred is a footnote and two of four is the answer.
     n_degraded_observations: int = 0
-    #: Models the cost estimate planned that no level of the model axis carries — planned and never
-    #: observed here. Named rather than dropped, since a prediction with nowhere to sit is still a
-    #: fact about the plan: an arm that was priced and did not run. Empty when no estimate was given.
+    #: Plans the cost estimate made that no cell describes — a model no level of the model axis carries, or a
+    #: template no cell at that model holds alone — each as ``model`` or ``model (template)``. Named rather than
+    #: dropped, since a prediction with nowhere to sit is still a fact about the plan: an arm that was priced and
+    #: did not run, or ran where this table does not separate it. Empty when no estimate was given.
     unplaced_predicted_models: list[str] = []
 
 
@@ -3281,12 +3289,23 @@ def compute_pivot(
 
     cells: list[PivotCell] = []
     measured: dict[tuple[str, str], PivotCell] = {}
+    placed: set[str] = set()
     for row in rows:
         for column in columns:
             at_cell = grouped.get((row, column), [])
-            planned = _planned_for(predictions, row, column, row_factor)
+            plan = _plan_for(predictions, row, column, at_cell, (row_factor, column_factor))
+            planned = plan.predicted if plan is not None else None
+            unplanned = (
+                sum(1 for record in at_cell if record.run_id not in plan.run_ids)
+                if plan is not None and plan.run_ids
+                else None
+            )
+            if plan is not None:
+                placed.add(plan.label)
             if not at_cell:
-                cells.append(PivotCell(row=row, column=column, status=CELL_NOT_RUN, predicted=planned))
+                cells.append(
+                    PivotCell(row=row, column=column, status=CELL_NOT_RUN, predicted=planned, n_unplanned=unplanned)
+                )
                 continue
 
             outcomes: dict[str, int] = {}
@@ -3303,6 +3322,7 @@ def compute_pivot(
                 cells.append(
                     PivotCell(
                         predicted=planned,
+                        n_unplanned=unplanned,
                         row=row,
                         column=column,
                         status=CELL_UNMEASURED,
@@ -3315,6 +3335,7 @@ def compute_pivot(
             value, sem = _aggregate(values_by_case, weighting)
             cell = PivotCell(
                 predicted=planned,
+                n_unplanned=unplanned,
                 row=row,
                 column=column,
                 status=CELL_MEASURED,
@@ -3369,16 +3390,32 @@ def compute_pivot(
             if any(record.run_id == run_id for record in selected)
         },
         n_degraded_observations=sum(1 for record in selected if record.run_id in (completeness_disclosures or {})),
-        unplaced_predicted_models=sorted(
-            set(predictions) - set(rows if row_factor == CANDIDATE_MODEL_LEVER else columns)
-        ),
+        unplaced_predicted_models=sorted({plan.label for plan in predictions} - placed),
     )
+
+
+#: The coordinate a pivot axis names the template by.
+_TEMPLATE_FACTOR = "template_id"
+
+
+class _Plan(NamedTuple):
+    """One plan as a pivot places it: whose cells it describes, and its prediction per observation."""
+
+    model: str
+    template_id: str | None
+    run_ids: frozenset[str]
+    predicted: PredictedValue
+
+    @property
+    def label(self) -> str:
+        """The plan as an unplaced list names it."""
+        return self.model if self.template_id is None else f"{self.model} ({self.template_id})"
 
 
 def _planned_cost_per_observation(
     estimate: CostEstimate | Sequence[PlannedCost] | None, metric: str, axes: tuple[str, str]
-) -> dict[str, PredictedValue]:
-    """Each planned model's predicted cost per observation, read off the estimate made before the run.
+) -> list[_Plan]:
+    """Each plan's predicted cost per observation, read off the estimate made before the run.
 
     A planned cell's prediction is its sweep's TOTAL (``n_observations`` draws), and a pivot cell's
     value is a mean per observation, so the prediction is divided by the planned observation count —
@@ -3393,15 +3430,16 @@ def _planned_cost_per_observation(
         axes: The pivot's row and column factors.
 
     Returns:
-        ``{model: per-observation prediction}``; empty when no estimate was given.
+        One plan per priced model and template; empty when no estimate was given.
 
     Raises:
-        PivotError: An estimate was given to a pivot of another metric, or to one with no model axis —
-            a planned model's cost describes neither, so its prediction would sit beside a number it
-            does not predict.
+        PivotError: An estimate was given to a pivot of another metric, or to one with no model axis — a
+            planned model's cost describes neither, so its prediction would sit beside a number it does not
+            predict — or it plans one model on one template twice, which leaves no answer to which prediction
+            a cell carries.
     """
     if estimate is None:
-        return {}
+        return []
     if metric != METRIC_COST_USD:
         raise PivotError(
             f"a predicted cost sits beside an observed cost, and this pivot aggregates {metric!r} — "
@@ -3412,29 +3450,59 @@ def _planned_cost_per_observation(
             f"the estimate predicts cost per planned model, and neither axis is {CANDIDATE_MODEL_LEVER!r} — "
             "put the model on an axis so each prediction has the cells it planned"
         )
-    per_observation: dict[str, PredictedValue] = {}
-    planned: Sequence[CostEstimateCell | PlannedCost] = (
-        estimate.cells if isinstance(estimate, CostEstimate) else estimate
-    )
+    planned = estimate.planned_costs() if isinstance(estimate, CostEstimate) else list(estimate)
+    keys = [(cell.model, cell.template_id) for cell in planned]
+    if repeated := sorted({key for key in keys if keys.count(key) > 1}, key=str):
+        named = ", ".join(model if template is None else f"{model} on {template}" for model, template in repeated)
+        raise PivotError(
+            f"the estimate plans {named} more than once, so no cell can say which prediction it carries — hand "
+            "the pivot one plan per model and template"
+        )
+    plans: list[_Plan] = []
     for cell in planned:
         if cell.predicted is None:
             continue
         n = cell.n_observations
-        per_observation[cell.model] = cell.predicted.model_copy(
-            update={
-                "value": cell.predicted.value / n,
-                "interval_low": None if cell.predicted.interval_low is None else cell.predicted.interval_low / n,
-                "interval_high": None if cell.predicted.interval_high is None else cell.predicted.interval_high / n,
-            }
+        plans.append(
+            _Plan(
+                model=cell.model,
+                template_id=cell.template_id,
+                run_ids=frozenset(cell.run_ids),
+                predicted=cell.predicted.model_copy(
+                    update={
+                        "value": cell.predicted.value / n,
+                        "interval_low": None if cell.predicted.interval_low is None else cell.predicted.interval_low / n,
+                        "interval_high": None
+                        if cell.predicted.interval_high is None
+                        else cell.predicted.interval_high / n,
+                    }
+                ),
+            )
         )
-    return per_observation
+    return plans
 
 
-def _planned_for(
-    predictions: dict[str, PredictedValue], row: str, column: str, row_factor: str
-) -> PredictedValue | None:
-    """The prediction for the planned model a pivot cell sits at, or None."""
-    return predictions.get(row if row_factor == CANDIDATE_MODEL_LEVER else column)
+def _plan_for(
+    plans: list[_Plan], row: str, column: str, records: list[ScoreRecord], axes: tuple[str, str]
+) -> _Plan | None:
+    """The plan a pivot cell's observations are, or None — matched on the model and the template the cell holds.
+
+    The cell's template is the template axis's level when one axis is the template, else the one template every
+    observation in it shares; a cell holding several, or an empty cell with no template axis, holds none a
+    template's plan can claim. A plan that names no template matches on the model alone, and one naming the
+    cell's template is preferred to it.
+    """
+    row_factor, column_factor = axes
+    model = row if row_factor == CANDIDATE_MODEL_LEVER else column
+    if _TEMPLATE_FACTOR in axes:
+        templates = {row if row_factor == _TEMPLATE_FACTOR else column}
+    else:
+        templates = {record.template_id for record in records}
+    template = next(iter(templates)) if len(templates) == 1 else None
+    at_model = [plan for plan in plans if plan.model == model]
+    return next((plan for plan in at_model if plan.template_id is not None and plan.template_id == template), None) or next(
+        (plan for plan in at_model if plan.template_id is None), None
+    )
 
 
 # =============================================================================
@@ -5820,13 +5888,25 @@ class PlannedCost(EvalBaseModel):
     the prediction — so the pivot divides it by the observations and sets it beside the cost observed, never in
     place of it.
 
+    **Which cells it describes is part of the plan.** A prediction is for one model running one template, so it
+    sits only in a pivot cell whose observations are all that template's at that model; and once the plan
+    launched, ``run_ids`` names the runs it made, so a cell that pools other runs too — the earlier history the
+    prediction was derived from among them — says how many of its observations the plan did not make
+    (:attr:`PivotCell.n_unplanned`).
+
     Attributes:
         model: The planned candidate model.
+        template_id: The template the plan runs; ``None`` for an estimate pooled over templates, which sits beside
+            the model's cells whatever their template.
+        run_ids: The runs the plan launched; empty before it launched, when the observed cost beside it is
+            history the plan did not make.
         n_observations: The observations the prediction totals (cases × repeats).
         predicted: The predicted total cost, or ``None`` for a model nothing predicted.
     """
 
     model: str
+    template_id: str | None = None
+    run_ids: list[str] = Field(default_factory=list)
     n_observations: int = Field(ge=1)
     predicted: PredictedValue | None = None
 
@@ -5944,6 +6024,27 @@ class CostEstimate(EvalBaseModel):
     total_interval_low: float | None = None
     total_interval_high: float | None = None
     n_uncovered_models: int = 0
+
+    def planned_costs(self, run_ids: Sequence[str] = ()) -> list[PlannedCost]:
+        """Each priced cell as a cost pivot's plan: its model, the template the estimate was scoped to, its prediction.
+
+        Args:
+            run_ids: The runs the plan launched, once it has; empty before.
+
+        Returns:
+            One :class:`PlannedCost` per cell with a prediction and at least one planned observation.
+        """
+        return [
+            PlannedCost(
+                model=cell.model,
+                template_id=self.template_id,
+                run_ids=list(run_ids),
+                n_observations=cell.n_observations,
+                predicted=cell.predicted,
+            )
+            for cell in self.cells
+            if cell.predicted is not None and cell.n_observations >= 1
+        ]
 
 
 def compute_estimate_cost(

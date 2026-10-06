@@ -26,7 +26,7 @@ from threetears.evals.contracts import MetricDescriptor
 from threetears.evals.contracts.host import EvalHost, MeasureRegistry
 from threetears.evals.contracts.host.bars import BarRegistrationError
 from packages.evals.tests.factories import memory_storage
-from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, toyhost_batch, toyhost_measurements
+from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import (
     FIELD_COUNT_ERROR,
@@ -181,6 +181,16 @@ class TestWhatAProposalReads:
         assert FIELD_COUNT_ERROR in result.not_proposed, "the directionless measure the cell carries"
         assert "a diagnostic" in result.not_proposed[FIELD_COUNT_ERROR]
         assert result.behavior == BEHAVIOR and result.campaign_id == "baseline"
+
+    def test_a_judged_dimension_the_cell_carries_is_named_never_silently_skipped(self) -> None:
+        batch = _batch(256)
+        results = toyhost_measurements(
+            batch, profile=toyhost_profile(), cost_usd=0.02, total_ms=900.0, field_accuracy=0.95, layout_fidelity=3
+        )
+        result = _proposals(_host([(batch, results)]))
+
+        assert TOYHOST_JUDGED_DIMENSION in result.not_proposed
+        assert "a judged dimension" in result.not_proposed[TOYHOST_JUDGED_DIMENSION]
 
     def test_nothing_is_registered(self) -> None:
         host = _host([_flat(256)])

@@ -11,13 +11,15 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 - ``_planned_cost_per_observation``: dividing the value but not the band's upper end; not dividing
   the value;
   removing either refusal (another metric, no model axis).
-- ``compute_pivot``: not setting ``predicted`` on a not-run cell; an empty ``unplaced_predicted_models``.
+- ``compute_pivot``: not setting ``predicted`` on a not-run cell; an empty ``unplaced_predicted_models``; placing
+  a plan by its model alone, ignoring its template; not counting the observations its runs did not make.
 - ``reads.pivot``: not threading ``predicted_cost`` through; removing the malformed-estimate refusal.
 """
 
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pytest
 
@@ -27,6 +29,7 @@ from threetears.evals.analysis.reporting import (
     METRIC_COST_USD,
     CostEstimate,
     PivotError,
+    PlannedCost,
     ScoreRecord,
     compute_estimate_cost,
     compute_pivot,
@@ -72,11 +75,13 @@ def _estimate(*, models: list[str], n_test_cases: int = 4) -> CostEstimate:
     )
 
 
-def _cost_record(model: str, case: str, value: float, template: str = "tpl-1") -> ScoreRecord:
+def _cost_record(
+    model: str, case: str, value: float, template: str = "tpl-1", run_id: str | None = None
+) -> ScoreRecord:
     return ScoreRecord(
         subject_id="ent-maple",
         scope_id="uni-1",
-        run_id=f"run-{model}",
+        run_id=run_id or f"run-{model}",
         result_id=f"res-{model}-{template}-{case}",
         template_id=template,
         test_case_id=case,
@@ -205,6 +210,83 @@ class TestThePivotSetsThePredictionBesideTheObservedCost:
                 predicted_cost=_estimate(models=["sonnet"]),
                 profile=PROFILE,
             )
+
+
+def _plan(model: str, value: float, *, template: str | None = "tpl-A", run_ids: tuple[str, ...] = ()) -> PlannedCost:
+    return PlannedCost(
+        model=model,
+        template_id=template,
+        run_ids=list(run_ids),
+        n_observations=4,
+        predicted=PredictedValue(value=value, method_id="m", computed_at=STAMP),
+    )
+
+
+def _by_template_and_model(records: list[ScoreRecord], plans: list[PlannedCost]) -> dict[tuple[str, str], Any]:
+    table = compute_pivot(
+        records,
+        row_factor="template_id",
+        column_factor="model",
+        metric=METRIC_COST_USD,
+        predicted_cost=plans,
+        profile=PROFILE,
+    )
+    return {(cell.row, cell.column): cell for cell in table.cells} | {("", "unplaced"): table.unplaced_predicted_models}
+
+
+class TestAPredictionSitsOnlyWhereItsPlanRan:
+    """A plan is one model on one template; a cell of another template at that model is not what it predicted."""
+
+    RECORDS = [
+        _cost_record("sonnet", "tc-0", 0.25, "tpl-A"),
+        _cost_record("sonnet", "tc-1", 0.35, "tpl-A"),
+        _cost_record("sonnet", "tc-0", 5.0, "tpl-OTHER"),
+        _cost_record("sonnet", "tc-1", 6.0, "tpl-OTHER"),
+    ]
+
+    def test_another_templates_cell_at_the_planned_model_carries_no_prediction(self) -> None:
+        grid = _by_template_and_model(self.RECORDS, [_plan("sonnet", 0.8)])
+
+        assert grid[("tpl-A", "sonnet")].predicted is not None
+        assert grid[("tpl-A", "sonnet")].predicted.value == pytest.approx(0.2)
+        assert grid[("tpl-OTHER", "sonnet")].predicted is None, "its 5.5 is not what the plan predicted"
+
+    def test_a_cell_pooling_templates_carries_none_and_the_plan_is_named_unplaced(self) -> None:
+        table = compute_pivot(
+            self.RECORDS,
+            row_factor="test_case_id",
+            column_factor="model",
+            metric=METRIC_COST_USD,
+            predicted_cost=[_plan("sonnet", 0.8)],
+            profile=PROFILE,
+        )
+
+        assert all(cell.predicted is None for cell in table.cells)
+        assert table.unplaced_predicted_models == ["sonnet (tpl-A)"]
+
+    def test_one_model_planned_on_two_templates_sits_in_each_its_own(self) -> None:
+        grid = _by_template_and_model(self.RECORDS, [_plan("sonnet", 0.8), _plan("sonnet", 20.0, template="tpl-OTHER")])
+
+        assert grid[("tpl-A", "sonnet")].predicted.value == pytest.approx(0.2)
+        assert grid[("tpl-OTHER", "sonnet")].predicted.value == pytest.approx(5.0)
+
+    def test_one_model_planned_twice_on_one_template_is_refused(self) -> None:
+        with pytest.raises(PivotError, match="plans sonnet on tpl-A more than once"):
+            _by_template_and_model(self.RECORDS, [_plan("sonnet", 0.4), _plan("sonnet", 40.0)])
+
+    def test_a_cell_says_how_many_of_its_observations_the_plan_did_not_make(self) -> None:
+        """The history the prediction was drawn from pools into the same cell; the cell says how much of it."""
+        records = [
+            _cost_record("sonnet", "tc-0", 0.25, "tpl-A", run_id="history"),
+            _cost_record("sonnet", "tc-1", 0.35, "tpl-A", run_id="history"),
+            _cost_record("sonnet", "tc-0", 0.30, "tpl-A", run_id="launched"),
+        ]
+
+        launched = _by_template_and_model(records, [_plan("sonnet", 0.8, run_ids=("launched",))])
+        before = _by_template_and_model(records, [_plan("sonnet", 0.8)])
+
+        assert launched[("tpl-A", "sonnet")].n_unplanned == 2
+        assert before[("tpl-A", "sonnet")].n_unplanned is None, "a plan naming no run made none of them"
 
 
 class TestTheLensTakesTheEstimateTheCallerMadeBeforeTheRun:

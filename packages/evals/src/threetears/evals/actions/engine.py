@@ -126,8 +126,8 @@ RunStatusFilter = Annotated[
 PredictedCost = Annotated[
     dict[str, Any] | None,
     Field(
-        description="A cost pivot's plan: the structured result launch_estimate returned before these runs. Each "
-        "priced arm's model's cell then shows its predicted cost beside the cost observed."
+        description="A cost pivot's plan: the structured result launch_estimate returned before these runs. The "
+        "cell at each priced arm's model and template then shows its predicted cost beside the cost observed."
     ),
 ]
 MinAbsoluteChange = Annotated[
@@ -262,6 +262,13 @@ class ScopePivotParams(EvalBaseModel):
     subject_filter: SubjectFilter = None
     run_status: RunStatusFilter = "completed"
     predicted_cost: PredictedCost = None
+    launched_run_ids: Annotated[
+        list[str] | None,
+        Field(
+            description="The runs the estimated launch made (the run ids its jobs name), with predicted_cost: each "
+            "predicted cell then says how many of its observations came from other runs."
+        ),
+    ] = None
 
 
 class ScopeHistoryParams(EvalBaseModel):
@@ -461,6 +468,7 @@ async def _scope_pivot(host: OpsHost, caller: Caller, params: ScopePivotParams) 
         subject_id=params.subject_filter,
         status=params.run_status,
         predicted_cost=params.predicted_cost,
+        launched_run_ids=params.launched_run_ids or (),
     )
 
 

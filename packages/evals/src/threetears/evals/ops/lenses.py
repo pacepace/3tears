@@ -66,6 +66,7 @@ def scope_pivot(
     subject_id: str | None = None,
     status: str | None = "completed",
     predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None = None,
+    launched_run_ids: Sequence[str] = (),
 ) -> PivotTable:
     """One measure over the scope's observations, aggregated over two coordinates.
 
@@ -82,6 +83,9 @@ def scope_pivot(
             each planned cell's observed cost: a :class:`LaunchEstimate` (:func:`launch_estimate`'s, each priced
             arm's prediction) or an analysis :class:`~threetears.evals.analysis.reporting.CostEstimate` — the
             model, or its JSON form as a caller across a wire holds it.
+        launched_run_ids: The runs the estimated launch made, once it has. Each cell beside a prediction then
+            says how many of its observations came from other runs (``PivotCell.n_unplanned``) — the history
+            the prediction was drawn from among them. Refused without ``predicted_cost``.
 
     Returns:
         The table.
@@ -90,7 +94,7 @@ def scope_pivot(
         ValidationFailedError: The pivot cannot be answered honestly — see
             :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate.
     """
-    plan: CostEstimate | list[PlannedCost] | None = None
+    plan: list[PlannedCost] | None = None
     if predicted_cost is not None:
         try:
             # Validated as exactly one of the two shapes — each forbids the other's fields — never sniffed.
@@ -99,7 +103,12 @@ def scope_pivot(
             )
         except ValidationError as e:
             raise ValidationFailedError(f"predicted_cost is neither a launch estimate nor a cost estimate: {e}") from e
-        plan = estimate.planned_costs() if isinstance(estimate, LaunchEstimate) else estimate
+        plan = estimate.planned_costs(launched_run_ids)
+    elif launched_run_ids:
+        raise ValidationFailedError(
+            "launched_run_ids names the runs an estimate's launch made, and no predicted_cost was given to set "
+            "them against"
+        )
     return pivot(
         host.storage,
         scope_id,
@@ -263,8 +272,12 @@ class LaunchEstimate(EvalBaseModel):
     would_launch: bool
     computed_at: str
 
-    def planned_costs(self) -> list[PlannedCost]:
-        """Each priced arm as a cost pivot's plan: its model, its observations and its prediction.
+    def planned_costs(self, run_ids: Sequence[str] = ()) -> list[PlannedCost]:
+        """Each priced arm as a cost pivot's plan: its model, its template, its observations and its prediction.
+
+        Args:
+            run_ids: The runs the launch made, once it has (the run ids its jobs name); empty before, when the
+                cost a pivot sets beside each prediction is history the launch did not make.
 
         Returns:
             One :class:`~threetears.evals.analysis.reporting.PlannedCost` per arm with a model, a plan and a
@@ -279,6 +292,8 @@ class LaunchEstimate(EvalBaseModel):
             planned.append(
                 PlannedCost(
                     model=arm.candidate_model,
+                    template_id=self.template_id,
+                    run_ids=list(run_ids),
                     n_observations=arm.n_observations,
                     predicted=PredictedValue(
                         value=arm.central_usd if arm.central_usd is not None else arm.predicted_usd,
@@ -682,16 +697,23 @@ def _completeness(disclosures: Mapping[str, str], n_degraded: int | None = None)
     return [f"incomplete runs{weight}:", *(f"- {run_id}: {sentence}" for run_id, sentence in disclosures.items())]
 
 
-def _predicted(predicted: PredictedValue | None) -> str:
-    """A prediction, set apart from the observation it sits beside."""
+def _predicted(predicted: PredictedValue | None, n_unplanned: int | None = None) -> str:
+    """A prediction, set apart from the observation it sits beside, and how much of that observation the plan made."""
     if predicted is None:
         return ""
+    population = (
+        " — the observed cost here is history the plan did not make (it names no launched run)"
+        if n_unplanned is None
+        else f" — {n_unplanned} observation(s) here are from runs the plan did not make"
+        if n_unplanned
+        else ""
+    )
     band = (
         f" [{format_number(predicted.interval_low)}, {format_number(predicted.interval_high)}]"
         if predicted.interval_low is not None and predicted.interval_high is not None
         else ""
     )
-    return f"; predicted {format_number(predicted.value)}{band} ({predicted.method_id})"
+    return f"; predicted {format_number(predicted.value)}{band} ({predicted.method_id}){population}"
 
 
 def pivot_text(table: PivotTable) -> str:
@@ -706,7 +728,7 @@ def pivot_text(table: PivotTable) -> str:
         unmeasured = f", {cell.n_unmeasured} unmeasured" if cell.n_unmeasured else ""
         lines.append(
             f"- {cell.row} / {cell.column}: {format_number(cell.value)} ({cell.status}; n={cell.n}, "
-            f"{cell.n_cases} case(s){spread}{unmeasured}){_predicted(cell.predicted)}"
+            f"{cell.n_cases} case(s){spread}{unmeasured}){_predicted(cell.predicted, cell.n_unplanned)}"
         )
     if not table.cells:
         lines.append("- no cells")
@@ -717,7 +739,7 @@ def pivot_text(table: PivotTable) -> str:
             f"{flag.rows_agreeing} that agree — do not read the pooled order as a ranking"
         )
     if table.unplaced_predicted_models:
-        lines.append(f"planned and not observed: {', '.join(table.unplaced_predicted_models)}")
+        lines.append(f"planned and in no cell here: {', '.join(table.unplaced_predicted_models)}")
     lines += _exclusions(table.exclusions)
     lines += _completeness(table.completeness_disclosures, table.n_degraded_observations)
     return "\n".join(lines)

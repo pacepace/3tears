@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a launch's predicted cost sits only beside its own template's cell, a campaign with no question still corrects its comparisons, and the same-rig and lower-is-better guards are pinned
+
+- **``PlannedCost`` carries ``template_id`` and ``run_ids``, and a cost pivot places a prediction only in a cell
+  whose observations are all its template's at its model.** A launch's prediction sat in every cell at the model
+  — another template's 5.5 beside a 0.2 predicted for this one. With ``run_ids`` (``LaunchEstimate.planned_costs``
+  and ``CostEstimate.planned_costs`` take them; ``scope_pivot`` and its action take ``launched_run_ids``), each
+  predicted cell says how many of its observations the plan did not make (``PivotCell.n_unplanned``), which is
+  the history the prediction was drawn from. A plan that lands in no cell is named
+  (``unplaced_predicted_models``, now ``model`` or ``model (template)``); one model planned twice on one template
+  is refused. **Breaking:** ``unplaced_predicted_models`` entries may name a template.
+- **A campaign that declares no question gets one campaign-wide family**: every contrast against the control, on
+  every reading, corrected by Holm's method together (``ComparisonFamily.question_id`` ``None``). It got no family,
+  and the generator prompt let it call separations on a dimension's own ``sem`` with no correction at all. The
+  prompt now says a comparison is separated only where ``multiple_comparisons`` separates it, and that with no
+  family (no control resolved) nothing is. **Breaking:** ``ComparisonFamily.question_id`` is nullable;
+  ``multiple_comparisons.withheld`` now only means no control resolved.
+- The same-rig pairing of a family is tested on a two-rig campaign; a lower-is-better bar at its floor is tested
+  as discriminating; ``propose_bars`` names each judged dimension in ``not_proposed``; ``PredictedValue`` names both
+  of its writers; the ``directional`` tier's comment says judge agreement is measured but sets no tier.
+
 ### 3tears-evals: judge agreement averages a kappa per person when several people rate, the weighted kappa is pinned, and an agent rates through the catalogue
 
 - **With several people rating, a dimension's kappa is Light's kappa**: Cohen's kappa of the judge against each

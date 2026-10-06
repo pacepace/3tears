@@ -529,7 +529,7 @@ def _comparison_blocks(bundle: AnalysisContextBundle, surface: DecisionSurface) 
             reading = f"{comparison.name} (judged)" if comparison.reading == "judged" else comparison.name
             rows.append(
                 {
-                    "question": family.question_id,
+                    "question": family.question_id if family.question_id is not None else "(campaign-wide)",
                     "reading": reading,
                     "contrast": arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id),
                     "control": arm(comparison.control.variant_key, comparison.control.apparatus_class_id),

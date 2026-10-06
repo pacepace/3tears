@@ -114,8 +114,8 @@ _READING_DESCRIPTION = (
 #:
 #: - ``mechanical``: every reading is a measure — checks and metrics from the trace, which need no
 #:   judge;
-#: - ``directional``: at least one reading is a judged score, and a judged score is only a hint until
-#:   the judge's reliability is measured, which nothing computes yet;
+#: - ``directional``: at least one reading is a judged score, and a judged score is only a hint: the
+#:   judge's reliability is measured (``judge_agreement``), but no bar turns that agreement into a tier;
 #: - ``none``: the finding names no reading, so there is nothing for a tier to stand on.
 #:
 #: The stronger judged tiers (separation, incidental, calibrated) are deliberately absent, and what

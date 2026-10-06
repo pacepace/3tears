@@ -557,6 +557,18 @@ def test_a_baseline_nothing_could_fail_is_flagged_as_a_vacuous_seed():
     )
     assert ceilinged.vacuous
 
+    # And the strictest bar a lower-is-better measure can have — at its FLOOR — discriminates: every value above
+    # 0.0 fails it. A ratchet that read every measure's floor as its permissive end would flag it vacuous and let
+    # the ceiling case above pass anyway, since a bar at the ceiling also clears the floor.
+    strictest = toy.bars.propose(
+        behavior="reconcile_statements",
+        measure="manual_review_rate",
+        observed=0.0,
+        measures=toy.measures,
+        rationale="the incumbent escalates nothing",
+    )
+    assert not strictest.vacuous and strictest.reason == ""
+
     # An UNBOUNDED measure cannot be judged this way and is not flagged — `p95_extract_ms`
     # declares no range, so there is no permissive extreme to sit at. Stated rather than left
     # implicit: silence here is "cannot tell", not "discriminates".

@@ -153,7 +153,9 @@ enforced cap — a host composing its own launch through `launch_as_group` price
 A battery prices each template's arms once, in its pre-flight, prepares every template before starting any,
 and launches each template as it priced it. `launch_estimate` (`quote_launch` in `run`) runs the same steps
 read-only and reports each arm's price and the launch's verdict, word for word; hand its result to a cost
-pivot as `predicted_cost`. A host therefore prices no arm itself: a wrapper that priced assembled runs would
+pivot as `predicted_cost`, and each prediction sits only in the cell of its model and template. Once the launch
+ran, pass its run ids as `launched_run_ids` too, and each predicted cell says how many of its observations came
+from other runs — the history the prediction was drawn from among them. A host therefore prices no arm itself: a wrapper that priced assembled runs would
 be a second rule, and a second pricing of the same arm.
 
 **Setting the rig at launch.** `apparatus_settings` sets host-declared apparatus values — who sits in an
