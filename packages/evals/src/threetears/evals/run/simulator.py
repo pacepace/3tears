@@ -117,14 +117,37 @@ from threetears.evals.contracts.models import (
 from threetears.evals.contracts.provider import SimulatorLLM
 from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
 
+#: The simulated user's private-reasoning budget. A turn is a line of dialogue and a scheduling pick
+#: is one id, so the reasoning they need is small; the bound exists because a reasoning model's
+#: default spends far more. Measured 2026-10-06: ``openai/gpt-5-nano`` at its default (medium)
+#: effort spent all of a flat 4096-token cap reasoning on a rules lawyer's objection and returned an
+#: empty or cut reply, three cells in six of one template. It goes out as ``reasoning.max_tokens``;
+#: an effort-only model (OpenAI's reasoning series) has it mapped to an effort level by its share of
+#: the output cap, and a fifth of the cap is ``low``. So, as for the judge
+#: (:data:`threetears.evals.run.judge.JUDGE_REASONING_BUDGET_TOKENS`), it is a bound in tokens only
+#: where a provider takes it as one, and the cap below stays the only hard stop.
+SIMULATOR_REASONING_BUDGET_TOKENS = 1024
+
+#: Output room kept for the simulated user's visible reply: the strict-schema JSON object holding one
+#: utterance or one scheduling pick. That is at most a few hundred tokens, so this is headroom; unused
+#: output tokens are not billed.
+SIMULATOR_ANSWER_BUDGET_TOKENS = 4096
+
+#: The simulator's output cap: the reasoning budget plus the answer budget, derived rather than chosen,
+#: so it always sits above the bound it wraps.
+SIMULATOR_MAX_TOKENS = SIMULATOR_REASONING_BUDGET_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
+
 #: The simulator role's request settings as ONE value: what the host's client builder applies to
 #: the simulated user's client, and what a run launched with a simulated user records as
-#: ``simulator_request_settings``. A flat output cap with no reasoning parameter: a simulated
-#: user's turn is a line of dialogue and a scheduling pick is one id, and neither needs a
-#: private-reasoning budget. Recorded on the run for the reason
+#: ``simulator_request_settings``. Recorded on the run for the reason
 #: :data:`threetears.evals.run.judge.JUDGE_REQUEST_SETTINGS` is — moving it changes the conversation
-#: every later candidate is handed, with ``simulator_model`` unchanged.
-SIMULATOR_REQUEST_SETTINGS = ClientRequestSettings(max_tokens=4096, reasoning_max_tokens=None)
+#: every later candidate is handed, with ``simulator_model`` unchanged. A run launched before the
+#: reasoning budget records a flat 4096-token cap with no reasoning parameter, so the
+#: ``simulator_request_settings`` apparatus dimension tells a campaign pooling runs from both sides.
+SIMULATOR_REQUEST_SETTINGS = ClientRequestSettings(
+    max_tokens=SIMULATOR_MAX_TOKENS,
+    reasoning_max_tokens=SIMULATOR_REASONING_BUDGET_TOKENS,
+)
 
 #: How many calls one ``llm_decided`` scheduling decision may make: the first, and one repair that
 #: names what was wrong with it. A second bad reply is a rig fault, not a reason to keep paying.
@@ -735,6 +758,9 @@ def _parse_reply(content: str | None) -> SimulatedUserReply:
 __all__ = [
     "SCHEDULER_CALL_ATTEMPTS",
     "SIMULATED_USER_RESPONSE_FORMAT",
+    "SIMULATOR_ANSWER_BUDGET_TOKENS",
+    "SIMULATOR_MAX_TOKENS",
+    "SIMULATOR_REASONING_BUDGET_TOKENS",
     "SIMULATOR_REQUEST_SETTINGS",
     "CandidateTurn",
     "NextSpeakerReply",

@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the simulated user bounds its reasoning
+
+- `SIMULATOR_REQUEST_SETTINGS` sends a reasoning budget (`SIMULATOR_REASONING_BUDGET_TOKENS` = 1024) under a cap derived
+  above it (`SIMULATOR_MAX_TOKENS` = budget + `SIMULATOR_ANSWER_BUDGET_TOKENS` 4096), as the judge's are. Before, a flat
+  4096-token cap with no reasoning parameter let `openai/gpt-5-nano` at its default effort spend the whole cap
+  reasoning and return an empty or cut turn (measured 2026-10-06, three cells in six of one template). Runs record the
+  new settings as `simulator_request_settings`, so a campaign pooling runs from both sides is told the apparatus moved.
+
 ### 3tears-evals: the quick CLI's `run` pins the judge and the simulated user
 
 - `run` takes `--judge-model` and `--simulator-model`, handed to the launch as `run_launch`'s `judge_model` and
