@@ -807,7 +807,8 @@ class EvalStorage:
         """Persist a rating in the scope it names, replacing that rater's earlier rating of the same thing.
 
         The replacement is the id's doing, not this method's: a rating's id is derived from its
-        result, dimension and rater, so the upsert lands on the earlier rating's row.
+        result, dimension, rater and kind of rater, so the upsert lands on the earlier rating's row — and a
+        person and an agent of one name rating the same thing are two rows.
         """
         self._save(rating.to_dict())
 

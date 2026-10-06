@@ -22,6 +22,7 @@ from threetears.evals.run.authoring import list_templates
 from threetears.evals.run.curation import delete_run, set_run_archived
 from threetears.evals.run.launch import start_run
 from threetears.evals.run.lifecycle import get_run
+from threetears.evals.run.ratings import rate_result
 from threetears.evals.run.reads import list_runs
 
 
@@ -242,6 +243,64 @@ def run_archive(host: EvalHost, run_id: str, scope_id: str, *, archived: bool) -
     return _line(set_run_archived(host.storage, run_id, scope_id, archived=archived, profile=host.profile))
 
 
+class ResultRated(EvalBaseModel):
+    """A rating an agent wrote: what it rated, and that it is an agent's, never read as a person's."""
+
+    rating_id: str
+    result_id: str
+    rubric_dim: str
+    score: int
+    rater: str
+    rater_kind: str = Field(description="Always `agent` through an action: the agent rated, whatever account it acts for.")
+
+
+def result_rate(
+    host: EvalHost, result_id: str, scope_id: str, *, rubric_dim: str, score: int, reason: str, rater: str
+) -> ResultRated:
+    """Record an agent's rating of one judged dimension of one result — kept beside people's, never pooled with them.
+
+    The operation an agent-facing surface rates through, so ``rater_kind`` is fixed here rather than taken from
+    the caller: an agent writing through a tool is an ``agent`` whatever account it acts for, and only a person's
+    rating is judge-versus-human agreement (:func:`~threetears.evals.run.rate_result`). A host recording a
+    person's rating calls :func:`~threetears.evals.run.rate_result` with ``rater_kind="person"`` itself.
+
+    Args:
+        host: The host whose store holds the result.
+        result_id: The result rated.
+        scope_id: The scope it lives in.
+        rubric_dim: The judged dimension, spelled as the result's score spells it.
+        score: The score, on the dimension's scale.
+        reason: The agent's own words for the score.
+        rater: Who rated, as the calling surface names the agent.
+
+    Returns:
+        What was written.
+
+    Raises:
+        NotFoundError: No such result in the scope.
+        ValidationFailedError: The judge scored no such dimension, or the score is off its scale.
+        StorageError: The write failed.
+    """
+    rating = rate_result(
+        host.storage,
+        result_id=result_id,
+        scope_id=scope_id,
+        rubric_dim=rubric_dim,
+        rater=rater,
+        rater_kind="agent",
+        score=score,
+        reason=reason,
+    )
+    return ResultRated(
+        rating_id=rating.id,
+        result_id=rating.result_id,
+        rubric_dim=rating.rubric_dim,
+        score=rating.score,
+        rater=rating.rater,
+        rater_kind=rating.rater_kind,
+    )
+
+
 def run_delete(host: EvalHost, run_id: str, scope_id: str, *, confirm: str | None) -> RunDeleted:
     """Destroy a run, its results and its campaign memberships — unrecoverable; archive is the safe answer.
 
@@ -269,6 +328,7 @@ def run_delete(host: EvalHost, run_id: str, scope_id: str, *, confirm: str | Non
 
 __all__ = [
     "LaunchArguments",
+    "ResultRated",
     "RunDeleted",
     "RunLine",
     "RunListing",
@@ -277,6 +337,7 @@ __all__ = [
     "run_archive",
     "run_delete",
     "run_get",
+    "result_rate",
     "run_launch",
     "runs_list",
     "templates_list",

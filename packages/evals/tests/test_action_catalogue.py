@@ -106,6 +106,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "run_archive": "write",
         "campaign_archive": "write",
         "analysis_archive": "write",
+        "result_rate": "write",
         "run_delete": "destructive",
         "analysis_delete": "destructive",
     }

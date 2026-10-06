@@ -39,6 +39,7 @@ from threetears.evals.ops import (
     OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
+    ResultRated,
     RunDeleted,
     RunLine,
     RunListing,
@@ -56,6 +57,7 @@ from threetears.evals.ops import (
     job_poll,
     launch_estimate,
     report_read,
+    result_rate,
     run_archive,
     run_delete,
     run_get,
@@ -305,6 +307,17 @@ class ScopeOutOfRunSpendParams(EvalBaseModel):
     ] = None
 
 
+class ResultRateParams(EvalBaseModel):
+    """``result_rate``."""
+
+    result_id: Annotated[str, Field(min_length=1, description="A result's id, as a run's results name it.")]
+    rubric_dim: Annotated[
+        str, Field(min_length=1, description="The judged dimension rated, spelled as the result's score spells it.")
+    ]
+    score: Annotated[int, Field(description="The score, on the dimension's scale: 1-5, or 1 (pass) / 0 (fail).")]
+    rating_reason: Annotated[str, Field(min_length=1, description="Why that score, in the rater's own words.")]
+
+
 class RunDeleteParams(EvalBaseModel):
     """``run_delete``."""
 
@@ -502,6 +515,23 @@ async def _launch_estimate(host: OpsHost, caller: Caller, params: LaunchEstimate
         LaunchArguments.model_validate(params.model_dump(exclude={"n_test_cases"})),
         caller.scope_id,
         n_test_cases=params.n_test_cases,
+    )
+
+
+async def _result_rate(host: OpsHost, caller: Caller, params: ResultRateParams) -> ResultRated:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(
+            result_rate,
+            rubric_dim=params.rubric_dim,
+            score=params.score,
+            reason=params.rating_reason,
+            rater=caller.identity,
+        ),
+        eval_host,
+        params.result_id,
+        caller.scope_id,
     )
 
 
@@ -807,6 +837,22 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_campaign_archive,
             render=render.render_campaign,
             example={"campaign_id": campaign_id, "archived": True},
+        ),
+        Action(
+            name="result_rate",
+            summary="Rate one judged dimension of one result, as an agent — kept beside people's ratings, never pooled.",
+            workflow=CURATE,
+            permission="write",
+            params=ResultRateParams,
+            result=ResultRated,
+            handler=_result_rate,
+            render=render.render_result_rated,
+            example={"result_id": "result-1", "rubric_dim": "chat.tone", "score": 4, "rating_reason": "warm, on point"},
+            detail=(
+                "Recorded as the caller's identity with rater_kind agent, fixed here: an agent rating through a tool "
+                "is another model's opinion, so it is listed beside people's ratings and never enters the judge's "
+                "agreement with people. A second rating of the same dimension of the same result replaces the first."
+            ),
         ),
         Action(
             name="analysis_archive",

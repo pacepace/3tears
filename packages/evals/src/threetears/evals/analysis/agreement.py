@@ -12,6 +12,16 @@ same dimension of the same result and reads the pairs per dimension:
 - **quadratic-weighted kappa** — on a 1-5 dimension only, where a 4 against a 5 is a near miss and
   a 1 against a 5 is not. On pass/fail it would be the unweighted number restated, so it is absent.
 
+**Several people, one judge: the judge is set against each person, and the kappas averaged.** Cohen's kappa
+is a two-rater statistic. Pooling every (judge, person) pair into one table would enter a result two people
+rated twice — the judge's score duplicated, the items no longer independent — and read the people's
+disagreement with each other as the judge's with them. So each person's kappa is computed over the results
+that person rated, and the dimension's kappa (and weighted kappa) is their mean: Light's kappa (Light, 1971),
+the standard extension of Cohen's kappa to several raters, here over the judge-person pairs. With one person it
+is Cohen's kappa. A person whose kappa is undefined (every pair one score) is left out of the mean, and the
+dimension's kappa is undefined only when every person's is. ``n`` and ``exact_agreement`` stay per rating —
+counts, which nothing double-weights.
+
 **One group per dimension, scale and judge.** The judge is the model that served the score
 (:attr:`~threetears.evals.contracts.models.RubricScore.served_model`), so a campaign sweeping its
 judge reads each judge's agreement separately — pooling them would credit one judge with the other's
@@ -61,7 +71,13 @@ class DimensionAgreement(EvalDocumentModel):
             "model, so which judge these pairs calibrate is unknown — never read as a match for a named one."
         ),
     )
-    n: int = Field(ge=1, description="Pairs read: one per rating, so two raters of one result are two pairs.")
+    n: int = Field(
+        ge=1,
+        description=(
+            "Pairs read: one per rating, so two raters of one result are two pairs. The kappas are per person and "
+            "averaged (see `kappa`), so this count enters no kappa twice."
+        ),
+    )
     raters: list[str] = Field(
         min_length=1, description="Every person whose ratings are among the pairs, sorted; never an agent."
     )
@@ -70,14 +86,17 @@ class DimensionAgreement(EvalDocumentModel):
     )
     kappa: float | None = Field(
         description=(
-            "Cohen's kappa, unweighted. None when chance alone predicts no disagreement — judge and people gave "
-            "one and the same score to every pair — where it is undefined, not perfect."
+            "Cohen's kappa, unweighted, of the judge against each person over the results that person rated, "
+            "averaged over people (Light's kappa; with one person, Cohen's kappa). A person whose kappa is "
+            "undefined is left out of the mean. None when every person's is undefined — chance alone predicts no "
+            "disagreement, judge and person giving one and the same score to every pair — where it is undefined, "
+            "not perfect."
         ),
     )
     weighted_kappa: float | None = Field(
         description=(
-            "Cohen's kappa with quadratic weights over the 1-5 scale. None on pass/fail, where it equals `kappa`, "
-            "and wherever `kappa` is undefined."
+            "Cohen's kappa with quadratic weights over the 1-5 scale, per person and averaged as `kappa` is. None on "
+            "pass/fail, where it equals `kappa`, and wherever every person's is undefined."
         ),
     )
 
@@ -185,8 +204,15 @@ def _dimension_agreement(
     low, high = SCALES[scale].scores
     categories = list(range(low, high + 1))
     scored = [(judge, person) for judge, person, _ in pairs]
-    kappa = cohen_kappa(scored, categories)
-    weighted = cohen_kappa(scored, categories, weights="quadratic") if scale == "ordinal" else None
+    by_rater: dict[str, list[tuple[int, int]]] = {}
+    for judge, person, rater in pairs:
+        by_rater.setdefault(rater, []).append((judge, person))
+    kappa = _mean_kappa([cohen_kappa(own, categories) for own in by_rater.values()])
+    weighted = (
+        _mean_kappa([cohen_kappa(own, categories, weights="quadratic") for own in by_rater.values()])
+        if scale == "ordinal"
+        else None
+    )
     return DimensionAgreement(
         rubric_dim=rubric_dim,
         scale=scale,
@@ -197,6 +223,12 @@ def _dimension_agreement(
         kappa=kappa,
         weighted_kappa=weighted,
     )
+
+
+def _mean_kappa(kappas: Sequence[float | None]) -> float | None:
+    """The mean of the defined per-person kappas — Light's kappa — or None when none is defined."""
+    defined = [kappa for kappa in kappas if kappa is not None]
+    return sum(defined) / len(defined) if defined else None
 
 
 __all__ = [

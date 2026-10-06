@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: judge agreement averages a kappa per person when several people rate, the weighted kappa is pinned, and an agent rates through the catalogue
+
+- **With several people rating, a dimension's kappa is Light's kappa**: Cohen's kappa of the judge against each
+  person over the results that person rated, averaged (a person whose kappa is undefined is left out). Pooling
+  every (judge, person) pair entered a result two people rated twice and read their disagreement with each other
+  as the judge's. With one person nothing changes. ``weighted_kappa`` is averaged the same way and now pinned to
+  its value on a fixture where it differs from the unweighted kappa and from one weighted over the scores seen.
+- **New ``result_rate`` operation and write action** — an agent's rating, with ``rater_kind`` fixed to ``agent``
+  and the caller's identity as the rater, so every host's agent surface shares one write instead of
+  re-implementing it and its rule.
+- The rating's id is documented as derived from result, dimension, rater and kind of rater, and
+  ``CalibrationRating`` says it holds a person's or an agent's score.
+
 ### 3tears-evals: a merit ranking names each axis once, the least-repeated case is pinned, and a code-only report states the declared priority
 
 - **``CampaignDesign.merit_priority`` and ``Question.merit_axes`` refuse an axis named twice.** A repeat put one

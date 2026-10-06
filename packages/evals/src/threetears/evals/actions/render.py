@@ -37,6 +37,7 @@ from threetears.evals.ops import (
     OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
+    ResultRated,
     RunDeleted,
     RunLine,
     RunListing,
@@ -303,6 +304,14 @@ def render_export(export: ScoreExport) -> str:
     return export_text(export)
 
 
+def render_result_rated(rated: ResultRated) -> str:
+    """What an agent's rating wrote, and that it is an agent's."""
+    return (
+        f"rated {rated.rubric_dim} of result {rated.result_id} at {rated.score} as {rated.rater} "
+        f"({rated.rater_kind}; kept beside people's ratings, never read as one)"
+    )
+
+
 def render_run_deleted(deleted: RunDeleted) -> str:
     """What deleting a run removed."""
     detached = ", ".join(deleted.campaigns_detached) or "none"
@@ -327,6 +336,7 @@ __all__ = [
     "render_analysis_deleted",
     "render_analysis_estimate",
     "render_analysis_line",
+    "render_result_rated",
     "render_campaign",
     "render_campaigns",
     "render_estimate",

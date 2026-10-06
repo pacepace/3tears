@@ -46,6 +46,8 @@ from threetears.evals.ops import (
     run_job_id,
     run_launch,
 )
+from threetears.evals.analysis import judge_agreement
+from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import (
@@ -319,6 +321,39 @@ async def test_an_analysis_is_archived_and_restored_through_the_action_its_delet
     assert not restored.archived
     with pytest.raises(NotFoundError):
         analysis_archive(fixture.host.eval_host, "no-such-analysis", TOYHOST_SCOPE, archived=True)
+
+
+async def test_an_agent_rates_through_the_action_and_its_rating_is_never_a_persons() -> None:
+    """``result_rate`` fixes ``rater_kind`` to agent: the judge's agreement with people lists it, never pools it."""
+    fixture = ops_fixture()
+    storage = fixture.host.eval_host.storage
+    (judged,) = [
+        result
+        for run_id in fixture.campaign.run_ids[:1]
+        for result in storage.query_eval_results_by_run(run_id, TOYHOST_SCOPE)[:1]
+    ]
+    assert judged.judge_score(TOYHOST_JUDGED_DIMENSION) is not None, "the toy result is judged on that dimension"
+    tools = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}
+
+    outcome = await tools["evals"].call(
+        {
+            "action": "result_rate",
+            "result_id": judged.id,
+            "rubric_dim": TOYHOST_JUDGED_DIMENSION,
+            "score": 4,
+            "rating_reason": "faithful layout",
+        },
+        host=fixture.host,
+        caller=CALLER,
+    )
+
+    assert not outcome.is_error, outcome.text
+    (rating,) = storage.query_calibration_ratings(TOYHOST_SCOPE, result_id=judged.id)
+    assert (rating.rater, rating.rater_kind, rating.score) == (CALLER.identity, "agent", 4)
+    agreement = judge_agreement([rating], [judged])
+    assert agreement.dimensions == [] and [u.reason for u in agreement.unpaired] == ["rated_by_an_agent"]
+    action = tools["evals"].action("result_rate")
+    assert action is not None and "rater_kind" not in action.params.model_fields, "the caller cannot claim a person"
 
 
 def test_the_launch_action_offers_exactly_the_launchs_own_arguments() -> None:

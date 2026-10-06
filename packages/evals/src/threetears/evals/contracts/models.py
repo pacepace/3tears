@@ -973,7 +973,10 @@ RaterKind = Literal["person", "agent"]
 
 
 class CalibrationRating(EvalDocumentModel):
-    """A rater's score for one judged dimension of one result — from a person, the human side of judge calibration.
+    """A rater's score for one judged dimension of one result — a person's, or an agent's.
+
+    A person's is the human side of judge calibration. Only a person's rating is agreement with people; an agent's (``rater_kind="agent"``) is stored and listed,
+    never paired with the judge (:func:`threetears.evals.analysis.judge_agreement`).
 
     A standalone document, never embedded on the result: a rating is written after the run, by
     someone who is not the run, and a result is a measurement the engine does not rewrite to add an
