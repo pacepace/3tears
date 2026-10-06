@@ -96,7 +96,7 @@ from threetears.evals.run.lifecycle import (
     sweep_abandoned_runs,
 )
 from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
-from threetears.evals.run.offload import run_blocking
+from threetears.evals.contracts.offload import run_blocking
 from threetears.evals.run.reads import get_result, get_result_trace, list_results, list_runs
 from threetears.evals.run.recheck import (
     CheckFlip,

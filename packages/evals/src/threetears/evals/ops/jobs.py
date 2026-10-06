@@ -27,7 +27,7 @@ from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.models import EvalRun
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.run.lifecycle import cancel_run, get_run
-from threetears.evals.run.offload import run_blocking
+from threetears.evals.contracts.offload import run_blocking
 
 #: What a job's work is: a launched run, or an analysis generation.
 JobKind = Literal["run", "analysis"]

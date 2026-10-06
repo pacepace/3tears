@@ -42,6 +42,7 @@ from pydantic import Field, TypeAdapter, ValidationError, field_validator, model
 
 from threetears.evals.contracts.base import EvalDocumentModel
 from threetears.evals.contracts.errors import ValidationFailedError
+from threetears.evals.contracts.offload import run_blocking
 from threetears.evals.contracts.models import (
     EVAL_SCHEMA_VERSION,
     EvalTemplate,
@@ -54,6 +55,8 @@ from threetears.evals.contracts.provider import JSON_OBJECT_RESPONSE_FORMAT, Sto
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from concurrent.futures import Executor
+
     from threetears.evals.contracts.provider import PricedCompletion
 
 log = get_logger(__name__)
@@ -280,6 +283,11 @@ class OutOfRunBudget:
         template_id: The template the work is for, stamped on every row; ``None`` when it is for none.
         subject_id: The subject the work is for, stamped on every row; ``None`` when it is for none.
         launch_group_id: The launch a case generation is made for, stamped on every row.
+        blocking_executor: Where each ledger write to ``store`` runs, off the event loop — the host's
+            ``EvalHost.blocking_executor``, or ``None`` for the loop's default executor. Keyword-only and
+            without a default, as the host's own is: a store write made on the loop stalls every
+            coroutine in the process, and the default executor is the one a host's liveness probes may
+            share, so each construction names where its writes go.
     """
 
     store: OutOfRunSpendStore
@@ -288,6 +296,7 @@ class OutOfRunBudget:
     template_id: str | None = None
     subject_id: str | None = None
     launch_group_id: str | None = None
+    blocking_executor: Executor | None = field(kw_only=True)
     _committed_usd: float = field(default=0.0, init=False)
     #: Every admission not yet made, by token: the object minted and the client it was priced on.
     _admitted: dict[str, tuple[AdmittedCall, PricedCompletion]] = field(default_factory=dict, init=False)
@@ -427,7 +436,7 @@ class OutOfRunBudget:
             result = await client.generate(system=call.system, user=call.user, response_format=call.response_format)
         except BaseException as raised:
             try:
-                self._record(admitted, outcome="raised", failure=type(raised).__name__)
+                await self._record(admitted, outcome="raised", failure=type(raised).__name__)
             # prawduct:ok-broad-except — a failed ledger write must not replace the call's own failure, which propagates
             except Exception as unrecorded:
                 log.error(
@@ -443,7 +452,7 @@ class OutOfRunBudget:
         reported = {
             field_name: getattr(result, attribute, None) for field_name, attribute in _COMPLETION_ATTRIBUTES.items()
         }
-        spend = self._record(admitted, outcome="completed", **_storable(admitted, reported))
+        spend = await self._record(admitted, outcome="completed", **_storable(admitted, reported))
         return RecordedCompletion(result, spend)
 
     def _row(self, admitted: AdmittedCall) -> dict[str, Any]:
@@ -459,10 +468,11 @@ class OutOfRunBudget:
             "launch_group_id": self.launch_group_id,
         }
 
-    def _record(self, admitted: AdmittedCall, **reported: Any) -> OutOfRunSpend:
+    async def _record(self, admitted: AdmittedCall, **reported: Any) -> OutOfRunSpend:
         spend = OutOfRunSpend(**self._row(admitted), **reported)
-        self.store.save_out_of_run_spend(spend)
-        self._recorded.append(spend)
+        # The append rides the write onto the worker, so ``recorded`` lists every row the store holds even
+        # when the coroutine awaiting the write is cancelled before it reads the outcome.
+        await run_blocking(self.blocking_executor, self._write, spend)
         log.info(
             "eval.out_of_run purpose=%s model=%s outcome=%s cost=%s ceiling=%s cap=%s scope=%s",
             spend.purpose,
@@ -474,6 +484,11 @@ class OutOfRunBudget:
             spend.scope_id,
         )
         return spend
+
+    def _write(self, spend: OutOfRunSpend) -> None:
+        """Write one ledger row and remember it — blocking, so it runs on :attr:`blocking_executor`."""
+        self.store.save_out_of_run_spend(spend)
+        self._recorded.append(spend)
 
 
 #: The ledger field each reported attribute of a completion is stored in, keyed by ledger field, valued by the

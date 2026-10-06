@@ -14,12 +14,16 @@ rest. These do, one refusal per forbidden shape, beside the accepted one:
   call's own failure to propagate.
 - **Usage is read by the completion protocol's names**: ``served_model`` is the model the response named,
   and a result offering only ``model`` records none.
+- **A ledger row leaves the loop**: it is written on the executor the budget names, for a completed call and a
+  raised one alike.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -97,7 +101,9 @@ class _FakeLedger:
 
 
 def _budget(ledger: _FakeLedger | None = None, *, cap_usd: float | None = 1.0) -> OutOfRunBudget:
-    return OutOfRunBudget(ledger if ledger is not None else _FakeLedger(), scope_id="s", cap_usd=cap_usd)
+    return OutOfRunBudget(
+        ledger if ledger is not None else _FakeLedger(), scope_id="s", cap_usd=cap_usd, blocking_executor=None
+    )
 
 
 # =============================================================================
@@ -273,3 +279,39 @@ async def test_the_served_model_is_the_one_the_response_named():
     assert [row.served_model for row in ledger.rows] == ["writer/model-2026-09", None], (
         "``model`` is attribution, which a client may fill from the request; it is never read as who answered"
     )
+
+
+# =============================================================================
+# A ledger row is written off the loop, on the executor the budget names
+# =============================================================================
+
+
+# parity-with: threetears.evals.contracts.out_of_run.OutOfRunSpendStore
+@dataclass
+class _FakeThreadRecordingLedger(_FakeLedger):
+    """Records the thread each write ran on."""
+
+    threads: list[int] = field(default_factory=list)
+
+    def save_out_of_run_spend(self, spend: OutOfRunSpend, /) -> None:
+        self.threads.append(threading.get_ident())
+        super().save_out_of_run_spend(spend)
+
+
+@pytest.mark.parametrize("raises", [None, RuntimeError("the provider refused")], ids=["completed", "raised"])
+async def test_the_ledger_row_is_written_on_the_budget_s_executor_and_never_on_the_loop(raises: BaseException | None):
+    """Both outcomes' rows — the completed call's and the raised one's — leave the loop for the named pool."""
+    ledger = _FakeThreadRecordingLedger()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool_thread = pool.submit(threading.get_ident).result()
+        budget = OutOfRunBudget(ledger, scope_id="s", cap_usd=1.0, blocking_executor=pool)
+        writer = _FakeWriter(raises=raises)
+        [admitted] = budget.admit(writer, "variation", [_CALL])
+        if raises is None:
+            await budget.generate(writer, admitted)
+        else:
+            with pytest.raises(RuntimeError):
+                await budget.generate(writer, admitted)
+
+    assert ledger.threads == [pool_thread] != [threading.get_ident()]
+    assert budget.recorded == tuple(ledger.rows) and len(ledger.rows) == 1

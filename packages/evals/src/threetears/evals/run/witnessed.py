@@ -67,7 +67,7 @@ from threetears.evals.run.rejudge import (
     recorded_judge_pins,
     recorded_judged_dims,
 )
-from threetears.evals.run.offload import run_blocking
+from threetears.evals.contracts.offload import run_blocking
 from threetears.evals.run.runner import (
     DEFAULT_JUDGE_CONCURRENCY,
     assemble_completed_cell,

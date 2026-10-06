@@ -24,6 +24,13 @@ Cross-axis combination is the Cartesian product, truncated (or sampled
 without replacement) to ``n_variations``. Existing test cases are reused
 when their ``variation_params`` match; only new combinations get persisted.
 
+Where the store calls run
+-------------------------
+
+Every store call — the dedup read, each case saved, each ledger row the budget writes — runs on the
+host's blocking executor; only the model calls stay on the loop, because the writer's client is bound
+to it, so a host cannot move the whole generation to a thread.
+
 Preview mode
 ------------
 
@@ -41,6 +48,7 @@ from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.hashing import canonical_json
 from threetears.evals.contracts.identity import compute_content_hash
 from threetears.evals.contracts.models import EvalTemplate, EvalTestCase, VariationAxis, VariationCounts
+from threetears.evals.contracts.offload import run_blocking
 from threetears.evals.contracts.out_of_run import (
     AdmittedCall,
     OutOfRunBudget,
@@ -52,6 +60,8 @@ from threetears.evals.contracts.provider import extract_json
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from concurrent.futures import Executor
+
     from threetears.evals.contracts.storage import EvalStorage
     from threetears.evals.contracts.provider import VariationLLM
 
@@ -117,6 +127,7 @@ async def generate_variations(
     *,
     storage: EvalTestCaseStore,
     scope_id: str,
+    blocking_executor: Executor | None,
     llm: VariationLLM | None = None,
     budget: OutOfRunBudget | None = None,
     rng: random.Random | None = None,
@@ -135,6 +146,12 @@ async def generate_variations(
             smaller (axis exhaustion) but never larger.
         storage: Storage for dedup-lookup and persistence.
         scope_id: Scope partition key for the test cases.
+        blocking_executor: Where every ``storage`` read and write runs, off the event loop — the host's
+            ``EvalHost.blocking_executor``, or ``None`` for the loop's default executor. The model calls
+            stay on the loop, because the writer's client is bound to it, so a host cannot move the
+            whole generation to a thread and this is how the store calls leave it. No default, as the
+            host's own has none: the default executor is the one a host's liveness probes may share.
+            The ``budget``'s ledger writes go where the budget's own ``blocking_executor`` says.
         llm: The client that writes the values of the template's ``llm``
             axes, naming the model it calls (:class:`VariationLLM` — a host's
             client for the ``variation`` role). Required exactly when an axis
@@ -190,7 +207,7 @@ async def generate_variations(
     existing: list[EvalTestCase] = []
     seen_by_params: dict[str, EvalTestCase] = {}
     if not preview:
-        existing = storage.query_test_cases(scope_id, template_id=template.id)
+        existing = await run_blocking(blocking_executor, storage.query_test_cases, scope_id, template_id=template.id)
         for tc in existing:
             seen_by_params[_canonical_key(tc.variation_params)] = tc
 
@@ -244,7 +261,7 @@ async def generate_variations(
             content_hash=compute_content_hash(params),
         )
         if not preview:
-            storage.save_test_case(tc)
+            await run_blocking(blocking_executor, storage.save_test_case, tc)
         seen_by_params[key] = tc
         out.append(tc)
     return GeneratedVariations(
@@ -265,6 +282,7 @@ async def price_variations(
     *,
     storage: EvalTestCaseStore,
     scope_id: str,
+    blocking_executor: Executor | None,
     llm: VariationLLM,
     budget: OutOfRunBudget,
 ) -> list[float | None]:
@@ -280,6 +298,8 @@ async def price_variations(
         n_variations: The cases the generation would ask for.
         storage: Where the template's existing cases are read — the values each axis's prompt excludes.
         scope_id: The scope the cases would be generated into.
+        blocking_executor: Where the ``storage`` read runs, off the event loop — as
+            :func:`generate_variations` takes it.
         llm: The client the axes would be written with.
         budget: The budget the generation would be admitted under.
 
@@ -292,7 +312,7 @@ async def price_variations(
     """
     if n_variations <= 0:
         raise ValueError(f"n_variations must be positive; got {n_variations}.")
-    existing = storage.query_test_cases(scope_id, template_id=template.id)
+    existing = await run_blocking(blocking_executor, storage.query_test_cases, scope_id, template_id=template.id)
     planned = plan_variation_calls(template, n_variations, existing)
     if not planned:
         raise ValueError(f"template {template.id!r} has no llm-generated axis, so a generation of it makes no call")

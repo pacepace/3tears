@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from threetears.evals.contracts import EvalStorage, OutOfRunBudget
+from threetears.evals.contracts import EvalStorage, OutOfRunBudget, OutOfRunSpend
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.models import ActorPolicy, ConversationSpec, EvalTemplate, EvalTestCase, VariationAxis
 from threetears.evals.gen import price_variations
@@ -77,7 +79,7 @@ class _FakeLLM:
 
 def _budget(*, cap_usd: float | None = 1.0) -> OutOfRunBudget:
     """An out-of-run budget over its own in-memory ledger, capped at a dollar unless told otherwise."""
-    return OutOfRunBudget(EvalStorage(InMemoryDocumentStore()), scope_id="u", cap_usd=cap_usd)
+    return OutOfRunBudget(EvalStorage(InMemoryDocumentStore()), scope_id="u", cap_usd=cap_usd, blocking_executor=None)
 
 
 def _template(*axes, name="t", scope_id="uni") -> EvalTemplate:
@@ -99,7 +101,9 @@ def _template(*axes, name="t", scope_id="uni") -> EvalTemplate:
 async def test_enum_axis_yields_every_value_once_within_cap():
     template = _template(VariationAxis(name="tone", generator="enum", values=["casual", "cocky", "uncertain"]))
     storage = _FakeStorage()
-    out = (await generate_variations(template, n_variations=10, storage=storage, scope_id="uni")).cases
+    out = (
+        await generate_variations(template, n_variations=10, storage=storage, scope_id="uni", blocking_executor=None)
+    ).cases
     assert len(out) == 3
     tones = sorted(tc.variation_params["tone"] for tc in out)
     assert tones == ["casual", "cocky", "uncertain"]
@@ -108,7 +112,7 @@ async def test_enum_axis_yields_every_value_once_within_cap():
 async def test_enum_axis_persists_each_unique_test_case():
     template = _template(VariationAxis(name="tone", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
-    out = (await generate_variations(template, 5, storage=storage, scope_id="u")).cases
+    out = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
     assert len(out) == 2
     assert len(storage.saved) == 2
 
@@ -117,10 +121,10 @@ async def test_existing_test_case_reused_not_duplicated():
     """A second call with the same template+scope returns the same test cases."""
     template = _template(VariationAxis(name="tone", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
-    out1 = (await generate_variations(template, 5, storage=storage, scope_id="u")).cases
+    out1 = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
     assert len(storage.saved) == 2
 
-    out2 = (await generate_variations(template, 5, storage=storage, scope_id="u")).cases
+    out2 = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
     assert len(storage.saved) == 2  # nothing new saved
     # Same test case objects returned (same id).
     out1_ids = {tc.id for tc in out1}
@@ -137,7 +141,11 @@ async def test_sample_axis_chooses_n_distinct_values():
     template = _template(VariationAxis(name="x", generator="sample", values=["a", "b", "c", "d", "e"]))
     storage = _FakeStorage()
     rng = random.Random(42)
-    out = (await generate_variations(template, n_variations=3, storage=storage, scope_id="u", rng=rng)).cases
+    out = (
+        await generate_variations(
+            template, n_variations=3, storage=storage, scope_id="u", rng=rng, blocking_executor=None
+        )
+    ).cases
     values = [tc.variation_params["x"] for tc in out]
     assert len(values) == 3
     assert len(set(values)) == 3
@@ -147,7 +155,7 @@ async def test_sample_axis_chooses_n_distinct_values():
 async def test_sample_axis_handles_n_larger_than_values():
     template = _template(VariationAxis(name="x", generator="sample", values=["a", "b"]))
     storage = _FakeStorage()
-    out = (await generate_variations(template, 10, storage=storage, scope_id="u")).cases
+    out = (await generate_variations(template, 10, storage=storage, scope_id="u", blocking_executor=None)).cases
     # Only 2 distinct values available.
     assert len(out) == 2
 
@@ -156,7 +164,7 @@ async def test_an_axis_with_no_values_refuses_rather_than_generating_nothing():
     template = _template(VariationAxis(name="x", generator="sample", values=[]))
     storage = _FakeStorage()
     with pytest.raises(ValidationFailedError, match="'x'"):
-        await generate_variations(template, 5, storage=storage, scope_id="u")
+        await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)
     assert storage.saved == []
 
 
@@ -166,7 +174,7 @@ async def test_an_empty_axis_does_not_fall_back_to_the_templates_stored_cases():
     storage = _FakeStorage()
     storage.saved.append(EvalTestCase(template_id=template.id, scope_id="u", variation_params={"x": "old"}))
     with pytest.raises(ValidationFailedError):
-        await generate_variations(template, 5, storage=storage, scope_id="u")
+        await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)
 
 
 # =============================================================================
@@ -178,7 +186,11 @@ async def test_llm_axis_parses_json_object_response():
     template = _template(VariationAxis(name="category_pair", generator="llm", description="Category pairings"))
     storage = _FakeStorage()
     llm = _FakeLLM(['{"values": ["kitchen + garden", "toys + stationery", "tools + linen"]}'])
-    out = (await generate_variations(template, 3, storage=storage, scope_id="u", llm=llm, budget=_budget())).cases
+    out = (
+        await generate_variations(
+            template, 3, storage=storage, scope_id="u", llm=llm, budget=_budget(), blocking_executor=None
+        )
+    ).cases
     pairs = [tc.variation_params["category_pair"] for tc in out]
     assert sorted(pairs) == ["kitchen + garden", "tools + linen", "toys + stationery"]
 
@@ -190,7 +202,9 @@ async def test_llm_axis_uses_json_object_mode():
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
     llm = _FakeLLM(['{"values": ["a"]}'])
-    await generate_variations(template, 1, storage=storage, scope_id="u", llm=llm, budget=_budget())
+    await generate_variations(
+        template, 1, storage=storage, scope_id="u", llm=llm, budget=_budget(), blocking_executor=None
+    )
     assert llm.response_formats[0] == JSON_OBJECT_RESPONSE_FORMAT
 
 
@@ -198,7 +212,11 @@ async def test_llm_axis_strips_code_fences_and_commentary():
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
     llm = _FakeLLM(['Sure! Here are three: ```json\n{"values": ["a", "b", "c"]}\n```'])
-    out = (await generate_variations(template, 3, storage=storage, scope_id="u", llm=llm, budget=_budget())).cases
+    out = (
+        await generate_variations(
+            template, 3, storage=storage, scope_id="u", llm=llm, budget=_budget(), blocking_executor=None
+        )
+    ).cases
     assert sorted(tc.variation_params["x"] for tc in out) == ["a", "b", "c"]
 
 
@@ -217,7 +235,11 @@ async def test_llm_axis_dedupes_against_existing():
     storage = _FakeStorage(existing=[existing])
     # LLM returns one stale + two novel
     llm = _FakeLLM(['{"values": ["stale", "novel1", "novel2"]}'])
-    out = (await generate_variations(template, 2, storage=storage, scope_id="u", llm=llm, budget=_budget())).cases
+    out = (
+        await generate_variations(
+            template, 2, storage=storage, scope_id="u", llm=llm, budget=_budget(), blocking_executor=None
+        )
+    ).cases
     new_values = sorted(tc.variation_params["x"] for tc in out)
     # The stale value is filtered out of the LLM response; only the novel
     # two appear in this generation's output.
@@ -233,7 +255,7 @@ async def test_enum_axis_with_existing_reuses_matching_test_cases():
     template = _template(VariationAxis(name="x", generator="enum", values=["a", "b"]))
     existing = EvalTestCase(template_id=template.id, scope_id="u", variation_params={"x": "a"})
     storage = _FakeStorage(existing=[existing])
-    out = (await generate_variations(template, 5, storage=storage, scope_id="u")).cases
+    out = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
     by_x = {tc.variation_params["x"]: tc for tc in out}
     # 'a' is the existing test case (reused, same id).
     assert by_x["a"].id == existing.id
@@ -248,7 +270,9 @@ async def test_llm_axis_dedupes_passed_to_prompt():
     existing = EvalTestCase(template_id=template.id, scope_id="u", variation_params={"x": "Stale Category"})
     storage = _FakeStorage(existing=[existing])
     llm = _FakeLLM(['{"values": ["novel"]}'])
-    await generate_variations(template, 1, storage=storage, scope_id="u", llm=llm, budget=_budget())
+    await generate_variations(
+        template, 1, storage=storage, scope_id="u", llm=llm, budget=_budget(), blocking_executor=None
+    )
 
     _system, user = llm.calls[0]
     assert "Stale Category" in user
@@ -259,7 +283,9 @@ async def test_an_llm_axis_whose_response_is_unparseable_refuses():
     storage = _FakeStorage()
     llm = _FakeLLM(["I'm sorry but I cannot help with that request."])
     with pytest.raises(ValidationFailedError, match="produced no values"):
-        await generate_variations(template, 3, storage=storage, scope_id="u", llm=llm, budget=_budget())
+        await generate_variations(
+            template, 3, storage=storage, scope_id="u", llm=llm, budget=_budget(), blocking_executor=None
+        )
 
 
 async def test_an_llm_axis_whose_object_has_no_values_key_refuses():
@@ -268,14 +294,16 @@ async def test_an_llm_axis_whose_object_has_no_values_key_refuses():
     storage = _FakeStorage()
     llm = _FakeLLM(['{"result": ["a", "b"]}'])  # valid object, wrong key
     with pytest.raises(ValidationFailedError, match="produced no values"):
-        await generate_variations(template, 3, storage=storage, scope_id="u", llm=llm, budget=_budget())
+        await generate_variations(
+            template, 3, storage=storage, scope_id="u", llm=llm, budget=_budget(), blocking_executor=None
+        )
 
 
 async def test_llm_axis_requires_llm_client():
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
     with pytest.raises(ValueError, match="llm client"):
-        await generate_variations(template, 1, storage=storage, scope_id="u", llm=None)
+        await generate_variations(template, 1, storage=storage, scope_id="u", llm=None, blocking_executor=None)
 
 
 # =============================================================================
@@ -289,7 +317,9 @@ async def test_multi_axis_combines_via_cartesian_product():
         VariationAxis(name="depth", generator="enum", values=["short", "long"]),
     )
     storage = _FakeStorage()
-    out = (await generate_variations(template, n_variations=10, storage=storage, scope_id="u")).cases
+    out = (
+        await generate_variations(template, n_variations=10, storage=storage, scope_id="u", blocking_executor=None)
+    ).cases
     assert len(out) == 4
     combos = sorted((tc.variation_params["tone"], tc.variation_params["depth"]) for tc in out)
     assert combos == [
@@ -307,7 +337,11 @@ async def test_multi_axis_truncates_when_product_exceeds_n_variations():
     )
     storage = _FakeStorage()
     rng = random.Random(0)
-    out = (await generate_variations(template, n_variations=4, storage=storage, scope_id="u", rng=rng)).cases
+    out = (
+        await generate_variations(
+            template, n_variations=4, storage=storage, scope_id="u", rng=rng, blocking_executor=None
+        )
+    ).cases
     assert len(out) == 4
     # All 4 combos must be distinct.
     combos = {(tc.variation_params["a"], tc.variation_params["b"]) for tc in out}
@@ -322,7 +356,9 @@ async def test_multi_axis_truncates_when_product_exceeds_n_variations():
 async def test_preview_mode_does_not_persist():
     template = _template(VariationAxis(name="x", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
-    out = (await generate_variations(template, 5, storage=storage, scope_id="u", preview=True)).cases
+    out = (
+        await generate_variations(template, 5, storage=storage, scope_id="u", preview=True, blocking_executor=None)
+    ).cases
     assert len(out) == 2
     assert storage.saved == []
 
@@ -331,7 +367,9 @@ async def test_preview_mode_does_not_dedup_against_storage():
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     existing = EvalTestCase(template_id=template.id, scope_id="u", variation_params={"x": "a"})
     storage = _FakeStorage(existing=[existing])
-    out = (await generate_variations(template, 1, storage=storage, scope_id="u", preview=True)).cases
+    out = (
+        await generate_variations(template, 1, storage=storage, scope_id="u", preview=True, blocking_executor=None)
+    ).cases
     # Preview generates a fresh test case (different id from existing).
     assert len(out) == 1
     assert out[0].id != existing.id
@@ -345,7 +383,7 @@ async def test_preview_mode_does_not_dedup_against_storage():
 async def test_n_variations_zero_raises():
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     with pytest.raises(ValueError, match="positive"):
-        await generate_variations(template, 0, storage=_FakeStorage(), scope_id="u")
+        await generate_variations(template, 0, storage=_FakeStorage(), scope_id="u", blocking_executor=None)
 
 
 async def test_the_dedup_key_is_stable_under_key_order():
@@ -357,7 +395,7 @@ async def test_the_dedup_key_is_stable_under_key_order():
     existing = EvalTestCase(template_id=template.id, scope_id="u", variation_params={"y": "2", "x": "1"})
     storage = _FakeStorage(existing=[existing])
 
-    out = (await generate_variations(template, 5, storage=storage, scope_id="u")).cases
+    out = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
 
     assert [tc.id for tc in out] == [existing.id]
     assert storage.saved == []
@@ -369,7 +407,7 @@ async def test_the_dedup_key_distinguishes_different_values():
     existing = EvalTestCase(template_id=template.id, scope_id="u", variation_params={"x": "1"})
     storage = _FakeStorage(existing=[existing])
 
-    out = (await generate_variations(template, 5, storage=storage, scope_id="u")).cases
+    out = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
 
     assert [tc.variation_params for tc in out] == [{"x": "2"}]
     assert [tc.variation_params for tc in storage.saved] == [{"x": "2"}]
@@ -390,7 +428,7 @@ async def test_generated_cases_are_content_hashed():
 
     template = _template(VariationAxis(name="tone", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
-    out = (await generate_variations(template, 5, storage=storage, scope_id="u")).cases
+    out = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
 
     assert len(out) == 2
     for tc in out:
@@ -401,7 +439,7 @@ async def test_generated_cases_are_content_hashed():
 async def test_distinct_variations_get_distinct_content_hashes():
     template = _template(VariationAxis(name="tone", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
-    out = (await generate_variations(template, 5, storage=storage, scope_id="u")).cases
+    out = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
     assert len({tc.content_hash for tc in out}) == 2
 
 
@@ -424,7 +462,7 @@ async def test_dedup_and_content_identity_agree():
     existing = EvalTestCase(template_id=template.id, scope_id="u", variation_params=params_b)
     storage = _FakeStorage(existing=[existing])
 
-    out = (await generate_variations(template, 5, storage=storage, scope_id="u")).cases
+    out = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
 
     # The generator treats the stored case as a duplicate of what it generated...
     assert [tc.id for tc in out] == [existing.id] and storage.saved == []
@@ -453,7 +491,9 @@ async def test_a_case_with_no_generated_content_carries_no_content_hash():
 async def test_a_short_generation_says_it_ran_short():
     """Two enum values cannot make five cases; the counts say so rather than the run looking whole."""
     template = _template(VariationAxis(name="x", generator="enum", values=["a", "b"]))
-    counts = (await generate_variations(template, 5, storage=_FakeStorage(), scope_id="u")).counts
+    counts = (
+        await generate_variations(template, 5, storage=_FakeStorage(), scope_id="u", blocking_executor=None)
+    ).counts
     assert (counts.requested, counts.kept, counts.reused) == (5, 2, 0)
     assert counts.short
 
@@ -461,8 +501,8 @@ async def test_a_short_generation_says_it_ran_short():
 async def test_a_full_generation_is_not_short_and_counts_what_it_reused():
     template = _template(VariationAxis(name="x", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
-    await generate_variations(template, 2, storage=storage, scope_id="u")
-    counts = (await generate_variations(template, 2, storage=storage, scope_id="u")).counts
+    await generate_variations(template, 2, storage=storage, scope_id="u", blocking_executor=None)
+    counts = (await generate_variations(template, 2, storage=storage, scope_id="u", blocking_executor=None)).counts
     assert (counts.requested, counts.kept, counts.reused) == (2, 2, 2)
     assert not counts.short
 
@@ -472,7 +512,13 @@ async def test_the_counts_name_the_model_that_wrote_the_llm_axis():
     template = _template(VariationAxis(name="x", generator="llm"))
     counts = (
         await generate_variations(
-            template, 1, storage=_FakeStorage(), scope_id="u", llm=_FakeLLM(['{"values": ["a"]}']), budget=_budget()
+            template,
+            1,
+            storage=_FakeStorage(),
+            scope_id="u",
+            llm=_FakeLLM(['{"values": ["a"]}']),
+            budget=_budget(),
+            blocking_executor=None,
         )
     ).counts
     assert counts.variation_model == "writer-model"
@@ -480,14 +526,18 @@ async def test_the_counts_name_the_model_that_wrote_the_llm_axis():
 
 async def test_the_counts_name_no_writer_when_no_axis_is_llm():
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
-    counts = (await generate_variations(template, 1, storage=_FakeStorage(), scope_id="u")).counts
+    counts = (
+        await generate_variations(template, 1, storage=_FakeStorage(), scope_id="u", blocking_executor=None)
+    ).counts
     assert counts.variation_model is None
 
 
 async def test_a_client_for_a_template_no_model_writes_is_refused():
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     with pytest.raises(ValueError, match="no llm-generated axis"):
-        await generate_variations(template, 1, storage=_FakeStorage(), scope_id="u", llm=_FakeLLM([]))
+        await generate_variations(
+            template, 1, storage=_FakeStorage(), scope_id="u", llm=_FakeLLM([]), blocking_executor=None
+        )
 
 
 # =============================================================================
@@ -511,7 +561,9 @@ async def test_every_llm_axis_is_priced_before_the_first_call_is_made():
     with pytest.raises(
         ValidationFailedError, match=r"2 variation call\(s\).*\$1\.1000, above the out-of-run cap \$1\.00"
     ):
-        await generate_variations(_two_llm_axes(), 1, storage=storage, scope_id="u", llm=llm, budget=budget)
+        await generate_variations(
+            _two_llm_axes(), 1, storage=storage, scope_id="u", llm=llm, budget=budget, blocking_executor=None
+        )
 
     assert len(llm.priced) == 2 and llm.calls == [], "both priced, neither made"
     assert storage.saved == [] and budget.recorded == ()
@@ -520,10 +572,12 @@ async def test_every_llm_axis_is_priced_before_the_first_call_is_made():
 async def test_an_admitted_generation_ledgers_one_row_per_llm_call_and_returns_them():
     llm = _FakeLLM(['{"values": ["a"]}', '{"values": ["b"]}'], ceilings=[0.4, 0.5])
     ledger = EvalStorage(InMemoryDocumentStore())
-    budget = OutOfRunBudget(ledger, scope_id="u", cap_usd=1.0, template_id="t-1", launch_group_id="group-1")
+    budget = OutOfRunBudget(
+        ledger, scope_id="u", cap_usd=1.0, template_id="t-1", launch_group_id="group-1", blocking_executor=None
+    )
 
     generated = await generate_variations(
-        _two_llm_axes(), 1, storage=_FakeStorage(), scope_id="u", llm=llm, budget=budget
+        _two_llm_axes(), 1, storage=_FakeStorage(), scope_id="u", llm=llm, budget=budget, blocking_executor=None
     )
 
     assert llm.priced == llm.calls, "what was priced is what was called"
@@ -538,7 +592,7 @@ async def test_an_admitted_generation_ledgers_one_row_per_llm_call_and_returns_t
 
 async def test_a_generation_no_model_writes_ledgers_nothing():
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
-    generated = await generate_variations(template, 1, storage=_FakeStorage(), scope_id="u")
+    generated = await generate_variations(template, 1, storage=_FakeStorage(), scope_id="u", blocking_executor=None)
     assert generated.spend == ()
 
 
@@ -546,7 +600,12 @@ async def test_a_writer_without_a_budget_is_refused_before_any_call():
     llm = _FakeLLM(['{"values": ["a"]}'])
     with pytest.raises(ValueError, match="priced and ledgered through an out-of-run budget"):
         await generate_variations(
-            _template(VariationAxis(name="x", generator="llm")), 1, storage=_FakeStorage(), scope_id="u", llm=llm
+            _template(VariationAxis(name="x", generator="llm")),
+            1,
+            storage=_FakeStorage(),
+            scope_id="u",
+            llm=llm,
+            blocking_executor=None,
         )
     assert llm.priced == [] and llm.calls == []
 
@@ -554,14 +613,18 @@ async def test_a_writer_without_a_budget_is_refused_before_any_call():
 async def test_a_budget_without_a_writer_is_refused():
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     with pytest.raises(ValueError, match="no model writes"):
-        await generate_variations(template, 1, storage=_FakeStorage(), scope_id="u", budget=_budget())
+        await generate_variations(
+            template, 1, storage=_FakeStorage(), scope_id="u", budget=_budget(), blocking_executor=None
+        )
 
 
 async def test_price_variations_quotes_what_a_generation_would_admit_and_calls_nothing():
     llm = _FakeLLM([], ceilings=[0.4, 0.5])
     budget = _budget(cap_usd=1.0)
 
-    ceilings = await price_variations(_two_llm_axes(), 1, storage=_FakeStorage(), scope_id="u", llm=llm, budget=budget)
+    ceilings = await price_variations(
+        _two_llm_axes(), 1, storage=_FakeStorage(), scope_id="u", llm=llm, budget=budget, blocking_executor=None
+    )
 
     assert ceilings == [0.4, 0.5]
     assert llm.calls == [] and budget.committed_usd == 0.0, "a quote commits nothing"
@@ -571,7 +634,13 @@ async def test_price_variations_refuses_what_the_generation_would_refuse():
     llm = _FakeLLM([], ceilings=[0.4, 0.7])
     with pytest.raises(ValidationFailedError, match="above the out-of-run cap"):
         await price_variations(
-            _two_llm_axes(), 1, storage=_FakeStorage(), scope_id="u", llm=llm, budget=_budget(cap_usd=1.0)
+            _two_llm_axes(),
+            1,
+            storage=_FakeStorage(),
+            scope_id="u",
+            llm=llm,
+            budget=_budget(cap_usd=1.0),
+            blocking_executor=None,
         )
     assert llm.calls == []
 
@@ -579,4 +648,116 @@ async def test_price_variations_refuses_what_the_generation_would_refuse():
 async def test_price_variations_refuses_a_template_no_model_writes():
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     with pytest.raises(ValueError, match="no llm-generated axis"):
-        await price_variations(template, 1, storage=_FakeStorage(), scope_id="u", llm=_FakeLLM([]), budget=_budget())
+        await price_variations(
+            template,
+            1,
+            storage=_FakeStorage(),
+            scope_id="u",
+            llm=_FakeLLM([]),
+            budget=_budget(),
+            blocking_executor=None,
+        )
+
+
+# =============================================================================
+# Where the store calls run: off the loop, on the executor named; the model calls on the loop
+# =============================================================================
+
+
+# parity-with: threetears.evals.gen.variation_gen.EvalTestCaseStore
+class _FakeThreadRecordingCaseStore(_FakeStorage):
+    """Records the thread each store call ran on."""
+
+    def __init__(self, threads: list[tuple[str, int]], existing: list[EvalTestCase] | None = None):
+        super().__init__(existing)
+        self._threads = threads
+
+    def query_test_cases(self, scope_id: str, /, *, template_id: str | None = None) -> list[EvalTestCase]:
+        self._threads.append(("query_test_cases", threading.get_ident()))
+        return super().query_test_cases(scope_id, template_id=template_id)
+
+    def save_test_case(self, test_case: EvalTestCase, /) -> None:
+        self._threads.append(("save_test_case", threading.get_ident()))
+        super().save_test_case(test_case)
+
+
+# parity-with: threetears.evals.contracts.out_of_run.OutOfRunSpendStore
+class _FakeThreadRecordingLedger:
+    """Records the thread each ledger write ran on."""
+
+    def __init__(self, threads: list[tuple[str, int]]):
+        self._threads = threads
+        self.rows: list[OutOfRunSpend] = []
+
+    def save_out_of_run_spend(self, spend: OutOfRunSpend, /) -> None:
+        self._threads.append(("save_out_of_run_spend", threading.get_ident()))
+        self.rows.append(spend)
+
+
+# parity-with: threetears.evals.contracts.provider.VariationLLM
+class _FakeThreadRecordingLLM(_FakeLLM):
+    """Records the thread each model call ran on — the loop's, since the client is bound to it."""
+
+    def __init__(self, responses: list[str], threads: list[tuple[str, int]]):
+        super().__init__(responses)
+        self._threads = threads
+
+    async def generate(self, *, system: str, user: str, response_format=None):
+        self._threads.append(("generate", threading.get_ident()))
+        return await super().generate(system=system, user=user, response_format=response_format)
+
+
+@pytest.mark.parametrize("named_pool", [True, False], ids=["host-pool", "default-executor"])
+async def test_no_store_call_from_a_generation_runs_on_the_loop_thread(named_pool: bool):
+    """Every store call — the dedup read, each save, each ledger row — leaves the loop; the model call does not.
+
+    One existing case so the dedup read has something to find, an ``llm`` axis so a ledger row is written,
+    and an ``enum`` axis so several cases are saved. Run under a named pool and under ``None`` (the loop's
+    default executor): either way no store call shares the loop's thread, and under the pool every one runs
+    on the pool's own threads, so the executor named is the one used.
+    """
+    threads: list[tuple[str, int]] = []
+    loop_thread = threading.get_ident()
+    template = _template(
+        VariationAxis(name="tone", generator="enum", values=["a", "b"]),
+        VariationAxis(name="topic", generator="llm"),
+    )
+    existing = EvalTestCase(
+        template_id=template.id, scope_id="u", variation_params={"tone": "z", "topic": "old"}, content_hash="h"
+    )
+    storage = _FakeThreadRecordingCaseStore(threads, [existing])
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="host-io") as pool:
+        executor = pool if named_pool else None
+        pool_thread = pool.submit(threading.get_ident).result()
+        budget = OutOfRunBudget(
+            _FakeThreadRecordingLedger(threads), scope_id="u", cap_usd=1.0, blocking_executor=executor
+        )
+        llm = _FakeThreadRecordingLLM(['{"values": ["new"]}'], threads)
+
+        out = await generate_variations(
+            template, 4, storage=storage, scope_id="u", llm=llm, budget=budget, blocking_executor=executor
+        )
+
+    calls = {name for name, _ in threads}
+    assert {"query_test_cases", "save_test_case", "save_out_of_run_spend", "generate"} <= calls, (
+        f"the precondition: every kind of call was made, so none can pass by not happening — {sorted(calls)}"
+    )
+    assert len(storage.saved) == len(out.cases) == 2
+    store_threads = {(name, ident) for name, ident in threads if name != "generate"}
+    assert all(ident != loop_thread for _, ident in store_threads), f"a store call ran on the loop: {store_threads}"
+    assert {ident for name, ident in threads if name == "generate"} == {loop_thread}, "the model call stays on the loop"
+    if named_pool:
+        assert {ident for _, ident in store_threads} == {pool_thread}, "the executor named is the one used"
+
+
+async def test_pricing_a_generation_reads_its_cases_off_the_loop_thread():
+    threads: list[tuple[str, int]] = []
+    loop_thread = threading.get_ident()
+    storage = _FakeThreadRecordingCaseStore(threads)
+
+    await price_variations(
+        _two_llm_axes(), 1, storage=storage, scope_id="u", llm=_FakeLLM([]), budget=_budget(), blocking_executor=None
+    )
+
+    assert [name for name, _ in threads] == ["query_test_cases"]
+    assert all(ident != loop_thread for _, ident in threads)

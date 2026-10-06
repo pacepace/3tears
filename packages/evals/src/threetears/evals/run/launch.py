@@ -63,7 +63,8 @@ from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
 from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.metering import MeteredCallLedger
-from threetears.evals.run.offload import run_blocking, wait_through_cancellation
+from threetears.evals.contracts.offload import run_blocking
+from threetears.evals.run.offload import wait_through_cancellation
 from threetears.evals.run.runner import DEFAULT_CELL_TIMEOUT_S, KindFactory, RunCallbacks, RunnerOptions, execute_run
 from threetears.evals.run.simulator import SIMULATOR_REQUEST_SETTINGS
 from threetears.observe import get_logger
@@ -1751,6 +1752,7 @@ def _generation_budget(
         template_id=template_id,
         subject_id=subject_id,
         launch_group_id=launch_group_id,
+        blocking_executor=host.eval_host.blocking_executor,
     )
 
 
