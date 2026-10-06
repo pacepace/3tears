@@ -6,13 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### 3tears-evals: the simulated user bounds its reasoning
+### 3tears-evals: the simulated user asks for its reasoning by effort, and a role's settings can record one
 
-- `SIMULATOR_REQUEST_SETTINGS` sends a reasoning budget (`SIMULATOR_REASONING_BUDGET_TOKENS` = 1024) under a cap derived
-  above it (`SIMULATOR_MAX_TOKENS` = budget + `SIMULATOR_ANSWER_BUDGET_TOKENS` 4096), as the judge's are. Before, a flat
-  4096-token cap with no reasoning parameter let `openai/gpt-5-nano` at its default effort spend the whole cap
-  reasoning and return an empty or cut turn (measured 2026-10-06, three cells in six of one template). Runs record the
-  new settings as `simulator_request_settings`, so a campaign pooling runs from both sides is told the apparatus moved.
+- **`ClientRequestSettings.reasoning_effort`** (`ReasoningEffort`: `max`/`xhigh`/`high`/`medium`/`low`/`minimal`/`none`,
+  the router's `reasoning.effort`), optional, beside `reasoning_max_tokens`. A settings value naming both is refused:
+  a request carrying both leaves the provider to pick, and the record could not say which it did. A stamp written
+  before the field reads as no effort sent, which is what it was, so stored runs still load (no schema bump). Every
+  recorded settings level gains the key, so the bundle's apparatus class ids move over unchanged evidence: bundle
+  `schema_version` 39.
+- **`SIMULATOR_REQUEST_SETTINGS` sends effort `minimal` (`SIMULATOR_REASONING_EFFORT`) and no token budget**, under a
+  cap still derived as `SIMULATOR_REASONING_ALLOWANCE_TOKENS` 1024 + `SIMULATOR_ANSWER_BUDGET_TOKENS` 4096 = 5120
+  (`SIMULATOR_MAX_TOKENS`); the allowance is never sent and bounds nothing. `SIMULATOR_REASONING_BUDGET_TOKENS` is
+  gone. Measured 2026-10-06: a flat 4096-token cap let `openai/gpt-5-nano` at its default effort reason through the
+  cap and return an empty or cut turn (three cells in six of one template), and a 1024-token `reasoning.max_tokens`
+  under a 5120 cap did not stop it — gpt-5-nano is effort-only, so the router mapped the budget to an effort by its
+  share of the cap (`low`), and a rules lawyer's turn still came back empty in two cells of 24. Runs record the
+  setting as `simulator_request_settings`; the flat-cap, budget and effort stamps all differ, so a campaign pooling
+  runs from either side of either change is told the simulated user was asked differently. The judge's settings
+  are unchanged.
 
 ### 3tears-evals: the quick CLI's `run` pins the judge and the simulated user
 

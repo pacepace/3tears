@@ -47,6 +47,7 @@ from threetears.evals.run import (
     LaunchPricer,
     LaunchRequest,
     LaunchSettings,
+    SIMULATOR_REQUEST_SETTINGS,
     PlannedJudge,
     build_judge_service,
     launch_as_group,
@@ -423,6 +424,7 @@ class _Judged:
         *,
         plan_judge_model: str | None = None,
         wired_simulator: str | None = None,
+        planned_simulator: str | None = None,
         role_default: str = "judge-default",
         alternate: str | None = None,
         launcher_steps: bool = True,
@@ -452,7 +454,7 @@ class _Judged:
                 case_count=STORED_CASES,
                 candidate_model=require_candidate_model(request, None),
                 judge=judge,
-                simulator_model=None,
+                simulator_model=planned_simulator,
             )
 
         def quoted(quote: ArmQuote) -> ArmPrice:
@@ -562,6 +564,22 @@ async def test_an_arm_whose_launcher_resolves_another_simulator_than_its_plan_is
         await judged.launch()
 
     assert judged.storage.query_eval_runs(TOYHOST_SCOPE) == []
+
+
+async def test_a_run_launched_with_a_simulated_user_records_how_it_was_asked():
+    """The stamp is the one value the host's simulator client applies, read back from storage whole — an effort level
+    included, since that is what the simulated user is asked with."""
+    judged = _Judged(wired_simulator="sim-a", planned_simulator="sim-a")
+
+    (run,) = await judged.launch()
+    async with asyncio.timeout(10):
+        while judged.host.job_manager.is_active(run.id):
+            await asyncio.sleep(0.01)
+
+    stored = judged.storage.load_eval_run(run.id, TOYHOST_SCOPE)
+    assert stored is not None and stored.simulator_model == "sim-a"
+    assert stored.simulator_request_settings == SIMULATOR_REQUEST_SETTINGS
+    assert stored.simulator_request_settings.reasoning_effort == "minimal"
 
 
 async def test_a_plan_contradicting_the_launchs_judge_pin_is_refused_before_any_arm_is_priced():

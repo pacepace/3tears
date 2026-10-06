@@ -57,15 +57,15 @@ class TestTheRunRecordsItsCandidateKind:
 class TestTheRunRecordsHowItsApparatusWasAsked:
     def test_both_roles_settings_survive_the_read_and_a_round_trip(self) -> None:
         judge = {"max_tokens": 10240, "reasoning_max_tokens": 8192}
-        simulator = {"max_tokens": 4096, "reasoning_max_tokens": None}
+        simulator = {"max_tokens": 5120, "reasoning_effort": "minimal"}
         run = EvalRun.model_validate(_run_document(judge_request_settings=judge, simulator_request_settings=simulator))
         assert run.judge_request_settings == ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192)
-        assert run.simulator_request_settings == ClientRequestSettings(max_tokens=4096)
-        again = EvalRun.model_validate(run.model_dump(mode="json"))
-        assert (again.judge_request_settings, again.simulator_request_settings) == (
-            run.judge_request_settings,
-            run.simulator_request_settings,
-        )
+        assert run.simulator_request_settings == ClientRequestSettings(max_tokens=5120, reasoning_effort="minimal")
+        for again in (EvalRun.model_validate(run.model_dump(mode="json")), EvalRun.from_dict(run.to_dict())):
+            assert (again.judge_request_settings, again.simulator_request_settings) == (
+                run.judge_request_settings,
+                run.simulator_request_settings,
+            )
 
     def test_a_run_stored_before_the_stamp_reads_as_unrecorded(self) -> None:
         document = _run_document()
@@ -75,7 +75,15 @@ class TestTheRunRecordsHowItsApparatusWasAsked:
         assert run.judge_request_settings is None and run.simulator_request_settings is None
 
     def test_no_reasoning_parameter_is_a_recorded_level(self) -> None:
-        assert ClientRequestSettings(max_tokens=4096).reasoning_max_tokens is None
+        settings = ClientRequestSettings(max_tokens=4096)
+        assert settings.reasoning_max_tokens is None and settings.reasoning_effort is None
+
+    def test_a_settings_stored_before_the_effort_field_reads_as_no_effort_sent(self) -> None:
+        """A stamp written before ``reasoning_effort`` existed sent none, so its absence reads as exactly that."""
+        assert (
+            ClientRequestSettings.model_validate({"max_tokens": 4096, "reasoning_max_tokens": 1024}).reasoning_effort
+            is None
+        )
 
     @pytest.mark.parametrize(
         "fields", [{"max_tokens": 0}, {"max_tokens": -1}, {"max_tokens": 4096, "reasoning_max_tokens": 0}]
@@ -83,3 +91,27 @@ class TestTheRunRecordsHowItsApparatusWasAsked:
     def test_a_non_positive_setting_is_refused(self, fields) -> None:
         with pytest.raises(ValidationError):
             ClientRequestSettings(**fields)
+
+    def test_an_effort_the_router_does_not_name_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="reasoning_effort"):
+            ClientRequestSettings(max_tokens=4096, reasoning_effort="extreme")
+
+    @pytest.mark.parametrize("build", ["construct", "read"])
+    def test_asking_for_reasoning_both_ways_is_refused(self, build: str) -> None:
+        """A budget and an effort together leave the provider to pick, and the record could not say which it did."""
+        fields = {"max_tokens": 5120, "reasoning_max_tokens": 1024, "reasoning_effort": "minimal"}
+        with pytest.raises(ValidationError, match="not both"):
+            if build == "construct":
+                ClientRequestSettings(**fields)
+            else:
+                EvalRun.model_validate(_run_document(simulator_request_settings=fields))
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"max_tokens": 5120, "reasoning_max_tokens": 1024},
+            {"max_tokens": 5120, "reasoning_effort": "minimal"},
+        ],
+    )
+    def test_asking_for_reasoning_either_way_alone_is_accepted(self, fields) -> None:
+        assert ClientRequestSettings(**fields).model_dump(exclude_none=True) == fields
