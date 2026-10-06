@@ -143,7 +143,7 @@ class CheckDiscrimination:
                 "cannot be proven against it: the do-nothing control is the template's seed (an armed event or human "
                 "dimension known absent, None) with no value a host's read would add by default, and a named control "
                 "is that seed with what it states laid over it. Seed or state the path the check reads, or read a "
-                'triggered dimension\'s arrival through fired("<dimension>") or fired_armed("<dimension>")'
+                'triggered dimension\'s firing through fired("<dimension>") or fired_armed("<dimension>")'
             )
         if self.did_nothing.passed is self.controlled.passed:
             return f"{verdicts} — the same verdict on both, so it does not depend on what the candidate did"
