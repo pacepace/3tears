@@ -1,9 +1,10 @@
 """Calls the engine makes outside any run: priced before they are made, and ledgered once they are.
 
-Three engine calls have no run around them: a launch's case generation (an ``llm`` variation axis's
+Four engine calls have no run around them: a launch's case generation (an ``llm`` variation axis's
 writer, :func:`~threetears.evals.gen.generate_variations`), the rubric proposer
-(:func:`~threetears.evals.gen.propose_draft`) and an analysis generation
-(:func:`~threetears.evals.analysis.run_analysis_generation`). A run's own calls are bounded by its cost
+(:func:`~threetears.evals.gen.propose_draft`), an analysis generation
+(:func:`~threetears.evals.analysis.run_analysis_generation`) and a judge repeat
+(:func:`~threetears.evals.run.repeat_judge_scores`). A run's own calls are bounded by its cost
 cap as their spend arrives (``EvalRunCostCap``); these happen before any run exists, with none coming, or
 after the runs have ended, so nothing would bound or record them. This module is what does:
 
@@ -64,9 +65,11 @@ log = get_logger(__name__)
 
 #: What an out-of-run call was for: ``variation`` writes a launch's generated cases (an ``llm``
 #: variation axis's values), ``proposer`` drafts a rubric for operator review, ``analysis`` writes a
-#: campaign's analysis memo (its first call and the one repair round-trip a refused output buys). Each is
-#: the :data:`~threetears.evals.contracts.host.CompletionRole` the host built the client in.
-OutOfRunPurpose = Literal["variation", "proposer", "analysis"]
+#: campaign's analysis memo (its first call and the one repair round-trip a refused output buys), ``judge``
+#: repeats a finished run's judge scores to measure the judge's agreement with itself
+#: (:func:`~threetears.evals.run.repeat_judge_scores`). Each is the
+#: :data:`~threetears.evals.contracts.host.CompletionRole` the host built the client in.
+OutOfRunPurpose = Literal["variation", "proposer", "analysis", "judge"]
 
 #: How an out-of-run call ended: it returned a completion, or it raised. A raised call is still a
 #: ledger row — the provider may have billed it — carrying no usage, since nothing reported any.
@@ -133,6 +136,9 @@ class OutOfRunSpend(EvalDocumentModel):
     )
     campaign_id: str | None = Field(
         default=None, description="The campaign an analysis generation was written for, when it was for one."
+    )
+    run_id: str | None = Field(
+        default=None, description="The finished run a judge repeat re-scored results of, when it was for one."
     )
     created_at: str = Field(default_factory=utc_now_iso)
 
@@ -290,6 +296,7 @@ class OutOfRunBudget:
         subject_id: The subject the work is for, stamped on every row; ``None`` when it is for none.
         launch_group_id: The launch a case generation is made for, stamped on every row.
         campaign_id: The campaign an analysis generation is written for, stamped on every row.
+        run_id: The finished run a judge repeat re-scores, stamped on every row.
         blocking_executor: Where each ledger write to ``store`` runs, off the event loop — the host's
             ``EvalHost.blocking_executor``, or ``None`` for the loop's default executor. Keyword-only and
             without a default, as the host's own is: a store write made on the loop stalls every
@@ -304,6 +311,7 @@ class OutOfRunBudget:
     subject_id: str | None = None
     launch_group_id: str | None = None
     campaign_id: str | None = None
+    run_id: str | None = None
     blocking_executor: Executor | None = field(kw_only=True)
     _committed_usd: float = field(default=0.0, init=False)
     #: Every admission not yet made, by token: the object minted and the client it was priced on.
@@ -475,6 +483,7 @@ class OutOfRunBudget:
             "subject_id": self.subject_id,
             "launch_group_id": self.launch_group_id,
             "campaign_id": self.campaign_id,
+            "run_id": self.run_id,
         }
 
     async def _record(self, admitted: AdmittedCall, **reported: Any) -> OutOfRunSpend:

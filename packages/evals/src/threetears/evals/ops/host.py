@@ -70,5 +70,14 @@ class OpsHost:
         """The host every read goes through — the launching host's own."""
         return self.launch.eval_host
 
+    def out_of_run_cap(self) -> float | None:
+        """The cap a call made outside any run is held to: the host's out-of-run cap, read once, or ``None`` with enforcement off.
+
+        One reading for every out-of-run operation — an analysis generation and a judge repeat — so the two
+        cannot hold their calls to different ceilings.
+        """
+        settings = self.launch.settings()
+        return settings.max_out_of_run_cost_usd if settings.enforcement_enabled else None
+
 
 __all__ = ["AnalysisGeneration", "OpsHost"]

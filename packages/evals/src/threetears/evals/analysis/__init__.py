@@ -41,9 +41,17 @@ from __future__ import annotations
 from threetears.evals.analysis.agreement import (
     DimensionAgreement,
     JudgeAgreement,
+    JudgeSelfAgreement,
+    SelfAgreementDimension,
     UnpairedRating,
     UnpairedReason,
+    UnrepeatedReason,
+    UnrepeatedScore,
     judge_agreement,
+    judge_evidence_tiers,
+    judge_self_agreement,
+    tier_for_judges,
+    tier_sentence,
 )
 from threetears.evals.analysis.arms import ArmTable, cell_label, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
@@ -342,6 +350,7 @@ __all__ = [
     "GenerationTally",
     "InsightStanding",
     "JudgeAgreement",
+    "JudgeSelfAgreement",
     "JudgedArm",
     "JudgedMeasure",
     "LabelCriterion",
@@ -366,6 +375,7 @@ __all__ = [
     "PivotTable",
     "RegressionFlag",
     "ScoreExport",
+    "SelfAgreementDimension",
     "SeriesPoint",
     "SimpsonsFlag",
     "AnalysisGenerationEstimate",
@@ -403,6 +413,8 @@ __all__ = [
     "TokenRollup",
     "TwoPillarDisclosure",
     "UnpairedRating",
+    "UnrepeatedReason",
+    "UnrepeatedScore",
     "UnpairedReason",
     "VerdictOrder",
     "WriterMessageCheck",
@@ -441,6 +453,8 @@ __all__ = [
     "inspect_analysis_bundle",
     "inspect_campaign_bundle",
     "judge_agreement",
+    "judge_evidence_tiers",
+    "judge_self_agreement",
     "judge_phase_ceiling_s",
     "list_analyses",
     "list_analysis_attempts",
@@ -466,6 +480,8 @@ __all__ = [
     "set_reporter_case_archived",
     "short_digest",
     "significance_disclosure",  # debt: retires when the English moves to one renderer
+    "tier_for_judges",
+    "tier_sentence",
     "update_campaign",
     "variant_key_of_run",
 ]

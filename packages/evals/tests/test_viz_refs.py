@@ -126,7 +126,14 @@ def _cell(
         n_observations=n,
         measures=MeasureCollection(measures=sorted(measures, key=lambda m: m.name)),
         judged=[
-            JudgedReading(dimension="reply.grounding", mean=GROUNDING[arm], sem=0.2, n=n, n_independent=n_independent)
+            JudgedReading(
+                dimension="reply.grounding",
+                mean=GROUNDING[arm],
+                sem=0.2,
+                n=n,
+                n_independent=n_independent,
+                evidence_tier="undetermined",
+            )
         ],
     )
 

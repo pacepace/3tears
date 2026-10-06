@@ -47,12 +47,23 @@ compute agreement two ways.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from pydantic import Field
 
+from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.stats import cohen_kappa
 from threetears.evals.contracts.base import EvalDocumentModel
+from threetears.evals.contracts.evidence_tiers import (
+    JudgedEvidenceTier,
+    JudgeEvidenceTier,
+    TierCriterion,
+    agreement_statistic,
+    calibration_criterion,
+    separation_criterion,
+    tier_of,
+    weakest_judged_tier,
+)
 from threetears.evals.contracts.models import SCALES, RubricScale
 
 if TYPE_CHECKING:
@@ -191,6 +202,49 @@ def _unpaired(rating: CalibrationRating, reason: UnpairedReason) -> UnpairedRati
     )
 
 
+class _AgreementNumbers(NamedTuple):
+    """One group's agreement, as both reads compute it: pairs, raters, exact agreement and the per-rater kappas."""
+
+    n: int
+    raters: list[str]
+    exact_agreement: float
+    kappa: float | None
+    weighted_kappa: float | None
+
+
+def _agreement_numbers(scale: RubricScale, pairs: Sequence[tuple[int, int, str]]) -> _AgreementNumbers:
+    """Read one group's pairs: the ONE computation calibration and self-agreement share.
+
+    Each rater's Cohen's kappa over the pairs that rater gave, then the unweighted mean of the defined
+    ones (see the module docstring); on a 1-5 scale the same with quadratic weights.
+
+    Args:
+        scale: The group's scale.
+        pairs: ``(judge's score, the other side's score, rater)`` per pair, at least one.
+
+    Returns:
+        The numbers.
+    """
+    low, high = SCALES[scale].scores
+    categories = list(range(low, high + 1))
+    by_rater: dict[str, list[tuple[int, int]]] = {}
+    for judge, other, rater in pairs:
+        by_rater.setdefault(rater, []).append((judge, other))
+    kappa = _mean_kappa([cohen_kappa(own, categories) for own in by_rater.values()])
+    weighted = (
+        _mean_kappa([cohen_kappa(own, categories, weights="quadratic") for own in by_rater.values()])
+        if scale == "ordinal"
+        else None
+    )
+    return _AgreementNumbers(
+        n=len(pairs),
+        raters=sorted(by_rater),
+        exact_agreement=sum(1 for judge, other, _ in pairs if judge == other) / len(pairs),
+        kappa=kappa,
+        weighted_kappa=weighted,
+    )
+
+
 def _dimension_agreement(
     rubric_dim: str, scale: RubricScale, judge_model: str | None, pairs: Sequence[tuple[int, int, str]]
 ) -> DimensionAgreement:
@@ -205,28 +259,235 @@ def _dimension_agreement(
     Returns:
         The group's agreement.
     """
-    low, high = SCALES[scale].scores
-    categories = list(range(low, high + 1))
-    scored = [(judge, person) for judge, person, _ in pairs]
-    by_rater: dict[str, list[tuple[int, int]]] = {}
-    for judge, person, rater in pairs:
-        by_rater.setdefault(rater, []).append((judge, person))
-    kappa = _mean_kappa([cohen_kappa(own, categories) for own in by_rater.values()])
-    weighted = (
-        _mean_kappa([cohen_kappa(own, categories, weights="quadratic") for own in by_rater.values()])
-        if scale == "ordinal"
-        else None
-    )
+    numbers = _agreement_numbers(scale, pairs)
     return DimensionAgreement(
         rubric_dim=rubric_dim,
         scale=scale,
         judge_model=judge_model,
-        n=len(pairs),
-        raters=sorted({rater for _, _, rater in pairs}),
-        exact_agreement=sum(1 for judge, person in scored if judge == person) / len(scored),
-        kappa=kappa,
-        weighted_kappa=weighted,
+        n=numbers.n,
+        raters=numbers.raters,
+        exact_agreement=numbers.exact_agreement,
+        kappa=numbers.kappa,
+        weighted_kappa=numbers.weighted_kappa,
     )
+
+
+# ---------------------------------------------------------------------------
+# The judge against itself
+# ---------------------------------------------------------------------------
+
+#: Why a repeated score has no pair to be read in. ``repeat_failed``: the repeat call failed.
+#: ``repeat_cannot_tell``: the repeat answered it could not score a dimension it had scored — a
+#: disagreement no kappa can hold, so it is counted here rather than dropped. ``judge_changed``: a
+#: different model served the repeat than served the first score, so the pair would measure two
+#: judges' agreement, not one judge's.
+UnrepeatedReason = Literal["repeat_failed", "repeat_cannot_tell", "judge_changed"]
+
+
+class SelfAgreementDimension(EvalDocumentModel):
+    """How one judge's repeated scores on one dimension agreed with its first scores of the same evidence."""
+
+    rubric_dim: str = Field(min_length=1, description="The judged dimension.")
+    scale: RubricScale = Field(description="The scale it was judged on.")
+    judge_model: str | None = Field(
+        description=(
+            "The model that served both the first score and its repeat; None when neither response named one, "
+            "a judge nobody observed, never read as a match for a named one."
+        ),
+    )
+    n: int = Field(ge=1, description="First-score/repeat pairs read: one per repeated score.")
+    rounds: list[str] = Field(
+        min_length=1,
+        description=(
+            "The repeat rounds among the pairs, sorted: `repeat 1` is each result's first repeat of the "
+            "dimension, `repeat 2` its second. Each round is a rater, so the kappas average per round as "
+            "calibration averages per person."
+        ),
+    )
+    exact_agreement: float = Field(ge=0.0, le=1.0, description="The share of pairs where the two scores were equal.")
+    kappa: float | None = Field(description="Cohen's kappa per round, averaged; None when every round's is undefined.")
+    weighted_kappa: float | None = Field(
+        description="Quadratic-weighted kappa per round, averaged as `kappa` is. None on pass/fail, and when undefined."
+    )
+
+
+class UnrepeatedScore(EvalDocumentModel):
+    """A repeated score with no pair to read, and why."""
+
+    result_id: str = Field(min_length=1, description="The result whose score was repeated.")
+    rubric_dim: str = Field(min_length=1, description="The dimension.")
+    round: str = Field(min_length=1, description="Which repeat of the dimension it was, as `rounds` names it.")
+    reason: UnrepeatedReason
+
+
+class JudgeSelfAgreement(EvalDocumentModel):
+    """Every repeated score read, paired with the first score where it can be, and agreement per dimension and judge."""
+
+    repeats_read: int = Field(default=0, ge=0, description="Every repeated score read: the pairs plus the unpaired.")
+    dimensions: list[SelfAgreementDimension] = Field(
+        default_factory=list,
+        description=(
+            "One per (dimension, scale, judge) with at least one pair, ordered by those three. Empty when nothing "
+            "was repeated — the judge's consistency is then unmeasured, which is a state, not a zero."
+        ),
+    )
+    unpaired: list[UnrepeatedScore] = Field(
+        default_factory=list, description="Repeated scores that could not be paired, in the order they were read."
+    )
+
+
+def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
+    """Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
+
+    The pair is the one the repeat recorded (:class:`~threetears.evals.contracts.models.RepeatedScore`),
+    so a re-judge that later rewrote the result's score does not split it. The repeat stands where the
+    person stands in :func:`judge_agreement` and each round of repeats is a rater, so the figures are the
+    same statistic over the same averaging, and the two tiers they decide compare.
+
+    Args:
+        results: The results whose repeats to read.
+
+    Returns:
+        The agreement per (dimension, scale, judge), and the repeated scores that could not be paired.
+    """
+    groups: dict[tuple[str, RubricScale, str | None], list[tuple[int, int, str]]] = {}
+    unpaired: list[UnrepeatedScore] = []
+    read = 0
+    for result in results:
+        rounds: dict[str, int] = {}
+        for repeat in result.judge_repeats:
+            for entry in repeat.scores:
+                read += 1
+                rounds[entry.dim] = rounds.get(entry.dim, 0) + 1
+                round_name = f"repeat {rounds[entry.dim]}"
+                reason: UnrepeatedReason
+                if entry.repeat is None:
+                    reason = "repeat_cannot_tell" if entry.cannot_tell is not None else "repeat_failed"
+                elif entry.repeat.served_model != entry.first_served_model:
+                    reason = "judge_changed"
+                else:
+                    key = (entry.dim, entry.scale, entry.first_served_model)
+                    groups.setdefault(key, []).append((entry.first_score, entry.repeat.score, round_name))
+                    continue
+                unpaired.append(
+                    UnrepeatedScore(result_id=result.id, rubric_dim=entry.dim, round=round_name, reason=reason)
+                )
+    dimensions = []
+    for dim, scale, judge in sorted(groups, key=lambda key: (key[0], key[1], key[2] or "")):
+        numbers = _agreement_numbers(scale, groups[(dim, scale, judge)])
+        dimensions.append(
+            SelfAgreementDimension(
+                rubric_dim=dim,
+                scale=scale,
+                judge_model=judge,
+                n=numbers.n,
+                rounds=numbers.raters,
+                exact_agreement=numbers.exact_agreement,
+                kappa=numbers.kappa,
+                weighted_kappa=numbers.weighted_kappa,
+            )
+        )
+    return JudgeSelfAgreement(repeats_read=read, dimensions=dimensions, unpaired=unpaired)
+
+
+# ---------------------------------------------------------------------------
+# The tiers the two agreements decide
+# ---------------------------------------------------------------------------
+
+
+def judge_evidence_tiers(
+    agreement: JudgeAgreement,
+    self_agreement: JudgeSelfAgreement,
+    judged: Iterable[tuple[str, RubricScale, str | None]],
+) -> list[JudgeEvidenceTier]:
+    """Decide the evidence tier of every judge's readings on every dimension, from the two agreements.
+
+    One entry per ``(dimension, scale, judge)`` among ``judged`` and every group either agreement read,
+    so a judge nobody rated and nobody repeated is listed — its criteria at ``n=0``, its tier
+    ``undetermined`` — rather than absent, which a reader would take for unjudged.
+
+    Args:
+        agreement: The judge's agreement with people (:func:`judge_agreement`).
+        self_agreement: The judge's agreement with itself (:func:`judge_self_agreement`).
+        judged: Every ``(dimension, scale, served model)`` a judged score was read under.
+
+    Returns:
+        The tiers, ordered by dimension, scale and judge.
+    """
+    calibrations = {(d.rubric_dim, d.scale, d.judge_model): d for d in agreement.dimensions}
+    repeats = {(d.rubric_dim, d.scale, d.judge_model): d for d in self_agreement.dimensions}
+    keys = {*judged, *calibrations, *repeats}
+    tiers = []
+    for dim, scale, judge in sorted(keys, key=lambda key: (key[0], key[1], key[2] or "")):
+        people = calibrations.get((dim, scale, judge))
+        itself = repeats.get((dim, scale, judge))
+        calibration = calibration_criterion(
+            people.n if people else 0,
+            agreement_statistic(scale, people.kappa, people.weighted_kappa) if people else None,
+        )
+        separation = separation_criterion(
+            itself.n if itself else 0,
+            agreement_statistic(scale, itself.kappa, itself.weighted_kappa) if itself else None,
+        )
+        tiers.append(
+            JudgeEvidenceTier(
+                rubric_dim=dim,
+                scale=scale,
+                judge_model=judge,
+                tier=tier_of(calibration, separation),
+                calibration=calibration,
+                separation=separation,
+            )
+        )
+    return tiers
+
+
+def tier_for_judges(
+    tiers: Iterable[JudgeEvidenceTier], rubric_dim: str, judge_models: Iterable[str | None]
+) -> JudgedEvidenceTier:
+    """The tier a reading of ``rubric_dim`` stands on when ``judge_models`` served its scores: the weakest of theirs.
+
+    A cell whose scores were served by two models pools two judges' readings, and the composite can
+    bear only what the weaker judge can. A judge with no entry is ``undetermined``: nothing measured it.
+
+    Args:
+        tiers: The tiers, from :func:`judge_evidence_tiers`.
+        rubric_dim: The dimension.
+        judge_models: The served models behind the reading's scores.
+
+    Returns:
+        The tier; ``undetermined`` when no model is named — a reading with no score behind it has no judge.
+    """
+    by_judge = {tier.judge_model: tier.tier for tier in tiers if tier.rubric_dim == rubric_dim}
+    found: list[JudgedEvidenceTier] = [by_judge.get(model, "undetermined") for model in set(judge_models)]
+    return weakest_judged_tier(found) if found else "undetermined"
+
+
+def tier_sentence(tier: JudgeEvidenceTier) -> str:
+    """One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
+
+    Args:
+        tier: The tier as decided.
+
+    Returns:
+        The sentence, naming the judge, the tier and each criterion's agreement and n against its bar.
+    """
+    judge = tier.judge_model or "an unnamed judge"
+    return (
+        f"{tier.rubric_dim} ({judge}): {tier.tier} — agreement with people "
+        f"{_criterion_words(tier.calibration)}; with its own repeats {_criterion_words(tier.separation)}."
+    )
+
+
+def _criterion_words(criterion: TierCriterion) -> str:
+    """A criterion as a clause: its agreement and n against the bar, or why there is nothing to read."""
+    bar = f"(bar {format_number(criterion.threshold)} over at least {criterion.min_pairs} pairs)"
+    if criterion.n == 0:
+        return f"not measured {bar}"
+    if criterion.agreement is None:
+        return f"undefined over {criterion.n} pairs {bar}"
+    verdict = {"met": "meets", "not_met": "misses", "insufficient": "too few pairs for"}[criterion.state]
+    return f"{format_number(criterion.agreement)} over {criterion.n} pairs, {verdict} {bar}"
 
 
 def _mean_kappa(kappas: Sequence[float | None]) -> float | None:
@@ -238,7 +499,15 @@ def _mean_kappa(kappas: Sequence[float | None]) -> float | None:
 __all__ = [
     "DimensionAgreement",
     "JudgeAgreement",
+    "JudgeSelfAgreement",
+    "SelfAgreementDimension",
     "UnpairedRating",
     "UnpairedReason",
+    "UnrepeatedReason",
+    "UnrepeatedScore",
     "judge_agreement",
+    "judge_evidence_tiers",
+    "judge_self_agreement",
+    "tier_for_judges",
+    "tier_sentence",
 ]

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
+from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.analysis.arms import ArmTable, arm_table, arm_table_of, short_digest
 from threetears.evals.analysis.bundle import AnalysisContextBundle, bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref
@@ -717,14 +718,10 @@ def _evidence_disclosures(bundle: AnalysisContextBundle) -> list[ReportBlock]:
         else:
             text = f"Subject label {instability.label} names {len(instability.counterparts)} keys: "
         say("measurement", text + _listed(instability.counterparts) + ".")
-    calibrated = {agreement.rubric_dim for agreement in bundle.judge_agreement.dimensions}
-    if uncalibrated := sorted({judged.name for judged in bundle.judged_measures} - calibrated):
-        say(
-            "measurement",
-            "No person rated these judged dimensions, so every score on them rests on the judge alone: "
-            + _listed(uncalibrated)
-            + ".",
-        )
+    # Every judge's tier on every judged dimension, with the two measurements that decided it — flagged, so
+    # a judged number is never read without what it can bear (PD-13).
+    for tier in bundle.judge_evidence_tiers:
+        say("measurement", "Judged evidence tier: " + tier_sentence(tier))
     say("apparatus", bundle.controls_reading.disclosure)
     if bundle.apparatus_confounds:
         say(

@@ -35,6 +35,7 @@ from pydantic import Field, field_validator, model_validator
 from threetears.evals.contracts.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.contracts.metrics import MeasurePopulation, MeritAxis
 from threetears.evals.contracts.base import EvalDocumentModel
+from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier
 from threetears.evals.contracts.models import DimName
 
 
@@ -58,6 +59,13 @@ class JudgedReading(EvalDocumentModel):
         default=0,
         ge=0,
         description="Observations the judge could not score on this dimension, left out of n and the mean.",
+    )
+    evidence_tier: JudgedEvidenceTier = Field(
+        description=(
+            "What these scores can bear, decided by code from the judge's measured reliability "
+            "(`threetears.evals.contracts.evidence_tiers`): the weakest tier among the judges that served them. "
+            "`undetermined` when the evidence decides no tier — never a default standing in for one."
+        )
     )
 
 

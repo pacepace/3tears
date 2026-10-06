@@ -242,12 +242,6 @@ def _generation_settings(host: OpsHost) -> AnalysisGeneration:
     return host.generation
 
 
-def _out_of_run_cap(host: OpsHost) -> float | None:
-    """The cap a generation's calls are held to: the host's out-of-run cap, read once, or ``None`` with enforcement off."""
-    settings = host.launch.settings()
-    return settings.max_out_of_run_cost_usd if settings.enforcement_enabled else None
-
-
 async def analysis_estimate(
     host: OpsHost, campaign_id: str, scope_id: str, *, model: str | None = None
 ) -> AnalysisGenerationEstimate:
@@ -277,7 +271,7 @@ async def analysis_estimate(
         scope_id,
         model=model,
         resolve_prompt=generation.resolve_prompt,
-        out_of_run_cap_usd=_out_of_run_cap(host),
+        out_of_run_cap_usd=host.out_of_run_cap(),
     )
 
 
@@ -323,7 +317,7 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         scope_id,
         model=model,
         resolve_prompt=generation.resolve_prompt,
-        out_of_run_cap_usd=_out_of_run_cap(host),
+        out_of_run_cap_usd=host.out_of_run_cap(),
     )
 
     async def work() -> None:

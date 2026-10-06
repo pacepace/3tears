@@ -21,6 +21,12 @@ from threetears.evals.ops.summary import EvalSummary, summarize_run
 from threetears.evals.run.authoring import list_templates
 from threetears.evals.run.curation import delete_run, set_run_archived
 from threetears.evals.run.launch import start_run
+from threetears.evals.run.judge_repeat import (
+    JudgeRepeatEstimate,
+    JudgeRepeatReport,
+    estimate_judge_repeat,
+    repeat_judge_scores,
+)
 from threetears.evals.run.lifecycle import get_run
 from threetears.evals.run.ratings import rate_result
 from threetears.evals.run.reads import list_runs
@@ -300,6 +306,59 @@ def result_rate(
         score=rating.score,
         rater=rating.rater,
         rater_kind=rating.rater_kind,
+    )
+
+
+async def judge_repeat_estimate(
+    host: OpsHost, run_id: str, scope_id: str, *, result_ids: list[str] | None = None
+) -> JudgeRepeatEstimate:
+    """What repeating a finished run's judge scores would be priced at, against the host's out-of-run cap — no call made.
+
+    The repeat's own collection and admission (:func:`judge_repeat` refuses by the same rule), so
+    ``would_start`` is its answer.
+
+    Args:
+        host: The host: its store, its judge clients and its out-of-run cap.
+        run_id: The finished run.
+        scope_id: The scope it lives in.
+        result_ids: The results to repeat; ``None`` for every result of the run.
+
+    Returns:
+        The estimate.
+
+    Raises:
+        NotFoundError: No run with that id, or a record it names does not load.
+        ValidationFailedError: The run cannot be repeated.
+    """
+    return await estimate_judge_repeat(
+        host.eval_host, run_id, scope_id, out_of_run_cap_usd=host.out_of_run_cap(), result_ids=result_ids
+    )
+
+
+async def judge_repeat(
+    host: OpsHost, run_id: str, scope_id: str, *, result_ids: list[str] | None = None
+) -> JudgeRepeatReport:
+    """Repeat a finished run's judge scores — the measurement the ``separation`` evidence tier reads.
+
+    Every call is priced and admitted against the host's out-of-run cap before the first is sent, and
+    ledgered under purpose ``judge`` (:func:`~threetears.evals.run.repeat_judge_scores`).
+
+    Args:
+        host: The host: its store, its judge clients and its out-of-run cap.
+        run_id: The finished run.
+        scope_id: The scope it lives in.
+        result_ids: The results to repeat; ``None`` for every result of the run.
+
+    Returns:
+        What was repeated, what it cost, and what was left out.
+
+    Raises:
+        NotFoundError: No run with that id, or a record it names does not load.
+        ValidationFailedError: The run cannot be repeated, or its calls are priced above the cap or cannot be
+            priced under it — before any call.
+    """
+    return await repeat_judge_scores(
+        host.eval_host, run_id, scope_id, out_of_run_cap_usd=host.out_of_run_cap(), result_ids=result_ids
     )
 
 

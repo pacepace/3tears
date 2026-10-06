@@ -178,7 +178,8 @@ class TestTheReferenceFieldsAreStored:
         with pytest.raises(ValidationError, match="reading"):
             EvidenceRow.model_validate(row)
         assert EvidenceRow.model_validate({**row, "reading": "measure"}).reading == "measure"
-        assert EvidenceRow.model_validate({**row, "reading": "judged"}).reading == "judged"
+        judged = {**row, "reading": "judged", "judged_tier": "undetermined"}
+        assert EvidenceRow.model_validate(judged).reading == "judged"
         with pytest.raises(ValidationError):
             EvidenceRow.model_validate({**row, "reading": "guessed"})
 

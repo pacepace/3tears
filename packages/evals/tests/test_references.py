@@ -70,7 +70,11 @@ def _surface(*, n_independent: int = 4) -> DecisionSurface:
                 ),
             ]
         ),
-        judged=[JudgedReading(dimension="reply.grounding", mean=4.0, sem=0.25, n=4, n_independent=4)],
+        judged=[
+            JudgedReading(
+                dimension="reply.grounding", mean=4.0, sem=0.25, n=4, n_independent=4, evidence_tier="separation"
+            )
+        ],
     )
     return DecisionSurface(
         cells=[cell],

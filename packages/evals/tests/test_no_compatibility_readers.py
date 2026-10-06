@@ -191,7 +191,10 @@ def _rescore(**fields: Any) -> JudgeRescore:
             ),
             id="EvalRun.judge_config_provenance",
         ),
-        pytest.param(lambda name: JudgedReading(dimension=name, n=0, n_independent=0), id="JudgedReading.dimension"),
+        pytest.param(
+            lambda name: JudgedReading(dimension=name, n=0, n_independent=0, evidence_tier="undetermined"),
+            id="JudgedReading.dimension",
+        ),
         pytest.param(
             lambda name: DecisionSurface(dimensions={name: JudgedDimensionFacts(higher_is_better=True)}),
             id="DecisionSurface.dimensions",

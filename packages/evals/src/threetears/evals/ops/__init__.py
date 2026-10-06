@@ -88,6 +88,8 @@ from threetears.evals.ops.runs import (
     RunListing,
     TemplateLine,
     TemplateListing,
+    judge_repeat,
+    judge_repeat_estimate,
     result_rate,
     run_archive,
     run_delete,
@@ -170,4 +172,6 @@ __all__ = [
     "scope_pivot",
     "summarize_run",
     "templates_list",
+    "judge_repeat",
+    "judge_repeat_estimate",
 ]
