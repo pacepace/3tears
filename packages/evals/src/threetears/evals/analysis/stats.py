@@ -269,7 +269,11 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
 
 
 def cohen_kappa(
-    pairs: Sequence[tuple[int, int]], categories: Sequence[int], *, weights: Literal["none", "quadratic"] = "none"
+    pairs: Sequence[tuple[int, int]],
+    categories: Sequence[int],
+    *,
+    weights: Literal["none", "quadratic"] = "none",
+    unordered: Sequence[int] = (),
 ) -> float | None:
     """Cohen's kappa between two raters over the same items: agreement beyond what chance would give.
 
@@ -279,10 +283,16 @@ def cohen_kappa(
     5 is a near miss and a 1 against a 5 is not — the reading an ordinal judge's calibration wants.
     Over two categories the two weightings are the same number.
 
+    An ``unordered`` category sits on no scale — an answer that is not a score at all, such as a
+    judge declining to score — so it is at the greatest distance from every other category under
+    either weighting (cost 1), and agrees only with itself (cost 0).
+
     Args:
         pairs: ``(first, second)`` per item.
         categories: Every category either rater could give, in order — the scale, not merely the
             values seen, because the quadratic cost is a distance along it.
+        weights: ``"none"`` or ``"quadratic"``.
+        unordered: Categories outside the scale, each maximally far from every other.
 
     Returns:
         Kappa, in ``[-1, 1]``; ``None`` with no pairs, or when chance alone predicts no
@@ -290,23 +300,31 @@ def cohen_kappa(
         is undefined rather than perfect.
 
     Raises:
-        ValueError: A pair holds a value outside ``categories``, or fewer than two categories.
+        ValueError: A pair holds a value outside ``categories`` and ``unordered``, an ``unordered``
+            category is also on the scale, or fewer than two categories.
     """
     if len(categories) < 2:
         raise ValueError(f"kappa needs at least two categories; got {list(categories)}")
-    index = {category: position for position, category in enumerate(categories)}
+    if overlap := sorted(set(categories) & set(unordered)):
+        raise ValueError(f"categories {overlap} cannot be both on the scale and off it")
+    ordered = len(categories)
+    index = {category: position for position, category in enumerate([*categories, *unordered])}
     stray = sorted({value for pair in pairs for value in pair if value not in index})
     if stray:
-        raise ValueError(f"values {stray} are not among the categories {list(categories)}")
+        raise ValueError(f"values {stray} are not among the categories {list(categories)} or {list(unordered)}")
     n = len(pairs)
     if n == 0:
         return None
-    k = len(categories)
+    k = len(index)
 
     def cost(i: int, j: int) -> float:
+        if i == j:
+            return 0.0
+        if i >= ordered or j >= ordered:
+            return 1.0
         if weights == "quadratic":
-            return (i - j) ** 2 / (k - 1) ** 2
-        return 0.0 if i == j else 1.0
+            return (i - j) ** 2 / (ordered - 1) ** 2
+        return 1.0
 
     first = [0] * k
     second = [0] * k

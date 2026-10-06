@@ -34,6 +34,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError as PydanticValidationError
+
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.errors import ConflictError, NotFoundError, StorageError, ValidationFailedError
 from threetears.evals.contracts.models import (
@@ -117,8 +119,8 @@ class JudgeRepeatReport(EvalBaseModel):
         scores_repeated: Dims the judge scored again.
         scores_unanswered: Dims whose repeat failed or answered it could not tell.
         skipped: The run's results not repeated, each with why — decided before anything was spent.
-        unwritten: Results repeated and paid for whose record did not land (deleted meanwhile, or the
-            write failed). Their spend is in the ledger.
+        unwritten: Results repeated and paid for whose record did not land (deleted meanwhile, could not be
+            read back, or the write failed). Their spend is in the ledger.
         stopped: Why the repeat stopped before its last result, when it did — the account behind the
             judge refused a call, so every later call would be refused too.
         calls_made: Judge calls made, as the ledger recorded them.
@@ -506,6 +508,7 @@ def _repeat_of(result: EvalResult, outcomes: list[tuple[str, JudgeOutcome]], *, 
                 scale=first.scale,
                 first_score=first.score,
                 first_served_model=first.served_model,
+                first_judge_config_id=result.judge_config_ids.get(dim),
                 repeat=outcome.score,
                 error=outcome.error if outcome.score is None and outcome.cannot_tell is None else None,
                 cannot_tell=outcome.cannot_tell,
@@ -521,14 +524,23 @@ def _repeat_of(result: EvalResult, outcomes: list[tuple[str, JudgeOutcome]], *, 
 def _record(storage: EvalStorage, result_id: str, scope_id: str, repeat: JudgeRepeat) -> bool:
     """Append ``repeat`` to the stored result, re-reading and re-applying it when another writer got there first.
 
-    Blocking, so it runs on the host's executor.
+    Blocking, so it runs on the host's executor. The read is inside the guard as well as the write: the calls
+    are paid for and in the ledger by now, so a store that cannot load the result (a backend failure, or a
+    stored document this build refuses to hydrate) costs this one result its record — named in the report's
+    ``unwritten`` — and never the report of everything else the repeat paid for.
 
     Returns:
-        True once the repeat is stored; False when the result is gone or every write was refused or failed —
-        the calls are paid for and in the ledger either way, so this never raises.
+        True once the repeat is stored; False when the result is gone, could not be read, or every write was
+        refused or failed. Nothing the store raises escapes.
     """
     for _ in range(_WRITE_ATTEMPTS):
-        result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
+        try:
+            result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
+        except StorageError, PydanticValidationError:
+            log.exception(
+                "eval.repeat_judge_scores result=%s could not be read back; its repeat is not stored", result_id
+            )
+            return False
         if result is None:
             log.error(
                 "eval.repeat_judge_scores result=%s was deleted while repeated; its repeat is not stored", result_id

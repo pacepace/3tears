@@ -10,14 +10,33 @@ packages (bumped in lock-step).
 
 - **Evidence tiers** (`threetears.evals.contracts.evidence_tiers`, owner ruling 2026-10-06): `calibrated` when the
   judge's agreement with people (`judge_agreement`, person ratings only) is at least `CALIBRATION_MIN_AGREEMENT` = 0.6
-  over at least `CALIBRATION_MIN_PAIRS` = 20 pairs; `separation` when its agreement with its own repeated scores is at
-  least `SEPARATION_MIN_AGREEMENT` = 0.8 over at least `SEPARATION_MIN_PAIRS` = 20 pairs; `incidental` when both were
-  measured over enough pairs and both missed; `undetermined` when the evidence decides none — a reportable state,
-  never a silent tier. Agreement is one statistic for both (weighted kappa on 1-5, kappa on pass/fail, averaged per
-  rater). The bundle carries `judge_self_agreement` and `judge_evidence_tiers`; every `JudgedArm` and every
-  `JudgedReading` carries the weakest tier among the judges behind its scores; the code-only report states each
-  judge's tier with its numbers; the generator prompt says what each tier lets a claim bear. Bundle
-  `schema_version` 37.
+  over at least `CALIBRATION_MIN_RESULTS` = 20 distinct results; `separation` when its agreement with its own repeated
+  scores is at least `SEPARATION_MIN_AGREEMENT` = 0.8 over at least `SEPARATION_MIN_RESULTS` = 20 distinct results;
+  `incidental` when both were measured over enough results and both missed; `undetermined` when the evidence decides
+  none — a reportable state, never a silent tier. The bundle carries `judge_self_agreement` and
+  `judge_evidence_tiers`; every `JudgedArm` and every `JudgedReading` carries the weakest tier among the judges behind
+  its scores; the code-only report states each judge's tier with its numbers; the generator prompt says what each tier
+  lets a claim bear. Bundle `schema_version` 38.
+- **Agreement is one statistic computed by one rule for both tiers.** Each rater's kappa (each person; each round
+  of repeats) is pooled **weighted by that rater's pairs** — superseding the unweighted per-person mean below, which
+  let 2 ratings at 1.0 carry 20 at 0.3 to 0.65 and over the calibration bar. The floor counts **distinct results**
+  among the raters whose kappa is defined, never pairs, so repeating two results ten times (twenty pairs) is two
+  results. A repeat answering "can't tell" on a dimension the judge had scored is a pair, read in its own category at
+  the greatest distance from every score (new `cohen_kappa(..., unordered=...)`) and counted as a disagreement;
+  only a failed repeat, or one served by another model (`judge_changed`) or answered under another judge config (new
+  `config_changed`), is set aside. **Breaking:** `TierCriterion` gains `results` and `min_results` (was `min_pairs`);
+  `calibration_criterion` / `separation_criterion` take `(n, results, agreement)`; `criterion_state` takes `results`
+  and `min_results`; `DimensionAgreement` and `SelfAgreementDimension` gain `results` and `judge_config_id`,
+  `SelfAgreementDimension` gains `n_cannot_tell`; `UnrepeatedReason` loses `repeat_cannot_tell`.
+- **A judge is a model and its config.** Both agreements, the tiers and every lookup key on `JudgeKey` (dimension,
+  scale, served model, judge config; `judge_key(result, dim)` reads it off a result), so a repeat under one judge
+  prompt never sets the tier of readings judged under another, and a dimension judged on two scales gets each scale's
+  own tier. **Breaking:** `judge_evidence_tiers` takes `JudgeKey`s; `tier_for_judges(tiers, judges)` takes
+  `JudgeKey`s in place of `(tiers, rubric_dim, judge_models)`; `JudgeEvidenceTier` gains `judge_config_id`;
+  `RepeatedScore` gains required `first_judge_config_id`.
+- **`EVAL_SCHEMA_VERSION` 7 → 8**: judged evidence rows and judged readings carry a required tier, `directional` is
+  gone, and a repeated score records its first config — as every bump does, nothing written under v7 loads; drop the
+  stored eval documents on upgrade.
 - **A finding's `evidence_tier` reads the tiers**: `EvidenceTier` is now `mechanical`, `calibrated`, `separation`,
   `undetermined`, `incidental` or `none` — the weakest among its rows — and each judged `EvidenceRow` carries the
   `judged_tier` code resolved for its cell. **Breaking:** `directional` is gone; `evidence_tier_of` takes one
@@ -29,6 +48,8 @@ packages (bumped in lock-step).
   out-of-run cap before the first is sent, and ledgered under the new `OutOfRunPurpose` `judge` with
   `OutOfRunSpend.run_id`. `JudgeService.score_request` / `client_for` and `judge_requests` expose the calls a
   result's judging consists of, built before any is sent; `OpsHost.out_of_run_cap()` is the one reading of the cap.
+  A result whose record cannot be read back after its calls were paid for is reported in `unwritten` rather than
+  abandoning the report; an account refusal stops the repeat before any later call (`stopped`).
 
 ### 3tears-evals: a launch's predicted cost sits only beside its own template's cell, a campaign with no question still corrects its comparisons, and the same-rig and lower-is-better guards are pinned
 
