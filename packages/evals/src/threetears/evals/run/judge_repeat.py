@@ -538,6 +538,10 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, repeat: JudgeRe
         try:
             storage.replace_eval_result(updated, if_match=etag)
         except ConflictError:
+            log.info(
+                "eval.repeat_judge_scores result=%s changed between the read and the write; re-reading to re-apply",
+                result_id,
+            )
             continue
         except StorageError:
             log.exception("eval.repeat_judge_scores result=%s: its repeat could not be written", result_id)
