@@ -133,6 +133,9 @@ from threetears.evals.run.runner import (
 )
 from threetears.evals.run.simulator import (
     SCHEDULER_CALL_ATTEMPTS,
+    SIMULATOR_ANSWER_BUDGET_TOKENS,
+    SIMULATOR_MAX_TOKENS,
+    SIMULATOR_REASONING_BUDGET_TOKENS,
     SIMULATOR_REQUEST_SETTINGS,
     CandidateTurn,
     SimulatorCall,
@@ -163,6 +166,9 @@ __all__ = [
     "JUDGE_REQUEST_SETTINGS",
     "RUBRIC_DIM_SERVER_FIELDS",
     "SCHEDULER_CALL_ATTEMPTS",
+    "SIMULATOR_ANSWER_BUDGET_TOKENS",
+    "SIMULATOR_MAX_TOKENS",
+    "SIMULATOR_REASONING_BUDGET_TOKENS",
     "SIMULATOR_REQUEST_SETTINGS",
     "TEMPLATE_SERVER_FIELDS",
     "AbandonedRunSweepReport",

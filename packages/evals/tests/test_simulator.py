@@ -10,6 +10,10 @@ from threetears.evals.contracts.models import ActorPolicy, ConversationSpec, Con
 from threetears.evals.contracts.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
+    SIMULATOR_ANSWER_BUDGET_TOKENS,
+    SIMULATOR_MAX_TOKENS,
+    SIMULATOR_REASONING_BUDGET_TOKENS,
+    SIMULATOR_REQUEST_SETTINGS,
     CandidateTurn,
     SimulatorReplyInvalid,
     SimulatorTurn,
@@ -595,3 +599,14 @@ def test_fold_usage_refuses_another_roles_ledger(role):
     """Simulator spend is the program's cost; landing it on the candidate's row would misstate what it costs."""
     with pytest.raises(ValueError, match="simulator ledger"):
         _usage_driver().fold_usage(RoleUsageLedger(role=role))
+
+
+def test_the_simulator_bounds_its_reasoning_under_a_cap_derived_above_the_bound() -> None:
+    """A reasoning model at its default effort spent a flat 4096-token cap reasoning and returned an empty turn, so the
+    simulator sends a reasoning budget and its cap is that budget plus room for the reply — never a cap at or under the
+    budget. The budget is at most a fifth of the cap: an effort-only model maps it by that share, and a fifth is
+    ``low``, below the default that exhausted the old cap."""
+    assert SIMULATOR_REQUEST_SETTINGS.reasoning_max_tokens == SIMULATOR_REASONING_BUDGET_TOKENS
+    assert SIMULATOR_REQUEST_SETTINGS.max_tokens == SIMULATOR_MAX_TOKENS
+    assert SIMULATOR_MAX_TOKENS == SIMULATOR_REASONING_BUDGET_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
+    assert SIMULATOR_REASONING_BUDGET_TOKENS / SIMULATOR_MAX_TOKENS <= 0.2
