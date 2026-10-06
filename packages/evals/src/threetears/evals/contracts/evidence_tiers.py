@@ -22,17 +22,22 @@ scale and the tiers compare (:func:`threetears.evals.analysis.agreement` holds t
 
 - *The figure*: Cohen's kappa with quadratic weights on a 1-5 dimension, Cohen's kappa on pass/fail,
   where the two weightings are the same number (:func:`agreement_statistic`).
-- *Per rater, then pooled by pairs*: each rater's kappa (each person, for calibration; each round of
+- *Per rater, then pooled by result*: each rater's kappa (each person, for calibration; each round of
   repeats, for self-agreement) is computed over the pairs that rater gave, and the dimension's figure is
-  the mean of the defined ones **weighted by each rater's pairs**. A rater who gave 2 pairs moves it a
-  tenth as far as one who gave 20, so a small rater cannot outvote a large one — the defect an unweighted
-  mean had, where 20 ratings at 0.3 beside 2 at 1.0 read 0.65 and "met" a bar 91% of the evidence missed.
-  The kappa stays per rater rather than pooled into one table, because one table would enter a result two
-  people rated twice and read their disagreement with each other as the judge's.
+  the mean of the defined ones **weighted by the results each rater measured**: every distinct result
+  carries weight 1, split evenly across the raters that measured it. The figure therefore weighs what
+  the floor counts. Neither one small rater nor many small raters re-measuring a few shared results can
+  carry it: 20 ratings at 0.44 beside five annotators matching the judge on the same 3 anchors read 0.51,
+  where an unweighted mean (0.91) or a pair-weighted one (0.68) published ``calibrated`` on three results;
+  and 20 results repeated once at 0.44 beside 2 of them repeated 30 more times read about 0.5, where a
+  pair-weighted mean read 0.86 and published ``separation``. The kappa stays per rater rather than pooled
+  into one table, because one table would enter a result two people rated twice and read their
+  disagreement with each other as the judge's.
 - *The floor counts distinct results*, never pairs: :data:`CALIBRATION_MIN_RESULTS` and
   :data:`SEPARATION_MIN_RESULTS` are met by that many different results among the raters whose kappa
   entered the figure. Pairs can be multiplied without new evidence — repeating two results ten times
-  is twenty pairs about two results — and results cannot.
+  is twenty pairs about two results — and results cannot; with the figure weighted by result too, the
+  floor and the figure count the same thing.
 - *A judge that declines on repeat is disagreeing with itself*: a repeat answering "can't tell" on a
   dimension the judge had scored is a pair whose second half is its own category, at the greatest
   distance from every score in both kappas, and it counts in ``n``, ``results`` and exact agreement like
@@ -128,8 +133,9 @@ class TierCriterion(EvalDocumentModel):
     )
     agreement: float | None = Field(
         description=(
-            "Weighted kappa on a 1-5 dimension, kappa on pass/fail, per rater and pooled weighted by each rater's "
-            "pairs; None when nothing was measured or every rater's kappa is undefined."
+            "Weighted kappa on a 1-5 dimension, kappa on pass/fail, per rater and pooled by result (each distinct "
+            "result weighing 1, split across its raters); None when nothing was measured or every rater's kappa "
+            "is undefined."
         )
     )
     threshold: float = Field(description="The agreement the criterion asks for.")

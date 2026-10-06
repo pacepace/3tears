@@ -530,8 +530,16 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, repeat: JudgeRe
     ``unwritten`` — and never the report of everything else the repeat paid for.
 
     Returns:
-        True once the repeat is stored; False when the result is gone, could not be read, or every write was
-        refused or failed. Nothing the store raises escapes.
+        True once the repeat is stored; False when the result is gone, could not be read (``StorageError``, or
+        a pydantic ``ValidationError`` hydrating it), or every write was refused (``ConflictError``) or failed
+        (``StorageError``).
+
+    Raises:
+        Exception: Anything else the store raises — a host adapter's own driver exception, which the store
+            port names no type for — propagates, loudly, out of :func:`repeat_judge_scores`: the calls already
+            made stay in the out-of-run ledger, but that report is not returned. This catches only the types
+            the engine's store is documented to raise, never everything, so an unexpected fault is not filed as
+            an ordinary unwritten result.
     """
     for _ in range(_WRITE_ATTEMPTS):
         try:

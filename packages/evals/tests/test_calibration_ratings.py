@@ -353,10 +353,11 @@ class TestJudgeAgreement:
         (tone,) = judge_agreement(ratings, results).dimensions
 
         scale = [1, 2, 3, 4, 5]
-        # Per person, then pooled weighted by each person's pairs (5 and 2): alice's five ratings carry five sevenths.
+        # Per person, then pooled by result: five results weigh 1 each, the two both people rated split between
+        # them — alice carries 3 + 2 x 1/2 = 4, bob 2 x 1/2 = 1.
         per_person = (
-            5 * cohen_kappa(list(zip(judged, alice)), scale) + 2 * cohen_kappa(list(zip(judged[:2], bob)), scale)
-        ) / 7
+            4 * cohen_kappa(list(zip(judged, alice)), scale) + 1 * cohen_kappa(list(zip(judged[:2], bob)), scale)
+        ) / 5
         pooled = cohen_kappa(list(zip(judged + judged[:2], alice + bob)), scale)
         assert tone.n == 7 and tone.raters == ["alice", "bob"]
         assert tone.results == 5, "two people rating one result is one result"

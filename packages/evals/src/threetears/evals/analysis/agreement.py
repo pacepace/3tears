@@ -12,21 +12,23 @@ same dimension of the same result and reads the pairs per dimension:
 - **quadratic-weighted kappa** — on a 1-5 dimension only, where a 4 against a 5 is a near miss and
   a 1 against a 5 is not. On pass/fail it would be the unweighted number restated, so it is absent.
 
-**Several people, one judge: the judge is set against each person, and the kappas pooled by pairs.** Cohen's
+**Several people, one judge: the judge is set against each person, and the kappas pooled by result.** Cohen's
 kappa is a two-rater statistic. Pooling every (judge, person) pair into one table would enter a result two people
 rated twice — the judge's score duplicated, the items no longer independent — and read the people's
 disagreement with each other as the judge's with them. So each person's kappa is computed over the results
 that person rated, and the dimension's kappa (and weighted kappa) is the mean of those per-person kappas
-**weighted by each person's pairs**: a person with 2 ratings moves it a tenth as far as one with 20. (An
-unweighted mean let the small rater outvote the large one — 20 ratings at 0.3 beside 2 at 1.0 read 0.65 — and
-since the figure decides the ``calibrated`` tier that was an overclaim, not a presentation choice.) With one
-person it is Cohen's kappa. A person whose kappa is undefined (every pair one score — which includes a person
-who agreed with the judge perfectly on a constant score) is EXCLUDED from the mean rather than counted, so
-such agreement does not raise it, and their results are not among ``results``; the dimension's kappa is
+**weighted by the results each person measured, each distinct result carrying weight 1** split evenly across
+the people who rated it: a person's weight is the sum over their ratings of ``1 / (people who rated that
+result)``. The figure therefore weighs what the evidence tiers' floor counts (distinct results), and neither a
+small rater nor many small raters can carry it: 20 ratings at 0.44 beside five annotators who each matched the
+judge on the same 3 shared anchors read 0.51, where an unweighted mean (0.91) or a pair-weighted one (0.68) put
+the judge over the ``calibrated`` bar on the strength of three results. With one person it is Cohen's kappa. A
+person whose kappa is undefined (every pair one score — which includes a person who agreed with the judge
+perfectly on a constant score) is EXCLUDED from the mean before the weights are split, so such agreement does not
+raise it, and results only they rated are not among ``results`` and carry no weight; the dimension's kappa is
 undefined only when every person's is. ``n`` and ``exact_agreement`` stay per rating — counts, which nothing
-double-weights. ``results`` is the distinct results the pooled kappa covers, and it is what the evidence
-tiers' floor counts (:mod:`threetears.evals.contracts.evidence_tiers`), because ratings can pile onto a few
-results and results cannot.
+double-weights. ``results`` is the distinct results the pooled kappa covers, and it is what the evidence tiers'
+floor counts (:mod:`threetears.evals.contracts.evidence_tiers`).
 
 **One group per dimension, scale and judge** (:class:`JudgeKey`). The judge is the model that served the
 score (:attr:`~threetears.evals.contracts.models.RubricScore.served_model`) AND the versioned judge config
@@ -130,7 +132,7 @@ class DimensionAgreement(EvalDocumentModel):
         ge=1,
         description=(
             "Pairs read: one per rating, so two raters of one result are two pairs. The kappas are per person and "
-            "pooled by pairs (see `kappa`), so this count enters no kappa twice."
+            "pooled by result (see `kappa`), so this count enters no kappa twice."
         ),
     )
     results: int = Field(
@@ -149,8 +151,9 @@ class DimensionAgreement(EvalDocumentModel):
     kappa: float | None = Field(
         description=(
             "Cohen's kappa, unweighted, of the judge against each person over the results that person rated, "
-            "then the mean over people weighted by each person's pairs, so a person who rated 2 results moves "
-            "it a tenth as far as one who rated 20 (with one person, Cohen's kappa). A person whose kappa is "
+            "then the mean over people weighted by result: each distinct result weighs 1, split across the people "
+            "who rated it, so many people re-rating a few shared results weigh those few results and no more "
+            "(with one person, Cohen's kappa). A person whose kappa is "
             "undefined is excluded from the mean. None when every person's is undefined — chance alone predicts "
             "no disagreement, judge and person giving one and the same score to every pair — where it is "
             "undefined, not perfect."
@@ -296,7 +299,7 @@ def _agreement_numbers(scale: RubricScale, pairs: Sequence[_Pair]) -> _Agreement
     """Read one group's pairs: the ONE computation calibration and self-agreement share.
 
     Each rater's Cohen's kappa over the pairs that rater gave, then the mean of the defined ones weighted by
-    each rater's pairs (see the module docstring and :mod:`threetears.evals.contracts.evidence_tiers`); on a
+    result — each distinct result weighing 1, split across the raters that measured it (see the module docstring and :mod:`threetears.evals.contracts.evidence_tiers`); on a
     1-5 scale the same with quadratic weights. A "can't tell" answer is its own category, maximally far from
     every score, and a disagreement in exact agreement. ``results`` counts the distinct results among the
     raters whose kappa is defined — the raters the pooled figure actually rests on.
@@ -343,14 +346,23 @@ def _agreement_numbers(scale: RubricScale, pairs: Sequence[_Pair]) -> _Agreement
 
 
 def _pooled_kappa(per_rater: Sequence[tuple[float | None, Sequence[_Pair]]]) -> float | None:
-    """The mean of the defined per-rater kappas weighted by each rater's pairs (undefined ones excluded), or None.
+    """The mean of the defined per-rater kappas, each rater weighted by the results it measured, or None.
 
-    Weighted by pairs so that a rater's pull on the figure is the evidence they gave: a rater with 2 pairs
-    beside one with 20 moves it a tenth as far, and cannot carry a figure the larger rater's evidence misses.
+    **Each distinct result carries weight 1**, split evenly across the defined raters that measured it, so a
+    rater's weight is the sum over its pairs of ``1 / (defined raters measuring that pair's result)``. The
+    figure then weighs exactly what the floor counts: twenty results move it as twenty, however many times a
+    few of them were re-measured — whether by one more round of repeats over the same two results, or by five
+    annotators rating the same three anchors. Undefined raters are excluded first, so a result only they
+    measured carries no weight, matching ``results``.
     """
-    defined = [(kappa, len(own)) for kappa, own in per_rater if kappa is not None]
-    total = sum(weight for _, weight in defined)
-    return sum(kappa * weight for kappa, weight in defined) / total if total else None
+    defined = [(kappa, own) for kappa, own in per_rater if kappa is not None]
+    measurers: dict[str, int] = {}
+    for _, own in defined:
+        for pair in own:
+            measurers[pair.result_id] = measurers.get(pair.result_id, 0) + 1
+    weighted = [(kappa, sum(1 / measurers[pair.result_id] for pair in own)) for kappa, own in defined]
+    total = sum(weight for _, weight in weighted)
+    return sum(kappa * weight for kappa, weight in weighted) / total if total else None
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +407,8 @@ class SelfAgreementDimension(EvalDocumentModel):
         description=(
             "Pairs whose repeat answered it could not tell on a dimension the judge had scored. Counted in `n`, "
             "`results` and as disagreements in `exact_agreement`, and read in both kappas as a category of its own, "
-            "maximally far from every score."
+            "maximally far from every score — deliberately strict: one decline costs what a 1 against a 5 does, so "
+            "a declining judge can be under-credited, never over-credited."
         ),
     )
     rounds: list[str] = Field(
@@ -403,7 +416,8 @@ class SelfAgreementDimension(EvalDocumentModel):
         description=(
             "The repeat rounds among the pairs, sorted: `repeat 1` is each result's first repeat of the "
             "dimension, `repeat 2` its second. Each round is a rater, so the kappas pool per round, weighted by "
-            "the round's pairs, as calibration pools per person."
+            "the results each round measured (each result weighing 1, split across the rounds that repeated it), as "
+            "calibration pools per person."
         ),
     )
     exact_agreement: float = Field(
@@ -412,7 +426,7 @@ class SelfAgreementDimension(EvalDocumentModel):
         description='The share of pairs where the repeat gave the same score; a "can\'t tell" never does.',
     )
     kappa: float | None = Field(
-        description="Cohen's kappa per round, pooled by pairs; None when every round's is undefined."
+        description="Cohen's kappa per round, pooled by result; None when every round's is undefined."
     )
     weighted_kappa: float | None = Field(
         description="Quadratic-weighted kappa per round, pooled as `kappa` is. None on pass/fail, and when undefined."
@@ -455,10 +469,9 @@ def judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement:
     A "can't tell" repeat is paired, as a disagreement (see :class:`SelfAgreementDimension`). Its judge is
     checked by config only — it carries no score, so no served model to compare.
 
-    **Stated limits.** Only a dimension the result holds a SCORE on is repeated, so the reverse flip — "can't
-    tell" first, a score on repeat — is never observed. And rounds pool by their pairs, so a few results
-    repeated many times beside many results repeated once weigh by their repeats; the floor guarantees the
-    figure rests on enough distinct results, and ``results`` beside ``n`` shows how concentrated it is.
+    **Stated limit.** Only a dimension the result holds a SCORE on is repeated, so the reverse flip — "can't
+    tell" first, a score on repeat — is never observed. (Rounds pool by result, so repeating a few results many
+    times weighs those few results and no more.)
 
     Args:
         results: The results whose repeats to read.
