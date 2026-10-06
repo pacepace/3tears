@@ -130,6 +130,7 @@ def _json_or_none(value: Any) -> str | None:
     try:
         return canonical_json(value)
     except UnhashableContentError:
+        # NOSILENT: None IS the answer -- the caller defers to sweepable.json_safe, which reports this value
         return None
 
 
