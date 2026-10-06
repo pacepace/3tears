@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a WorldSession says whose apparatus it records — a host grading a witnessed cell through one gets the witnessed rule, and a witnessed cell refuses a rig's events
+
+- **``WorldSession`` takes a required keyword ``provenance``** (the run's ``apparatus_provenance``), which its
+  ``fired`` reads through ``Firings.of``; it was hardcoded ``commissioned``, so a host grading a WITNESSED cell
+  through a ``WorldSession`` got commissioned semantics for ``fired_armed()`` and had to override it itself. The
+  runner passes ``commissioned`` (it is the rig, and the seed it applies arms the cell's events). New read-only
+  ``WorldSession.provenance``. **Breaking:** every ``WorldSession(registry)`` call. **Adopters:** a host grading a
+  witnessed cell constructs ``WorldSession(registry, provenance="witnessed")`` and drops any ``fired_armed``
+  override — the package's three-valued rule decides it, so ``fired_armed(x) or fired("y")`` passes when ``y``
+  fired and is not established when it did not.
+- **``record_witnessed_cell`` refuses a world event claiming ``armed=True`` or ``caused_by="rig"``.** A witnessed
+  session had no seed to arm an event and no rig to fire one or perturb the world, so such an event is a
+  commissioned cell's record handed in as an observation; it is refused before anything is judged.
+  **Adopters:** record a witnessed session's firings as ``caused_by="world"``, ``armed=False``.
+
 ### 3tears-evals: re-check establishes no more than the original grading could — a witnessed cell's `fired_armed()` stays not established
 
 - **A witnessed cell's ``fired_armed()`` is not established, on grading and on re-check alike.** A witnessed cell had

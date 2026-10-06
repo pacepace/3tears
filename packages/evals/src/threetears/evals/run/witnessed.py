@@ -253,10 +253,14 @@ async def record_witnessed_cell(
 
     **A witnessed cell's goal checks read what fired as a witnessed cell's.** The host grades the cell's checks
     itself (they arrive on ``output``), and builds what fired with
-    ``Firings.of(world_events, provenance="witnessed")`` — the rule a re-check reads the stored cell back by
-    (:func:`~threetears.evals.run.recheck.recheck_goal_states`). No seed armed the session, so its events say
-    ``armed=False`` because nothing could mark them armed, and ``fired_armed()`` is not established, negated
-    or not; read under any other provenance it would be graded as a verdict a re-check then contradicts.
+    ``Firings.of(world_events, provenance="witnessed")`` — or, grading through a
+    :class:`~threetears.evals.contracts.world_session.WorldSession`, by constructing that session with
+    ``provenance="witnessed"``, whose ``fired`` reads the same rule — the rule a re-check reads the stored
+    cell back by (:func:`~threetears.evals.run.recheck.recheck_goal_states`). No seed armed the session, so
+    its events say ``armed=False`` because nothing could mark them armed, and ``fired_armed()`` is not
+    established, negated or not; read under any other provenance it would be graded as a verdict a re-check
+    then contradicts. For the same reason a world event claiming ``armed=True`` or ``caused_by="rig"`` is
+    refused: no seed armed it and no rig made it happen, so it is a rig's record, not an observation.
 
     **What the host writes around it.** A witnessed session has no template that set it, so its case
     carries ``template_id=None`` whatever its run names: an :class:`~threetears.evals.contracts.models.EvalTestCase`
@@ -298,7 +302,8 @@ async def record_witnessed_cell(
             template; it is judged and ``judging`` is missing or judges another run; ``test_case`` is not one of its cases, sits in another scope, or names a template;
             ``k_iteration`` is outside ``1..run.k_runs``; the output's stop cause is one only the engine's
             simulator produces; a judged run's kind declares nothing a judge reads; or a judged run's host
-            supplies no completion clients.
+            supplies no completion clients; or a world event claims ``armed=True`` or ``caused_by="rig"``,
+            which only a rig's seed or handle produces and a witnessed session had neither.
         ValidationFailedError: A judged run's recorded apparatus cannot score the cell: it recorded no
             attribution, config set or request settings, or settings other than the ones a call sends
             now; its template was edited after it was created; or it recorded a judge for a dim this
@@ -345,6 +350,7 @@ async def record_witnessed_cell(
             "engine's simulator or its run's cost cap, which drive only a conversation the engine ran, and a "
             "witnessed session was observed. A session its people ended is 'participants_ended'"
         )
+    _refuse_rig_world_events(world_events or ())
     # Read once: the kind the run stamped at its creation, and so the kind the cell is recorded under.
     candidate_kind = run.candidate_kind
     hold_to_declaration(candidate_kind, judged_artifact, output)
@@ -410,6 +416,34 @@ async def record_witnessed_cell(
         result, trace = assemble(judged, judge_ms, template.goal_state_checks)
         judging.count(result)
     return result, trace
+
+
+def _refuse_rig_world_events(world_events: Sequence[WorldEvent]) -> None:
+    """Refuse a world event only a rig could have produced, in a session no rig set up.
+
+    A witnessed session has no seed, so no event in it was armed, and no rig, so nothing in it was made to
+    happen by one — a ``caused_by="rig"`` event is a fire handle or the ambient-perturbation handle, both the
+    runner's. An event claiming either is a commissioned cell's record handed in as an observation; stored,
+    the re-check would read it under the witnessed rule while the event itself asserts the seed's arming.
+
+    Args:
+        world_events: What moved the session's world, as the host hands them over.
+
+    Raises:
+        ValueError: An event claims ``armed=True`` or ``caused_by="rig"``.
+    """
+    for index, event in enumerate(world_events):
+        claims = [
+            claim
+            for claim, made in (("armed=True", event.armed), ('caused_by="rig"', event.caused_by == "rig"))
+            if made
+        ]
+        if claims:
+            raise ValueError(
+                f"world event {index} ({event.kind}{f' on {event.dimension}' if event.dimension else ''}) claims "
+                f"{' and '.join(claims)}: a witnessed session had no seed to arm an event and no rig to make one "
+                "happen, so every event in it is the world's own and unarmed (caused_by='world', armed=False)"
+            )
 
 
 def _assembled(
