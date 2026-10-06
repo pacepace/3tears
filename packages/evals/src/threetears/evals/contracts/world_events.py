@@ -34,11 +34,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import Field, model_validator
 
 from threetears.evals.contracts.base import EvalDocumentModel
+
+if TYPE_CHECKING:
+    from threetears.evals.contracts.models import ApparatusProvenance
 
 #: What moved the world: a triggered dimension's condition, by its trigger kind, or ambient perturbation.
 #:
@@ -138,41 +141,66 @@ class Firings:
 
     Built from a cell's world events by :meth:`of` — a live session's, or a stored result's on a
     re-check — or stated for a control end state. ``fired("<dimension>")`` reads :attr:`dimensions`;
-    ``fired_armed("<dimension>")`` reads :attr:`armed`.
+    ``fired_armed("<dimension>")`` reads :attr:`armed`, and is *not established* when
+    :attr:`armed_known` is False.
 
     Attributes:
         dimensions: Every triggered dimension that fired at least once, whoever caused it.
         armed: The dimensions on which the event the cell's seed armed fired — a subset of ``dimensions``.
+        armed_known: Whether which firings were armed can be known at all. False for a witnessed cell:
+            no seed armed anything there, so the events record ``armed=False`` because nothing could
+            mark them armed, not because the cell established that none was — and ``fired_armed()``,
+            negated or not, is then not established rather than a verdict.
     """
 
     dimensions: frozenset[str] = frozenset()
     armed: frozenset[str] = frozenset()
+    armed_known: bool = True
 
     def __post_init__(self) -> None:
-        """Refuse an armed firing that is not a firing.
+        """Refuse an armed firing that is not a firing, and an armed firing where none can be known.
 
         Raises:
-            ValueError: ``armed`` names a dimension ``dimensions`` does not.
+            ValueError: ``armed`` names a dimension ``dimensions`` does not, or names any while
+                ``armed_known`` is False.
         """
         if stray := sorted(self.armed - self.dimensions):
             raise ValueError(
                 f"armed firing(s) {', '.join(map(repr, stray))} are not among the dimensions that fired; an armed "
                 "firing is a firing"
             )
+        if self.armed and not self.armed_known:
+            raise ValueError(
+                f"armed firing(s) {', '.join(map(repr, sorted(self.armed)))} are stated where which firings were "
+                "armed cannot be known; a cell no seed armed has no armed firing to name"
+            )
 
     @classmethod
-    def of(cls, events: Iterable[WorldEvent]) -> Firings:
-        """What a cell's world events say fired.
+    def of(cls, events: Iterable[WorldEvent], *, provenance: ApparatusProvenance) -> Firings:
+        """What a cell's world events say fired, and what its apparatus lets them say about arming.
+
+        The one rule for what a cell's firings can establish, read by the live grading of a cell and by
+        the re-check of a stored one alike, so a re-check never establishes what the original grading
+        could not. A ``commissioned`` cell's seed armed its events (or armed none, which is itself
+        known), so each event's ``armed`` is the record. A ``witnessed`` cell had no seed: its events
+        say ``armed=False`` because nothing could mark them otherwise, so which firings were armed is
+        unknowable and ``fired_armed()`` is not established.
 
         Args:
             events: The cell's world events, in any order.
+            provenance: The apparatus provenance of the run the cell belongs to
+                (:attr:`~threetears.evals.contracts.models.EvalRun.apparatus_provenance`).
 
         Returns:
-            Every dimension that fired, and those on which an armed event fired.
+            Every dimension that fired, and those on which an armed event fired — or, for a witnessed
+            cell, no armed set and ``armed_known=False``.
         """
         fired = [event for event in events if event.dimension is not None]
+        dimensions = frozenset(event.dimension for event in fired if event.dimension is not None)
+        if provenance == "witnessed":
+            return cls(dimensions=dimensions, armed_known=False)
         return cls(
-            dimensions=frozenset(event.dimension for event in fired if event.dimension is not None),
+            dimensions=dimensions,
             armed=frozenset(event.dimension for event in fired if event.dimension is not None and event.armed),
         )
 

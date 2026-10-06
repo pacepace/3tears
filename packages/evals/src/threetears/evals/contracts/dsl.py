@@ -78,6 +78,8 @@ propagates by Kleene's three-valued logic, so negating a question never turns "u
   and ``.length``/``length()`` of one);
 * a list or tuple literal holding a ``Missing`` element is ``Missing`` (``[state.x]`` is not a
   one-element list when ``state.x`` resolved to nothing);
+* ``fired_armed(...)`` is ``Missing`` for a cell whose firings cannot say which were armed — a
+  witnessed cell, which no seed armed (:meth:`~threetears.evals.contracts.world_events.Firings.of`);
 * ``not Missing`` is ``Missing``;
 * ``a and b`` is False when any operand is False, else ``Missing`` when any is ``Missing``, else True;
   ``a or b`` is True when any operand is True, else ``Missing`` when any is ``Missing``, else False;
@@ -1119,7 +1121,8 @@ def evaluate(
         fired: What fired during the cell — read by ``fired()`` — and which firings were of the event the
             seed armed — read by ``fired_armed()``. None when no world events were recorded for this
             evaluation, where both raise rather than answering False: an evaluation with no record cannot
-            say nothing fired.
+            say nothing fired. When it cannot know which firings were armed (``armed_known=False`` — a
+            witnessed cell, built by :meth:`Firings.of`), ``fired_armed()`` is :data:`Missing`.
 
     Returns:
         ``True`` if the expression's value is truthy after coercion; ``False`` otherwise, including
@@ -1479,32 +1482,42 @@ def _eval_call(node: ast.Call, ctx: _EvalContext) -> Any:
     if func_name == "calls":
         return _builtin_calls(ctx.ledger, *_check_arity("calls", args, 1))
     if func_name in _FIRE_PREDICATES:
-        return _builtin_fired(func_name, ctx.fired, *_check_arity(func_name, args, 1))
+        return _builtin_fired(func_name, ctx, ast.unparse(node), *_check_arity(func_name, args, 1))
     raise DSLError(f"Unknown DSL function: {func_name}")
 
 
-def _builtin_fired(predicate: str, fired: Firings | None, name: Any) -> bool:
+def _builtin_fired(predicate: str, ctx: _EvalContext, call: str, name: Any) -> Any:
     """Whether the triggered dimension ``name`` fired during the cell — for ``fired_armed``, as the seed's armed event.
 
     Args:
         predicate: ``fired`` (any firing, whoever caused it) or ``fired_armed`` (a firing of the event
             the cell's seed armed, so not the world's own firing on the same dimension).
-        fired: What fired, or None when no world events were recorded.
+        ctx: The evaluation context, whose ``fired`` is what fired (None when no world events were
+            recorded) and whose ``unresolved`` names what a :data:`Missing` rests on.
+        call: The call as written, named in the detail when it is not established.
         name: The dimension.
 
     Returns:
-        Whether it fired as the predicate asks.
+        Whether it fired as the predicate asks; :data:`Missing` for ``fired_armed`` when which firings
+        were armed cannot be known (:attr:`~threetears.evals.contracts.world_events.Firings.armed_known`
+        — a witnessed cell, which no seed armed), so ``not fired_armed(...)`` is not established either.
 
     Raises:
         DSLError: No world events were recorded for this evaluation. Answering False there would
             score a cell whose events nobody recorded as one in which nothing fired.
     """
+    fired = ctx.fired
     if fired is None:
         raise DSLError(
             f"{predicate}({name!r}) reads the cell's world events, and none were recorded for this evaluation — "
             "a cell that opened no world session has no record to read"
         )
-    return name in (fired.armed if predicate == "fired_armed" else fired.dimensions)
+    if predicate == "fired_armed":
+        if not fired.armed_known:
+            ctx.unresolved.append(call)
+            return Missing
+        return name in fired.armed
+    return name in fired.dimensions
 
 
 def _check_arity(name: str, args: list[Any], expected: int) -> list[Any]:

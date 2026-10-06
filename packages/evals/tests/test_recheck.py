@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.contracts import (
+    NOT_ESTABLISHED,
     CallLedger,
     ConflictError,
     EvalResult,
@@ -20,6 +21,7 @@ from threetears.evals.contracts import (
     GoalStateOutcome,
     NotFoundError,
     ValidationFailedError,
+    WorldEvent,
 )
 from threetears.evals.run import recheck_goal_states, recheck_result
 from packages.evals.tests.factories import (
@@ -188,7 +190,7 @@ def test_world_reading_checks_are_kept_when_what_they_read_was_not_stored() -> N
     result = make_eval_result(goal_state_outcomes=[state_check, fired_check], world_events=None)
 
     report, outcomes = recheck_result(
-        result, ledger=None, end_state={"payment_hold": "released"}, world=None, variation={}
+        result, ledger=None, end_state={"payment_hold": "released"}, world=None, variation={}, provenance="commissioned"
     )
 
     assert outcomes is None and report.regraded == 0
@@ -205,7 +207,9 @@ def test_world_reading_checks_are_kept_when_what_they_read_was_not_stored() -> N
 def test_a_result_whose_checks_were_not_graded_at_the_cell_s_end_is_not_rechecked() -> None:
     result = make_eval_result(goal_state_outcomes=[_every_field(False)], termination="cell_timeout")
 
-    report, outcomes = recheck_result(result, ledger=_ledger(4), end_state=None, world=None, variation={})
+    report, outcomes = recheck_result(
+        result, ledger=_ledger(4), end_state=None, world=None, variation={}, provenance="commissioned"
+    )
 
     assert outcomes is None
     assert report.not_rechecked is not None and "termination=cell_timeout" in report.not_rechecked
@@ -218,6 +222,7 @@ def test_a_ledger_check_on_a_result_with_no_stored_ledger_is_kept_as_stored() ->
         end_state=None,
         world=None,
         variation={},
+        provenance="commissioned",
     )
 
     assert outcomes is None
@@ -228,7 +233,12 @@ def test_a_ledger_check_on_a_result_with_no_stored_ledger_is_kept_as_stored() ->
 
 def test_a_result_with_no_goal_outcomes_is_not_rechecked() -> None:
     report, outcomes = recheck_result(
-        make_eval_result(goal_state_outcomes=[]), ledger=_ledger(4), end_state=None, world=None, variation={}
+        make_eval_result(goal_state_outcomes=[]),
+        ledger=_ledger(4),
+        end_state=None,
+        world=None,
+        variation={},
+        provenance="commissioned",
     )
 
     assert outcomes is None
@@ -239,7 +249,9 @@ def test_a_check_reading_world_state_is_kept_as_stored_when_its_end_state_was_no
     world_check = GoalStateOutcome(expression="state.shop.cart.length >= 1", passed=True)
     result = make_eval_result(goal_state_outcomes=[world_check, _every_field(True)])
 
-    report, outcomes = recheck_result(result, ledger=_ledger(3), end_state=None, world=None, variation={})
+    report, outcomes = recheck_result(
+        result, ledger=_ledger(3), end_state=None, world=None, variation={}, provenance="commissioned"
+    )
 
     assert [kept.expression for kept in report.kept_as_stored] == [world_check.expression]
     assert "end state was not stored" in report.kept_as_stored[0].reason
@@ -259,6 +271,7 @@ def test_a_check_reading_the_case_is_re_graded_under_the_case_s_variation(
         end_state=None,
         world=None,
         variation=variation,
+        provenance="commissioned",
     )
 
     assert bool(report.flips) is flips
@@ -268,7 +281,12 @@ def test_a_check_reading_the_case_is_kept_when_its_test_case_no_longer_resolves(
     check = GoalStateOutcome(expression='call_count("extractor.emit_field") == variation.wanted', passed=True)
 
     report, outcomes = recheck_result(
-        make_eval_result(goal_state_outcomes=[check]), ledger=_ledger(4), end_state=None, world=None, variation=None
+        make_eval_result(goal_state_outcomes=[check]),
+        ledger=_ledger(4),
+        end_state=None,
+        world=None,
+        variation=None,
+        provenance="commissioned",
     )
 
     assert outcomes is None
@@ -280,11 +298,103 @@ def test_a_check_that_no_longer_evaluates_stops_the_result_s_recheck() -> None:
     broken = GoalStateOutcome(expression='call_count("extractor.emit_field") < "four"', passed=True)
 
     report, outcomes = recheck_result(
-        make_eval_result(goal_state_outcomes=[broken]), ledger=_ledger(4), end_state=None, world=None, variation={}
+        make_eval_result(goal_state_outcomes=[broken]),
+        ledger=_ledger(4),
+        end_state=None,
+        world=None,
+        variation={},
+        provenance="commissioned",
     )
 
     assert outcomes is None
     assert report.not_rechecked is not None and "no longer evaluates" in report.not_rechecked
+
+
+# =============================================================================
+# What a cell can establish: a witnessed cell's fired_armed stays not established on re-check
+# =============================================================================
+
+_ARMED = 'fired_armed("payment_hold")'
+_NOT_ARMED = 'not fired_armed("payment_hold")'
+_ANY_FIRING = 'fired("payment_hold")'
+_NOT_ESTABLISHED_DETAIL = f"{NOT_ESTABLISHED}: fired_armed('payment_hold') resolved to nothing"
+
+
+def _stored_firing_run(storage: EvalStorage, provenance: str, outcomes: list[GoalStateOutcome]) -> tuple[str, str]:
+    """A finished run of ``provenance`` whose one cell recorded the world's own firing of the payment hold.
+
+    The event says ``armed=False``, as every event of a witnessed cell does — no seed could mark it armed.
+    """
+    run = make_eval_run(
+        status="completed",
+        apparatus_provenance=provenance,
+        **({"template_id": None} if provenance == "witnessed" else {}),
+    )
+    storage.save_eval_run(run)
+    storage.save_test_case(make_test_case(id="tc-1", template_id=None if provenance == "witnessed" else "tpl-1"))
+    firing = WorldEvent(
+        kind="event", dimension="payment_hold", condition="extraction_posted", caused_by="world", event="posting-hold"
+    )
+    result = make_eval_result(eval_run_id=run.id, goal_state_outcomes=outcomes, world_events=[firing])
+    storage.save_eval_result(result, None)
+    return run.id, result.id
+
+
+def test_a_witnessed_cell_s_fired_armed_checks_stay_not_established_negated_or_not() -> None:
+    """The defect: its events all say armed=False, and re-reading them flipped ``not fired_armed`` to a pass."""
+    storage, _ = memory_storage()
+    graded = [
+        GoalStateOutcome(expression=_ARMED, passed=False, detail=_NOT_ESTABLISHED_DETAIL),
+        GoalStateOutcome(expression=_NOT_ARMED, passed=False, detail=_NOT_ESTABLISHED_DETAIL),
+        GoalStateOutcome(expression=_ANY_FIRING, passed=True, detail="True"),
+    ]
+    run_id, result_id = _stored_firing_run(storage, "witnessed", graded)
+
+    recheck = recheck_goal_states(storage, run_id, "uni-1", world=None, apply=True)
+
+    (report,) = recheck.results
+    assert report.not_rechecked is None and report.regraded == 3
+    assert report.flips == []
+    stored = storage.load_eval_result(result_id, "uni-1")
+    assert stored is not None and stored.goal_state_outcomes == graded
+
+
+def test_a_witnessed_cell_s_stale_pass_on_not_fired_armed_is_re_graded_as_not_established() -> None:
+    storage, _ = memory_storage()
+    run_id, result_id = _stored_firing_run(
+        storage, "witnessed", [GoalStateOutcome(expression=_NOT_ARMED, passed=True, detail="True")]
+    )
+
+    recheck = recheck_goal_states(storage, run_id, "uni-1", world=None, apply=True)
+
+    assert [(flip.expression, flip.was, flip.now) for flip in recheck.results[0].flips] == [(_NOT_ARMED, True, False)]
+    stored = storage.load_eval_result(result_id, "uni-1")
+    assert stored is not None
+    (outcome,) = stored.goal_state_outcomes
+    assert outcome.detail == _NOT_ESTABLISHED_DETAIL
+
+
+def test_a_launched_cell_s_fired_armed_checks_re_grade_from_its_events() -> None:
+    """The same events under a commissioned run say the seed's event did not fire — a verdict, so it moves."""
+    storage, _ = memory_storage()
+    run_id, result_id = _stored_firing_run(
+        storage,
+        "commissioned",
+        [
+            GoalStateOutcome(expression=_ARMED, passed=True, detail="True"),
+            GoalStateOutcome(expression=_NOT_ARMED, passed=False, detail="False"),
+        ],
+    )
+
+    recheck = recheck_goal_states(storage, run_id, "uni-1", world=None, apply=True)
+
+    assert [(flip.expression, flip.was, flip.now) for flip in recheck.results[0].flips] == [
+        (_ARMED, True, False),
+        (_NOT_ARMED, False, True),
+    ]
+    stored = storage.load_eval_result(result_id, "uni-1")
+    assert stored is not None
+    assert [(o.passed, o.detail) for o in stored.goal_state_outcomes] == [(False, "False"), (True, "True")]
 
 
 # =============================================================================
@@ -344,7 +454,12 @@ def test_a_goal_check_today_s_language_refuses_is_kept_and_named_as_refused() ->
     stored = GoalStateOutcome(expression="call_count(variation.spec) == 4", passed=True)
 
     report, outcomes = recheck_result(
-        make_eval_result(goal_state_outcomes=[stored]), ledger=_ledger(4), end_state=None, world=None, variation={}
+        make_eval_result(goal_state_outcomes=[stored]),
+        ledger=_ledger(4),
+        end_state=None,
+        world=None,
+        variation={},
+        provenance="commissioned",
     )
 
     assert outcomes is None and report.not_rechecked is None
@@ -374,6 +489,7 @@ def test_a_check_over_a_dimension_today_s_world_no_longer_declares_keeps_its_sto
         end_state={"payment_hold_v1": "held"},
         world=_toy_registry(),
         variation={},
+        provenance="commissioned",
     )
 
     assert outcomes is None and report.flips == [] and report.regraded == 0
@@ -406,6 +522,7 @@ def test_a_check_whose_path_today_s_world_resolves_to_another_dimension_keeps_it
         end_state={"inbox.messages": ["hello"]},
         world=today,
         variation={},
+        provenance="commissioned",
     )
 
     assert outcomes is None and report.flips == []
@@ -427,6 +544,7 @@ def test_a_negated_check_over_a_dimension_its_cell_never_held_is_re_graded_as_no
         end_state={"document_language": "de"},
         world=_toy_registry(),
         variation={},
+        provenance="commissioned",
     )
 
     assert [(flip.was, flip.now) for flip in report.flips] == [(True, False)]

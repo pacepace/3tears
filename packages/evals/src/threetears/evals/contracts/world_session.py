@@ -179,8 +179,12 @@ class WorldSession:
 
     @property
     def fired(self) -> Firings:
-        """What fired, whoever caused it, and which firings were the seed's armed events — what the goal language reads."""
-        return Firings.of(self._events)
+        """What fired, whoever caused it, and which firings were the seed's armed events — what the goal language reads.
+
+        A world session is the rig's: the runner opens one for a commissioned cell and seeds it, so its
+        firings are read as a commissioned cell's.
+        """
+        return Firings.of(self._events, provenance="commissioned")
 
     @property
     def end_state_read(self) -> dict[str, Any] | None:
