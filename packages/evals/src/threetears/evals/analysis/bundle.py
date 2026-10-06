@@ -1475,8 +1475,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         default_factory=JudgeAgreement,
         description=(
             "How the judge's scores agreed with people's calibration ratings of the same results, per judged "
-            "dimension and per judge model: n, exact agreement, Cohen's kappa and, on 1-5 dimensions, quadratic-"
-            "weighted kappa — over every resolved member run's results. A dimension absent here is uncalibrated: "
+            "dimension, judge model and judge config: n, distinct results, exact agreement, Cohen's kappa and, on 1-5 "
+            "dimensions, quadratic-weighted kappa, each pooled over people by result — over every resolved member run's results. A dimension absent here is uncalibrated: "
             "nobody rated it, so an absolute claim about it rests on the judge alone. Ratings that could not be "
             "paired with a judge score are listed with why."
         ),

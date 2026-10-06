@@ -18,8 +18,10 @@ packages (bumped in lock-step).
   its scores; the code-only report states each judge's tier with its numbers; the generator prompt says what each tier
   lets a claim bear. Bundle `schema_version` 38.
 - **Agreement is one statistic computed by one rule for both tiers.** Each rater's kappa (each person; each round
-  of repeats) is pooled **weighted by that rater's pairs** — superseding the unweighted per-person mean below, which
-  let 2 ratings at 1.0 carry 20 at 0.3 to 0.65 and over the calibration bar. The floor counts **distinct results**
+  of repeats) is pooled **by result**: each distinct result weighs 1, split across the raters that measured it —
+  superseding the unweighted per-person mean below, which let 2 ratings at 1.0 carry 20 at 0.3 to 0.65 and over the
+  calibration bar, and which a pair weighting would only have moved (five annotators on the same three anchors beside
+  one person's 20 ratings at 0.44 read 0.68, `calibrated`; by result, 0.51). The floor counts **distinct results**
   among the raters whose kappa is defined, never pairs, so repeating two results ten times (twenty pairs) is two
   results. A repeat answering "can't tell" on a dimension the judge had scored is a pair, read in its own category at
   the greatest distance from every score (new `cohen_kappa(..., unordered=...)`) and counted as a disagreement;

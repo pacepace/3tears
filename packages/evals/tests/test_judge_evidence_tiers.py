@@ -26,7 +26,9 @@ Mutations that turn this file red (each made in a scratch copy and the file rest
 
 And, for the review fixes (each applied to a scratch-backed copy and restored from it, 2026-10-06):
 
-- ``_pooled_kappa`` weighting every rater 1 instead of by pairs (the small-round, small-person and two-people cases);
+- ``_pooled_kappa`` weighting every rater 1, or by pairs, instead of by result (the small-round, small-person and
+  two-people cases, and the verify round's shapes: two results repeated thirty more times; five annotators on three
+  shared anchors), and splitting a result's weight with a rater left out of the mean;
 - the floor reading pairs instead of distinct results (the two-results-ten-times cases, here and end to end), and
   counting results behind an undefined kappa;
 - a "can't tell" repeat set aside as unpaired (both scales, here and end to end);
@@ -388,7 +390,8 @@ class TestAFewResultsCannotEarnATier:
             "an unweighted mean of the two rounds would meet the bar — the fixture must make that so"
         )
         (itself,) = judge_self_agreement(results).dimensions
-        assert itself.weighted_kappa == pytest.approx((20 * first_round + 2 * 1.0) / 22)
+        # By result: the two re-repeated results weigh 1 each, split between the rounds — round 1 carries 19.
+        assert itself.weighted_kappa == pytest.approx((19 * first_round + 1 * 1.0) / 20)
         (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_key()})
         assert (tier.separation.state, tier.tier) == ("not_met", "undetermined")
 
@@ -431,6 +434,92 @@ class TestAFewResultsCannotEarnATier:
         assert (people.n, people.results, people.weighted_kappa) == (22, 2, 1.0)
         (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement([]), {_key()})
         assert (tier.calibration.state, tier.tier) == ("insufficient", "undetermined")
+
+
+class TestEachResultWeighsOnceInTheFigure:
+    """The figure weighs what the floor counts: each distinct result carries weight 1, split across its measurers.
+
+    Pair-weighting closed a small rater outvoting a large one and left many small raters, or many rounds over a
+    few results, free to carry the figure: the floor saw twenty results while the kappa saw mostly two or three.
+    """
+
+    @staticmethod
+    def _first_round() -> list[tuple[int, int]]:
+        # Twenty results at a weighted kappa well under either bar.
+        return _shifted(20, disagreeing=10, shift=2)
+
+    def test_two_results_repeated_thirty_more_times_do_not_carry_a_round_to_separation(self) -> None:
+        pairs = self._first_round()
+        first_round = cohen_kappa(pairs, [1, 2, 3, 4, 5], weights="quadratic")
+        assert first_round is not None and first_round < 0.5
+        results = []
+        for i, (first, again) in enumerate(pairs):
+            repeats = [_repeat(first, again)]
+            if i in (0, 2):  # two results in different categories, repeated thirty more times, agreeing
+                repeats += [_repeat(first, first) for _ in range(30)]
+            results.append(_scored(f"r-{i}", first, judge_repeats=repeats))
+        (itself,) = judge_self_agreement(results).dimensions
+        assert (itself.n, itself.results) == (80, 20)
+        (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_key()})
+        assert itself.weighted_kappa is not None and itself.weighted_kappa < 0.6, (
+            "the many re-measurements weigh two results"
+        )
+        assert (tier.separation.state, tier.tier) == ("not_met", "undetermined")
+
+    def test_five_annotators_on_three_shared_anchors_do_not_calibrate_a_judge_one_person_found_wanting(self) -> None:
+        # Alice rates twenty results at about 0.44: every other one two points off the judge.
+        firsts = [1, 2, 3, 4, 5] * 4
+        pairs = [(f, f if i % 2 else (f + 2 if f <= 3 else f - 2)) for i, f in enumerate(firsts)]
+        results = [_scored(f"r-{i}", first) for i, (first, _) in enumerate(pairs)]
+        ratings = [
+            make_calibration_rating(result_id=f"r-{i}", rubric_dim=TONE, score=other, rater="alice")
+            for i, (_, other) in enumerate(pairs)
+        ]
+        anchors = [1, 3, 4]  # three of alice's results, each in a different category
+        assert len({pairs[i][0] for i in anchors}) == 3
+        for annotator in range(5):
+            ratings += [
+                make_calibration_rating(
+                    result_id=f"r-{i}", rubric_dim=TONE, score=pairs[i][0], rater=f"annotator-{annotator}"
+                )
+                for i in anchors
+            ]
+        (people,) = judge_agreement(ratings, results).dimensions
+        assert (people.n, people.results) == (35, 20)
+        alice = cohen_kappa(pairs, [1, 2, 3, 4, 5], weights="quadratic")
+        assert alice is not None and alice < CALIBRATION_MIN_AGREEMENT
+        assert (20 * alice + 15 * 1.0) / 35 >= CALIBRATION_MIN_AGREEMENT, (
+            "weighted by pairs the annotators would carry it over the bar — the fixture must make that so"
+        )
+        # Each result weighs 1: alice carries 17 + 3/6, the five annotators 3/6 each.
+        assert people.weighted_kappa == pytest.approx((17.5 * alice + 5 * 0.5 * 1.0) / 20)
+        (tier,) = judge_evidence_tiers(judge_agreement(ratings, results), judge_self_agreement([]), {_key()})
+        assert (tier.calibration.state, tier.tier) == ("not_met", "undetermined")
+
+    def test_a_rater_left_out_of_the_mean_takes_no_share_of_a_results_weight(self) -> None:
+        # Someone who rated alice's five 3s as 3 has an undefined kappa and is left out; those five results stay
+        # wholly alice's, so alice weighs her twenty and bob his two.
+        pairs = _shifted(20, disagreeing=8, shift=1)
+        results = [_scored(f"r-{i}", first) for i, (first, _) in enumerate(pairs)] + [
+            _scored("lo", 1),
+            _scored("hi", 5),
+        ]
+        ratings = [
+            make_calibration_rating(result_id=f"r-{i}", rubric_dim=TONE, score=other, rater="alice")
+            for i, (_, other) in enumerate(pairs)
+        ]
+        threes = [i for i, (first, _) in enumerate(pairs) if first == 3]
+        assert len(threes) == 5
+        ratings += [make_calibration_rating(result_id=f"r-{i}", rubric_dim=TONE, score=3, rater="flat") for i in threes]
+        ratings += [
+            make_calibration_rating(result_id="lo", rubric_dim=TONE, score=1, rater="bob"),
+            make_calibration_rating(result_id="hi", rubric_dim=TONE, score=5, rater="bob"),
+        ]
+        alice = cohen_kappa(pairs, [1, 2, 3, 4, 5], weights="quadratic")
+        assert alice is not None and alice < 1.0
+        (people,) = judge_agreement(ratings, results).dimensions
+        assert (people.n, people.results) == (27, 22)
+        assert people.weighted_kappa == pytest.approx((20 * alice + 2 * 1.0) / 22)
 
 
 # --- a "can't tell" repeat is the judge disagreeing with itself (W1) ---------------------------------

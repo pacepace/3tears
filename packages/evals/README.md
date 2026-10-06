@@ -356,9 +356,10 @@ reliability was measured to be (`threetears.evals.contracts.evidence_tiers`, own
 | `undetermined` | too little evidence to decide — never filed as incidental |
 
 Agreement is one statistic computed by one rule for both — quadratic-weighted kappa on 1-5, kappa on pass/fail,
-per rater (each person; each round of repeats) and pooled weighted by each rater's pairs, so a small rater cannot
-outvote a large one; the floor counts distinct results, never pairs, so re-measuring a few results many times cannot
-reach it; and a repeat that answers "can't tell" where the judge had scored is a disagreement, never set aside. A
+per rater (each person; each round of repeats) and pooled by result — every distinct result weighs 1, split across
+the raters that measured it — so the figure weighs what the floor counts, distinct results, never pairs: neither a
+small rater nor many raters re-measuring a few shared results (five annotators on the same three anchors; one result
+repeated thirty times) can carry it, or the floor, over the bar; and a repeat that answers "can't tell" where the judge had scored is a disagreement, never set aside. A
 judge is a served model and a judge config, so a tier measured under one prompt never sets another's. The bundle
 lists each judge's tier per dimension with both criteria
 (`judge_evidence_tiers`); a finding stands on the weakest tier among its rows (`FindingResolution.evidence_tier`:
