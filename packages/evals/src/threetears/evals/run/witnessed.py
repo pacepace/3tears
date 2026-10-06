@@ -251,6 +251,13 @@ async def record_witnessed_cell(
     — the runner's bound. What it cannot see is a judgement made through another :class:`WitnessedJudging` (another
     process's, say) that its host has not saved: those share only the store, so save each pair as it is recorded.
 
+    **A witnessed cell's goal checks read what fired as a witnessed cell's.** The host grades the cell's checks
+    itself (they arrive on ``output``), and builds what fired with
+    ``Firings.of(world_events, provenance="witnessed")`` — the rule a re-check reads the stored cell back by
+    (:func:`~threetears.evals.run.recheck.recheck_goal_states`). No seed armed the session, so its events say
+    ``armed=False`` because nothing could mark them armed, and ``fired_armed()`` is not established, negated
+    or not; read under any other provenance it would be graded as a verdict a re-check then contradicts.
+
     **What the host writes around it.** A witnessed session has no template that set it, so its case
     carries ``template_id=None`` whatever its run names: an :class:`~threetears.evals.contracts.models.EvalTestCase`
     with ``template_id=None``, its stimulus in ``variation_params`` and ``host_payload``, saved with

@@ -13,6 +13,12 @@ with — and a change to the goal language reaches results stored before it with
 Nothing here is kind-shaped: no kind replays its own trace, because each input was stored as the
 engine's own type.
 
+**It establishes no more than the original grading could.** What fired is read through
+:meth:`~threetears.evals.contracts.world_events.Firings.of` with the provenance of the run the result
+belongs to — the rule the cell was graded under. A witnessed cell had no seed, so its stored events say
+``armed=False`` because nothing could mark them armed; ``fired_armed()`` on it stays *not established*
+on re-check, negated or not, instead of reading those events as "nothing armed fired".
+
 **What it re-grades, and what it leaves as stored.** It re-grades every stored outcome whose
 expression is a goal-state expression whose every input is stored. It leaves as stored, and names:
 
@@ -57,7 +63,7 @@ from threetears.evals.contracts.dsl import (
     speaks_the_goal_language,
 )
 from threetears.evals.contracts.errors import ConflictError, NotFoundError, ValidationFailedError
-from threetears.evals.contracts.models import NON_TERMINAL_RUN_STATUSES, GoalStateOutcome
+from threetears.evals.contracts.models import NON_TERMINAL_RUN_STATUSES, ApparatusProvenance, GoalStateOutcome
 from threetears.evals.contracts.world_events import Firings
 from threetears.evals.run.runner import GoalCheckUnevaluable, grade_goal_checks
 from threetears.observe import get_logger
@@ -152,6 +158,7 @@ def recheck_result(
     end_state: Mapping[str, Any] | None,
     variation: Mapping[str, Any] | None,
     world: WorldRegistry | None,
+    provenance: ApparatusProvenance,
 ) -> tuple[ResultRecheck, list[GoalStateOutcome] | None]:
     """Re-grade one stored result's goal checks against what its cell stored.
 
@@ -168,6 +175,9 @@ def recheck_result(
             resolves — an outcome reading ``variation.*`` is then kept as stored.
         world: The host's world registry, which ``state.<dimension>`` resolves through; ``None`` keeps
             every outcome reading world state as stored.
+        provenance: The apparatus provenance of the run the result belongs to, which decides what its
+            world events can establish (:meth:`~threetears.evals.contracts.world_events.Firings.of`) — a
+            witnessed cell's ``fired_armed()`` is not established, as it was when the cell was graded.
 
     Returns:
         The report, and the outcomes to store — ``None`` when no verdict moved, so a caller
@@ -188,7 +198,7 @@ def recheck_result(
         has_events=result.world_events is not None,
         has_variation=variation is not None,
     )
-    fired = Firings.of(result.world_events) if result.world_events is not None else None
+    fired = Firings.of(result.world_events, provenance=provenance) if result.world_events is not None else None
 
     outcomes: list[GoalStateOutcome] = []
     flips: list[CheckFlip] = []
@@ -356,6 +366,7 @@ def recheck_goal_states(
             end_state=trace.end_state if trace is not None else None,
             variation=variations[result.test_case_id],
             world=world,
+            provenance=run.apparatus_provenance,
         )
         reports.append(report)
         if not apply or outcomes is None:

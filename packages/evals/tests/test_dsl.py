@@ -8,8 +8,16 @@ import pytest
 from pydantic import ValidationError
 
 import threetears.evals.contracts.dsl as _dsl
-from threetears.evals.contracts import Firings, Precondition
-from threetears.evals.contracts.dsl import DSLError, Missing, evaluate, evaluate_with_detail, extract_paths, parse
+from threetears.evals.contracts import Firings, Precondition, WorldEvent
+from threetears.evals.contracts.dsl import (
+    NOT_ESTABLISHED,
+    DSLError,
+    Missing,
+    evaluate,
+    evaluate_with_detail,
+    extract_paths,
+    parse,
+)
 from threetears.evals.contracts.host import Triggered, WorldDimension, WorldRegistry
 from threetears.evals.contracts.call_ledger import CallLedger
 
@@ -1099,6 +1107,29 @@ class TestFired:
         assert evaluate('fired_armed("restock_alarm")', fired=worlds_own, **call) is False
         assert evaluate('fired_armed("restock_alarm")', fired=seeds, **call) is True
         assert evaluate('fired_armed("restock_alarm")', fired=Firings(), **call) is False
+
+    def test_a_witnessed_cell_s_fired_armed_is_not_established_negated_or_not(self) -> None:
+        """No seed armed a witnessed cell, so its armed=False events cannot say the seed's event did not fire."""
+        call = {"end_state": {}, "ledger": CallLedger(), "world": None}
+        firing = WorldEvent(
+            kind="event", dimension="restock_alarm", condition="low_stock", caused_by="world", event="restock-1"
+        )
+        witnessed = Firings.of([firing], provenance="witnessed")
+        launched = Firings.of([firing], provenance="commissioned")
+
+        assert witnessed == Firings(dimensions=frozenset({"restock_alarm"}), armed_known=False)
+        for expression in ('fired_armed("restock_alarm")', 'not fired_armed("restock_alarm")'):
+            passed, detail = evaluate_with_detail(expression, fired=witnessed, **call)
+            assert passed is False
+            assert detail == f"{NOT_ESTABLISHED}: fired_armed('restock_alarm') resolved to nothing"
+        assert evaluate('fired("restock_alarm")', fired=witnessed, **call) is True
+        assert evaluate('not fired_armed("restock_alarm")', fired=launched, **call) is True
+        assert evaluate('fired_armed("restock_alarm")', fired=launched, **call) is False
+
+    def test_an_armed_firing_where_none_can_be_known_is_refused(self) -> None:
+        alarm = frozenset({"restock_alarm"})
+        with pytest.raises(ValueError, match="cannot be known"):
+            Firings(dimensions=alarm, armed=alarm, armed_known=False)
 
     def test_an_armed_firing_that_is_not_a_firing_is_refused(self) -> None:
         with pytest.raises(ValueError, match="an armed firing is a firing"):

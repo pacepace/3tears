@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: re-check establishes no more than the original grading could — a witnessed cell's `fired_armed()` stays not established
+
+- **A witnessed cell's ``fired_armed()`` is not established, on grading and on re-check alike.** A witnessed cell had
+  no seed, so its world events all say ``armed=False`` because nothing could mark them armed — not because the cell
+  established that the seed's event did not fire. ``recheck_goal_states`` read those events as "nothing armed fired",
+  so a ``not fired_armed(...)`` the host had graded not established flipped to a PASS on re-check. ``Firings`` gains
+  ``armed_known`` (False refuses any ``armed`` set), and ``fired_armed()`` over it is ``Missing``: failed and not
+  established, negated or not. ``fired()`` is unaffected. **Breaking:** ``Firings.of`` takes a required keyword
+  ``provenance`` (the run's ``apparatus_provenance``) — the one rule both paths read what fired through: the
+  runner's ``WorldSession.fired`` passes ``commissioned``, ``recheck_goal_states`` passes the stored run's, and a
+  host grading a witnessed cell passes ``witnessed``. ``recheck_result`` takes a required keyword ``provenance``.
+  **Adopters:** build a witnessed cell's ``fired`` with ``Firings.of(world_events, provenance="witnessed")``; a
+  launched cell's ``fired_armed()`` re-checks as before.
+
 ### 3tears-evals: a list literal cannot launder a missing value, a failed candidate's stored result counts every check, a cell that ended before turn 1 does not fail a perturbed run, one launch-cost rule, hold checks over an unfired event are provable again
 
 - **A list or tuple literal holding a missing element is itself missing.** ``not contains([state.x], "y")``,
