@@ -35,6 +35,7 @@ from typing import Any
 import pytest
 
 from threetears.evals.contracts import EvalRun, EvalStorage, JudgedArtifact, RubricDim, ValidationFailedError
+from threetears.evals.contracts.judge_attribution import judges_sharing_a_candidate_model
 from threetears.evals.contracts.models import EvalTemplate
 from threetears.evals.run import (
     ArmPlan,
@@ -54,6 +55,7 @@ from threetears.evals.run import (
     price_arms,
     quote_launch,
     require_candidate_model,
+    resolve_judge_pin,
     start_run,
     start_universal_battery,
 )
@@ -331,21 +333,33 @@ def _judged_template() -> EvalTemplate:
 class _Judged:
     """The toy host as a judged kind: a launcher that builds its judge from the request, and a plan of its own."""
 
-    def __init__(self, *, plan_judge_model: str | None = None, wired_simulator: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        plan_judge_model: str | None = None,
+        wired_simulator: str | None = None,
+        role_default: str = "judge-default",
+        alternate: str | None = None,
+        launcher_steps: bool = True,
+    ) -> None:
         self.storage = EvalStorage(InMemoryDocumentStore())
         self.template = _judged_template()
         self.storage.save_template(self.template)
-        toy, _client = toyhost_launch_host(storage=self.storage, clients=lambda role, model, **_: object())
+        settings = TOYHOST_LAUNCH_SETTINGS.model_copy(update={"judge_alternate_model": alternate})
+        toy, _client = toyhost_launch_host(
+            storage=self.storage, clients=lambda role, model, **_: object(), settings=lambda: settings
+        )
         (launchable,) = toy.kinds.values()
         self.quotes: list[ArmQuote] = []
         self.launched: list[LaunchRequest] = []
         eval_host = toy.eval_host
 
         def plan(request: LaunchRequest) -> ArmPlan:
+            model = require_candidate_model(request, None)
             judge = plan_judge(
                 eval_host,
                 request.template,
-                plan_judge_model or request.judge_model or "judge-default",
+                plan_judge_model or resolve_judge_pin(request, role_default, candidate_model=model),
                 request.judge_config_ids,
                 judged_artifact=JudgedArtifact.DOCUMENT,
             )
@@ -362,10 +376,16 @@ class _Judged:
 
         async def launch(request: LaunchRequest) -> EvalRun:
             self.launched.append(request)
+            model = require_candidate_model(request, None)
+            pin = (
+                resolve_judge_pin(request, role_default, candidate_model=model)
+                if launcher_steps
+                else request.judge_model or role_default
+            )
             judge = build_judge_service(
                 eval_host,
                 request.template,
-                request.judge_model or "judge-default",
+                pin,
                 request.judge_config_ids,
                 judged_artifact=JudgedArtifact.DOCUMENT,
             )
@@ -647,3 +667,68 @@ async def test_a_battery_launches_the_template_it_priced_not_one_edited_since():
             await asyncio.sleep(0.01)
 
     assert len(run_ids) == 1 and launched.launched[0].template.candidate_kind == TOY_EXTRACTOR_KIND
+
+
+# =============================================================================
+# A candidate does not judge its own output when an alternate judge stands ready
+# =============================================================================
+
+
+async def _judged_run(judged: _Judged, **arguments: Any) -> EvalRun:
+    """Launch, wait for every run, and return the first arm's."""
+    runs = await judged.launch(**arguments)
+    async with asyncio.timeout(10):
+        while any(judged.host.job_manager.is_active(run.id) for run in runs):
+            await asyncio.sleep(0.01)
+    return runs[0]
+
+
+async def test_an_inherited_judge_on_a_candidates_model_steps_to_the_alternate():
+    judged = _Judged(role_default=RUN_MODELS[0], alternate="judge-alternate")
+
+    run = await _judged_run(judged)
+
+    assert run.judge_model == "judge-alternate" and run.model_role_provenance["judge"] == "inherited"
+    assert run.effective_judges == {_DIM: "judge-alternate"}
+    (quote,) = judged.quotes
+    assert quote.judge is not None and quote.judge.model == "judge-alternate", "priced by the judge that scores"
+    assert judges_sharing_a_candidate_model(run.effective_judges, [run.candidate_model]) == {}
+
+
+@pytest.mark.parametrize(
+    ("judged", "arguments", "judge"),
+    [
+        # Not a candidate: the default stands.
+        ({"role_default": "judge-default", "alternate": "judge-alternate"}, {}, "judge-default"),
+        # A judge the launch named is a choice, recorded and never overridden, even on a candidate's model.
+        (
+            {"role_default": "judge-default", "alternate": "judge-alternate"},
+            {"judge_model": RUN_MODELS[0]},
+            RUN_MODELS[0],
+        ),
+        # No alternate configured, or one that is itself a candidate: the default stands and the overlap is disclosed.
+        ({"role_default": RUN_MODELS[0], "alternate": None}, {}, RUN_MODELS[0]),
+        # The alternate is a SIBLING arm's model: it is a candidate of the launch, so it may not judge either.
+        ({"role_default": RUN_MODELS[0], "alternate": RUN_MODELS[1]}, {"models": list(RUN_MODELS[:2])}, RUN_MODELS[0]),
+    ],
+    ids=["default-not-a-candidate", "named-judge-on-a-candidate", "no-alternate", "alternate-is-a-candidate"],
+)
+async def test_the_judge_stays_where_no_usable_alternate_or_a_choice_applies(judged, arguments, judge):
+    run = await _judged_run(_Judged(**judged), **arguments)
+
+    assert run.judge_model == judge
+    shared = judges_sharing_a_candidate_model(run.effective_judges, [run.candidate_model])
+    assert (shared == {_DIM: judge}) == (judge == RUN_MODELS[0]), "an overlap left in place is disclosed"
+
+
+async def test_a_launcher_that_keeps_a_candidate_judge_where_an_alternate_stood_ready_is_refused_at_the_tail():
+    judged = _Judged(
+        role_default=RUN_MODELS[0], alternate="judge-alternate", launcher_steps=False, plan_judge_model=RUN_MODELS[0]
+    )
+
+    with pytest.raises(
+        ValueError, match="kept the inherited judge .* one of the launch's candidates.*resolve_judge_pin"
+    ):
+        await judged.launch()
+
+    assert judged.storage.query_eval_runs(TOYHOST_SCOPE) == []

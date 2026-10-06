@@ -61,7 +61,7 @@ from threetears.observe import get_logger
 log = get_logger(__name__)
 
 
-EVAL_SCHEMA_VERSION: int = 6
+EVAL_SCHEMA_VERSION: int = 7
 """The schema version every stored eval document is written under, and the only one a read accepts.
 
 Bump it when a stored shape changes so that a document written before the change would not mean
@@ -81,6 +81,10 @@ cassette corpus — ``EvalCassette`` keyed by corpus and occurrence, ``EvalRun.c
 place of ``cassette_version`` on the run and the result — and the background-work spend
 ``AsyncDelivery`` carries; and ``WorldEvent.event``, the identity of the event a firing names, required
 on every firing so a firing's ``armed`` is the event's provenance rather than the dimension's.)
+
+**v7**: a calibration rating records who KIND of rater wrote it (``CalibrationRating.rater_kind``, a person or
+an agent), required, so an agent's rating is never read as a person's. A rating written before it says
+nothing about which it was, so nothing written under v6 loads.
 """
 
 
@@ -956,8 +960,13 @@ def _derived_rating_id(data: dict[str, Any]) -> str:
         return ""
 
 
+#: Who wrote a calibration rating: a ``person``, whose rating is the human side of judge calibration, or an
+#: ``agent`` (a model acting through a tool), whose rating is not.
+RaterKind = Literal["person", "agent"]
+
+
 class CalibrationRating(EvalDocumentModel):
-    """A person's score for one judged dimension of one result — the human side of judge calibration.
+    """A rater's score for one judged dimension of one result — from a person, the human side of judge calibration.
 
     A standalone document, never embedded on the result: a rating is written after the run, by
     someone who is not the run, and a result is a measurement the engine does not rewrite to add an
@@ -984,8 +993,16 @@ class CalibrationRating(EvalDocumentModel):
     rater: str = Field(
         min_length=1,
         description=(
-            "Who rated, as the host names its people (an account, a seat). Agreement pools raters and lists "
-            "them; one rater's second rating of the same dimension of the same result replaces the first."
+            "Who rated, as the host names them: a person's account or seat, or an agent's identity. Agreement pools "
+            "a person's ratings with other people's and lists them; one rater's second rating of the same dimension "
+            "of the same result replaces the first."
+        ),
+    )
+    rater_kind: RaterKind = Field(
+        description=(
+            "Whether a person or an agent wrote the rating. Only a person's rating calibrates the judge against "
+            "people: an agent's is another model's opinion, read apart and never pooled into judge-versus-human "
+            "agreement."
         ),
     )
     id: str = Field(
@@ -3869,6 +3886,7 @@ __all__ = [
     "NON_TERMINAL_RUN_STATUSES",
     "OUTCOME_DIM_ID",
     "ROUND_DONE",
+    "RaterKind",
     "TERMINAL_RUN_STATUSES",
     "TRANSCRIPT_DIM_ID",
     "ActorPolicy",

@@ -154,6 +154,7 @@ def _rescore(**fields: Any) -> JudgeRescore:
                 result_id="r-1",
                 rubric_dim=name,
                 rater="host",
+                rater_kind="person",
                 scale="ordinal",
                 score=3,
                 reason="why",

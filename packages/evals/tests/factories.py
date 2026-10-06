@@ -476,6 +476,7 @@ def make_calibration_rating(**overrides: Any) -> CalibrationRating:
         "result_id": "r-1",
         "rubric_dim": "conversation.tone",
         "rater": "host",
+        "rater_kind": "person",
         "scale": "ordinal",
         "score": 4,
         "reason": "warm and on topic",

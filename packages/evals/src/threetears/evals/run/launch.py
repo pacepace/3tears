@@ -118,6 +118,13 @@ class LaunchSettings(BaseModel):
             ``enforcement_enabled`` is. Per LAUNCH, as ``max_cost_usd`` is per run: a battery is one launch
             per template, so a battery of N generating templates may spend up to N times this out of run,
             as its runs may spend up to their count times their cap.
+        judge_alternate_model: The judge a launch's arms are scored by instead of the judge role's default
+            when that default IS one of the launch's candidate models — a model grading its own output —
+            provided it is itself none of them (:func:`resolve_judge_pin`), spelled as the host's clients name
+            the model they resolve. It never overrides a judge the launch named, nor a model a judge config
+            pins per dim: those are choices. ``None`` substitutes nothing, and a run judged on a candidate's
+            model says so on every surface that lists its judges
+            (:func:`~threetears.evals.contracts.judge_attribution.judges_sharing_a_candidate_model`).
         setting_names: What the host calls each of the fields above, keyed by field name, so a
             refusal names the knob an operator turns. A field the host does not name here is
             called by its own name; the engine names no host setting of its own.
@@ -132,6 +139,7 @@ class LaunchSettings(BaseModel):
     max_cost_usd: float = Field(gt=0)
     max_metered_calls: int | None = Field(gt=0)
     max_out_of_run_cost_usd: float = Field(gt=0)
+    judge_alternate_model: str | None = Field(default=None, min_length=1)
     setting_names: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -615,8 +623,9 @@ class LaunchGroup:
     Attributes:
         id: The group's id, stamped on every member run.
         candidate_models: Every candidate model the launch names, across all its arms — the set the
-            judge is chosen against, so a candidate that is also the default judge moves every
-            sibling's judge rather than its own run's alone.
+            judge is chosen against (:func:`resolve_judge_pin`, and the launch tail that holds a launcher to
+            it), so a candidate that is also the default judge moves every sibling's judge rather than its
+            own run's alone.
         members: The prepared runs, their work functions and their job timeouts.
     """
 
@@ -2450,6 +2459,49 @@ async def launch_as_group(
         ticket.release()
 
 
+def resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_model: str) -> str:
+    """The run-level judge pin an arm is scored under: the launch's, or the role default stepped off a candidate.
+
+    A launch that names a judge gets that judge, whatever it is: a choice is recorded, not overridden. One
+    that names none inherits the judge role's default — unless that default is one of the launch's candidate
+    models (every arm's, :attr:`LaunchGroup.candidate_models`, and this arm's own, which is the kind's default
+    for an arm that named none), in which case :attr:`LaunchSettings.judge_alternate_model` scores instead,
+    provided it is set and is itself none of the candidates. Otherwise the default stands, and the run's
+    surfaces disclose the overlap
+    (:func:`~threetears.evals.contracts.judge_attribution.judges_sharing_a_candidate_model`). A judged kind
+    calls this in its ``plan_arm`` and in its launcher alike — the plan's judges and the launcher's must agree
+    — and the launch tail refuses a launcher that kept a candidate's model where an alternate stood ready.
+
+    Args:
+        request: The arm.
+        role_default: The judge role's default model, resolved as the host's clients resolve it.
+        candidate_model: The model the arm runs on — the one it named, or the kind's default.
+
+    Returns:
+        The judge pin, resolved.
+    """
+    if request.judge_model is not None:
+        return request.judge_model
+    candidates = _candidates_of(request, candidate_model)
+    alternate = request.settings.judge_alternate_model
+    if role_default in candidates and alternate is not None and alternate not in candidates:
+        return alternate
+    return role_default
+
+
+def _candidates_of(request: LaunchRequest, candidate_model: str) -> frozenset[str]:
+    """Every candidate model of ``request``'s launch: each arm's, and this arm's own.
+
+    Args:
+        request: The arm.
+        candidate_model: The model it runs on.
+
+    Returns:
+        The candidates.
+    """
+    return frozenset({*request.launch_group.candidate_models, candidate_model})
+
+
 def require_candidate_model(request: LaunchRequest, default: str | None) -> str:
     """The model ``request``'s arm runs on — the one it named, or the kind's role default — or the refusal.
 
@@ -2518,6 +2570,20 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
         raise ValueError(
             f"the launch pinned judge {request.judge_model!r} and kind {kind!r}'s launcher wired "
             f"{judge.model if judge is not None else 'no judge'!r}; a pinned judge is the judge"
+        )
+    alternate = request.settings.judge_alternate_model
+    candidates = _candidates_of(request, candidate_model)
+    if (
+        request.judge_model is None
+        and judge is not None
+        and judge.model in candidates
+        and alternate is not None
+        and alternate not in candidates
+    ):
+        raise ValueError(
+            f"kind {kind!r}'s launcher kept the inherited judge {judge.model!r}, one of the launch's candidates, "
+            f"where {request.settings.name_of('judge_alternate_model')} names {alternate!r} to score instead; a "
+            "candidate would grade its own output — resolve the pin with resolve_judge_pin"
         )
     if request.judge_config_ids and (judge is None or judge.selection != request.judge_config_ids):
         raise ValueError(
@@ -3504,6 +3570,7 @@ __all__ = [
     "price_arms",
     "quote_launch",
     "require_candidate_model",
+    "resolve_judge_pin",
     "settable_apparatus",
     "start_run",
     "start_universal_battery",

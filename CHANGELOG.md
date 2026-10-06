@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: a candidate does not judge itself where an alternate stands ready; a rating says whether a person wrote it
+
+- **An inherited judge on a candidate's model steps to the host's alternate.** ``LaunchGroup.candidate_models``
+  was stored and read by nothing, so its docstring's promise — a candidate that is also the default judge moves
+  every sibling's judge — was false. New ``LaunchSettings.judge_alternate_model`` (optional) and
+  ``resolve_judge_pin(request, role_default, candidate_model=...)``: a launch naming a judge keeps it; one
+  naming none inherits the role default unless that default is one of the launch's candidates (any arm's, or this
+  arm's own), when the alternate scores instead, provided it is set and is itself no candidate. Otherwise the
+  default stands and the overlap is disclosed as before (``judges_sharing_a_candidate_model``). A per-dim config
+  model is a choice and never stepped. The launch tail refuses a launcher that kept an inherited candidate judge
+  where a usable alternate was configured. **Adopters:** call ``resolve_judge_pin`` in a judged kind's
+  ``plan_arm`` and launcher alike (they must agree); set ``judge_alternate_model`` where a candidate can also be
+  the judge role's default.
+- **A calibration rating records whether a person or an agent wrote it.** **Breaking:** ``CalibrationRating``
+  gains required ``rater_kind`` (``"person"`` / ``"agent"``, new ``RaterKind``; ``rater`` stays the identity —
+  a person's account or an agent's), and ``rate_result`` takes ``rater_kind=``. ``judge_agreement`` (the bundle's
+  ``judge_agreement``, a reporter run's ``rating_agreement``) pairs only people's ratings; an agent's is listed as
+  unpaired with the new reason ``rated_by_an_agent`` and moves no n, kappa or rater list. **``EVAL_SCHEMA_VERSION``
+  6 → 7**: a v6 rating cannot say who wrote it, so, as every bump does, nothing written under v6 loads — drop the
+  stored eval documents on upgrade. The package has no ``rate_result`` action or op; a host exposing ratings
+  through its own tool (an MCP action) passes ``rater_kind="agent"`` for an agent caller, whatever account it acts
+  for.
+
 ### 3tears-evals: an arm is priced by the judges it will be scored by, and the estimate is the launch's own price
 
 - **An arm is priced, and held, by its effective judges and its resolved simulator.** **Breaking:**
