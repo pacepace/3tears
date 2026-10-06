@@ -1677,8 +1677,9 @@ RoleModelOrigin = Literal["chosen", "inherited", "alternate"]
 #: :data:`ModelRoleOrigin`: that literal's two values cannot express the third state this
 #: cascade really has — a run can be bounded by nothing at all.
 #:
-#: * ``chosen`` — the launch passed ``max_cost_usd``, so re-launching with the same
-#:   arguments runs under the same ceiling.
+#: * ``chosen`` — the launch passed ``max_cost_usd``, at or below the host's ceiling (a launch may
+#:   only lower it, :func:`~threetears.evals.run.ceilings.refuse_raised_ceiling`), so re-launching
+#:   with the same arguments runs under the same ceiling while the host's stays at or above it.
 #: * ``inherited`` — the launch passed nothing and the host's configured default
 #:   (``LaunchSettings.max_cost_usd``) supplied it, so the same launch arguments run under
 #:   whatever that setting has since become. This is the one that moves under a run's feet, and

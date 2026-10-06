@@ -74,13 +74,14 @@ python -m threetears.evals spend  --host myapp.evals:build_host --scope dev [--p
 
 `run` launches, waits and prints each run's summary. Each `--model` is one arm and one run; with no
 `--model` the kind runs one arm on its own default model, and a kind with no default refuses the launch.
-`--k` is the repeats per case (the launch default when omitted); `--max-cost-usd` caps each run in place of
-the host's default; `--n-variations` and `--variation-model` generate that many cases first (priced against
+`--k` is the repeats per case (the launch default when omitted); `--max-cost-usd` caps each run at or
+below the host's ceiling (a launch may only lower that ceiling; a value above it is refused); `--n-variations` and `--variation-model` generate that many cases first (priced against
 the host's out-of-run cap, outside the runs' caps); `--apparatus-settings` sets host-declared apparatus
 values as a JSON object — each as `start_run`'s argument of the same name. `report` prints the campaign's
 report (below) — its analysis, or, when it has none, a code-only report of its evidence; `bundle` prints the
 analysis bundle a generation would read, as JSON. Neither calls a model. `spend` prints what the engine
-spent outside any run in the scope — case generations and rubric proposals — narrowed by its flags.
+spent outside any run in the scope — case generations, rubric proposals and analysis generations — narrowed by
+its flags.
 
 Exit codes: `0` done; `1` a launched run did not complete; `2` refused (a host that cannot be loaded, a
 template that is not there, a launch the engine refuses, a malformed command line); `3` failed on an error
@@ -367,7 +368,16 @@ Every surface calls the same **operations** (`threetears.evals.ops`): one functi
 does, over an `OpsHost` — the `LaunchHost`, plus `AnalysisGeneration` (the prompt, output cap and budget a
 background generation runs under) — returning a typed model. Long work is a **job**: `run_launch` and
 `analysis_generate` return `JobsStarted`, and `job_poll` / `job_cancel` take any job id either returned. A
-job id names the durable record its work writes, so it is still answerable after a restart.
+job id names the durable record its work writes, so it is still answerable after a restart. A job is
+answered only in the caller's scope: another scope's generation reads `lost` on poll and is refused on cancel.
+
+Both spend operations are bounded in dollars before they spend. A launch's runs are held to the host's per-run
+ceiling, which a launch's `max_cost_usd` may only lower — one above it is refused on every surface. An analysis
+generation is held to the host's out-of-run cap (`LaunchSettings.max_out_of_run_cost_usd`): its first call is
+priced before the job starts (`analysis_estimate` prices it without spending), its one repair round-trip
+before that is sent, and each call is ledgered under purpose `analysis`, so `scope_out_of_run_spend` reads it.
+A host's own `spend` action carries no such obligation: the class is a label a tool cut splits on, metered only
+as far as the host's handler meters it.
 
 The **action catalogue** (`threetears.evals.actions`) declares each operation once for an agent: a `noun_verb`
 name, a permission class (`read`, `spend`, `write`, `destructive`), flat described parameters, a result and

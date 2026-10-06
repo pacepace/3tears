@@ -36,8 +36,12 @@ vega = [
 ]
 
 # The FastMCP transport (`threetears.evals.transports.fastmcp`): mounts the action catalogue as tools
-# on a FastMCP server. Optional, so the engine and its catalogue install without an MCP stack; the
-# floor is the first release an adopting host is known to run, and the cap the major this is tested against.
+# on a FastMCP server. Optional, so the engine and its catalogue install without an MCP stack. The suite
+# runs against the locked release; the floor is the first release an adopting host is known to run, and is
+# tested by running the transport's tests against it rather than assumed:
+#   uv run --with "fastmcp==3.4.2" pytest packages/evals/tests/test_fastmcp_transport.py
+# Re-run that when the transport starts using a fastmcp API it did not, and raise the floor if it fails.
+# The cap is the major this is tested against.
 fastmcp = ["fastmcp>=3.4.2,<4"]
 
 [project.urls]

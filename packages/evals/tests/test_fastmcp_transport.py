@@ -131,3 +131,23 @@ async def test_the_caller_is_resolved_for_every_call_and_may_be_async() -> None:
         second, _, _ = await _text(client, "evals", {"action": "templates_list"})
     assert asked == ["asked", "asked"]
     assert first == "campaigns (0)" and second == "templates (0)", "the resolved scope, not the toy host's, was read"
+
+
+async def test_a_cap_above_the_hosts_is_refused_through_the_transport() -> None:
+    """An agent over MCP cannot raise the host's per-run ceiling by naming a larger ``max_cost_usd``."""
+    fixture = ops_fixture()
+    above = fixture.host.launch.settings().max_cost_usd * 10
+    async with Client(_served(fixture)) as client:
+        text, _, is_error = await _text(
+            client,
+            "evals",
+            {
+                "action": "run_launch",
+                "template_id": toyhost_template().id,
+                "subject_id": TOYHOST_SUBJECT.subject_id,
+                "models": [RUN_MODELS[0]],
+                "max_cost_usd": above,
+            },
+        )
+    assert is_error and "a launch may only lower the host's ceiling" in text
+    assert fixture.host.launch.job_manager.admitted_count == 0

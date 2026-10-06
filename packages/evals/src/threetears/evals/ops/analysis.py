@@ -20,19 +20,21 @@ from pydantic import Field
 from threetears.evals.analysis.campaigns import create_campaign, list_campaigns
 from threetears.evals.analysis.report import Report, ReportBasis, report_html, report_markdown
 from threetears.evals.analysis.service import (
+    AnalysisGenerationEstimate,
     campaign_report,
+    estimate_analysis_generation,
     get_analysis,
     list_analyses,
     prepare_analysis_generation,
     run_analysis_generation,
 )
 from threetears.evals.contracts.base import EvalBaseModel, VerbatimText
-from threetears.evals.contracts.campaign import EvalCampaign
+from threetears.evals.contracts.campaign import EvalAnalysis, EvalCampaign
 from threetears.evals.contracts.errors import ConflictError, ValidationFailedError
 from threetears.evals.contracts.host import EvalHost
-from threetears.evals.ops.host import OpsHost
-from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id
-from threetears.evals.run.curation import delete_analysis, set_campaign_archived
+from threetears.evals.ops.host import AnalysisGeneration, OpsHost
+from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, generation_key
+from threetears.evals.run.curation import delete_analysis, set_analysis_archived, set_campaign_archived
 
 #: The forms a report is read in: Markdown (the memo, and what an agent reads), its canonical JSON (what
 #: the published schema validates) and HTML that reads without any script.
@@ -176,6 +178,43 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
     return _campaign_line(set_campaign_archived(host.storage, campaign_id, scope_id, archived=archived))
 
 
+def _analysis_line(analysis: EvalAnalysis) -> AnalysisLine:
+    return AnalysisLine(
+        id=analysis.id,
+        campaign_id=analysis.campaign_id,
+        headline=analysis.document.headline,
+        generator_model=analysis.generation.generator_model,
+        generated_at=analysis.generation.generated_at,
+        archived=analysis.archived,
+    )
+
+
+def analysis_archive(
+    host: EvalHost, analysis_id: str, scope_id: str, *, archived: bool, reason: str | None = None
+) -> AnalysisLine:
+    """Archive or restore a stored analysis — the reversible answer to deleting it.
+
+    Archived, the analysis stays readable and marked, and the insights it minted are retracted from every
+    later generation's context for as long as it stays archived; restored, they return
+    (:func:`~threetears.evals.run.set_analysis_archived`).
+
+    Args:
+        host: The host whose store holds the analysis.
+        analysis_id: The analysis.
+        scope_id: The scope it lives in.
+        archived: ``True`` retires it, ``False`` restores it.
+        reason: Why it is archived; cleared on restore.
+
+    Returns:
+        The analysis as persisted.
+
+    Raises:
+        NotFoundError: No analysis with that id in the scope.
+        StorageError: The write failed.
+    """
+    return _analysis_line(set_analysis_archived(host.storage, analysis_id, scope_id, archived=archived, reason=reason))
+
+
 def analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisListing:
     """A campaign's stored analyses.
 
@@ -189,27 +228,68 @@ def analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisLi
     """
     return AnalysisListing(
         campaign_id=campaign_id,
-        analyses=[
-            AnalysisLine(
-                id=analysis.id,
-                campaign_id=analysis.campaign_id,
-                headline=analysis.document.headline,
-                generator_model=analysis.generation.generator_model,
-                generated_at=analysis.generation.generated_at,
-                archived=analysis.archived,
-            )
-            for analysis in list_analyses(host.storage, campaign_id, scope_id)
-        ],
+        analyses=[_analysis_line(analysis) for analysis in list_analyses(host.storage, campaign_id, scope_id)],
     )
 
 
-def generation_key(campaign_id: str, scope_id: str) -> str:
-    """The exclusivity key one campaign's generations share: one runs at a time."""
-    return f"analysis-generation:{scope_id}:{campaign_id}"
+def _generation_settings(host: OpsHost) -> AnalysisGeneration:
+    """The host's generation settings, or a refusal saying it generates none here."""
+    if host.generation is None:
+        raise ValidationFailedError(
+            "this host does not generate analyses here: it was mounted without generation settings "
+            "(OpsHost.generation), so a generation has no prompt, output cap or budget to run under"
+        )
+    return host.generation
+
+
+def _out_of_run_cap(host: OpsHost) -> float | None:
+    """The cap a generation's calls are held to: the host's out-of-run cap, read once, or ``None`` with enforcement off."""
+    settings = host.launch.settings()
+    return settings.max_out_of_run_cost_usd if settings.enforcement_enabled else None
+
+
+async def analysis_estimate(
+    host: OpsHost, campaign_id: str, scope_id: str, *, model: str | None = None
+) -> AnalysisGenerationEstimate:
+    """What a campaign's generation would be priced at, against the cap it would be held to — making no call.
+
+    The start's own assembly and pricing (:func:`analysis_generate` refuses by the same rule), so
+    ``would_start`` is its answer.
+
+    Args:
+        host: The host: its generation settings, its clients and its out-of-run cap.
+        campaign_id: The campaign.
+        scope_id: The scope it lives in.
+        model: The generator model, or ``None`` for the host's default.
+
+    Returns:
+        The estimate.
+
+    Raises:
+        ValidationFailedError: The host generates no analyses here, the bundle has no evidence, or the
+            prompt does not resolve.
+        NotFoundError: No campaign with that id in the scope.
+    """
+    generation = _generation_settings(host)
+    return await estimate_analysis_generation(
+        host.eval_host,
+        campaign_id,
+        scope_id,
+        model=model,
+        resolve_prompt=generation.resolve_prompt,
+        out_of_run_cap_usd=_out_of_run_cap(host),
+    )
 
 
 async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, model: str | None = None) -> JobsStarted:
-    """Check a campaign's generation, then start its paid call as a background job.
+    """Check a campaign's generation, price its first call against the host's out-of-run cap, then start it as a job.
+
+    Every call the generation makes is priced before it is sent against the host's out-of-run cap
+    (``LaunchSettings.max_out_of_run_cost_usd``, when enforcement is on) and ledgered under purpose
+    ``analysis``, so :func:`~threetears.evals.ops.scope_out_of_run_spend` reads it beside case generations
+    and rubric proposals. The first call is priced here, so one over the cap is refused to the caller with
+    nothing spent; the repair round-trip a refused output buys is priced when its prompt exists, against
+    what is left of the same cap.
 
     Args:
         host: The host: its generation settings, its clients and the job manager the task runs under.
@@ -221,17 +301,13 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         The generation's one job.
 
     Raises:
-        ValidationFailedError: The host generates no analyses here, the bundle has no evidence, or the
-            prompt does not resolve.
+        ValidationFailedError: The host generates no analyses here, the bundle has no evidence, the
+            prompt does not resolve, or the first call cannot be priced under the enforced cap or is priced
+            above it.
         ConflictError: A generation of this campaign is already running.
         NotFoundError: No campaign with that id in the scope.
     """
-    generation = host.generation
-    if generation is None:
-        raise ValidationFailedError(
-            "this host does not generate analyses here: it was mounted without generation settings "
-            "(OpsHost.generation), so a generation has no prompt, output cap or budget to run under"
-        )
+    generation = _generation_settings(host)
     manager = host.launch.job_manager
     key = generation_key(campaign_id, scope_id)
     running = manager.active_task_ids(key)
@@ -242,7 +318,12 @@ async def analysis_generate(host: OpsHost, campaign_id: str, scope_id: str, *, m
         )
     eval_host = host.eval_host
     prepared = await prepare_analysis_generation(
-        eval_host, campaign_id, scope_id, model=model, resolve_prompt=generation.resolve_prompt
+        eval_host,
+        campaign_id,
+        scope_id,
+        model=model,
+        resolve_prompt=generation.resolve_prompt,
+        out_of_run_cap_usd=_out_of_run_cap(host),
     )
 
     async def work() -> None:
@@ -341,6 +422,7 @@ def analysis_delete(host: EvalHost, analysis_id: str, scope_id: str, *, confirm:
 
 __all__ = [
     "AnalysisDeleted",
+    "AnalysisGenerationEstimate",
     "AnalysisLine",
     "AnalysisListing",
     "CampaignDefinition",
@@ -349,12 +431,13 @@ __all__ = [
     "ReportDocument",
     "ReportFormat",
     "analyses_list",
+    "analysis_archive",
     "analysis_delete",
+    "analysis_estimate",
     "analysis_generate",
     "campaign_archive",
     "campaign_create",
     "campaigns_list",
-    "generation_key",
     "report_read",
     "serialize_report",
 ]

@@ -543,7 +543,8 @@ class OutOfRunSpendTotals(EvalBaseModel):
 
 
 class OutOfRunSpendReport(EvalBaseModel):
-    """The calls the engine made outside any run in a scope — case generations and rubric proposals — and their totals.
+    """The calls the engine made outside any run in a scope — case generations, rubric proposals and analysis
+    generations — and their totals.
 
     Read off the out-of-run ledger (``EvalStorage.query_out_of_run_spend``), the one record of spend no run's
     cost carries: a run's results sum what its cells spent, never what was spent writing its cases.
@@ -556,7 +557,7 @@ class OutOfRunSpendReport(EvalBaseModel):
         rows: Every matching call, oldest first.
         totals: Every matching call, summed.
         by_purpose: The totals per purpose that appears, in the order purposes first appear.
-        by_launch: The totals per launch group that appears (case generations; a proposal belongs to none, and
+        by_launch: The totals per launch group that appears (case generations; a proposal or an analysis belongs to none, and
             is not listed here), in the order launches first appear.
     """
 
@@ -583,7 +584,7 @@ def scope_out_of_run_spend(
     Args:
         host: The host whose store holds the ledger.
         scope_id: The scope to read.
-        purpose: Only calls made for this purpose (``variation`` or ``proposer``).
+        purpose: Only calls made for this purpose (``variation``, ``proposer`` or ``analysis``).
         launch_group_id: Only the calls one launch's case generation made; its runs carry the same group id.
         template_id: Only calls made for this template.
 
@@ -654,6 +655,7 @@ def out_of_run_spend_text(report: OutOfRunSpendReport) -> str:
         lines.append(
             f"  {row.created_at}  {row.purpose}  {row.model}  {row.outcome}{failed}  {cost} (ceiling {ceiling})"
             f"  template {row.template_id}  launch {row.launch_group_id}"
+            + (f"  campaign {row.campaign_id}" if row.campaign_id is not None else "")
         )
     return "\n".join(lines)
 

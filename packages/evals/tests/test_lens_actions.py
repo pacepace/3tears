@@ -305,6 +305,24 @@ async def test_a_case_count_below_one_is_refused_naming_it(evals: MountedTool) -
     assert "- n_test_cases:" in outcome.text
 
 
+@pytest.mark.parametrize("action", ["run_launch", "launch_estimate"])
+async def test_a_cap_above_the_hosts_is_refused_by_the_operation_and_the_action(
+    evals: MountedTool, action: str
+) -> None:
+    """``max_cost_usd`` may only lower the host's ceiling — on the operation and on the action an agent calls."""
+    fixture = _priced(ops_fixture())
+    above = TOYHOST_COST_CEILING_USD + 1.0
+    arguments = _launching(toyhost_template().id, PRICED_MODEL, max_cost_usd=above)
+    operation = {"run_launch": run_launch, "launch_estimate": launch_estimate}[action]
+
+    with pytest.raises(ValidationFailedError, match=f"max_cost_usd={above} is above the host's ceiling"):
+        await operation(fixture.host, LaunchArguments(**arguments), TOYHOST_SCOPE)
+    outcome = await _call(evals, fixture, {"action": action, **arguments})
+
+    assert outcome.is_error and "a launch may only lower the host's ceiling" in outcome.text
+    assert fixture.host.launch.job_manager.admitted_count == 0
+
+
 async def test_a_status_no_run_carries_is_refused_naming_it(evals: MountedTool) -> None:
     outcome = await _call(evals, ops_fixture(), {"action": "scope_history", "run_status": "done"})
     assert outcome.is_error and "scope_history was called with values it cannot take" in outcome.text

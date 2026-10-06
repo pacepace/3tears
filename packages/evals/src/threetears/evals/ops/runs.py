@@ -60,19 +60,47 @@ class RunListing(EvalBaseModel):
 
 
 class LaunchArguments(EvalBaseModel):
-    """What a launch names: the template, the subject, one arm per model, and the run's own limits."""
+    """What a launch names: the template, the subject, one arm per model, and the run's own limits.
 
-    template_id: str
-    subject_id: str
-    models: list[str] = Field(default_factory=list)
-    k_runs: int = DEFAULT_LAUNCH_K_RUNS
-    n_variations: int = 0
-    variation_model: str | None = None
-    overlays: dict[str, Any] | None = None
-    apparatus_settings: dict[str, Any] | None = None
-    max_cost_usd: float | None = None
-    judge_model: str | None = None
-    simulator_model: str | None = None
+    The one declaration of a launch's arguments — their types, bounds and descriptions. The ``run_launch``
+    and ``launch_estimate`` actions' parameters derive from it, so the operation and what an agent is
+    offered cannot drift apart.
+    """
+
+    template_id: str = Field(min_length=1, description="A template's id, as templates_list names it.")
+    subject_id: str = Field(min_length=1, description="The subject the runs measure, as the host names it.")
+    models: list[str] = Field(
+        default_factory=list,
+        description="Candidate models, one arm and one run each; empty runs the kind's own default.",
+    )
+    k_runs: int = Field(default=DEFAULT_LAUNCH_K_RUNS, ge=1, description="Repeats of every case, for pass^k.")
+    n_variations: int = Field(
+        default=0, ge=0, description="New cases to generate from the template's variation axes; 0 runs its stored cases."
+    )
+    variation_model: str | None = Field(
+        default=None,
+        description="The model that writes the template's llm variation axes' values; required when n_variations "
+        "generates for such an axis, refused otherwise.",
+    )
+    overlays: dict[str, Any] | None = Field(
+        default=None, description="The knobs this launch turns on the template's kind, by field."
+    )
+    apparatus_settings: dict[str, Any] | None = Field(
+        default=None,
+        description="Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits "
+        "in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused "
+        "otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two.",
+    )
+    max_cost_usd: float | None = Field(
+        default=None,
+        gt=0,
+        description="A per-run cost cap in dollars, at or below the host's ceiling; it can only lower that ceiling, "
+        "and a value above it is refused.",
+    )
+    judge_model: str | None = Field(default=None, description="The judge model, where the kind is model-judged.")
+    simulator_model: str | None = Field(
+        default=None, description="The simulated user's model, where the kind has one."
+    )
 
 
 class RunDeleted(EvalBaseModel):

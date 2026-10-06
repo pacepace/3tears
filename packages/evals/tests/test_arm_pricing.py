@@ -195,6 +195,91 @@ async def test_a_stored_case_arm_over_a_cap_the_launch_named_is_refused_too():
     launched.assert_nothing_launched()
 
 
+async def test_a_cap_over_the_hosts_tells_the_operator_only_the_host_can_raise_it():
+    """An arm over the host's own ceiling is not told "a larger max_cost_usd raises the cap" — a launch cannot."""
+    launched = _Launched(pricer=_at(9.0))
+
+    with pytest.raises(ValidationFailedError, match="the cap is the host's ceiling, which a launch cannot raise"):
+        await launched.launch()
+    with pytest.raises(ValidationFailedError, match=f"up to the host's \\${TOYHOST_COST_CEILING_USD:.2f} ceiling"):
+        await launched.launch(max_cost_usd=1.5)
+
+    launched.assert_nothing_launched()
+
+
+# =============================================================================
+# A launch's override may only LOWER the host's ceiling — refused on every launch surface, before anything is paid
+# =============================================================================
+
+_ABOVE_THE_HOSTS_USD = TOYHOST_COST_CEILING_USD + 0.5
+
+
+async def test_a_launch_naming_a_cap_above_the_hosts_is_refused_before_anything_is_priced():
+    launched = _Launched()
+
+    with pytest.raises(ValidationFailedError, match=f"max_cost_usd={_ABOVE_THE_HOSTS_USD} is above the host's ceiling"):
+        await launched.launch(max_cost_usd=_ABOVE_THE_HOSTS_USD)
+
+    assert launched.quotes == [], "refused on its arguments, before any arm was priced"
+    launched.assert_nothing_launched()
+    # At the ceiling is a choice, not a raise.
+    runs = await launched.launch(max_cost_usd=TOYHOST_COST_CEILING_USD)
+    assert {(run.max_cost_usd, run.max_cost_usd_origin) for run in runs} == {(TOYHOST_COST_CEILING_USD, "chosen")}
+
+
+async def test_a_launch_naming_a_metered_ceiling_above_the_hosts_is_refused():
+    launched = _Launched()
+    above = (TOYHOST_LAUNCH_SETTINGS.max_metered_calls or 0) + 1
+
+    with pytest.raises(ValidationFailedError, match=f"max_metered_calls={above} is above the host's ceiling"):
+        await launched.launch(max_metered_calls=above)
+
+    launched.assert_nothing_launched()
+
+
+async def test_the_lower_only_rule_holds_with_enforcement_off():
+    """The argument's contract does not change with the host's enforcement switch."""
+    launched = _Launched(settings=TOYHOST_LAUNCH_SETTINGS.model_copy(update={"enforcement_enabled": False}))
+
+    with pytest.raises(ValidationFailedError, match="a launch may only lower the host's ceiling"):
+        await launched.launch(max_cost_usd=_ABOVE_THE_HOSTS_USD)
+
+    launched.assert_nothing_launched()
+
+
+async def test_a_quote_naming_a_cap_above_the_hosts_is_refused():
+    launched = _Launched()
+
+    with pytest.raises(ValidationFailedError, match="a launch may only lower the host's ceiling"):
+        await quote_launch(
+            launched.host,
+            template_id=toyhost_template().id,
+            subject_id=TOYHOST_SUBJECT.subject_id,
+            models=list(RUN_MODELS),
+            max_cost_usd=_ABOVE_THE_HOSTS_USD,
+            scope_id=TOYHOST_SCOPE,
+        )
+
+    assert launched.quotes == []
+
+
+async def test_a_battery_naming_a_cap_above_the_hosts_is_refused_before_launching_any():
+    launched = _Launched(_universal("first"), _universal("second"))
+
+    with pytest.raises(ValidationFailedError, match="a launch may only lower the host's ceiling.*Nothing was launched"):
+        await start_universal_battery(
+            launched.host,
+            TOYHOST_SUBJECT.subject_id,
+            scope_id=TOYHOST_SCOPE,
+            models=[RUN_MODELS[0]],
+            max_cost_usd=_ABOVE_THE_HOSTS_USD,
+            preflight=_no_preflight,
+        )
+
+    assert launched.quotes == []
+    launched.assert_nothing_launched()
+
+
 @pytest.mark.parametrize(
     ("unpriceable", "said"),
     [

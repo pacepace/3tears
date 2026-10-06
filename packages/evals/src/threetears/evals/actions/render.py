@@ -24,6 +24,8 @@ from pydantic import ValidationError
 from threetears.evals.contracts.errors import EvalServiceError
 from threetears.evals.ops import (
     AnalysisDeleted,
+    AnalysisGenerationEstimate,
+    AnalysisLine,
     AnalysisListing,
     CampaignLine,
     CampaignListing,
@@ -244,14 +246,31 @@ def render_campaigns(listing: CampaignListing) -> str:
     return "\n".join([f"campaigns ({len(listing.campaigns)})", *(render_campaign(c) for c in listing.campaigns)])
 
 
+def render_analysis_line(analysis: AnalysisLine) -> str:
+    """One stored analysis on one line."""
+    archived = ", archived" if analysis.archived else ""
+    return f"- {analysis.id}: {analysis.headline} ({analysis.generator_model}, {analysis.generated_at}{archived})"
+
+
 def render_analyses(listing: AnalysisListing) -> str:
     """A campaign's analyses."""
     lines = [f"analyses of campaign {listing.campaign_id} ({len(listing.analyses)})"]
-    lines += [
-        f"- {a.id}: {a.headline} ({a.generator_model}, {a.generated_at}{', archived' if a.archived else ''})"
-        for a in listing.analyses
-    ]
+    lines += [render_analysis_line(a) for a in listing.analyses]
     return "\n".join(lines)
+
+
+def render_analysis_estimate(estimate: AnalysisGenerationEstimate) -> str:
+    """A generation's price before it starts: its first call's ceiling against the cap, and whether it would start."""
+    ceiling = (
+        f"${estimate.first_call_ceiling_usd:.4f}" if estimate.first_call_ceiling_usd is not None else "unpriceable"
+    )
+    cap = f"${estimate.cap_usd:.2f}" if estimate.cap_usd is not None else "none enforced"
+    verdict = "would start" if estimate.would_start else f"would be refused: {estimate.refusal}"
+    return (
+        f"estimate: analysis of campaign {estimate.campaign_id} on {estimate.generator_model} — first call priced at "
+        f"up to {ceiling}, out-of-run cap {cap}; {verdict}. A generation makes at most {estimate.max_calls} call(s): "
+        "a refused output buys one repair round-trip, priced against what is left of the cap before it is sent."
+    )
 
 
 def render_report(document: ReportDocument) -> str:
@@ -306,6 +325,8 @@ __all__ = [
     "refuse_unknown_action",
     "render_analyses",
     "render_analysis_deleted",
+    "render_analysis_estimate",
+    "render_analysis_line",
     "render_campaign",
     "render_campaigns",
     "render_estimate",

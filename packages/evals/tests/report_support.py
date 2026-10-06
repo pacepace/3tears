@@ -69,7 +69,7 @@ async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
         return PROMPT
 
     prepared = await prepare_analysis_generation(
-        host, campaign.id, campaign.scope_id, model=None, resolve_prompt=prompt
+        host, campaign.id, campaign.scope_id, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
     )
     built[0].completion.content = json.dumps(_with_a_chart(prepared.bundle))
     analysis, _ = await run_analysis_generation(host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)

@@ -125,8 +125,7 @@ from threetears.evals.contracts.usage_capture import (
 from threetears.evals.run.cassette_proxy import CassetteCell, CassetteLane
 from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeService, fold_judge_outcomes
 from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
-from threetears.evals.contracts.offload import run_blocking
-from threetears.evals.run.offload import wait_through_cancellation
+from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:

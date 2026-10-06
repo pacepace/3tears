@@ -69,6 +69,7 @@ from threetears.evals.analysis.campaigns import (
 )
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.generator import (
+    CallAdmission,
     analysis_gen_request_settings_for,
     first_request,
     generate_analysis,
@@ -154,10 +155,13 @@ from threetears.evals.analysis.report import (
     report_markdown,
 )
 from threetears.evals.analysis.service import (
+    AnalysisGenerationEstimate,
+    BudgetedGenerator,
     PreparedGeneration,
     analysis_report,
     campaign_report,
     describe_insight_id_filters,
+    estimate_analysis_generation,
     finding_chart_intent,
     freeze_reporter_case,
     get_analysis,
@@ -364,6 +368,9 @@ __all__ = [
     "ScoreExport",
     "SeriesPoint",
     "SimpsonsFlag",
+    "AnalysisGenerationEstimate",
+    "CallAdmission",
+    "BudgetedGenerator",
     "PreparedGeneration",
     "PreparedReporter",
     "ProjectionExclusions",
@@ -443,6 +450,7 @@ __all__ = [
     "multi_rig_variants",
     "orphaned_runs",
     "pivot",
+    "estimate_analysis_generation",
     "prepare_analysis_generation",
     "program_budget",
     "prompt_content_version",

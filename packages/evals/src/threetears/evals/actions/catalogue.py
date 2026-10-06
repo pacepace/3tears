@@ -43,6 +43,13 @@ from threetears.evals.contracts.errors import EvalServiceError
 from threetears.evals.ops import JobsStarted, OpsHost
 
 #: What an action does to the world, which decides the tools that may mount it.
+#:
+#: ``spend`` says an action may cost money; it is a label a tool cut splits on, not a promise that
+#: the engine meters it. The engine's own spend actions are priced and capped before they spend
+#: (``run_launch`` against each run's cost cap, which a launch may only lower; ``analysis_generate``
+#: against the host's out-of-run cap). :class:`Action` places no such obligation on a host-contributed
+#: ``spend`` action — as it does require a ``confirm`` of a destructive one and a job of long work — so a
+#: host action is metered exactly as far as the host's own handler meters it.
 PermissionClass = Literal["read", "spend", "write", "destructive"]
 
 #: The classes, in the order help lists them.
