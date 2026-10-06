@@ -16,16 +16,24 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 
 import pytest
 
 from threetears.evals.analysis import BaselineBarProposals, propose_bars
 from threetears.evals.contracts import EvalCampaign, EvalResult, EvalRun, NotFoundError, ValidationFailedError
-from threetears.evals.contracts.host import EvalHost
+from threetears.evals.contracts import MetricDescriptor
+from threetears.evals.contracts.host import EvalHost, MeasureRegistry
+from threetears.evals.contracts.host.bars import BarRegistrationError
 from packages.evals.tests.factories import memory_storage
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.fixtures.toyhost.profile import FIELD_COUNT_ERROR, toyhost_profile
+from packages.evals.tests.fixtures.toyhost.profile import (
+    FIELD_COUNT_ERROR,
+    TOYHOST_EXTRACTION_FAMILY,
+    TOYHOST_MEASURES,
+    toyhost_profile,
+)
 
 BEHAVIOR = "extract_invoice_fields"
 
@@ -41,7 +49,12 @@ def _batch(chunk_tokens: int) -> EvalRun:
     )
 
 
-def _host(batches: Sequence[tuple[EvalRun, list[EvalResult]]], campaign_id: str = "baseline") -> EvalHost:
+def _host(
+    batches: Sequence[tuple[EvalRun, list[EvalResult]]],
+    campaign_id: str = "baseline",
+    *,
+    extra_measures: Sequence[MetricDescriptor] = (),
+) -> EvalHost:
     storage, _ = memory_storage()
     for run, results in batches:
         storage.save_eval_run(run)
@@ -59,7 +72,30 @@ def _host(batches: Sequence[tuple[EvalRun, list[EvalResult]]], campaign_id: str 
             created_by="test:fixture",
         )
     )
-    return toyhost_host(storage=storage)
+    profile = toyhost_profile()
+    if extra_measures:
+        profile = replace(profile, measures=_measures(*extra_measures))
+    return toyhost_host(storage=storage, profile=profile)
+
+
+def _measures(*extra: MetricDescriptor) -> MeasureRegistry:
+    """The toy host's measures plus ``extra``."""
+    return MeasureRegistry((*TOYHOST_MEASURES, *extra), families=(TOYHOST_EXTRACTION_FAMILY,))
+
+
+def _directionless(name: str, data_type: str | None, *, diagnostic: bool = False) -> MetricDescriptor:
+    """A code-graded measure with no better end, of ``data_type``."""
+    return MetricDescriptor.model_validate(
+        {
+            "name": name,
+            "data_type": data_type,
+            "family": TOYHOST_EXTRACTION_FAMILY.name,
+            "transferability_class": "mechanical",
+            "attribution_scope": "subsystem",
+            "description": f"A {data_type} measure with no better end.",
+            "diagnostic": diagnostic,
+        }
+    )
 
 
 def _measured(chunk_tokens: int, *, field_accuracy: float) -> tuple[EvalRun, list[EvalResult]]:
@@ -151,6 +187,45 @@ class TestWhatAProposalReads:
         before = host.profile.bars.bars
         _proposals(host)
         assert host.profile.bars.bars == before
+
+
+class TestEachDirectionlessKindIsNamedForWhatItIs:
+    """A directionless measure is described by its declared kind — a text measure is not "a raw count"."""
+
+    @pytest.mark.parametrize(
+        ("data_type", "diagnostic", "what"),
+        [
+            ("numeric", False, "a raw count"),
+            ("numeric", True, "a diagnostic"),
+            ("text", False, "a text measure"),
+            ("categorical", False, "a categorical measure"),
+            ("boolean", False, "a boolean condition"),
+            (None, False, "an undescribed measure"),
+        ],
+    )
+    def test_the_ratchet_names_the_measure_s_kind(self, data_type: str | None, diagnostic: bool, what: str) -> None:
+        measure = _directionless("reviewer_note", data_type, diagnostic=diagnostic)
+        with pytest.raises(BarRegistrationError, match=f"declares no better direction — {what}"):
+            toyhost_profile().bars.propose(
+                behavior=BEHAVIOR,
+                measure=measure.name,
+                observed=1.0,
+                measures=_measures(measure),
+                rationale="no such thing as clearing this",
+            )
+
+    def test_a_text_measure_the_cell_carries_is_named_a_text_measure_by_the_proposer(self) -> None:
+        """End to end: the measure reaches the cell as text, and the not-proposed reason says so."""
+        note = _directionless("reviewer_note", "text")
+        run, results = _measured(256, field_accuracy=0.95)
+        results = [
+            result.model_copy(update={"host_measures": {**result.host_measures, note.name: "looks fine"}})
+            for result in results
+        ]
+
+        result = _proposals(_host([(run, results)], extra_measures=(note,)))
+
+        assert result.not_proposed[note.name] == "it is a text measure, with no better end to clear"
 
 
 class TestRefusals:
