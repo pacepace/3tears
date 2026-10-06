@@ -3367,6 +3367,89 @@ class JudgeRescore(EvalDocumentModel):
     )
 
 
+class RepeatedScore(EvalDocumentModel):
+    """One dimension's stored judge score, asked again of the same judge from the same evidence.
+
+    The pair a judge's self-agreement is read from: ``first_score`` is the score the result held
+    when the repeat was asked, and the repeat's answer sits beside it. Both are carried here rather
+    than the first read back off the result later, because a re-judge may rewrite the result's
+    score afterwards, and a pair whose halves were read at different moments is not one pair.
+    """
+
+    dim: DimName = Field(min_length=1, description="The dimension asked again.")
+    scale: RubricScale = Field(description="The scale the first score was on, and the repeat was asked on.")
+    first_score: int = Field(description="The score the result held on the dimension when the repeat was asked.")
+    first_served_model: str | None = Field(
+        description=(
+            "The model that served the first score, as its response named it; None when it named none. "
+            "The judge whose self-agreement this pair measures."
+        ),
+    )
+    repeat: RubricScore | None = Field(
+        default=None, description="The repeat's score, when the judge scored the dimension again."
+    )
+    error: str | None = Field(default=None, description="Why the repeat call failed, when it did.")
+    cannot_tell: ModelProse | None = Field(
+        default=None, description="The judge's reason, when the repeat answered it could not score the dimension."
+    )
+
+    @model_validator(mode="after")
+    def _one_answer_on_the_scale(self) -> Self:
+        """Refuse a repeat with no answer or two, a first score off its scale, or a repeat on another dim or scale.
+
+        Raises:
+            ValueError: Not exactly one of ``repeat``, ``error`` and ``cannot_tell`` is set, ``first_score``
+                is off ``scale``, or ``repeat`` scores another dimension or scale.
+        """
+        answers = [name for name in ("repeat", "error", "cannot_tell") if getattr(self, name) is not None]
+        if len(answers) != 1:
+            raise ValueError(f"a repeated score carries exactly one of repeat, error and cannot_tell; got {answers}")
+        low, high = SCALES[self.scale].scores
+        if not low <= self.first_score <= high:
+            raise ValueError(f"first_score {self.first_score} is off the {self.scale} scale [{low}, {high}]")
+        if self.repeat is not None and (self.repeat.dim != self.dim or self.repeat.scale != self.scale):
+            raise ValueError(
+                f"the repeat scored {self.repeat.dim!r} on {self.repeat.scale!r}, not {self.dim!r} on {self.scale!r}"
+            )
+        return self
+
+
+class JudgeRepeat(EvalDocumentModel):
+    """One repeat of a result's judge scores: the same judge asked the same question again, recorded beside them.
+
+    A judge's agreement with ITSELF — re-scoring evidence it already scored, under the apparatus the run
+    recorded — is what the ``separation`` evidence tier reads
+    (:func:`threetears.evals.analysis.judge_self_agreement`). A repeat never changes the result's scores:
+    it is a measurement OF the judge, so the scores the cell was judged with stay the ones every lens
+    reads, and this entry is the only place the repeat's answers live.
+
+    **Its spend is not here.** Each call a repeat makes is priced before it is made and written to the
+    out-of-run ledger (:class:`~threetears.evals.contracts.out_of_run.OutOfRunSpend`, purpose ``judge``,
+    stamped with the run), which is the one record of what it cost.
+    """
+
+    repeated_at: str = Field(default_factory=utc_now_iso)
+    judge_model: str = Field(
+        min_length=1, description="The run's judge pin, which scored every dim whose config names no model."
+    )
+    scores: list[RepeatedScore] = Field(
+        min_length=1, description="One entry per dimension asked again, in dimension order."
+    )
+    judge_config_ids: dict[DimName, str] = Field(
+        default_factory=dict,
+        description="dim -> the versioned JudgeConfig that answered the repeat. Absent = the built-in prompt.",
+    )
+
+    @field_validator("scores")
+    @classmethod
+    def _each_dim_once(cls, scores: list[RepeatedScore]) -> list[RepeatedScore]:
+        """Refuse a repeat asking one dimension twice — two answers to one question in one repeat."""
+        dims = [score.dim for score in scores]
+        if repeated := sorted({dim for dim in dims if dims.count(dim) > 1}):
+            raise ValueError(f"a repeat asks each dimension once; repeated: {repeated}")
+        return scores
+
+
 class EvalResult(EvalDocumentModel):
     """One test case x one model x one k-iteration.
 
@@ -3497,6 +3580,10 @@ class EvalResult(EvalDocumentModel):
     # Re-judges of this result's failed judge dimensions, oldest first — see
     # :class:`JudgeRescore`. Empty for a result scored in one pass.
     judge_rescores: list[JudgeRescore] = Field(default_factory=list)
+
+    # Repeats of this result's judge scores, oldest first — see :class:`JudgeRepeat`. A measurement
+    # of the judge, never a change to the scores above. Empty for a result nobody repeated.
+    judge_repeats: list[JudgeRepeat] = Field(default_factory=list)
 
     # Cost. The blended spend over ``cost_roles``, derived from ``usage`` by
     # :func:`threetears.evals.contracts.usage_capture.blended_cost` at every exit of a cell.
@@ -3981,6 +4068,7 @@ __all__ = [
     "GoalStateOutcome",
     "JudgeConfig",
     "JudgeEvidence",
+    "JudgeRepeat",
     "JudgeRescore",
     "JudgedArtifact",
     "Precondition",
@@ -3989,6 +4077,7 @@ __all__ = [
     "ProposedTemplate",
     "RubricDim",
     "RubricProposal",
+    "RepeatedScore",
     "RubricScore",
     "RunCompleteness",
     "SchemaVersion",

@@ -48,6 +48,7 @@ from threetears.evals.analysis.numbers import format_number
 from threetears.evals.contracts.analysis_measures import MeasureSummary
 from threetears.evals.contracts.base import EvalBaseModel
 from threetears.evals.contracts.campaign import ReadingKind
+from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier
 from threetears.evals.contracts.metrics import MeritAxis, classifier_label_of
 from threetears.evals.contracts.surface import (
     CellFacts,
@@ -76,6 +77,8 @@ class ResolvedReading(BaseModel):
     higher_is_better: bool | None
     merit_axis: MeritAxis | None
     dispersion: str
+    #: A judged reading's evidence tier, as the surface froze it for the cell's judges; None for a measure.
+    judged_tier: JudgedEvidenceTier | None
 
 
 class ReadingRef(EvalBaseModel):
@@ -291,6 +294,7 @@ def _resolve_measure(surface: DecisionSurface, cell: CellFacts, ref: str, measur
             if (label := classifier_label_of(measure_id)) is not None and label[0] == "f1"
             else _dispersion(summary.sem, summary.ci_low, summary.ci_high, summary.n, summary.n_independent or None)
         ),
+        judged_tier=None,
     )
 
 
@@ -334,6 +338,7 @@ def _resolve_judged(surface: DecisionSurface, cell: CellFacts, ref: str, dimensi
         higher_is_better=facts.higher_is_better,
         merit_axis="quality",
         dispersion=_dispersion(judged.sem, ci_low, ci_high, judged.n, judged.n_independent or None),
+        judged_tier=judged.evidence_tier,
     )
 
 

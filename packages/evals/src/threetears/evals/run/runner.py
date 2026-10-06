@@ -123,7 +123,13 @@ from threetears.evals.contracts.usage_capture import (
     cell_cost,
 )
 from threetears.evals.run.cassette_proxy import CassetteCell, CassetteLane
-from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeService, fold_judge_outcomes
+from threetears.evals.run.judge_service import (
+    JudgeContext,
+    JudgeOutcome,
+    JudgeRequest,
+    JudgeService,
+    fold_judge_outcomes,
+)
 from threetears.evals.run.metering import MeteredCallLedger, MeteredCallTally
 from threetears.evals.contracts.offload import run_blocking, wait_through_cancellation
 from threetears.observe import get_logger
@@ -2540,6 +2546,41 @@ def build_judge_context(
     )
 
 
+def judge_requests(
+    *,
+    template: EvalTemplate,
+    judge_service: JudgeService,
+    context: JudgeContext,
+    only: frozenset[str] | None = None,
+) -> list[JudgeRequest]:
+    """The judge calls one result's judging consists of, built and not sent, in dimension order.
+
+    The one decision of which calls there are — :func:`judge_dims` sends exactly these, and a caller
+    that must price a result's judging before paying for it (a judge repeat) prices exactly these. The
+    order is the transcript axis, the outcome axis, then ``template.rubric`` in declaration order; a
+    document candidate has no turns and no goal, so the two conversation axes are absent for one.
+
+    Args:
+        template: The run's template, whose ``rubric`` names the per-dim calls.
+        judge_service: The judge that builds each call.
+        context: The evidence every call reads.
+        only: Restrict the calls to these dim ids; ``None`` builds every call.
+
+    Returns:
+        Each call as it would be sent.
+    """
+    conversational = context.judged_artifact is JudgedArtifact.TRANSCRIPT
+    requests = [
+        *(
+            [judge_service.transcript_request(context), judge_service.outcome_request(context)]
+            if conversational
+            else []
+        ),
+        *[judge_service.dimension_request(dim, context) for dim in template.rubric],
+    ]
+    return [request for request in requests if only is None or request.dim_id in only]
+
+
 async def judge_dims(
     *,
     template: EvalTemplate,
@@ -2603,20 +2644,10 @@ async def judge_dims(
             settled.append((dim_id, outcome))
         return outcome
 
-    conversational = context.judged_artifact is JudgedArtifact.TRANSCRIPT
     calls: list[tuple[str, Callable[[], Awaitable[JudgeOutcome]]]] = [
-        *(
-            [
-                (TRANSCRIPT_DIM_ID, partial(judge_service.score_transcript, context)),
-                (OUTCOME_DIM_ID, partial(judge_service.score_outcome, context)),
-            ]
-            if conversational
-            else []
-        ),
-        *[(dim.name, partial(judge_service.score_dimension, dim, context)) for dim in template.rubric],
+        (request.dim_id, partial(judge_service.score_request, request, case_id=context.case_id))
+        for request in judge_requests(template=template, judge_service=judge_service, context=context, only=only)
     ]
-    if only is not None:
-        calls = [(dim_id, call) for dim_id, call in calls if dim_id in only]
     # ``return_exceptions`` stays False on purpose: every Exception is already caught per
     # call above, so anything that reaches gather is a BaseException — a cell timeout's
     # cancellation — and must propagate, not be recorded as a score.

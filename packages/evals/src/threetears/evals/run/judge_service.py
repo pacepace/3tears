@@ -451,6 +451,31 @@ class JudgeService:
         """Score one template rubric dimension."""
         return await self._score(self.dimension_request(dim, context), case_id=context.case_id)
 
+    async def score_request(self, request: JudgeRequest, *, case_id: str) -> JudgeOutcome:
+        """Send one call already built by a ``*_request`` method — what a caller that priced it first sends.
+
+        Args:
+            request: The call, as built.
+            case_id: The test case, for log context.
+
+        Returns:
+            The call's outcome.
+        """
+        return await self._score(request, case_id=case_id)
+
+    def client_for(self, request: JudgeRequest) -> Any:
+        """The client ``request`` will be sent on — the one the service caches for its config's model and temperature.
+
+        What a caller pricing a call before it is made asks: a call's price is its client's.
+
+        Args:
+            request: The call.
+
+        Returns:
+            The client, built on first ask and cached like every other.
+        """
+        return self._client_for(request.config)
+
     # ------------------------------------------------------------------
     # Requests — what each call sends, built without calling anything
     # ------------------------------------------------------------------

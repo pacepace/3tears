@@ -59,7 +59,10 @@ CONFIDENCE_WORDS = worded(
 EVIDENCE_TIER_WORDS = worded(
     {
         "mechanical": "checks and measures",
-        "directional": "judged scores, directional until the judge's reliability is measured",
+        "calibrated": "judged scores from a judge that agrees with people",
+        "separation": "judged scores from a judge that agrees with itself, not checked against people",
+        "undetermined": "judged scores whose judge's reliability has not been measured enough to say",
+        "incidental": "judged scores from a judge measured as neither agreeing with people nor with itself",
         "none": "no reading it names",
     },
     EvidenceTier,

@@ -955,6 +955,7 @@ def _resolution_of(
                 value=resolved.mean,
                 n=resolved.n,
                 dispersion=resolved.dispersion,
+                judged_tier=resolved.judged_tier,
             )
         )
     chart, note = _compiled_chart(finding.chart, surface, variant_index, where=f"{where}.chart", measures=measures)

@@ -342,6 +342,33 @@ slots, slots 1-4 validated; a sequential ramp; background, ink, muted, grid, rul
 every colour resolved `#rrggbb`. The presentation rules are checked on the intent (`check_intent`), so they hold for any
 renderer, and the core ships no charting library.
 
+### How far a judged score can be leaned on: evidence tiers
+
+Every judged reading — each `judged_measures` arm, each judged reading on the decision surface, each
+judged evidence row of a finding — carries an `evidence_tier` that code decides from what the judge's
+reliability was measured to be (`threetears.evals.contracts.evidence_tiers`, owner ruling 2026-10-06):
+
+| Tier | When |
+|---|---|
+| `calibrated` | the judge agrees with people: `judge_agreement` (person ratings only) at least `CALIBRATION_MIN_AGREEMENT` (0.6) over at least `CALIBRATION_MIN_PAIRS` (20) pairs |
+| `separation` | the judge agrees with itself: `judge_self_agreement` at least `SEPARATION_MIN_AGREEMENT` (0.8) over at least `SEPARATION_MIN_PAIRS` (20) pairs |
+| `incidental` | both measured over enough pairs, and both missed |
+| `undetermined` | too little evidence to decide — never filed as incidental |
+
+Agreement is one statistic for both — quadratic-weighted kappa on 1-5, kappa on pass/fail, averaged per
+rater — so the two thresholds compare. The bundle lists each judge's tier per dimension with both criteria
+(`judge_evidence_tiers`); a finding stands on the weakest tier among its rows (`FindingResolution.evidence_tier`:
+`mechanical`, `calibrated`, `separation`, `undetermined`, `incidental` or `none`), which every report states
+beside the finding; a code-only report also states each judge's tier with the numbers behind it. Tiers are
+flagged, never a reason to drop a reading.
+
+Self-agreement is measured by **repeating** a finished run's judge scores: `repeat_judge_scores` (operation
+`judge_repeat`; `estimate_judge_repeat` / `judge_repeat_estimate` price it without a call) asks the same judge
+the same question again from the evidence its first judge read, under the apparatus the run recorded, and
+records each answer beside the score it repeats (`EvalResult.judge_repeats`) without changing the scores. Every
+call it can make — parse retries included — is priced and admitted against the host's out-of-run cap before
+the first is sent, and each is ledgered under purpose `judge` with the run's id.
+
 ### Drawing charts: the Vega-Lite adapter
 
 The package's own renderer is an optional adapter, `threetears.evals.vega`. Install the extra for its
@@ -385,11 +412,13 @@ background generation runs under) — returning a typed model. Long work is a **
 job id names the durable record its work writes, so it is still answerable after a restart. A job is
 answered only in the caller's scope: another scope's generation reads `lost` on poll and is refused on cancel.
 
-Both spend operations are bounded in dollars before they spend. A launch's runs are held to the host's per-run
+Every spend operation is bounded in dollars before it spends. A launch's runs are held to the host's per-run
 ceiling, which a launch's `max_cost_usd` may only lower — one above it is refused on every surface. An analysis
 generation is held to the host's out-of-run cap (`LaunchSettings.max_out_of_run_cost_usd`): its first call is
 priced before the job starts (`analysis_estimate` prices it without spending), its one repair round-trip
-before that is sent, and each call is ledgered under purpose `analysis`, so `scope_out_of_run_spend` reads it.
+before that is sent, and each call is ledgered under purpose `analysis`, so `scope_out_of_run_spend` reads it. A judge
+repeat (`judge_repeat`) is held to the same cap, every call priced before the first is sent, and ledgered under
+purpose `judge`.
 A host's own `spend` action carries no such obligation: the class is a label a tool cut splits on, metered only
 as far as the host's handler meters it.
 

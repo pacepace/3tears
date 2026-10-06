@@ -753,14 +753,22 @@ class TestAResolutionIsTheReadingsItsFindingNames:
     def _pair(named: list[tuple[str, str]], resolved: list[tuple[str, str]]) -> EvalAnalysis:
         refs = [EvidenceRef(cell="v:a", measure_id=measure, reading=kind) for measure, kind in named]
         rows = [
-            EvidenceRow(cell_ref="v:a", measure_id=measure, reading=kind, value=1.0, n=3, dispersion="sd 0.1")
+            EvidenceRow(
+                cell_ref="v:a",
+                measure_id=measure,
+                reading=kind,
+                value=1.0,
+                n=3,
+                dispersion="sd 0.1",
+                judged_tier="separation" if kind == "judged" else None,
+            )
             for measure, kind in resolved
         ]
         return _make_analysis(findings=[_finding("a", evidence=refs)], resolutions=[FindingResolution(evidence=rows)])
 
     def test_the_readings_resolved_as_named_are_accepted(self):
         named = [("latency", "measure"), ("helpful", "judged")]
-        assert self._pair(named, named).resolutions[0].evidence_tier == "directional"
+        assert self._pair(named, named).resolutions[0].evidence_tier == "separation"
 
     def test_a_judged_reading_resolved_as_a_measure_is_refused(self):
         # The tier would read mechanical over a finding that leans on a judge.

@@ -82,7 +82,16 @@ def _cell(variant_key: str, *, rig: str = RIG, scale: float = 1.0) -> CellFacts:
                 _summary("parse_ms", 300.0 * scale, scope="subsystem"),
             ]
         ),
-        judged=[JudgedReading(dimension="extraction.layout_kept", mean=4.0, sem=0.2, n=6, n_independent=6)],
+        judged=[
+            JudgedReading(
+                dimension="extraction.layout_kept",
+                mean=4.0,
+                sem=0.2,
+                n=6,
+                n_independent=6,
+                evidence_tier="undetermined",
+            )
+        ],
     )
 
 

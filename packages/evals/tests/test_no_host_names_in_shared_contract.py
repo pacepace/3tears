@@ -358,6 +358,11 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # than by promotion — it left the host's service so a second consumer manages its runs with it, and
     # takes `scope_id` and a host-built judge subject.
     "run/lifecycle.py",
+    # Repeating a finished run's judge scores to measure the judge against itself, and the evidence tiers
+    # that measurement and calibration decide. Shared contract from the day they existed: they read a
+    # run, its results and the judge through the engine's own ports and name no host.
+    "run/judge_repeat.py",
+    "contracts/evidence_tiers.py",
     # Tool recording and replay. It moved off _HOST_COUPLED_MODULES when the lane stopped reaching
     # into a host's candidate and started wiring only the seams a kind hands it (now declared in
     # `contracts/cassettes.py`); what is here records and replays through them for every host alike.

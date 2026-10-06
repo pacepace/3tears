@@ -23,12 +23,13 @@ so it can never drift from the runs it summarises.
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any, Literal, TypeVar
+from typing import Annotated, Any, Literal, Self, TypeVar
 
 from pydantic import BeforeValidator, Field, ValidationInfo, computed_field, field_validator, model_validator
 
 from threetears.evals.contracts.authored import AuthoredAnalysis
 from threetears.evals.contracts.declaration import CampaignDesign
+from threetears.evals.contracts.evidence_tiers import JudgedEvidenceTier, weakest_judged_tier
 from threetears.evals.contracts.host.values import SweepableValue
 from threetears.evals.contracts.identity import compute_variant_key
 from threetears.evals.contracts.base import EvalDocumentModel
@@ -110,36 +111,33 @@ _READING_DESCRIPTION = (
 )
 
 #: What a finding's verdict stands on, as code reads it off the finding's resolved evidence rows —
-#: never chosen by the report writer: code assigns the tier.
+#: never chosen by the report writer: code assigns the tier. Strongest first:
 #:
 #: - ``mechanical``: every reading is a measure — checks and metrics from the trace, which need no
 #:   judge;
-#: - ``directional``: at least one reading is a judged score, and a judged score is only a hint: the
-#:   judge's reliability is measured (``judge_agreement``), but no bar turns that agreement into a tier;
+#: - ``calibrated``, ``separation``, ``undetermined``, ``incidental``: at least one reading is a judged
+#:   score, and the finding stands on the weakest judged tier among its rows
+#:   (:mod:`threetears.evals.contracts.evidence_tiers` defines each and the order they compose in);
 #: - ``none``: the finding names no reading, so there is nothing for a tier to stand on.
 #:
-#: The stronger judged tiers (separation, incidental, calibrated) are deliberately absent, and what
-#: each still lacks is named so the gap is not mistaken for an oversight. ``calibrated`` would read the
-#: judge's agreement with people, which the bundle now measures (``judge_agreement``), but the
-#: agreement a judge must reach on a criterion to earn it is a bar nobody has set. ``separation``
-#: compares an arm gap with the judge's own retest noise, a measurement of the judge that no code
-#: takes. ``incidental`` is named and undefined. A tier nothing can compute is a tier only the model
-#: could have supplied.
-EvidenceTier = Literal["mechanical", "directional", "none"]
+#: A judged tier is never read off a writer's claim: each judged row carries the tier code resolved
+#: for its cell's judges (``EvidenceRow.judged_tier``).
+EvidenceTier = Literal["mechanical", "calibrated", "separation", "undetermined", "incidental", "none"]
 
 
-def evidence_tier_of(readings: list[ReadingKind]) -> EvidenceTier:
-    """The tier a verdict resting on these readings stands on: the weakest among them.
+def evidence_tier_of(rows: list[JudgedEvidenceTier | None]) -> EvidenceTier:
+    """The tier a verdict resting on these evidence rows stands on: the weakest among them.
 
     Args:
-        readings: The reading kind of each evidence row, in any order.
+        rows: Per evidence row, in any order: ``None`` for a measure, the row's judged tier for a judged score.
 
     Returns:
-        ``none`` for no readings, ``directional`` when any is judged, otherwise ``mechanical``.
+        ``none`` for no rows; the weakest judged tier when any row is judged; otherwise ``mechanical``.
     """
-    if not readings:
+    if not rows:
         return "none"
-    return "directional" if "judged" in readings else "mechanical"
+    judged = [tier for tier in rows if tier is not None]
+    return weakest_judged_tier(judged) if judged else "mechanical"
 
 
 class CampaignWindow(EvalDocumentModel):
@@ -523,6 +521,30 @@ class EvidenceRow(EvalDocumentModel):
     )
     n: int = Field(ge=0, description="Samples behind the value, filled by code.")
     dispersion: str = Field(description="Spread of the value, filled by code.")
+    judged_tier: JudgedEvidenceTier | None = Field(
+        default=None,
+        description=(
+            "On a judged row, the evidence tier code resolved for the judges behind the cell's scores "
+            "(`cell_measures[].judged[].evidence_tier`); None on a measure row, which needs no judge."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _a_judged_row_carries_its_tier(self) -> Self:
+        """Refuse a judged row without a tier, or a measure row with one.
+
+        The finding's tier is read off this field, so a judged row with none would compose as mechanical,
+        and a measure row with one would weaken a finding no judge touched.
+
+        Raises:
+            ValueError: ``judged_tier`` is absent on a judged row or present on a measure row.
+        """
+        if (self.reading == "judged") != (self.judged_tier is not None):
+            raise ValueError(
+                f"a {self.reading} row carries judged_tier={self.judged_tier!r}; a judged row carries the tier "
+                "code resolved for its judges, and a measure row carries none"
+            )
+        return self
 
 
 class RunIndexEntry(EvalDocumentModel):
@@ -703,14 +725,15 @@ class FindingResolution(EvalDocumentModel):
     @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
         description=(
             "What the finding's verdict stands on, read off `evidence`: `mechanical` when every row is a "
-            "measure, `directional` when any is a judged score, `none` when there are no rows. Derived on "
-            "every read and never stored as a choice, so it cannot disagree with the rows it came from."
+            "measure; the weakest judged row's `judged_tier` (`calibrated`, `separation`, `undetermined`, "
+            "`incidental`) when any is a judged score; `none` when there are no rows. Derived on every read and "
+            "never stored as a choice, so it cannot disagree with the rows it came from."
         )
     )
     @property
     def evidence_tier(self) -> EvidenceTier:
         """The finding's evidence tier, derived from its evidence rows."""
-        return evidence_tier_of([row.reading for row in self.evidence])
+        return evidence_tier_of([row.judged_tier for row in self.evidence])
 
 
 class EvalAnalysis(EvalDocumentModel):

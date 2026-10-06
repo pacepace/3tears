@@ -48,7 +48,22 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
-from threetears.evals.analysis.agreement import JudgeAgreement, judge_agreement
+from threetears.evals.analysis.agreement import (
+    JudgeAgreement,
+    JudgeSelfAgreement,
+    judge_agreement,
+    judge_evidence_tiers,
+    judge_self_agreement,
+    tier_for_judges,
+)
+from threetears.evals.contracts.evidence_tiers import (
+    CALIBRATION_MIN_AGREEMENT,
+    CALIBRATION_MIN_PAIRS,
+    SEPARATION_MIN_AGREEMENT,
+    SEPARATION_MIN_PAIRS,
+    JudgedEvidenceTier,
+    JudgeEvidenceTier,
+)
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
     ApparatusClass,
@@ -130,7 +145,7 @@ from threetears.evals.contracts.metrics import (
 from threetears.evals.contracts.base import EvalDocumentModel
 
 # At runtime for its field set, which tells a result-level measure from a row-level one.
-from threetears.evals.contracts.models import ApparatusProvenance, CalibrationRating, EvalResult
+from threetears.evals.contracts.models import ApparatusProvenance, CalibrationRating, EvalResult, RubricScale
 from threetears.evals.contracts.provider import sum_optional_tokens
 from threetears.evals.contracts.result_condition import (
     JUDGE_CANNOT_TELL_OUTCOME,
@@ -758,6 +773,13 @@ class JudgedArm(EvalDocumentModel):
     sem: float | None = Field(
         default=None, description="Standard error of that mean. None below n=2, where no spread is estimable."
     )
+    evidence_tier: JudgedEvidenceTier = Field(
+        description=(
+            "What these scores can bear: the weakest `judge_evidence_tiers` tier among the judges that served the "
+            "scores counted in `n` — `undetermined` when none was counted or the evidence decides no tier. "
+            "Flagged, never a reason the scores are dropped."
+        )
+    )
 
 
 class JudgedMeasure(EvalDocumentModel):
@@ -1306,7 +1328,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=36, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=37, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -1455,6 +1477,28 @@ class AnalysisContextBundle(EvalDocumentModel):
             "weighted kappa — over every resolved member run's results. A dimension absent here is uncalibrated: "
             "nobody rated it, so an absolute claim about it rests on the judge alone. Ratings that could not be "
             "paired with a judge score are listed with why."
+        ),
+    )
+    judge_self_agreement: JudgeSelfAgreement = Field(
+        default_factory=JudgeSelfAgreement,
+        description=(
+            "How the judge's repeated scores agreed with its own first scores of the same evidence, per judged "
+            "dimension and judge model, read exactly as `judge_agreement` is (n, exact agreement, kappa, weighted "
+            "kappa) — over every resolved member run's results. Empty when nothing was repeated: the judge's "
+            "consistency is then unmeasured. Repeats that could not be paired are listed with why."
+        ),
+    )
+    judge_evidence_tiers: list[JudgeEvidenceTier] = Field(
+        default_factory=list,
+        description=(
+            "The evidence tier of each judge's readings on each judged dimension, decided by code from "
+            "`judge_agreement` and `judge_self_agreement`: `calibrated` (agreement with people at least "
+            f"{format_number(CALIBRATION_MIN_AGREEMENT)} over at least {CALIBRATION_MIN_PAIRS} pairs), `separation` "
+            f"(agreement with its own repeats at least {format_number(SEPARATION_MIN_AGREEMENT)} over at least "
+            f"{SEPARATION_MIN_PAIRS}), "
+            "`incidental` (both measured over enough pairs and both missed), or `undetermined` (too little "
+            "evidence to decide). Each entry carries both criteria. Every judged reading in `judged_measures` and "
+            "`cell_measures` carries the tier of the judges behind it; a finding citing one stands on it."
         ),
     )
     multiple_comparisons: MultipleComparisons = Field(
@@ -2189,8 +2233,10 @@ def _scalar_leaves(model: BaseModel) -> Iterator[tuple[str, float | str]]:
 #: measured in its cell, so the measure walk must not read their scalars as observations. A
 #: re-judge's record carries its own ``cost_usd`` — spend an operator paid after the run —
 #: and walking it would pool that as a second cost observation of the cell, beside the prose
-#: of its timestamp, prior error and model reported as measurements the registry lost.
-RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores"})
+#: of its timestamp, prior error and model reported as measurements the registry lost. A repeat
+#: of the judge's scores is a measurement of the JUDGE, read by ``judge_self_agreement``; walking
+#: it would pool a repeat's score as a second observation of the candidate's cell.
+RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats"})
 
 
 def _carrier_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tuple[str, float | str, bool, str, str]]:
@@ -4730,12 +4776,20 @@ def assemble_context_bundle(
             results,
         ),
     )
+    # The judge's reliability, before anything judged is summarised: every judged reading carries the
+    # tier these two agreements decide for the judges that served it.
+    bundle.judge_self_agreement = judge_self_agreement(results)
+    bundle.judge_evidence_tiers = judge_evidence_tiers(
+        bundle.judge_agreement, bundle.judge_self_agreement, _judged_keys(results)
+    )
     # Judged quality and the bars, per cell. Both read the cell algebra's own grouping, so every
     # per-arm number here describes observations the bundle already calls one arm, and neither
     # enters `measures` or the catalog: judged dimensions stay off the ranking surface, and are
     # carried here so that staying off it is not read as never having been measured.
     results_by_cell = _results_by_cell(cells, results)
-    bundle.judged_measures = _judged_measures(projection.records, results_by_cell, campaign.declared_design)
+    bundle.judged_measures = _judged_measures(
+        projection.records, results_by_cell, campaign.declared_design, tiers=bundle.judge_evidence_tiers
+    )
     bundle.bar_adjudications = _bar_adjudications(
         campaign.behavior, campaign.declared_design, results_by_cell, projection.records, profile=profile
     )
@@ -4760,6 +4814,7 @@ def assemble_context_bundle(
         {c.apparatus_class_id: c for c in apparatus_classes.values()},
         projection.records,
         campaign.declared_design,
+        tiers=bundle.judge_evidence_tiers,
         short_runs=bundle.short_runs,
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
@@ -4896,10 +4951,22 @@ def _judged_rows(records: list[ScoreRecord]) -> Iterator[tuple[str, ScoreRecord]
                 yield record.metric, record
 
 
+def _judged_keys(results: list[EvalResult]) -> set[tuple[str, RubricScale, str | None]]:
+    """Every ``(dimension, scale, served model)`` a judged score among ``results`` was given under."""
+    return {
+        (score.dim, score.scale, score.served_model)
+        for result in results
+        for score in (*result.rubric_scores, result.transcript_score, result.outcome_score)
+        if score is not None
+    }
+
+
 def _judged_measures(
     records: list[ScoreRecord],
     results_by_cell: dict[_CellKey, list[EvalResult]],
     design: CampaignDesign | None,
+    *,
+    tiers: list[JudgeEvidenceTier],
 ) -> list[JudgedMeasure]:
     """Summarise every judged dimension per cell, from the score projection assembly already holds.
 
@@ -4912,10 +4979,13 @@ def _judged_measures(
         records: The assembly's score projection rows.
         results_by_cell: Each cell's results, from :func:`_results_by_cell`.
         design: The campaign's declaration, for the bar naming a dimension.
+        tiers: The judges' evidence tiers; each arm carries the weakest among the judges that served its
+            counted scores (:func:`~threetears.evals.analysis.agreement.tier_for_judges`).
 
     Returns:
         One entry per dimension scored anywhere, sorted by name.
     """
+    result_by_id = {result.id: result for members in results_by_cell.values() for result in members}
     cell_of_result = {result.id: key for key, members in results_by_cell.items() for result in members}
     scored: dict[str, dict[_CellKey, list[ScoreRecord]]] = {}
     for dimension, record in _judged_rows(records):
@@ -4940,6 +5010,11 @@ def _judged_measures(
                 row for row in rows if row.outcome not in (ResultOutcome.INFRA_EXCLUDE.value, JUDGE_CANNOT_TELL_OUTCOME)
             ]
             values = [float(row.value) for row in counted if row.value is not None]
+            served = [
+                score.served_model
+                for row in counted
+                if row.value is not None and (score := result_by_id[row.result_id].judge_score(dimension)) is not None
+            ]
             arms.append(
                 JudgedArm(
                     variant_key=key[0],
@@ -4951,6 +5026,7 @@ def _judged_measures(
                     n_cannot_tell=len(cannot_tell),
                     mean=sum(values) / len(values) if values else None,
                     sem=standard_error_of_mean(values) if values else None,
+                    evidence_tier=tier_for_judges(tiers, dimension, served),
                 )
             )
         measures.append(
@@ -5595,6 +5671,7 @@ def _cell_measures(
                     n_independent=arm.n_independent,
                     n_infra_excluded=arm.n_infra_excluded,
                     n_cannot_tell=arm.n_cannot_tell,
+                    evidence_tier=arm.evidence_tier,
                 )
             )
     facts = []
@@ -5632,6 +5709,7 @@ def _time_axis(
     records: list[ScoreRecord],
     design: CampaignDesign | None,
     *,
+    tiers: list[JudgeEvidenceTier],
     short_runs: dict[str, str],
     incomplete_runs: dict[str, str],
     profile: HostProfile,
@@ -5652,6 +5730,8 @@ def _time_axis(
         classes: Apparatus class id → the class, as the campaign's pooling read them.
         records: The score projection, for judged dimensions.
         design: The campaign's declaration, for the bar a judged dimension carries.
+        tiers: The judges' evidence tiers, which every judged reading carries — the campaign's own, since a
+            judge's reliability is measured over the whole campaign, not one position of it.
         short_runs: The bundle's short-run sentences, by run id.
         incomplete_runs: The bundle's incomplete-run statuses, by run id.
         profile: The host, whose ``release_label`` names its builds.
@@ -5672,7 +5752,9 @@ def _time_axis(
         slice_results = [result for run in members for result in results_by_run[run.id]]
         result_ids = {result.id for result in slice_results}
         by_cell = _results_by_cell(slice_cells, slice_results)
-        judged = _judged_measures([record for record in records if record.result_id in result_ids], by_cell, design)
+        judged = _judged_measures(
+            [record for record in records if record.result_id in result_ids], by_cell, design, tiers=tiers
+        )
         positions.append(
             TimePosition(
                 key=key,

@@ -15,7 +15,8 @@ be forced to disagree in their names.
 
 *A judge-mediated number and a mechanical one are different kinds of number.* Latency, cost,
 convergence rate, call counts and ordering predicates carry no judge. A rubric mean carries one,
-and until judge calibration lands it is directional. A consumer inheriting a score field with no
+and it bears only the evidence tier its judge's measured reliability earns
+(:mod:`threetears.evals.contracts.evidence_tiers`). A consumer inheriting a score field with no
 marking will quote it as though it were a latency. ``transferability_class`` already draws this
 line on the descriptor; the registry is where a surface can ask it without knowing the
 descriptor's shape.

@@ -107,6 +107,13 @@ from threetears.evals.run.recheck import (
     recheck_goal_states,
     recheck_result,
 )
+from threetears.evals.run.judge_repeat import (
+    JudgeRepeatEstimate,
+    JudgeRepeatReport,
+    JudgeRepeatSkip,
+    estimate_judge_repeat,
+    repeat_judge_scores,
+)
 from threetears.evals.run.rejudge import reproducible_judge_inputs
 from threetears.evals.run.runner import (
     CellContext,
@@ -272,6 +279,7 @@ __all__ = [
     "stamp_witnessed_judge",
     "refuse_stale_presumptions",
     "rejudge_result",
+    "repeat_judge_scores",
     "reproducible_judge_inputs",
     "require_delete_confirmation",
     "refuse_raised_ceiling",
@@ -292,4 +300,8 @@ __all__ = [
     "update_rubric_dim",
     "update_template",
     "validated_kind_spec",
+    "JudgeRepeatEstimate",
+    "JudgeRepeatReport",
+    "JudgeRepeatSkip",
+    "estimate_judge_repeat",
 ]

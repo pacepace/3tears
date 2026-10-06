@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: judged readings carry a code-decided evidence tier (PD-13), and a judge's agreement with itself is measured
+
+- **Evidence tiers** (`threetears.evals.contracts.evidence_tiers`, owner ruling 2026-10-06): `calibrated` when the
+  judge's agreement with people (`judge_agreement`, person ratings only) is at least `CALIBRATION_MIN_AGREEMENT` = 0.6
+  over at least `CALIBRATION_MIN_PAIRS` = 20 pairs; `separation` when its agreement with its own repeated scores is at
+  least `SEPARATION_MIN_AGREEMENT` = 0.8 over at least `SEPARATION_MIN_PAIRS` = 20 pairs; `incidental` when both were
+  measured over enough pairs and both missed; `undetermined` when the evidence decides none — a reportable state,
+  never a silent tier. Agreement is one statistic for both (weighted kappa on 1-5, kappa on pass/fail, averaged per
+  rater). The bundle carries `judge_self_agreement` and `judge_evidence_tiers`; every `JudgedArm` and every
+  `JudgedReading` carries the weakest tier among the judges behind its scores; the code-only report states each
+  judge's tier with its numbers; the generator prompt says what each tier lets a claim bear. Bundle
+  `schema_version` 37.
+- **A finding's `evidence_tier` reads the tiers**: `EvidenceTier` is now `mechanical`, `calibrated`, `separation`,
+  `undetermined`, `incidental` or `none` — the weakest among its rows — and each judged `EvidenceRow` carries the
+  `judged_tier` code resolved for its cell. **Breaking:** `directional` is gone; `evidence_tier_of` takes one
+  `JudgedEvidenceTier | None` per row; `JudgedReading.evidence_tier` and a judged row's `judged_tier` are required.
+- **`repeat_judge_scores` / `estimate_judge_repeat`** (operations `judge_repeat` / `judge_repeat_estimate`) repeat
+  a finished run's judge scores from the evidence its first judge read, under the apparatus the run recorded, and
+  record each answer beside the score it repeats (`EvalResult.judge_repeats`, `JudgeRepeat`, `RepeatedScore`)
+  without changing the scores. Every call, parse retries included, is priced and admitted against the host's
+  out-of-run cap before the first is sent, and ledgered under the new `OutOfRunPurpose` `judge` with
+  `OutOfRunSpend.run_id`. `JudgeService.score_request` / `client_for` and `judge_requests` expose the calls a
+  result's judging consists of, built before any is sent; `OpsHost.out_of_run_cap()` is the one reading of the cap.
+
 ### 3tears-evals: a launch's predicted cost sits only beside its own template's cell, a campaign with no question still corrects its comparisons, and the same-rig and lower-is-better guards are pinned
 
 - **``PlannedCost`` carries ``template_id`` and ``run_ids``, and a cost pivot places a prediction only in a cell
