@@ -55,6 +55,7 @@ from threetears.evals.contracts.declaration import (
     resolve_bar_name,
 )
 from threetears.evals.contracts.dsl import (
+    NOT_ESTABLISHED,
     DSLError,
     extract_paths,
     referenced_actions,
@@ -490,6 +491,7 @@ __all__ = [
     "ENGINE_FAMILIES",
     "GOAL_STATE_FAMILY",
     "MATCH_MEASURE",
+    "NOT_ESTABLISHED",
     "MECHANICAL_FAMILY",
     "RUBRIC_FAMILY",
     "ClassifierStatistic",

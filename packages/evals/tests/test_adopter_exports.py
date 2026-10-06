@@ -8,7 +8,7 @@ is pinned here as the defining object, re-exported — not a copy that could dri
 from __future__ import annotations
 
 import threetears.evals.contracts as contracts
-from threetears.evals.contracts import identity, usage_capture
+from threetears.evals.contracts import dsl, identity, usage_capture
 
 
 def test_the_variant_derivation_and_the_substituted_delivery_count_are_on_the_contracts_root():
@@ -38,3 +38,9 @@ def test_the_substituted_delivery_count_reads_a_delivery_record_before_any_resul
     for record in (None, [live, seeded]):
         result = make_eval_result(async_deliveries=record)
         assert contracts.count_substituted_deliveries(result) == contracts.count_substituted(record)
+
+
+def test_the_not_established_marker_is_on_the_contracts_root():
+    """A host's own suite asserts that no keyless verdict came out "not established"; it reads the engine's marker."""
+    assert contracts.NOT_ESTABLISHED is dsl.NOT_ESTABLISHED
+    assert "NOT_ESTABLISHED" in contracts.__all__
