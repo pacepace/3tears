@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the report's published schema states every cross-field rule JSON Schema can, and says which three it cannot
+
+- **``schema.json`` now refuses what the model refuses, but for three rules.** It accepted a code-only report with
+  a headline, an analysis id, a model and findings; a block linked to findings a report without any does not
+  hold; a finding title naming no finding; and a chart block with neither an intent nor an error. Each is now an
+  ``if``/``then`` in the schema (generated from the model through ``json_schema_extra``), as is a chart intent of
+  another type than its block. The three that compare a value with a sibling's — a finding position against
+  ``finding_count``, ``total_rows`` against the rows shown, a row's keys against the columns — JSON Schema cannot
+  state; the README and the model's docstring now say the model alone holds them, and a test pins that the
+  schema's superset is exactly those three.
+- The HTML serializer escapes ``basis``, a text block's ``role`` and a disclosure's ``source`` like every other
+  attribute, so a report built without validation cannot break out of one.
+
 ### 3tears-evals: a timeseries survives a whitespace-variant release label, states every gap, holds a date axis to calendar days, and names interleaved builds
 
 - **A release label is normalised once, for every check.** Two runs recording ``v1`` and ``v1 `` (a version read

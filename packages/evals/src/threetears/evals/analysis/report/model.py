@@ -6,7 +6,14 @@ put together for itself, and the memo's Markdown dropped every chart's data on t
 :class:`Report` is all of it, in reading order, as an ordered list of blocks — ``text`` with a role,
 ``table``, ``chart`` and ``disclosure`` — each linked to the findings it belongs to or rests on. It has
 a published JSON Schema (``schema.json`` beside this module), so a host generates its client types from
-the schema rather than mirroring them by hand, and it ships three serializers: JSON (canonical, this
+the schema rather than mirroring them by hand. **The schema checks the shape and every cross-field rule JSON
+Schema can state** — a code-only report names no analysis or model and holds no headline, finding or text
+block; a report with no findings links no block to one; a finding's own words name their finding; a chart
+block carries exactly one of an intent and an error, the intent of its own type. Three rules compare a value
+with a sibling's, which JSON Schema cannot: a block's finding positions are below ``finding_count`` on a
+report that has findings, a table's ``total_rows`` is at least the rows it shows, and a row keys only its
+table's columns. Those the model's validators hold, so a document is a report when the model accepts it, and
+the schema accepts a superset by exactly those three. It and it ships three serializers: JSON (canonical, this
 model's own dump), Markdown (the agent-facing form) and HTML that reads without a script.
 
 **A report is of an analysis, or of the evidence alone — and it says which** (:attr:`Report.basis`). A
@@ -36,9 +43,9 @@ the analysis was generated).
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, get_args
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from threetears.evals.analysis.viz.intent import Cell, ChartIntent, ChartType
 from threetears.evals.contracts.base import EvalBaseModel
@@ -115,8 +122,27 @@ class _Block(EvalBaseModel):
     )
 
 
+#: The text roles that are part of one finding, and so name it.
+FINDING_ROLES: frozenset[str] = frozenset({"finding_title", "finding_body", "caveat", "carried_forward"})
+
+
+#: Only whitespace — what an empty author field, or a chart block's empty error, reads as.
+_BLANK = r"^\s*$"
+
+#: Some non-whitespace — what a chart block's error is when it carries one.
+_SAID = r"\S"
+
+
 class TextBlock(_Block):
     """What the analysis's author wrote, exactly as written, with the facts code states beside it."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            # A finding's own words name it (``_a_findings_own_words_name_it``), stated in the schema too.
+            "if": {"properties": {"role": {"enum": sorted(FINDING_ROLES)}}, "required": ["role"]},
+            "then": {"properties": {"finding": {"type": "integer"}}, "required": ["finding"]},
+        }
+    )
 
     kind: Literal["text"] = "text"
     role: TextRole = Field(description="What the author wrote it as.")
@@ -135,10 +161,6 @@ class TextBlock(_Block):
         if self.role in FINDING_ROLES and self.finding is None:
             raise ValueError(f"a {self.role} block belongs to a finding and names none")
         return self
-
-
-#: The text roles that are part of one finding, and so name it.
-FINDING_ROLES: frozenset[str] = frozenset({"finding_title", "finding_body", "caveat", "carried_forward"})
 
 
 def finding_number(block: TextBlock) -> int:
@@ -196,6 +218,27 @@ class ChartBlock(_Block):
 
     A chart code chose — on a code-only report, one per measure the surface can draw — names no finding.
     """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            # Exactly one of an intent and the reason it cannot be drawn, and the intent of the block's own type
+            # (``_drawn_or_says_why_not``), stated in the schema too.
+            "if": {"properties": {"intent": {"type": "null"}}, "required": ["intent"]},
+            "then": {"properties": {"error": {"type": "string", "pattern": _SAID}}},
+            "else": {"properties": {"error": {"type": "string", "pattern": _BLANK}}},
+            "allOf": [
+                {
+                    "if": {"properties": {"viz_type": {"const": chart_type}}, "required": ["viz_type"]},
+                    "then": {
+                        "properties": {
+                            "intent": {"anyOf": [{"type": "null"}, {"properties": {"type": {"const": chart_type}}}]}
+                        }
+                    },
+                }
+                for chart_type in get_args(ChartType)
+            ],
+        }
+    )
 
     kind: Literal["chart"] = "chart"
     viz_type: ChartType = Field(description="The chart type the finding carries.")
@@ -269,6 +312,46 @@ class ReportSource(EvalBaseModel):
 
 class Report(EvalBaseModel):
     """One analysis, as a document every surface renders. See the module docstring for the contract."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                # A code-only report names no analysis or model and holds nothing an author wrote
+                # (``_the_basis_matches_what_the_report_holds``); an analysis report names both.
+                {
+                    "if": {"properties": {"basis": {"const": "code_only"}}, "required": ["basis"]},
+                    "then": {
+                        "properties": {
+                            "headline": {"type": "string", "pattern": _BLANK},
+                            "finding_count": {"const": 0},
+                            "source": {
+                                "properties": {"analysis_id": {"type": "null"}, "generator_model": {"type": "null"}}
+                            },
+                            "blocks": {"items": {"not": {"properties": {"kind": {"const": "text"}}, "required": ["kind"]}}},
+                        }
+                    },
+                    "else": {
+                        "properties": {
+                            "source": {
+                                "properties": {"analysis_id": {"type": "string"}, "generator_model": {"type": "string"}},
+                                "required": ["analysis_id", "generator_model"],
+                            }
+                        }
+                    },
+                },
+                # A report with no findings links no block to one (``_positions_point_at_findings``, at the one
+                # finding_count the schema can compare against).
+                {
+                    "if": {"properties": {"finding_count": {"const": 0}}, "required": ["finding_count"]},
+                    "then": {
+                        "properties": {
+                            "blocks": {"items": {"properties": {"finding": {"type": "null"}, "rests_on": {"maxItems": 0}}}}
+                        }
+                    },
+                },
+            ]
+        }
+    )
 
     report_version: Literal[2] = Field(default=REPORT_VERSION, description="This shape's version.")
     basis: ReportBasis = Field(

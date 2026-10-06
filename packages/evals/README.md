@@ -307,7 +307,7 @@ to the findings it belongs to or rests on. Serialize it three ways:
 from threetears.evals.analysis import analysis_report, report_html, report_markdown
 
 report = analysis_report(host.storage, analysis_id, scope_id)
-report.to_canonical_json()   # validated by the published schema, report/schema.json
+report.to_canonical_json()   # validated by the published schema, report/schema.json (see below)
 report_markdown(report)      # for an agent, or to paste as a memo
 report_html(report)          # a page that reads without a script
 ```
@@ -315,11 +315,20 @@ report_html(report)          # a page that reads without a script
 **The campaign's report** is `campaign_report(host, campaign_id, scope_id)` — the one answer the CLI's
 `report` and the `report_read` action both give: the campaign's newest analysis that is not archived, or,
 when it has none, a **code-only report** of its evidence (`build_code_only_report`). That one has
-`basis="code_only"` and no author's words — no headline, no findings, no text block, which the schema
-refuses — and holds the arm table (every arm unresolved, since nothing decided), the decision surface,
+`basis="code_only"` and no author's words — no headline, no findings, no text block, which the published
+schema and the model both refuse — and holds the arm table (every arm unresolved, since nothing decided), the decision surface,
 the contrasts the evidence tested against the control, a distribution chart per measure and judged
 dimension, and every disclosure the evidence carries, opening with a statement that no analysis was
 generated and what one would add. `Report.basis` says which a report is; `REPORT_VERSION` is 2.
+
+**What the schema checks, and what only the model does.** `schema.json` holds the report's shape and every
+cross-field rule JSON Schema can state: a code-only report names no analysis or model and holds no headline,
+finding or text block; an analysis report names both; a report with no findings links no block to one; a
+finding's own words name their finding; a chart block carries exactly one of an intent and an error, the
+intent of its own type. Three rules compare a value with a sibling's, which JSON Schema cannot: a block's
+finding positions are below `finding_count`, a table's `total_rows` is at least the rows it shows, and a row
+keys only its table's columns. Those only `Report.model_validate` holds, so a host that validates against the
+schema alone accepts exactly those three malformations as well.
 
 A chart block carries the chart's **intent** (`ChartIntent`, from `threetears.evals.analysis.viz`), never
 a charting library's spec: its type from eval's eight, the rows it draws, what each field encodes (identity,
