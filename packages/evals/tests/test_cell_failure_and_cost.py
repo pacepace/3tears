@@ -640,9 +640,18 @@ class _ConversingKind(ToyExtractorKind):
     asked exactly as it would be for a product's conversing kind; its spend lands on the simulator row.
     """
 
-    def __init__(self, *args: Any, simulator_cost_usd: float | None = _SIMULATOR_CALL_USD, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        simulator_cost_usd: float | None = _SIMULATOR_CALL_USD,
+        announces: bool = False,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.simulator_cost_usd = simulator_cost_usd
+        #: Whether it announces each candidate turn to its world (``at_turn``), as a kind under a
+        #: perturbation schedule must.
+        self.announces = announces
         self.tables: list[ScriptedTable] = []
 
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
@@ -652,6 +661,8 @@ class _ConversingKind(ToyExtractorKind):
         answered: list[str] = []
 
         async def answer(round_turns: Any) -> CandidateTurn:
+            if self.announces:
+                await instance.world_session.at_turn(len(answered) + 1)
             answered.append(round_turns[-1].content)
             return CandidateTurn(content=f"answer {len(answered)}")
 
@@ -703,6 +714,82 @@ async def test_the_cap_reached_in_the_last_cell_still_ends_the_run_budget_stoppe
     with pytest.raises(BudgetStoppedError):
         await go()
     assert len(drive.results) == 1
+
+
+async def test_the_cap_reached_before_the_first_answer_under_a_perturbation_schedule_still_ends_the_run_budget_stopped():
+    """A cell the cap stopped before turn 1 announced no turn, truthfully — the run stops ``budget_stopped``, not failed.
+
+    Half a call's worth of cap: the first utterance crosses it, so the candidate never answers and the kind never
+    reaches a turn to announce.
+    """
+    template = _no_goal_checks()
+    template = template.model_copy(
+        update={"world_seed": template.world_seed.model_copy(update={"ambient_perturbation_turns": [1]})}
+    )
+    cap = EvalRunCostCap("toy-run", 0.5 * _SIMULATOR_CALL_USD, enabled=True)
+
+    def announcing(world: WorldRegistry) -> ToyExtractorKind:
+        return _ConversingKind(client=ScriptedExtractionClient(), world=world, goal_checks=(), announces=True)
+
+    drive, go = _drive(announcing, n_cases=2, cap=cap, template=template)
+
+    with pytest.raises(BudgetStoppedError, match="cost cap exceeded") as stopped:
+        await go()
+
+    assert stopped.value.completed == 1
+    (result,) = drive.results
+    assert result.stop_cause is ConversationStopCause.BUDGET_STOPPED
+    assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE
+    assert not any(event.kind == "ambient" for event in result.world_events or []), "no turn was reached"
+
+
+class _AsksTheCapFirstKind(ToyExtractorKind):
+    """A kind that holds no conversation and asks the run's cap before its one paid turn, stopping when it is reached.
+
+    It reports no stop cause — it does not converse — so only the sink's breach says the cap stopped it.
+    """
+
+    async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
+        if sink.cost_cap_reached(1.0):
+            return CandidateOutput()
+        await instance.world_session.at_turn(1)
+        return await super().invoke(instance, test_case, sink)
+
+
+async def test_a_kind_the_cap_stopped_before_its_turn_reports_no_stop_cause_and_still_ends_the_run_budget_stopped():
+    template = _no_goal_checks()
+    template = template.model_copy(
+        update={"world_seed": template.world_seed.model_copy(update={"ambient_perturbation_turns": [1]})}
+    )
+    cap = EvalRunCostCap("toy-run", 0.5, enabled=True)
+
+    def asks_first(world: WorldRegistry) -> ToyExtractorKind:
+        return _AsksTheCapFirstKind(client=ScriptedExtractionClient(), world=world, goal_checks=())
+
+    drive, go = _drive(asks_first, n_cases=1, cap=cap, template=template)
+
+    with pytest.raises(BudgetStoppedError):
+        await go()
+    (result,) = drive.results
+    assert result.stop_cause is None
+    assert classify_result(result) is ResultOutcome.INFRA_EXCLUDE
+
+
+async def test_an_announcing_conversation_under_a_schedule_is_perturbed_before_its_first_answer():
+    """The accepting side of the test above: uncapped, the same kind reaches turn 1 and the perturbation applies."""
+    template = _no_goal_checks()
+    template = template.model_copy(
+        update={"world_seed": template.world_seed.model_copy(update={"ambient_perturbation_turns": [1]})}
+    )
+
+    def announcing(world: WorldRegistry) -> ToyExtractorKind:
+        return _ConversingKind(client=ScriptedExtractionClient(), world=world, goal_checks=(), announces=True)
+
+    drive = await _driven(announcing, n_cases=1, template=template)
+
+    (result,) = drive.results
+    assert result.stop_cause is ConversationStopCause.MAX_TURNS
+    assert [event.turn for event in result.world_events or [] if event.kind == "ambient"] == [1]
 
 
 async def test_an_unpriced_simulator_call_stops_a_capped_conversation_at_once():

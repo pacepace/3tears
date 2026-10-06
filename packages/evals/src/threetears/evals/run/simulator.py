@@ -71,16 +71,16 @@ actor's lines and each pick of the scheduler cost survives the cell. :attr:`Turn
 its total, which :func:`~threetears.evals.run.conversation.drive_conversation` asks the run's cost cap
 about before every further call.
 
-**The worst case one conversation can spend.** With ``T = max_turns``, ``S = max_speakers_per_round``
-and ``A`` actors: at most ``T·S`` lines are delivered and at most ``A`` replies are departures, so at most
-``T·S + A`` utterance calls are made; every ``llm_decided`` decision ends in one of those or in one
-``round_done`` per round, and makes at most :data:`SCHEDULER_CALL_ATTEMPTS` calls, so at most
-``2·(T·S + A + T)`` scheduling calls. That is ``3·(T·S + A) + 2·T`` simulator calls under ``llm_decided``
-(``T·S + A`` under ``round_robin``) — at the schema's maxima (``T = 100``, ``S = 20``) over 6,000 calls,
-each capped at :data:`SIMULATOR_REQUEST_SETTINGS`'s ``max_tokens``. Under an enforcing cost cap the run's
-ceiling binds first: the loop stops ``budget_stopped`` before any call once the run's recorded spend
-plus this conversation's simulator spend exceeds the cap, so the overshoot is one simulator call plus
-the cell's candidate spend. With no cap enforced, the structure above is the only bound.
+**The worst case one conversation can spend.** With ``T = max_turns``, ``S = max_speakers_per_round`` and ``A``
+actors: at most ``T·S`` lines are delivered and at most ``A`` replies are departures, so at most ``T·S + A`` utterance
+calls are made; every ``llm_decided`` decision ends in one of those or in one ``round_done`` per round, and makes at
+most :data:`SCHEDULER_CALL_ATTEMPTS` calls, so at most ``2·(T·S + A + T)`` scheduling calls. That is ``3·(T·S + A) +
+2·T`` simulator calls under ``llm_decided`` (``T·S + A`` under ``round_robin``) — at the schema's maxima (``T = 100``,
+``S = 20``) over 6,000 calls, each capped at :data:`SIMULATOR_REQUEST_SETTINGS`'s ``max_tokens``. Under an enforcing
+cost cap the run's ceiling binds first: the loop stops ``budget_stopped`` before any call once the run's recorded
+spend plus this conversation's simulator spend exceeds the cap. It asks once per decision, and one ``llm_decided``
+decision can be :data:`SCHEDULER_CALL_ATTEMPTS` calls, so the overshoot is at most two simulator calls (one under
+``round_robin``) plus the cell's candidate spend. With no cap enforced, the structure above is the only bound.
 
 Why this is engine API
 ----------------------

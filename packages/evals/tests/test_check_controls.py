@@ -98,7 +98,9 @@ def test_an_event_triggered_dimension_the_seed_arms_neither_fires_nor_arrives_wh
 
     idle = do_nothing_end_state(held, world=profile.world)
 
-    assert PAYMENT_HOLD not in idle.end_state, "its condition is an event, and nothing brought it about"
+    # Known absent: its condition is an event, and nothing brought it about, so the seeded value never
+    # arrived — and the gate knows that, so the dimension is not Missing (unknown) either.
+    assert idle.end_state == {PAYMENT_HOLD: None}
     # The clock still runs: an unarmed clock-driven dimension may fire on the world's own clock, and is
     # not the seed's armed event.
     assert idle.fired == Firings(dimensions=frozenset({_CLOCK}))
@@ -234,6 +236,54 @@ class TestSeedArmedFirings:
 
         with pytest.raises(ValidationFailedError, match=r"fired\('document_language'\) names a dimension set at t=0"):
             refuse_non_discriminating_checks(template, profile=toyhost_profile())
+
+
+class TestAnUnfiredEventDimensionIsKnownAbsent:
+    """A hold check over an armed event dimension's value: the hold never arrived when the candidate did nothing."""
+
+    _HELD = WorldSeed(namespaces={"console": {PAYMENT_HOLD: "held"}})
+    _HOLD_PLACED = ControlEndState(
+        describes="The extraction was posted and the seeded hold took effect.",
+        world={"console": {PAYMENT_HOLD: "held"}},
+        fired_armed=[PAYMENT_HOLD],
+    )
+
+    def test_a_hold_check_over_its_value_is_admitted(self) -> None:
+        template = _single_check(
+            toyhost_template(), f'not state.{PAYMENT_HOLD} == "held"', "hold", self._HOLD_PLACED, seed=self._HELD
+        )
+
+        refuse_non_discriminating_checks(template, profile=toyhost_profile())
+        (verdict,) = check_discriminations(template, profile=toyhost_profile())
+        assert (verdict.did_nothing.passed, verdict.controlled.passed) == (True, False)
+
+    def test_the_act_check_over_its_value_is_admitted_too(self) -> None:
+        template = _single_check(
+            toyhost_template(), f'state.{PAYMENT_HOLD} == "held"', "act", self._HOLD_PLACED, seed=self._HELD
+        )
+
+        refuse_non_discriminating_checks(template, profile=toyhost_profile())
+
+
+def test_a_check_reading_a_path_the_do_nothing_control_does_not_hold_is_refused_for_that_reason() -> None:
+    """Not "the same verdict on both": the check was decided by neither control, and the refusal says which path is empty.
+
+    ``supervisor_signoff`` is a human dimension this seed does not arm, so neither control holds a value for it.
+    """
+    template = _single_check(
+        toyhost_template(),
+        f'not state.{_SIGNOFF} == "signed"',
+        "hold",
+        ControlEndState(describes="The supervisor signed off.", fired=[_SIGNOFF]),
+    )
+
+    with pytest.raises(ValidationFailedError) as refused:
+        refuse_non_discriminating_checks(template, profile=toyhost_profile())
+
+    message = str(refused.value)
+    assert "the do-nothing control and control 'it' hold(s) nothing at a path the check reads" in message
+    assert 'fired_armed("<dimension>")' in message
+    assert "does not depend on what the candidate did" not in message
 
 
 def test_a_named_control_lays_its_dimensions_over_the_seed_and_records_its_calls() -> None:

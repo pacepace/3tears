@@ -9,22 +9,23 @@ at authoring instead.
 
 **Two controls per check.** Each check is evaluated against:
 
-* **the do-nothing control** — what a cell whose candidate did nothing would leave: the template's own
-  seed as the end state, named through the host's world registry, an empty call ledger, and whatever
-  the world does on its own. A triggered dimension's seed arms it rather than setting it, so an armed
-  ``event`` or ``human`` dimension is left out — its condition is the candidate's act or a person's,
-  and neither happened. A ``turn`` dimension is the exception, because its condition is the passage of
-  turns, which happens in a cell whatever its candidate does. The session does not advance a clock
-  itself — :meth:`~threetears.evals.contracts.world_session.WorldSession.at_turn` only applies ambient
+* **the do-nothing control** — what a cell whose candidate did nothing would leave: the template's own seed as the
+  end state, named through the host's world registry, an empty call ledger, and whatever the world does on its own. A
+  triggered dimension's seed arms it rather than setting it, so an armed ``event`` or ``human`` dimension is *known
+  absent* — present, holding ``None`` rather than its seeded value — since its condition is the candidate's act or a
+  person's, and neither happened. Known absent and not :data:`~threetears.evals.contracts.dsl.Missing`: the gate knows
+  the value never arrived, so a hold check such as ``not state.payment_hold == "held"`` passes here, as it does in a
+  run whose host reads an unfired dimension back as ``None``. A ``turn`` dimension is the exception, because its
+  condition is the passage of turns, which happens in a cell whatever its candidate does. The session does not advance
+  a clock itself — :meth:`~threetears.evals.contracts.world_session.WorldSession.at_turn` only applies ambient
   perturbation — so a turn trigger fires when the kind fires it as its turns pass
-  (:meth:`~threetears.evals.contracts.world_session.WorldSession.fire`), or when the world's own clock
-  fires it and the kind records it (``observe``). Whether a given kind fires its turn triggers is the
-  kind's code, which this gate cannot see, so it assumes the worst case for a do-nothing candidate:
-  every clock-driven dimension FIRES in the do-nothing control — the world's own clock may fire one the
-  seed never armed, and the engine cannot rule that out — and one the seed arms fires as the seed's armed
-  event (``fired_armed``), with its seeded value arrived in the end state. That over-refuses rather than
-  over-admits: a check on a clock dimension that a particular kind never fires is still refused.
-  A check that passes on a clock firing alone passes for a candidate that did nothing, and is refused.
+  (:meth:`~threetears.evals.contracts.world_session.WorldSession.fire`), or when the world's own clock fires it and
+  the kind records it (``observe``). Whether a given kind fires its turn triggers is the kind's code, which this gate
+  cannot see, so it assumes the worst case for a do-nothing candidate: every clock-driven dimension FIRES in the
+  do-nothing control — the world's own clock may fire one the seed never armed, and the engine cannot rule that out —
+  and one the seed arms fires as the seed's armed event (``fired_armed``), with its seeded value arrived in the end
+  state. That over-refuses rather than over-admits: a check on a clock dimension that a particular kind never fires is
+  still refused. A check that passes on a clock firing alone passes for a candidate that did nothing, and is refused.
   Derived, so it needs no data and cannot be authored wrong.
 * **its named control** — an end state the template's author states in
   :class:`~threetears.evals.contracts.models.GoalCheckControls`, laid over the do-nothing control: for an
@@ -44,13 +45,15 @@ through, so a check is proven under the evaluation it will be scored by.
 ``world_seed``, the simulated user from the ``conversation`` block, and the judge from the intent
 and the evidence the kind renders. A control reaching the candidate would be a hint about the answer.
 
-**What the do-nothing control does not model.** It is the seed as written, not as a host's carriers
-read it back after a cell: a field the host's read adds with a default (a flag reading ``false``)
-is absent here, and so is the value a clock-driven dimension takes when the world's own clock fires it
-unarmed — the firing is modelled, the value it brings is the host's. A check that distinguishes "absent" from "false" can therefore pass this gate and
-grade differently in a run; the host's own suite is where that agreement is proven for its
-templates. A seed value a run resolves from the subject (a reference to the subject's own state) resolves to empty, as
-it does for a run with no subject.
+**What the do-nothing control does not model.** It is the seed as written, not as a host's carriers read it back after
+a cell: a field the host's read adds with a default (a flag reading ``false``) is absent here — a check reading it is
+*not established* on this control, and refused naming the path — and so is the value a clock-driven dimension takes
+when the world's own clock fires it unarmed — the firing is modelled, the value it brings is the host's. An armed
+event or human dimension that never fired is ``None`` here, whatever a host's read gives back for one — a host whose
+read answers ``"released"`` for an unfired hold grades ``state.payment_hold == None`` differently in a run. A check
+that distinguishes "absent" from "false" can therefore pass this gate and grade differently in a run; the host's own
+suite is where that agreement is proven for its templates. A seed value a run resolves from the subject (a reference
+to the subject's own state) resolves to empty, as it does for a run with no subject.
 
 **Which writes it binds** — see :func:`refuse_non_discriminating_checks`. A template written past
 authoring (saved straight to the store) with no controls is not refused where it is read or run; its checks are
@@ -65,7 +68,7 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 from threetears.evals.contracts.call_ledger import CallLedger
-from threetears.evals.contracts.dsl import undefined_action, undefined_fired_dimension
+from threetears.evals.contracts.dsl import NOT_ESTABLISHED, undefined_action, undefined_fired_dimension
 from threetears.evals.contracts.errors import ValidationFailedError
 from threetears.evals.contracts.host.profile import HostProfile
 from threetears.evals.contracts.host.world import Triggered, WorldRegistry
@@ -124,6 +127,24 @@ class CheckDiscrimination:
             f"goal check {self.check!r} ({self.intent}) {_verdict(self.did_nothing)} when the candidate did nothing "
             f"and {_verdict(self.controlled)} on control {self.control!r}"
         )
+        unestablished = [
+            name
+            for name, outcome in (
+                ("the do-nothing control", self.did_nothing),
+                (f"control {self.control!r}", self.controlled),
+            )
+            if outcome.detail.startswith(NOT_ESTABLISHED)
+        ]
+        if unestablished:
+            # Not "the same verdict on both": a check not established on a control was not decided by it at
+            # all, so the diagnosis is the path the control holds nothing at, never the check's dependence.
+            return (
+                f"{verdicts} — {' and '.join(unestablished)} hold(s) nothing at a path the check reads, so the check "
+                "cannot be proven against it: the do-nothing control is the template's seed (an armed event or human "
+                "dimension known absent, None) with no value a host's read would add by default, and a named control "
+                "is that seed with what it states laid over it. Seed or state the path the check reads, or read a "
+                'triggered dimension\'s firing through fired("<dimension>") or fired_armed("<dimension>")'
+            )
         if self.did_nothing.passed is self.controlled.passed:
             return f"{verdicts} — the same verdict on both, so it does not depend on what the candidate did"
         required = (
@@ -183,9 +204,12 @@ def _named(world: WorldRegistry | None, namespaces: Mapping[str, Any]) -> dict[s
 def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None) -> ControlEnd:
     """The end state of a candidate that did nothing: the template's seed, no calls, and what the world does alone.
 
-    The seed less its ``event`` and ``human`` triggered dimensions: seeding one arms it, and with nothing
-    done its condition — the candidate's act, or a person's — never happened, so its value is not in the
-    world. A ``turn`` dimension is different: its condition is turns passing, which happens in every cell
+    The seed with each of its ``event`` and ``human`` triggered dimensions *known absent* (``None``): seeding
+    one arms it, and with nothing done its condition — the candidate's act, or a person's — never happened,
+    so its seeded value is not in the world. Known absent rather than left out, because left out it reads
+    as :data:`~threetears.evals.contracts.dsl.Missing` — unknown — and a hold check over it
+    (``not state.payment_hold == "held"``) could then never pass here, though the gate knows the hold never
+    arrived. A ``turn`` dimension is different: its condition is turns passing, which happens in every cell
     whatever the candidate does, and whether a kind fires it then is the kind's code, not something this
     gate can see — so it is taken as firing. Every declared ``turn`` dimension fires, since the world's own
     clock may fire one the seed never armed; one the seed arms fires as the seed's armed event, and its
@@ -203,13 +227,13 @@ def do_nothing_end_state(template: EvalTemplate, *, world: WorldRegistry | None)
     """
     seeded = _named(world, template.world_seed.namespaces)
     clock = _clock_driven(world)
-    # A triggered dimension's seed ARMS it rather than setting it: a candidate that did nothing never
-    # met an event's or a person's condition, so the value never arrived. Naming it here would grade a
-    # check on such a dimension's end state as already satisfied by the seed — exactly the "graded the
-    # seed, not the end state" defect this gate exists to refuse. A clock-driven one is the opposite
-    # case: its condition is turns passing, so leaving it out would let a check on it pass this gate
-    # and then pass, in every cell, for a candidate that did nothing — the same defect from the far side.
-    idle = {name: value for name, value in seeded.items() if not _is_triggered(world, name) or name in clock}
+    # A triggered dimension's seed ARMS it rather than setting it: a candidate that did nothing never met an event's
+    # or a person's condition, so the value never arrived — known absent, ``None``. Naming its seeded value here would
+    # grade a check on such a dimension's end state as already satisfied by the seed — exactly the "graded the seed,
+    # not the end state" defect this gate exists to refuse. A clock-driven one is the opposite case: its condition is
+    # turns passing, so leaving it out would let a check on it pass this gate and then pass, in every cell, for a
+    # candidate that did nothing — the same defect from the far side.
+    idle = {name: value if not _is_triggered(world, name) or name in clock else None for name, value in seeded.items()}
     return ControlEnd(
         end_state=idle,
         ledger=CallLedger(),

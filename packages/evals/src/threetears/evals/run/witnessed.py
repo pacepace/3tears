@@ -53,6 +53,7 @@ from threetears.evals.contracts.models import (
     EvalTemplate,
     EvalTestCase,
     EvalTrace,
+    JudgeConfig,
     JudgedArtifact,
 )
 from threetears.evals.contracts.spend import ExternalRateTable
@@ -72,6 +73,7 @@ from threetears.evals.run.runner import (
     DEFAULT_JUDGE_CONCURRENCY,
     assemble_completed_cell,
     hold_to_declaration,
+    hold_to_goal_checks,
     judge_witnessed_output,
     refuse_engine_derived_host_measures,
     refuse_inner_agent_usage,
@@ -230,19 +232,24 @@ async def record_witnessed_cell(
 
     **Nothing is paid for a cell that cannot be recorded.** The refusals that would stop the record being
     built — a kind landing a measure the engine derives, a kind double-reporting its background work's
-    spend, a variant identity the host's profile cannot derive — are made before the judge is called, as
-    the runner makes them before its judge phase.
+    spend, a variant identity the host's profile cannot derive, a clean cell that left one of its judged
+    template's goal checks ungraded — are made before the judge is called, as the runner makes them before
+    its judge phase.
 
-    **A judged cell is held to its run's ceiling.** Before judging, the run's judge spend so far is checked
-    against the ceiling :func:`stamp_witnessed_judge` recorded, the way the runner checks its cost cap between
-    cells: past it — or with any of that spend unpriced, under an enforced ceiling — the cell is refused before
-    the judge is called. The spend counted is every cell the store holds and every cell judged through the
-    run's ``judging`` that the host has not saved yet, and the check and the judgement it admits are one step
-    per run: cells of one run recorded concurrently through one :class:`WitnessedJudging` are judged one at a
-    time, each against everything judged before it, so the ceiling is overshot by at most the one cell that
-    crosses it — the runner's bound. What it cannot see is a judgement made through another
-    :class:`WitnessedJudging` (another process's, say) that its host has not saved: those share only the store,
-    so save each pair as it is recorded.
+    **A judged cell is held to its template's goal checks**, as a run's cell is
+    (:func:`~threetears.evals.run.runner.hold_to_goal_checks`): a cell whose candidate failed stores each
+    check it did not grade as failed and not evaluated, so per-check rates count it, and a clean cell that
+    graded fewer than the template declares is refused. An unjudged run names no template and so no checks.
+
+    **A judged cell is held to its run's ceiling.** Before judging, the run's judge spend so far is checked against
+    the ceiling :func:`stamp_witnessed_judge` recorded, the way the runner checks its cost cap between cells: past it
+    — or with any of that spend unpriced, under an enforced ceiling — the cell is refused before the judge is called.
+    The spend counted is every cell the store holds, every cell judged through the run's ``judging`` that the host has
+    not saved yet, and every judgement a re-record of a cell replaced, and the check and the judgement it admits are
+    one step per run: cells of one run recorded concurrently through one :class:`WitnessedJudging` are judged one at a
+    time, each against everything judged before it, so the ceiling is overshot by at most the one cell that crosses it
+    — the runner's bound. What it cannot see is a judgement made through another :class:`WitnessedJudging` (another
+    process's, say) that its host has not saved: those share only the store, so save each pair as it is recorded.
 
     **What the host writes around it.** A witnessed session has no template that set it, so its case
     carries ``template_id=None`` whatever its run names: an :class:`~threetears.evals.contracts.models.EvalTestCase`
@@ -342,11 +349,12 @@ async def record_witnessed_cell(
     # Read off the run exactly as execute_run reads it, so the two key a cell the same way.
     variant = resolve_variant_identity(run=run, profile=host.profile)
 
-    def assemble(judged: Any, judge_ms: Any) -> tuple[EvalResult, EvalTrace]:
+    def assemble(judged: Any, judge_ms: Any, goal_checks: Sequence[str]) -> tuple[EvalResult, EvalTrace]:
         return _assembled(
             run,
             test_case,
             output,
+            goal_checks=goal_checks,
             candidate_kind=candidate_kind,
             k_iteration=k_iteration,
             variant=variant,
@@ -362,7 +370,8 @@ async def record_witnessed_cell(
         )
 
     if run.judge_model is None:
-        return assemble(None, None)
+        # No template names the cell — an unjudged witnessed run names none — so no goal check holds it.
+        return assemble(None, None, ())
     # The ceiling check and the judgement it admits are one step per run: a second cell of the same run
     # waits here until the first has been judged and its spend counted, so cells recorded concurrently are
     # admitted one at a time, against everything judged before them — saved or not yet saved.
@@ -373,20 +382,25 @@ async def record_witnessed_cell(
             f"WitnessedJudging({run.id!r}) once and hand it to every record_witnessed_cell of the run, so each "
             "cell's ceiling check counts every cell judged before it"
         )
-    async with judging.admitting() as unsaved:
-        await _refuse_past_the_judge_ceiling(host, run, unsaved)
-        judge_service, template = _recorded_judge(host, run, judged_artifact)
+    async with judging.admitting():
+        await _refuse_past_the_judge_ceiling(host, run, judging)
+        judge_service, template = await _recorded_judge(host, run, judged_artifact)
+        # Held to the template's goal checks before the judge is paid for, as the runner holds a cell
+        # before its judge phase; the judge reads the outcomes the cell will store, and the assembly
+        # holds the output to the same checks again, idempotently.
+        goal_outcomes = hold_to_goal_checks(candidate_kind, template.goal_state_checks, output)
         async with judge_service:
             judged, judge_ms = await judge_witnessed_output(
                 template=template,
                 test_case=test_case,
                 output=output,
+                goal_outcomes=goal_outcomes,
                 judged_artifact=judged_artifact,
                 judge_service=judge_service,
                 concurrency=DEFAULT_JUDGE_CONCURRENCY,
                 eval_run_id=run.id,
             )
-        result, trace = assemble(judged, judge_ms)
+        result, trace = assemble(judged, judge_ms, template.goal_state_checks)
         judging.count(result)
     return result, trace
 
@@ -396,6 +410,7 @@ def _assembled(
     test_case: EvalTestCase,
     output: CandidateOutput,
     *,
+    goal_checks: Sequence[str],
     candidate_kind: str,
     k_iteration: int,
     variant: Any,
@@ -415,6 +430,7 @@ def _assembled(
         run: The witnessed run.
         test_case: The case.
         output: What the candidate produced.
+        goal_checks: The goal checks of the template the run is judged against; empty for an unjudged run.
         candidate_kind: The kind the run stamped.
         k_iteration: The repeat.
         variant: The run's variant identity.
@@ -442,6 +458,7 @@ def _assembled(
         variant=variant,
         judge_model=run.judge_model,
         output=output,
+        goal_checks=goal_checks,
         judged_artifact=judged_artifact,
         rate_table=external_rates,
         result_id=result_id,
@@ -480,7 +497,8 @@ class WitnessedJudging:
     :func:`record_witnessed_cell` of the run's cells. It is what makes a cell's ceiling check and the
     judgement that check admits one step: a second cell of the run waits until the first has been judged and
     its spend counted, so cells recorded concurrently are admitted one at a time, each against every cell
-    judged before it — the ones the store holds and the ones judged here that the host has not saved yet. The
+    judged before it — the ones the store holds and the ones judged here that the host has not saved yet. A
+    cell recorded twice is judged twice, and both judgements count, though the store keeps the later. The
     ceiling is then overshot by at most the one cell that crosses it, the bound the runner's between-cells check
     keeps. It is the host's to hold, as the recording loop is: the engine keeps no state of its own between
     calls.
@@ -497,48 +515,89 @@ class WitnessedJudging:
         """
         self.run_id = run_id
         self._lock = asyncio.Lock()
-        # The judge spend of every cell judged here, by result id, until the store holds that result: the
-        # spend a check reading the store alone would miss.
-        self._unsaved: dict[str, float | None] = {}
+        # The judge spend of the LATEST judgement of every cell judged here, by result id — counted from here
+        # rather than from the store, which holds that judgement only once the host saves it.
+        self._latest: dict[str, float | None] = {}
+        # Every judgement that a later judgement of the same cell replaced: re-recording a cell judges it again,
+        # and both judgements were paid for, though only the later one will be stored.
+        self._superseded: list[float | None] = []
+        # The judge spend of each cell the store held at the last ceiling check, by result id: what a cell
+        # judged here for the first time replaces, once the host saves it.
+        self._stored: dict[str, float | None] = {}
 
     def count(self, result: EvalResult) -> None:
-        """Count ``result``'s judging as spent, until the store holds it — what :func:`record_witnessed_cell` calls.
+        """Count ``result``'s judging as spent — what :func:`record_witnessed_cell` calls once it has judged a cell.
+
+        A cell judged before — here, or as the store held it at the last check — is judged again: the earlier
+        judgement stays counted, since it was paid for, though the store will keep only this one.
 
         Args:
             result: The cell just judged.
         """
         spend = _judge_spend(result)
-        if spend is not False:
-            self._unsaved[result.id] = spend
+        if spend is False:
+            return
+        if result.id in self._latest:
+            self._superseded.append(self._latest[result.id])
+        elif result.id in self._stored:
+            self._superseded.append(self._stored[result.id])
+        self._latest[result.id] = spend
+
+    def spent(self, saved: Sequence[EvalResult]) -> list[float | None]:
+        """Every judgement of the run's cells to count against its ceiling, given what the store holds now.
+
+        A cell judged here counts its latest judgement from here, whether or not the host has saved it; a cell
+        the store holds and this judging never judged counts the store's; and every judgement a re-record
+        replaced counts too. Judgements another :class:`WitnessedJudging` made and its host has not saved, and
+        what a re-judge elsewhere replaced, are beyond it — save each pair as it is recorded.
+
+        Args:
+            saved: The run's results as the store holds them.
+
+        Returns:
+            Each judgement's spend; ``None`` for an unpriced one.
+        """
+        self._stored = {}
+        for result in saved:
+            spend = _judge_spend(result)
+            if spend is not False:
+                self._stored[result.id] = spend
+        from_store = [spend for result_id, spend in self._stored.items() if result_id not in self._latest]
+        return [*from_store, *self._latest.values(), *self._superseded]
+
+    @property
+    def judged_ids(self) -> frozenset[str]:
+        """The ids of every cell judged here."""
+        return frozenset(self._latest)
 
     @contextlib.asynccontextmanager
-    async def admitting(self) -> AsyncIterator[dict[str, float | None]]:
+    async def admitting(self) -> AsyncIterator[None]:
         """Hold the run's ceiling check and the judgement it admits — what :func:`record_witnessed_cell` enters.
 
         Yields:
-            The unsaved judge spend, by result id.
+            Nothing; the check and the judgement run while it is held.
         """
         async with self._lock:
-            yield self._unsaved
+            yield
 
 
-async def _refuse_past_the_judge_ceiling(host: EvalHost, run: EvalRun, unsaved: dict[str, float | None]) -> None:
+async def _refuse_past_the_judge_ceiling(host: EvalHost, run: EvalRun, judging: WitnessedJudging) -> None:
     """Refuse to judge another of a judged witnessed run's cells once its judge spend has passed its ceiling.
 
     The runner's between-cells check (:meth:`~threetears.evals.run.budget.EvalRunCostCap.check`), over the
-    judge spend of every cell of the run: the ones the store holds, and the ones this process judged that the
-    host has not saved yet — the only spend of a witnessed cell the engine makes. A cell whose judge spend is
-    unpriced counts as unpriced, never as $0, and stops an enforced ceiling.
+    judge spend of every judgement of the run's cells (:meth:`WitnessedJudging.spent`): the ones the store
+    holds, the ones this process judged that the host has not saved yet, and the ones a re-record replaced —
+    the only spend of a witnessed cell the engine makes. A cell whose judge spend is unpriced counts as
+    unpriced, never as $0, and stops an enforced ceiling.
 
     Args:
         host: The host, whose store holds the run's saved cells.
         run: The judged witnessed run.
-        unsaved: The judge spend of the cells judged in this process the store did not hold yet, by result id;
-            a cell the store now holds is dropped from it, since the store's copy is counted.
+        judging: The run's judging in this process.
 
     Raises:
         ValueError: The run records no ceiling origin — it was not stamped by :func:`stamp_witnessed_judge`.
-        BudgetStoppedError: The ceiling is enforced and the saved judge spend is past it, or unpriced.
+        BudgetStoppedError: The ceiling is enforced and the judge spend is past it, or unpriced.
     """
     if run.max_cost_usd_origin is None:
         raise ValueError(
@@ -549,28 +608,28 @@ async def _refuse_past_the_judge_ceiling(host: EvalHost, run: EvalRun, unsaved: 
         # The host enforces no ceiling, and the run recorded that: uncapped, as a launched run would be.
         return
     saved = await run_blocking(host.blocking_executor, host.storage.query_eval_results_by_run, run.id, run.scope_id)
-    for result in saved:
-        unsaved.pop(result.id, None)
     cap = EvalRunCostCap(run.id, run.max_cost_usd, enabled=True)
-    for result in saved:
-        spend = _judge_spend(result)
-        if spend is not False:
-            cap.record(spend)
-    for spend in unsaved.values():
+    judgements = judging.spent(saved)
+    for spend in judgements:
         cap.record(spend)
     breach = cap.check()
     if breach is not None:
-        raise BudgetStoppedError(len(saved) + len(unsaved), len(run.test_case_ids) * run.k_runs, breach)
+        cells = {result.id for result in saved} | judging.judged_ids
+        raise BudgetStoppedError(len(cells), len(run.test_case_ids) * run.k_runs, breach)
 
 
-def _recorded_judge(host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifact) -> tuple[JudgeService, EvalTemplate]:
+async def _recorded_judge(
+    host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifact
+) -> tuple[JudgeService, EvalTemplate]:
     """The judge a judged witnessed run recorded, and the template it reads — refusing what cannot score the cell.
 
     Built from the run's own record through the checks a re-judge makes (:mod:`threetears.evals.run.rejudge`),
-    so a cell is scored now under exactly the apparatus a re-judge would reproduce later.
+    so a cell is scored now under exactly the apparatus a re-judge would reproduce later. The template and the
+    recorded configs are store reads, made off the event loop on the host's blocking executor, as the runner
+    makes its own; the judge service is built on the loop, where its clients will run.
 
     Args:
-        host: The host: its store and its judge clients.
+        host: The host: its store, its blocking executor and its judge clients.
         run: The judged witnessed run.
         judged_artifact: What the kind's judge reads.
 
@@ -588,10 +647,7 @@ def _recorded_judge(host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifac
             "reads; a run naming a judge claims every cell was scored by it"
         )
     judge_model = recorded_judge_pins(run, request_settings="today")
-    storage = host.storage
-    template = judged_template(storage, run, run.scope_id)
-    dims = recorded_judged_dims(run, template, judged_artifact)
-    configs = recorded_judge_configs(storage, run, dims, run.scope_id)
+    template, configs = await run_blocking(host.blocking_executor, _recorded_apparatus, host, run, judged_artifact)
     # A dim the run recorded no config for is scored by the judge's built-in prompt, as a launch scores it.
     service = JudgeService(
         client_factory=judge_clients_for_run(host.completion_clients("a judged witnessed cell"), judge_model),
@@ -599,6 +655,27 @@ def _recorded_judge(host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifac
         failure_describer=host.failure_describer,
     )
     return service, template
+
+
+def _recorded_apparatus(
+    host: EvalHost, run: EvalRun, judged_artifact: JudgedArtifact
+) -> tuple[EvalTemplate, dict[str, JudgeConfig]]:
+    """The template a judged witnessed run is judged against and the judge configs it recorded, read from the store.
+
+    Blocking: :func:`_recorded_judge` calls it on the host's blocking executor.
+
+    Args:
+        host: The host, whose store holds both.
+        run: The judged witnessed run.
+        judged_artifact: What the kind's judge reads, which picks the dims scored.
+
+    Returns:
+        The template and the recorded config of each scored dim that recorded one.
+    """
+    storage = host.storage
+    template = judged_template(storage, run, run.scope_id)
+    dims = recorded_judged_dims(run, template, judged_artifact)
+    return template, recorded_judge_configs(storage, run, dims, run.scope_id)
 
 
 __all__ = ["WitnessedJudging", "record_witnessed_cell", "stamp_witnessed_judge"]

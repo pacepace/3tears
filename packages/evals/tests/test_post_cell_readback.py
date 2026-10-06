@@ -21,6 +21,7 @@ import pytest
 from threetears.evals.contracts import (
     CandidateOutput,
     CellSink,
+    ConversationStopCause,
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
@@ -51,9 +52,11 @@ class _MovesItsWorldKind:
 
     judged_artifact = JudgedArtifact.UNJUDGED
 
-    def __init__(self, *, seeds: bool = True, fault_after_firing: bool = False) -> None:
+    def __init__(self, *, seeds: bool = True, fault_after_firing: bool = False, **ends: Any) -> None:
         self._seeds = seeds
         self._fault_after_firing = fault_after_firing
+        #: Fields of the output it returns beyond its posting — how the cell ENDED.
+        self._ends = ends
         self.handed: WorldSession | None = None
 
     async def prepare(self, *, world: WorldSession | None, world_seed: WorldSeed, **_: Any) -> WorldSession | None:
@@ -67,7 +70,7 @@ class _MovesItsWorldKind:
             await instance.fire("payment_hold", turn=1)
             if self._fault_after_firing:
                 raise ApparatusError("the posting rig fell over after the hold took effect")
-        return CandidateOutput(output=[{"posted": True}])
+        return CandidateOutput(output=[{"posted": True}], **self._ends)
 
 
 def _template(seed: WorldSeed = _SEED) -> EvalTemplate:
@@ -206,3 +209,39 @@ async def test_a_kind_that_never_announces_its_turns_under_a_perturbation_schedu
     # The same kind under no schedule completes: the refusal is the unannounced schedule, nothing else.
     result, _trace = await _cell(_MovesItsWorldKind())
     assert result.termination == "completed"
+
+
+@pytest.mark.parametrize(
+    "ends",
+    [
+        pytest.param({"candidate_errors": ["the model refused before its first turn"]}, id="candidate-failed-first"),
+        pytest.param(
+            {
+                "infra_errors": ["simulator: reply broke the schema"],
+                "stop_cause": ConversationStopCause.SIMULATOR_ERROR,
+            },
+            id="simulator-error",
+        ),
+        pytest.param({"stop_cause": ConversationStopCause.USER_DONE}, id="every-actor-left"),
+    ],
+)
+async def test_a_cell_that_ended_before_turn_one_under_a_schedule_is_recorded_not_refused(ends: dict[str, Any]) -> None:
+    """Announcing no turn is the truth for a cell that never reached one, so the run is not failed for it.
+
+    The cell is recorded on its own terms — excluded, failed, or scored — and the refusal stays for a cell
+    that ran its course without announcing (the test above).
+    """
+    scheduled = _SEED.model_copy(update={"ambient_perturbation_turns": [1]})
+
+    result, _trace = await _cell(_MovesItsWorldKind(**ends), seed=scheduled)
+
+    assert result.termination == "completed"
+    assert not any(event.kind == "ambient" for event in result.world_events or [])
+
+
+async def test_a_conversation_that_spent_its_turn_budget_without_announcing_a_turn_is_refused() -> None:
+    """``max_turns`` says the turns were taken, so a kind announcing none of them is refused as it always was."""
+    scheduled = _SEED.model_copy(update={"ambient_perturbation_turns": [1]})
+
+    with pytest.raises(WorldSessionError, match="announced no turn"):
+        await _cell(_MovesItsWorldKind(stop_cause=ConversationStopCause.MAX_TURNS), seed=scheduled)

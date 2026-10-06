@@ -688,7 +688,9 @@ async def test_an_inherited_judge_on_a_candidates_model_steps_to_the_alternate()
 
     run = await _judged_run(judged)
 
-    assert run.judge_model == "judge-alternate" and run.model_role_provenance["judge"] == "inherited"
+    # Recorded as the alternate it is, not as the role default it stepped off: re-running the same arguments
+    # picks the alternate setting, and only while the default is still a candidate.
+    assert run.judge_model == "judge-alternate" and run.model_role_provenance == {"judge": "alternate"}
     assert run.effective_judges == {_DIM: "judge-alternate"}
     (quote,) = judged.quotes
     assert quote.judge is not None and quote.judge.model == "judge-alternate", "priced by the judge that scores"
@@ -696,27 +698,34 @@ async def test_an_inherited_judge_on_a_candidates_model_steps_to_the_alternate()
 
 
 @pytest.mark.parametrize(
-    ("judged", "arguments", "judge"),
+    ("judged", "arguments", "judge", "origin"),
     [
         # Not a candidate: the default stands.
-        ({"role_default": "judge-default", "alternate": "judge-alternate"}, {}, "judge-default"),
+        ({"role_default": "judge-default", "alternate": "judge-alternate"}, {}, "judge-default", "inherited"),
         # A judge the launch named is a choice, recorded and never overridden, even on a candidate's model.
         (
             {"role_default": "judge-default", "alternate": "judge-alternate"},
             {"judge_model": RUN_MODELS[0]},
             RUN_MODELS[0],
+            "chosen",
         ),
         # No alternate configured, or one that is itself a candidate: the default stands and the overlap is disclosed.
-        ({"role_default": RUN_MODELS[0], "alternate": None}, {}, RUN_MODELS[0]),
+        ({"role_default": RUN_MODELS[0], "alternate": None}, {}, RUN_MODELS[0], "inherited"),
         # The alternate is a SIBLING arm's model: it is a candidate of the launch, so it may not judge either.
-        ({"role_default": RUN_MODELS[0], "alternate": RUN_MODELS[1]}, {"models": list(RUN_MODELS[:2])}, RUN_MODELS[0]),
+        (
+            {"role_default": RUN_MODELS[0], "alternate": RUN_MODELS[1]},
+            {"models": list(RUN_MODELS[:2])},
+            RUN_MODELS[0],
+            "inherited",
+        ),
     ],
     ids=["default-not-a-candidate", "named-judge-on-a-candidate", "no-alternate", "alternate-is-a-candidate"],
 )
-async def test_the_judge_stays_where_no_usable_alternate_or_a_choice_applies(judged, arguments, judge):
+async def test_the_judge_stays_where_no_usable_alternate_or_a_choice_applies(judged, arguments, judge, origin):
     run = await _judged_run(_Judged(**judged), **arguments)
 
     assert run.judge_model == judge
+    assert run.model_role_provenance == {"judge": origin}
     shared = judges_sharing_a_candidate_model(run.effective_judges, [run.candidate_model])
     assert (shared == {_DIM: judge}) == (judge == RUN_MODELS[0]), "an overlap left in place is disclosed"
 

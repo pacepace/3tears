@@ -7,10 +7,12 @@ per-check rate would be computed over the cells that happened to grade them.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
-from threetears.evals.contracts.candidate_kind import CandidateOutput
-from threetears.evals.contracts.models import GoalStateOutcome
+from threetears.evals.contracts.candidate_kind import CandidateOutput, CellSink
+from threetears.evals.contracts.models import EvalTestCase, GoalStateOutcome
 from threetears.evals.run.runner import RunnerOptions, execute_run, hold_to_goal_checks
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
@@ -90,3 +92,47 @@ async def test_a_run_whose_kind_was_built_without_the_template_s_checks_is_refus
             judge_service=None,
             options=RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}),
         )
+
+
+class _RefusingExtractor(ToyExtractorKind):
+    """The toy extractor whose candidate fails before its kind grades anything."""
+
+    async def invoke(self, instance: Any, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
+        return CandidateOutput(candidate_errors=["the model refused"])
+
+
+async def test_a_failed_candidate_s_stored_result_carries_every_template_check_as_failed() -> None:
+    """End to end, read back from the store: the failed cell counts against every check, so no rate is inflated.
+
+    The helper's own return is asserted above; this reads what the run SAVED, which is what every
+    per-check rate is computed over.
+    """
+    host = toyhost_host()
+    world = host.profile.world
+    assert world is not None
+    template = toyhost_template()
+    assert template.goal_state_checks, "the toy template declares a goal check, which this test relies on"
+    kind = _RefusingExtractor(
+        client=ScriptedExtractionClient(), world=world, goal_checks=tuple(template.goal_state_checks)
+    )
+    (case, *_) = toyhost_test_cases(template)
+    run = toyhost_run(model=RUN_MODELS[0], template=template, kind=kind, world=world).model_copy(
+        update={"k_runs": 1, "test_case_ids": [case.id]}
+    )
+    host.storage.save_eval_run(run)
+
+    await execute_run(
+        host,
+        run=run,
+        template=template,
+        test_cases=[case],
+        judge_service=None,
+        options=RunnerOptions(candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind}),
+    )
+
+    (stored,) = host.storage.query_eval_results_by_run(run.id, run.scope_id)
+    assert stored.candidate_error is not None
+    assert [(fact.expression, fact.passed) for fact in stored.goal_state_outcomes] == [
+        (expression, False) for expression in template.goal_state_checks
+    ]
+    assert all(fact.detail.startswith("not evaluated: the candidate failed") for fact in stored.goal_state_outcomes)

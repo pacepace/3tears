@@ -1156,7 +1156,7 @@ async def run_one_result(
             sink.waiting_on("apparatus")
             # A perturbation schedule the kind never announced its turns for would leave a cell keyed as
             # perturbed with nothing perturbed: the kind's code, so refused here rather than recorded.
-            world_session.require_schedule_announced()
+            world_session.require_schedule_announced(ran_its_course=_ran_its_course(candidate, sink))
             await world_session.end_state()
     except ApparatusError as fault:
         # The rig broke under the candidate — a replay miss, a corrupt recording, a harness fault
@@ -1188,6 +1188,9 @@ async def run_one_result(
     # because for every kind so far they are the same one.
     telemetry = candidate.telemetry
     trace = candidate.output
+    # Held here so a kind that skipped a check is refused before the judge phase is paid for, and so the
+    # judge reads the outcomes the cell will store; the assembly holds the output again, idempotently,
+    # because it is what every completed cell — a witnessed one included — passes through.
     goal_outcomes = hold_to_goal_checks(candidate_kind_name, template.goal_state_checks, candidate)
     # Refused HERE, before the judge phase is paid for, though the rows are folded only when the
     # cell is assembled: a kind double-reporting its background work's spend is its own code, so
@@ -1306,6 +1309,7 @@ async def run_one_result(
         variant=variant,
         judge_model=judge_model,
         output=candidate,
+        goal_checks=template.goal_state_checks,
         judged_artifact=judged_artifact,
         rate_table=options.external_rates,
         result_id=str(uuid.uuid7()),
@@ -1386,6 +1390,7 @@ async def judge_witnessed_output(
     template: EvalTemplate,
     test_case: EvalTestCase,
     output: CandidateOutput,
+    goal_outcomes: list[GoalStateOutcome],
     judged_artifact: JudgedArtifact,
     judge_service: JudgeService,
     concurrency: int,
@@ -1400,6 +1405,8 @@ async def judge_witnessed_output(
         template: The template whose intent and rubric the judge reads.
         test_case: The case the observation answers.
         output: What the candidate produced.
+        goal_outcomes: The goal-check outcomes the cell will store (:func:`hold_to_goal_checks`), which
+            the judge reads.
         judged_artifact: What the kind declares a judge reads.
         judge_service: The judge, built from the run's recorded apparatus.
         concurrency: Judge calls in flight at once.
@@ -1420,7 +1427,7 @@ async def judge_witnessed_output(
         template=template,
         test_case=test_case,
         judge_service=judge_service,
-        goal_outcomes=output.mechanical_facts,
+        goal_outcomes=goal_outcomes,
         concurrency=concurrency,
         settled=[],
         eval_run_id=eval_run_id,
@@ -1454,6 +1461,30 @@ def hold_to_declaration(kind_name: str, judged_artifact: JudgedArtifact, output:
         contradicts = bool(output.output) and not has_evidence
     if contradicts:
         raise CandidateKindDefect(kind_name, declared=judged_artifact, has_evidence=has_evidence)
+
+
+#: The stop causes of a conversation that ran to its own end, past any turn it would announce; with no stop
+#: cause (a kind that does not converse), a clean cell ran its course too (:func:`_ran_its_course`).
+_RAN_ITS_COURSE_STOP_CAUSES = frozenset({ConversationStopCause.MAX_TURNS})
+
+
+def _ran_its_course(output: CandidateOutput, sink: _CellSink) -> bool:
+    """Whether a cell ran to its own end, so it must have announced a turn under a perturbation schedule.
+
+    No error on the output, no breach of the run's cost cap, and a conversation — if the kind held one —
+    that stopped on its turn budget. Every other ending may have come before turn 1
+    (:meth:`~threetears.evals.contracts.world_session.WorldSession.require_schedule_announced`).
+
+    Args:
+        output: What the kind returned.
+        sink: The cell's sink, which records a cost-cap breach reached inside the cell.
+
+    Returns:
+        ``True`` when the cell ran its course.
+    """
+    if output.infra_errors or output.candidate_errors or sink.budget_breach is not None:
+        return False
+    return output.stop_cause is None or output.stop_cause in _RAN_ITS_COURSE_STOP_CAUSES
 
 
 def hold_to_goal_checks(kind_name: str, goal_checks: Sequence[str], output: CandidateOutput) -> list[GoalStateOutcome]:
@@ -1587,6 +1618,7 @@ def assemble_completed_cell(
     variant: DerivedVariantIdentity,
     judge_model: str | None,
     output: CandidateOutput,
+    goal_checks: Sequence[str],
     judged_artifact: JudgedArtifact,
     rate_table: ExternalRateTable | None,
     result_id: str,
@@ -1620,6 +1652,9 @@ def assemble_completed_cell(
         variant: The run's resolved contestant identity.
         judge_model: The judge the run records, or ``None``.
         output: What the candidate produced.
+        goal_checks: The template's goal checks the cell is held to (:func:`hold_to_goal_checks`), so the
+            stored result carries a failed, not-evaluated outcome for each one a failed candidate's kind
+            never graded; empty for a cell no template set.
         judged_artifact: What the kind declares a judge reads, kept on the trace beside the evidence.
         rate_table: The run's rate table, which prices external calls.
         result_id: The result's id; the trace's id is derived from it.
@@ -1635,10 +1670,19 @@ def assemble_completed_cell(
 
     Returns:
         The cell.
+
+    Raises:
+        ValueError: The output lands a measure the engine derives, or a clean cell left one of
+            ``goal_checks`` ungraded.
     """
     if judged is None:
         judged = _unjudged_record()
     refuse_engine_derived_host_measures(output.host_measures)
+    # Held HERE, the one point every completed cell passes through, so what is STORED counts a failed
+    # candidate against every check its template declares: a per-check rate counts a candidate failure
+    # only over the checks a result carries, so a cell that failed before its kind graded anything would
+    # otherwise drop out of every rate and inflate it.
+    goal_outcomes = hold_to_goal_checks(candidate_kind, goal_checks, output)
     telemetry = output.telemetry
     trace = output.output
     async_deliveries = output.async_deliveries
@@ -1707,7 +1751,7 @@ def assemble_completed_cell(
         k_iteration=k_iteration,
         candidate_instance_id=output.candidate_instance_id,
         subject_id=subject_id,
-        goal_state_outcomes=output.mechanical_facts,
+        goal_state_outcomes=goal_outcomes,
         rubric_scores=judged.rubric_scores,
         transcript_score=judged.transcript_score,
         outcome_score=judged.outcome_score,

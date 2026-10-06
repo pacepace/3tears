@@ -74,8 +74,8 @@ def list_runs(
     re-deriving it. Pass ``include_archived=True`` to see them; ``get_run``
     always reads one regardless, so an archived run is never unreachable.
 
-    **The COST surfaces deliberately opt back in** (``program_budget``,
-    ``estimate_cost`` both pass ``include_archived=True``). Archiving is a
+    **The COST surfaces deliberately opt back in** (``program_budget`` and the engine's launch pricer,
+    ``history_launch_pricer``, both pass ``include_archived=True``). Archiving is a
     measurement curation, not a financial one: a run retired because its
     observation is junk still spent its dollars. The rule: quality views exclude
     them, budget views never do.

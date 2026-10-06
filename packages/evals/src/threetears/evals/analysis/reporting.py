@@ -5906,8 +5906,8 @@ class CostEstimate(EvalBaseModel):
     about to sweep still priced ONE case — a 5x understatement for a five-case template, scaling with
     ``k_runs`` and model count. Both fields are supplied by the caller: this function
     is pure over runs and results and cannot open a template, so the count and its
-    provenance are resolved one layer up in
-    :func:`~threetears.evals.analysis.reads.estimate_cost` and echoed here.
+    provenance are resolved by the caller — the engine's launch pricer
+    (:func:`~threetears.evals.ops.history_launch_pricer`) counts them off the arm's plan — and echoed here.
     """
 
     cassette_mode: str
@@ -5932,10 +5932,9 @@ class CostEstimate(EvalBaseModel):
     #: and a reader with the count alone cannot tell which reading applies. A
     #: ``conversational-turn`` template with zero persisted cases has nothing to sweep; a
     #: ``classifier`` template with zero has its cases minted at launch from the subject's
-    #: snapshot bank, so zero is its ordinary state. Resolved one layer up in
-    #: :func:`~threetears.evals.analysis.reads.estimate_cost` and echoed here for the same
-    #: reason the count is: this function is pure over runs and results and cannot open a
-    #: template.
+    #: snapshot bank, so zero is its ordinary state. Resolved by the caller of
+    #: :func:`compute_estimate_cost` and echoed here for the same reason the count is: that
+    #: function is pure over runs and results and cannot open a template.
     template_candidate_kind: str | None = None
     #: The basis filters this estimate was computed under; ``None`` = not filtered.
     subject_id: str | None = None

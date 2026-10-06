@@ -23,8 +23,11 @@ counting the simulator's spend so far (:meth:`~threetears.evals.contracts.candid
 and when it is, stops ``budget_stopped`` without making the call. A round already delivered is then left
 unanswered: answering it is a paid call past the cap. The runner excludes such a cell and stops the run.
 The candidate's own spend inside the cell is not in that count — the loop cannot see it — and is
-counted when the cell's result lands, so a run overshoots its cap by at most one simulator call plus
-the stopped cell's candidate spend.
+counted when the cell's result lands. The cap is asked once per DECISION, and an ``llm_decided``
+scheduling decision may take two calls (a refused reply buys one repair,
+:data:`~threetears.evals.run.simulator.SCHEDULER_CALL_ATTEMPTS`), so a run overshoots its cap by at most
+two simulator calls plus the stopped cell's candidate spend — one call under ``round_robin``, whose only
+paid calls are utterances.
 """
 
 from __future__ import annotations
@@ -52,13 +55,15 @@ async def drive_conversation(
     the kind starts one before delivering it); then ``candidate_turn`` answers the round's utterances
     and its answer is recorded. A reply in which an actor says ``done`` is not delivered.
 
-    **Every delivered line is answered, the last actor's departure included.** When the last actor
-    present leaves after others have spoken in the same round, the conversation ends ``user_done``
-    only once the candidate has answered what that round delivered, so a transcript ending on
-    ``user_done`` does not end on a simulated line the candidate was handed and not asked to answer —
-    unless the run's cost cap is reached just then, when the answer is not bought and the runner
-    excludes the cell for the cap. A round that delivered nothing is not answered. The turn budget
-    cannot be spent by that answer: the round began with ``candidate_turns < max_turns``.
+    **Every delivered line is answered, the last actor's departure included.** When the last actor present leaves
+    after others have spoken in the same round, the conversation ends ``user_done`` only once the candidate has
+    answered what that round delivered, so a transcript ending on ``user_done`` does not end on a simulated line the
+    candidate was handed and not asked to answer — unless the run's cost cap is reached just then, when the answer is
+    not bought and the runner excludes the cell for the cap. The stop cause then stays ``user_done``, deliberately:
+    the departure ended the conversation before the cap was asked, and a driver's first stop stands. The cell is
+    excluded and the run stopped all the same, through the breach the sink recorded. A round that delivered nothing is
+    not answered. The turn budget cannot be spent by that answer: the round began with ``candidate_turns <
+    max_turns``.
 
     Args:
         driver: A fresh driver over the template's ``conversation`` block.

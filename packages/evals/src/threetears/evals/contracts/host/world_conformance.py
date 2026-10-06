@@ -1006,6 +1006,11 @@ async def _compose_beside_another(
     for candidate in _synthesize(declared.schema, _VALUE_ATTEMPTS, named=declared.name):
         if any(json_equal(candidate, spent) for spent in tried):
             continue
+        # Each attempt starts from a re-laid base, and this guard is the one place that says the base did not
+        # land on a LATER rebase than :func:`_independence`'s own. Nothing in the toy host reaches it: its
+        # dead-seeder fault fails on every call, so ``_independence``'s guard answers first. It stays because a
+        # real host's seeder can fail on a later call only (a write that stops landing mid-suite), and
+        # composing over a base that never landed would charge the sibling with the seeder's defect.
         if blocked := _base_never_landed("independence", declared, await _rebase(registry)):
             return blocked
         if await _incoherence(registry, declared, candidate):
