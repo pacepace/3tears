@@ -139,7 +139,7 @@ class TextBlock(_Block):
     model_config = ConfigDict(
         json_schema_extra={
             # A finding's own words name it (``_a_findings_own_words_name_it``), stated in the schema too.
-            "if": {"properties": {"role": {"enum": sorted(FINDING_ROLES)}}, "required": ["role"]},
+            "if": {"properties": {"role": {"enum": [role for role in sorted(FINDING_ROLES)]}}, "required": ["role"]},
             "then": {"properties": {"finding": {"type": "integer"}}, "required": ["finding"]},
         }
     )

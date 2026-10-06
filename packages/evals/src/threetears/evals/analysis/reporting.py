@@ -3496,6 +3496,7 @@ def _plan_for(
     """
     row_factor, column_factor = axes
     model = row if row_factor == CANDIDATE_MODEL_LEVER else column
+    templates: set[str | None]
     if _TEMPLATE_FACTOR in axes:
         templates = {row if row_factor == _TEMPLATE_FACTOR else column}
     else:

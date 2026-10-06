@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, TypeIs
 
 from threetears.evals.analysis.viz.intent import INTERVAL_ROLES, LENGTH_ROLES, MEASURED_ROLES
@@ -307,14 +308,14 @@ def table_disagreements(intent: ChartIntent) -> list[str]:
     return disagreements
 
 
-def _comparable(row: dict[str, object], datum: dict[str, object], field: str) -> bool:
+def _comparable(row: Mapping[str, object], datum: Mapping[str, object], field: str) -> bool:
     """Whether ``row`` and ``datum`` state anything both of them hold besides the identity."""
     return any(
         key != field and key in datum and value is not None and datum[key] is not None for key, value in row.items()
     )
 
 
-def _differing(row: dict[str, object], datum: dict[str, object], field: str) -> list[str]:
+def _differing(row: Mapping[str, object], datum: Mapping[str, object], field: str) -> list[str]:
     """The keys on which ``row`` states something other than ``datum`` — see :func:`table_disagreements`."""
     differ = []
     for key, value in row.items():

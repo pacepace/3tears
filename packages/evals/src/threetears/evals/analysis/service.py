@@ -301,7 +301,8 @@ class BudgetedGenerator:
         pending, self._pending = self._pending, None
         if pending is None or pending.call != PlannedCall(system=system, user=user, response_format=response_format):
             raise ValueError("an analysis generator call was sent without being admitted against its budget")
-        return (await self._budget.generate(self._client, pending)).result
+        result: CompletionResult = (await self._budget.generate(self._client, pending)).result
+        return result
 
 
 class AnalysisGenerationEstimate(EvalBaseModel):
