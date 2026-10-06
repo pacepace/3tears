@@ -314,7 +314,7 @@ class TestJudgeAgreement:
         guest = [(judged[i], people[i]) for i in range(0, 6, 2)]
         host = [(judged[i], people[i]) for i in range(1, 6, 2)]
         scale = [1, 2, 3, 4, 5]
-        # Each person's kappa over the results they rated, averaged: Light's kappa.
+        # Each person's kappa over the results they rated, averaged unweighted (each person once): a Light-style mean.
         assert tone.kappa == pytest.approx((cohen_kappa(guest, scale) + cohen_kappa(host, scale)) / 2)
         assert tone.weighted_kappa == pytest.approx(
             (cohen_kappa(guest, scale, weights="quadratic") + cohen_kappa(host, scale, weights="quadratic")) / 2

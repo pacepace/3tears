@@ -50,6 +50,30 @@ CASES: dict[str, tuple[str, dict[str, Any]]] = {
     "distribution-binned": ("distribution", BINNED),
     "attribution-withheld": ("attribution", ATTRIBUTION_WITHHELD),
     "attribution-earned": ("attribution", ATTRIBUTION_EARNED),
+    # A measure already in percentage points: the table writes -12 as `-12%`, which is -12, not -0.12.
+    "attribution-percent": (
+        "attribution",
+        EVERY_TYPE["attribution"]
+        | {
+            "end_to_end": {"measure": "rate", "delta": -12.0, "a": 40.0, "b": 28.0, "n": 12},
+            "subsystem": {"measure": "sub", "delta": -4.0, "n": 12},
+            "unit": "%",
+            "unattributed_delta": -8.0,
+            "contained_by": "rate",
+        },
+    ),
+    # Values below 1e-4, which the shared formatter writes in scientific notation (`-4e-05 USD`).
+    "attribution-tiny": (
+        "attribution",
+        EVERY_TYPE["attribution"]
+        | {
+            "end_to_end": {"measure": "cost_usd", "delta": -0.00004, "a": 0.00009, "b": 0.00005, "n": 12},
+            "subsystem": {"measure": "tool_usd", "delta": -0.00001, "n": 12},
+            "unit": "USD",
+            "unattributed_delta": -0.00003,
+            "contained_by": "cost_usd",
+        },
+    ),
     # Every name shares `p/`, so the axis draws them stripped — and the stripped `p/c` is ALSO an
     # identity, spelled in full: the read-back has to resolve each drawn name through the right spelling.
     "breakdown-stripped": (
@@ -234,6 +258,37 @@ def test_a_withheld_row_with_no_mark_is_not_a_disagreement() -> None:
     drawn = {datum.get(field) for datum in intent.data}
     assert any(row.get(field) not in drawn for row in intent.rows), "the fixture withholds a row"
     assert table_disagreements(intent) == []
+
+
+@pytest.mark.parametrize("case", ["attribution-percent", "attribution-tiny"])
+def test_a_table_spelled_by_its_own_formatter_agrees_with_the_marks(case: str) -> None:
+    """A percentage-point cell (`-12%` for -12) and a scientific one (`-4e-05 USD`) state what is drawn."""
+    intent = _intent(case)
+    assert any(
+        isinstance(cell, str) and ("%" in cell or "e-05" in cell) for row in intent.rows for cell in row.values()
+    )
+    assert check_intent(intent) == []
+
+
+def test_a_percentage_point_cell_spelled_as_a_fraction_is_refused() -> None:
+    """Under the unit `%` a cell is read in points: `-1200%` misstates a drawn -12 — the unit decides, not the glyph."""
+    intent = _intent("attribution-percent")
+    rows = copy.deepcopy(intent.rows)
+    assert rows[0]["delta"] == "-12%"
+    rows[0]["delta"] = "-1200%"
+    (violation, *_) = table_disagreements(intent.model_copy(update={"rows": rows}))
+    assert "states delta='-1200%'" in violation
+
+
+def test_a_unitless_relative_change_misspelled_is_refused() -> None:
+    """A delta table's change is a fraction written as a percent; the same digits read as points are refused."""
+    intent = _intent("delta_table")
+    rows = copy.deepcopy(intent.rows)
+    index, row = next((i, r) for i, r in enumerate(rows) if r.get("change"))
+    drawn = next(d["change"] for d in intent.data if d["metric"] == row["metric"])
+    assert table_disagreements(intent) == []
+    rows[index]["change"] = f"{drawn:+g}%"
+    assert table_disagreements(intent.model_copy(update={"rows": rows}))
 
 
 def test_the_conformance_run_raises_on_a_disagreement() -> None:

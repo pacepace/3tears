@@ -28,8 +28,10 @@ packages (bumped in lock-step).
 
 ### 3tears-evals: judge agreement averages a kappa per person when several people rate, the weighted kappa is pinned, and an agent rates through the catalogue
 
-- **With several people rating, a dimension's kappa is Light's kappa**: Cohen's kappa of the judge against each
-  person over the results that person rated, averaged (a person whose kappa is undefined is left out). Pooling
+- **With several people rating, a dimension's kappa is the unweighted mean of per-person kappas**: Cohen's kappa
+  of the judge against each person over the results that person rated, then averaged with each person counting
+  once regardless of how many results they rated (a Light-style average over different subsets, not Light's
+  statistic over one common item set). A person whose kappa is undefined is excluded from the mean. Pooling
   every (judge, person) pair entered a result two people rated twice and read their disagreement with each other
   as the judge's. With one person nothing changes. ``weighted_kappa`` is averaged the same way and now pinned to
   its value on a fixture where it differs from the unweighted kappa and from one weighted over the scores seen.
@@ -54,8 +56,13 @@ packages (bumped in lock-step).
 
 - **Policy rule 12 now ties the values table to the marks** (``table_disagreements``, exported from
   ``analysis.viz``): a row's value under a key a mark of its identity carries is that mark's value — the same
-  number, the same text, or text spelling the number to the precision written (``-31.8 s``; ``+72.7%`` for
-  0.727) — and every drawn mark has a row that states it. Before, the conformance check compared the drawing
+  number, the same text, or the text the table's own formatters write for that number in its field's unit — and
+  every drawn mark has a row that states it. The check formats the mark through the same functions the builders
+  write cells with (new ``quantities.table_spellings``; a delta table's relative change now goes through
+  ``quantities.relative_change_text``) and compares text, so a ``%``-unit measure's ``-12%`` states -12 (the unit,
+  not the glyph, decides whether a percent is a fraction) and a value the shared formatter writes in scientific
+  notation (``-4e-05 USD``) agrees. A first version read cells back as numbers and refused both, dropping the
+  chart. Before, the conformance check compared the drawing
   with ``data`` only, so an intent whose table disagreed with its picture passed the policy and every renderer.
   ``renderer_disagreements`` reports these too, which makes the intent docstring's claim — a renderer is held to
   the table — true. A column only the table carries (a delta table's arm values) is the builder's to spell.
@@ -128,7 +135,11 @@ packages (bumped in lock-step).
   one cannot silently take its default through the other. ``LaunchArguments`` now refuses what the action always
   did (an empty id, ``k_runs`` below 1, a non-positive cap).
 - The ``spend`` permission class is documented as a label, not a promise the engine meters a host's own action.
-  The ``fastmcp`` floor is tested by running the transport's tests against it (the command is in ``pyproject``).
+  The ``fastmcp`` floor is checked manually, not gated: on 2026-10-06 the transport's tests and the catalogue
+  tests that mount it passed under ``fastmcp==3.4.2`` (the command is in ``pyproject``).
+- A ``lost`` generation's ``job_poll`` detail no longer says its spend is recorded nowhere: each call is on the
+  out-of-run spend ledger (purpose ``analysis``, with the campaign's id). ``stamp_witnessed_judge`` documents the
+  ``CeilingRaisedError`` it raises for an override above the host's ceiling.
 
 ### 3tears-evals: a WorldSession says whose apparatus it records — a host grading a witnessed cell through one gets the witnessed rule, and a witnessed cell refuses a rig's events
 

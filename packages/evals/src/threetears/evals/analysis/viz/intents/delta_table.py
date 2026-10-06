@@ -13,7 +13,13 @@ from typing import Any
 from threetears.evals.analysis.reporting import format_significance
 from threetears.evals.analysis.viz.intent import ChartAxis, ChartColumn, ChartEncoding, ChartIdentity, ChartIntent
 from threetears.evals.analysis.viz.payloads import DeltaRow, DeltaTablePayload, PayloadError
-from threetears.evals.analysis.viz.quantities import display_scale, render_cell, signed_with_unit, with_unit
+from threetears.evals.analysis.viz.quantities import (
+    display_scale,
+    relative_change_text,
+    render_cell,
+    signed_with_unit,
+    with_unit,
+)
 
 
 def delta_table_intent(payload: DeltaTablePayload) -> ChartIntent:
@@ -125,7 +131,7 @@ def _delta_row(row: DeltaRow) -> dict[str, Any]:
         "a": with_unit(a * scale, unit),
         "b": with_unit(b * scale, unit),
         "delta": signed_with_unit(delta * scale, unit) + (" (immaterial)" if row.materiality == "immaterial" else ""),
-        "change": f"{change:+.1%}" if change is not None else None,
+        "change": relative_change_text(change) if change is not None else None,
         "effect": _effect_read(row),
     }
 
