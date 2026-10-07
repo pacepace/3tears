@@ -134,6 +134,29 @@ async def test_start_when_needed_does_not_retry_an_unnamed_error() -> None:
     assert body.calls == 0
 
 
+async def test_an_unnamed_error_ending_the_wait_is_logged_even_when_nobody_waits_for_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    body = _gate()
+    operation = BackgroundOperation("load", body)
+
+    async def needed() -> bool:
+        raise ValueError("the check itself is broken")
+
+    operation.start_when_needed(needed, retry_on=(ConnectionError,), retry_seconds=0)
+    await asyncio.sleep(0.01)
+    # a later wait replaces the finished one, so its error can only be seen in the log
+    operation.start_when_needed(needed, retry_on=(ConnectionError,), retry_seconds=0)
+    await asyncio.sleep(0.01)
+    failures = [
+        record
+        for record in caplog.records
+        if record.levelname == "ERROR" and "the check itself is broken" in str(getattr(record, "extra_data", ""))
+    ]
+    assert len(failures) == 2
+    assert body.calls == 0
+
+
 async def test_a_second_start_when_needed_while_one_waits_is_refused_and_stop_still_ends_the_first() -> None:
     body = _gate()
     operation = BackgroundOperation("load", body)

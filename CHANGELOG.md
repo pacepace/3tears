@@ -21,7 +21,8 @@ packages (bumped in lock-step).
   operation in the background at most once at a time and keeps how its last run ended (its result,
   or the exception as `<Type>: <message>`); `start_when_needed` runs a pod's first run once it can
   tell one is needed, retrying only the errors it is told mean "not reachable yet" (a second such
-  wait while one is deciding is refused, so `stop` and `wait_until_settled` reach the one running).
+  wait while one is deciding is refused, so `stop` and `wait_until_settled` reach the one running;
+  any other error ends the wait and is logged, since nothing may ever await it).
   `StartOperationTool` starts a run and answers at once, refusing a start while one runs with
   `CONFLICT`; `OperationStatusTool` reports `idle`, `running`, `succeeded` or `failed` with the last
   run's times, result and error. Both are `face_api` and refuse, saying so, until the pod has built
@@ -103,7 +104,8 @@ packages (bumped in lock-step).
   has written a new generation of its geography layers' shapes: `report_geo_layers_reloaded`, its
   request and reply models, and the hub's obligations. The hub moves each layer's tile version to
   the reported generation, forward only (a generation below the version is refused
-  `GENERATION_BEHIND` with the version in the reply). New subject
+  `GENERATION_BEHIND` with the version in the reply). A layer never reported has no version, and
+  nothing of it is served until its first report sets one. New subject
   `Subjects.hub_geo_layers_reloaded` (`{ns}.hub.geo.layers.reloaded`), granted to tool pods to
   publish and to the hub to answer. The hub serves a layer's tiles at exactly two versions: its
   current one and the PREVIOUS one, the version the current one replaced, which is recorded when

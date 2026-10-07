@@ -315,6 +315,12 @@ class BackgroundOperation(Generic[ResultT]):
                     },
                 )
                 await asyncio.sleep(retry_seconds)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- logged and re-raised: the wait may never be awaited, so the log is the only place this error is sure to be seen
+                log.error(
+                    "cannot tell whether the operation is needed; no run will start",
+                    extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+                )
+                raise
         if answer:
             self.start()
         else:
