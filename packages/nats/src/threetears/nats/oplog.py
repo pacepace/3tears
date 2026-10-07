@@ -466,6 +466,7 @@ class OpLog:
             ack_policy=AckPolicy.NONE,
         )
         try:
+            # sender-posture: unauthenticated open N1 -- the replay reads any message on the fetch inbox as an op
             psub = await js.pull_subscribe(self._subject, stream=self._stream, config=config)
         except Exception as exc:
             raise OpLogError(f"op-log replay failed (subscribe): stream={self._stream}: {exc!r}") from exc

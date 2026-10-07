@@ -1998,6 +1998,7 @@ class ToolServer:
         #
         # Heartbeat publishes are write-only and still need no queue group.
         call_subject = Subjects.tools_internal(self._pod_id)
+        # sender-posture: signed-envelope -- hub token plus a registry assertion bound to pod, body, expiry, jti
         await self._nc.subscribe(subject=call_subject, queue=call_subject.path, cb=self.handle_call)
         log.info(
             "subscribed to call subject",
@@ -2005,6 +2006,7 @@ class ToolServer:
         )
 
         probe_subject = Subjects.tools_probe(self._pod_id)
+        # sender-posture: read-only -- answers a probe ack and nothing else
         await self._nc.subscribe(subject=probe_subject, queue=probe_subject.path, cb=self.handle_probe)
         log.info(
             "subscribed to probe subject",

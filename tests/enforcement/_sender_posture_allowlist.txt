@@ -1,0 +1,32 @@
+# Receivers that still trust what arrives on their subject, each under the audit row it is tracked by.
+#
+# This list only shrinks. A site declares an open row with "# sender-posture: <posture> open <ROW>",
+# and tests/enforcement/test_subscribers_declare_sender_posture.py fails when a site declares a row
+# this list does not carry, and when a line here names a row no site in that file still declares.
+# Fix a site, drop its "open <ROW>", and delete its line in the same commit.
+#
+# Rows are those of .prawduct/artifacts/security-audit-nats-receivers.md in the hub repo. N rows are
+# receivers that audit did not list. The chunk is the fix plan's chunk
+# (.prawduct/artifacts/build-plan-nats-receiver-trust.md there); "backlog" is a WEAK row the plan
+# defers; "unassigned" has no chunk yet.
+#
+# path :: row :: chunk :: why it is still open
+packages/agent/audit/src/threetears/agent/audit/persist.py :: H1 :: unassigned :: a forged event reaching the audit stream is persisted as a genuine record
+packages/channels/src/threetears/channels/presence/fanout.py :: S7 :: backlog :: room frames go to browser sockets with no sender check; not wired in any repo today
+packages/core/src/threetears/core/collections/registry.py :: S3 :: backlog :: the invalidation body names the key and L2 scope to evict
+packages/epoch/src/threetears/epoch/listener.py :: G12 :: backlog :: a forged broadcast epoch is taken as last seen without confirming it against KV
+packages/epoch/src/threetears/epoch/listener.py :: G13 :: backlog :: same listener; a forged huge epoch delays revocations until the catch-up tick
+packages/nats/src/threetears/nats/auth_callout_responder.py :: H3 :: 11 :: the request JWT is not verified, so a pod can take over another connection's owner row
+packages/nats/src/threetears/nats/client.py :: R2 :: 01 :: the result waiter takes the first message on its inbox without checking its own consumer
+packages/nats/src/threetears/nats/client.py :: S6 :: 01 :: same result waiter, as the agent's durable tool reply
+packages/nats/src/threetears/nats/client.py :: S2 :: 06 :: a renewal request is acted on when is_mine matches claims a tool pod can read
+packages/nats/src/threetears/nats/client.py :: S1 :: 06 :: a credential refusal closes every connection when is_mine matches claims a tool pod can read
+packages/nats/src/threetears/nats/cross_worker_cancel.py :: S7 :: backlog :: a cancel is acted on with no sender check; not wired in any repo today
+packages/nats/src/threetears/nats/kv.py :: S4 :: 01 :: the key watch and key listing accept any message on their inbox, with or without JetStream metadata
+packages/nats/src/threetears/nats/oplog.py :: N1 :: 01 :: the op-log replay reads any message on its fetch inbox as a logged op
+packages/registry/src/threetears/registry/discovery.py :: R6 :: backlog :: lists tools for the agent the body names
+packages/registry/src/threetears/registry/health.py :: R5 :: backlog :: a heartbeat marks the pod_id in its body available
+packages/registry/src/threetears/registry/proxy.py :: R2 :: 01 :: the durable tool result is taken from any sender on the waiter's inbox
+packages/registry/src/threetears/registry/registration.py :: R4 :: backlog :: the bootstrap JWT is not bound to the body and carries no jti
+packages/scrape/src/threetears/scrape/operator_control.py :: R7 :: backlog :: a control message needs only the session id
+packages/scrape/src/threetears/scrape/operator_pipe.py :: R7 :: backlog :: an attach to the display needs only the session id

@@ -851,6 +851,7 @@ class Subscription:
         :return: the nats-py subscription on it
         :rtype: Any
         """
+        # sender-posture: primitive -- moves a caller's subscription to a successor connection
         return await connection.subscribe(self._subject.path, queue=self._queue)
 
     def move_to(self, raw_subscription: Any, connection: Any) -> asyncio.Task[None]:
@@ -1704,6 +1705,7 @@ class JetStreamResultWaiter:
         name = f"{_RESULT_WAITER_CONSUMER_PREFIX}{uuid.uuid7().hex}"
         connection = self._connection()
         inbox = connection.new_inbox()
+        # sender-posture: unauthenticated open R2,S6 -- the first message on the inbox is the result, from any sender
         sub = await connection.subscribe(inbox)
         config = _NatsConsumerConfig(
             name=name,
@@ -3853,6 +3855,7 @@ class NatsClient:
             async with self._handover_lock:
                 moving: list[tuple[Subscription, Any]] = []
                 for sub in [s for s in self._subscriptions if not s.is_closed]:
+                    # sender-posture: primitive -- moves every caller's subscription to a successor connection
                     moving.append((sub, await sub.subscribe_on(successor)))
                 await _round_trip(successor, timeout=REAUTH_CONNECT_TIMEOUT_SECONDS)
                 # the one step that changes the current connection, refused once the client stopped
@@ -4322,6 +4325,7 @@ class NatsClient:
                 return
             self._start_successor_move(why=f"its credential's minter asked for a renewal ({request.reason.value})")
 
+        # sender-posture: unauthenticated open S2 -- is_mine compares claims a tool pod can read
         return await self.subscribe_typed(
             subject=Subjects.credential_renewal_request(inbox_prefix),
             cb=_on_request,
@@ -4453,6 +4457,7 @@ class NatsClient:
                     name=f"nats-abandon:{self._client_name}",
                 )
 
+        # sender-posture: unauthenticated open S1 -- is_mine compares claims a tool pod can read
         return await self.subscribe_typed(
             subject=Subjects.credential_refusal(inbox_prefix),
             cb=_on_refusal,
@@ -5186,6 +5191,7 @@ class NatsClient:
         async with self._handover_lock:
             connection = self._raw
             try:
+                # sender-posture: primitive -- the core subscribe behind subscribe and subscribe_typed
                 raw_sub = await connection.subscribe(subject.path, queue=wire_queue)
             except Exception as exc:
                 raise SubscribeError(f"subscribe failed: subject={subject.path} queue={queue!r}: {exc}") from exc
@@ -5950,6 +5956,7 @@ class NatsClient:
             :return: the nats-py push subscription
             :rtype: Any
             """
+            # sender-posture: primitive -- the push consumer behind jetstream_subscribe_durable
             return await js.subscribe(
                 subject.path,
                 durable=durable,
@@ -6202,6 +6209,7 @@ class NatsClient:
             :return: the nats-py pull subscription
             :rtype: Any
             """
+            # sender-posture: primitive -- the pull consumer behind jetstream_pull_subscribe
             return await self.jetstream_context().pull_subscribe(
                 subject.path,
                 durable=durable,

@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Enforcement: every NATS receiver says how it authenticates its sender
+
+A subject proves nothing about who published on it: any connection can have its own bytes
+delivered on any subject, through a push consumer's `deliver_subject` or a request's reply subject.
+
+- **Added, `threetears.enforcement.sender_posture`** (`SenderPostureConfig`,
+  `sender_posture_findings`, `find_subscribe_sites`, `SubscribeSite`, `POSTURES`,
+  `DEFAULT_SITE_CALLEES`): a gate under which every receiving site declares
+  `# sender-posture: <posture> [open <ROW>]`, and a repo's allowlist carries exactly the audit rows
+  still open, in both directions.
+- **3tears runs it** (`tests/enforcement/test_subscribers_declare_sender_posture.py`). Every
+  receiving site in `packages/` now carries its marker; `tests/enforcement/_sender_posture_allowlist.txt`
+  lists the receivers still open under the NATS receiver-trust audit.
+
 ### Core and datasources: keep tables current from a source, write only what changed, one writer at a time
 
 The ENR tool pod's refresh is the first consumer of every entry below: it fingerprints each state's

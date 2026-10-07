@@ -325,6 +325,7 @@ class RegistrationHandler:
         """
         self._nc = nc
         subject = Subjects.tools_register()
+        # sender-posture: verified-token open R4 -- bootstrap JWT pinned to the signer, not bound to the body, no jti
         self._sub = await nc.subscribe(subject=subject, cb=self.handle_registration)
         if self._authenticator is None:
             log.warning(

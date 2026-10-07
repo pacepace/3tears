@@ -191,6 +191,7 @@ async def subscribe_acl_invalidation(nats: AclInvalidationSubscriber, cache: Acl
     bound: list[Subscription] = []
     try:
         for kind, handler, payload_type in bindings:
+            # sender-posture: trigger-only -- evicts a cached grant so the next check re-reads it from L3
             bound.append(
                 await nats.subscribe_typed(
                     subject=Subjects.acl_invalidate(kind),

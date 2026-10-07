@@ -316,6 +316,7 @@ async def serve_owner(
     # one; distinct keys ride distinct subjects + groups and never mix.
     # deadletter_on_failure is off: handler failures are framed back to
     # the caller (above), they are not transport faults to deadletter.
+    # sender-posture: primitive -- serve_owner hands each request to its caller's handler
     sub: Subscription = await nats.subscribe(
         subject=subject,
         cb=_on_request,

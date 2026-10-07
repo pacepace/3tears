@@ -2254,6 +2254,7 @@ class NatsKvBucket:
         if raw.is_closed:
             raise KvError(f"cannot list keys of {self._full_name}: the NATS connection is closed")
         inbox = raw.new_inbox()
+        # sender-posture: unauthenticated open S4 -- the key listing reads any message on its inbox
         subscription = await raw.subscribe(inbox)
         subjects: list[str] = []
         try:
@@ -2356,6 +2357,7 @@ class _KeyWatchConsumer:
             raise KvError(f"cannot watch {subject}: the NATS connection is closed")
         name = f"{_KEY_WATCH_CONSUMER_PREFIX}{uuid.uuid7().hex}"
         inbox = raw.new_inbox()
+        # sender-posture: unauthenticated open S4 -- the key watch takes any message on its inbox, metadata or not
         subscription = await raw.subscribe(inbox)
         config = ConsumerConfig(
             name=name,

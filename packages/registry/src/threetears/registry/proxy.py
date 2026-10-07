@@ -470,6 +470,7 @@ class CallProxy:
         self._nc = nc
         await self._pop_replay_guard.bind()
         subject = Subjects.tools_call()
+        # sender-posture: verified-token -- hub identity token plus a proof of possession checked against a nonce ledger
         self._sub = await nc.subscribe(
             subject=subject,
             queue="registry",
@@ -1663,6 +1664,7 @@ class CallProxy:
             effective_timeout=effective_timeout,
         )
         try:
+            # sender-posture: unauthenticated open R2 -- the result is taken from any sender on the inbox
             waiter = await self._nc.jetstream_result_waiter(
                 subject=result_subject,
                 stream=result_stream_name(),
