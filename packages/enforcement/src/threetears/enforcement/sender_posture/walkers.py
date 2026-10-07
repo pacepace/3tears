@@ -10,6 +10,13 @@ marker grammar::
     # sender-posture: <posture> [open <ROW>[,<ROW>...]] [-- <free text>]
 
 where a row is an audit row id such as ``H5`` or ``S4``.
+
+allowlist grammar, one line per (module, row)::
+
+    <repo-relative path> :: <ROW> :: <sites> :: <chunk> :: <why it is still open>
+
+``<sites>`` is how many sites in that module declare the row open. it is pinned so a NEW receiver
+cannot ride an existing line: adding one changes the count, and the count is reviewed.
 """
 
 from __future__ import annotations
@@ -44,7 +51,7 @@ _MARKER: Final[re.Pattern[str]] = re.compile(
 
 _ROW_ONLY: Final[re.Pattern[str]] = re.compile(rf"^{_ROW}$")
 
-_ALLOWLIST_FIELDS: Final[int] = 4
+_ALLOWLIST_FIELDS: Final[int] = 5
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,7 @@ class SubscribeSite:
     :ivar path: repo-relative posix path of the module
     :ivar line: line of the call
     :ivar callee: final name of the called function or method
+    :ivar function: qualified name of the enclosing function or class, or ``<module>``
     :ivar posture: declared posture, or none when undeclared or unknown
     :ivar open_rows: audit rows the marker declares still open at this site
     """
@@ -61,6 +69,7 @@ class SubscribeSite:
     path: str
     line: int
     callee: str
+    function: str
     posture: str | None
     open_rows: tuple[str, ...]
 
@@ -144,23 +153,28 @@ def _callee_name(call: ast.Call) -> str | None:
     return name
 
 
-def _calls_with_statements(tree: ast.Module) -> list[tuple[ast.Call, ast.stmt]]:
+_SCOPES: Final[tuple[type[ast.AST], ...]] = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _calls_with_statements(tree: ast.Module) -> list[tuple[ast.Call, ast.stmt, str]]:
     """
-    pair every call with the innermost statement enclosing it.
+    pair every call with the innermost statement enclosing it and its enclosing scope's name.
 
     :param tree: parsed module
     :ptype tree: ast.Module
-    :return: call and its enclosing statement, in walk order
-    :rtype: list[tuple[ast.Call, ast.stmt]]
+    :return: call, its enclosing statement, and the dotted name of its enclosing function or class
+        (``<module>`` at top level), in walk order
+    :rtype: list[tuple[ast.Call, ast.stmt, str]]
     """
-    pairs: list[tuple[ast.Call, ast.stmt]] = []
-    stack: list[tuple[ast.AST, ast.stmt | None]] = [(tree, None)]
+    pairs: list[tuple[ast.Call, ast.stmt, str]] = []
+    stack: list[tuple[ast.AST, ast.stmt | None, tuple[str, ...]]] = [(tree, None, ())]
     while stack:
-        node, statement = stack.pop()
+        node, statement, scope = stack.pop()
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.Call) and statement is not None:
-                pairs.append((child, statement))
-            stack.append((child, child if isinstance(child, ast.stmt) else statement))
+                pairs.append((child, statement, ".".join(scope) or "<module>"))
+            child_scope = (*scope, child.name) if isinstance(child, _SCOPES) else scope  # type: ignore[attr-defined]
+            stack.append((child, child if isinstance(child, ast.stmt) else statement, child_scope))
     pairs.sort(key=lambda pair: (pair[0].lineno, pair[0].col_offset))
     return pairs
 
@@ -192,6 +206,7 @@ def _site_from_markers(
     relative: str,
     call: ast.Call,
     callee: str,
+    function: str,
     markers: list[_Marker],
     config: SenderPostureConfig,
     findings: list[str],
@@ -205,6 +220,8 @@ def _site_from_markers(
     :ptype call: ast.Call
     :param callee: final callee name
     :ptype callee: str
+    :param function: dotted name of the enclosing function or class
+    :ptype function: str
     :param markers: well-formed markers inside the site's region
     :ptype markers: list[_Marker]
     :param config: gate configuration
@@ -234,12 +251,14 @@ def _site_from_markers(
                 f"{where}: unauthenticated must name the open audit row it is tracked under "
                 "('# sender-posture: unauthenticated open <ROW>')"
             )
-        if posture == "primitive" and relative not in config.primitive_modules:
+        if posture == "primitive" and f"{relative}::{function}" not in config.primitive_functions:
             findings.append(
-                f"{where}: primitive is allowed only in the configured primitive modules "
-                f"{sorted(config.primitive_modules)}; declare what this receiver checks instead"
+                f"{where}: primitive is allowed only in the configured primitive functions, and "
+                f"{relative}::{function} is not one; declare what this receiver checks instead"
             )
-    return SubscribeSite(path=relative, line=call.lineno, callee=callee, posture=posture, open_rows=open_rows)
+    return SubscribeSite(
+        path=relative, line=call.lineno, callee=callee, function=function, posture=posture, open_rows=open_rows
+    )
 
 
 def _scan_module(path: Path, config: SenderPostureConfig, scan: _Scan) -> None:
@@ -274,14 +293,14 @@ def _scan_module(path: Path, config: SenderPostureConfig, scan: _Scan) -> None:
             else:
                 markers[line] = marker
     claimed: set[int] = set()
-    for call, statement in _calls_with_statements(tree):
+    for call, statement, function in _calls_with_statements(tree):
         callee = _callee_name(call)
         if callee is None or callee not in config.site_callees:
             continue
         region = _region(statement, call, lines)
         in_region = [markers[line] for line in region if line in markers]
         claimed.update(marker.line for marker in in_region)
-        scan.sites.append(_site_from_markers(relative, call, callee, in_region, config, scan.findings))
+        scan.sites.append(_site_from_markers(relative, call, callee, function, in_region, config, scan.findings))
     for line in sorted(set(markers) - claimed):
         scan.findings.append(f"{relative}:{line}: sender-posture marker sits on no subscribe site; remove it")
 
@@ -296,6 +315,9 @@ def _scan(config: SenderPostureConfig) -> _Scan:
     :rtype: _Scan
     """
     scan = _Scan()
+    for prefix in config.excluded_prefixes:
+        if not prefix.endswith("/"):
+            scan.findings.append(f"excluded prefix {prefix!r} must end with '/', so it names a directory")
     matched: set[str] = set()
     for root in config.src_roots:
         for path in iter_python_files(root):
@@ -327,16 +349,23 @@ def _allowlist_findings(config: SenderPostureConfig, sites: list[SubscribeSite])
         findings.append(f"{listed_name}: sender-posture allowlist not found")
         return findings
     listed: dict[tuple[str, str], int] = {}
+    pinned: dict[tuple[str, str], int] = {}
     text = config.allowlist_path.read_text(encoding="utf-8")
     for number, raw in enumerate(text.splitlines(), start=1):
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
         fields = [part.strip() for part in stripped.split("::")]
-        if len(fields) != _ALLOWLIST_FIELDS or not all(fields) or not _ROW_ONLY.match(fields[1]):
+        if (
+            len(fields) != _ALLOWLIST_FIELDS
+            or not all(fields)
+            or not _ROW_ONLY.match(fields[1])
+            or not fields[2].isdigit()
+            or int(fields[2]) < 1
+        ):
             findings.append(
                 f"{listed_name}:{number}: malformed allowlist line {stripped!r}; "
-                "expected '<path> :: <ROW> :: <chunk> :: <why it is still open>'"
+                "expected '<path> :: <ROW> :: <sites> :: <chunk> :: <why it is still open>'"
             )
             continue
         key = (fields[0], fields[1])
@@ -344,10 +373,13 @@ def _allowlist_findings(config: SenderPostureConfig, sites: list[SubscribeSite])
             findings.append(f"{listed_name}:{number}: {key[0]} :: {key[1]} is listed twice (first at {listed[key]})")
             continue
         listed[key] = number
+        pinned[key] = int(fields[2])
     declared: dict[tuple[str, str], SubscribeSite] = {}
+    counts: dict[tuple[str, str], int] = {}
     for site in sites:
         for row in site.open_rows:
             declared.setdefault((site.path, row), site)
+            counts[(site.path, row)] = counts.get((site.path, row), 0) + 1
     for key, site in sorted(declared.items()):
         if key not in listed:
             findings.append(
@@ -355,6 +387,11 @@ def _allowlist_findings(config: SenderPostureConfig, sites: list[SubscribeSite])
                 "add its line, or fix the site and drop the row"
             )
     for key, number in sorted(listed.items(), key=lambda item: item[1]):
+        if key in declared and counts[key] != pinned[key]:
+            findings.append(
+                f"{listed_name}:{number}: {key[0]} :: {key[1]} pins {pinned[key]} site(s), but {counts[key]} "
+                "declare that row open; a new receiver needs its own reviewed count, a fixed one drops it"
+            )
         if key not in declared:
             findings.append(
                 f"{listed_name}:{number}: {key[0]} :: {key[1]} is listed, but no site in it declares that "

@@ -15,8 +15,10 @@ delivered on any subject, through a push consumer's `deliver_subject` or a reque
   `sender_posture_findings`, `find_subscribe_sites`, `SubscribeSite`, `POSTURES`,
   `DEFAULT_SITE_CALLEES`): a gate under which every receiving site declares
   `# sender-posture: <posture> [open <ROW>]`, and a repo's allowlist carries exactly the audit rows
-  still open, in both directions. `excluded_prefixes` leaves test doubles shipped under `src`
-  unwalked; one that matches no module is a finding.
+  still open, in both directions, each line pinning how many sites in its file declare the row so
+  a new receiver cannot ride an existing line. `primitive` is allowed only in named functions
+  (`primitive_functions`, `path::Qual.name`), never a whole module. `excluded_prefixes` leaves test
+  doubles shipped under `src` unwalked; each must end in `/` and match a module.
 - **3tears runs it** (`tests/enforcement/test_subscribers_declare_sender_posture.py`). Every
   receiving site in `packages/` now carries its marker; `tests/enforcement/_sender_posture_allowlist.txt`
   lists the receivers still open under the NATS receiver-trust audit.

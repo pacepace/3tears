@@ -16,7 +16,7 @@ from threetears.enforcement.sender_posture import (
     sender_posture_findings,
 )
 
-_ALLOWLIST_HEADER = "# path :: row :: chunk :: why it is still open\n"
+_ALLOWLIST_HEADER = "# path :: row :: sites :: chunk :: why it is still open\n"
 
 
 def _config(
@@ -24,7 +24,7 @@ def _config(
     sources: dict[str, str],
     allowlist: str = "",
     *,
-    primitive_modules: frozenset[str] = frozenset(),
+    primitive_functions: frozenset[str] = frozenset(),
 ) -> SenderPostureConfig:
     """
     write synthesised modules and allowlist under tmp_path and answer gate config over them.
@@ -35,8 +35,8 @@ def _config(
     :ptype sources: dict[str, str]
     :param allowlist: allowlist body written after header line
     :ptype allowlist: str
-    :param primitive_modules: repo-relative modules allowed to declare primitive posture
-    :ptype primitive_modules: frozenset[str]
+    :param primitive_functions: ``path::function`` names allowed to declare primitive posture
+    :ptype primitive_functions: frozenset[str]
     :return: gate configuration over synthesised tree
     :rtype: SenderPostureConfig
     """
@@ -51,7 +51,7 @@ def _config(
         repo_root=tmp_path,
         src_roots=(tmp_path / "src",),
         allowlist_path=allowlist_path,
-        primitive_modules=primitive_modules,
+        primitive_functions=primitive_functions,
     )
 
 
@@ -156,7 +156,7 @@ def test_an_open_row_listed_in_the_allowlist_passes(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
         {"src/pkg/door.py": source},
-        "src/pkg/door.py :: H5 :: 03 :: owner and customer come from the body\n",
+        "src/pkg/door.py :: H5 :: 1 :: 03 :: owner and customer come from the body\n",
     )
     assert sender_posture_findings(config) == []
 
@@ -180,7 +180,7 @@ def test_a_declared_posture_may_also_carry_an_open_row(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
         {"src/pkg/door.py": source},
-        "src/pkg/door.py :: H10 :: 10 :: bearer replay\nsrc/pkg/door.py :: H11 :: 10 :: bearer replay\n",
+        "src/pkg/door.py :: H10 :: 1 :: 10 :: bearer replay\nsrc/pkg/door.py :: H11 :: 1 :: 10 :: bearer replay\n",
     )
     assert sender_posture_findings(config) == []
 
@@ -191,8 +191,8 @@ def test_an_allowlist_entry_whose_site_is_gone_fails(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
         {"src/pkg/door.py": source},
-        "src/pkg/door.py :: H5 :: 03 :: owner and customer come from the body\n"
-        "src/pkg/gone.py :: H8 :: 03 :: ids from the body\n",
+        "src/pkg/door.py :: H5 :: 1 :: 03 :: owner and customer come from the body\n"
+        "src/pkg/gone.py :: H8 :: 1 :: 03 :: ids from the body\n",
     )
     findings = sender_posture_findings(config)
     assert len(findings) == 2
@@ -211,7 +211,7 @@ def test_a_malformed_allowlist_line_fails(tmp_path: Path) -> None:
 def test_a_duplicate_allowlist_line_fails(tmp_path: Path) -> None:
     """one (path, row) pair is listed once."""
     source = "async def start(nc, cb):\n    await nc.subscribe(subject='x', cb=cb)  # sender-posture: unauthenticated open H5\n"
-    entry = "src/pkg/door.py :: H5 :: 03 :: owner from the body\n"
+    entry = "src/pkg/door.py :: H5 :: 1 :: 03 :: owner from the body\n"
     config = _config(tmp_path, {"src/pkg/door.py": source}, entry + entry)
     findings = sender_posture_findings(config)
     assert len(findings) == 1
@@ -233,7 +233,7 @@ def test_primitive_is_refused_outside_a_primitive_module(tmp_path: Path) -> None
     config = _config(tmp_path, {"src/pkg/door.py": source})
     findings = sender_posture_findings(config)
     assert len(findings) == 1
-    assert "primitive is allowed only in" in findings[0]
+    assert "primitive is allowed only in the configured primitive functions" in findings[0]
 
 
 def test_primitive_passes_inside_a_primitive_module(tmp_path: Path) -> None:
@@ -244,7 +244,7 @@ def test_primitive_passes_inside_a_primitive_module(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
         {"src/pkg/client.py": source},
-        primitive_modules=frozenset({"src/pkg/client.py"}),
+        primitive_functions=frozenset({"src/pkg/client.py::start"}),
     )
     assert sender_posture_findings(config) == []
 
@@ -323,7 +323,7 @@ def test_the_site_reports_its_posture_and_open_rows(tmp_path: Path) -> None:
         "async def start(nc, cb):\n"
         "    await nc.subscribe(subject='x', cb=cb)  # sender-posture: verified-token open H10\n"
     )
-    config = _config(tmp_path, {"src/pkg/door.py": source}, "src/pkg/door.py :: H10 :: 10 :: bearer replay\n")
+    config = _config(tmp_path, {"src/pkg/door.py": source}, "src/pkg/door.py :: H10 :: 1 :: 10 :: bearer replay\n")
     (site,) = find_subscribe_sites(config)
     assert site.path == "src/pkg/door.py"
     assert site.line == 2
@@ -361,3 +361,59 @@ def test_an_excluded_prefix_that_matches_nothing_fails(tmp_path: Path) -> None:
     findings = sender_posture_findings(excluded)
     assert len(findings) == 1
     assert "excluded prefix 'src/pkg/testing/' matches no module" in findings[0]
+
+
+def test_a_new_site_cannot_ride_an_existing_allowlist_line(tmp_path: Path) -> None:
+    """a second receiver declaring an already-listed row changes the pinned count, which is a finding."""
+    source = (
+        "async def start(nc, cb):\n"
+        "    await nc.subscribe(subject='a', cb=cb)  # sender-posture: unauthenticated open H3\n"
+        "    await nc.subscribe(subject='b', cb=cb)  # sender-posture: unauthenticated open H3\n"
+    )
+    config = _config(tmp_path, {"src/pkg/door.py": source}, "src/pkg/door.py :: H3 :: 1 :: 11 :: owner row\n")
+    findings = sender_posture_findings(config)
+    assert len(findings) == 1
+    assert "pins 1 site(s), but 2 declare that row open" in findings[0]
+
+
+def test_primitive_is_refused_in_an_unnamed_function_of_a_primitive_module(tmp_path: Path) -> None:
+    """naming one function a primitive does not bless a real door elsewhere in the same module."""
+    source = (
+        "class Client:\n"
+        "    async def _subscribe_internal(self, connection, path):\n"
+        "        return await connection.subscribe(path)  # sender-posture: primitive\n"
+        "    async def abandon_on_refusal(self, cb):\n"
+        "        return await self.subscribe_typed(subject='x', cb=cb)  # sender-posture: primitive\n"
+    )
+    config = _config(
+        tmp_path,
+        {"src/pkg/client.py": source},
+        primitive_functions=frozenset({"src/pkg/client.py::Client._subscribe_internal"}),
+    )
+    findings = sender_posture_findings(config)
+    assert len(findings) == 1
+    assert "src/pkg/client.py::Client.abandon_on_refusal is not one" in findings[0]
+
+
+def test_an_excluded_prefix_must_name_a_directory(tmp_path: Path) -> None:
+    """a prefix without its trailing slash would also skip a sibling module that merely shares the stem."""
+    config = _config(
+        tmp_path,
+        {"src/pkg/testing/stub.py": "x = 1\n", "src/pkg/testing_utils.py": "x = 1\n"},
+    )
+    excluded = SenderPostureConfig(
+        repo_root=config.repo_root,
+        src_roots=config.src_roots,
+        allowlist_path=config.allowlist_path,
+        excluded_prefixes=("src/pkg/testing",),
+    )
+    findings = sender_posture_findings(excluded)
+    assert any("must end with '/'" in finding for finding in findings)
+
+
+def test_the_site_names_its_enclosing_function(tmp_path: Path) -> None:
+    """a site carries the dotted name of the function it sits in, for primitive checks and reports."""
+    source = "class Door:\n    async def start(self, nc, cb):\n        await nc.subscribe(subject='x', cb=cb)\n"
+    config = _config(tmp_path, {"src/pkg/door.py": source})
+    (site,) = find_subscribe_sites(config)
+    assert site.function == "Door.start"

@@ -22,7 +22,8 @@ the postures, and what each one claims:
 - ``unauthenticated``: none of the above. allowed only while its audit row stays open in the
   repo's allowlist.
 - ``primitive``: the call implements a subscribe primitive whose callers declare their own
-  posture. allowed only in the modules a repo names as its primitives.
+  posture. allowed only inside the functions a repo names as its primitives (``path::Qual.name``),
+  never across a whole module: a module that implements subscribing can hold real doors too.
 
 any posture may also carry ``open <ROW>[,<ROW>]``: audit rows still open at that site, each of
 which must have a line in the allowlist, and every allowlist line must still have a site.
@@ -68,6 +69,9 @@ DEFAULT_SITE_CALLEES: Final[frozenset[str]] = frozenset(
         "pull_subscribe",
         "watch_key",
         "watch_prefix",
+        "subscribe_bind",
+        "pull_subscribe_bind",
+        "watchall",
         "renew_on_request",
         "abandon_on_refusal",
         "serve_owner",
@@ -88,9 +92,9 @@ class SenderPostureConfig:
     :ivar allowlist_path: the repo's shrinking allowlist of open audit rows. each line reads
         ``<repo-relative path> :: <row> :: <chunk> :: <why it is still open>``
     :ivar site_callees: callee names treated as receiving sites
-    :ivar primitive_modules: repo-relative posix paths of the modules allowed to declare
-        ``primitive``
-    :ivar excluded_prefixes: repo-relative posix path prefixes left unwalked: test doubles a
+    :ivar primitive_functions: ``<repo-relative path>::<dotted function name>`` of the functions
+        allowed to declare ``primitive``
+    :ivar excluded_prefixes: repo-relative posix directory prefixes, each ending ``/``, left unwalked: test doubles a
         package ships under ``src`` that no deployed process runs. each must match at least one
         module, so a stale exclusion is a finding rather than a silent widening
     """
@@ -99,5 +103,5 @@ class SenderPostureConfig:
     src_roots: tuple[Path, ...]
     allowlist_path: Path
     site_callees: frozenset[str] = DEFAULT_SITE_CALLEES
-    primitive_modules: frozenset[str] = frozenset()
+    primitive_functions: frozenset[str] = frozenset()
     excluded_prefixes: tuple[str, ...] = ()
