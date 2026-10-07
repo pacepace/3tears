@@ -9,6 +9,19 @@ for the receiver's consumer carries that consumer's ack reply, ``$JS.ACK.<stream
 names a different consumer, a plain publish carries no ack reply or one the forger made up -- and
 the consumer's name is drawn from :func:`random_consumer_name`, so a made-up one cannot match.
 
+**What it rests on.** The name is unguessable only while no other principal can read it. A grant
+that lets a principal list or inspect the consumers on the receiver's stream
+(``$JS.API.CONSUMER.INFO|LIST|NAMES.<stream>``), or subscribe to that stream's consumer advisories
+(``$JS.EVENT.ADVISORY.CONSUMER.>``), hands it the name and the deliver inbox, and this check then
+authenticates nothing against that principal. Pod grants in this package hold none of those
+(:mod:`threetears.nats.subject_permissions`); a repo granting more must not declare ``own-consumer``.
+
+**What it does not cover.** A status frame (an idle heartbeat, ``409 Consumer Deleted``) carries no
+ack reply, so it cannot be traced to a consumer at all. The receivers count a heartbeat as proof of
+life and replace their consumer on any other status; the barrier against a forged one is the inbox
+name, drawn from the CSPRNG, and a replacement moves the receiver onto a fresh random inbox the
+forger does not know. A refused data delivery is never proof of life.
+
 :func:`delivered_by_own_consumer` is the check, and logs one refusal event naming the receiver,
 the reason and the reply the delivery claimed, never the payload.
 """

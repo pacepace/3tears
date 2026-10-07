@@ -501,3 +501,30 @@ async def test_only_forged_deliveries_end_at_the_deadline() -> None:
     with pytest.raises(RequestTimeoutError):
         await waiter.wait(timeout=timedelta(seconds=0.2))
     assert not any(f.acked for f in forgeries)
+
+
+async def test_forgeries_into_a_quiet_consumer_do_not_keep_it_alive() -> None:
+    """a forged result is no proof of life: a consumer the broker lost is still replaced.
+
+    Only the waiter's own deliveries and the server's heartbeats count. Were a refused forgery to
+    reset the silence clock, a sender who reaches the inbox could hold a dead consumer in place
+    until the deadline while the stream still holds the answer.
+    """
+    forgeries = [_Msg(b"forged", reply=None) for _ in range(1000)]  # outlasts the deadline
+
+    class _Trickle(_Sub):
+        async def next_msg(self, timeout: float) -> Any:
+            await asyncio.sleep(0.005)
+            return await super().next_msg(timeout)
+
+    quiet = _Trickle(forgeries)
+    revived = _Sub([_Msg(b"delivered after the replacement")])
+    js = _Js()
+    waiter = _waiter(_Raw([quiet, revived]), js, poll=0.01, heartbeat=0.02)
+    await waiter.open()
+
+    payload = await waiter.wait(timeout=timedelta(seconds=2))
+
+    assert payload == b"delivered after the replacement"
+    assert len(js.creates) == 2
+    assert quiet.unsubscribed

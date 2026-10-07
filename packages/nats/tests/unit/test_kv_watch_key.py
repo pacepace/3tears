@@ -515,3 +515,39 @@ class TestTheKeyListingReadsOnlyItsOwnConsumer:
         assert all(r.getMessage().startswith("key listing ") for r in refusals)
         name = js.creates[0][1].name
         assert name is not None and len(name.removeprefix("kl_")) == 32
+
+
+class TestForgeriesAreNoProofOfLife:
+    """a consumer the broker lost is replaced even while forgeries keep arriving on its inbox."""
+
+    async def test_a_stream_of_forgeries_does_not_hold_a_dead_consumer_in_place(self) -> None:
+        forgeries = [_forged(b"forged config") for _ in range(2000)]  # outlasts the test's budget
+
+        class _Trickle(_Inbox):
+            async def next_msg(self, timeout: float) -> Msg:
+                await asyncio.sleep(0.002)
+                return await super().next_msg(timeout)
+
+        log: list[str] = []
+        raw = _Raw([forgeries, [_delivered(b"3", sequence=7)]], log)
+        trickle = _Trickle(raw.new_inbox(), forgeries)
+
+        async def subscribe(subject: str) -> _Inbox:
+            inbox = trickle if not raw.inboxes else _Inbox(subject, [_delivered(b"3", sequence=7)])
+            inbox.subject = subject
+            raw.inboxes.append(inbox)
+            return inbox
+
+        raw.subscribe = subscribe  # type: ignore[method-assign]
+        js = _JetStream(log)
+        bucket = NatsKvBucket(
+            client=_Client(raw, js),  # type: ignore[arg-type]
+            full_name=_BUCKET,
+            kv=_ForbiddenKv(),  # type: ignore[arg-type]
+            ttl=None,
+        )
+
+        updates = await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST), 1), timeout=2)
+
+        assert updates == [KvKeyUpdate(key=_KEY, value=b"3", revision=7)]
+        assert len(js.creates) == 2, "the dead consumer was not replaced while forgeries arrived"

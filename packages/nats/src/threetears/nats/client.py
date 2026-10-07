@@ -1766,21 +1766,24 @@ class JetStreamResultWaiter:
                 await self._rebuild()
                 last_heard = time.monotonic()
                 continue
+            if time.monotonic() - last_heard >= silence:
+                # measured from the last frame that counts -- an own delivery or a heartbeat -- so
+                # neither an empty poll nor a stream of refused forgeries can hold it off.
+                log.warning(
+                    "result waiter consumer went quiet; replacing it (subject=%s stream=%s consumer=%s)",
+                    self._subject.path,
+                    self._stream,
+                    self._consumer_name,
+                )
+                await self._rebuild()
+                last_heard = time.monotonic()
+                continue
             poll = min(self._poll_seconds, max(deadline - time.monotonic(), _RESULT_WAITER_MIN_POLL_SECONDS))
             try:
                 msg = await self._sub.next_msg(timeout=poll)
             except _NatsTimeoutError:
-                # NOSILENT: an empty poll is the ordinary case -- the tool is still running. only a
-                # consumer that has also stopped heartbeating is replaced, and that is logged.
-                if time.monotonic() - last_heard >= silence:
-                    log.warning(
-                        "result waiter consumer went quiet; replacing it (subject=%s stream=%s consumer=%s)",
-                        self._subject.path,
-                        self._stream,
-                        self._consumer_name,
-                    )
-                    await self._rebuild()
-                    last_heard = time.monotonic()
+                # NOSILENT: an empty poll is the ordinary case -- the tool is still running. a
+                # consumer that has also stopped heartbeating is replaced at the top of the loop.
                 continue
             except asyncio.CancelledError:
                 raise
@@ -1794,14 +1797,19 @@ class JetStreamResultWaiter:
                 await self._rebuild()
                 last_heard = time.monotonic()
                 continue
-            last_heard = time.monotonic()
             headers = msg.headers or {}
             status = headers.get("Status") if not msg.data else None
+            # a status frame carries no ack reply, so it cannot be traced to this waiter's consumer:
+            # the barrier for it is the inbox name, drawn from the CSPRNG. a heartbeat counts as
+            # proof of life; any other status replaces the consumer onto a fresh random inbox,
+            # which a sender that forged it does not know.
             if status == _STATUS_IDLE_HEARTBEAT:
+                last_heard = time.monotonic()
                 continue
             if status is not None:
                 log.warning(
-                    "result waiter consumer ended by the server (%s %s); replacing it (subject=%s consumer=%s)",
+                    "result waiter got a status frame on its inbox (%s %s); replacing its consumer "
+                    "(subject=%s consumer=%s)",
                     status,
                     headers.get("Description", ""),
                     self._subject.path,
@@ -1812,8 +1820,10 @@ class JetStreamResultWaiter:
             if not delivered_by_own_consumer(
                 msg, stream=self._stream, consumer=self._consumer_name or "", receiver="result waiter"
             ):
-                # dropped, never acked: the answer is still to come from this waiter's own consumer
+                # dropped, never acked, and no proof of life: a forgery must not keep a consumer the
+                # broker lost looking alive. the answer is still to come from the waiter's own consumer.
                 continue
+            last_heard = time.monotonic()
             await msg.ack()
             payload = bytes(msg.data)
         if payload is None:

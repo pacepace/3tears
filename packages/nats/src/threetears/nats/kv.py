@@ -2429,9 +2429,15 @@ class _KeyWatchConsumer:
         :raises KvError: when the NATS connection is closed
         """
         silence = self._heartbeat.total_seconds() * _KEY_WATCH_MISSED_HEARTBEATS
+        # the consumer is alive while its own deliveries or heartbeats keep arriving; a refused
+        # forgery does not count, so the silence is measured from the last frame that did.
+        last_heard = time.monotonic()
         while True:
+            remaining = max(silence - (time.monotonic() - last_heard), 0.0)
             try:
-                msg = await self._subscription.next_msg(timeout=silence)
+                if remaining <= 0.0:
+                    raise TimeoutError
+                msg = await self._subscription.next_msg(timeout=remaining)
             except _NatsConnectionClosedError as exc:
                 if self._client.is_closed:
                     raise KvError(f"key watch on {self._subject} ended: the NATS connection is closed") from exc
@@ -2457,14 +2463,19 @@ class _KeyWatchConsumer:
                 return
             headers = msg.headers or {}
             status = headers.get(Header.STATUS) if not msg.data else None
+            # a status frame carries no ack reply, so it cannot be traced to this consumer: the
+            # barrier for it is the inbox name, drawn from the CSPRNG. a status that ends the
+            # consumer moves the watch onto a fresh random inbox, which a sender that forged it
+            # does not know.
             if status == _STATUS_IDLE_HEARTBEAT:
                 # proof of life, and nothing to yield
+                last_heard = time.monotonic()
                 continue
             if status is not None:
-                # the server ended the consumer (``409 Consumer Deleted``, and its kin): replace it
-                # now rather than wait out the heartbeats it will never send.
+                # the server ends a consumer this way (``409 Consumer Deleted``, and its kin): replace
+                # it now rather than wait out the heartbeats it will never send.
                 log.info(
-                    "key watch consumer %s on %s ended by the server (%s %s); replacing it",
+                    "key watch consumer %s on %s got a status frame on its inbox (%s %s); replacing it",
                     self._name,
                     self._subject,
                     status,
@@ -2473,7 +2484,9 @@ class _KeyWatchConsumer:
                 )
                 return
             if not delivered_by_own_consumer(msg, stream=self._stream, consumer=self._name, receiver="key watch"):
+                # no proof of life: a forgery must not keep a consumer the broker lost looking alive
                 continue
+            last_heard = time.monotonic()
             update = self._update_of(msg, key=key)
             if update is not None:
                 yield update
