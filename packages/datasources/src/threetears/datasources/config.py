@@ -438,7 +438,10 @@ class RedshiftConnectionConfig(BaseModel):
     tcp_keepalive_count: int = Field(
         default=3,
         description="unacknowledged keepalive probes before the OS marks the socket dead and fails "
-        "the blocked read. detection time is ~ idle + count*interval (~60s with the defaults).",
+        "the blocked read. detection time is ~ idle + count*interval, but never shorter than "
+        "query_timeout_seconds: the driver raises the count (past 127, the interval) until it "
+        "reaches that ceiling, because a path that answers no probe (Docker Desktop's VM "
+        "network) otherwise turns this window into a statement timeout.",
     )
     allowed_schemas: list[str] = Field(
         default_factory=list,

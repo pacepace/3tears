@@ -374,6 +374,46 @@ def _report_late_terminate(unit: asyncio.Future[None]) -> None:
         )
 
 
+#: Linux's ceiling on ``TCP_KEEPCNT`` (``MAX_TCP_KEEPCNT``); a larger value is refused.
+_MAX_KEEPALIVE_PROBES = 127
+
+
+def _keepalive_probe_plan(cfg: RedshiftConnectionConfig) -> tuple[int, int, int]:
+    """the keepalive (idle, interval, count) to set: the configured one, widened to the ceiling.
+
+    keepalive cannot tell a dead socket from a path that swallows its probes, and such
+    paths exist: Docker Desktop's VM network (the whole local devx stack on macOS)
+    answers none, so a socket from a container dies with ``ETIMEDOUT`` exactly
+    idle + count x interval after the warehouse last spoke, however alive the
+    warehouse is. on such a path the window IS a statement timeout, and the 60s
+    default silently undercut the 300s ``query_timeout_seconds`` ceiling: the hub's
+    table-hash probe died there on every sweep with ``[Errno 110]``. the warehouse
+    ends any statement by the ceiling itself (Redshift's ``statement_timeout``
+    counts WLM queue time too), so a window that reaches the ceiling never kills a
+    statement the warehouse may still answer, and a really dead socket still frees
+    its worker, by the ceiling instead of "forever" -- the hang keepalive exists to
+    end. widening raises the probe COUNT, keeping idle and interval, so the probe
+    cadence that holds NAT state warm does not change; past Linux's 127-probe
+    limit the interval widens instead. a configured window already past the
+    ceiling is kept exactly.
+
+    :param cfg: datasource config carrying the keepalive knobs and the statement ceiling
+    :ptype cfg: RedshiftConnectionConfig
+    :return: ``(idle_seconds, interval_seconds, probe_count)``
+    :rtype: tuple[int, int, int]
+    """
+    idle = cfg.tcp_keepalive_idle_seconds
+    interval = cfg.tcp_keepalive_interval_seconds
+    count = cfg.tcp_keepalive_count
+    probing = cfg.query_timeout_seconds - idle
+    if idle + count * interval < cfg.query_timeout_seconds:
+        count = -(-probing // interval)
+        if count > _MAX_KEEPALIVE_PROBES:
+            count = _MAX_KEEPALIVE_PROBES
+            interval = -(-probing // count)
+    return idle, interval, count
+
+
 def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionConfig) -> None:
     """apply aggressive OS-level TCP keepalive on a redshift_connector connection.
 
@@ -384,7 +424,8 @@ def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionCon
     Linux socket options (the hub + tool pods run Linux); one absent on the host
     platform is skipped, and a ``setsockopt`` failure is logged, not raised -- the
     connection is usable, only half-dead-socket detection falls back to the system
-    default. detection window ~= idle + count * interval.
+    default. detection window ~= idle + count * interval, never shorter than the
+    statement ceiling (see :func:`_keepalive_probe_plan`).
 
     :param conn: live redshift_connector connection to tune
     :ptype conn: RedshiftConnection
@@ -399,12 +440,13 @@ def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionCon
     if sock is None:
         log.warning("redshift keepalive: connection exposes no socket; leaving keepalive at the system default")
         return
+    idle, interval, count = _keepalive_probe_plan(cfg)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         for opt_name, value in (
-            ("TCP_KEEPIDLE", cfg.tcp_keepalive_idle_seconds),
-            ("TCP_KEEPINTVL", cfg.tcp_keepalive_interval_seconds),
-            ("TCP_KEEPCNT", cfg.tcp_keepalive_count),
+            ("TCP_KEEPIDLE", idle),
+            ("TCP_KEEPINTVL", interval),
+            ("TCP_KEEPCNT", count),
         ):
             opt = getattr(socket, opt_name, None)
             if opt is not None:

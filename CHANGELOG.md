@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Datasources: a Redshift keepalive no longer gives up before the statement ceiling
+
+- **Fixed, `RedshiftDriver`**: the TCP keepalive window (idle + count x interval) is widened to at
+  least `query_timeout_seconds`, by raising the probe count (past Linux's 127, the interval), so
+  idle and interval, and with them the probe cadence, stay as configured. A path that answers no
+  keepalive probe -- Docker Desktop's VM network, the whole local devx stack on macOS -- cannot be
+  told from a dead socket, and there the 60s default acted as a 60s statement timeout under a 300s
+  ceiling: the hub's table-hash probe died with `TimeoutError: [Errno 110]` on every sweep. A dead
+  socket is now detected by the ceiling (300s by default) instead of 60s; a configured window
+  already past the ceiling is unchanged.
+
 ### Nats and core: a scoped snapshot -- tables a pod needs whole, kept in L2 and loaded in seconds
 
 The ENR tool pod is the first consumer: its report tables live in NATS as one Arrow chunk per state,
