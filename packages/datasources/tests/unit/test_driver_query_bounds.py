@@ -1,10 +1,11 @@
 """What a caller running many queries at once must know of a driver: how many it may run, and whose pool it draws on.
 
-The hub answers datasource queries side by side. A driver that bounds its own warehouse connections
-(Redshift, a Postgres pool it owns) needs nothing more; one whose logins are not guarded against a
-refused credential (Snowflake, BigQuery) must be asked one query at a time, or a wrong credential
-fails a burst of logins at once; one that borrows the host's own pool (agent_internal) must be
-bounded with every other driver borrowing it, or it starves the host.
+The hub gates every datasource's calls. A driver that caps its own warehouse connections (Redshift,
+a Postgres pool it owns) states that cap, so the caller's gate (which refuses busy, with a deadline)
+is where a burst waits, never the driver's own semaphore; one whose logins are not guarded against a
+refused credential (Snowflake, BigQuery) states 1, or a wrong credential fails a burst of logins at
+once; one that borrows the host's own pool (agent_internal) states none and names the pool, so it is
+bounded with every other driver borrowing it.
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ def test_a_driver_that_caps_its_own_connections_states_that_cap_and_borrows_noth
         database="analytics",
         username="u",
         password_ref="env://ABSENT_PW",
-        executor_max_workers=3,
+        executor_max_workers=6,
         connection_cache_size=3,
     )
     drivers: list[Any] = [AsyncpgDriver(postgres), RedshiftDriver(redshift)]
@@ -95,3 +96,19 @@ async def test_a_driver_that_cannot_stop_early_still_answers_no_more_than_asked(
         )
     )
     assert await driver(reader, "SELECT n FROM t", max_rows=4) == [{"n": index} for index in range(4)]
+
+
+def test_a_driver_lent_a_pool_states_no_cap_of_its_own_whatever_its_config_says() -> None:
+    """the pool lent to it decides, not the pool size its config would have opened."""
+    pool = MagicMock(name="lent-pool")
+    driver = AsyncpgDriver(
+        PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="localhost",
+            database="x",
+            password_ref="env://ABSENT_PW",
+            pool_max_size=9,
+        ),
+        external_pool=pool,
+    )
+    assert (driver.concurrent_queries, driver.borrowed_pool) == (None, pool)
