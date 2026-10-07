@@ -1735,6 +1735,15 @@ class RedshiftDriver(Driver):
         )
         return result
 
+    @property
+    def concurrent_queries(self) -> int | None:
+        """the driver's own cap on open connections (``connection_cache_size``).
+
+        :return: the cap
+        :rtype: int | None
+        """
+        return self._config.connection_cache_size
+
     @traced
     @observed(driver_type="redshift")
     async def fetch_at_most(

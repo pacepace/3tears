@@ -492,6 +492,19 @@ class AsyncpgDriver(Driver):
     # -------------------------------------------------------------------
 
     @property
+    def concurrent_queries(self) -> int | None:
+        """its own pool's ceiling; None for a borrowed pool, bounded with the pool's other borrowers.
+
+        :return: the cap, or None
+        :rtype: int | None
+        """
+        config = self._config
+        result: int | None = None
+        if self._external_pool is None and not isinstance(config, BorrowedPoolConnectionConfig):
+            result = config.pool_max_size
+        return result
+
+    @property
     def borrowed_pool(self) -> Any | None:
         """the host's pool this driver borrows (agent_internal), or None when it owns its pool.
 

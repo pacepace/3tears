@@ -821,11 +821,14 @@ class Driver(ABC):
 
     @property
     def concurrent_queries(self) -> int | None:
-        """the most queries a caller should run on this driver at once; None when it bounds them itself.
+        """the most queries a caller should run on this driver at once; None when it states no cap.
 
-        A driver that caps its own open connections (and guards its logins) answers None. One whose
-        logins are not guarded against a refused credential answers 1, so a caller running queries
-        side by side cannot send a burst of failing logins.
+        A driver that caps its own open connections answers that cap, so a caller running queries
+        side by side gates them there and they wait at the caller's gate (which can refuse, with a
+        deadline) rather than on the driver's own connection semaphore, which has neither. One whose
+        logins are not guarded against a refused credential answers 1, so a caller cannot send a
+        burst of failing logins. A driver borrowing its host's pool answers None: it is bounded with
+        every other borrower of that pool (:attr:`borrowed_pool`).
 
         :return: the bound, or None
         :rtype: int | None

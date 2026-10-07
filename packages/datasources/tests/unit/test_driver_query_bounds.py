@@ -33,20 +33,27 @@ def _postgres() -> PostgresConnectionConfig:
     )
 
 
-def test_a_driver_that_bounds_its_own_connections_asks_no_bound_and_borrows_nothing() -> None:
-    drivers: list[Any] = [
-        AsyncpgDriver(_postgres()),
-        RedshiftDriver(
-            RedshiftConnectionConfig(
-                datasource_type=DataSourceType.REDSHIFT,
-                host="rs.example.com",
-                database="analytics",
-                username="u",
-                password_ref="env://ABSENT_PW",
-            )
-        ),
-    ]
-    assert [(d.concurrent_queries, d.borrowed_pool) for d in drivers] == [(None, None), (None, None)]
+def test_a_driver_that_caps_its_own_connections_states_that_cap_and_borrows_nothing() -> None:
+    """a caller gating every datasource gates this one at the cap it already keeps, so a query waits at
+    the caller's gate (which refuses busy, with a deadline) and never on the driver's own semaphore."""
+    postgres = PostgresConnectionConfig(
+        datasource_type=DataSourceType.POSTGRES,
+        host="localhost",
+        database="x",
+        password_ref="env://ABSENT_PW",
+        pool_max_size=7,
+    )
+    redshift = RedshiftConnectionConfig(
+        datasource_type=DataSourceType.REDSHIFT,
+        host="rs.example.com",
+        database="analytics",
+        username="u",
+        password_ref="env://ABSENT_PW",
+        executor_max_workers=3,
+        connection_cache_size=3,
+    )
+    drivers: list[Any] = [AsyncpgDriver(postgres), RedshiftDriver(redshift)]
+    assert [(d.concurrent_queries, d.borrowed_pool) for d in drivers] == [(7, None), (3, None)]
 
 
 def test_a_driver_whose_logins_are_not_guarded_takes_one_query_at_a_time() -> None:
@@ -70,6 +77,8 @@ def test_a_driver_borrowing_the_hosts_pool_names_it() -> None:
         external_pool=pool,
     )
     assert driver.borrowed_pool is pool
+    # bounded with every other borrower of the pool, not on its own
+    assert driver.concurrent_queries is None
 
 
 async def test_a_driver_that_cannot_stop_early_still_answers_no_more_than_asked() -> None:

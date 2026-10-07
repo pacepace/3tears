@@ -68,9 +68,10 @@ copies swapped in whole.
   answering in the parts' order; the first failure cancels the rest and is raised as itself.
 - **Added, `Driver.concurrent_queries` and `Driver.borrowed_pool`** (read by the hub's datasource
   responder, which now answers queries side by side, among them the ENR pod's per-state reads): how
-  many queries a caller should run on a driver at once (None when the driver bounds its own
-  connections; 1 for `SnowflakeDriver` and `BigQueryDriver`, whose logins are not guarded against a
-  refused credential), and the host's pool a driver borrows (`AsyncpgDriver` for an
+  many queries a caller should run on a driver at once: its own open-connection cap
+  (`RedshiftDriver`'s `connection_cache_size`, an owned `AsyncpgDriver` pool's `pool_max_size`), 1 for
+  `SnowflakeDriver` and `BigQueryDriver` (logins not guarded against a refused credential), None for
+  a driver borrowing its host's pool or stating no cap, and the host's pool a driver borrows (`AsyncpgDriver` for an
   `agent_internal` datasource), which a caller bounds together across every driver borrowing it.
 - **Added, `query_client.DATASOURCE_BUSY`** (the hub's datasource responder answers it; the ENR pod's
   refresh fails on it and the next one runs): the refusal code for a query the hub would not queue
