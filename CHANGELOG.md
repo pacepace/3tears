@@ -31,7 +31,7 @@ packages (bumped in lock-step).
   rows, in one transaction) **and `DuckDBBackend.stored_keys(table, key)`** (every key as stored).
 - **Added, `BaseCollection.add_l1_change_listener(listener)` (returns a call that removes it) and
   `BaseCollection.l1_backend`:** a listener is called with a row's key whenever the row is written
-  into the collection's L1 or leaves it; every L1 write of the table's rows goes through one method.
+  into the collection's L1 or leaves it; every L1 write BaseCollection itself makes goes through one method (subclasses with their own L1 write paths, such as presence and heartbeat collections, do not notify the listener).
 
 ### Core: smaller changes to collections
 
