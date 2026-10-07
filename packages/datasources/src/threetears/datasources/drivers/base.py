@@ -724,6 +724,19 @@ class TransactionContext:
 # ---------------------------------------------------------------------------
 
 
+def _check_max_rows(max_rows: int) -> None:
+    """refuse a read bound below one row.
+
+    :param max_rows: the bound
+    :ptype max_rows: int
+    :return: nothing
+    :rtype: None
+    :raises ValueError: if ``max_rows`` is below 1
+    """
+    if max_rows < 1:
+        raise ValueError(f"max_rows must be at least 1, got {max_rows}")
+
+
 class Driver(ABC):
     """abstract base for all datasource drivers.
 
@@ -859,6 +872,34 @@ class Driver(ABC):
         :raises RuntimeError: if the driver was previously closed
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
+
+    async def fetch_at_most(
+        self, sql: str, *params: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> list[dict[str, Any]]:
+        """run a SELECT and read at most ``max_rows`` rows of its result, in order.
+
+        For a caller that answers with a bounded number of rows (a responder capping its reply at a
+        thousand and saying whether there were more): ask for one row past the cap, and no result
+        larger than that is held. A driver that can stop reading early (a server-side cursor)
+        overrides this; this default reads the result through :meth:`fetch` and keeps the first
+        ``max_rows``, so the bound on what is kept holds for every driver, and the bound on what is
+        read only where the driver says so.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_rows: the most rows to read; at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` column-name -> value dicts, in row order
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``max_rows`` is below 1
+        """
+        _check_max_rows(max_rows)
+        rows = await self.fetch(sql, *params, timeout_seconds=timeout_seconds)
+        return rows[:max_rows]
 
     @abstractmethod
     async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:

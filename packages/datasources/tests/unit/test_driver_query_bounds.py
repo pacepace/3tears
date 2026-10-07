@@ -20,6 +20,7 @@ from threetears.datasources.config import (
     SnowflakeConnectionConfig,
 )
 from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
+from threetears.datasources.drivers.base import Driver
 from threetears.datasources.drivers.bigquery_driver import BigQueryDriver
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.drivers.snowflake_driver import SnowflakeDriver
@@ -69,3 +70,19 @@ def test_a_driver_borrowing_the_hosts_pool_names_it() -> None:
         external_pool=pool,
     )
     assert driver.borrowed_pool is pool
+
+
+async def test_a_driver_that_cannot_stop_early_still_answers_no_more_than_asked() -> None:
+    """the default for a driver with no early stop: it reads what it reads, and keeps the bound."""
+
+    class _ReadsEverything(RedshiftDriver):
+        async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
+            return [{"n": index} for index in range(10)]
+
+    driver = Driver.fetch_at_most  # the base implementation, reached through a subclass that keeps it
+    reader = _ReadsEverything(
+        RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT, host="h", database="d", username="u", password_ref="env://X"
+        )
+    )
+    assert await driver(reader, "SELECT n FROM t", max_rows=4) == [{"n": index} for index in range(4)]

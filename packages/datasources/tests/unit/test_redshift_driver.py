@@ -889,6 +889,21 @@ class TestQueryRouting:
         assert len([sql for sql in statements if "FROM SVV_COLUMNS" in sql]) == 2
 
     @pytest.mark.asyncio
+    async def test_fetch_at_most_keeps_no_more_rows_than_asked(self, redshift_config: RedshiftConnectionConfig) -> None:
+        """the rows taken off the cursor stop at the bound; nothing past it is turned into a reply row."""
+        conn = _build_mock_connection(description=[("n", None)])
+        conn.recorded_cursor.fetchmany = MagicMock(return_value=[(0,), (1,), (2,)])
+        conn.recorded_cursor.fetchall = MagicMock(side_effect=AssertionError("read every row"))
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            rows = await driver.fetch_at_most("SELECT n FROM big", max_rows=3, timeout_seconds=30)
+        assert rows == [{"n": 0}, {"n": 1}, {"n": 2}]
+        conn.recorded_cursor.fetchmany.assert_called_once_with(3)
+
+    @pytest.mark.asyncio
     async def test_table_hashes_returns_dict_keyed_by_schema_table(
         self, redshift_config: RedshiftConnectionConfig
     ) -> None:

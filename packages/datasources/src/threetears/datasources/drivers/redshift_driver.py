@@ -1613,8 +1613,9 @@ class RedshiftDriver(Driver):
         sql: str,
         params: tuple[Any, ...],
         timeout_seconds: int | None,
+        max_rows: int | None = None,
     ) -> list[dict[str, Any]]:
-        """run one SELECT on ``conn`` and materialize its rows (sync).
+        """run one SELECT on ``conn`` and materialize its rows (sync), at most ``max_rows`` of them.
 
         shared by :meth:`fetch` and the transaction handle so both
         apply the per-statement timeout the same way.
@@ -1627,6 +1628,8 @@ class RedshiftDriver(Driver):
         :ptype params: tuple[Any, ...]
         :param timeout_seconds: per-statement override, or None
         :ptype timeout_seconds: int | None
+        :param max_rows: the most rows to take off the cursor; every row when None
+        :ptype max_rows: int | None
         :return: list of column-name -> value dicts in row order
         :rtype: list[dict[str, Any]]
         """
@@ -1640,7 +1643,7 @@ class RedshiftDriver(Driver):
                 cursor.execute(sql, params)
             else:
                 cursor.execute(sql)
-            rows = cursor.fetchall()
+            rows = cursor.fetchall() if max_rows is None else cursor.fetchmany(max_rows)
             cols = [c[0] for c in cursor.description]
             result = [dict(zip(cols, row)) for row in rows]
         finally:
@@ -1723,6 +1726,51 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 functools.partial(self._fetch_sync, conn, translated, params, timeout_seconds),
+                cancel_cb=conn.close,
+            )
+
+        result: list[dict[str, Any]] = await self._acquire_and_run(
+            _op,
+            timeout_overridden=timeout_seconds is not None,
+        )
+        return result
+
+    @traced
+    @observed(driver_type="redshift")
+    async def fetch_at_most(
+        self, sql: str, *params: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> list[dict[str, Any]]:
+        """run a SELECT and take at most ``max_rows`` rows off its cursor.
+
+        ``redshift_connector`` receives a statement's whole result inside ``execute`` (it has no
+        streaming read), so this bounds the rows turned into the answer, not what crossed the wire:
+        a caller that must bound that too asks the warehouse for no more (a ``LIMIT``), as the hub's
+        responder does wherever the statement takes one.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_rows: the most rows to keep; at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` column-name -> value dicts, in row order
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``max_rows`` is below 1, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if max_rows < 1:
+            raise ValueError(f"max_rows must be at least 1, got {max_rows}")
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql, "pyformat")
+
+        async def _op(conn: RedshiftConnection) -> Any:
+            return await self._bridge.to_thread_with_cancel(
+                functools.partial(self._fetch_sync, conn, translated, params, timeout_seconds, max_rows),
                 cancel_cb=conn.close,
             )
 

@@ -30,6 +30,7 @@ from threetears.datasources.drivers import (
     DriverMissingCredentialError,
 )
 from threetears.datasources.drivers.asyncpg_driver import BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS, AsyncpgDriver
+from threetears.datasources.drivers.errors import DriverPoolBusyError
 from threetears.datasources.entities import DataSourceType
 
 
@@ -930,3 +931,93 @@ class TestABorrowedConnectionIsScopedToItsSchema:
         conn = fake_pool.recorded_conn
         executed = [call.args[0] for call in conn.execute.await_args_list]
         assert not any("search_path" in statement for statement in executed)
+
+
+class TestFetchAtMost:
+    """a read that stops after ``max_rows`` rows: the rest are never fetched from the server."""
+
+    @pytest.mark.asyncio
+    async def test_rows_are_read_through_a_cursor_that_fetches_no_more_than_asked(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        external = _build_mock_pool()
+        conn = external.recorded_conn
+        cursor = MagicMock(name="MockCursor")
+        cursor.fetch = AsyncMock(return_value=[{"n": 0}, {"n": 1}, {"n": 2}])
+        opened: list[tuple[Any, ...]] = []
+
+        async def open_cursor(*args: Any) -> Any:
+            opened.append(args)
+            return cursor
+
+        conn.cursor = MagicMock(side_effect=lambda *args: open_cursor(*args))
+
+        @asynccontextmanager
+        async def transaction() -> Any:
+            yield None
+
+        conn.transaction = MagicMock(side_effect=transaction)
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        rows = await driver.fetch_at_most("SELECT n FROM big WHERE a = $1", 7, max_rows=3)
+
+        assert rows == [{"n": 0}, {"n": 1}, {"n": 2}]
+        assert opened == [("SELECT n FROM big WHERE a = $1", 7)]
+        cursor.fetch.assert_awaited_once_with(3)
+        conn.fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_bound_below_one_is_refused(self, agent_internal_config: BorrowedPoolConnectionConfig) -> None:
+        driver = AsyncpgDriver(agent_internal_config, external_pool=_build_mock_pool())
+        with pytest.raises(ValueError, match="max_rows"):
+            await driver.fetch_at_most("SELECT 1", max_rows=0)
+
+
+class TestABorrowedPoolThatHasNoConnectionToSpare:
+    @pytest.mark.asyncio
+    async def test_a_timed_out_wait_for_a_connection_says_the_pool_is_busy_not_that_a_statement_timed_out(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        external = _build_mock_pool()
+
+        @asynccontextmanager
+        async def exhausted(**options: Any) -> Any:
+            raise TimeoutError
+            yield  # pragma: no cover - never reached
+
+        external.acquire = exhausted
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        with pytest.raises(DriverPoolBusyError):
+            await driver.fetch("SELECT 1")
+        with pytest.raises(DriverPoolBusyError):
+            await driver.fetch_at_most("SELECT 1", max_rows=2)
+
+    @pytest.mark.asyncio
+    async def test_every_way_into_a_borrowed_pool_says_busy_when_it_has_no_connection(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        """a transaction and a streamed read take their connection by other routes than fetch; each must say busy."""
+
+        class _Exhausted:
+            """a pool's acquire that runs out of time whether it is awaited or entered."""
+
+            def __await__(self) -> Any:
+                raise TimeoutError
+                yield  # pragma: no cover - never reached
+
+            async def __aenter__(self) -> Any:
+                raise TimeoutError
+
+            async def __aexit__(self, *exc_info: Any) -> bool:
+                return False
+
+        external = _build_mock_pool()
+        external.acquire = lambda **options: _Exhausted()
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        with pytest.raises(DriverPoolBusyError):
+            await driver.begin()
+        with pytest.raises(DriverPoolBusyError):
+            async for _row in driver.fetch_iter("SELECT 1"):
+                pass  # pragma: no cover - the acquire fails before any row

@@ -150,6 +150,7 @@ import asyncio
 import dataclasses
 import functools
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, Final
 
 import asyncpg
@@ -189,6 +190,7 @@ from pydantic import SecretStr
 from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
 from threetears.datasources.drivers.errors import (
     DriverConnectError,
+    DriverPoolBusyError,
     connect_error_from,
     optional_password,
 )
@@ -396,7 +398,7 @@ def _get_cancellation_fired_counter() -> Any:
 #: how long a query waits for a connection of a pool it borrows from its host (the hub's L3 pool, for
 #: an ``agent_internal`` datasource) before it gives up with a timeout: well under a datasource
 #: client's deadline, so nothing runs after its caller stopped waiting
-BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS: Final = 30.0
+BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS: Final = 5.0
 
 
 class AsyncpgDriver(Driver):
@@ -497,6 +499,42 @@ class AsyncpgDriver(Driver):
         :rtype: Any | None
         """
         return self._external_pool
+
+    @asynccontextmanager
+    async def _pool_connection(self, pool: Any) -> AsyncIterator[Any]:
+        """a connection of ``pool`` for one call; a borrowed pool with none to spare is busy, not timed out.
+
+        :param pool: the pool
+        :ptype pool: asyncpg.Pool
+        :return: an async context manager yielding the connection
+        :rtype: AsyncIterator[Any]
+        :raises DriverPoolBusyError: when a borrowed pool had no connection within the bound
+        """
+        async with AsyncExitStack() as stack:
+            try:
+                conn = await stack.enter_async_context(pool.acquire(**self._acquire_options))
+            except TimeoutError as exc:
+                busy = self._busy(exc)
+                if busy is exc:
+                    raise
+                raise busy from exc
+            yield conn
+
+    def _busy(self, exc: TimeoutError) -> BaseException:
+        """what a wait for a pool connection that ran out of time raises.
+
+        :param exc: the timeout
+        :ptype exc: TimeoutError
+        :return: :class:`DriverPoolBusyError` for a borrowed pool (nothing ran); the timeout itself otherwise
+        :rtype: BaseException
+        """
+        result: BaseException = exc
+        if self._external_pool is not None:
+            result = DriverPoolBusyError(
+                f"the host's pool had no connection to spare within {BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS} s; "
+                "nothing ran"
+            )
+        return result
 
     async def _ensure_pool(self) -> asyncpg.Pool[Any]:
         """lazily create the asyncpg pool on first use; reject calls after close.
@@ -810,7 +848,7 @@ class AsyncpgDriver(Driver):
         # borrowed-pool search_path is applied at this one point rather than at
         # each call site.
         pool = await self._ensure_pool()
-        async with pool.acquire(**self._acquire_options) as conn:
+        async with self._pool_connection(pool) as conn:
             await self._scope_borrowed_connection(conn)
             if timeout_seconds is None:
                 result = await self._with_cancellation(
@@ -900,6 +938,47 @@ class AsyncpgDriver(Driver):
 
     @traced
     @observed(driver_type="asyncpg")
+    async def fetch_at_most(
+        self, sql: str, *params: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> list[dict[str, Any]]:
+        """run a SELECT through a server-side cursor and fetch at most ``max_rows`` rows.
+
+        The rows past the bound are never sent: the cursor (a portal, in its own transaction) is
+        asked for ``max_rows`` and closed with the transaction.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_rows: the most rows to fetch; at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` column-name -> value dicts, in row order
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``max_rows`` is below 1, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if max_rows < 1:
+            raise ValueError(f"max_rows must be at least 1, got {max_rows}")
+        if self._closed:
+            raise RuntimeError("AsyncpgDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql, "asyncpg")
+
+        async def _bounded(conn: Any) -> Any:
+            # a cursor lives in a transaction; nested in the timeout's own one, this is a savepoint
+            async with conn.transaction():
+                cursor = await conn.cursor(translated, *params)
+                return await cursor.fetch(max_rows)
+
+        records = await self._acquire_and_run(_bounded, timeout_seconds=timeout_seconds)
+        result: list[dict[str, Any]] = [dict(r) for r in records]
+        return result
+
+    @traced
+    @observed(driver_type="asyncpg")
     async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         """run a DML / DDL statement; discard any returned rows.
 
@@ -949,7 +1028,13 @@ class AsyncpgDriver(Driver):
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
         pool = await self._ensure_pool()
-        conn = await pool.acquire(**self._acquire_options)
+        try:
+            conn = await pool.acquire(**self._acquire_options)
+        except TimeoutError as exc:
+            busy = self._busy(exc)
+            if busy is exc:
+                raise
+            raise busy from exc
         try:
             # before the transaction opens: a borrowed connection carries the
             # pool owner's search_path until scoped, and SET inside the
@@ -1109,7 +1194,7 @@ class AsyncpgDriver(Driver):
             raise RuntimeError("AsyncpgDriver is closed")
         translated = translate_placeholders(sql, "asyncpg")
         pool = await self._ensure_pool()
-        async with pool.acquire(**self._acquire_options) as conn:
+        async with self._pool_connection(pool) as conn:
             await self._scope_borrowed_connection(conn)
             async with conn.transaction():
                 # ``Connection.cursor`` returns a server-side cursor;

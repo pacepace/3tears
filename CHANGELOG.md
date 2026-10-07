@@ -76,9 +76,23 @@ copies swapped in whole.
   refresh fails on it and the next one runs): the refusal code for a query the hub would not queue
   because the datasource already has as many queries running and waiting as it bears, or the query
   waited too long for a turn. Nothing ran.
-- **Added, `asyncpg_driver.BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS`** (30 s; agent_internal datasources
+- **Added, `asyncpg_driver.BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS`** (5 s; agent_internal datasources
   on the hub's L3 pool): an `AsyncpgDriver` borrowing its host's pool waits that long for a
   connection, not forever.
+- **Added, `Driver.fetch_at_most(sql, *params, max_rows, timeout_seconds=None)`** (the hub's
+  datasource responder reads every query through it, so no reply holds more than one row past its
+  cap whatever the statement says): at most `max_rows` rows in order. `AsyncpgDriver` reads through a
+  server-side cursor, so the rows past the bound are never sent; `RedshiftDriver` takes at most
+  `max_rows` off its cursor (`redshift_connector` receives a statement's whole result inside
+  `execute`, so the hub also asks the warehouse for no more where the statement takes a `LIMIT`); the
+  default (and the Snowflake and BigQuery stubs) reads through `fetch` and keeps the bound.
+- **Added, `drivers.DriverPoolBusyError`:** an `AsyncpgDriver` borrowing its host's pool raises it
+  when no connection was free within `BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS` (now 5 s, so a gate's
+  turn, a connection and the statement deadline fit inside the client's): nothing ran, which the hub
+  answers `DATASOURCE_BUSY`, not as a statement timeout.
+- **Changed, `DatasourceQueryClient.query` and `relation_fingerprint`:** a `DATASOURCE_BUSY` refusal
+  (nothing ran) is asked again up to `BUSY_RETRIES` (3) times after a growing, jittered wait from
+  `BUSY_BACKOFF_SECONDS` (0.5 s), then raised.
 - **Fixed, `RedshiftDriver.relation_fingerprint`** (found by the ENR pod's per-state check over
   every column): a key naming a boolean column failed, because Redshift refuses to cast a boolean to
   text. The driver reads the relation's boolean columns from `SVV_COLUMNS` (the names lower-cased as

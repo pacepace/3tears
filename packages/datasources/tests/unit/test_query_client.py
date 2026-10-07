@@ -18,6 +18,9 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from threetears.datasources.query_client import (
+    BUSY_BACKOFF_SECONDS,
+    BUSY_RETRIES,
+    DATASOURCE_BUSY,
     DEFAULT_QUERY_TIMEOUT_SECONDS,
     QUERY_STATEMENT_TIMEOUT_SECONDS,
     DatasourceQueryClient,
@@ -365,3 +368,63 @@ class TestReplies:
         with pytest.raises(DatasourceQueryError) as exc_info:
             await _client(fake).query("ds", "SELECT 1")
         assert exc_info.value.error_code == "REQUEST_FAILED"
+
+
+class _BusyThen(_FakeNatsClient):
+    """answers DATASOURCE_BUSY ``busy`` times, then the reply."""
+
+    def __init__(self, busy: int, reply: BaseModel) -> None:
+        super().__init__(reply)
+        self._busy = busy
+
+    async def request(self, **kwargs: Any) -> BaseModel:
+        await super().request(**kwargs)
+        answer: BaseModel = self._reply  # type: ignore[assignment]
+        if len(self.calls) <= self._busy:
+            answer = DatasourceQueryResponse(success=False, error_code=DATASOURCE_BUSY, error_message="busy")
+        return answer
+
+
+class TestABusyHubIsAskedAgain:
+    """DATASOURCE_BUSY means nothing ran: the client asks again a few times, after a short wait, then gives up."""
+
+    @pytest.fixture
+    def waits(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        waited: list[float] = []
+
+        async def no_wait(seconds: float) -> None:
+            waited.append(seconds)
+
+        monkeypatch.setattr("threetears.datasources.query_client.asyncio.sleep", no_wait)
+        return waited
+
+    async def test_a_query_refused_busy_is_asked_again_and_answers(self, waits: list[float]) -> None:
+        fake = _BusyThen(2, _rows(uuid7(), [{"a": 1}]))
+
+        result = await _client(fake).query("warehouse", "SELECT 1")
+
+        assert result.rows == [{"a": 1}]
+        assert len(fake.calls) == 3
+        assert len(waits) == 2 and all(0 < seconds <= BUSY_BACKOFF_SECONDS * 4 for seconds in waits)
+        assert waits[1] > BUSY_BACKOFF_SECONDS * 0.5, "the wait does not grow"
+
+    async def test_a_fingerprint_refused_busy_is_asked_again(self, waits: list[float]) -> None:
+        reply = DatasourceQueryResponse(
+            success=True, fingerprint={"row_count": 3, "digest": "9"}, correlation_id=uuid7()
+        )
+        fake = _BusyThen(1, reply)
+
+        result = await _client(fake).relation_fingerprint("warehouse", relation="s.t", key=["a"])
+
+        assert (result.row_count, len(fake.calls)) == (3, 2)
+
+    async def test_a_hub_that_stays_busy_is_given_up_on_after_a_bounded_number_of_asks(
+        self, waits: list[float]
+    ) -> None:
+        fake = _BusyThen(100, _rows(uuid7(), []))
+
+        with pytest.raises(DatasourceQueryError) as raised:
+            await _client(fake).query("warehouse", "SELECT 1")
+
+        assert raised.value.error_code == DATASOURCE_BUSY
+        assert len(fake.calls) == 1 + BUSY_RETRIES

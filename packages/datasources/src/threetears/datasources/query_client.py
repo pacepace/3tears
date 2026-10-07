@@ -47,6 +47,8 @@ the prefix, a derivation refuses it.
 
 from __future__ import annotations
 
+import asyncio
+import random
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
@@ -55,13 +57,15 @@ from uuid import UUID, uuid7
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, field_validator, model_validator
 from threetears.nats.errors import RequestError
-from threetears.nats.subjects import Subjects
+from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import get_logger, traced
 
 if TYPE_CHECKING:
     from threetears.nats import NatsClient
 
 __all__ = [
+    "BUSY_BACKOFF_SECONDS",
+    "BUSY_RETRIES",
     "DATASOURCE_BUSY",
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
     "RESULT_TOO_LARGE",
@@ -493,6 +497,38 @@ class DatasourceQueryClient:
             )
         return token
 
+    async def _ask(self, subject: Subject, request: DatasourceQueryRequest) -> DatasourceQueryResponse:
+        """send the request, and ask again while the hub answers ``DATASOURCE_BUSY``, a bounded number of times.
+
+        A busy refusal means nothing ran, so asking again is safe; the waits grow and are jittered so
+        callers refused together do not come back together. The last answer is returned as it is.
+
+        :param subject: the datasource's query subject
+        :ptype subject: Subject
+        :param request: the request
+        :ptype request: DatasourceQueryRequest
+        :return: the hub's answer
+        :rtype: DatasourceQueryResponse
+        :raises RequestError: when the bus fails to deliver or answer
+        """
+        wait = BUSY_BACKOFF_SECONDS
+        attempts = 0
+        response: DatasourceQueryResponse = await self._nats_client.request(
+            subject=subject, message=request, response_type=DatasourceQueryResponse, timeout=self._timeout
+        )
+        while response.error_code == DATASOURCE_BUSY and attempts < BUSY_RETRIES:
+            attempts += 1
+            await asyncio.sleep(wait * random.uniform(0.5, 1.5))  # noqa: S311 - backoff jitter, not a secret
+            wait *= 2
+            log.info(
+                "datasource busy; asking again",
+                extra={"extra_data": {"subject": subject.path, "attempt": attempts, "retries": BUSY_RETRIES}},
+            )
+            response = await self._nats_client.request(
+                subject=subject, message=request, response_type=DatasourceQueryResponse, timeout=self._timeout
+            )
+        return response
+
     @traced
     async def relation_fingerprint(
         self,
@@ -543,12 +579,7 @@ class DatasourceQueryClient:
         )
         subject = Subjects.datasource_query(datasource_name)
         try:
-            response: DatasourceQueryResponse = await self._nats_client.request(
-                subject=subject,
-                message=request,
-                response_type=DatasourceQueryResponse,
-                timeout=self._timeout,
-            )
+            response = await self._ask(subject, request)
         except RequestError as exc:
             raise DatasourceQueryError("REQUEST_FAILED", f"relation fingerprint on {datasource_name!r}: {exc}") from exc
 
@@ -624,12 +655,7 @@ class DatasourceQueryClient:
             },
         )
         try:
-            response: DatasourceQueryResponse = await self._nats_client.request(
-                subject=subject,
-                message=request,
-                response_type=DatasourceQueryResponse,
-                timeout=self._timeout,
-            )
+            response = await self._ask(subject, request)
         except RequestError as exc:
             log.warning(
                 "datasource query did not complete",
@@ -716,6 +742,14 @@ RESULT_TOO_LARGE: Final = "RESULT_TOO_LARGE"
 #: running and waiting as it bears, or this one waited too long for its turn. nothing ran; ask again
 #: later (a refresh that meets it fails, and the next one runs)
 DATASOURCE_BUSY: Final = "DATASOURCE_BUSY"
+
+#: how many times the client asks again after a ``DATASOURCE_BUSY`` refusal before raising it
+BUSY_RETRIES: Final = 3
+
+#: the first wait before asking again after ``DATASOURCE_BUSY``; each later wait doubles, and every
+#: wait is jittered between half and one and a half of it, so replicas refused together do not return
+#: together
+BUSY_BACKOFF_SECONDS: Final = 0.5
 
 _DEFAULT_PAGE_SIZE: Final[int] = 500
 
