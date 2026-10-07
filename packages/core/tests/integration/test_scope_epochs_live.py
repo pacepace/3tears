@@ -26,6 +26,7 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.complete_copy import Unsettled
 from threetears.core.collections.scope_epochs import (
     STALLED_WRITE_SECONDS,
     WHOLE,
@@ -121,7 +122,7 @@ async def test_a_write_begun_is_in_progress_until_it_commits(held: _Held) -> Non
     begun = await held.epochs.snapshot()
     assert begun.writing == 1
     assert begun.writing_since is not None, "a write in progress does not say when it began"
-    assert await held.epochs.settled() is None
+    assert isinstance(await held.epochs.settled(), Unsettled)
 
     await _in_transaction(held.pool, lambda conn: held.epochs.commit(version, {"state:VA", "race:va-sen"}, conn=conn))
 
@@ -308,7 +309,7 @@ async def test_a_reader_refused_by_a_write_in_progress_is_told_how_long_it_has_b
     version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
 
     with caplog.at_level("INFO", logger="threetears.core.collections.scope_epochs"):
-        assert await held.epochs.settled() is None
+        assert isinstance(await held.epochs.settled(), Unsettled)
 
     [record] = [r for r in caplog.records if r.getMessage() == "a write is in progress; readers keep what they hold"]
     data = record.extra_data  # type: ignore[attr-defined]
@@ -346,9 +347,11 @@ async def test_a_write_in_progress_far_too_long_is_logged_as_stalled_and_describ
     )
 
     with caplog.at_level("INFO", logger="threetears.core.collections.scope_epochs"):
-        assert await held.epochs.settled() is None
+        assert isinstance(await held.epochs.settled(), Unsettled)
 
     [record] = [r for r in caplog.records if "write is in progress" in r.getMessage()]
     assert record.levelname == "WARNING"
-    assert f"write {version}" in held.epochs.why_unsettled()
-    assert "in progress for" in held.epochs.why_unsettled()
+    refused = await held.epochs.settled()
+    assert isinstance(refused, Unsettled)
+    assert f"write {version}" in refused.reason
+    assert "in progress for" in refused.reason

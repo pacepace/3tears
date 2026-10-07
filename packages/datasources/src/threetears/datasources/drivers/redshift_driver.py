@@ -179,6 +179,7 @@ from threetears.datasources.drivers.base import (
     Transaction,
     _check_otel_metrics,
     _instrument_cache,
+    check_max_rows,
     observed,
 )
 from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
@@ -1736,11 +1737,11 @@ class RedshiftDriver(Driver):
         return result
 
     @property
-    def concurrent_queries(self) -> int | None:
+    def concurrent_queries(self) -> int:
         """the driver's own cap on open connections (``connection_cache_size``).
 
         :return: the cap
-        :rtype: int | None
+        :rtype: int
         """
         return self._config.connection_cache_size
 
@@ -1749,7 +1750,7 @@ class RedshiftDriver(Driver):
     async def fetch_at_most(
         self, sql: str, *params: Any, max_rows: int, timeout_seconds: int | None = None
     ) -> list[dict[str, Any]]:
-        """run a SELECT and take at most ``max_rows`` rows off its cursor.
+        """run a SELECT and take at most ``max_rows`` rows off its cursor .
 
         ``redshift_connector`` receives a statement's whole result inside ``execute`` (it has no
         streaming read), so this bounds the rows turned into the answer, not what crossed the wire:
@@ -1760,7 +1761,7 @@ class RedshiftDriver(Driver):
         :ptype sql: str
         :param params: positional placeholder values
         :ptype params: Any
-        :param max_rows: the most rows to keep; at least 1
+        :param max_rows: the most rows to keep, at least 1
         :ptype max_rows: int
         :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
         :ptype timeout_seconds: int | None
@@ -1769,8 +1770,7 @@ class RedshiftDriver(Driver):
         :raises ValueError: if ``max_rows`` is below 1, or ``timeout_seconds`` is not a positive int
         :raises RuntimeError: if the driver was previously closed
         """
-        if max_rows < 1:
-            raise ValueError(f"max_rows must be at least 1, got {max_rows}")
+        check_max_rows(max_rows)
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
         if timeout_seconds is not None:

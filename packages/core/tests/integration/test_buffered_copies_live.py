@@ -22,7 +22,7 @@ from sqlalchemy import MetaData
 
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.duckdb import DuckDBBackend
-from threetears.core.collections.complete_copy import BufferedCopies, IncompleteCopyError, read_l3_rows
+from threetears.core.collections.complete_copy import BufferedCopies, IncompleteCopyError, Unsettled, read_l3_rows
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
@@ -79,9 +79,9 @@ class _Writer:
         self.writing = False
         self.asked = 0
 
-    async def settled(self) -> int | None:
+    async def settled(self) -> int | Unsettled:
         self.asked += 1
-        return None if self.writing else self.version
+        return Unsettled(f"write {self.version + 1} in progress for 912.0 s") if self.writing else self.version
 
 
 @dataclass
@@ -309,13 +309,24 @@ async def test_a_build_that_fails_closes_the_backend_it_was_filling(held: _Held)
 
 async def test_a_build_refused_by_a_write_in_progress_says_what_the_writer_says_of_it(held: _Held) -> None:
     held.writer.writing = True
-    copies: BufferedCopies[int] = BufferedCopies(
-        held.collections,
-        _new_backend,
-        held.writer.settled,
-        page_size=3,
-        why_unsettled=lambda: "write 7 in progress for 912.0 s",
-    )
+    held.writer.version = 6
+    copies: BufferedCopies[int] = BufferedCopies(held.collections, _new_backend, held.writer.settled, page_size=3)
 
     with pytest.raises(IncompleteCopyError, match="write 7 in progress for 912.0 s"):
         await copies.build()
+
+
+async def test_a_superseded_set_says_when_it_is_released(held: _Held, caplog: pytest.LogCaptureFixture) -> None:
+    """a set readers no longer hold is let go: the log says when, so a copy kept alive by a reader shows."""
+    import gc
+    import logging
+
+    copies = _copies(held)
+    await copies.build()
+    held.writer.version = 1
+    with caplog.at_level(logging.INFO, logger="threetears.core.collections.complete_copy"):
+        await copies.build()
+        gc.collect()
+
+    released = [r for r in caplog.records if r.getMessage() == "superseded complete copies released"]
+    assert [r.extra_data["stamp"] for r in released] == ["0"]  # type: ignore[attr-defined]

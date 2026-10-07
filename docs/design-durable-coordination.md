@@ -160,6 +160,18 @@ consumed by a revision-guarded delete of its own record, as `NatsKvTicketStore` 
 does. Separate R1 streams can sit on different NATS nodes, so a separate nonce bucket can be
 wiped while the artifact survives. Consuming the artifact itself cannot split that way.
 
+### Pending run requests: memory, the schedule is the backstop
+
+`CoalescedRun` (`threetears.core.coordination.coalesced_run`) records "a run is wanted" as one key
+beside its lease, `<key>.requested`, in the memory-backed `leases` bucket. A wipe drops a request
+that no replica has taken yet, and nothing reports it: the run it asked for does not happen. That is
+accepted rather than designed out, because every consumer drives the run from something that asks
+again on its own: the ENR pod's refresh is asked for by a hub schedule on an interval (and by the
+warehouse's "ready" call), so a dropped request costs at most one interval of staleness, and the
+next ask runs it. A consumer whose request must survive a wipe keeps it in L3 instead. A request
+that was taken is not at risk: the run holding it is under the lease, and a run stopped before it
+finished records the request again.
+
 ### Durable security state: L3 through `BaseCollection`
 
 | State | What a wipe costs | Write path |

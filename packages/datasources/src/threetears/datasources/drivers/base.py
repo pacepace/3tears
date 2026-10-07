@@ -70,6 +70,7 @@ __all__ = [
     "ColumnCoverage",
     "ColumnRow",
     "Driver",
+    "check_max_rows",
     "RelationFingerprint",
     "TableRow",
     "Transaction",
@@ -724,8 +725,8 @@ class TransactionContext:
 # ---------------------------------------------------------------------------
 
 
-def _check_max_rows(max_rows: int) -> None:
-    """refuse a read bound below one row.
+def check_max_rows(max_rows: int) -> None:
+    """refuse a read bound below one row: the one check every driver's ``fetch_at_most`` makes first.
 
     :param max_rows: the bound
     :ptype max_rows: int
@@ -820,27 +821,35 @@ class Driver(ABC):
     """
 
     @property
-    def concurrent_queries(self) -> int | None:
-        """the most queries a caller should run on this driver at once; None when it states no cap.
+    def concurrent_queries(self) -> int:
+        """the most queries a caller should run on this driver at once.
 
-        A driver that caps its own open connections answers that cap, so a caller running queries
-        side by side gates them there and they wait at the caller's gate (which can refuse, with a
-        deadline) rather than on the driver's own connection semaphore, which has neither. One whose
-        logins are not guarded against a refused credential answers 1, so a caller cannot send a
-        burst of failing logins. A driver borrowing its host's pool answers None: it is bounded with
-        every other borrower of that pool (:attr:`borrowed_pool`).
+        Fails closed: a driver that says nothing is asked one query at a time. A driver that caps
+        its own open connections answers that cap, so a caller running queries side by side gates
+        them there and they wait at the caller's gate (which can refuse, with a deadline) rather than
+        on the driver's own connection semaphore, which has neither. A driver whose logins are not
+        guarded against a refused credential answers 1, so a caller cannot send a burst of failing
+        logins.
 
-        :return: the bound, or None
-        :rtype: int | None
+        A driver querying through a pool its host lends it (:attr:`borrowed_pool` is not None) is
+        bounded with every other borrower of that pool, by the host; its own answer is not the bound
+        then, and stays 1.
+
+        The hub gates every call through a datasource's driver this way (its ``DrainableDriver``
+        takes a turn for each statement, for a whole ``fetch_iter`` walk and for a transaction from
+        ``begin`` to commit or rollback).
+
+        :return: the bound, at least 1
+        :rtype: int
         """
-        return None
+        return 1
 
     @property
     def borrowed_pool(self) -> Any | None:
         """the host's own pool this driver queries through, or None when it opens its own connections.
 
         A caller running queries side by side bounds every driver borrowing one pool together, or
-        they starve the host that lent it.
+        they starve the host that lent it; :attr:`concurrent_queries` is not that bound.
 
         :return: the borrowed pool
         :rtype: Any | None
@@ -883,10 +892,10 @@ class Driver(ABC):
 
         For a caller that answers with a bounded number of rows (a responder capping its reply at a
         thousand and saying whether there were more): ask for one row past the cap, and no result
-        larger than that is held. A driver that can stop reading early (a server-side cursor)
-        overrides this; this default reads the result through :meth:`fetch` and keeps the first
-        ``max_rows``, so the bound on what is kept holds for every driver, and the bound on what is
-        read only where the driver says so.
+        larger than that is held. Every driver checks the bound first with :func:`check_max_rows`, the
+        one check; a driver that can stop reading early (a server-side cursor) overrides this, and
+        the default reads the result through :meth:`fetch` and keeps the first ``max_rows``. So the bound on what
+        is kept holds for every driver, and the bound on what is read only where the driver says so.
 
         :param sql: SQL text with ``$1``-style placeholders
         :ptype sql: str
@@ -900,7 +909,7 @@ class Driver(ABC):
         :rtype: list[dict[str, Any]]
         :raises ValueError: if ``max_rows`` is below 1
         """
-        _check_max_rows(max_rows)
+        check_max_rows(max_rows)
         rows = await self.fetch(sql, *params, timeout_seconds=timeout_seconds)
         return rows[:max_rows]
 

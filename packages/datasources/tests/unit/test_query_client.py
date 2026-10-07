@@ -385,6 +385,30 @@ class _BusyThen(_FakeNatsClient):
         return answer
 
 
+class TestTheBusyWaitIsJittered:
+    async def test_each_wait_is_drawn_between_half_and_one_and_a_half_of_the_backoff(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        drawn: list[tuple[float, float]] = []
+        waited: list[float] = []
+
+        def uniform(low: float, high: float) -> float:
+            drawn.append((low, high))
+            return high
+
+        async def no_wait(seconds: float) -> None:
+            waited.append(seconds)
+
+        monkeypatch.setattr("threetears.datasources.query_client.random.uniform", uniform)
+        monkeypatch.setattr("threetears.datasources.query_client.asyncio.sleep", no_wait)
+        fake = _BusyThen(1, _rows(uuid7(), []))
+
+        await _client(fake).query("warehouse", "SELECT 1")
+
+        assert drawn == [(0.5, 1.5)]
+        assert waited == [BUSY_BACKOFF_SECONDS * 1.5]
+
+
 class TestABusyHubIsAskedAgain:
     """DATASOURCE_BUSY means nothing ran: the client asks again a few times, after a short wait, then gives up."""
 
@@ -396,6 +420,8 @@ class TestABusyHubIsAskedAgain:
             waited.append(seconds)
 
         monkeypatch.setattr("threetears.datasources.query_client.asyncio.sleep", no_wait)
+        # the jitter held at its middle, so the waits are the backoff itself
+        monkeypatch.setattr("threetears.datasources.query_client.random.uniform", lambda low, high: 1.0)
         return waited
 
     async def test_a_query_refused_busy_is_asked_again_and_answers(self, waits: list[float]) -> None:
@@ -405,8 +431,7 @@ class TestABusyHubIsAskedAgain:
 
         assert result.rows == [{"a": 1}]
         assert len(fake.calls) == 3
-        assert len(waits) == 2 and all(0 < seconds <= BUSY_BACKOFF_SECONDS * 4 for seconds in waits)
-        assert waits[1] > BUSY_BACKOFF_SECONDS * 0.5, "the wait does not grow"
+        assert waits == [BUSY_BACKOFF_SECONDS, BUSY_BACKOFF_SECONDS * 2], "the wait does not double"
 
     async def test_a_fingerprint_refused_busy_is_asked_again(self, waits: list[float]) -> None:
         reply = DatasourceQueryResponse(

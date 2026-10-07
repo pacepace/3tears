@@ -13,6 +13,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from threetears.datasources.config import (
     BigQueryConnectionConfig,
     BorrowedPoolConnectionConfig,
@@ -78,24 +80,25 @@ def test_a_driver_borrowing_the_hosts_pool_names_it() -> None:
         external_pool=pool,
     )
     assert driver.borrowed_pool is pool
-    # bounded with every other borrower of the pool, not on its own
-    assert driver.concurrent_queries is None
+    # bounded with every other borrower of the pool; its own answer fails closed
+    assert driver.concurrent_queries == 1
 
 
 async def test_a_driver_that_cannot_stop_early_still_answers_no_more_than_asked() -> None:
     """the default for a driver with no early stop: it reads what it reads, and keeps the bound."""
 
-    class _ReadsEverything(RedshiftDriver):
+    class _ReadsEverything(SnowflakeDriver):
         async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
             return [{"n": index} for index in range(10)]
 
-    driver = Driver.fetch_at_most  # the base implementation, reached through a subclass that keeps it
     reader = _ReadsEverything(
-        RedshiftConnectionConfig(
-            datasource_type=DataSourceType.REDSHIFT, host="h", database="d", username="u", password_ref="env://X"
+        SnowflakeConnectionConfig(
+            datasource_type=DataSourceType.SNOWFLAKE, account="a", warehouse="w", user="u", password_ref="env://X"
         )
     )
-    assert await driver(reader, "SELECT n FROM t", max_rows=4) == [{"n": index} for index in range(4)]
+    assert await reader.fetch_at_most("SELECT n FROM t", max_rows=4) == [{"n": index} for index in range(4)]
+    with pytest.raises(ValueError, match="max_rows"):
+        await reader.fetch_at_most("SELECT n FROM t", max_rows=0)
 
 
 def test_a_driver_lent_a_pool_states_no_cap_of_its_own_whatever_its_config_says() -> None:
@@ -111,4 +114,21 @@ def test_a_driver_lent_a_pool_states_no_cap_of_its_own_whatever_its_config_says(
         ),
         external_pool=pool,
     )
-    assert (driver.concurrent_queries, driver.borrowed_pool) == (None, pool)
+    assert (driver.concurrent_queries, driver.borrowed_pool) == (1, pool)
+
+
+def test_a_driver_that_says_nothing_runs_one_query_at_a_time() -> None:
+    """fail closed: a driver that states no cap of its own is asked one query at a time."""
+    snowflake = SnowflakeDriver(
+        SnowflakeConnectionConfig(
+            datasource_type=DataSourceType.SNOWFLAKE, account="a", warehouse="w", user="u", password_ref="env://X"
+        )
+    )
+    assert Driver.concurrent_queries.fget(snowflake) == 1  # type: ignore[attr-defined]
+
+
+def test_a_config_for_a_lent_pool_with_no_pool_is_refused() -> None:
+    with pytest.raises(ValueError, match="lent"):
+        AsyncpgDriver(
+            BorrowedPoolConnectionConfig(datasource_type=DataSourceType.AGENT_INTERNAL, schema_name="agent_a")
+        )

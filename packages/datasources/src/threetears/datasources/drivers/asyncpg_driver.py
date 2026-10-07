@@ -183,6 +183,7 @@ from threetears.datasources.drivers.base import (
     Transaction,
     _check_otel_metrics,
     _instrument_cache,
+    check_max_rows,
     observed,
 )
 from pydantic import SecretStr
@@ -464,8 +465,13 @@ class AsyncpgDriver(Driver):
         :return: nothing
         :rtype: None
         """
+        if isinstance(config, BorrowedPoolConnectionConfig) and external_pool is None:
+            raise ValueError(
+                "a BorrowedPoolConnectionConfig names a pool lent by the host; pass that pool as external_pool"
+            )
         self._config = config
         self._connect_guard = connect_guard
+        # the one attribute that says borrowed (lent by the host) or owned; everything else derives from it
         self._external_pool = external_pool
         # a borrowed pool is the host's own, busy with its work too: wait on it a bounded time
         self._acquire_options: dict[str, Any] = (
@@ -492,14 +498,14 @@ class AsyncpgDriver(Driver):
     # -------------------------------------------------------------------
 
     @property
-    def concurrent_queries(self) -> int | None:
-        """its own pool's ceiling; None for a borrowed pool, bounded with the pool's other borrowers.
+    def concurrent_queries(self) -> int:
+        """its own pool's ceiling; 1 for a lent pool, which the host bounds with its other borrowers.
 
-        :return: the cap, or None
-        :rtype: int | None
+        :return: the cap
+        :rtype: int
         """
         config = self._config
-        result: int | None = None
+        result = 1
         if self._external_pool is None and not isinstance(config, BorrowedPoolConnectionConfig):
             result = config.pool_max_size
         return result
@@ -954,7 +960,7 @@ class AsyncpgDriver(Driver):
     async def fetch_at_most(
         self, sql: str, *params: Any, max_rows: int, timeout_seconds: int | None = None
     ) -> list[dict[str, Any]]:
-        """run a SELECT through a server-side cursor and fetch at most ``max_rows`` rows.
+        """run a SELECT through a server-side cursor and fetch at most ``max_rows`` rows .
 
         The rows past the bound are never sent: the cursor (a portal, in its own transaction) is
         asked for ``max_rows`` and closed with the transaction.
@@ -963,7 +969,7 @@ class AsyncpgDriver(Driver):
         :ptype sql: str
         :param params: positional placeholder values
         :ptype params: Any
-        :param max_rows: the most rows to fetch; at least 1
+        :param max_rows: the most rows to fetch, at least 1
         :ptype max_rows: int
         :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
         :ptype timeout_seconds: int | None
@@ -972,8 +978,7 @@ class AsyncpgDriver(Driver):
         :raises ValueError: if ``max_rows`` is below 1, or ``timeout_seconds`` is not a positive int
         :raises RuntimeError: if the driver was previously closed
         """
-        if max_rows < 1:
-            raise ValueError(f"max_rows must be at least 1, got {max_rows}")
+        check_max_rows(max_rows)
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
         if timeout_seconds is not None:

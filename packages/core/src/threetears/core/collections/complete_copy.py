@@ -40,13 +40,14 @@ reader holds, and a generation is never half built.
 **One state of all the tables.** Each table's proof says it held still while it was read, not that
 the tables agree with each other: a writer could change one table between the reads of two others.
 So a build asks the writer's own record (``settled``, a seqlock: a stamp naming the last committed
-write, or None while one is in progress) before the first table and after the last, and keeps the
+write, or :class:`Unsettled` while one is in progress) before the first table and after the last, and keeps the
 set only when the two agree.
 """
 
 from __future__ import annotations
 
 import asyncio
+import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -64,6 +65,7 @@ __all__ = [
     "CopyGeneration",
     "CopyProof",
     "IncompleteCopyError",
+    "Unsettled",
     "WholeTableL1",
     "copy_table",
     "l3_fingerprint",
@@ -424,6 +426,16 @@ StampT = TypeVar("StampT")
 
 
 @dataclass(frozen=True)
+class Unsettled:
+    """the writer's record while a write is in progress: no stamp to build against, and why.
+
+    :ivar reason: what the writer says of the write (which one, how long it has run)
+    """
+
+    reason: str
+
+
+@dataclass(frozen=True)
 class CopyGeneration(Generic[StampT]):
     """one complete set of copies: every table, proven, in a backend nothing writes to again.
 
@@ -448,24 +460,21 @@ class BufferedCopies(Generic[StampT]):
     :param new_backend: makes an empty L1 holding every table (``DuckDBBackend`` initialized with
         their metadata); a build copies into a new one each time
     :ptype new_backend: Callable[[], WholeTableL1]
-    :param settled: the writer's record: a stamp naming the last committed write, or None while one
-        is in progress; equal stamps mean no write committed between them
-    :ptype settled: Callable[[], Awaitable[StampT | None]]
+    :param settled: the writer's record: a stamp naming the last committed write, or
+        :class:`Unsettled` (saying why) while one is in progress; equal stamps mean no write committed
+        between them (``ScopeEpochs.settled``)
+    :ptype settled: Callable[[], Awaitable[StampT | Unsettled]]
     :param page_size: rows per L3 page
     :ptype page_size: int
-    :param why_unsettled: what the writer says of a write in progress when ``settled`` answered None
-        (which write, how long it has run), for the refusal to say; ``ScopeEpochs.why_unsettled``
-    :ptype why_unsettled: Callable[[], str] | None
     """
 
     def __init__(
         self,
         collections: Sequence[Any],
         new_backend: Callable[[], WholeTableL1],
-        settled: Callable[[], Awaitable[StampT | None]],
+        settled: Callable[[], Awaitable[StampT | Unsettled]],
         *,
         page_size: int = DEFAULT_PAGE_SIZE,
-        why_unsettled: Callable[[], str] | None = None,
     ) -> None:
         self._tables = tuple(
             (collection.table_name, tuple(collection.primary_key_columns), collection) for collection in collections
@@ -475,7 +484,6 @@ class BufferedCopies(Generic[StampT]):
         self._page_size = page_size
         self._current: CopyGeneration[StampT] | None = None
         self._building = asyncio.Lock()
-        self._why_unsettled = why_unsettled
 
     @property
     def current(self) -> CopyGeneration[StampT] | None:
@@ -523,17 +531,12 @@ class BufferedCopies(Generic[StampT]):
         async with self._building:
             generation = self._current
             stamp = await self._settled()
-            if generation is None or (stamp is not None and stamp != generation.stamp):
+            if generation is None or (not isinstance(stamp, Unsettled) and stamp != generation.stamp):
                 generation = await self._build()
-            elif stamp is None:
+            elif isinstance(stamp, Unsettled):
                 log.info(
                     "complete copies not rebuilt: a write is in progress; the live copies stay",
-                    extra={
-                        "extra_data": {
-                            "live": str(generation.stamp),
-                            "write": None if self._why_unsettled is None else self._why_unsettled(),
-                        }
-                    },
+                    extra={"extra_data": {"live": str(generation.stamp), "write": stamp.reason}},
                 )
             return generation
 
@@ -546,9 +549,8 @@ class BufferedCopies(Generic[StampT]):
         """
         started = datetime.now(UTC)
         before = await self._settled()
-        if before is None:
-            detail = "" if self._why_unsettled is None else f" ({self._why_unsettled()})"
-            raise IncompleteCopyError(f"not built: a write is in progress{detail}; the live copies stay")
+        if isinstance(before, Unsettled):
+            raise IncompleteCopyError(f"not built: a write is in progress ({before.reason}); the live copies stay")
         backend = self._new_backend()
         proofs: dict[str, CopyProof] = {}
         try:
@@ -573,8 +575,18 @@ class BufferedCopies(Generic[StampT]):
                 "the live copies stay"
             )
         generation = CopyGeneration(backend=backend, proofs=proofs, stamp=before, built_at=datetime.now(UTC))
+        superseded = self._current
         # one assignment: a reader takes the old set or the new, never part of either
         self._current = generation
+        if superseded is not None:
+            # freed when its last reader lets go; said then, so a set a reader keeps alive shows
+            weakref.finalize(
+                superseded.backend,
+                log.info,
+                "superseded complete copies released",
+                extra={"extra_data": {"stamp": str(superseded.stamp)}},
+            )
+            log.info("complete copies superseded", extra={"extra_data": {"stamp": str(superseded.stamp)}})
         log.info(
             "complete copies swapped in",
             extra={

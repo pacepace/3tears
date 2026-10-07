@@ -64,7 +64,7 @@ from threetears.observe import get_logger
 
 from threetears.core.cache.base import quote_identifier
 from threetears.core.collections.caller_transaction import CallerTransaction
-from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, read_l3_rows
+from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, read_l3_rows
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     DATETIMETZ_TYPE,
@@ -188,7 +188,6 @@ class ScopeEpochs:
         self._collection = collection
         self._page_size = page_size
         self._table = quote_identifier(collection.table_name)
-        self._why_unsettled = "no write was in progress when last read"
 
     async def snapshot(self) -> EpochSnapshot:
         """every scope's epoch and the data's version, read from L3.
@@ -223,19 +222,18 @@ class ScopeEpochs:
             version=version, writing=writing, epochs=epochs, previous=previous, writing_since=writing_since
         )
 
-    async def settled(self) -> EpochSnapshot | None:
-        """the snapshot, or None while a write is in progress.
+    async def settled(self) -> EpochSnapshot | Unsettled:
+        """the snapshot, or :class:`Unsettled` (which write, and how long it has run) while one is in progress.
 
         :return: the snapshot when no write is in progress
-        :rtype: EpochSnapshot | None
+        :rtype: EpochSnapshot | Unsettled
         """
         snapshot = await self.snapshot()
-        settled: EpochSnapshot | None = snapshot
+        settled: EpochSnapshot | Unsettled = snapshot
         if snapshot.writing is not None:
-            settled = None
             since = snapshot.writing_since
             seconds = None if since is None else round((datetime.now(UTC) - since).total_seconds(), 1)
-            self._why_unsettled = f"write {snapshot.writing} in progress for {seconds} s"
+            settled = Unsettled(f"write {snapshot.writing} in progress for {seconds} s")
             stalled = seconds is not None and seconds > STALLED_WRITE_SECONDS
             # a write that began long ago and never committed is one that died: say so, with its age
             log.log(
@@ -251,16 +249,6 @@ class ScopeEpochs:
                 },
             )
         return settled
-
-    def why_unsettled(self) -> str:
-        """what the last :meth:`settled` that answered None found: which write, and how long it has run.
-
-        For a reader refused by a write in progress to say why (``BufferedCopies``' ``why_unsettled``).
-
-        :return: the description
-        :rtype: str
-        """
-        return self._why_unsettled
 
     async def begin(self, *, conn: Any) -> int:
         """take the next version for a write, and record the write as in progress.

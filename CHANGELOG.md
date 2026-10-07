@@ -14,7 +14,7 @@ changed, moves the epochs of the scopes (races, states) it changed, and serves i
 copies swapped in whole.
 
 - **Added, `threetears.core.collections.complete_copy.BufferedCopies(collections, new_backend,
-  settled, *, page_size=999)`** (used by the ENR pod's rows tool): complete copies of several L3
+  settled, *, page_size=999)` and `Unsettled`** (used by the ENR pod's rows tool): complete copies of several L3
   tables kept apart from the collections' own L1. `build()` copies every table into a fresh backend
   beside the live set, proves each, and swaps the new set in with one assignment only when every
   table is proven and the writer's record (`settled`: a stamp naming the last committed write, or
@@ -40,9 +40,9 @@ copies swapped in whole.
   transaction), then moves every pending scope -- an abandoned write's included -- to the version,
   never back, recording what each replaced; a scope already at or past it refuses the commit.
   `snapshot()` reads every epoch, the version and any write in progress with when it began
-  (`EpochSnapshot.writing_since`); `settled()` is the snapshot, or None (logged with the write's
-  age, at warning past `STALLED_WRITE_SECONDS`) while a write is in progress; `why_unsettled()`
-  says which write and for how long, for `BufferedCopies(..., why_unsettled=)` to put in its refusal. `on_change(listener)` hears a commit here and a peer's
+  (`EpochSnapshot.writing_since`); `settled()` is the snapshot, or `Unsettled(reason)` (which write,
+  and how long it has run; logged, at warning past `STALLED_WRITE_SECONDS`) while a write is in
+  progress, the one callback `BufferedCopies` builds against. `on_change(listener)` hears a commit here and a peer's
   broadcast. Kept in L3, not the NATS epoch counter, because the value is in CDN URLs and must
   never be handed out twice for different data.
 - **Added, `threetears.core.coordination.coalesced_run.CoalescedRun(lease, key, run, *, ttl,
@@ -66,13 +66,17 @@ copies swapped in whole.
   equality filters, as `read_all` takes them) side by side, at most `concurrency` at once
   (`DEFAULT_PART_CONCURRENCY`, 5: the hub's default open warehouse connections per datasource),
   answering in the parts' order; the first failure cancels the rest and is raised as itself.
-- **Added, `Driver.concurrent_queries` and `Driver.borrowed_pool`** (read by the hub's datasource
-  responder, which now answers queries side by side, among them the ENR pod's per-state reads): how
-  many queries a caller should run on a driver at once: its own open-connection cap
-  (`RedshiftDriver`'s `connection_cache_size`, an owned `AsyncpgDriver` pool's `pool_max_size`), 1 for
-  `SnowflakeDriver` and `BigQueryDriver` (logins not guarded against a refused credential), None for
-  a driver borrowing its host's pool or stating no cap, and the host's pool a driver borrows (`AsyncpgDriver` for an
-  `agent_internal` datasource), which a caller bounds together across every driver borrowing it.
+  Asking for more at once than the datasource's gate on the hub admits risks `DATASOURCE_BUSY`
+  (the client retries it briefly), not only queueing.
+- **Added, `Driver.concurrent_queries` and `Driver.borrowed_pool`** (read by the hub, which gates
+  every call through a datasource's driver, a statement, a whole `fetch_iter` walk or a transaction
+  from `begin` to its end): how many queries a caller should run on a driver at once, failing closed
+  at 1 for a driver that says nothing: its own open-connection cap (`RedshiftDriver`'s
+  `connection_cache_size`, an owned `AsyncpgDriver` pool's `pool_max_size`), 1 for `SnowflakeDriver`
+  and `BigQueryDriver` (logins not guarded against a refused credential); and, separately, the pool
+  a host lends a driver (`AsyncpgDriver` for an agent_internal datasource), which the host bounds
+  across every borrower. An `AsyncpgDriver` given a `BorrowedPoolConnectionConfig` with no pool is
+  refused. Every driver's `fetch_at_most` checks its bound with the one `check_max_rows`.
 - **Added, `query_client.DATASOURCE_BUSY`** (the hub's datasource responder answers it; the ENR pod's
   refresh fails on it and the next one runs): the refusal code for a query the hub would not queue
   because the datasource already has as many queries running and waiting as it bears, or the query

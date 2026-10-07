@@ -178,14 +178,14 @@ class SnowflakeDriver(Driver):
     """
 
     @property
-    def concurrent_queries(self) -> int | None:
+    def concurrent_queries(self) -> int:
         """one at a time: this driver's logins are not guarded against a refused credential.
 
         It does not yet tell a refused login from other failures, so a connect guard cannot pause a
         wrong credential here; queries run side by side would each send a failing login at once.
 
         :return: 1
-        :rtype: int | None
+        :rtype: int
         """
         return 1
 

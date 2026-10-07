@@ -13,8 +13,11 @@ the part changed too, which is what a caller comparing parts needs.
 
 **Several at once, never more than asked.** A read through the datasource rail costs mostly waiting
 (the round trip and the warehouse's planning), not bytes, so parts are asked for side by side, at
-most ``concurrency`` at a time. The hub opens at most a few warehouse connections per datasource
-(:data:`DEFAULT_PART_CONCURRENCY`), so asking for more only queues there.
+most ``concurrency`` at a time. The hub runs at most the datasource driver's own connection cap at
+once (:data:`DEFAULT_PART_CONCURRENCY`, Redshift's default), lets a couple more wait a few seconds,
+and refuses the rest ``DATASOURCE_BUSY`` (nothing ran; the client asks again briefly, then raises).
+So asking for more than the cap does not only queue: past the hub's short queue it fails the read.
+Keep ``concurrency`` at or under the datasource's cap.
 
 **One failure fails the read.** The first part that raises cancels the parts still running and is
 raised as itself (a refused statement, an incomplete part), so a caller never takes some parts as
