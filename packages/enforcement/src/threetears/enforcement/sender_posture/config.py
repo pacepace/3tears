@@ -14,7 +14,9 @@ the postures, and what each one claims:
 - ``signed-envelope``: the handler verifies a signature over the message itself, bound to its
   body, audience and expiry, with a single-use id.
 - ``own-consumer``: a JetStream delivery accepted only when its ack reply names the
-  receiver's own stream and consumer.
+  receiver's own stream and randomly named consumer. it holds only while no other principal
+  can list or inspect that stream's consumers or watch its consumer advisories, which would
+  hand it the name; a repo whose grants allow that cannot claim this posture.
 - ``trigger-only``: the message is a nudge; the handler refetches from the authority and acts
   on nothing in the body.
 - ``read-only``: the handler answers a read and changes nothing, and its reply is safe to

@@ -15,7 +15,8 @@ workspace reads or writes them on a nats-py object, and no access carries an inl
 **Verified against nats-py 2.15.0 and 2.16.0** (``nats/aio/client.py``,
 ``nats/aio/subscription.py``, ``nats/js/client.py`` and ``nats/nuid.py`` read in both; every
 attribute below is unchanged between them). ``packages/nats/pyproject.toml`` caps nats-py below the first release
-not verified here. Moving the cap: read the same three files in the new release, check every
+not verified here. Moving the cap: read the same four files in the new release, and every other
+nats-py module that calls ``_nuid.next()`` (``js/object_store.py``, ``micro/service.py``), check every
 entry of :data:`PRIVATE_SURFACE` against them, run the unit and integration suites on it, and
 add the version to this paragraph.
 
