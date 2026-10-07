@@ -21,7 +21,7 @@ import random
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -3696,6 +3696,42 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._evict_l1(entity_id)
         await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
+
+    #: how many keys :meth:`invalidate_cache_many` settles at once on L2 and the bus
+    INVALIDATE_CONCURRENCY: ClassVar[int] = 32
+
+    async def invalidate_cache_many(self, entity_ids: Sequence[Any]) -> None:
+        """delete many keys from L1 and L2 and signal other pods, as :meth:`invalidate_cache` does for one.
+
+        Every key leaves this process's L1 at once. A collection with no NATS client has no L2 and
+        no bus, so nothing more is done for the keys but drop this process's cached scans of the
+        table (once, not per key). With a bus, each key's L2 delete and broadcast still go -- the
+        broadcast's envelope names one entity -- but :attr:`INVALIDATE_CONCURRENCY` of them at a
+        time, not one after another.
+
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared column order
+        :ptype entity_ids: Sequence[Any]
+        :return: nothing
+        :rtype: None
+        """
+        self._set_span_table()
+        for entity_id in entity_ids:
+            self._evict_l1(entity_id)
+        if not entity_ids:
+            return
+        if self._nats_client is None:
+            self._warn_missing_nats_client_once()
+            if self._registry is not None:
+                self._registry.scan_cache.drop_for_table(self.table_name)
+            return
+        limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
+
+        async def settle(entity_id: Any) -> None:
+            async with limit:
+                await self._delete_from_l2(entity_id)
+                await self._publish_invalidation(entity_id)
+
+        await asyncio.gather(*(settle(entity_id) for entity_id in entity_ids))
 
     @asynccontextmanager
     async def bypassing_write(self, *entity_ids: Any, conn: Any = None) -> AsyncIterator[BypassingWrite]:

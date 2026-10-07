@@ -42,10 +42,6 @@ from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 
 from threetears.core.backends.protocol import DurableStore, OrderedDurableStore
 from threetears.core.backends.schema_sql import (
-    MAX_STATEMENT_PARAMS,
-    build_bulk_insert_sql,
-    build_insert_params,
-    bulk_batches,
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
     encode_jsonb as encode_jsonb,
@@ -1881,18 +1877,23 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         max_rows: int | None = None,
         max_bytes: int | None = None,
     ) -> int:
-        """upsert many rows on a caller's transaction, as few multi-row statements as fit.
+        """upsert many rows on a caller's transaction, through the collection's durable store.
 
-        For a load: one ``INSERT ... VALUES (...), (...) ON CONFLICT`` per batch
-        (:func:`~threetears.core.backends.schema_sql.build_bulk_insert_sql`), where
-        :meth:`save_entity` would make a round trip per row. Batches split so no statement passes
-        ``max_rows`` rows, the bind-parameter limit, or ``max_bytes`` of parameters
-        (:func:`~threetears.core.backends.schema_sql.bulk_batches`).
+        For a load, where :meth:`save_entity` would make a round trip per row. The rows go to the
+        store's :meth:`~threetears.core.backends.protocol.BulkDurableStore.upsert_many` when it has
+        one -- a SQL store writes one ``INSERT ... VALUES (...), (...) ON CONFLICT`` per batch, each
+        batch within ``max_rows`` rows, the bind-parameter limit and ``max_bytes`` of parameters --
+        and a row at a time through ``upsert`` when it has not.
 
         **On the caller's transaction only, like** ``save_entity(conn=...)``: the rows are final
-        when the caller's :class:`CallerTransaction` commits, and a batch that fails fails the
+        when the caller's :class:`CallerTransaction` commits, and a write that fails fails the
         transaction, so every batch rolls back with it. Each row's key leaves this process's L1 now
-        and is enrolled, so the transaction evicts it from every tier when it ends.
+        and is enrolled; when the transaction ends the keys are settled together, one call for the
+        collection (:meth:`~threetears.core.collections.base.BaseCollection.invalidate_cache_many`):
+        a collection with no bus does no L2 or broadcast work at all, and one with a bus settles its
+        keys side by side rather than one after another. The cost that remains with a bus is two
+        messages a key (its L2 delete and its broadcast), because the broadcast's envelope names one
+        entity and a peer of an older release reads no other shape.
 
         Each row is stamped ``date_created`` and ``date_updated`` (when the schema has them) with
         the write's time; an upsert of a row already held keeps its ``date_created``, an immutable
@@ -1910,11 +1911,15 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :return: how many rows were written
         :rtype: int
         :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the
-            collection caches absences or defers its L3 writes; when the schema fences with a
-            null-safe CAS; when two rows share a key (one statement cannot upsert a key twice)
-        :raises KeyError: when a row lacks a required column
+            collection has no durable store, caches absences, defers its L3 writes or fences with a
+            null-safe CAS; when two rows share a key (one statement cannot upsert a key twice); when
+            the rows disagree on which server-default columns they supply
+        :raises KeyError: when a row lacks a key column, naming the table and the column
         """
         transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.save_rows")
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(f"{type(self).__name__}.save_rows: {self.table_name} has no durable store to write to")
         if self._negative_cache_writes_advance or self._defers_l3_writes or self.schema.cas_null_safe:
             raise ValueError(
                 f"{type(self).__name__}.save_rows: a bulk upsert cannot keep this collection's write "
@@ -1922,27 +1927,38 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         now = datetime.now(UTC)
         stamps = {name: now for name in ("date_created", "date_updated") if self.schema.get_column(name) is not None}
+        stamped: list[dict[str, Any]] = []
         keys: list[Any] = []
-        params: list[list[Any]] = []
-        for row in rows:
+        for index, row in enumerate(rows):
+            missing = [name for name in self.schema.pk_columns if name not in row]
+            if missing:
+                raise KeyError(f"{self.table_name}.save_rows: row {index} has no key column {missing[0]!r}")
             data = {**row, **stamps}
-            keys.append(tuple(data[name] for name in self.schema.pk_columns))
-            params.append(build_insert_params(self.schema, data))
+            stamped.append(data)
+            key = tuple(data[name] for name in self.schema.pk_columns)
+            keys.append(key if len(key) > 1 else key[0])
         if len(set(keys)) != len(keys):
             raise ValueError(f"{type(self).__name__}.save_rows: two rows share a key; one statement upserts a key once")
         for key in keys:
             # enrolled before the write, so a write whose outcome is unknown is settled with the rest
-            transaction.enroll(self, key if len(key) > 1 else key[0])
-            self._evict_l1(key if len(key) > 1 else key[0])
+            transaction.enroll(self, key)
+            self._evict_l1(key)
         written = 0
-        for batch in bulk_batches(
-            params,
-            max_rows=max_rows or self.BULK_MAX_ROWS,
-            max_bytes=max_bytes or self.BULK_MAX_BYTES,
-            max_params=MAX_STATEMENT_PARAMS,
-        ):
-            await conn.execute(build_bulk_insert_sql(self.schema, rows=len(batch)), *(v for row in batch for v in row))
-            written += len(batch)
+        upsert_many = getattr(store, "upsert_many", None)
+        if stamped and callable(upsert_many):
+            written = await upsert_many(
+                self.table_name,
+                stamped,
+                max_rows=max_rows or self.BULK_MAX_ROWS,
+                max_bytes=max_bytes or self.BULK_MAX_BYTES,
+                conn=conn,
+            )
+        elif stamped:
+            # a store that saves one row at a time: still one transaction, a write per row
+            for data in stamped:
+                written += await store.upsert(
+                    self.table_name, data, pk=self.schema.pk_columns, on_conflict=self.schema.on_conflict, conn=conn
+                )
         log.debug(
             "bulk upsert written on the caller's transaction",
             extra={"extra_data": {"table": self.table_name, "rows": written}},

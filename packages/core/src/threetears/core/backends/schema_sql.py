@@ -650,25 +650,28 @@ def build_cas_update_sql(schema: TableSchema, data: dict[str, Any] | None = None
 MAX_STATEMENT_PARAMS: int = 32767
 
 
-def build_bulk_insert_sql(schema: TableSchema, *, rows: int) -> str:
-    """build one INSERT of ``rows`` rows, every column in declared order, with the schema's conflict clause.
+def build_bulk_insert_sql(schema: TableSchema, *, rows: int, columns: list[Column] | None = None) -> str:
+    """build one INSERT of ``rows`` rows with the schema's conflict clause.
 
     The multi-row form of :func:`build_insert_sql`: ``VALUES ($1, ..., $n), ($n+1, ...)``, each
-    row's parameters in :attr:`TableSchema.columns` order (:func:`build_insert_params` with
-    every column present), and one ``ON CONFLICT`` clause for all of them. Every column is
-    emitted: a bulk write supplies every row whole, so no server default applies.
+    row's parameters in the order of ``columns``, and one ``ON CONFLICT`` clause for all of them.
+    ``columns`` is :func:`insert_columns_for_data` of the rows, the same list
+    :func:`build_insert_params` builds each row's parameters from, so the two always agree.
 
     :param schema: table schema
     :ptype schema: TableSchema
     :param rows: how many rows the statement inserts; at least one
     :ptype rows: int
+    :param columns: the columns every row supplies (:func:`insert_columns_for_data`); every
+        column of the schema when None
+    :ptype columns: list[Column] | None
     :return: parameterized INSERT SQL
     :rtype: str
     :raises ValueError: when ``rows`` is under one
     """
     if rows < 1:
         raise ValueError(f"a bulk INSERT needs at least one row, got {rows}")
-    cols = list(schema.columns)
+    cols = list(schema.columns) if columns is None else list(columns)
     width = len(cols)
     values = ", ".join(
         "(" + ", ".join(render_param(c, row * width + i + 1) for i, c in enumerate(cols)) + ")" for row in range(rows)

@@ -64,8 +64,15 @@ class _Conn:
         return f"INSERT 0 {sql.count('),(') + 1}"
 
 
-def _collection() -> Any:
-    return collection_for_schema(SCHEMA)(CollectionRegistry(), DefaultCoreConfig(), None)
+class _Pool:
+    """a raw transport the collection wraps as its SQL store; writes go to the caller's connection."""
+
+
+def _collection(schema: TableSchema = SCHEMA) -> Any:
+    registry = CollectionRegistry()
+    collection = collection_for_schema(schema)(registry, DefaultCoreConfig(), None)
+    collection.l3_pool = _Pool()
+    return collection
 
 
 def _rows(count: int) -> list[dict[str, Any]]:
@@ -133,12 +140,118 @@ async def test_save_rows_refuses_a_connection_no_caller_transaction_opened() -> 
         await _collection().save_rows(_rows(1), conn=_Conn())
 
 
-async def test_every_row_written_is_settled_when_the_transaction_ends() -> None:
+async def test_every_row_written_is_settled_once_when_the_transaction_ends() -> None:
+    """The keys are settled together after the transaction, one call per collection, not one per row."""
     collection, conn = _collection(), _Conn()
-    async with CallerTransaction(conn) as transaction:
+    settled: list[list[Any]] = []
+
+    async def settle(keys: Any) -> None:
+        settled.append(list(keys))
+
+    collection.invalidate_cache_many = settle
+    async with CallerTransaction(conn):
         await collection.save_rows(_rows(3), conn=conn)
-        enrolled = [key for _, key in transaction.enrolled]
-    assert enrolled == [("sn_NC1", "00000"), ("sn_NC1", "00001"), ("sn_NC1", "00002")]
+        assert settled == []
+    assert settled == [[("sn_NC1", "00000"), ("sn_NC1", "00001"), ("sn_NC1", "00002")]]
+
+
+DEFAULTED = TableSchema(
+    name="loads",
+    primary_key="source",
+    columns=[
+        Column("source", STRING_TYPE),
+        Column("rows", INT_TYPE, nullable=True),
+        Column("loaded_at", DATETIMETZ_TYPE, nullable=True, server_default="now()"),
+        Column("date_created", DATETIMETZ_TYPE, immutable=True),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+)
+
+
+async def test_a_column_every_row_leaves_to_its_server_default_is_left_out_of_sql_and_params_alike() -> None:
+    collection, conn = _collection(DEFAULTED), _Conn()
+    async with CallerTransaction(conn):
+        await collection.save_rows([{"source": "a", "rows": 1}, {"source": "b", "rows": 2}], conn=conn)
+    [(sql, params)] = conn.committed
+    assert "loaded_at" not in sql
+    assert sql.startswith("INSERT INTO loads (source, rows, date_created, date_updated) VALUES ($1, $2, $3, $4), ")
+    assert len(params) == 8
+    assert params[0:2] == ("a", 1) and params[4:6] == ("b", 2)
+
+
+async def test_rows_that_disagree_on_a_server_default_column_are_refused_naming_the_table() -> None:
+    collection, conn = _collection(DEFAULTED), _Conn()
+    rows = [{"source": "a"}, {"source": "b", "loaded_at": datetime.now(UTC)}]
+    with pytest.raises(ValueError, match="loads"):
+        async with CallerTransaction(conn):
+            await collection.save_rows(rows, conn=conn)
+    assert conn.executed == []
+
+
+async def test_a_row_missing_a_key_column_names_the_table_and_the_column() -> None:
+    collection, conn = _collection(), _Conn()
+    with pytest.raises(KeyError, match="results.*geo_id"):
+        async with CallerTransaction(conn):
+            await collection.save_rows([{"office_key": "sn_NC1", "votes": 1}], conn=conn)
+
+
+class _BulkStore:
+    """a non-SQL store that saves many rows at once."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[dict[str, Any]], Any]] = []
+
+    async def fetch_one(self, table: str, pk: Any, *, conn: Any = None) -> None:
+        return None
+
+    async def upsert(self, table: str, row: Any, **kwargs: Any) -> int:
+        raise AssertionError("a store that saves many rows at once is not asked one at a time")
+
+    async def upsert_many(self, table: str, rows: Any, *, max_rows: int, max_bytes: int, conn: Any = None) -> int:
+        self.calls.append((table, [dict(r) for r in rows], conn))
+        return len(rows)
+
+    async def delete(self, table: str, pk: Any, *, conn: Any = None) -> None:
+        return None
+
+    async def scan(self, table: str, filters: Any = None) -> list[dict[str, Any]]:
+        return []
+
+
+class _RowStore(_BulkStore):
+    """a non-SQL store with no bulk save: it is written row by row."""
+
+    upsert_many = None  # type: ignore[assignment]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[tuple[str, dict[str, Any], Any]] = []
+
+    async def upsert(self, table: str, row: Any, **kwargs: Any) -> int:
+        self.rows.append((table, dict(row), kwargs.get("conn")))
+        return 1
+
+
+async def test_save_rows_goes_through_the_collection_s_store() -> None:
+    collection, conn, store = _collection(), _Conn(), _BulkStore()
+    collection.l3_pool = store
+    async with CallerTransaction(conn):
+        assert await collection.save_rows(_rows(3), conn=conn) == 3
+    [(table, rows, used)] = store.calls
+    assert table == "results" and used is conn
+    assert [r["geo_id"] for r in rows] == ["00000", "00001", "00002"]
+    assert conn.executed == []
+
+
+async def test_a_store_with_no_bulk_save_is_written_a_row_at_a_time() -> None:
+    collection, conn, store = _collection(), _Conn(), _RowStore()
+    collection.l3_pool = store
+    async with CallerTransaction(conn):
+        assert await collection.save_rows(_rows(2), conn=conn) == 2
+    assert [(t, r["geo_id"], c is conn) for t, r, c in store.rows] == [
+        ("results", "00000", True),
+        ("results", "00001", True),
+    ]
 
 
 async def test_no_rows_writes_nothing() -> None:

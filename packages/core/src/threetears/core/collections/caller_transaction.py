@@ -118,15 +118,6 @@ class CallerTransaction:
             )
         return found
 
-    @property
-    def enrolled(self) -> tuple[tuple[BaseCollection[Any], Any], ...]:
-        """the (collection, key) pairs written in this transaction so far, to be settled when it ends.
-
-        :return: the pairs, in the order they were enrolled
-        :rtype: tuple[tuple[BaseCollection[Any], Any], ...]
-        """
-        return tuple(self._enrolled)
-
     def enroll(self, collection: BaseCollection[Any], entity_id: Any) -> None:
         """record that ``collection`` wrote ``entity_id`` in this transaction, to be evicted when it ends.
 
@@ -196,8 +187,13 @@ class CallerTransaction:
         """
         enrolled = list(self._enrolled)
         self._enrolled.clear()
+        # one call per collection, with every key it wrote, in the order written: a load of many
+        # rows settles them together rather than one round trip at a time
+        by_collection: dict[int, tuple[BaseCollection[Any], list[Any]]] = {}
         for collection, entity_id in enrolled:
-            await collection.invalidate_cache(entity_id)
+            by_collection.setdefault(id(collection), (collection, []))[1].append(entity_id)
+        for collection, keys in by_collection.values():
+            await collection.invalidate_cache_many(keys)
         if enrolled:
             log.debug(
                 "caller transaction ended; the rows its writes touched were evicted from every cache",

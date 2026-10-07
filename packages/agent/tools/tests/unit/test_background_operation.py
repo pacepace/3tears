@@ -292,3 +292,40 @@ def test_the_tools_are_named_and_versioned_as_given() -> None:
     assert start.mcp_version() == status.mcp_version() == "1.0"
     assert start.mcp_schema().description == "Start a load."
     assert start.face_api and status.face_api
+
+
+async def test_a_wait_that_fails_with_an_error_it_does_not_retry_is_reported_failed_with_its_reason() -> None:
+    operation = BackgroundOperation("load", _gate())
+
+    async def needed() -> bool:
+        raise ValueError("the check itself is broken")
+
+    _, status = _tools(operation)
+    operation.start_when_needed(needed, retry_on=(ConnectionError,), retry_seconds=0)
+    with pytest.raises(ValueError):
+        await operation.wait_until_settled()
+    assert operation.state == "failed"
+    answer = await status.run()
+    assert answer.metadata is not None
+    assert answer.metadata["state"] == "failed"
+    assert answer.metadata["last"]["error"] == "ValueError: the check itself is broken"
+
+
+async def test_a_failure_is_logged_with_its_traceback(caplog: pytest.LogCaptureFixture) -> None:
+    body = _gate()
+    body.fail_with = RuntimeError("part way")
+    body.release.set()
+    operation = BackgroundOperation("load", body)
+
+    async def needed() -> bool:
+        raise ValueError("the check itself is broken")
+
+    with caplog.at_level("WARNING"):
+        operation.start()
+        await operation.wait()
+        operation.start_when_needed(needed, retry_on=(ConnectionError,), retry_seconds=0)
+        with pytest.raises(ValueError):
+            await operation.wait_until_settled()
+    failures = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(failures) == 2
+    assert all(r.exc_info is not None for r in failures)

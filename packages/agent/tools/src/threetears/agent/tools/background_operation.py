@@ -201,7 +201,8 @@ class BackgroundOperation(Generic[ResultT]):
 
         For a pod's first run, when it cannot know yet whether one is needed (its tables are
         out of reach until the hub grants it storage). Only the errors in ``retry_on`` are
-        retried; any other ends the wait and is raised from :meth:`wait_until_settled`. If a
+        retried; any other ends the wait, is kept as the last outcome (the status reports it failed, with
+        its reason) and is raised from :meth:`wait_until_settled`. If a
         run was started some other way meanwhile, that run is the one; none is added. While
         one such wait is still deciding, another is refused, so :meth:`stop` and
         :meth:`wait_until_settled` always reach the wait that is running.
@@ -300,6 +301,7 @@ class BackgroundOperation(Generic[ResultT]):
         :rtype: None
         """
         answer: bool | None = None
+        waiting_since = datetime.now(UTC)
         while answer is None:
             try:
                 answer = await needed()
@@ -315,10 +317,14 @@ class BackgroundOperation(Generic[ResultT]):
                     },
                 )
                 await asyncio.sleep(retry_seconds)
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- logged and re-raised: the wait may never be awaited, so the log is the only place this error is sure to be seen
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- kept, logged and re-raised: the wait may never be awaited, so the status and the log are where this error is sure to be seen
+                error = f"{type(exc).__name__}: {exc}"
+                # kept as the last outcome, so the status says failed with the reason rather than idle
+                self._last = OperationOutcome(started_at=waiting_since, finished_at=datetime.now(UTC), error=error)
                 log.error(
                     "cannot tell whether the operation is needed; no run will start",
-                    extra={"extra_data": {"operation": self._name, "error": f"{type(exc).__name__}: {exc}"}},
+                    extra={"extra_data": {"operation": self._name, "error": error}},
+                    exc_info=(type(exc), exc, exc.__traceback__),
                 )
                 raise
         if answer:
@@ -338,7 +344,11 @@ class BackgroundOperation(Generic[ResultT]):
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- a background run has no caller to raise to; the failure is logged and kept for the status tool
             error = f"{type(exc).__name__}: {exc}"
             self._last = OperationOutcome(started_at=started, finished_at=datetime.now(UTC), error=error)
-            log.error("background operation failed", extra={"extra_data": {"operation": self._name, "error": error}})
+            log.error(
+                "background operation failed",
+                extra={"extra_data": {"operation": self._name, "error": error}},
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
         else:
             self._last = OperationOutcome(started_at=started, finished_at=datetime.now(UTC), result=result)
             log.info("background operation finished", extra={"extra_data": {"operation": self._name}})

@@ -29,6 +29,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 __all__ = [
+    "BulkDurableStore",
     "DurableStore",
     "L3Backend",
     "OrderedDurableStore",
@@ -162,6 +163,41 @@ class DurableStore(Protocol):
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return every row matching the equality ``filters`` (all rows when ``None``/empty)."""
+        ...
+
+
+@runtime_checkable
+class BulkDurableStore(Protocol):
+    """A durable store that saves many rows of one table at once.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.save_rows`
+    writes through. A store without it is written a row at a time through
+    :meth:`DurableStore.upsert`; a SQL store issues multi-row upserts. No method takes SQL.
+    """
+
+    async def upsert_many(
+        self,
+        table: str,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        max_rows: int,
+        max_bytes: int,
+        conn: Any = None,
+    ) -> int:
+        """Insert-or-update every row of ``rows`` in ``table``; return how many were written.
+
+        :param rows: the rows, each keyed by column, every row supplying the same columns
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param max_rows: the most rows one write may carry (a statement's share of a timeout)
+        :ptype max_rows: int
+        :param max_bytes: the most bytes of values one write may carry (a message's share of a bus)
+        :ptype max_bytes: int
+        :param conn: the caller's transaction handle the writes bind to; ``None`` uses the
+            backend's own. A failing write fails that transaction whole
+        :ptype conn: Any
+        :return: rows written
+        :rtype: int
+        """
         ...
 
 

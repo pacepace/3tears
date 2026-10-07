@@ -9,18 +9,30 @@ packages (bumped in lock-step).
 ### Core: many rows upserted in a few statements, on the caller's transaction
 
 - **Added, `SchemaBackedCollection.save_rows(rows, *, conn, max_rows=None, max_bytes=None)`:** upserts
-  rows as multi-row `INSERT ... VALUES (...), (...) ON CONFLICT` statements on a connection whose
-  transaction a `CallerTransaction` opened, where `save_entity` makes a round trip per row. Batches
-  split so none passes `max_rows` (`BULK_MAX_ROWS`, 1,000), the 32,767 bind-parameter limit, or
-  `max_bytes` of JSON parameters (`BULK_MAX_BYTES`, 768 KiB, under a default NATS message); a
-  failing batch fails the caller's transaction, so every batch rolls back. Rows are stamped
-  `date_created` / `date_updated`; an upsert keeps a held row's `date_created`. Each key leaves L1
-  at once and is enrolled for the transaction's settling. Refused, as `ValueError`, for a collection
-  that caches absences, defers its L3 writes or fences with a null-safe CAS, and for two rows with
-  one key. The hub's L3 broker admits one such statement; it refuses `COPY`.
-- **Added, `threetears.core.backends.schema_sql`:** `build_bulk_insert_sql(schema, *, rows)`,
-  `bulk_batches(rows, *, max_rows, max_bytes, max_params)` and `MAX_STATEMENT_PARAMS`.
-- **Added, `CallerTransaction.enrolled`:** the (collection, key) pairs written so far.
+  rows on a connection whose transaction a `CallerTransaction` opened, through the collection's
+  durable store, where `save_entity` makes a round trip per row. A store with `upsert_many` saves
+  them in bulk; one without is written a row at a time through `upsert`. A failing write fails the
+  caller's transaction, so everything rolls back. Rows are stamped `date_created` / `date_updated`;
+  an upsert keeps a held row's `date_created`. Each key leaves L1 at once and is settled when the
+  transaction ends. Refused, as `ValueError`, for a collection with no durable store, that caches
+  absences, defers its L3 writes or fences with a null-safe CAS, for two rows with one key, and for
+  rows that disagree on which server-default columns they supply; a row missing a key column is a
+  `KeyError` naming the table and the column.
+- **Added, `threetears.core.backends.protocol.BulkDurableStore`** (`upsert_many(table, rows, *,
+  max_rows, max_bytes, conn=None)`), implemented by `SqlL3Backend.upsert_many`: multi-row
+  `INSERT ... VALUES (...), (...) ON CONFLICT` statements, the column list derived once from the
+  rows (a server-default column every row omits is left out of the SQL and the parameters alike),
+  batches split so none passes `max_rows` (`BULK_MAX_ROWS`, 1,000), the 32,767 bind-parameter
+  limit, or `max_bytes` of JSON parameters (`BULK_MAX_BYTES`, 768 KiB, under a default NATS
+  message). The hub's L3 broker admits one such statement; it refuses `COPY`.
+- **Added, `threetears.core.backends.schema_sql`:** `build_bulk_insert_sql(schema, *, rows,
+  columns=None)`, `bulk_batches(rows, *, max_rows, max_bytes, max_params)` and `MAX_STATEMENT_PARAMS`.
+- **Added, `BaseCollection.invalidate_cache_many(entity_ids)`; changed, `CallerTransaction`'s
+  settling:** a transaction now settles each collection's written keys in one call. A collection
+  with no NATS client (no L2, no bus) evicts the keys from L1 and drops its cached scans once, with
+  no L2 or bus work. One with a bus still sends each key's L2 delete and broadcast -- two messages a
+  key, because the broadcast's envelope names one entity and a peer of an older release reads no
+  other shape -- but `INVALIDATE_CONCURRENCY` (32) at a time rather than one after another.
 
 ### Core: a collection class built from a table schema
 
@@ -44,6 +56,9 @@ packages (bumped in lock-step).
   run's times, result and error. Both are `face_api` and refuse, saying so, until the pod has built
   the operation. For operations longer than the hub waits on a tool call (a warehouse load, a layer
   rebuild); the geography pod's reload and status tools were the first copy, the ENR pod's the second.
+  A wait of `start_when_needed` that ends on an error it does not retry is kept as the last outcome,
+  so the status reports `failed` with the reason rather than `idle`; it and a failed run are logged
+  with their traceback.
 
 ## v0.66.0 -- 2026-10-05
 
