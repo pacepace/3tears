@@ -17,7 +17,7 @@ import pytest
 from threetears.core.backends.nats_proxy import LOCK_NOT_AVAILABLE_ERROR_CODE
 from threetears.core.exceptions import DataLayerUnavailableError
 
-from .test_nats_proxy_constraint_violation import _TX_ID, _proxy
+from .scripted_broker import TX_ID, scripted_proxy
 
 
 def _refused(**fields: Any) -> dict[str, Any]:
@@ -39,7 +39,7 @@ def _refused(**fields: Any) -> dict[str, Any]:
 
 
 async def test_a_refused_nowait_inside_a_transaction_is_asyncpg_lock_not_available() -> None:
-    proxy = _proxy({"success": True, "tx_id": _TX_ID}, _refused(), {"success": True})
+    proxy = scripted_proxy({"success": True, "tx_id": TX_ID}, _refused(), {"success": True})
 
     with pytest.raises(asyncpg.LockNotAvailableError) as raised:
         async with proxy.acquire() as conn:
@@ -52,7 +52,7 @@ async def test_a_refused_nowait_inside_a_transaction_is_asyncpg_lock_not_availab
 
 async def test_the_code_without_its_sqlstate_stays_unavailable() -> None:
     """a malformed reply is a broker fault, not a refused lock."""
-    proxy = _proxy(_refused(sqlstate=None))
+    proxy = scripted_proxy(_refused(sqlstate=None))
 
     with pytest.raises(DataLayerUnavailableError):
         await proxy.fetchrow("SELECT 1")
@@ -60,7 +60,7 @@ async def test_the_code_without_its_sqlstate_stays_unavailable() -> None:
 
 async def test_a_lock_message_under_another_code_stays_unavailable() -> None:
     """the type comes from the code, never from the message's words."""
-    proxy = _proxy(_refused(error_code="QUERY_EXECUTION_ERROR"))
+    proxy = scripted_proxy(_refused(error_code="QUERY_EXECUTION_ERROR"))
 
     with pytest.raises(DataLayerUnavailableError):
         await proxy.fetchrow("SELECT 1")

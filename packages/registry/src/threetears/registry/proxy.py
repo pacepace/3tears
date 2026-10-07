@@ -1652,7 +1652,7 @@ class CallProxy:
             effective_timeout=effective_timeout,
         )
         try:
-            # sender-posture: unauthenticated open R2 -- the result is taken from any sender on the inbox
+            # sender-posture: own-consumer -- the waiter takes a result only with its own consumer's ack reply
             waiter = await self._nc.jetstream_result_waiter(
                 subject=result_subject,
                 stream=result_stream_name(),

@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### NATS: inbox names cannot be predicted, and a JetStream delivery counts only from the receiver's own consumer
+
+Any client in the account can get bytes delivered onto a subject it can name. nats-py named every
+inbox and request token from a sequential NUID, so one reply subject predicted the next.
+
+- **Changed: every connection `NatsClient` opens draws its inboxes, request tokens and ephemeral
+  consumer names from a CSPRNG** (`CsprngNuid`, installed before `connect()` in
+  `threetears.nats._nats_py_internals`). Nothing on the wire changes shape.
+- **Added, `threetears.nats.own_consumer`**: `random_consumer_name` and `delivered_by_own_consumer`,
+  which accepts a delivery only when its ack reply names the receiver's own stream and consumer, and
+  logs one refusal event otherwise.
+- **Changed: the durable result waiter, the KV key watch, the KV key listing and the op-log replay
+  accept only their own consumer's deliveries**, and name their consumers at random. A forged
+  message is dropped unacked and logged, and the receiver keeps waiting. The key watch no longer
+  delivers a message with no JetStream metadata as revision 0. The op-log replay now creates its
+  named consumer and binds to it, the same consumer-create subject as before.
+
 ### Core: wire models are tolerant readers, and a door adopts a proof through a dated window
 
 Owner ruling 2026-10-07: framework components and their consumers upgrade on their own schedules.

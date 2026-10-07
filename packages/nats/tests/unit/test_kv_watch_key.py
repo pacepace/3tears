@@ -11,6 +11,7 @@ scripted stand-in for the nats-py client; the live-broker proof under the real g
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
@@ -31,8 +32,20 @@ _KEY = "019470a8b5c37def8123456789abcdef"
 _SUBJECT = f"$KV.{_BUCKET}.{_KEY}"
 _FAST = timedelta(milliseconds=20)
 
+#: stands for the name of the consumer pushing to the inbox a scripted message is delivered on;
+#: the server puts that consumer's name in the ack reply of every delivery it makes for it.
+_OWN = "OWN-CONSUMER"
 
-def _delivered(data: bytes, *, sequence: int, operation: str | None = None) -> Msg:
+#: every scripted inbox name is unique, so the consumer pushing to it is known from the name alone.
+_INBOX_SEQ = itertools.count()
+
+#: the consumer the server pushes to each inbox, as recorded by ``_JetStream.add_consumer``.
+_CONSUMER_BY_INBOX: dict[str, str] = {}
+
+
+def _delivered(
+    data: bytes, *, sequence: int, operation: str | None = None, stream: str = _STREAM, consumer: str = _OWN
+) -> Msg:
     """a message as a push consumer delivers it, its stream sequence in the ack reply.
 
     :param data: the payload
@@ -41,12 +54,29 @@ def _delivered(data: bytes, *, sequence: int, operation: str | None = None) -> M
     :ptype sequence: int
     :param operation: the ``KV-Operation`` header, for a delete or purge marker
     :ptype operation: str | None
+    :param stream: the stream the ack reply names
+    :ptype stream: str
+    :param consumer: the consumer the ack reply names; :data:`_OWN` is the watch's own
+    :ptype consumer: str
     :return: the message
     :rtype: Msg
     """
     headers = {"KV-Operation": operation} if operation is not None else None
-    reply = f"$JS.ACK.{_STREAM}.kw_x.1.{sequence}.{sequence}.1700000000000000000.0"
+    reply = f"$JS.ACK.{stream}.{consumer}.1.{sequence}.{sequence}.1700000000000000000.0"
     return Msg(_client=None, subject=_SUBJECT, reply=reply, data=data, headers=headers)  # type: ignore[arg-type]
+
+
+def _forged(data: bytes, *, reply: str = "") -> Msg:
+    """bytes some other client got delivered onto the watch's inbox, with the reply it chose.
+
+    :param data: the payload
+    :ptype data: bytes
+    :param reply: the reply subject, empty for a plain publish
+    :ptype reply: str
+    :return: the message
+    :rtype: Msg
+    """
+    return Msg(_client=None, subject=_SUBJECT, reply=reply, data=data, headers=None)  # type: ignore[arg-type]
 
 
 def _heartbeat() -> Msg:
@@ -68,7 +98,13 @@ class _Inbox:
 
     async def next_msg(self, timeout: float) -> Msg:
         if self._script:
-            return self._script.pop(0)
+            msg = self._script.pop(0)
+            own = f".{_OWN}."
+            if own in msg.reply:
+                consumer = _CONSUMER_BY_INBOX[self.subject]
+                reply = msg.reply.replace(own, f".{consumer}.")
+                return Msg(_client=None, subject=msg.subject, reply=reply, data=msg.data, headers=msg.headers)  # type: ignore[arg-type]
+            return msg
         if self._closed_after:
             raise nats.errors.ConnectionClosedError
         await asyncio.sleep(timeout)
@@ -90,7 +126,7 @@ class _Raw:
 
     def new_inbox(self) -> str:
         self._count += 1
-        return f"_INBOX_pod.{self._count}"
+        return f"_INBOX_pod.{next(_INBOX_SEQ)}"
 
     async def subscribe(self, subject: str) -> _Inbox:
         self._log.append(f"subscribe {subject}")
@@ -113,6 +149,8 @@ class _JetStream:
             self._failures -= 1
             raise nats.errors.TimeoutError
         self.creates.append((stream, config))
+        assert config.deliver_subject is not None and config.name is not None
+        _CONSUMER_BY_INBOX[config.deliver_subject] = config.name
         return object()
 
     async def key_value(self, bucket: str) -> Any:
@@ -366,3 +404,49 @@ class TestACredentialRenewal:
 
         assert len(js.creates) == 2
         assert len(successor.inboxes) == 1
+
+
+class TestOnlyItsOwnConsumer:
+    """any client can get bytes delivered onto the watch's inbox; only its own consumer's count."""
+
+    @pytest.mark.parametrize(
+        "forged",
+        [
+            _forged(b"forged: a plain publish"),
+            _forged(b"forged: a reply that is no ack", reply="_INBOX_tool_pod_forger.x"),
+            _delivered(b"forged: another stream", sequence=99, stream="OBJ_forger", consumer="c1"),
+            _delivered(b"forged: another consumer here", sequence=99, consumer="kw_someone_else"),
+        ],
+        ids=["no-reply", "not-an-ack", "other-stream", "other-consumer"],
+    )
+    async def test_a_delivery_not_from_its_own_consumer_is_never_applied(
+        self, forged: Msg, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        bucket, _raw, _js, _log = _bucket([[forged, _delivered(b"3", sequence=7)]])
+
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.own_consumer"):
+            updates = await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST), 1), timeout=2)
+
+        assert updates == [KvKeyUpdate(key=_KEY, value=b"3", revision=7)]
+        refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
+        assert len(refusals) == 1
+        assert "key watch" in refusals[0].getMessage()
+
+    async def test_a_message_with_no_jetstream_metadata_is_no_longer_delivered_with_revision_zero(self) -> None:
+        bucket, _raw, _js, _log = _bucket([[_forged(b"forged config"), _delivered(b"real", sequence=3)]])
+
+        updates = await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST), 1), timeout=2)
+
+        assert updates == [KvKeyUpdate(key=_KEY, value=b"real", revision=3)]
+
+    async def test_every_consumer_name_is_random(self) -> None:
+        """a forger who can name the consumer can forge its ack reply; names share nothing past the prefix."""
+        names: list[str] = []
+        for _ in range(50):
+            bucket, _raw, js, _log = _bucket([[_delivered(b"3", sequence=7)]])
+            await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST), 1), timeout=2)
+            name = js.creates[0][1].name
+            assert name is not None
+            names.append(name.removeprefix("kw_"))
+        assert all(len(name) == 32 for name in names)
+        assert len({name[:8] for name in names}) > 40

@@ -109,6 +109,7 @@ from threetears.observe.resilience import retry_until_done
 from threetears.nats.diagnostics import permissions_violation_remedy
 from threetears.nats._nats_py_internals import (
     force_reconnect,
+    install_csprng_nuid,
     pull_subscription_inbox,
     send_unsubscribe,
     take_queued_messages,
@@ -141,6 +142,7 @@ from threetears.nats.errors import (
     StreamSubjectsOverlapError,
     SubscribeError,
 )
+from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.result_delivery import SYNC_REPLY_BUDGET_SECONDS
 from threetears.nats.subject_permissions import SERVER_USER_INFO_SUBJECT
 from threetears.nats.subjects import DEAD_LETTER_ORIGINAL_SUBJECT_HEADER, Subject, Subjects, set_default_namespace
@@ -1602,6 +1604,11 @@ class JetStreamResultWaiter:
     whenever it was published" -- so the ordering between opening the consumer and the answer
     arriving stops being a race at all.
 
+    **Only the waiter's own consumer can answer.** Any client in the account can get bytes delivered
+    onto an inbox it can name, so a message on the inbox counts only when it carries the ack reply
+    of this waiter's consumer, whose name is random (:mod:`threetears.nats.own_consumer`). Anything
+    else is dropped unacked and logged, and the wait goes on.
+
     **The consumer is made on whichever connection is current when it is made.** A credential
     renewal replaces the connection mid-wait and later retires the old one; the waiter then sees
     its subscription end, and the replacement it makes lands on the successor -- where
@@ -1702,10 +1709,10 @@ class JetStreamResultWaiter:
         :rtype: None
         :raises Exception: when the create fails or is not answered within its ceiling
         """
-        name = f"{_RESULT_WAITER_CONSUMER_PREFIX}{uuid.uuid7().hex}"
+        name = random_consumer_name(_RESULT_WAITER_CONSUMER_PREFIX)
         connection = self._connection()
         inbox = connection.new_inbox()
-        # sender-posture: unauthenticated open R2,S6 -- the first message on the inbox is the result, from any sender
+        # sender-posture: own-consumer -- a result counts only with this waiter's own consumer's ack reply
         sub = await connection.subscribe(inbox)
         config = _NatsConsumerConfig(
             name=name,
@@ -1801,6 +1808,11 @@ class JetStreamResultWaiter:
                     self._consumer_name,
                 )
                 await self._rebuild()
+                continue
+            if not delivered_by_own_consumer(
+                msg, stream=self._stream, consumer=self._consumer_name or "", receiver="result waiter"
+            ):
+                # dropped, never acked: the answer is still to come from this waiter's own consumer
                 continue
             await msg.ack()
             payload = bytes(msg.data)
@@ -6409,6 +6421,10 @@ async def _establish_connection(
     :raises NatsClientError: if connection fails
     """
     nc = _NatsPyClient()
+    # every inbox, request token and ephemeral consumer this connection names is drawn from a
+    # CSPRNG: nats-py's own NUID is sequential, so one reply subject a peer sees would predict the
+    # next, and any client in the account can get bytes delivered onto a subject it can name.
+    install_csprng_nuid(nc)
     # the options are heterogeneous by nature (callbacks, bounds, credentials); nats-py types each
     # keyword separately, which an options dict cannot express.
     connect_options: dict[str, Any] = dict(options)
