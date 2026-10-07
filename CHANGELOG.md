@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: a fetched JWKS is never trusted blind
+
+Any client in the account can get bytes delivered onto a verifier's JWKS reply inbox, and a
+forged reply that adds the forger's key would let it mint any identity the registry or a tool pod
+then accepts.
+
+- **Added, `threetears.core.security.jwks_trust`**: `thumbprint_mismatches` (an entry whose key
+  does not hash to its `kid` refuses the whole reply), `sign_jwks_statement` /
+  `verify_jwks_statement` (a publisher's EdDSA statement over exactly its key set, under a root
+  key verifiers pin), `JwksKeyring` (add-only `merge` for a verified reply, a key retired only
+  after `ROTATION_OVERLAP`; exact `replace` for an unsigned one), `RefreshGate` (single-flight,
+  one refresh per `REACTIVE_REFRESH_WINDOW_SECONDS`), `HUB_JWKS_STATEMENT_WINDOW` (the hub JWKS
+  door's dated window, required from 2027-01-05) and `root_public_key_from_text`.
+- **Changed, `CachedHubJwksProvider`**: it refuses a reply with a misnamed key, checks the hub's
+  statement against the root pinned in `THREETEARS_HUB_JWKS_ROOT_PUBLIC_KEY`, refuses an
+  unsigned reply from the window's date or once the hub has signed one (no downgrade), merges a
+  verified reply add-only and replaces the cache on an unsigned one, so a key an unsigned reply
+  forged is gone at the next genuine reply. Pods require the door early through
+  `THREETEARS_DOOR_PROOF_REQUIRED_EARLY`.
+- **Added**: a gate (`tests/enforcement/test_door_windows_are_open.py`) that fails once any
+  `DoorWindow` declared in source is past its date.
+
 ### NATS: inbox names cannot be predicted, and a JetStream delivery counts only from the receiver's own consumer
 
 Any client in the account can get bytes delivered onto a subject it can name. nats-py named every
