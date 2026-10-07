@@ -10,7 +10,13 @@ from typing import Any
 
 import pytest
 
-from threetears.core.backends.schema_sql import build_bulk_insert_sql, build_insert_params, bulk_batches, json_default
+from threetears.core.backends.schema_sql import (
+    build_bulk_delete_sql,
+    build_bulk_insert_sql,
+    build_insert_params,
+    bulk_batches,
+    json_default,
+)
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -348,3 +354,95 @@ async def test_save_rows_answers_how_many_rows_it_submitted() -> None:
     collection, conn = _collection(), _Conn()
     async with CallerTransaction(conn):
         assert await collection.save_rows(_rows(4), conn=conn, max_rows=3) == 4
+
+
+# -- delete_rows: the bulk write's other half -------------------------------------------------------
+
+
+def test_one_statement_deletes_every_key_named() -> None:
+    sql = build_bulk_delete_sql(SCHEMA, rows=2)
+    assert sql == "DELETE FROM results WHERE (office_key, geo_id) IN (($1, $2), ($3, $4))"
+
+
+async def test_delete_rows_deletes_them_in_one_statement_on_the_caller_s_transaction() -> None:
+    collection, conn = _collection(), _Conn()
+    async with CallerTransaction(conn):
+        deleted = await collection.delete_rows([("sn_NC1", "00001"), ("sn_NC1", "00007")], conn=conn)
+    assert deleted == 2
+    [(sql, params)] = conn.committed
+    assert sql == build_bulk_delete_sql(SCHEMA, rows=2)
+    assert params == ("sn_NC1", "00001", "sn_NC1", "00007")
+
+
+async def test_keys_to_delete_are_split_so_no_statement_passes_the_row_limit() -> None:
+    collection, conn = _collection(), _Conn()
+    keys = [("sn_NC1", f"{i:05d}") for i in range(5)]
+    async with CallerTransaction(conn):
+        await collection.delete_rows(keys, conn=conn, max_rows=2)
+    assert [len(params) // 2 for _, params in conn.committed] == [2, 2, 1]
+
+
+async def test_a_failing_delete_rolls_the_whole_transaction_back() -> None:
+    collection, conn = _collection(), _Conn(fail_on=2)
+    with pytest.raises(ConnectionError):
+        async with CallerTransaction(conn):
+            await collection.delete_rows([("sn_NC1", f"{i:05d}") for i in range(4)], conn=conn, max_rows=2)
+    assert conn.rolled_back
+    assert conn.committed == []
+
+
+async def test_every_key_deleted_is_settled_once_when_the_transaction_ends() -> None:
+    collection, conn = _collection(), _Conn()
+    settled: list[list[Any]] = []
+
+    async def settle(keys: Any) -> None:
+        settled.append(list(keys))
+
+    collection.invalidate_cache_many = settle
+    async with CallerTransaction(conn):
+        await collection.delete_rows([("sn_NC1", "00001")], conn=conn)
+        assert settled == []
+    assert settled == [[("sn_NC1", "00001")]]
+
+
+async def test_a_key_of_the_wrong_width_is_refused_naming_the_table() -> None:
+    collection, conn = _collection(), _Conn()
+    with pytest.raises(ValueError, match="results"):
+        async with CallerTransaction(conn):
+            await collection.delete_rows([("sn_NC1",)], conn=conn)
+    assert conn.executed == []
+
+
+async def test_delete_rows_refuses_a_connection_no_caller_transaction_opened() -> None:
+    with pytest.raises(ValueError, match="CallerTransaction"):
+        await _collection().delete_rows([("sn_NC1", "00001")], conn=_Conn())
+
+
+async def test_no_keys_deletes_nothing() -> None:
+    collection, conn = _collection(), _Conn()
+    async with CallerTransaction(conn):
+        assert await collection.delete_rows([], conn=conn) == 0
+    assert conn.committed == []
+
+
+async def test_a_store_that_cannot_delete_many_is_asked_a_key_at_a_time() -> None:
+    collection, conn, store = _collection(), _Conn(), _DeletingStore()
+    collection.l3_pool = store
+    async with CallerTransaction(conn):
+        assert await collection.delete_rows([("sn_NC1", "00001"), ("sn_NC1", "00002")], conn=conn) == 2
+    assert store.deleted == [
+        ("results", {"office_key": "sn_NC1", "geo_id": "00001"}, True),
+        ("results", {"office_key": "sn_NC1", "geo_id": "00002"}, True),
+    ]
+
+
+class _DeletingStore(_BulkStore):
+    """a non-SQL store with no bulk delete: it deletes a key at a time, on the caller's transaction."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.deleted: list[tuple[str, dict[str, Any], bool]] = []
+        self._conn: Any = None
+
+    async def delete(self, table: str, pk: Any, *, conn: Any = None) -> None:
+        self.deleted.append((table, dict(pk), conn is not None))

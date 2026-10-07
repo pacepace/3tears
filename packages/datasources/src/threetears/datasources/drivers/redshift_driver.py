@@ -248,6 +248,18 @@ ORDER BY table_schema, table_name
 #: as long as both sides observe SVV_COLUMNS, byte-equivalence holds.
 #: cross-driver hash equivalence (asyncpg vs redshift) is NOT
 #: guaranteed; same-driver python-vs-SQL IS guaranteed.
+#: the boolean columns of one relation, for the fingerprint: Redshift refuses to cast a boolean to
+#: text, so those columns render through a ``CASE`` instead (``relation_key_expression``)
+_REDSHIFT_BOOLEAN_COLUMNS_SQL = (
+    "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = %s AND table_name = %s AND data_type = 'boolean'"
+)
+
+#: the same, for a relation named without its schema: the search path decides which table it is
+_REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL = (
+    "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = ANY(current_schemas(false)) "
+    "AND table_name = %s AND data_type = 'boolean'"
+)
+
 _REDSHIFT_COLUMNS_SQL_TEMPLATE = """
 SELECT table_schema, table_name, column_name, data_type, is_nullable, ordinal_position
 FROM SVV_COLUMNS
@@ -675,6 +687,24 @@ def _drain_cache_static(
 # ---------------------------------------------------------------------------
 
 
+def _read_boolean_columns(cursor: Any, relation: str) -> frozenset[str]:
+    """the boolean columns of ``relation``, read from ``SVV_COLUMNS`` on an open cursor.
+
+    :param cursor: a cursor on a live connection
+    :ptype cursor: Any
+    :param relation: ``schema.table`` or ``table``, a TRUSTED identifier (bound here, not inlined)
+    :ptype relation: str
+    :return: the names of its boolean columns
+    :rtype: frozenset[str]
+    """
+    schema, _, table = relation.rpartition(".")
+    if schema:
+        cursor.execute(_REDSHIFT_BOOLEAN_COLUMNS_SQL, (schema, table))
+    else:
+        cursor.execute(_REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL, (table,))
+    return frozenset(str(row[0]) for row in cursor.fetchall())
+
+
 class RedshiftDriver(Driver):
     """concrete :class:`Driver` for Amazon Redshift via ``redshift_connector``.
 
@@ -781,6 +811,9 @@ class RedshiftDriver(Driver):
         # manual cleanup pass.
         self._backend_pids: weakref.WeakKeyDictionary[RedshiftConnection, int] = weakref.WeakKeyDictionary()
         self._closed = False
+        # each fingerprinted relation's boolean columns, read once: a relation's column types do not
+        # change under a running driver, and a stale entry fails the fingerprint rather than skewing it
+        self._boolean_columns: dict[str, frozenset[str]] = {}
         # read by :func:`observed` as the ``datasource_name`` attribute
         # on every metric emission. matches the AsyncpgDriver contract.
         self._datasource_name = datasource_name
@@ -2125,10 +2158,16 @@ class RedshiftDriver(Driver):
         relation -- and a wrapped sum fingerprints two different relations
         identically, which is the one failure a change-probe must not have.
 
+        Redshift refuses to cast a boolean to text, so the relation's boolean columns are read from
+        ``SVV_COLUMNS`` (once per relation, on the same connection) and rendered through a ``CASE``
+        as the text Postgres's cast gives; a key may then name any column the relation has.
+
         :param relation: schema-qualified relation name, a TRUSTED identifier
         :ptype relation: str
-        :param key: the ordering columns, TRUSTED identifiers
+        :param key: the columns the digest covers, TRUSTED identifiers
         :ptype key: list[str]
+        :param where: equality filters, column -> value, naming the rows to fingerprint
+        :ptype where: Mapping[str, str] | None
         :return: the relation's current row count and key digest
         :rtype: RelationFingerprint
         :raises ValueError: when ``key`` is empty
@@ -2136,18 +2175,23 @@ class RedshiftDriver(Driver):
         """
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
-        key_expression = relation_key_expression(key)
+        # refuses an empty key here, before a connection is taken
+        relation_key_expression(key)
         filters, values = build_equality_filter(where)
-        sql = (
-            "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
-            "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
-            f"FROM (SELECT {key_expression} AS k FROM {relation}{filters}) AS fingerprint_source"
-        )
-        sql = translate_placeholders(sql, "pyformat")
+        known = self._boolean_columns.get(relation)
 
         def _do_sync(conn: RedshiftConnection) -> RelationFingerprint:
             cursor = conn.cursor()
             try:
+                booleans = known if known is not None else _read_boolean_columns(cursor, relation)
+                self._boolean_columns[relation] = booleans
+                sql = translate_placeholders(
+                    "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
+                    "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
+                    f"FROM (SELECT {relation_key_expression(key, boolean_columns=booleans)} AS k "
+                    f"FROM {relation}{filters}) AS fingerprint_source",
+                    "pyformat",
+                )
                 if values:
                     cursor.execute(sql, values)
                 else:

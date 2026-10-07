@@ -28,6 +28,7 @@ The wrapped pool is the previously-untyped ``l3_pool`` (a bare asyncpg ``Pool`` 
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
@@ -474,6 +475,62 @@ class SqlL3Backend:
                 await self._execute(sql, *(value for row in batch for value in row), conn=conn)
                 written += len(batch)
         return written
+
+    async def delete_many(
+        self,
+        table: str,
+        keys: Sequence[Sequence[Any]],
+        *,
+        max_rows: int,
+        conn: Any = None,
+    ) -> int:
+        """Delete the rows of a schema-registered table named by ``keys``, in multi-row statements.
+
+        Each statement names at most ``max_rows`` keys (and at most the parameters one statement
+        may bind). On ``conn`` a failing statement fails the caller's transaction, so every batch
+        rolls back with it.
+
+        :param table: the table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param keys: each row's key values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param max_rows: the most keys one statement names
+        :ptype max_rows: int
+        :param conn: the caller's transaction handle; ``None`` uses the pool
+        :ptype conn: Any
+        :return: keys named
+        :rtype: int
+        :raises ValueError: when no schema is registered for ``table``, or a key is not as wide as
+            the table's key
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            raise ValueError(f"delete_many needs the schema of {table!r} registered")
+        key_columns = [schema.column(name) for name in schema.pk_columns]
+        params: list[list[Any]] = []
+        for key in keys:
+            if len(key) != len(key_columns):
+                raise ValueError(
+                    f"{table}: a key to delete has {len(key)} values where the table's key has {len(key_columns)}"
+                )
+            params.append(
+                [
+                    schema_sql.normalize_write_value(column, value)
+                    for column, value in zip(key_columns, key, strict=True)
+                ]
+            )
+        deleted = 0
+        # no byte limit: a key is a few short values, so the row count binds first
+        for batch in schema_sql.bulk_batches(
+            params, max_rows=max_rows, max_bytes=sys.maxsize, max_params=schema_sql.MAX_STATEMENT_PARAMS
+        ):
+            await self._execute(
+                schema_sql.build_bulk_delete_sql(schema, rows=len(batch)),
+                *(value for key in batch for value in key),
+                conn=conn,
+            )
+            deleted += len(batch)
+        return deleted
 
     async def _update_fenced(
         self,

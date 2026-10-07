@@ -24,7 +24,7 @@ digest only with one taken the same way over values held the same way.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -57,11 +57,17 @@ class KeyFingerprint:
     digest: str
 
 
-def relation_key_expression(key: Sequence[str]) -> str:
+def relation_key_expression(key: Sequence[str], *, boolean_columns: Collection[str] = ()) -> str:
     """render the key of one row as a single text value, NULLs distinguished, in SQL.
+
+    A boolean column renders through a ``CASE`` as ``'true'`` or ``'false'`` -- the text Postgres's
+    own cast gives -- because Redshift refuses to cast a boolean to text at all. Name every boolean
+    column of ``key`` in ``boolean_columns``; any other column is cast.
 
     :param key: the key's columns, TRUSTED identifiers
     :ptype key: Sequence[str]
+    :param boolean_columns: which of them are booleans
+    :ptype boolean_columns: Collection[str]
     :return: a SQL expression producing one text value per row
     :rtype: str
     :raises ValueError: when ``key`` is empty, which would render a constant and
@@ -70,7 +76,12 @@ def relation_key_expression(key: Sequence[str]) -> str:
     columns = list(key)
     if not columns:
         raise ValueError("a relation fingerprint needs at least one ordering column")
-    rendered = [f"CASE WHEN {column} IS NULL THEN CHR(30) ELSE CAST({column} AS VARCHAR) END" for column in columns]
+    rendered = [
+        f"CASE WHEN {column} IS NULL THEN CHR(30) WHEN {column} THEN 'true' ELSE 'false' END"
+        if column in boolean_columns
+        else f"CASE WHEN {column} IS NULL THEN CHR(30) ELSE CAST({column} AS VARCHAR) END"
+        for column in columns
+    ]
     return " || CHR(31) || ".join(rendered)
 
 

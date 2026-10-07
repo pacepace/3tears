@@ -788,6 +788,34 @@ class TestQueryRouting:
             assert calls[0].args[1] == ("s1",)
 
     @pytest.mark.asyncio
+    async def test_a_fingerprint_renders_the_relations_boolean_columns_without_a_cast(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """Redshift refuses ``CAST(boolean AS VARCHAR)``, so the driver asks which columns are booleans first."""
+        conn = _build_mock_connection(fetchall_rows=[("incumbent",)], fetchone_row=(7, 99))
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            first = await driver.relation_fingerprint("s1.results", ["race", "incumbent"], {"state": "VA"})
+            await driver.relation_fingerprint("s1.results", ["race", "incumbent"], {"state": "TX"})
+            assert (first["row_count"], first["digest"]) == (7, "99")
+            calls = [
+                c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
+            ]
+            lookups = [c for c in calls if "FROM SVV_COLUMNS" in c.args[0]]
+            prints = [c for c in calls if "AS digest" in c.args[0]]
+            # the column types are read once per relation, bound rather than inlined
+            assert len(lookups) == 1
+            assert "data_type = 'boolean'" in lookups[0].args[0]
+            assert lookups[0].args[1] == ("s1", "results")
+            assert len(prints) == 2
+            assert "CAST(incumbent AS VARCHAR)" not in prints[0].args[0]
+            assert "WHEN incumbent THEN 'true' ELSE 'false' END" in prints[0].args[0]
+            assert "CAST(race AS VARCHAR)" in prints[0].args[0]
+
+    @pytest.mark.asyncio
     async def test_table_hashes_returns_dict_keyed_by_schema_table(
         self, redshift_config: RedshiftConnectionConfig
     ) -> None:

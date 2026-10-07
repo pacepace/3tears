@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MAX_STATEMENT_PARAMS",
+    "build_bulk_delete_sql",
     "build_bulk_insert_sql",
     "build_cas_params",
     "build_cas_update_sql",
@@ -678,6 +679,30 @@ def build_bulk_insert_sql(schema: TableSchema, *, rows: int, columns: list[Colum
     )
     col_names = ", ".join(c.name for c in cols)
     return _with_conflict_clause(schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES {values}")
+
+
+def build_bulk_delete_sql(schema: TableSchema, *, rows: int) -> str:
+    """build one DELETE of ``rows`` rows named by their primary keys.
+
+    ``DELETE FROM t WHERE (a, b) IN (($1, $2), ($3, $4))``: each key's parameters in the order of
+    the schema's key columns, every key one row of the ``IN`` list.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param rows: how many keys the statement names; at least one
+    :ptype rows: int
+    :return: parameterized DELETE SQL
+    :rtype: str
+    :raises ValueError: when ``rows`` is under one
+    """
+    if rows < 1:
+        raise ValueError(f"a bulk DELETE needs at least one key, got {rows}")
+    key = [schema.column(name) for name in schema.pk_columns]
+    width = len(key)
+    keys = ", ".join(
+        "(" + ", ".join(render_param(c, row * width + i + 1) for i, c in enumerate(key)) + ")" for row in range(rows)
+    )
+    return f"DELETE FROM {schema.name} WHERE ({', '.join(c.name for c in key)}) IN ({keys})"
 
 
 def bulk_batches(

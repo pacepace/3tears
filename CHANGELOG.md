@@ -6,6 +6,61 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core and datasources: keep tables current from a source, write only what changed, one writer at a time
+
+- **Added, `threetears.core.collections.complete_copy.BufferedCopies(collections, new_backend,
+  settled, *, page_size=999)`:** complete copies of several L3 tables kept apart from the
+  collections' own L1. `build()` copies every table into a fresh backend beside the live set, proves
+  each, and swaps the new set in with one assignment only when every table is proven and the
+  writer's record (`settled`: a stamp naming the last committed write, or None while one is in
+  progress) was the same before the first table and after the last; otherwise it raises
+  `IncompleteCopyError` and the live set stays. `require()` answers the live `CopyGeneration`
+  (`backend`, `proofs`, `stamp`, `built_at`), which a reader holds for its whole read: a swap never
+  changes a generation a reader holds. `build_if_behind()` builds only when the writer has
+  committed since the live set was taken; builds run one at a time. The ENR tool pod's report
+  tables are the first consumer: its rows tool kept answering "loading" for the minutes a copy took,
+  and a reader could meet a table half rewritten.
+- **Added, `threetears.core.collections.complete_copy.read_l3_rows`, `l3_fingerprint` and
+  `copy_table`:** the pieces `CompleteCopy` was built from, public and taking equality filters
+  (`where`): read an L3 table, or one part of it, whole by key a page at a time; fingerprint it over
+  chosen columns; copy it into a `WholeTableL1` and prove the copy. `CompleteCopy` now uses them,
+  unchanged in behaviour.
+- **Added, `threetears.core.collections.scope_epochs`:** `ScopeEpochs(collection)` over an
+  owner-declared L3 table (`scope_epochs_schema(name)`, `scope_epochs_collection(name)`): the epoch of
+  each scope (a race, a state) is the version of the last write that changed it. `begin(conn=)`
+  takes the next version and records the write as in progress; `commit(version, scopes, conn=)`, in
+  the transaction of the write's last data write, records it committed and moves each scope it
+  changed to the version, recording the epoch each replaced, never back. `snapshot()` reads every
+  epoch, the version and any write in progress (`EpochSnapshot`); `settled()` is the snapshot or None
+  while a write is in progress, the seqlock `BufferedCopies` builds against. `on_change(listener)`
+  hears a commit here and a peer's broadcast. Kept in L3, not the NATS epoch counter, because the
+  value is in CDN URLs and must never be handed out twice for different data.
+- **Added, `threetears.core.coordination.coalesced_run.CoalescedRun(lease, key, run, *, ttl,
+  renew_every)`:** an operation run on one replica at a time under a `KVLease`, where a request made
+  during a run runs it once more afterwards, however many requests there were. `request()` records a
+  request beside the lease key (same bucket, same owner scope); `drain()` holds the lease and runs
+  once per request taken, looks again after letting the lease go, and returns how many runs it made
+  (0 when another replica holds the lease, which then runs what was asked). A lost lease cancels the
+  run, records the request again and raises `LeaseLost`; a failed run is raised and not retried.
+- **Added, `KVLease.stored_key(key)` and `KVLease.bucket()`:** where state kept beside a lease under
+  the same grant is stored.
+- **Added, `SchemaBackedCollection.delete_rows(keys, *, conn, max_rows=None)`:** the other half of
+  `save_rows`: rows deleted by key in multi-row `DELETE ... WHERE (k1, k2) IN ((...), ...)`
+  statements on the caller's transaction, settled with the rest when it ends; through
+  `BulkDeletingStore.delete_many` (new protocol, which `SqlL3Backend` implements), or a key at a
+  time through `delete` on a store without it. `schema_sql.build_bulk_delete_sql` builds the
+  statement.
+- **Added, `threetears.datasources.partitioned_read`:** `fingerprint_parts` and `read_parts`
+  fingerprint or read each part of a relation (named by equality filters, as `read_all` takes them)
+  side by side, at most `concurrency` at once (`DEFAULT_PART_CONCURRENCY`, 5: the hub's default
+  open warehouse connections per datasource), answering in the parts' order; the first failure
+  cancels the rest and is raised as itself. A fingerprint over every column read moves when any
+  value in its part does.
+- **Fixed, `RedshiftDriver.relation_fingerprint`:** a key naming a boolean column failed, because
+  Redshift refuses to cast a boolean to text. The driver now reads the relation's boolean columns
+  from `SVV_COLUMNS` (once per relation) and renders them as `'true'` / `'false'` through a `CASE`,
+  the text Postgres's own cast gives; `relation_key_expression` takes `boolean_columns`.
+
 ### Core: an L1 that is a complete copy of its L3 table, proven before it is read
 
 - **Added, `threetears.core.collections.complete_copy`:** `CompleteCopy(collection, *, page_size=999)`

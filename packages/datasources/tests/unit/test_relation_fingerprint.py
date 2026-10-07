@@ -56,6 +56,14 @@ class TestTheKeyExpressionSeesEveryDifference:
         for column in ("a", "b", "c"):
             assert f"CAST({column} AS VARCHAR)" in expression, expression
 
+    def test_a_boolean_column_renders_as_text_without_a_cast(self) -> None:
+        # Redshift refuses CAST(boolean AS VARCHAR), so a boolean renders through a CASE that
+        # gives the text Postgres's own cast does ('true' / 'false'), its NULL still CHR(30)
+        expression = build_relation_key_expression(["incumbent", "votes"], boolean_columns={"incumbent"})
+        assert "CAST(incumbent AS VARCHAR)" not in expression, expression
+        assert "WHEN incumbent IS NULL THEN CHR(30) WHEN incumbent THEN 'true' ELSE 'false' END" in expression
+        assert "CAST(votes AS VARCHAR)" in expression, expression
+
     def test_an_empty_key_is_refused(self) -> None:
         # a fingerprint over no columns is a constant, so every relation of the same size
         # would fingerprint identically -- silently reducing the check back to a count.
