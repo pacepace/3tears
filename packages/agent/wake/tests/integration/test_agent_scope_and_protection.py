@@ -740,6 +740,59 @@ class TestContextFromSkipsQuietChecks:
         finally:
             await pool.close()
 
+    async def test_a_failed_latest_fire_behind_quiet_checks_still_gives_the_downstream_nothing(
+        self, pg_schema: tuple[str, str]
+    ) -> None:
+        """Only a quiet check run is skipped: a failed latest fire makes the older output stale."""
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            _schedules, fires = _collections(pool)
+            agent = _new_uuid()
+            up_conv, upstream = await _seed_schedule(pool, agent_id=agent)
+            down_conv, downstream = await _seed_schedule(pool, agent_id=agent)
+            for minutes_ago, status, text in (
+                (10, "fired", "found three new messages"),
+                (7, "failed", None),
+                (5, "checked_quiet", "nothing new"),
+            ):
+                fire_id = _new_uuid()
+                await fires.create_dispatching(
+                    fire_id=fire_id,
+                    schedule_id=upstream,
+                    webhook_subscription_id=None,
+                    conversation_id=up_conv,
+                    scheduled_fire_at=None,
+                    actual_fired_at=datetime.now(UTC) - timedelta(minutes=minutes_ago),
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                )
+                if status == "failed":
+                    await fires.finalize_failed(up_conv, fire_id, error="the mailbox went away")
+                else:
+                    await fires.finalize_success(up_conv, fire_id, status=status, output_text=text)
+
+            handler = _RecordingHandler()
+            await dispatch_wake(
+                WakeTrigger(
+                    schedule_id=downstream,
+                    user_id=_new_uuid(),
+                    agent_id=agent,
+                    conversation_id=down_conv,
+                    fire_source="scheduled_tick",
+                    execution_mode="spawn",
+                    schedule_type="interval",
+                    fired_at=datetime.now(UTC),
+                    context_from_schedule_id=upstream,
+                ),
+                _new_uuid(),
+                pool,
+                handler=handler,
+            )
+            assert handler.prepared[0].context_blocks == ()
+        finally:
+            await pool.close()
+
 
 class TestFireConversationLink:
     async def test_the_hook_links_the_fire_before_the_handler_runs(self, pg_schema: tuple[str, str]) -> None:

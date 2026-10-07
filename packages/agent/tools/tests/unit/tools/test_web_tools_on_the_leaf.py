@@ -403,6 +403,10 @@ class TestWebFetchHonoursRobots:
         assert result.success is False
         assert _projection(result).candidates[0].facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
         assert _PAGE_URL not in transport.fetched
+        # the reader is told which refusal it was, not a list of what it might have been
+        assert result.content == (
+            f"No readable text could be taken from {_PAGE_URL}: the site's robots.txt does not allow it to be read."
+        )
 
     @pytest.mark.asyncio
     async def test_the_stance_is_configuration_not_a_per_call_choice(self) -> None:
@@ -430,6 +434,7 @@ class TestWebFetchFailsTyped:
         assert result.success is False
         assert not result.content.startswith("[TOOL ERROR]")
         assert _projection(result).candidates[0].facets[EXTRACTION_STATUS_FACET] == "failed"
+        assert result.content == f"No readable text could be taken from {_PAGE_URL}: the server answered 404."
 
     @pytest.mark.asyncio
     async def test_a_missing_url_is_answered_rather_than_fetched(self) -> None:

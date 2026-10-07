@@ -60,7 +60,7 @@ from threetears.search.contracts import (
     SearchFailure,
     Spend,
 )
-from threetears.search.extract import EXTRACTION_STATUS_FACET, extract
+from threetears.search.extract import EXTRACTION_REASON_FACET, EXTRACTION_STATUS_FACET, extract
 
 if TYPE_CHECKING:
     from threetears.search.contracts import FetchTransport
@@ -273,7 +273,8 @@ class WebFetchTool(TearsTool):
         # the reason this reader was named in the task doc before it was written.
         readable = {EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED}
         if fetched.content is None or status not in readable:
-            message = f"No readable text could be taken from {url}."
+            reason = fetched.facets.get(EXTRACTION_REASON_FACET)
+            message = f"No readable text could be taken from {url}" + (f": {reason}." if reason else ".")
             return ToolResult(
                 success=False,
                 content=message,

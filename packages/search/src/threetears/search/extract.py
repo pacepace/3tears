@@ -80,6 +80,7 @@ __all__ = [
     "DEFAULT_MAX_BYTES",
     "DEFAULT_USER_AGENT",
     "EXTRACTION_METHOD_FACET",
+    "EXTRACTION_REASON_FACET",
     "EXTRACTION_STATUS_FACET",
     "EXTRACTOR_UNAVAILABLE_SCOPE",
     "HTML_CONTENT_TYPES",
@@ -110,6 +111,12 @@ HTML_CONTENT_TYPES: Final[tuple[str, ...]] = (
 #: :attr:`~threetears.search.contracts.candidate.Candidate.facets` key
 #: carrying the ``media-contracts`` ``EXTRACTION_STATUS_*`` vocabulary.
 EXTRACTION_STATUS_FACET: Final[str] = "extraction_status"
+
+#: :attr:`~threetears.search.contracts.candidate.Candidate.facets` key carrying why
+#: an extraction was refused or failed, in a sentence a person can read: the status
+#: alone says "refused" for robots, a content type and a size cap alike, and a
+#: caller cannot tell its reader which one stopped the read.
+EXTRACTION_REASON_FACET: Final[str] = "extraction_reason"
 
 #: HTTP's "your copy is still current". Named rather than spelled inline so the
 #: one place that reads it says what it is reading (D30).
@@ -218,7 +225,7 @@ async def extract(
 
     url = _carrier_url(candidate)
     if url is None:
-        return _marked(candidate, EXTRACTION_STATUS_FAILED)
+        return _marked(candidate, EXTRACTION_STATUS_FAILED, "it has no address to fetch")
 
     extractor = _load_extractor()
 
@@ -227,7 +234,7 @@ async def extract(
         and heavy_fetcher is None
         and not await _robots_allow(url, transport=transport, user_agent=user_agent, timeout_seconds=timeout_seconds)
     ):
-        return _marked(candidate, EXTRACTION_STATUS_REFUSED)
+        return _marked(candidate, EXTRACTION_STATUS_REFUSED, "the site's robots.txt does not allow it to be read")
 
     try:
         response = await _fetch_carrier(
@@ -238,13 +245,13 @@ async def extract(
             timeout_seconds=timeout_seconds,
             headers=conditional or None,
         )
-    except LocalCapExceeded:
+    except LocalCapExceeded as exc:
         # A cap declined the read under rules that will decline it again --
         # which is what ``refused`` means, and what separates it from a
-        # fetch that tried and broke.
-        return _marked(candidate, EXTRACTION_STATUS_REFUSED)
-    except SearchFailure:
-        return _marked(candidate, EXTRACTION_STATUS_FAILED)
+        # fetch that tried and broke. Its message names the cap.
+        return _marked(candidate, EXTRACTION_STATUS_REFUSED, str(exc))
+    except SearchFailure as exc:
+        return _marked(candidate, EXTRACTION_STATUS_FAILED, str(exc))
 
     if conditional and response.status_code == _STATUS_NOT_MODIFIED:
         # Upstream confirmed the copy the caller already holds. Return the
@@ -267,11 +274,11 @@ async def extract(
         )
 
     if not 200 <= response.status_code < 300:
-        return _marked(candidate, EXTRACTION_STATUS_FAILED)
+        return _marked(candidate, EXTRACTION_STATUS_FAILED, f"the server answered {response.status_code}")
 
     text = extractor(response.body.decode("utf-8", errors="replace"))
     if not text:
-        return _marked(candidate, EXTRACTION_STATUS_FAILED)
+        return _marked(candidate, EXTRACTION_STATUS_FAILED, "the page has no readable text")
 
     method = _METHOD_HEAVY if heavy_fetcher is not None else _METHOD_TRAFILATURA
     return candidate.model_copy(
@@ -512,14 +519,18 @@ def _declared_type(response: TransportResponse) -> str | None:
     return media_type or None
 
 
-def _marked(candidate: Candidate, status: str) -> Candidate:
-    """The candidate with its extraction status recorded and no content.
+def _marked(candidate: Candidate, status: str, reason: str) -> Candidate:
+    """The candidate with its extraction status and the reason recorded, and no content.
 
     :param candidate: the candidate whose extraction did not produce text
     :ptype candidate: Candidate
     :param status: the ``media-contracts`` status to record
     :ptype status: str
-    :return: a copy carrying the status facet
+    :param reason: why, in a sentence a person can read
+    :ptype reason: str
+    :return: a copy carrying the status and reason facets
     :rtype: Candidate
     """
-    return candidate.model_copy(update={"facets": {**candidate.facets, EXTRACTION_STATUS_FACET: status}})
+    return candidate.model_copy(
+        update={"facets": {**candidate.facets, EXTRACTION_STATUS_FACET: status, EXTRACTION_REASON_FACET: reason}}
+    )

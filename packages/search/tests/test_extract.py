@@ -11,6 +11,8 @@ Extract's choices rather than httpx's.
 
 from __future__ import annotations
 
+from typing import Any
+
 from collections.abc import Mapping
 
 import pytest
@@ -27,6 +29,7 @@ from threetears.search.contracts.fidelity import FIDELITY_CONTENT
 from threetears.search.contracts.spend import Spend
 from threetears.search.contracts.transport import FetchTransport, HeavyFetcher, TransportResponse
 from threetears.search.extract import (
+    EXTRACTION_REASON_FACET,
     EXTRACTION_METHOD_FACET,
     EXTRACTION_STATUS_FACET,
     EXTRACTOR_UNAVAILABLE_SCOPE,
@@ -382,6 +385,65 @@ async def test_a_page_that_yields_no_text_is_recorded_as_failed(page_reply: Tran
 
     assert result.facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_FAILED
     assert result.content is None
+
+
+@pytest.mark.parametrize(
+    ("replies", "locators", "reason"),
+    [
+        pytest.param({_ROBOTS_URL: "disallow"}, None, "robots.txt does not allow it", id="robots"),
+        pytest.param(
+            {_ROBOTS_URL: "allow", _PAGE_URL: LocalCapExceeded("body past cap", spend=Spend(), scope="response-bytes")},
+            None,
+            "body past cap",
+            id="cap",
+        ),
+        pytest.param(
+            {
+                _ROBOTS_URL: "allow",
+                _PAGE_URL: TransportResponse(
+                    status_code=404,
+                    body=b"nope",
+                    final_url=_PAGE_URL,
+                    egress="direct",
+                    elapsed_seconds=0.01,
+                    headers={"content-type": "text/html"},
+                ),
+            },
+            None,
+            "the server answered 404",
+            id="status",
+        ),
+        pytest.param({_ROBOTS_URL: "allow", _PAGE_URL: "empty"}, None, "the page has no readable text", id="no-text"),
+        pytest.param(
+            {_ROBOTS_URL: "allow", _PAGE_URL: TransportFailed("connection reset", spend=Spend())},
+            None,
+            "connection reset",
+            id="transport",
+        ),
+        pytest.param({}, (), "it has no address to fetch", id="no-locator"),
+    ],
+)
+async def test_a_read_that_did_not_happen_says_why(
+    replies: dict[str, Any], locators: tuple[Any, ...] | None, reason: str
+) -> None:
+    """The status says refused or failed for several causes alike; the reason says which.
+
+    A caller tells its reader why the page was not read (robots, the cap, the
+    server's answer), not a list of everything it might have been.
+    """
+    built = {
+        url: _disallowed()
+        if reply == "disallow"
+        else _allowed()
+        if reply == "allow"
+        else (_ok(b"<html><body></body></html>") if reply == "empty" else reply)
+        for url, reply in replies.items()
+    }
+    transport = ScriptedFetchTransport(built)
+
+    result = await extract(_candidate() if locators is None else _candidate(locators=locators), transport=transport)
+
+    assert reason in result.facets[EXTRACTION_REASON_FACET]
 
 
 async def test_a_candidate_with_no_locator_fails_without_fetching() -> None:

@@ -52,7 +52,7 @@ from __future__ import annotations
 import dataclasses
 import re
 import time
-from typing import Any, Final
+from typing import Any, Final, get_args
 from uuid import UUID
 
 from threetears.core.collections import CallerTransaction
@@ -426,6 +426,10 @@ async def _start_fire_conversation(
     return dataclasses.replace(trigger, started_conversation_id=started_conversation_id)
 
 
+#: The fires ``context_from`` reads the latest of: every status but a check's quiet run.
+_CONTEXT_FROM_STATUSES: tuple[str, ...] = tuple(s for s in get_args(FireStatus) if s != "checked_quiet")
+
+
 async def _resolve_context_from(
     pool: Any,
     trigger: WakeTrigger,
@@ -485,12 +489,14 @@ async def _resolve_context_from(
     upstream_schedule = await schedules.find_for_agent(trigger.agent_id, upstream_id)
     upstream_fire = None
     if upstream_schedule is not None:
-        # the latest fire that delivered something: a check's quiet runs and a
-        # skipped fire would otherwise hide the last real one
+        # The latest fire, past a check's quiet runs: a check that found nothing
+        # leaves its last real output current, so its quiet runs must not hide it.
+        # Any other fire counts as it is: a failed or skipped latest fire means the
+        # older output is stale, and the downstream gets nothing.
         upstream_fire = await fires.latest_for_schedule(
             conversation_id=upstream_schedule.conversation_id,
             schedule_id=upstream_id,
-            statuses=("fired", "fired_silent"),
+            statuses=_CONTEXT_FROM_STATUSES,
         )
     if upstream_fire is None or upstream_fire.status not in {"fired", "fired_silent"}:
         log_upstream_id = str(upstream_id)  # convert at border: context_from no-fire log extra_data field
