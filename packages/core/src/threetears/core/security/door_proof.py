@@ -40,6 +40,7 @@ from threetears.observe import get_logger
 from threetears.observe.metrics import counter
 
 __all__ = [
+    "MAX_COUNTED_SENDERS",
     "MAX_PROOF_WINDOW",
     "AbsentSender",
     "DoorProofModes",
@@ -57,8 +58,14 @@ log = get_logger(__name__)
 #: is not an open door for a season.
 MAX_PROOF_WINDOW: Final[timedelta] = timedelta(days=90)
 
-#: the name an absent sender is counted under when its message names nobody.
+#: the name an absent sender is counted under when its message names nobody, or when the door has
+#: already counted :data:`MAX_COUNTED_SENDERS` distinct names.
 _UNCLAIMED: Final[str] = "unclaimed"
+
+#: the most distinct claimed senders one door counts by name. The name is whatever the message
+#: says, so a forger varying it per message would otherwise grow the count without bound; past
+#: this many, every new name is counted as unclaimed. Far above the senders a door has.
+MAX_COUNTED_SENDERS: Final[int] = 1024
 
 _ABSENT_COUNTER: Final[str] = "door_proof_absent"
 
@@ -225,6 +232,8 @@ class DoorProofSwitch:
             sender = claimed_sender or _UNCLAIMED
             now = datetime.now(UTC)
             with self._lock:
+                if sender not in self._absent and len(self._absent) >= MAX_COUNTED_SENDERS:
+                    sender = _UNCLAIMED
                 count = self._absent.get(sender, (0, now))[0] + 1
                 self._absent[sender] = (count, now)
             counter(

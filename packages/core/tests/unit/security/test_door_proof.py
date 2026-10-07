@@ -16,6 +16,7 @@ from datetime import date, timedelta
 import pytest
 
 from threetears.core.security.door_proof import (
+    MAX_COUNTED_SENDERS,
     MAX_PROOF_WINDOW,
     DoorProofModes,
     DoorProofSwitch,
@@ -121,6 +122,20 @@ def test_an_unclaimed_sender_is_counted_under_a_named_placeholder() -> None:
     (sender,) = switch.absent_senders()
     assert sender.claimed_sender == "unclaimed"
     assert sender.date_last_seen.tzinfo is not None
+
+
+def test_a_forger_varying_its_claimed_name_cannot_grow_the_count_without_bound() -> None:
+    """past the cap, every new claimed name is counted as unclaimed; names already counted keep counting."""
+    switch = _switch(_OPENED)
+    for index in range(MAX_COUNTED_SENDERS + 500):
+        switch.judge(presented=False, claimed_sender=f"forged-{index}")
+    switch.judge(presented=False, claimed_sender="forged-0")
+
+    senders = {sender.claimed_sender: sender.count for sender in switch.absent_senders()}
+
+    assert len(senders) == MAX_COUNTED_SENDERS + 1
+    assert senders["unclaimed"] == 500
+    assert senders["forged-0"] == 2
 
 
 def test_one_door_has_one_switch_and_one_counter() -> None:
