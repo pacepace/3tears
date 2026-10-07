@@ -161,6 +161,27 @@ class DuckDBBackend:
         :rtype: int
         :raises ValueError: when the rows do not all name the same columns
         """
+        with self._db_lock:
+            self._insert_rows(self._db, table, rows, primary_key)
+        return len(rows)
+
+    def _insert_rows(
+        self, connection: Any, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]
+    ) -> None:
+        """insert or replace ``rows`` in one columnar statement on ``connection``; the caller holds the lock.
+
+        :param connection: the connection to write on
+        :ptype connection: Any
+        :param table: destination table name
+        :ptype table: str
+        :param rows: the rows, each keyed by column name, every pk column present
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the rows do not all name the same columns
+        """
         pk_cols = self._pk_columns(primary_key)
         schema = self._schema_info.get(table, {})
         # Only the table's own columns are written: the collection's pull-through
@@ -181,9 +202,55 @@ class DuckDBBackend:
             # conversion types them; the registry's names are logical (VARCHAR_UUID), not SQL
             select = ", ".join(f"unnest(${i}) AS {quote_identifier(c)}" for i, c in enumerate(columns, 1))
             sql = f"INSERT OR REPLACE INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) SELECT {select}"
-            with self._db_lock:
-                self._db.execute(sql, lists)
+            connection.execute(sql, lists)
+
+    def replace_all(self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]) -> int:
+        """make a table hold exactly ``rows``, in one transaction: what it held before is gone.
+
+        For an L1 that is a whole copy of its table (:mod:`threetears.core.collections.complete_copy`):
+        a row the source no longer holds must leave the copy, which an upsert never does. A
+        failure rolls back, so the table keeps what it held. Rows repeating a key keep the last.
+
+        :param table: a table this backend created
+        :ptype table: str
+        :param rows: every row the table is to hold, each keyed by column name
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: how many rows were given
+        :rtype: int
+        :raises ValueError: when the table is not one this backend created
+        """
+        if table not in self._schema_info:
+            raise ValueError(f"unknown table {table!r}: replace_all fills tables this backend created")
+        with self._db_lock:
+            committed = False
+            self._db.execute("BEGIN TRANSACTION")
+            try:
+                self._db.execute(f"DELETE FROM {quote_identifier(table)}")
+                self._insert_rows(self._db, table, rows, primary_key)
+                self._db.execute("COMMIT")
+                committed = True
+            finally:
+                if not committed:
+                    self._db.execute("ROLLBACK")
+        log.info("replaced an L1 table whole", extra={"extra_data": {"table": table, "rows": len(rows)}})
         return len(rows)
+
+    def stored_keys(self, table: str, key: Sequence[str]) -> list[tuple[Any, ...]]:
+        """every row's key as this backend stores it: the form :meth:`serialize_value` writes.
+
+        :param table: the table
+        :ptype table: str
+        :param key: the key's columns, in order
+        :ptype key: Sequence[str]
+        :return: one tuple of stored values per row, in no particular order
+        :rtype: list[tuple[Any, ...]]
+        """
+        columns = ", ".join(quote_identifier(column) for column in key)
+        with self._db_lock:
+            rows = self._db.execute(f"SELECT {columns} FROM {quote_identifier(table)}").fetchall()
+        return [tuple(row) for row in rows]
 
     def load_parquet(self, table: str, path: str | Path, *, row_number_column: str | None = None) -> int:
         """load a Parquet file into a table this backend created, in one statement.

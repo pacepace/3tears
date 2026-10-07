@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: an L1 that is a complete copy of its L3 table, proven before it is read
+
+- **Added, `threetears.core.collections.complete_copy`:** `CompleteCopy(collection, *, page_size=999)`
+  makes a collection's L1 a whole copy of its L3 table for queries that aggregate over the L1 (an
+  analytic table in a `DuckDBBackend`), where an L1 holding only some rows would answer wrongly
+  without saying so. `warm()` reads the table by its key a page at a time (the L3 rail answers at
+  most a thousand rows a statement and does not say when it cut), replaces the L1 table with exactly
+  those rows, and proves it: the L3 count and key fingerprint agree before and after the read, the
+  rows read number the count, and the L1 then holds that many rows with the same keys. `require()`
+  returns the `CopyProof` or raises `IncompleteCopyError` saying why. Any row leaving the L1 (a
+  write settled here, a peer's invalidation) voids the proof until the next warm, and fails a warm
+  it lands in. Refused, as `ValueError`, for an L1 that cannot replace a table whole.
+- **Added, `threetears.core.fingerprint`:** `relation_key_expression` (moved from
+  `threetears.datasources.drivers.sql_fragments.build_relation_key_expression`, which stays as its
+  alias), `postgres_fingerprint_sql` (now also what `AsyncpgDriver.relation_fingerprint` runs),
+  `key_fingerprint` (the same digest over keys already read; the same number as Postgres' for text
+  keys) and `KeyFingerprint`.
+- **Added, `DuckDBBackend.replace_all(table, rows, primary_key)`** (the table holds exactly the
+  rows, in one transaction) **and `DuckDBBackend.stored_keys(table, key)`** (every key as stored).
+- **Added, `BaseCollection.add_l1_eviction_listener(listener)` and `BaseCollection.l1_backend`:**
+  a listener is called with the key of every row leaving the collection's L1.
+
 ### Core: many rows upserted in a few statements, on the caller's transaction
 
 - **Added, `SchemaBackedCollection.save_rows(rows, *, conn, max_rows=None, max_bytes=None)`:** upserts

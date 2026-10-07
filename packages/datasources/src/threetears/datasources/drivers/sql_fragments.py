@@ -19,8 +19,10 @@ target styles:
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Literal
+
+from threetears.core.fingerprint import relation_key_expression
 
 __all__ = [
     "PlaceholderStyle",
@@ -354,30 +356,7 @@ def build_equality_filter(where: Mapping[str, str] | None) -> tuple[str, list[st
     return (f" WHERE {clause}" if clause else ""), list(filters.values())
 
 
-def build_relation_key_expression(key: Sequence[str]) -> str:
-    """render the ordering key of one row as a single text value, NULLs distinguished.
-
-    The dialect-independent half of a relation fingerprint. Every admitted engine
-    spells ``CAST(... AS VARCHAR)``, ``CHR`` and ``||`` the same way, so the part
-    that differs between them is only the hash-to-number step around this.
-
-    **A NULL is not an empty string here.** Coalescing both to ``''`` would make a
-    row with a NULL key indistinguishable from one with an empty one, so a swap
-    between them would leave the fingerprint unchanged -- exactly the blindness a
-    fingerprint replaces a count to remove. ``CHR(30)``, the ASCII record
-    separator, stands in for NULL; ``CHR(31)``, the unit separator, joins the
-    columns. Neither occurs in warehouse key data in practice, and a value that
-    did contain one would still be separated from its neighbours by the other.
-
-    :param key: the ordering columns, TRUSTED identifiers
-    :ptype key: Sequence[str]
-    :return: a SQL expression producing one text value per row
-    :rtype: str
-    :raises ValueError: when ``key`` is empty, which would render a constant and
-        fingerprint every relation of the same size identically
-    """
-    columns = list(key)
-    if not columns:
-        raise ValueError("a relation fingerprint needs at least one ordering column")
-    rendered = [f"CASE WHEN {column} IS NULL THEN CHR(30) ELSE CAST({column} AS VARCHAR) END" for column in columns]
-    return " || CHR(31) || ".join(rendered)
+#: render the ordering key of one row as a single text value, NULLs distinguished: the
+#: dialect-independent half of a relation fingerprint. One rule for every engine and for the
+#: L1 copies proven against them, so it lives in :mod:`threetears.core.fingerprint`.
+build_relation_key_expression = relation_key_expression

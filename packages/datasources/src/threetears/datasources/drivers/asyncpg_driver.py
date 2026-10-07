@@ -154,6 +154,7 @@ from typing import Any
 
 import asyncpg
 
+from threetears.core.fingerprint import postgres_fingerprint_sql
 from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS
 from threetears.core.utils.pg_pool_kwargs import (
     PoolStartupTimeoutError,
@@ -168,7 +169,6 @@ from threetears.datasources.config import (
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
     build_equality_filter,
-    build_relation_key_expression,
     build_reset_statement_timeout_sql,
     build_search_path_value,
     build_set_local_statement_timeout_sql,
@@ -1188,14 +1188,8 @@ class AsyncpgDriver(Driver):
         """
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
-        key_expression = build_relation_key_expression(key)
         filters, values = build_equality_filter(where)
-        sql = (
-            "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
-            "COALESCE(SUM(('x' || SUBSTR(MD5(k), 1, 8))::bit(32)::bigint), 0) AS digest "
-            f"FROM (SELECT {key_expression} AS k FROM {relation}{filters}) AS fingerprint_source"
-        )
-        sql = translate_placeholders(sql, "asyncpg")
+        sql = translate_placeholders(postgres_fingerprint_sql(relation, key, filters), "asyncpg")
         record = await self._acquire_and_run(lambda conn: conn.fetchrow(sql, *values))
         return RelationFingerprint(row_count=int(record["row_count"]), digest=str(record["digest"]))
 

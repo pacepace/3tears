@@ -1551,6 +1551,32 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._l1_fence.changed(self._fence_key(entity_id))
         if self._l1 is not None:
             self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        for listener in tuple(self.__dict__.get("_l1_eviction_listeners", ())):
+            listener(entity_id)
+
+    def add_l1_eviction_listener(self, listener: Callable[[Any], None]) -> None:
+        """call ``listener`` with the key of every row that leaves this collection's L1, as it leaves.
+
+        For a holder whose correctness depends on L1 holding every row (a complete copy,
+        :mod:`threetears.core.collections.complete_copy`): every eviction -- a write this process
+        settled, a peer's invalidation broadcast -- passes through :meth:`_evict_l1`, so a listener
+        here hears each one. It runs synchronously inside the eviction and must not raise.
+
+        :param listener: called with the evicted row's key (pk value, or tuple of pk values)
+        :ptype listener: Callable[[Any], None]
+        :return: nothing
+        :rtype: None
+        """
+        self.__dict__.setdefault("_l1_eviction_listeners", []).append(listener)
+
+    @property
+    def l1_backend(self) -> Any:
+        """the L1 backend this collection caches in, as its registry bound it; None when it has none.
+
+        :return: the backend
+        :rtype: Any
+        """
+        return getattr(self, "_l1", None)
 
     # --- L2 cache (NATS KV, async) ---
 
