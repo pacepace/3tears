@@ -50,6 +50,7 @@ from threetears.core.backends.schema_sql import (
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
+from threetears.core.entities.base import BaseEntity
 from threetears.observe import get_logger
 
 __all__ = [
@@ -76,6 +77,7 @@ __all__ = [
     "TableSchema",
     "UUID_TYPE",
     "VECTOR_TYPE",
+    "collection_for_schema",
     "l2_order_columns",
     "spans_partitions",
 ]
@@ -1960,3 +1962,62 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: dict[str, Any]
         """
         return _coerce_row_fn(self.schema, row)
+
+
+def collection_for_schema(
+    schema: TableSchema, *, entity_class: type[BaseEntity] | None = None
+) -> type[SchemaBackedCollection[Any]]:
+    """a collection class over ``schema``, for a table declared as data rather than as a class.
+
+    A pod whose tables come from a catalogue (one per map layer, one per warehouse table it
+    mirrors) builds each one's collection from its schema instead of writing a class per
+    table. Build each class once and keep it: every call makes a new class.
+
+    :param schema: the table
+    :ptype schema: TableSchema
+    :param entity_class: the entities the collection builds; a plain
+        :class:`~threetears.core.entities.base.BaseEntity` keyed on the schema's first primary-key
+        column when None
+    :ptype entity_class: type[BaseEntity] | None
+    :return: a :class:`SchemaBackedCollection` subclass over ``schema``
+    :rtype: type[SchemaBackedCollection[Any]]
+    """
+    entity = entity_class
+    if entity is None:
+        entity = type(
+            f"{schema.name}_row",
+            (BaseEntity,),
+            {
+                "__doc__": f"one row of {schema.name}.",
+                "primary_key_field": schema.primary_key[0],
+            },
+        )
+    entity_type: type[BaseEntity] = entity
+
+    class _SchemaCollection(SchemaBackedCollection[Any]):
+        """one schema's rows."""
+
+        primary_key_column: str | tuple[str, ...] = schema.primary_key
+
+        @property
+        def table_name(self) -> str:
+            """the schema's table.
+
+            :return: the table name
+            :rtype: str
+            """
+            return schema.name
+
+        @property
+        def entity_class(self) -> type[Any]:
+            """the entity class.
+
+            :return: the entity class
+            :rtype: type[Any]
+            """
+            return entity_type
+
+    _SchemaCollection.schema = schema
+    _SchemaCollection.__name__ = f"SchemaCollection[{schema.name}]"
+    _SchemaCollection.__qualname__ = _SchemaCollection.__name__
+    return _SchemaCollection

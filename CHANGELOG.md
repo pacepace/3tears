@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: a collection class built from a table schema
+
+- **Added, `threetears.core.collections.schema_backed.collection_for_schema`:** a
+  `SchemaBackedCollection` subclass over a `TableSchema`, for tables a pod declares as data (one
+  per map layer, one per warehouse table it mirrors) rather than as a class each. Its entities are
+  a plain `BaseEntity` keyed on the schema's first primary-key column unless an entity class is
+  given. Each call makes a new class, so build each once. The geography pod's per-layer collection
+  classes were the first copy, the ENR pod's tables the second.
+
 ### Agent tools: a long operation started by one tool and reported by another
 
 - **Added, `threetears.agent.tools.background_operation`:** `BackgroundOperation` runs one
