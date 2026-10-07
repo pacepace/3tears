@@ -134,6 +134,55 @@ async def test_start_when_needed_does_not_retry_an_unnamed_error() -> None:
     assert body.calls == 0
 
 
+async def test_a_second_start_when_needed_while_one_waits_is_refused_and_stop_still_ends_the_first() -> None:
+    body = _gate()
+    operation = BackgroundOperation("load", body)
+    answer = asyncio.Event()
+    cancelled: list[str] = []
+
+    async def first() -> bool:
+        try:
+            await answer.wait()
+        except asyncio.CancelledError:
+            cancelled.append("first")
+            raise
+        return True
+
+    async def second() -> bool:
+        return True
+
+    assert operation.start_when_needed(first, retry_on=(ConnectionError,), retry_seconds=0)
+    assert not operation.start_when_needed(second, retry_on=(ConnectionError,), retry_seconds=0)
+    await asyncio.sleep(0)
+    await operation.stop()
+    assert cancelled == ["first"]
+    assert body.calls == 0
+
+
+async def test_wait_until_settled_waits_for_the_first_start_when_needed() -> None:
+    body = _gate()
+    body.release.set()
+    operation = BackgroundOperation("load", body)
+    answer = asyncio.Event()
+
+    async def first() -> bool:
+        await answer.wait()
+        return True
+
+    async def never() -> bool:
+        raise AssertionError("a second wait must not replace the first")
+
+    operation.start_when_needed(first, retry_on=(ConnectionError,), retry_seconds=0)
+    operation.start_when_needed(never, retry_on=(ConnectionError,), retry_seconds=0)
+    settled = asyncio.create_task(operation.wait_until_settled())
+    await asyncio.sleep(0)
+    assert not settled.done()
+    answer.set()
+    await settled
+    assert body.calls == 1
+    assert operation.state == "succeeded"
+
+
 async def test_stop_cancels_the_running_operation() -> None:
     body = _gate()
     operation = BackgroundOperation("load", body)

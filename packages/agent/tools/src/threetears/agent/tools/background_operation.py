@@ -196,13 +196,15 @@ class BackgroundOperation(Generic[ResultT]):
         *,
         retry_on: tuple[type[BaseException], ...],
         retry_seconds: float,
-    ) -> None:
+    ) -> bool:
         """in the background: ask ``needed`` until it answers, and start a run if it says yes.
 
         For a pod's first run, when it cannot know yet whether one is needed (its tables are
         out of reach until the hub grants it storage). Only the errors in ``retry_on`` are
         retried; any other ends the wait and is raised from :meth:`wait_until_settled`. If a
-        run was started some other way meanwhile, that run is the one; none is added.
+        run was started some other way meanwhile, that run is the one; none is added. While
+        one such wait is still deciding, another is refused, so :meth:`stop` and
+        :meth:`wait_until_settled` always reach the wait that is running.
 
         :param needed: whether a run is needed now
         :ptype needed: Callable[[], Awaitable[bool]]
@@ -210,13 +212,21 @@ class BackgroundOperation(Generic[ResultT]):
         :ptype retry_on: tuple[type[BaseException], ...]
         :param retry_seconds: the wait between attempts
         :ptype retry_seconds: float
-        :return: nothing
-        :rtype: None
+        :return: True when the wait started; False when one was already deciding
+        :rtype: bool
         """
-        self._watcher = asyncio.create_task(
-            self._start_when_needed(needed, retry_on=retry_on, retry_seconds=retry_seconds),
-            name=f"{self._name}-when-needed",
-        )
+        started = self._watcher is None or self._watcher.done()
+        if started:
+            self._watcher = asyncio.create_task(
+                self._start_when_needed(needed, retry_on=retry_on, retry_seconds=retry_seconds),
+                name=f"{self._name}-when-needed",
+            )
+        else:
+            log.warning(
+                "a wait to start the operation is already deciding; this one is refused",
+                extra={"extra_data": {"operation": self._name}},
+            )
+        return started
 
     async def wait_until_settled(self) -> None:
         """wait for :meth:`start_when_needed` to decide, and for any run it started to end.

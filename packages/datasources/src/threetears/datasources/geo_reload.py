@@ -56,10 +56,12 @@ read, and the next successful report deletes them.
    not verify, or names anything but a tool pod, is answered ``IDENTITY_REFUSED``.
 3. Every named layer must be registered (``LAYER_NOT_REGISTERED``) under a provider
    namespace the verified pod owns (``LAYER_NOT_OWNED``), and every generation must
-   be within :data:`MAX_GENERATION_STEP` of the layer's version (which is 1 before it
-   has ever moved)
-   (``GENERATION_OUT_OF_RANGE``) and not below it (``GENERATION_BEHIND``). These are
-   checked for all layers before any version moves; a refusal moves none.
+   be at most :data:`MAX_GENERATION_STEP` past the layer's version
+   (``GENERATION_OUT_OF_RANGE``) and not below it (``GENERATION_BEHIND``). A layer that
+   has never been reported has no version (``versions`` answers epoch ``0``), so its
+   first report is accepted at any generation from 1 to :data:`MAX_GENERATION_STEP` and
+   sets its version (obligations 4 and 6). These are checked for all layers before any
+   version moves; a refusal moves none.
 4. Move each layer's version to its generation, only after the check above, recording
    the version it replaced (:meth:`threetears.epoch.EpochClient.advance_to` keeps it as
    ``previous``), and reply :class:`GeoLayersReloadedReply` with ``success=True``, the

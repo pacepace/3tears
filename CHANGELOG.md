@@ -20,7 +20,8 @@ packages (bumped in lock-step).
 - **Added, `threetears.agent.tools.background_operation`:** `BackgroundOperation` runs one
   operation in the background at most once at a time and keeps how its last run ended (its result,
   or the exception as `<Type>: <message>`); `start_when_needed` runs a pod's first run once it can
-  tell one is needed, retrying only the errors it is told mean "not reachable yet".
+  tell one is needed, retrying only the errors it is told mean "not reachable yet" (a second such
+  wait while one is deciding is refused, so `stop` and `wait_until_settled` reach the one running).
   `StartOperationTool` starts a run and answers at once, refusing a start while one runs with
   `CONFLICT`; `OperationStatusTool` reports `idle`, `running`, `succeeded` or `failed` with the last
   run's times, result and error. Both are `face_api` and refuse, saying so, until the pod has built
