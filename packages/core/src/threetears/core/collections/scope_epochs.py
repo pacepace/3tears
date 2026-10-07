@@ -80,6 +80,7 @@ __all__ = [
     "SCOPE_EPOCHS_TABLE",
     "STALLED_WRITE_SECONDS",
     "WHOLE",
+    "EpochRecordBusyError",
     "EpochSnapshot",
     "ScopeEpochs",
     "scope_epochs_collection",
@@ -102,6 +103,36 @@ _TOUCH_BATCH: Final = 500
 
 #: a write in progress longer than this has most likely died: readers say so at warning, not info
 STALLED_WRITE_SECONDS: Final = 600
+
+
+class EpochRecordBusyError(RuntimeError):
+    """the version row is locked by a data transaction still open, so no write may begin now.
+
+    A writer's every data transaction holds the row's lock until it ends (the fence of
+    :meth:`ScopeEpochs.touch`). A writer whose lease lapsed while one of those hung open would make
+    the next ``begin`` wait as long as it hangs, so ``begin`` refuses at once instead; the next request
+    to write begins once the hung transaction has ended (the store's own transaction timeout ends it).
+    """
+
+
+#: SQLSTATE for "could not obtain lock" (``NOWAIT``)
+_LOCK_NOT_AVAILABLE: Final = "55P03"
+
+
+def _lock_not_available(exc: BaseException) -> bool:
+    """whether ``exc`` is the store refusing a ``NOWAIT`` lock, however its transport carries it.
+
+    :param exc: the error a statement raised
+    :ptype exc: BaseException
+    :return: True for SQLSTATE 55P03
+    :rtype: bool
+    """
+    text = str(exc).lower()
+    return (
+        getattr(exc, "sqlstate", None) == _LOCK_NOT_AVAILABLE
+        or _LOCK_NOT_AVAILABLE in text
+        or "could not obtain lock" in text
+    )
 
 
 def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
@@ -263,8 +294,24 @@ class ScopeEpochs:
         :ptype conn: Any
         :return: the write's version
         :rtype: int
+        :raises EpochRecordBusyError: when a data transaction of an earlier write still holds the
+            version row (refused at once, never waited on)
         """
         transaction = CallerTransaction.join(conn, writer="ScopeEpochs.begin")
+        try:
+            # the record's lock, taken without waiting: a data transaction left open by a stale writer
+            # holds it, and waiting on it would stall this write for as long as that one hangs
+            await conn.fetchrow(
+                f"SELECT writing FROM {self._table} WHERE scope = $1 FOR UPDATE NOWAIT",  # noqa: S608 - the owner's table name
+                WHOLE,
+            )
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- only a refused NOWAIT is translated; anything else is re-raised unchanged
+            if not _lock_not_available(exc):
+                raise
+            raise EpochRecordBusyError(
+                f"{self._collection.table_name}: a data transaction of an earlier write still holds the version row; "
+                "no write may begin until it ends"
+            ) from exc
         row = await conn.fetchrow(
             f"INSERT INTO {self._table} (scope, epoch, writing, date_created, date_updated) "  # noqa: S608 - the owner's table name
             "VALUES ($1, 0, 1, now(), now()) "

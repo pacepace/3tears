@@ -201,13 +201,22 @@ async def test_a_writer_whose_lease_lapsed_cannot_commit_over_the_writer_that_fo
     assert (after.version, after.epoch("state:VA"), after.epoch("state:MD")) == (current, current, 0)
 
 
-async def test_two_writes_begun_together_take_two_numbers(held: _Held) -> None:
-    versions = await asyncio.gather(
-        *(_in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn)) for _ in range(4))
+async def test_writes_begun_together_never_share_a_number(held: _Held) -> None:
+    """two begins at once (a lapsed lease): each takes its own number, or is refused because the
+    other holds the record; never the same number, and never a wait."""
+    from threetears.core.collections.scope_epochs import EpochRecordBusyError
+
+    outcomes = await asyncio.gather(
+        *(_in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn)) for _ in range(4)),
+        return_exceptions=True,
     )
 
-    assert sorted(versions) == [1, 2, 3, 4]
-    assert (await held.epochs.snapshot()).writing == 4
+    numbers = [outcome for outcome in outcomes if isinstance(outcome, int)]
+    refused = [outcome for outcome in outcomes if not isinstance(outcome, int)]
+    assert numbers, "every begin was refused"
+    assert len(set(numbers)) == len(numbers)
+    assert all(isinstance(outcome, EpochRecordBusyError) for outcome in refused)
+    assert (await held.epochs.snapshot()).writing == max(numbers)
 
 
 async def test_a_scope_already_at_or_past_the_version_is_refused_and_nothing_moves(held: _Held) -> None:
@@ -355,3 +364,41 @@ async def test_a_write_in_progress_far_too_long_is_logged_as_stalled_and_describ
     assert isinstance(refused, Unsettled)
     assert f"write {version}" in refused.reason
     assert "in progress for" in refused.reason
+
+
+async def test_a_begin_behind_a_hung_writers_open_data_transaction_is_refused_at_once(held: _Held) -> None:
+    """a stale writer whose data transaction hangs open (holding the record's lock) cannot stall the next."""
+    import time
+
+    from threetears.core.collections.scope_epochs import EpochRecordBusyError
+
+    stale = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    hung = await held.pool.acquire()
+    hang = CallerTransaction(hung)
+    await hang.__aenter__()
+    try:
+        await held.epochs.touch(stale, {"state:VA"}, conn=hung)  # its lock now held, never committed
+
+        started = time.monotonic()
+        with pytest.raises(EpochRecordBusyError):
+            await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+        assert time.monotonic() - started < 2.0, "begin waited on the hung writer's lock"
+    finally:
+        await hang.__aexit__(ConnectionError, ConnectionError("hung writer abandoned"), None)
+        await held.pool.release(hung)
+
+    # once the hung transaction is gone, the next write begins
+    assert await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn)) == stale + 1
+
+
+async def test_writes_through_one_record_take_turns_and_each_turn_is_short(held: _Held) -> None:
+    """every data transaction of a write passes the record's lock: measure what that costs per turn."""
+    import time
+
+    version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    started = time.monotonic()
+    turns = 20
+    for index in range(turns):
+        await _in_transaction(held.pool, lambda conn, i=index: held.epochs.touch(version, {f"state:S{i}"}, conn=conn))
+    per_turn = (time.monotonic() - started) / turns
+    assert per_turn < 0.05, f"a touch took {per_turn:.3f} s on a local Postgres"

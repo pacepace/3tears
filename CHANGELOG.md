@@ -33,7 +33,9 @@ copies swapped in whole.
   (`scope_epochs_schema(name)`, `scope_epochs_collection(name)`): a scope's epoch is the version of
   the last write that changed it. `begin(conn=)` takes the next version in one statement under the
   row's lock and marks the write in progress; the latest begin supersedes (its version is a fencing
-  token). `touch(version, scopes, conn=)`, in each data write's transaction, records the scopes it
+  token); it takes the row's lock with `NOWAIT` and raises `EpochRecordBusyError` at once when a
+  data transaction of an earlier (stale) write still holds it, never waiting on a hung one.
+  `touch(version, scopes, conn=)`, in each data write's transaction, records the scopes it
   changed as pending, fenced as commit is: a superseded writer's late data transaction is refused
   and rolls back. `commit(version, scopes, conn=)` clears the in-progress mark only while that
   version is still the write in progress (checked in the same statement, in the caller's
