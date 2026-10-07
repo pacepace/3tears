@@ -1989,7 +1989,7 @@ def collection_for_schema(
             (BaseEntity,),
             {
                 "__doc__": f"one row of {schema.name}.",
-                "primary_key_field": schema.primary_key[0],
+                "primary_key_field": schema.pk_columns[0],
             },
         )
     entity_type: type[BaseEntity] = entity

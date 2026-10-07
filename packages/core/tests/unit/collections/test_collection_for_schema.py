@@ -65,3 +65,19 @@ def test_two_schemas_give_two_classes() -> None:
     assert first is not second
     assert first.schema.name == "a"
     assert second.schema.name == "b"
+
+
+def test_a_single_column_key_names_the_entity_s_key_whole() -> None:
+    """A key written as one name keys the entity on that name, not on its first letter."""
+    schema = TableSchema(
+        name="loads",
+        primary_key="source",
+        columns=[
+            Column("source", STRING_TYPE),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
+        ],
+    )
+    collection = collection_for_schema(schema)(CollectionRegistry(), DefaultCoreConfig(), None)
+    assert collection.entity_class.primary_key_field == "source"
+    assert collection.create({"source": "geos"}).id == "geos"
