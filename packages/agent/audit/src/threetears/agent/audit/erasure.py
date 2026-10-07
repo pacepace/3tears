@@ -66,10 +66,11 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Annotated, Final
+from typing import TYPE_CHECKING, Annotated, ClassVar, Final
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
+from threetears.core.wire import TolerantWireModel
 from threetears.nats import RequestError, Subjects
 from threetears.observe import get_logger
 
@@ -165,7 +166,7 @@ class AuditAnonymizeUnavailableError(AuditAnonymizeError):
     """
 
 
-class AuditAnonymizeRequest(BaseModel):
+class AuditAnonymizeRequest(TolerantWireModel):
     """an agent's request to anonymize the audit rows it published about some actors.
 
     :param identity_token: the agent's CURRENT hub-minted identity token; the hub verifies
@@ -181,7 +182,8 @@ class AuditAnonymizeRequest(BaseModel):
     :ptype actor_user_ids: list[UUID]
     """
 
-    model_config = ConfigDict(extra="forbid")
+    #: the customer comes from the verified token; a body naming one would be a second, unverified answer.
+    refused_fields: ClassVar[frozenset[str]] = frozenset({"customer_id"})
 
     identity_token: Annotated[str, Field(min_length=1)]
     correlation_id: UUID

@@ -52,10 +52,11 @@ import random
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, field_validator, model_validator
+from threetears.core.wire import TolerantWireModel
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import get_logger, traced
@@ -122,7 +123,7 @@ _IDENTIFIER_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_
 _RELATION_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?$")
 
 
-class RelationFingerprintRequest(BaseModel):
+class RelationFingerprintRequest(TolerantWireModel):
     """ask the hub to count and fingerprint a relation, instead of running SQL.
 
     Declarative rather than a statement, because the statement is dialect-specific
@@ -141,8 +142,6 @@ class RelationFingerprintRequest(BaseModel):
     :raises ValueError: if ``relation`` or any ``key_columns`` entry is not a plain SQL
         identifier, or if ``key_columns`` is empty
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     relation: str
     key_columns: list[str]
@@ -227,7 +226,7 @@ class RelationFingerprintRequest(BaseModel):
         return value
 
 
-class RelationFingerprintResult(BaseModel):
+class RelationFingerprintResult(TolerantWireModel):
     """a relation's row count and key digest at one instant.
 
     Compared for equality against a later reading of the same relation. The digest
@@ -240,22 +239,22 @@ class RelationFingerprintResult(BaseModel):
     :ptype digest: str
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(frozen=True)
 
     row_count: int
     digest: str
 
 
-class DatasourceQueryRequest(BaseModel):
+class DatasourceQueryRequest(TolerantWireModel):
     """one datasource query, carrying the caller's identity as a forwarded token.
 
-    extras are FORBIDDEN, and that is a security property rather than a style
-    choice. ``agent_id`` and ``user_id`` are deliberately absent: a request that
-    carried them would be one whose ACL check a caller could steer. Pydantic's
-    default of ignoring an unknown field would let a stale client send one,
-    have it dropped, and be authorized as the token's principal with no error
-    anywhere -- broader authority than it asked for, silently. Refusing turns
-    that into a border failure the caller sees.
+    ``agent_id`` and ``user_id`` are RETIRED, and refusing them is a security
+    property rather than a style choice: a request that carried them would be one
+    whose ACL check a caller could steer. Ignoring them would let a stale client
+    send one, have it dropped, and be authorized as the token's principal with no
+    error anywhere -- broader authority than it asked for, silently. Any other
+    unknown field is ignored (a tolerant reader), so a newer caller's addition does
+    not refuse the query at an older hub.
 
     :param correlation_id: trace id echoed back on the reply and bound into the
         hub's logs, so one query can be followed from the caller to the driver
@@ -287,7 +286,7 @@ class DatasourceQueryRequest(BaseModel):
     :ptype params: list[Any]
     """
 
-    model_config = ConfigDict(extra="forbid")
+    refused_fields: ClassVar[frozenset[str]] = frozenset({"agent_id", "user_id"})
 
     correlation_id: UUID
     identity_token: SecretStr

@@ -16,7 +16,8 @@ from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
 
-from pydantic import BaseModel, ConfigDict, SerializerFunctionWrapHandler, model_serializer, model_validator
+from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer, model_validator
+from threetears.core.wire import TolerantWireModel
 
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import TearsTool, ToolResult
@@ -624,7 +625,7 @@ _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
 )
 
 
-class CallRequest(BaseModel):
+class CallRequest(TolerantWireModel):
     """incoming tool call request from NATS.
 
     per-call identity dimensions (conversation_id, user_id, customer_id,
@@ -678,28 +679,13 @@ class CallRequest(BaseModel):
         buy itself more time than the pod allows, and the pod does not spend
         time the caller has already given up waiting for.
 
-        **Rollout: this release ACCEPTS the field; no client sends it yet.**
-        :attr:`model_config` is ``extra="forbid"``, so a client that sends
-        this to a server predating it gets its whole call rejected -- not a
-        degraded call, a refused one. The server side therefore ships and
-        deploys a release before any caller is taught to populate it, which is
-        the same order ``result_subject`` went out under.
-
-        **That order is necessary and was not sufficient, and this note used
-        to say otherwise.** Not populating a field does not keep it off the
-        wire: every DECLARED field is serialized, so this one crossed as an
-        explicit ``null`` from the moment it was added, and a receiver that
-        forbids extras refuses an unknown null exactly as it refuses an
-        unknown value. A 0.23.11 pod refused every call from a 0.24.1 registry
-        for three days on this field, before any caller sent it. What makes the
-        rollout order true is the registry proxy pruning unset top-level
-        optionals from the envelope (0.24.3) -- so any OTHER sender of this
-        model must prune likewise, and adding a field here is not safe on the
-        strength of this paragraph alone
+        The model is a tolerant reader (:class:`~threetears.core.wire.TolerantWireModel`): a
+        server predating a field ignores it, so a caller may send it before every pod has
+        upgraded. Pods released while this model still forbade extras refuse the whole call on an
+        unknown key, explicit ``null`` included, which is why the registry proxy prunes unset
+        top-level optionals from the envelope
     :ptype deadline_seconds: float | None
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     tool_name: str
     tool_version: str
@@ -3221,18 +3207,16 @@ class ToolServer:
                 content="",
                 error=f"malformed call request: {exc}",
             )
-            # NOSILENT: this branch refuses the call at the border and, until now, wrote
-            # nothing anywhere -- the reason travelled only in the reply, to a caller that
-            # is usually a model. :attr:`CallRequest.model_config` is ``extra="forbid"``,
-            # so the ordinary way to arrive here is a CALLER NEWER THAN THIS POD sending a
-            # field this version does not know: an envelope-compatibility failure that
-            # rejects every call identically and is invisible in the pod's own log. That is
-            # the shape most worth naming, because nothing else about the pod looks wrong
-            # while it happens -- it registers, heartbeats, and answers probes throughout.
+            # NOSILENT: this branch refuses the call at the border, and the reason would
+            # otherwise travel only in the reply, to a caller that is usually a model. A
+            # CallRequest ignores fields it does not know, so arriving here means a declared
+            # field failed validation or a retired one was sent: an envelope-compatibility
+            # failure that can reject every call identically while the pod registers,
+            # heartbeats and answers probes throughout.
             log.warning(
-                "refusing a call whose envelope this pod cannot parse; a caller newer than "
-                "this pod sending an unknown field is the usual cause (CallRequest forbids "
-                "extras), and it refuses every call the same way",
+                "refusing a call whose envelope this pod cannot parse; a declared field that "
+                "failed validation or a retired field is the usual cause, and it refuses every "
+                "call the same way",
                 extra={"extra_data": {"pod_id": self._pod_id, "error": str(exc)}},
             )
             await self._respond(msg, error_response)

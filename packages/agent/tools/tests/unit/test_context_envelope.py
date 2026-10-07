@@ -365,15 +365,13 @@ class TestAuthWireFields:
         req = CallRequest(tool_name="test.stub", tool_version="1.0", arguments={})
         assert req.proxy_assertion is None
 
-    def test_call_request_still_forbids_a_genuinely_unknown_field(self) -> None:
-        """extra='forbid' stays intact: only the declared auth field is accepted, not any extra."""
-        with pytest.raises(ValidationError):
-            CallRequest(
-                tool_name="test.stub",
-                tool_version="1.0",
-                arguments={},
-                totally_unknown="x",  # type: ignore[call-arg]
-            )
+    def test_call_request_ignores_a_field_a_newer_registry_adds(self) -> None:
+        """a tolerant reader: a pod predating a field still runs the call (owner ruling 2026-10-07)."""
+        request = CallRequest.model_validate(
+            {"tool_name": "test.stub", "tool_version": "1.0", "arguments": {}, "totally_unknown": "x"}
+        )
+        assert request.tool_name == "test.stub"
+        assert "totally_unknown" not in request.model_dump()
 
     def test_call_request_forwards_identity_token_in_context(self) -> None:
         """``identity_token`` nested in ``context`` survives onto ``CallRequest``."""

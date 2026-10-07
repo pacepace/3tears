@@ -15,9 +15,9 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid7
 
+from threetears.core.wire import TolerantWireModel
 from pydantic import (
     BaseModel,
-    ConfigDict,
     SerializerFunctionWrapHandler,
     ValidationError,
     model_serializer,
@@ -105,7 +105,7 @@ _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
 _OMITTED_WHEN_UNSET: tuple[str, ...] = ("deadline_seconds", "input_schema_digest")
 
 
-class ProxyCallRequest(BaseModel):
+class ProxyCallRequest(TolerantWireModel):
     """incoming tool call request from a caller: an agent, a tool pod, or the hub.
 
     all per-call identity dimensions (conversation_id, user_id,
@@ -156,17 +156,10 @@ class ProxyCallRequest(BaseModel):
         clamped to its own wait, so a caller can shorten a call but never
         buy itself more time than the tool allows.
 
-        **Rollout: this release ACCEPTS the field; no agent sends it
-        yet.** :attr:`model_config` is ``extra="forbid"``, so an agent
-        sending it to a registry predating this release gets its whole
-        call rejected. The receiver ships first -- and, as of 0.24.3,
-        that order is *made* true rather than merely asserted: an unset
-        optional is pruned from the forwarded envelope rather than
-        crossing as an explicit ``null``. An agent-side sender must
-        prune likewise, which is the lesson that cost three days of
-        refusals on the hop below this one. **The model now does that
-        pruning itself**: an unset ``deadline_seconds`` is omitted from
-        every serialized form, whichever serializer the sender calls
+        The model is a tolerant reader (:class:`~threetears.core.wire.TolerantWireModel`), so a
+        registry predating a field ignores it rather than refusing the call. An unset
+        ``deadline_seconds`` is still omitted from every serialized form, whichever serializer
+        the sender calls
     :ptype deadline_seconds: float | None
     :param input_schema_digest: the :attr:`DiscoverResultEntry.input_schema_digest`
         the caller was shown. When set, the call is routed ONLY to copies
@@ -177,15 +170,10 @@ class ProxyCallRequest(BaseModel):
         serves. ``None`` routes exactly where discovery would show.
         Checked here and NEVER forwarded to the pod.
 
-        **Rollout: the registry ships before any sender sets it**, because
-        a registry older than this field refuses the whole call on the
-        unknown key. The model omits it from every serialized form when
-        unset, so a sender that never sets it cannot put a null on the
-        wire either
+        A registry older than this field ignores it, so the call routes as discovery would
+        show. The model omits it from every serialized form when unset
     :ptype input_schema_digest: str | None
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     tool_name: str
     tool_version: str
@@ -1989,15 +1977,12 @@ def _build_internal_payload(
         result_subject=result_subject,
         deadline_seconds=_forwarded_deadline(request.deadline_seconds, effective_timeout),
     )
-    # Dropping unset TOP-LEVEL optionals is what makes a newer registry safe against an older
-    # pod, and it is load-bearing rather than tidiness. :class:`CallRequest` is
-    # ``extra="forbid"``, so a pod predating a field refuses the WHOLE call rather than ignoring
-    # the field -- and since every declared field is serialized, an optional nobody set still
-    # reaches the wire as an explicit null. A field can therefore break every lagging pod in the
-    # fleet without a single caller populating it, which is exactly the trap the "ship the
-    # accepting server first" rollout note is written to avoid: that note assumes absence follows
-    # from not setting it, and only this makes it true. An absent key and a null key parse
-    # identically on a pod new enough to declare the field, so nothing is lost.
+    # Dropping unset TOP-LEVEL optionals keeps the envelope to what the caller set.
+    # :class:`CallRequest` is a tolerant reader, so a pod predating a field ignores it; a pod
+    # released before it was (one whose CallRequest still forbade extras) refused the WHOLE call
+    # on an explicit null, and pruning is what keeps a newer registry safe against such a pod
+    # until the fleet has moved past it. An absent key and a null key parse identically on a pod
+    # new enough to declare the field, so nothing is lost.
     #
     # Scoped to the top level ON PURPOSE, rather than a recursive ``exclude_none``. The nesting
     # that matters here is ``context``, and :class:`CallContext` does NOT forbid extras -- an

@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: wire models are tolerant readers, and a door adopts a proof through a dated window
+
+Owner ruling 2026-10-07: framework components and their consumers upgrade on their own schedules.
+
+- **Added, `threetears.core.wire.TolerantWireModel`**: a wire model a separately deployed receiver
+  reads ignores fields it does not know, and refuses by name the fields that would let a sender
+  steer its own authority (`refused_fields`).
+- **Changed: these wire models are now tolerant readers**: `ProxyCallRequest`, `CallRequest`,
+  `DatasourceQueryRequest` (still refuses `agent_id` and `user_id`), `RelationFingerprintRequest`,
+  `RelationFingerprintResult`, `GeoLayersReloadedRequest`, `AuditEvent` and
+  `AuditAnonymizeRequest` (now refuses `customer_id` by name). A newer sender's added field no
+  longer refuses the whole message at an older receiver. `tests/enforcement/test_wire_models_are_tolerant_readers.py`
+  pins the inventory both ways.
+- **Added, `threetears.core.security.door_proof`**: `DoorWindow` (a door's dated window for
+  adopting a proof, at most `MAX_PROOF_WINDOW`, 90 days), `DoorProofSwitch` (optional before the
+  date, required from it or when config requires it early; every absent proof logged and counted on
+  `door_proof_absent`), `DoorProofModes` (config lists only doors to require early, so it cannot
+  reopen one) and `expired_windows` (a window past its date, for a repo's gate).
+
 ### Enforcement: every NATS receiver says how it authenticates its sender
 
 A subject proves nothing about who published on it: any connection can have its own bytes

@@ -53,6 +53,25 @@ _SRC_ROOTS = (
 #: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
 _ALLOWLIST = (
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/security/door_proof.py",
+        class_name="DoorProofModes",
+        attr_name="_switches",
+        rationale=(
+            "one live DoorProofSwitch object per door in this process, built on first use; the "
+            "switches hold a lock and a clock and are not data, so there is nothing to serialize"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/security/door_proof.py",
+        class_name="DoorProofSwitch",
+        attr_name="_absent",
+        rationale=(
+            "this replica's tally of unverified sender claims, for an operator reading the "
+            "process; nothing decides on it (a window ends by its date), and the record that "
+            "outlives the process is the door_proof_absent prometheus counter and the decision log"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/registry.py",
         class_name="CollectionRegistry",
         attr_name="_collections",
