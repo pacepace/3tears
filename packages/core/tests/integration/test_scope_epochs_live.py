@@ -74,7 +74,9 @@ async def _schema_pool(db_container: str) -> asyncpg.Pool:
     return pool
 
 
-def _replica(pool: asyncpg.Pool, nats: NatsClient | None = None) -> tuple[CollectionRegistry, ScopeEpochs]:
+def _replica(
+    pool: asyncpg.Pool, nats: NatsClient | None = None, *, idle_timeout: Any = None
+) -> tuple[CollectionRegistry, ScopeEpochs]:
     registry = CollectionRegistry()
     l1 = SQLiteBackend(db_name=f"epochs_{uuid.uuid4().hex[:8]}")
     collection_class = scope_epochs_collection(_TABLE)
@@ -84,7 +86,7 @@ def _replica(pool: asyncpg.Pool, nats: NatsClient | None = None) -> tuple[Collec
     # replicas of one deployment share one key scope, as tool pods of one ``tool_pods.id`` do
     registry.configure(l1_backend=l1, l3_pool=SqlL3Backend(pool), kv_key_scope="epochs-pod")
     collection = collection_class(registry, DefaultCoreConfig(), nats)
-    return registry, ScopeEpochs(collection)
+    return registry, ScopeEpochs(collection, idle_timeout=idle_timeout)
 
 
 @pytest.fixture
@@ -206,6 +208,9 @@ async def test_writes_begun_together_never_share_a_number(held: _Held) -> None:
     other holds the record; never the same number, and never a wait."""
     from threetears.core.collections.scope_epochs import EpochRecordBusyError
 
+    # the record's row exists, as after any first write, so each begin takes its lock with NOWAIT
+    # (with no row there is nothing to lock, and the begins only meet at the insert)
+    await _write(held, set())
     outcomes = await asyncio.gather(
         *(_in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn)) for _ in range(4)),
         return_exceptions=True,
@@ -402,3 +407,84 @@ async def test_writes_through_one_record_take_turns_and_each_turn_is_short(held:
         await _in_transaction(held.pool, lambda conn, i=index: held.epochs.touch(version, {f"state:S{i}"}, conn=conn))
     per_turn = (time.monotonic() - started) / turns
     assert per_turn < 0.05, f"a touch took {per_turn:.3f} s on a local Postgres"
+
+
+async def test_two_data_transactions_of_one_write_run_alongside_and_its_commit_waits_for_both(held: _Held) -> None:
+    """the touch fence is a share lock: one write's data transactions overlap; begin and commit still wait."""
+    import time
+
+    from threetears.core.collections.scope_epochs import EpochRecordBusyError
+
+    version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    first = await held.pool.acquire()
+    open_first = CallerTransaction(first)
+    await open_first.__aenter__()
+    committed = False
+    try:
+        await held.epochs.touch(version, {"state:VA"}, conn=first)  # held open
+
+        started = time.monotonic()
+        await asyncio.wait_for(
+            _in_transaction(held.pool, lambda conn: held.epochs.touch(version, {"state:MD"}, conn=conn)), timeout=2.0
+        )
+        overlap = time.monotonic() - started
+        assert overlap < 0.5, f"a second data transaction of the write waited {overlap:.2f} s on the first"
+
+        with pytest.raises(EpochRecordBusyError):
+            await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+        commit = asyncio.create_task(
+            _in_transaction(held.pool, lambda conn: held.epochs.commit(version, set(), conn=conn))
+        )
+        await asyncio.sleep(0.3)
+        assert not commit.done(), "the commit did not wait for a data transaction still open"
+
+        await open_first.__aexit__(None, None, None)
+        committed = True
+        await asyncio.wait_for(commit, timeout=5.0)
+    finally:
+        if not committed:
+            await open_first.__aexit__(ConnectionError, ConnectionError("abandoned"), None)
+        await held.pool.release(first)
+    snapshot = await held.epochs.snapshot()
+    assert (snapshot.version, snapshot.epoch("state:VA"), snapshot.epoch("state:MD")) == (version, version, version)
+
+
+async def test_a_stalled_writers_hold_ends_within_the_idle_bound_and_the_next_begin_succeeds(held: _Held) -> None:
+    """direct Postgres: the server ends a data transaction idle past ``idle_timeout``, releasing the record."""
+    import time
+    from datetime import timedelta
+
+    from threetears.core.collections.scope_epochs import EpochRecordBusyError
+
+    bound = timedelta(seconds=1)
+    # another replica over the same pool shares the table, bounded where the fixture's is not
+    _registry, epochs = _replica(held.pool, idle_timeout=bound)
+    stale = await _in_transaction(held.pool, lambda conn: epochs.begin(conn=conn))
+    hung = await held.pool.acquire()
+    hang = CallerTransaction(hung)
+    await hang.__aenter__()
+    try:
+        await epochs.touch(stale, {"state:VA"}, conn=hung)  # then the writer stalls, its connection alive
+        with pytest.raises(EpochRecordBusyError):
+            await _in_transaction(held.pool, lambda conn: epochs.begin(conn=conn))
+
+        started = time.monotonic()
+        version = None
+        while version is None and time.monotonic() - started < bound.total_seconds() * 5:
+            await asyncio.sleep(0.2)
+            try:
+                version = await _in_transaction(held.pool, lambda conn: epochs.begin(conn=conn))
+            except EpochRecordBusyError:
+                version = None
+        released = time.monotonic() - started
+        assert version == stale + 1, "the next begin never succeeded: the stalled hold was not bounded"
+        assert released < bound.total_seconds() + 1.5, f"the hold lasted {released:.1f} s past a {bound} bound"
+        assert await held.pool.fetchval(f"SELECT pending FROM {_TABLE} WHERE scope = 'state:VA'") is None, (
+            "the stalled transaction's touch survived it"
+        )
+    finally:
+        try:
+            await hang.__aexit__(ConnectionError, ConnectionError("stalled writer abandoned"), None)
+        except asyncpg.PostgresError, asyncpg.InterfaceError, ConnectionError:
+            pass  # NOSILENT: the server already ended this transaction; that is what the test proves
+        await held.pool.release(hung)

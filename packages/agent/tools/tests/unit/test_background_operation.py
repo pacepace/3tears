@@ -361,17 +361,16 @@ async def test_a_wait_failing_after_a_run_finished_keeps_that_run_as_the_last_ou
 
 async def test_the_request_tool_records_a_request_and_starts_the_operation() -> None:
     body = _gate()
-    operation = BackgroundOperation("refresh", body)
     requests: list[str] = []
 
     async def request() -> None:
         requests.append("asked")
 
+    operation = BackgroundOperation("refresh", body, request=request)
     tool = RequestOperationTool(
         name="enr.reload",
         description="refresh",
         operation=lambda: operation,
-        request=request,
         status_tool="enr.load_status",
     )
 
@@ -385,17 +384,58 @@ async def test_the_request_tool_records_a_request_and_starts_the_operation() -> 
     assert "after the run in progress" in second.content
     body.release.set()
     await operation.wait()
-    assert body.calls == 1
+    # the run in progress is followed by exactly one more, which takes the request it may have missed
+    assert body.calls == 2
 
 
 async def test_the_request_tool_refuses_while_the_operation_is_not_built_yet() -> None:
-    async def request() -> None:
-        raise AssertionError("a request was recorded for an operation that does not exist yet")
-
-    tool = RequestOperationTool(
-        name="enr.reload", description="refresh", operation=lambda: None, request=request, status_tool="s"
-    )
+    tool = RequestOperationTool(name="enr.reload", description="refresh", operation=lambda: None, status_tool="s")
 
     refused = await tool.run()
 
     assert (refused.success, refused.error_code) == (False, TOOL_NOT_READY)
+
+
+async def test_a_request_made_after_the_drains_last_check_still_runs() -> None:
+    """the lost wake-up: the run has looked for requests for the last time but has not ended yet."""
+    wanted = 0
+    taken: list[int] = []
+    past_last_check = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def request() -> None:
+        nonlocal wanted
+        wanted += 1
+
+    async def drain() -> int:
+        # as CoalescedRun.drain: run while a request is waiting, then end
+        nonlocal wanted
+        runs = 0
+        while wanted:
+            wanted -= 1
+            runs += 1
+        taken.append(runs)
+        past_last_check.set()
+        await finish.wait()  # still running, its last look for requests already made
+        return runs
+
+    operation = BackgroundOperation("refresh", drain, request=request)
+    tool = RequestOperationTool(name="enr.reload", description="refresh", operation=lambda: operation, status_tool="s")
+
+    await tool.run()
+    await past_last_check.wait()
+    late = await tool.run()  # recorded now, after the drain's last check, while it still runs
+    finish.set()
+    await operation.wait()
+
+    assert late.success and late.metadata == {"started": False}
+    assert wanted == 0, "a request was recorded and no run took it"
+    assert taken == [1, 1]
+
+
+async def test_an_operation_built_without_a_request_step_refuses_a_request() -> None:
+    operation = BackgroundOperation("refresh", _gate())
+
+    with pytest.raises(TypeError, match="request="):
+        await operation.request()
+    assert not operation.running

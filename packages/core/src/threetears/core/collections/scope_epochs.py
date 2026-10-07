@@ -40,11 +40,21 @@ reading :meth:`ScopeEpochs.snapshot`, which is the truth either way.
 **One writer at a time, fenced in the database.** A writer holds the write's lease (a
 :class:`~threetears.core.coordination.coalesced_run.CoalescedRun`), but a lease can lapse under a
 writer that has not noticed. So the version is also a fencing token: ``begin`` takes the next number
-in one statement under the row's lock (two writes begun together take two numbers), and the latest
-``begin`` supersedes any write still in progress. ``commit`` moves anything only while its version is
-still the write in progress, checked in the same statement that clears it, inside the caller's
-transaction: a writer whose lease lapsed, and was followed by another, is refused and its
-transaction moves nothing.
+under the row's lock, never waiting for it: a ``begin`` racing another, or one behind a data
+transaction still open, is refused at once (:class:`EpochRecordBusyError`), so two writes never
+share a number. The latest ``begin`` supersedes any write still in progress. ``commit`` moves
+anything only while its version is still the write in progress, checked in the same statement that
+clears it, inside the caller's transaction: a writer whose lease lapsed, and was followed by another,
+is refused and its transaction moves nothing.
+
+**A hung writer's hold is bounded.** Each data transaction holds the row's share lock (``touch``)
+until it ends, so a writer that hangs with one open keeps every later ``begin`` refused until that
+transaction ends. Through the L3 broker it ends within the broker's idle bound: a transaction session
+idle past ``tx_idle_timeout_seconds`` (60 s on the hub) is rolled back by its sweep (every 10 s), and
+each statement is bounded by the session's statement timeout. On a direct Postgres connection pass
+``idle_timeout`` (sized to the write's lease): every transaction ``begin`` and ``touch`` join sets
+``idle_in_transaction_session_timeout`` for itself, so the server ends a stalled one. The broker
+refuses ``SET``, so leave it unset there.
 
 **Scopes a write touched are recorded as it writes.** :meth:`ScopeEpochs.touch`, in the transaction
 of each data write, marks the scopes that write changed as pending. ``commit`` moves every pending
@@ -57,9 +67,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
+import asyncpg
 from threetears.observe import get_logger
 
 from threetears.core.cache.base import quote_identifier
@@ -106,33 +117,13 @@ STALLED_WRITE_SECONDS: Final = 600
 
 
 class EpochRecordBusyError(RuntimeError):
-    """the version row is locked by a data transaction still open, so no write may begin now.
+    """the version row is locked by another transaction, so no write may begin now.
 
-    A writer's every data transaction holds the row's lock until it ends (the fence of
-    :meth:`ScopeEpochs.touch`). A writer whose lease lapsed while one of those hung open would make
-    the next ``begin`` wait as long as it hangs, so ``begin`` refuses at once instead; the next request
-    to write begins once the hung transaction has ended (the store's own transaction timeout ends it).
+    Held by a data transaction still open (the fence of :meth:`ScopeEpochs.touch`), or by another
+    ``begin`` racing this one. Waiting on a hung data transaction would stall this write as long as it
+    hangs, so ``begin`` refuses at once instead; the next request to write begins once the holder has
+    ended (a hung one within the bound the module describes).
     """
-
-
-#: SQLSTATE for "could not obtain lock" (``NOWAIT``)
-_LOCK_NOT_AVAILABLE: Final = "55P03"
-
-
-def _lock_not_available(exc: BaseException) -> bool:
-    """whether ``exc`` is the store refusing a ``NOWAIT`` lock, however its transport carries it.
-
-    :param exc: the error a statement raised
-    :ptype exc: BaseException
-    :return: True for SQLSTATE 55P03
-    :rtype: bool
-    """
-    text = str(exc).lower()
-    return (
-        getattr(exc, "sqlstate", None) == _LOCK_NOT_AVAILABLE
-        or _LOCK_NOT_AVAILABLE in text
-        or "could not obtain lock" in text
-    )
 
 
 def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
@@ -213,12 +204,39 @@ class ScopeEpochs:
     :ptype collection: SchemaBackedCollection
     :param page_size: rows per L3 page when reading every scope
     :ptype page_size: int
+    :param idle_timeout: on a direct Postgres connection, how long a transaction ``begin`` or
+        ``touch`` joined may sit idle before the server ends it (``idle_in_transaction_session_timeout``),
+        sized to the write's lease; None sets nothing (through the L3 broker, whose own idle sweep
+        bounds it and which refuses ``SET``)
+    :ptype idle_timeout: timedelta | None
+    :raises ValueError: when ``idle_timeout`` is not positive
     """
 
-    def __init__(self, collection: SchemaBackedCollection[Any], *, page_size: int = DEFAULT_PAGE_SIZE) -> None:
+    def __init__(
+        self,
+        collection: SchemaBackedCollection[Any],
+        *,
+        page_size: int = DEFAULT_PAGE_SIZE,
+        idle_timeout: timedelta | None = None,
+    ) -> None:
+        if idle_timeout is not None and idle_timeout <= timedelta(0):
+            raise ValueError(f"idle_timeout must be positive; got {idle_timeout}")
         self._collection = collection
         self._page_size = page_size
         self._table = quote_identifier(collection.table_name)
+        self._idle_ms = None if idle_timeout is None else max(1, int(idle_timeout.total_seconds() * 1000))
+
+    async def _bound_idle(self, conn: Any) -> None:
+        """bound how long the caller's transaction may sit idle, when an idle timeout was given.
+
+        :param conn: the caller's connection, its transaction open
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        """
+        if self._idle_ms is not None:
+            # an int this class computed; SET takes no parameters
+            await conn.execute(f"SET LOCAL idle_in_transaction_session_timeout = {int(self._idle_ms)}")
 
     async def snapshot(self) -> EpochSnapshot:
         """every scope's epoch and the data's version, read from L3.
@@ -284,8 +302,9 @@ class ScopeEpochs:
     async def begin(self, *, conn: Any) -> int:
         """take the next version for a write, and record the write as in progress.
 
-        One statement under the row's lock, so two writes begun together take two numbers; the
-        latest supersedes any write still in progress (only it may commit). The number is above both
+        Under the row's lock, taken without waiting: a ``begin`` racing another, or behind a data
+        transaction still open, is refused at once, so two writes never share a number. The latest
+        supersedes any write still in progress (only it may commit). The number is above both
         the last committed version and any write begun before, so no number a partial write may have
         stamped rows with is used again. Commit the caller's transaction before the write's first
         data row: until then a reader cannot tell the write has begun.
@@ -294,10 +313,11 @@ class ScopeEpochs:
         :ptype conn: Any
         :return: the write's version
         :rtype: int
-        :raises EpochRecordBusyError: when a data transaction of an earlier write still holds the
-            version row (refused at once, never waited on)
+        :raises EpochRecordBusyError: when a data transaction of an earlier write, or a racing
+            ``begin``, holds the version row (refused at once, never waited on)
         """
         transaction = CallerTransaction.join(conn, writer="ScopeEpochs.begin")
+        await self._bound_idle(conn)
         try:
             # the record's lock, taken without waiting: a data transaction left open by a stale writer
             # holds it, and waiting on it would stall this write for as long as that one hangs
@@ -305,12 +325,11 @@ class ScopeEpochs:
                 f"SELECT writing FROM {self._table} WHERE scope = $1 FOR UPDATE NOWAIT",  # noqa: S608 - the owner's table name
                 WHOLE,
             )
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- only a refused NOWAIT is translated; anything else is re-raised unchanged
-            if not _lock_not_available(exc):
-                raise
+        except asyncpg.exceptions.LockNotAvailableError as exc:
+            # the one type a refused NOWAIT arrives as, on a direct pool and through the L3 broker alike
             raise EpochRecordBusyError(
-                f"{self._collection.table_name}: a data transaction of an earlier write still holds the version row; "
-                "no write may begin until it ends"
+                f"{self._collection.table_name}: a data transaction of an earlier write, or a racing begin, "
+                "holds the version row; no write may begin until it ends"
             ) from exc
         row = await conn.fetchrow(
             f"INSERT INTO {self._table} (scope, epoch, writing, date_created, date_updated) "  # noqa: S608 - the owner's table name
@@ -331,8 +350,9 @@ class ScopeEpochs:
         Fenced as :meth:`commit` is: in the same transaction, the write must still be the one in
         progress, or this raises and the caller's data transaction rolls back with it. So a writer
         whose lease lapsed, and was followed by another that committed, cannot land rows under a
-        scope's epoch that will never move for them. The fence holds the version row's lock until the
-        data transaction ends, so no later write can begin in between.
+        scope's epoch that will never move for them. The fence holds the version row's share lock
+        until the data transaction ends, so no later write can begin, and this write cannot commit, in
+        between; the write's other data transactions share it and run alongside.
 
         The next commit moves every touched scope, whichever write touched it: a write that dies
         after committing some of its rows leaves them covered by the next write's epochs.
@@ -350,9 +370,11 @@ class ScopeEpochs:
         """
         named = _named(scopes)
         CallerTransaction.join(conn, writer="ScopeEpochs.touch")
-        # the row's lock, held to the end of the data transaction; nothing about the row changes
+        await self._bound_idle(conn)
+        # the row's share lock, held to the end of the data transaction: it conflicts with begin's
+        # FOR UPDATE NOWAIT and commit's UPDATE, not with this write's other data transactions
         fenced = await conn.fetchrow(
-            f"UPDATE {self._table} SET writing = writing WHERE scope = $2 AND writing = $1 RETURNING writing",  # noqa: S608 - the owner's table name
+            f"SELECT writing FROM {self._table} WHERE scope = $2 AND writing = $1 FOR SHARE",  # noqa: S608 - the owner's table name
             version,
             WHOLE,
         )

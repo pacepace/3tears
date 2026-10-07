@@ -1,4 +1,4 @@
-"""A long operation a pod runs in the background: started by one tool, reported by another.
+"""A long operation a pod runs in the background: started (or requested) by one tool, reported by another.
 
 **Why two tools, not one.** Some operations a tool pod runs on request take minutes (a
 load from a warehouse, a rebuild of every map layer), longer than the hub waits on a tool
@@ -8,10 +8,19 @@ running and how the last one ended.
 
 **One run at a time, and one way in.** :meth:`BackgroundOperation.start` is the only way
 to begin a run, whether a pod starts one itself (a first load when its tables are empty,
-:meth:`BackgroundOperation.start_when_needed`) or a caller asks through the start tool, so
+:meth:`BackgroundOperation.start_when_needed`) or a caller asks through a tool, so
 :attr:`~BackgroundOperation.running` and :attr:`~BackgroundOperation.last` describe every
-run. A start while one runs is refused, and the start tool answers it with
-:data:`~threetears.agent.tools.base_tool.CONFLICT`.
+run. Two tools start one, for two kinds of operation:
+
+- :class:`StartOperationTool`, for an operation a second run of would repeat: a start while one
+  runs is refused, answered :data:`~threetears.agent.tools.base_tool.CONFLICT`.
+- :class:`RequestOperationTool`, for an operation that drains requests (its body a
+  ``CoalescedRun.drain``, built with ``request=``): :meth:`BackgroundOperation.request` records the
+  request and starts a run, and a request while one runs is never refused nor lost: the run in
+  progress is followed by one more, which takes it (the drain may already have made its last look
+  for requests).
+
+:class:`OperationStatusTool` reports either kind.
 
 **A run that raises is kept as failed, with its reason.** The run is a background task
 with no caller to raise to, so its exception is recorded on the outcome and logged; the
@@ -105,11 +114,22 @@ class BackgroundOperation(Generic[ResultT]):
     :ptype name: str
     :param run: the operation's body; each start awaits a fresh call of it
     :ptype run: Callable[[], Awaitable[ResultT]]
+    :param request: records that a run is wanted (``CoalescedRun.request``), for an operation whose
+        body drains requests; :meth:`request` needs it
+    :ptype request: Callable[[], Awaitable[None]] | None
     """
 
-    def __init__(self, name: str, run: Callable[[], Awaitable[ResultT]]) -> None:
+    def __init__(
+        self,
+        name: str,
+        run: Callable[[], Awaitable[ResultT]],
+        *,
+        request: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self._name = name
         self._run = run
+        self._request = request
+        self._again = False
         self._task: asyncio.Task[None] | None = None
         self._watcher: asyncio.Task[None] | None = None
         self._started_at: datetime | None = None
@@ -177,9 +197,30 @@ class BackgroundOperation(Generic[ResultT]):
         """
         started = not self.running
         if started:
+            # a run that starts now sees every request already recorded
+            self._again = False
             self._started_at = datetime.now(UTC)
             self._task = asyncio.create_task(self._run_and_keep_outcome(), name=self._name)
             log.info("background operation started", extra={"extra_data": {"operation": self._name}})
+        return started
+
+    async def request(self) -> bool:
+        """record that a run is wanted, then start one, or have the run in progress run once more.
+
+        The request is recorded first, so a run on another replica may take it too; a run in progress
+        here is followed by one more, since it may already have made its last look for requests. Its
+        end checks for that in the same step it ends in, so no request falls between.
+
+        :return: True when a run was started; False when the run in progress will run once more
+        :rtype: bool
+        :raises TypeError: when the operation was built without ``request=``
+        """
+        if self._request is None:
+            raise TypeError(f"{self._name}: built without request=, so it cannot take a request")
+        await self._request()
+        started = self.start()
+        if not started:
+            self._again = True
         return started
 
     async def wait(self) -> None:
@@ -336,6 +377,24 @@ class BackgroundOperation(Generic[ResultT]):
             log.info("background operation not needed", extra={"extra_data": {"operation": self._name}})
 
     async def _run_and_keep_outcome(self) -> None:
+        """run, once more for each request made meanwhile, and keep how the last run ended.
+
+        :return: nothing
+        :rtype: None
+        """
+        again = True
+        while again:
+            await self._run_once()
+            # read and cleared in the step the task ends in: a request after this finds the task done
+            # and starts a run of its own
+            again, self._again = self._again, False
+            if again:
+                self._started_at = datetime.now(UTC)
+                log.info(
+                    "background operation runs once more for a request", extra={"extra_data": {"operation": self._name}}
+                )
+
+    async def _run_once(self) -> None:
         """run once and keep how it ended, a run that raised included.
 
         :return: nothing
@@ -500,13 +559,11 @@ class StartOperationTool(_OperationTool):
 
 
 class RequestOperationTool(_OperationTool):
-    """records that a run is wanted, then starts the operation; a request while one runs is not refused.
+    """asks the operation to run (:meth:`BackgroundOperation.request`); a request while one runs is not refused.
 
-    For an operation that drains requests (its body a ``CoalescedRun.drain``): the request is
-    recorded first, so a run already in progress (here or on another replica) takes it and runs once
-    more afterwards, and the start is only a nudge for when nothing runs. Where
-    :class:`StartOperationTool` answers a second start ``CONFLICT``, this answers that the request
-    will be run.
+    For an operation that drains requests, built with ``request=``, so the request and the run are
+    one object's and cannot name different runs. Where :class:`StartOperationTool` answers a second
+    start ``CONFLICT``, this answers that the run in progress is followed by one that takes it.
 
     :param name: the tool's namespaced name (``<provider>.<verb>``)
     :ptype name: str
@@ -514,8 +571,6 @@ class RequestOperationTool(_OperationTool):
     :ptype description: str
     :param operation: the operation, or None until the pod has built it
     :ptype operation: Callable[[], BackgroundOperation[Any] | None]
-    :param request: records that a run is wanted (``CoalescedRun.request``)
-    :ptype request: Callable[[], Awaitable[None]]
     :param status_tool: the status tool's name, which the answer points the caller to
     :ptype status_tool: str
     :param version: the tool's version
@@ -528,20 +583,18 @@ class RequestOperationTool(_OperationTool):
         name: str,
         description: str,
         operation: Callable[[], BackgroundOperation[Any] | None],
-        request: Callable[[], Awaitable[None]],
         status_tool: str,
         version: str = _DEFAULT_TOOL_VERSION,
     ) -> None:
         super().__init__(name=name, description=description, operation=operation, version=version)
-        self._request = request
         self._status_tool = status_tool
 
     async def execute(self, **kwargs: Any) -> ToolResult:
-        """refuse until the operation exists; then record the request and start the operation.
+        """refuse until the operation exists; then ask it to run.
 
         :param kwargs: none are taken
         :ptype kwargs: Any
-        :return: that it started, or that the run in progress will run the request after
+        :return: that it started, or that the run in progress is followed by one that takes the request
         :rtype: ToolResult
         """
         operation = self._operation()
@@ -549,8 +602,7 @@ class RequestOperationTool(_OperationTool):
         if operation is None:
             result = ToolResult(success=False, content="", error=_NOT_READY, error_code=TOOL_NOT_READY)
         else:
-            await self._request()
-            started = operation.start()
+            started = await operation.request()
             content = (
                 f"started; {self._status_tool} says when it ends and how"
                 if started

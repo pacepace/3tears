@@ -34,10 +34,16 @@ copies swapped in whole.
   the last write that changed it. `begin(conn=)` takes the next version in one statement under the
   row's lock and marks the write in progress; the latest begin supersedes (its version is a fencing
   token); it takes the row's lock with `NOWAIT` and raises `EpochRecordBusyError` at once when a
-  data transaction of an earlier (stale) write still holds it, never waiting on a hung one.
-  `touch(version, scopes, conn=)`, in each data write's transaction, records the scopes it
-  changed as pending, fenced as commit is: a superseded writer's late data transaction is refused
-  and rolls back. `commit(version, scopes, conn=)` clears the in-progress mark only while that
+  data transaction of an earlier (stale) write still holds it, or a racing begin does, never
+  waiting on a hung one (the refusal is told by its type, `asyncpg.LockNotAvailableError`, on a
+  direct pool and through the L3 broker alike). `touch(version, scopes, conn=)`, in each data
+  write's transaction, records the scopes it changed as pending, fenced as commit is (a share lock
+  on the version row, held to the transaction's end): a superseded writer's late data transaction
+  is refused and rolls back, and one write's data transactions run alongside each other. A hung
+  writer's hold ends within the broker's idle bound (an idle transaction session is rolled back
+  after 60 s, swept every 10 s); on a direct Postgres connection,
+  `ScopeEpochs(collection, idle_timeout=)` sets `idle_in_transaction_session_timeout` in each
+  transaction `begin` and `touch` join. `commit(version, scopes, conn=)` clears the in-progress mark only while that
   version is still the write in progress (checked in the same statement, in the caller's
   transaction), then moves every pending scope -- an abandoned write's included -- to the version,
   never back, recording what each replaced; a scope already at or past it refuses the commit.
@@ -58,16 +64,22 @@ copies swapped in whole.
   held and raised after). A failed run is raised and not
   retried. `KVLease` gains `stored_key(key)` and `bucket()`.
 - **Added, `threetears.agent.tools.background_operation.RequestOperationTool`** (the ENR pod's
-  `enr.reload`): for an operation that drains `CoalescedRun` requests, the tool records a request,
-  then starts the operation; a request while a run is in progress is not refused as a conflict
-  (`StartOperationTool` answers that) but answered "requested", and the run in progress, here or
-  on another replica, runs it once more afterwards.
+  `enr.reload`) **and `BackgroundOperation(name, run, *, request=)` with `request()`**: for an
+  operation that drains `CoalescedRun` requests, the operation owns its request step, so the tool
+  and the run cannot name different runs. `request()` records the request, then starts a run; a
+  request while a run is in progress is not refused as a conflict (`StartOperationTool` answers
+  that) but answered "requested", and the run in progress is followed by one more, which takes it
+  even when the drain had already made its last look for requests.
 - **Added, `SchemaBackedCollection.delete_rows(keys, *, conn, max_rows=None)`** (the ENR pod's
   refresh deletes the rows the warehouse no longer holds): rows deleted by key in multi-row
   `DELETE ... WHERE (k1, k2) IN ((...), ...)` statements on the caller's transaction, settled with
   the rest when it ends; through `BulkDeletingStore.delete_many` (new protocol, which
   `SqlL3Backend` implements), or a key at a time through `delete` on a store without it.
   `schema_sql.build_bulk_delete_sql` builds the statement.
+- **Added, `nats_proxy.LOCK_NOT_AVAILABLE_ERROR_CODE`**: the broker's code for a statement whose
+  `NOWAIT` lock another transaction holds (SQLSTATE 55P03); the proxy rebuilds
+  `asyncpg.LockNotAvailableError` from it, as a direct pool raises. The hub sends it from its
+  transaction statement doors.
 - **Added, `threetears.datasources.partitioned_read`** (the ENR pod's per-state warehouse checks and
   reads): `fingerprint_parts` and `read_parts` fingerprint or read each part of a relation (named by
   equality filters, as `read_all` takes them) side by side, at most `concurrency` at once
