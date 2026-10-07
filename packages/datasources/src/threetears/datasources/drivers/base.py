@@ -806,6 +806,31 @@ class Driver(ABC):
         ``wait=True`` deadlocks the asyncio event loop.
     """
 
+    @property
+    def concurrent_queries(self) -> int | None:
+        """the most queries a caller should run on this driver at once; None when it bounds them itself.
+
+        A driver that caps its own open connections (and guards its logins) answers None. One whose
+        logins are not guarded against a refused credential answers 1, so a caller running queries
+        side by side cannot send a burst of failing logins.
+
+        :return: the bound, or None
+        :rtype: int | None
+        """
+        return None
+
+    @property
+    def borrowed_pool(self) -> Any | None:
+        """the host's own pool this driver queries through, or None when it opens its own connections.
+
+        A caller running queries side by side bounds every driver borrowing one pool together, or
+        they starve the host that lent it.
+
+        :return: the borrowed pool
+        :rtype: Any | None
+        """
+        return None
+
     @abstractmethod
     async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         """run an arbitrary SELECT statement; materialize all rows in memory.

@@ -13,7 +13,7 @@ from datetime import timedelta
 import pytest
 
 from threetears.core.coordination.coalesced_run import CoalescedRun
-from threetears.core.coordination.lease import KVLease, LeaseLost
+from threetears.core.coordination.lease import KVLease, LeaseLost, LeaseUnavailable
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
 _KEY = "enr/refresh"
@@ -177,3 +177,74 @@ async def test_a_run_whose_lease_is_lost_is_cancelled_and_asked_for_again() -> N
 def test_the_renewal_must_be_shorter_than_the_lease() -> None:
     with pytest.raises(ValueError, match="renew_every"):
         CoalescedRun(KVLease(FakeNatsClient()), _KEY, _Body(), ttl=_TTL, renew_every=_TTL)  # type: ignore[arg-type]
+
+
+async def _second_replica_cannot_hold(client: FakeNatsClient) -> bool:
+    """whether another replica is refused the lease right now (asked directly, recording no request)."""
+    try:
+        held = await KVLease(client, pod_id="pod-b").hold(_KEY, ttl=_TTL, renew_every=_RENEW)  # type: ignore[arg-type]
+    except LeaseUnavailable:
+        return True
+    await held.release()
+    return False
+
+
+def _cancellable_run(
+    client: FakeNatsClient,
+) -> tuple[CoalescedRun, asyncio.Event, asyncio.Event, asyncio.Event, list[bool]]:
+    """a replica whose run takes a while to stop once cancelled, noting whether the lease was held meanwhile."""
+    started, cleaning, finish_cleanup = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    refused_meanwhile: list[bool] = []
+
+    async def writes_until_stopped() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            refused_meanwhile.append(await _second_replica_cannot_hold(client))
+            cleaning.set()
+            await finish_cleanup.wait()
+            refused_meanwhile.append(await _second_replica_cannot_hold(client))
+            raise
+
+    run = CoalescedRun(KVLease(client, pod_id="pod-a"), _KEY, writes_until_stopped, ttl=_TTL, renew_every=_RENEW)  # type: ignore[arg-type]
+    return run, started, cleaning, finish_cleanup, refused_meanwhile
+
+
+async def test_a_drain_cancelled_mid_run_stops_the_run_before_it_lets_the_lease_go() -> None:
+    client = FakeNatsClient()
+    run, started, cleaning, finish_cleanup, refused_meanwhile = _cancellable_run(client)
+    await run.request()
+    draining = asyncio.create_task(run.drain())
+    await started.wait()
+    assert not await run.requested(), "the run's request was not taken when it started"
+
+    draining.cancel()
+    await asyncio.wait_for(cleaning.wait(), timeout=5)
+    finish_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await draining
+    assert refused_meanwhile == [True, True], "another replica could take the lease while the run still wrote"
+    assert await run.requested(), "the request the cancelled run had taken was dropped"
+    assert not await _second_replica_cannot_hold(client), "the lease was not let go once the run had ended"
+
+
+async def test_a_second_cancellation_during_the_stop_still_stops_the_run_and_asks_again() -> None:
+    client = FakeNatsClient()
+    run, started, cleaning, finish_cleanup, refused_meanwhile = _cancellable_run(client)
+    await run.request()
+    draining = asyncio.create_task(run.drain())
+    await started.wait()
+
+    draining.cancel()
+    await asyncio.wait_for(cleaning.wait(), timeout=5)
+    draining.cancel()  # cancelled again while the run is still stopping
+    await asyncio.sleep(0.01)
+    assert not draining.done(), "the drain returned before the run it started had ended"
+    finish_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await draining
+    assert refused_meanwhile == [True, True]
+    assert await run.requested(), "the second cancellation skipped asking again"

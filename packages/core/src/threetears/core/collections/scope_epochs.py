@@ -37,19 +37,33 @@ collection does (when it has a bus); :meth:`ScopeEpochs.on_change` calls back on
 broadcast as on this process's own write. A replica that missed the broadcast learns the same by
 reading :meth:`ScopeEpochs.snapshot`, which is the truth either way.
 
-**One writer at a time.** ``begin`` and ``commit`` assume the caller holds the write's lease (a
-:class:`~threetears.core.coordination.coalesced_run.CoalescedRun`); a commit for a write that is not
-the one in progress is refused.
+**One writer at a time, fenced in the database.** A writer holds the write's lease (a
+:class:`~threetears.core.coordination.coalesced_run.CoalescedRun`), but a lease can lapse under a
+writer that has not noticed. So the version is also a fencing token: ``begin`` takes the next number
+in one statement under the row's lock (two writes begun together take two numbers), and the latest
+``begin`` supersedes any write still in progress. ``commit`` moves anything only while its version is
+still the write in progress, checked in the same statement that clears it, inside the caller's
+transaction: a writer whose lease lapsed, and was followed by another, is refused and its
+transaction moves nothing.
+
+**Scopes a write touched are recorded as it writes.** :meth:`ScopeEpochs.touch`, in the transaction
+of each data write, marks the scopes that write changed as pending. ``commit`` moves every pending
+scope, the ones an abandoned write left included: rows a write committed before it died are then
+covered by the next write's epochs, even when that write does not change those scopes itself.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Final
 
 from threetears.observe import get_logger
 
+from threetears.core.cache.base import quote_identifier
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, read_l3_rows
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
@@ -64,6 +78,7 @@ from threetears.core.entities.base import BaseEntity
 
 __all__ = [
     "SCOPE_EPOCHS_TABLE",
+    "STALLED_WRITE_SECONDS",
     "WHOLE",
     "EpochSnapshot",
     "ScopeEpochs",
@@ -80,7 +95,13 @@ SCOPE_EPOCHS_TABLE: Final = "scope_epochs"
 WHOLE: Final = "*"
 
 #: the columns a snapshot reads
-_COLUMNS: Final = ("scope", "epoch", "previous_epoch", "writing")
+_COLUMNS: Final = ("scope", "epoch", "previous_epoch", "writing", "date_updated")
+
+#: scopes one statement names when touching
+_TOUCH_BATCH: Final = 500
+
+#: a write in progress longer than this has most likely died: readers say so at warning, not info
+STALLED_WRITE_SECONDS: Final = 600
 
 
 def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
@@ -99,6 +120,7 @@ def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
             Column("epoch", BIGINT_TYPE),
             Column("previous_epoch", BIGINT_TYPE, nullable=True),
             Column("writing", BIGINT_TYPE, nullable=True),
+            Column("pending", BIGINT_TYPE, nullable=True),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
@@ -132,12 +154,14 @@ class EpochSnapshot:
     :ivar epochs: each scope's epoch, by scope (:data:`WHOLE` left out)
     :ivar previous: the epoch each scope's last move replaced (None after its first move), by scope;
         :data:`WHOLE`'s is the version before the current one
+    :ivar writing_since: when the write in progress began; None when none is
     """
 
     version: int
     writing: int | None
     epochs: Mapping[str, int]
     previous: Mapping[str, int | None]
+    writing_since: datetime | None = None
 
     def epoch(self, scope: str) -> int:
         """one scope's epoch; 0 for a scope no write has changed.
@@ -163,6 +187,8 @@ class ScopeEpochs:
     def __init__(self, collection: SchemaBackedCollection[Any], *, page_size: int = DEFAULT_PAGE_SIZE) -> None:
         self._collection = collection
         self._page_size = page_size
+        self._table = quote_identifier(collection.table_name)
+        self._why_unsettled = "no write was in progress when last read"
 
     async def snapshot(self) -> EpochSnapshot:
         """every scope's epoch and the data's version, read from L3.
@@ -179,17 +205,23 @@ class ScopeEpochs:
         )
         version = 0
         writing: int | None = None
+        writing_since: datetime | None = None
         epochs: dict[str, int] = {}
         previous: dict[str, int | None] = {}
         for row in rows:
             scope = str(row["scope"])
-            previous[scope] = None if row["previous_epoch"] is None else int(row["previous_epoch"])
             if scope == WHOLE:
                 version = int(row["epoch"])
                 writing = None if row["writing"] is None else int(row["writing"])
-            else:
+                writing_since = None if writing is None else _instant(row["date_updated"])
+                previous[scope] = None if row["previous_epoch"] is None else int(row["previous_epoch"])
+            elif int(row["epoch"]) > 0:
+                # a scope only touched has not moved yet: it has no epoch to name
                 epochs[scope] = int(row["epoch"])
-        return EpochSnapshot(version=version, writing=writing, epochs=epochs, previous=previous)
+                previous[scope] = None if row["previous_epoch"] is None else int(row["previous_epoch"])
+        return EpochSnapshot(
+            version=version, writing=writing, epochs=epochs, previous=previous, writing_since=writing_since
+        )
 
     async def settled(self) -> EpochSnapshot | None:
         """the snapshot, or None while a write is in progress.
@@ -198,78 +230,184 @@ class ScopeEpochs:
         :rtype: EpochSnapshot | None
         """
         snapshot = await self.snapshot()
-        return None if snapshot.writing is not None else snapshot
+        settled: EpochSnapshot | None = snapshot
+        if snapshot.writing is not None:
+            settled = None
+            since = snapshot.writing_since
+            seconds = None if since is None else round((datetime.now(UTC) - since).total_seconds(), 1)
+            self._why_unsettled = f"write {snapshot.writing} in progress for {seconds} s"
+            stalled = seconds is not None and seconds > STALLED_WRITE_SECONDS
+            # a write that began long ago and never committed is one that died: say so, with its age
+            log.log(
+                logging.WARNING if stalled else logging.INFO,
+                "a write is in progress; readers keep what they hold"
+                + ("; it has run so long it has most likely died, and the next write supersedes it" if stalled else ""),
+                extra={
+                    "extra_data": {
+                        "table": self._collection.table_name,
+                        "version": snapshot.writing,
+                        "seconds": seconds,
+                    }
+                },
+            )
+        return settled
+
+    def why_unsettled(self) -> str:
+        """what the last :meth:`settled` that answered None found: which write, and how long it has run.
+
+        For a reader refused by a write in progress to say why (``BufferedCopies``' ``why_unsettled``).
+
+        :return: the description
+        :rtype: str
+        """
+        return self._why_unsettled
 
     async def begin(self, *, conn: Any) -> int:
         """take the next version for a write, and record the write as in progress.
 
-        Commit the caller's transaction before the write's first data row: until then a reader
-        cannot tell the write has begun.
+        One statement under the row's lock, so two writes begun together take two numbers; the
+        latest supersedes any write still in progress (only it may commit). The number is above both
+        the last committed version and any write begun before, so no number a partial write may have
+        stamped rows with is used again. Commit the caller's transaction before the write's first
+        data row: until then a reader cannot tell the write has begun.
 
         :param conn: the caller's connection, its transaction opened by ``CallerTransaction``
         :ptype conn: Any
         :return: the write's version
         :rtype: int
         """
-        current = await self.snapshot()
-        version = max(current.version, current.writing or 0) + 1
-        await self._collection.save_rows(
-            [
-                {
-                    "scope": WHOLE,
-                    "epoch": current.version,
-                    "previous_epoch": current.previous.get(WHOLE),
-                    "writing": version,
-                }
-            ],
-            conn=conn,
+        transaction = CallerTransaction.join(conn, writer="ScopeEpochs.begin")
+        row = await conn.fetchrow(
+            f"INSERT INTO {self._table} (scope, epoch, writing, date_created, date_updated) "  # noqa: S608 - the owner's table name
+            "VALUES ($1, 0, 1, now(), now()) "
+            "ON CONFLICT (scope) DO UPDATE SET "
+            f"writing = GREATEST({self._table}.epoch, COALESCE({self._table}.writing, 0)) + 1, date_updated = now() "
+            "RETURNING writing",
+            WHOLE,
         )
+        transaction.enroll(self._collection, WHOLE)
+        version = int(row["writing"])
         log.info("write begun", extra={"extra_data": {"table": self._collection.table_name, "version": version}})
         return version
 
-    async def commit(self, version: int, scopes: Iterable[str], *, conn: Any) -> None:
-        """record the write as committed and move every scope it changed to its version.
+    async def touch(self, version: int, scopes: Iterable[str], *, conn: Any) -> None:
+        """record, in the transaction of a data write, that the write changed ``scopes``.
 
-        In the transaction of the write's last data write, or after it commits; never before.
+        Fenced as :meth:`commit` is: in the same transaction, the write must still be the one in
+        progress, or this raises and the caller's data transaction rolls back with it. So a writer
+        whose lease lapsed, and was followed by another that committed, cannot land rows under a
+        scope's epoch that will never move for them. The fence holds the version row's lock until the
+        data transaction ends, so no later write can begin in between.
+
+        The next commit moves every touched scope, whichever write touched it: a write that dies
+        after committing some of its rows leaves them covered by the next write's epochs.
+
+        :param version: the write's version
+        :ptype version: int
+        :param scopes: the scopes the data write changed
+        :ptype scopes: Iterable[str]
+        :param conn: the data write's connection, its transaction opened by ``CallerTransaction``
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``version`` is no longer the write in progress, or a scope is
+            :data:`WHOLE`
+        """
+        named = _named(scopes)
+        CallerTransaction.join(conn, writer="ScopeEpochs.touch")
+        # the row's lock, held to the end of the data transaction; nothing about the row changes
+        fenced = await conn.fetchrow(
+            f"UPDATE {self._table} SET writing = writing WHERE scope = $2 AND writing = $1 RETURNING writing",  # noqa: S608 - the owner's table name
+            version,
+            WHOLE,
+        )
+        if fenced is None:
+            raise ValueError(
+                f"write {version} is no longer in progress (a later write began); its data write is refused"
+            )
+        await self._mark_pending(version, named, conn=conn)
+
+    async def _mark_pending(self, version: int, scopes: list[str], *, conn: Any) -> None:
+        """mark ``scopes`` pending on the caller's transaction, a batch of statements at a time.
+
+        :param version: the write's version
+        :ptype version: int
+        :param scopes: the scopes, distinct, :data:`WHOLE` excluded
+        :ptype scopes: list[str]
+        :param conn: the caller's connection
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        """
+        transaction = CallerTransaction.join(conn, writer="ScopeEpochs.touch")
+        for start in range(0, len(scopes), _TOUCH_BATCH):
+            batch = scopes[start : start + _TOUCH_BATCH]
+            values = ", ".join(f"(${index + 2}, 0, $1, now(), now())" for index in range(len(batch)))
+            await conn.execute(
+                f"INSERT INTO {self._table} (scope, epoch, pending, date_created, date_updated) "  # noqa: S608 - the owner's table name
+                f"VALUES {values} "
+                f"ON CONFLICT (scope) DO UPDATE SET pending = GREATEST(COALESCE({self._table}.pending, 0), $1)",
+                version,
+                *batch,
+            )
+        for scope in scopes:
+            transaction.enroll(self._collection, scope)
+
+    async def commit(self, version: int, scopes: Iterable[str], *, conn: Any) -> None:
+        """record the write as committed and move every scope it changed, or touched before, to its version.
+
+        In the caller's transaction, with the write's last data write or after it commits; never
+        before. Refused, and nothing moves (raise inside the transaction to roll it back), when
+        ``version`` is no longer the write in progress or a scope to move is already at or past it.
 
         :param version: the write's version, as :meth:`begin` answered it
         :ptype version: int
-        :param scopes: every scope whose data the write changed
+        :param scopes: scopes the write changed and did not :meth:`touch`
         :ptype scopes: Iterable[str]
         :param conn: the caller's connection, its transaction opened by ``CallerTransaction``
         :ptype conn: Any
         :return: nothing
         :rtype: None
-        :raises ValueError: when ``version`` is not the write in progress, a scope is
-            :data:`WHOLE`, or a scope's epoch is already at or past ``version``
+        :raises ValueError: when ``version`` is not the write in progress, a scope is :data:`WHOLE`,
+            or a scope to move is already at or past ``version``
         """
-        moved = sorted(set(scopes))
-        if WHOLE in moved:
-            raise ValueError(f"{WHOLE!r} is reserved for the data's version; it is not a scope")
-        current = await self.snapshot()
-        if current.writing != version:
+        transaction = CallerTransaction.join(conn, writer="ScopeEpochs.commit")
+        named = _named(scopes)
+        # the fence: clears the marker only while this write is still the one in progress
+        fenced = await conn.fetchrow(
+            f"UPDATE {self._table} SET previous_epoch = epoch, epoch = $1, writing = NULL, "  # noqa: S608 - the owner's table name
+            "date_updated = now() WHERE scope = $2 AND writing = $1 RETURNING epoch",
+            version,
+            WHOLE,
+        )
+        if fenced is None:
             raise ValueError(
-                f"commit of version {version} refused: the write in progress is {current.writing}; "
-                "only the write that began may commit"
+                f"commit of version {version} refused: it is not the write in progress (a later write "
+                "began, or this one never did); nothing moved"
             )
-        behind = [scope for scope in moved if current.epoch(scope) >= version]
+        transaction.enroll(self._collection, WHOLE)
+        await self._mark_pending(version, named, conn=conn)
+        behind = await conn.fetch(
+            f"SELECT scope FROM {self._table} WHERE pending IS NOT NULL AND scope <> $2 AND epoch >= $1 "  # noqa: S608 - the owner's table name
+            "ORDER BY scope LIMIT 5",
+            version,
+            WHOLE,
+        )
         if behind:
-            raise ValueError(f"commit of version {version} refused: {behind[:5]} are already at or past it")
-        rows = [{"scope": WHOLE, "epoch": version, "previous_epoch": current.version, "writing": None}]
-        rows += [
-            {"scope": scope, "epoch": version, "previous_epoch": current.epochs.get(scope), "writing": None}
-            for scope in moved
-        ]
-        await self._collection.save_rows(rows, conn=conn)
+            raise ValueError(
+                f"commit of version {version} refused: {[str(r['scope']) for r in behind]} are already at or past it"
+            )
+        moved = await conn.fetch(
+            f"UPDATE {self._table} SET previous_epoch = NULLIF(epoch, 0), epoch = $1, pending = NULL, "  # noqa: S608 - the owner's table name
+            "date_updated = now() WHERE pending IS NOT NULL AND scope <> $2 RETURNING scope",
+            version,
+            WHOLE,
+        )
+        for row in moved:
+            transaction.enroll(self._collection, str(row["scope"]))
         log.info(
             "write committed and its scopes' epochs moved",
-            extra={
-                "extra_data": {
-                    "table": self._collection.table_name,
-                    "version": version,
-                    "scopes": len(moved),
-                }
-            },
+            extra={"extra_data": {"table": self._collection.table_name, "version": version, "scopes": len(moved)}},
         )
 
     def on_change(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -283,3 +421,29 @@ class ScopeEpochs:
         :rtype: Callable[[], None]
         """
         return self._collection.add_l1_change_listener(lambda _scope: listener())
+
+
+def _instant(value: Any) -> datetime:
+    """a timestamp as read: a datetime from Postgres, ISO text over the L3 rail.
+
+    :param value: the value read
+    :ptype value: Any
+    :return: the instant
+    :rtype: datetime
+    """
+    return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+
+
+def _named(scopes: Iterable[str]) -> list[str]:
+    """the scopes, each once, in order; :data:`WHOLE` refused.
+
+    :param scopes: the scopes
+    :ptype scopes: Iterable[str]
+    :return: the sorted distinct scopes
+    :rtype: list[str]
+    :raises ValueError: when :data:`WHOLE` is among them
+    """
+    named = sorted(set(scopes))
+    if WHOLE in named:
+        raise ValueError(f"{WHOLE!r} is reserved for the data's version; it is not a scope")
+    return named

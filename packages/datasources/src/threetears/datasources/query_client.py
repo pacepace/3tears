@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from threetears.nats import NatsClient
 
 __all__ = [
+    "DATASOURCE_BUSY",
     "DEFAULT_QUERY_TIMEOUT_SECONDS",
     "RESULT_TOO_LARGE",
     "QUERY_STATEMENT_TIMEOUT_SECONDS",
@@ -710,6 +711,11 @@ _HUB_ROW_CAP: Final[int] = 1000
 #: the hub's refusal code for a result too large for one reply on the bus. ``read_all``
 #: answers it by halving its page; another caller asks for fewer rows
 RESULT_TOO_LARGE: Final = "RESULT_TOO_LARGE"
+
+#: the hub's refusal code for a query it would not queue: the datasource already has as many queries
+#: running and waiting as it bears, or this one waited too long for its turn. nothing ran; ask again
+#: later (a refresh that meets it fails, and the next one runs)
+DATASOURCE_BUSY: Final = "DATASOURCE_BUSY"
 
 _DEFAULT_PAGE_SIZE: Final[int] = 500
 

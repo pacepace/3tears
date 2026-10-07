@@ -99,6 +99,10 @@ class WholeTableL1(Protocol):
         """a value in its stored form."""
         ...
 
+    def reset(self) -> None:
+        """close it and drop everything it holds."""
+        ...
+
 
 class IncompleteCopyError(RuntimeError):
     """the L1 copy is not proven to hold every row of its table, so nothing may read it."""
@@ -449,6 +453,9 @@ class BufferedCopies(Generic[StampT]):
     :ptype settled: Callable[[], Awaitable[StampT | None]]
     :param page_size: rows per L3 page
     :ptype page_size: int
+    :param why_unsettled: what the writer says of a write in progress when ``settled`` answered None
+        (which write, how long it has run), for the refusal to say; ``ScopeEpochs.why_unsettled``
+    :ptype why_unsettled: Callable[[], str] | None
     """
 
     def __init__(
@@ -458,6 +465,7 @@ class BufferedCopies(Generic[StampT]):
         settled: Callable[[], Awaitable[StampT | None]],
         *,
         page_size: int = DEFAULT_PAGE_SIZE,
+        why_unsettled: Callable[[], str] | None = None,
     ) -> None:
         self._tables = tuple(
             (collection.table_name, tuple(collection.primary_key_columns), collection) for collection in collections
@@ -467,6 +475,7 @@ class BufferedCopies(Generic[StampT]):
         self._page_size = page_size
         self._current: CopyGeneration[StampT] | None = None
         self._building = asyncio.Lock()
+        self._why_unsettled = why_unsettled
 
     @property
     def current(self) -> CopyGeneration[StampT] | None:
@@ -503,14 +512,29 @@ class BufferedCopies(Generic[StampT]):
     async def build_if_behind(self) -> CopyGeneration[StampT]:
         """build a new set only when the writer has committed since the live set was taken.
 
+        While a write is in progress there is nothing newer to build, so the live set is answered as
+        it is (it is still one complete state, the last committed one).
+
         :return: the live generation, new or not
         :rtype: CopyGeneration
-        :raises IncompleteCopyError: as :meth:`build`, when a build was needed and could not be proven
+        :raises IncompleteCopyError: when there is no live set and none can be built yet (a write in
+            progress), or a build was needed and could not be proven
         """
         async with self._building:
             generation = self._current
-            if generation is None or await self._settled() != generation.stamp:
+            stamp = await self._settled()
+            if generation is None or (stamp is not None and stamp != generation.stamp):
                 generation = await self._build()
+            elif stamp is None:
+                log.info(
+                    "complete copies not rebuilt: a write is in progress; the live copies stay",
+                    extra={
+                        "extra_data": {
+                            "live": str(generation.stamp),
+                            "write": None if self._why_unsettled is None else self._why_unsettled(),
+                        }
+                    },
+                )
             return generation
 
     async def _build(self) -> CopyGeneration[StampT]:
@@ -523,15 +547,23 @@ class BufferedCopies(Generic[StampT]):
         started = datetime.now(UTC)
         before = await self._settled()
         if before is None:
-            raise IncompleteCopyError("not built: a write is in progress; the live copies stay")
+            detail = "" if self._why_unsettled is None else f" ({self._why_unsettled()})"
+            raise IncompleteCopyError(f"not built: a write is in progress{detail}; the live copies stay")
         backend = self._new_backend()
         proofs: dict[str, CopyProof] = {}
-        for table, key, collection in self._tables:
-            proofs[table] = await copy_table(
-                collection.required_l3_pool, table, key, backend, page_size=self._page_size
-            )
-        after = await self._settled()
+        try:
+            for table, key, collection in self._tables:
+                proofs[table] = await copy_table(
+                    collection.required_l3_pool, table, key, backend, page_size=self._page_size
+                )
+            after = await self._settled()
+        except (
+            BaseException
+        ):  # prawduct:allow prawduct/broad-except -- closes the half-filled backend, then re-raises unchanged
+            backend.reset()
+            raise
         if after != before:
+            backend.reset()
             log.warning(
                 "complete copies refused: a write committed while they were built",
                 extra={"extra_data": {"before": str(before), "after": str(after)}},

@@ -235,6 +235,21 @@ ORDER BY table_schema, table_name
 """.strip()
 
 
+#: the boolean columns of one relation, for the fingerprint: Redshift refuses to cast a boolean to
+#: text, so those columns render through a ``CASE`` instead (``relation_key_expression``). bound
+#: lower-cased: SVV_COLUMNS holds an unquoted name as Redshift folds it (checked on the warehouse,
+#: 2026-10-07: ``Reporting_Prod`` matches nothing, ``reporting_prod`` matches)
+_REDSHIFT_BOOLEAN_COLUMNS_SQL = (
+    "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = %s AND table_name = %s AND data_type = 'boolean'"
+)
+
+#: the same, for a relation named without its schema: the search path decides which table it is
+_REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL = (
+    "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = ANY(current_schemas(false)) "
+    "AND table_name = %s AND data_type = 'boolean'"
+)
+
+
 #: list columns for every table in the schema allow-list. ``is_nullable``
 #: surfaces as the raw warehouse string -- the Tier-2 hash depends on
 #: byte-equality with the warehouse-side MD5 (see
@@ -248,18 +263,6 @@ ORDER BY table_schema, table_name
 #: as long as both sides observe SVV_COLUMNS, byte-equivalence holds.
 #: cross-driver hash equivalence (asyncpg vs redshift) is NOT
 #: guaranteed; same-driver python-vs-SQL IS guaranteed.
-#: the boolean columns of one relation, for the fingerprint: Redshift refuses to cast a boolean to
-#: text, so those columns render through a ``CASE`` instead (``relation_key_expression``)
-_REDSHIFT_BOOLEAN_COLUMNS_SQL = (
-    "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = %s AND table_name = %s AND data_type = 'boolean'"
-)
-
-#: the same, for a relation named without its schema: the search path decides which table it is
-_REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL = (
-    "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = ANY(current_schemas(false)) "
-    "AND table_name = %s AND data_type = 'boolean'"
-)
-
 _REDSHIFT_COLUMNS_SQL_TEMPLATE = """
 SELECT table_schema, table_name, column_name, data_type, is_nullable, ordinal_position
 FROM SVV_COLUMNS
@@ -697,7 +700,9 @@ def _read_boolean_columns(cursor: Any, relation: str) -> frozenset[str]:
     :return: the names of its boolean columns
     :rtype: frozenset[str]
     """
-    schema, _, table = relation.rpartition(".")
+    # only unquoted identifiers reach here (the request's grammar), and Redshift folds those to
+    # lower case: SVV_COLUMNS holds ``Reporting_Prod`` as ``reporting_prod``
+    schema, _, table = relation.lower().rpartition(".")
     if schema:
         cursor.execute(_REDSHIFT_BOOLEAN_COLUMNS_SQL, (schema, table))
     else:
@@ -811,8 +816,8 @@ class RedshiftDriver(Driver):
         # manual cleanup pass.
         self._backend_pids: weakref.WeakKeyDictionary[RedshiftConnection, int] = weakref.WeakKeyDictionary()
         self._closed = False
-        # each fingerprinted relation's boolean columns, read once: a relation's column types do not
-        # change under a running driver, and a stale entry fails the fingerprint rather than skewing it
+        # each fingerprinted relation's boolean columns, kept once a fingerprint has used them and
+        # forgotten when one fails, so a relation rebuilt with a column turned boolean is read again
         self._boolean_columns: dict[str, frozenset[str]] = {}
         # read by :func:`observed` as the ``datasource_name`` attribute
         # on every metric emission. matches the AsyncpgDriver contract.
@@ -2159,8 +2164,9 @@ class RedshiftDriver(Driver):
         identically, which is the one failure a change-probe must not have.
 
         Redshift refuses to cast a boolean to text, so the relation's boolean columns are read from
-        ``SVV_COLUMNS`` (once per relation, on the same connection) and rendered through a ``CASE``
-        as the text Postgres's cast gives; a key may then name any column the relation has.
+        ``SVV_COLUMNS`` (on the same connection; kept once a fingerprint has used them, read again
+        after one fails) and rendered through a ``CASE`` as the text Postgres's cast gives; a key may
+        then name any column the relation has.
 
         :param relation: schema-qualified relation name, a TRUSTED identifier
         :ptype relation: str
@@ -2184,7 +2190,6 @@ class RedshiftDriver(Driver):
             cursor = conn.cursor()
             try:
                 booleans = known if known is not None else _read_boolean_columns(cursor, relation)
-                self._boolean_columns[relation] = booleans
                 sql = translate_placeholders(
                     "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
                     "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
@@ -2192,11 +2197,20 @@ class RedshiftDriver(Driver):
                     f"FROM {relation}{filters}) AS fingerprint_source",
                     "pyformat",
                 )
-                if values:
-                    cursor.execute(sql, values)
-                else:
-                    cursor.execute(sql)
-                row = cursor.fetchone()
+                try:
+                    if values:
+                        cursor.execute(sql, values)
+                    else:
+                        cursor.execute(sql)
+                    row = cursor.fetchone()
+                except (
+                    Exception
+                ):  # prawduct:allow prawduct/broad-except -- forgets the column answer, then re-raises unchanged
+                    # the answer may be why it failed (a column turned boolean): read it again next time
+                    self._boolean_columns.pop(relation, None)
+                    raise
+                # kept only once it has carried a fingerprint through
+                self._boolean_columns[relation] = booleans
                 return RelationFingerprint(row_count=int(row[0]), digest=str(row[1]))
             finally:
                 cursor.close()

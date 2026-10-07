@@ -816,6 +816,79 @@ class TestQueryRouting:
             assert "CAST(race AS VARCHAR)" in prints[0].args[0]
 
     @pytest.mark.asyncio
+    async def test_a_mixed_case_relation_finds_its_columns_as_redshift_stores_them(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """an unquoted name is folded to lower case, and SVV_COLUMNS holds it so (checked on the warehouse)."""
+        conn = _build_mock_connection(fetchall_rows=[], fetchone_row=(1, 1))
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            await driver.relation_fingerprint("Reporting_Prod.Report_Results", ["race"])
+            await driver.relation_fingerprint("Report_Results", ["race"])
+        lookups = [c for c in conn.recorded_cursor.execute.call_args_list if c.args and "FROM SVV_COLUMNS" in c.args[0]]
+        assert lookups[0].args[1] == ("reporting_prod", "report_results")
+        assert "current_schemas(false)" in lookups[1].args[0]
+        assert lookups[1].args[1] == ("report_results",)
+
+    @pytest.mark.asyncio
+    async def test_boolean_columns_are_read_again_after_a_fingerprint_fails(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """an answer that let a fingerprint fail is not kept: a column turned boolean is learned on the next call."""
+        conn = _build_mock_connection(fetchall_rows=[], fetchone_row=(3, 9))
+        statements: list[str] = []
+        failing = {"on": False}
+
+        def execute(sql: str, *args: Any) -> None:
+            statements.append(sql)
+            if failing["on"] and "AS digest" in sql:
+                raise redshift_connector.ProgrammingError("cannot cast type boolean to character varying")
+
+        conn.recorded_cursor.execute.side_effect = execute
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            await driver.relation_fingerprint("s1.results", ["race", "incumbent"])
+            failing["on"] = True
+            with pytest.raises(redshift_connector.ProgrammingError):
+                await driver.relation_fingerprint("s1.results", ["race", "incumbent"])
+            failing["on"] = False
+            await driver.relation_fingerprint("s1.results", ["race", "incumbent"])
+        lookups = [sql for sql in statements if "FROM SVV_COLUMNS" in sql]
+        assert len(lookups) == 2, "the boolean columns were not read again after the fingerprint failed"
+
+    @pytest.mark.asyncio
+    async def test_boolean_columns_are_not_kept_from_a_fingerprint_that_failed(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        conn = _build_mock_connection(fetchall_rows=[], fetchone_row=(3, 9))
+        statements: list[str] = []
+        calls = {"n": 0}
+
+        def execute(sql: str, *args: Any) -> None:
+            statements.append(sql)
+            if "AS digest" in sql:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise redshift_connector.ProgrammingError("relation is being rebuilt")
+
+        conn.recorded_cursor.execute.side_effect = execute
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            with pytest.raises(redshift_connector.ProgrammingError):
+                await driver.relation_fingerprint("s1.results", ["race"])
+            await driver.relation_fingerprint("s1.results", ["race"])
+        assert len([sql for sql in statements if "FROM SVV_COLUMNS" in sql]) == 2
+
+    @pytest.mark.asyncio
     async def test_table_hashes_returns_dict_keyed_by_schema_table(
         self, redshift_config: RedshiftConnectionConfig
     ) -> None:

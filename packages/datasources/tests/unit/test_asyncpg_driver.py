@@ -29,7 +29,7 @@ from threetears.datasources.drivers import (
     DriverConnectError,
     DriverMissingCredentialError,
 )
-from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
+from threetears.datasources.drivers.asyncpg_driver import BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS, AsyncpgDriver
 from threetears.datasources.entities import DataSourceType
 
 
@@ -96,8 +96,11 @@ def _build_mock_pool(
     conn.fetchval = AsyncMock(return_value=fetchval_value)
 
     # async-context-manager shape for ``pool.acquire()``
+    pool.acquire_options = []
+
     @asynccontextmanager
-    async def _acquire() -> Any:
+    async def _acquire(**options: Any) -> Any:
+        pool.acquire_options.append(options)
         yield conn
 
     pool.acquire = _acquire
@@ -234,6 +237,19 @@ class TestConstruction:
         create_pool.assert_not_awaited()
         await driver.close()
         external.close.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_borrowed_pool_is_waited_on_for_a_bounded_time(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        """the host's pool may be busy with its own work; a query does not wait on it past its caller."""
+        external = _build_mock_pool(fetch_records=[{"x": 1}])
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        await driver.fetch("SELECT 1")
+
+        assert external.acquire_options == [{"timeout": BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS}]
+        assert BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS <= 30
 
     @pytest.mark.asyncio
     async def test_init_datasource_name_default_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:

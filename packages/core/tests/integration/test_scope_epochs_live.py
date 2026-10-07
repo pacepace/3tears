@@ -26,7 +26,13 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.collections.scope_epochs import WHOLE, EpochSnapshot, ScopeEpochs, scope_epochs_collection
+from threetears.core.collections.scope_epochs import (
+    STALLED_WRITE_SECONDS,
+    WHOLE,
+    EpochSnapshot,
+    ScopeEpochs,
+    scope_epochs_collection,
+)
 from threetears.core.config import DefaultCoreConfig
 from threetears.nats import NatsClient, set_default_namespace
 
@@ -57,11 +63,13 @@ async def _schema_pool(db_container: str) -> asyncpg.Pool:
             epoch BIGINT NOT NULL,
             previous_epoch BIGINT,
             writing BIGINT,
+            pending BIGINT,
             date_created TIMESTAMPTZ NOT NULL,
             date_updated TIMESTAMPTZ
         )
         """
     )
+    await pool.execute("CREATE TABLE results (state TEXT PRIMARY KEY, votes BIGINT)")
     return pool
 
 
@@ -101,7 +109,7 @@ async def _write(held: _Held, scopes: set[str]) -> int:
 async def test_nothing_written_is_version_zero_settled_with_no_scopes(held: _Held) -> None:
     snapshot = await held.epochs.snapshot()
 
-    assert snapshot == EpochSnapshot(version=0, writing=None, epochs={}, previous={})
+    assert snapshot == EpochSnapshot(version=0, writing=None, epochs={}, previous={}, writing_since=None)
     assert await held.epochs.settled() == snapshot
     assert snapshot.epoch("state:VA") == 0
 
@@ -110,7 +118,9 @@ async def test_a_write_begun_is_in_progress_until_it_commits(held: _Held) -> Non
     version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
 
     assert version == 1
-    assert (await held.epochs.snapshot()).writing == 1
+    begun = await held.epochs.snapshot()
+    assert begun.writing == 1
+    assert begun.writing_since is not None, "a write in progress does not say when it began"
     assert await held.epochs.settled() is None
 
     await _in_transaction(held.pool, lambda conn: held.epochs.commit(version, {"state:VA", "race:va-sen"}, conn=conn))
@@ -170,6 +180,73 @@ async def test_a_commit_of_a_write_not_in_progress_is_refused(held: _Held) -> No
 
     with pytest.raises(ValueError, match="in progress"):
         await _in_transaction(held.pool, lambda conn: held.epochs.commit(version + 1, {"state:VA"}, conn=conn))
+    assert (await held.epochs.snapshot()).epoch("state:VA") == 0
+
+
+async def test_a_writer_whose_lease_lapsed_cannot_commit_over_the_writer_that_followed(held: _Held) -> None:
+    """a later begin supersedes: its number is the fencing token, and only it may commit."""
+    stale = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    current = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+
+    with pytest.raises(ValueError, match="in progress"):
+        await _in_transaction(held.pool, lambda conn: held.epochs.commit(stale, {"state:VA"}, conn=conn))
+    snapshot = await held.epochs.snapshot()
+    assert snapshot.writing == current, "the stale writer cleared the marker of the write that followed"
+
+    await _in_transaction(held.pool, lambda conn: held.epochs.commit(current, {"state:VA"}, conn=conn))
+    with pytest.raises(ValueError, match="in progress"):
+        await _in_transaction(held.pool, lambda conn: held.epochs.commit(stale, {"state:MD"}, conn=conn))
+    after = await held.epochs.snapshot()
+    assert (after.version, after.epoch("state:VA"), after.epoch("state:MD")) == (current, current, 0)
+
+
+async def test_two_writes_begun_together_take_two_numbers(held: _Held) -> None:
+    versions = await asyncio.gather(
+        *(_in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn)) for _ in range(4))
+    )
+
+    assert sorted(versions) == [1, 2, 3, 4]
+    assert (await held.epochs.snapshot()).writing == 4
+
+
+async def test_a_scope_already_at_or_past_the_version_is_refused_and_nothing_moves(held: _Held) -> None:
+    await _write(held, {"state:VA"})
+    version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    await held.pool.execute(f"UPDATE {_TABLE} SET epoch = $1 WHERE scope = 'state:VA'", version + 5)
+
+    with pytest.raises(ValueError, match="already at or past"):
+        await _in_transaction(held.pool, lambda conn: held.epochs.commit(version, {"state:VA", "state:MD"}, conn=conn))
+
+    snapshot = await held.epochs.snapshot()
+    assert (snapshot.version, snapshot.writing, snapshot.epoch("state:MD")) == (1, version, 0)
+
+
+async def test_scopes_an_abandoned_write_touched_move_at_the_next_commit(held: _Held) -> None:
+    """an abandoned write committed rows for VA; the next write changes only MD, and VA still moves."""
+    abandoned = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    # its data transaction for VA committed, with VA recorded as touched in the same transaction
+    await _in_transaction(held.pool, lambda conn: held.epochs.touch(abandoned, {"state:VA"}, conn=conn))
+
+    version = await _write(held, {"state:MD"})
+
+    snapshot = await held.epochs.snapshot()
+    assert (snapshot.epoch("state:VA"), snapshot.epoch("state:MD")) == (version, version)
+    await _write(held, {"state:MD"})
+    assert (await held.epochs.snapshot()).epoch("state:VA") == version, "a touched scope moved twice"
+
+
+async def test_a_touch_rolled_back_with_its_data_leaves_nothing_pending(held: _Held) -> None:
+    version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+
+    async def touch_then_fail(conn: Any) -> None:
+        await held.epochs.touch(version, {"state:VA"}, conn=conn)
+        raise ConnectionError("the data write failed")
+
+    with pytest.raises(ConnectionError):
+        await _in_transaction(held.pool, touch_then_fail)
+    await _in_transaction(held.pool, lambda conn: held.epochs.commit(version, set(), conn=conn))
+
+    assert (await held.epochs.snapshot()).epoch("state:VA") == 0
 
 
 async def test_the_whole_record_is_not_a_scope_a_caller_may_name(held: _Held) -> None:
@@ -223,3 +300,55 @@ async def test_a_commit_on_one_replica_reaches_the_others_listener_and_a_missed_
             await registry_a.stop_invalidation_listener()
             await registry_b.stop_invalidation_listener()
             await pool.close()
+
+
+async def test_a_reader_refused_by_a_write_in_progress_is_told_how_long_it_has_been_going(
+    held: _Held, caplog: pytest.LogCaptureFixture
+) -> None:
+    version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+
+    with caplog.at_level("INFO", logger="threetears.core.collections.scope_epochs"):
+        assert await held.epochs.settled() is None
+
+    [record] = [r for r in caplog.records if r.getMessage() == "a write is in progress; readers keep what they hold"]
+    data = record.extra_data  # type: ignore[attr-defined]
+    assert data["version"] == version
+    assert 0 <= data["seconds"] < 60
+
+
+async def test_a_superseded_writers_late_data_write_is_refused_and_leaves_nothing(held: _Held) -> None:
+    """A's lease lapsed: B began and committed; A's late data transaction must not land under VA's epoch."""
+    stale = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    current = await _write(held, {"state:MD"})
+    assert current > stale
+
+    async def late_data_write(conn: Any) -> None:
+        await conn.execute("INSERT INTO results VALUES ('VA', 100)")
+        await held.epochs.touch(stale, {"state:VA"}, conn=conn)
+
+    with pytest.raises(ValueError, match="no longer in progress"):
+        await _in_transaction(held.pool, late_data_write)
+
+    assert await held.pool.fetch("SELECT * FROM results") == []
+    pending = await held.pool.fetch(f"SELECT scope FROM {_TABLE} WHERE pending IS NOT NULL")
+    assert pending == []
+    settled = await held.epochs.settled()
+    assert settled is not None and settled.epoch("state:VA") == 0
+
+
+async def test_a_write_in_progress_far_too_long_is_logged_as_stalled_and_described(
+    held: _Held, caplog: pytest.LogCaptureFixture
+) -> None:
+    version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    await held.pool.execute(
+        f"UPDATE {_TABLE} SET date_updated = now() - make_interval(secs => $1) WHERE scope = '*'",
+        STALLED_WRITE_SECONDS + 60,
+    )
+
+    with caplog.at_level("INFO", logger="threetears.core.collections.scope_epochs"):
+        assert await held.epochs.settled() is None
+
+    [record] = [r for r in caplog.records if "write is in progress" in r.getMessage()]
+    assert record.levelname == "WARNING"
+    assert f"write {version}" in held.epochs.why_unsettled()
+    assert "in progress for" in held.epochs.why_unsettled()

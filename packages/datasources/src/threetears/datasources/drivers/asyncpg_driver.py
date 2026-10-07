@@ -150,7 +150,7 @@ import asyncio
 import dataclasses
 import functools
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from typing import Any
+from typing import Any, Final
 
 import asyncpg
 
@@ -195,6 +195,7 @@ from threetears.datasources.drivers.errors import (
 from threetears.observe import get_logger, traced
 
 __all__ = [
+    "BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS",
     "AsyncpgDriver",
     "DriverCancellationError",
     "DriverQueryError",
@@ -392,6 +393,12 @@ def _get_cancellation_fired_counter() -> Any:
 # ---------------------------------------------------------------------------
 
 
+#: how long a query waits for a connection of a pool it borrows from its host (the hub's L3 pool, for
+#: an ``agent_internal`` datasource) before it gives up with a timeout: well under a datasource
+#: client's deadline, so nothing runs after its caller stopped waiting
+BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS: Final = 30.0
+
+
 class AsyncpgDriver(Driver):
     """concrete :class:`Driver` backed by ``asyncpg.Pool``.
 
@@ -458,6 +465,10 @@ class AsyncpgDriver(Driver):
         self._config = config
         self._connect_guard = connect_guard
         self._external_pool = external_pool
+        # a borrowed pool is the host's own, busy with its work too: wait on it a bounded time
+        self._acquire_options: dict[str, Any] = (
+            {} if external_pool is None else {"timeout": BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS}
+        )
         # the pool is None until first use OR a borrowed pool is
         # supplied; ``_owns_pool`` distinguishes the lifecycle paths
         # so :meth:`close` knows whether to call ``pool.close()``.
@@ -477,6 +488,15 @@ class AsyncpgDriver(Driver):
     # -------------------------------------------------------------------
     # pool lifecycle helpers
     # -------------------------------------------------------------------
+
+    @property
+    def borrowed_pool(self) -> Any | None:
+        """the host's pool this driver borrows (agent_internal), or None when it owns its pool.
+
+        :return: the borrowed pool
+        :rtype: Any | None
+        """
+        return self._external_pool
 
     async def _ensure_pool(self) -> asyncpg.Pool[Any]:
         """lazily create the asyncpg pool on first use; reject calls after close.
@@ -790,7 +810,7 @@ class AsyncpgDriver(Driver):
         # borrowed-pool search_path is applied at this one point rather than at
         # each call site.
         pool = await self._ensure_pool()
-        async with pool.acquire() as conn:
+        async with pool.acquire(**self._acquire_options) as conn:
             await self._scope_borrowed_connection(conn)
             if timeout_seconds is None:
                 result = await self._with_cancellation(
@@ -929,7 +949,7 @@ class AsyncpgDriver(Driver):
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
         pool = await self._ensure_pool()
-        conn = await pool.acquire()
+        conn = await pool.acquire(**self._acquire_options)
         try:
             # before the transaction opens: a borrowed connection carries the
             # pool owner's search_path until scoped, and SET inside the
@@ -1089,7 +1109,7 @@ class AsyncpgDriver(Driver):
             raise RuntimeError("AsyncpgDriver is closed")
         translated = translate_placeholders(sql, "asyncpg")
         pool = await self._ensure_pool()
-        async with pool.acquire() as conn:
+        async with pool.acquire(**self._acquire_options) as conn:
             await self._scope_borrowed_connection(conn)
             async with conn.transaction():
                 # ``Connection.cursor`` returns a server-side cursor;

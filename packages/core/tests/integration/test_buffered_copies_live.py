@@ -262,3 +262,60 @@ async def test_a_part_of_a_table_is_read_by_equality_filters_across_pages(held: 
     )
 
     assert [r["county"] for r in rows] == ["c0", "c2", "c4", "c6"]
+
+
+async def test_while_a_write_is_in_progress_the_live_set_is_answered_not_refused(held: _Held) -> None:
+    copies = _copies(held)
+    live = await copies.build()
+    held.writer.version = 4
+    held.writer.writing = True
+
+    assert await copies.build_if_behind() is live
+
+
+async def test_with_no_live_set_a_write_in_progress_is_refused(held: _Held) -> None:
+    held.writer.writing = True
+
+    with pytest.raises(IncompleteCopyError, match="a write is in progress"):
+        await _copies(held).build_if_behind()
+
+
+async def test_a_build_that_fails_closes_the_backend_it_was_filling(held: _Held) -> None:
+    made: list[DuckDBBackend] = []
+
+    def tracked() -> DuckDBBackend:
+        backend = _new_backend()
+        made.append(backend)
+        return backend
+
+    copies: BufferedCopies[int] = BufferedCopies(held.collections, tracked, held.writer.settled, page_size=3)
+    live = await copies.build()
+    l3 = held.collections[1].required_l3_pool
+    read = l3.fetch
+
+    async def fails_on_races(query: str, *args: Any) -> Any:
+        if "races" in query:
+            raise ConnectionError("the L3 rail went away")
+        return await read(query, *args)
+
+    l3.fetch = fails_on_races  # type: ignore[method-assign]
+    with pytest.raises(ConnectionError):
+        await copies.build()
+
+    assert len(made) == 2
+    assert not made[1].is_initialized(), "the half-filled backend of a failed build was left open"
+    assert made[0].is_initialized() and copies.require() is live
+
+
+async def test_a_build_refused_by_a_write_in_progress_says_what_the_writer_says_of_it(held: _Held) -> None:
+    held.writer.writing = True
+    copies: BufferedCopies[int] = BufferedCopies(
+        held.collections,
+        _new_backend,
+        held.writer.settled,
+        page_size=3,
+        why_unsettled=lambda: "write 7 in progress for 912.0 s",
+    )
+
+    with pytest.raises(IncompleteCopyError, match="write 7 in progress for 912.0 s"):
+        await copies.build()
