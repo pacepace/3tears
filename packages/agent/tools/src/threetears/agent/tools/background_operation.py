@@ -55,6 +55,7 @@ __all__ = [
     "OperationOutcome",
     "OperationState",
     "OperationStatusTool",
+    "RequestOperationTool",
     "StartOperationTool",
 ]
 
@@ -495,6 +496,67 @@ class StartOperationTool(_OperationTool):
                 error=f"a run is already in progress{since}; {self._status_tool} says when it ends",
                 error_code=CONFLICT,
             )
+        return result
+
+
+class RequestOperationTool(_OperationTool):
+    """records that a run is wanted, then starts the operation; a request while one runs is not refused.
+
+    For an operation that drains requests (its body a ``CoalescedRun.drain``): the request is
+    recorded first, so a run already in progress (here or on another replica) takes it and runs once
+    more afterwards, and the start is only a nudge for when nothing runs. Where
+    :class:`StartOperationTool` answers a second start ``CONFLICT``, this answers that the request
+    will be run.
+
+    :param name: the tool's namespaced name (``<provider>.<verb>``)
+    :ptype name: str
+    :param description: the sentence a caller routes on
+    :ptype description: str
+    :param operation: the operation, or None until the pod has built it
+    :ptype operation: Callable[[], BackgroundOperation[Any] | None]
+    :param request: records that a run is wanted (``CoalescedRun.request``)
+    :ptype request: Callable[[], Awaitable[None]]
+    :param status_tool: the status tool's name, which the answer points the caller to
+    :ptype status_tool: str
+    :param version: the tool's version
+    :ptype version: str
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        description: str,
+        operation: Callable[[], BackgroundOperation[Any] | None],
+        request: Callable[[], Awaitable[None]],
+        status_tool: str,
+        version: str = _DEFAULT_TOOL_VERSION,
+    ) -> None:
+        super().__init__(name=name, description=description, operation=operation, version=version)
+        self._request = request
+        self._status_tool = status_tool
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """refuse until the operation exists; then record the request and start the operation.
+
+        :param kwargs: none are taken
+        :ptype kwargs: Any
+        :return: that it started, or that the run in progress will run the request after
+        :rtype: ToolResult
+        """
+        operation = self._operation()
+        result: ToolResult
+        if operation is None:
+            result = ToolResult(success=False, content="", error=_NOT_READY, error_code=TOOL_NOT_READY)
+        else:
+            await self._request()
+            started = operation.start()
+            content = (
+                f"started; {self._status_tool} says when it ends and how"
+                if started
+                else f"requested; it runs after the run in progress, and {self._status_tool} says when it ends"
+            )
+            result = ToolResult(success=True, content=content, metadata={"started": started})
         return result
 
 

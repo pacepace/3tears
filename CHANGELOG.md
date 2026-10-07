@@ -57,6 +57,11 @@ copies swapped in whole.
   again, and waits for the run to end before the lease is let go (a second cancellation meanwhile is
   held and raised after). A failed run is raised and not
   retried. `KVLease` gains `stored_key(key)` and `bucket()`.
+- **Added, `threetears.agent.tools.background_operation.RequestOperationTool`** (the ENR pod's
+  `enr.reload`): for an operation that drains `CoalescedRun` requests, the tool records a request,
+  then starts the operation; a request while a run is in progress is not refused as a conflict
+  (`StartOperationTool` answers that) but answered "requested", and the run in progress, here or
+  on another replica, runs it once more afterwards.
 - **Added, `SchemaBackedCollection.delete_rows(keys, *, conn, max_rows=None)`** (the ENR pod's
   refresh deletes the rows the warehouse no longer holds): rows deleted by key in multi-row
   `DELETE ... WHERE (k1, k2) IN ((...), ...)` statements on the caller's transaction, settled with

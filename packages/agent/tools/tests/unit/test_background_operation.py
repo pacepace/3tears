@@ -10,6 +10,7 @@ import pytest
 from threetears.agent.tools.background_operation import (
     BackgroundOperation,
     OperationStatusTool,
+    RequestOperationTool,
     StartOperationTool,
 )
 from threetears.agent.tools.base_tool import CONFLICT, TOOL_NOT_READY
@@ -356,3 +357,45 @@ async def test_a_wait_failing_after_a_run_finished_keeps_that_run_as_the_last_ou
 
     assert operation.state == "succeeded"
     assert operation.last is not None and operation.last.result == {"rows": 3}
+
+
+async def test_the_request_tool_records_a_request_and_starts_the_operation() -> None:
+    body = _gate()
+    operation = BackgroundOperation("refresh", body)
+    requests: list[str] = []
+
+    async def request() -> None:
+        requests.append("asked")
+
+    tool = RequestOperationTool(
+        name="enr.reload",
+        description="refresh",
+        operation=lambda: operation,
+        request=request,
+        status_tool="enr.load_status",
+    )
+
+    first = await tool.run()
+    second = await tool.run()
+
+    assert requests == ["asked", "asked"], "a request was not recorded"
+    assert first.success and first.metadata == {"started": True}
+    # a request while the operation runs is not refused: the run in progress takes it
+    assert second.success and second.metadata == {"started": False}
+    assert "after the run in progress" in second.content
+    body.release.set()
+    await operation.wait()
+    assert body.calls == 1
+
+
+async def test_the_request_tool_refuses_while_the_operation_is_not_built_yet() -> None:
+    async def request() -> None:
+        raise AssertionError("a request was recorded for an operation that does not exist yet")
+
+    tool = RequestOperationTool(
+        name="enr.reload", description="refresh", operation=lambda: None, request=request, status_tool="s"
+    )
+
+    refused = await tool.run()
+
+    assert (refused.success, refused.error_code) == (False, TOOL_NOT_READY)
