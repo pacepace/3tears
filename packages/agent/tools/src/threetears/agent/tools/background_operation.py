@@ -48,7 +48,7 @@ from typing import Any, Final, Generic, Literal, TypeVar
 
 from threetears.observe import get_logger
 
-from threetears.agent.tools.base_tool import CONFLICT, MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.base_tool import CONFLICT, TOOL_NOT_READY, MCPToolDefinition, TearsTool, ToolResult
 
 __all__ = [
     "BackgroundOperation",
@@ -319,8 +319,10 @@ class BackgroundOperation(Generic[ResultT]):
                 await asyncio.sleep(retry_seconds)
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- kept, logged and re-raised: the wait may never be awaited, so the status and the log are where this error is sure to be seen
                 error = f"{type(exc).__name__}: {exc}"
-                # kept as the last outcome, so the status says failed with the reason rather than idle
-                self._last = OperationOutcome(started_at=waiting_since, finished_at=datetime.now(UTC), error=error)
+                # kept as the last outcome, so the status says failed with the reason rather than idle;
+                # unless a run ended after the wait began, which is newer news than this failure
+                if self._last is None or self._last.finished_at < waiting_since:
+                    self._last = OperationOutcome(started_at=waiting_since, finished_at=datetime.now(UTC), error=error)
                 log.error(
                     "cannot tell whether the operation is needed; no run will start",
                     extra={"extra_data": {"operation": self._name, "error": error}},
@@ -396,7 +398,7 @@ class _OperationTool(TearsTool):
         operation = self._operation()
         result: ToolResult
         if operation is None:
-            result = ToolResult(success=False, content="", error=_NOT_READY)
+            result = ToolResult(success=False, content="", error=_NOT_READY, error_code=TOOL_NOT_READY)
         else:
             result = self.answer(operation)
         return result

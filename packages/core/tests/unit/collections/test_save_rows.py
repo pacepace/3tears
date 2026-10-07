@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -22,6 +22,7 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.entities.base import BaseEntity
 
 SCHEMA = TableSchema(
     name="results",
@@ -34,6 +35,12 @@ SCHEMA = TableSchema(
         Column("date_updated", DATETIMETZ_TYPE),
     ],
 )
+
+
+class _ResultRow(BaseEntity):
+    """a result row: its own id is the geography, within the race its key leads with."""
+
+    primary_key_field = "geo_id"
 
 
 class _Conn:
@@ -70,7 +77,8 @@ class _Pool:
 
 def _collection(schema: TableSchema = SCHEMA) -> Any:
     registry = CollectionRegistry()
-    collection = collection_for_schema(schema)(registry, DefaultCoreConfig(), None)
+    entity = _ResultRow if len(schema.pk_columns) > 1 else None
+    collection = collection_for_schema(schema, entity_class=entity)(registry, DefaultCoreConfig(), None)
     collection.l3_pool = _Pool()
     return collection
 
@@ -269,3 +277,74 @@ async def test_two_rows_with_one_key_are_refused_before_anything_is_written() ->
         async with CallerTransaction(conn):
             await collection.save_rows(rows, conn=conn)
     assert conn.executed == []
+
+
+class _Buffer:
+    """a write buffer: present, so a write-behind collection really defers."""
+
+
+async def test_a_collection_with_no_durable_store_is_refused() -> None:
+    collection, conn = _collection(), _Conn()
+    collection.l3_pool = None
+    with pytest.raises(ValueError, match="no durable store"):
+        async with CallerTransaction(conn):
+            await collection.save_rows(_rows(1), conn=conn)
+
+
+async def test_a_collection_caching_absences_is_refused() -> None:
+    class _Absences(type(_collection())):  # type: ignore[misc]
+        negative_cache_max_age = timedelta(seconds=60)
+
+    collection, conn = _Absences(CollectionRegistry(), DefaultCoreConfig(), None), _Conn()
+    collection.l3_pool = _Pool()
+    with pytest.raises(ValueError, match="caches absences"):
+        async with CallerTransaction(conn):
+            await collection.save_rows(_rows(1), conn=conn)
+    assert conn.executed == []
+
+
+async def test_a_collection_deferring_its_l3_writes_is_refused() -> None:
+    class _Deferred(type(_collection())):  # type: ignore[misc]
+        l3_write_policy = "write_behind"
+
+    collection = _Deferred(CollectionRegistry(), DefaultCoreConfig(), None, write_buffer=_Buffer())  # type: ignore[arg-type]
+    collection.l3_pool = _Pool()
+    conn = _Conn()
+    with pytest.raises(ValueError, match="defers its L3 writes"):
+        async with CallerTransaction(conn):
+            await collection.save_rows(_rows(1), conn=conn)
+    assert conn.executed == []
+
+
+async def test_a_collection_fencing_with_a_null_safe_cas_is_refused() -> None:
+    fenced = TableSchema(
+        name="counters",
+        primary_key="id",
+        columns=[
+            Column("id", STRING_TYPE),
+            Column("count", INT_TYPE),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE, nullable=True),
+        ],
+        cas_column="date_updated",
+        cas_null_safe=True,
+    )
+    collection, conn = _collection(fenced), _Conn()
+    with pytest.raises(ValueError, match="null-safe CAS"):
+        async with CallerTransaction(conn):
+            await collection.save_rows([{"id": "a", "count": 1}], conn=conn)
+    assert conn.executed == []
+
+
+async def test_a_sql_store_refuses_a_bulk_upsert_to_a_table_whose_schema_it_does_not_hold() -> None:
+    from threetears.core.backends.sql import SqlL3Backend
+
+    store = SqlL3Backend(_Pool())
+    with pytest.raises(ValueError, match="schema of 'nowhere' registered"):
+        await store.upsert_many("nowhere", [{"id": 1}], max_rows=10, max_bytes=1000)
+
+
+async def test_save_rows_answers_how_many_rows_it_submitted() -> None:
+    collection, conn = _collection(), _Conn()
+    async with CallerTransaction(conn):
+        assert await collection.save_rows(_rows(4), conn=conn, max_rows=3) == 4

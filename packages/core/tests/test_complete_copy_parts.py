@@ -128,12 +128,17 @@ class TestEvictionListeners:
         )
         registry = CollectionRegistry()
         registry.configure(l1_backend=backend)
-        return collection_for_schema(schema)(registry, DefaultCoreConfig(), None)
+        from threetears.core.entities.base import BaseEntity
+
+        class _Result(BaseEntity):
+            primary_key_field = "at"
+
+        return collection_for_schema(schema, entity_class=_Result)(registry, DefaultCoreConfig(), None)
 
     def test_a_listener_hears_every_row_that_leaves_l1(self, backend: Any) -> None:
         collection = self._collection(backend)
         heard: list[Any] = []
-        collection.add_l1_eviction_listener(heard.append)
+        collection.add_l1_change_listener(heard.append)
         collection.evict_from_cache_sync(("VA", "2026-11-04T03:57:11+00:00"))
         assert heard == [("VA", "2026-11-04T03:57:11+00:00")]
 

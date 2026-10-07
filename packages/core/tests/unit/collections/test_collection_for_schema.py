@@ -12,8 +12,16 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
     collection_for_schema,
 )
+import pytest
+
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+
+
+class _ResultRow(BaseEntity):
+    """a result row: its own id is the geography, within the race its key leads with."""
+
+    primary_key_field: str = "geo_id"
 
 
 def _schema(name: str = "results") -> TableSchema:
@@ -32,7 +40,7 @@ def _schema(name: str = "results") -> TableSchema:
 
 def test_the_class_carries_the_schema_its_table_and_key() -> None:
     schema = _schema()
-    collection_class = collection_for_schema(schema)
+    collection_class = collection_for_schema(schema, entity_class=_ResultRow)
     assert issubclass(collection_class, SchemaBackedCollection)
     assert collection_class.schema is schema
     assert collection_class.primary_key_column == ("office_key", "geo_id")
@@ -40,7 +48,7 @@ def test_the_class_carries_the_schema_its_table_and_key() -> None:
 
 
 def test_an_instance_names_its_table_and_builds_entities() -> None:
-    collection_class = collection_for_schema(_schema())
+    collection_class = collection_for_schema(_schema(), entity_class=_ResultRow)
     registry = CollectionRegistry()
     collection = collection_class(registry, DefaultCoreConfig(), None)
     assert collection.table_name == "results"
@@ -60,8 +68,8 @@ def test_the_entity_class_given_is_the_one_used() -> None:
 
 
 def test_two_schemas_give_two_classes() -> None:
-    first = collection_for_schema(_schema("a"))
-    second = collection_for_schema(_schema("b"))
+    first = collection_for_schema(_schema("a"), entity_class=_ResultRow)
+    second = collection_for_schema(_schema("b"), entity_class=_ResultRow)
     assert first is not second
     assert first.schema.name == "a"
     assert second.schema.name == "b"
@@ -81,3 +89,10 @@ def test_a_single_column_key_names_the_entity_s_key_whole() -> None:
     collection = collection_for_schema(schema)(CollectionRegistry(), DefaultCoreConfig(), None)
     assert collection.entity_class.primary_key_field == "source"
     assert collection.create({"source": "geos"}).id == "geos"
+
+
+def test_a_composite_key_with_no_entity_class_is_refused_naming_the_table() -> None:
+    """On a composite key an entity's id names its bare row id, not the column the key leads with;
+    which column that is only the caller knows, so it is never guessed."""
+    with pytest.raises(ValueError, match="results.*composite key.*entity_class"):
+        collection_for_schema(_schema())

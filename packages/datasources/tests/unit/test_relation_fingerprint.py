@@ -27,7 +27,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from threetears.datasources.drivers.sql_fragments import build_relation_key_expression
+from threetears.core.fingerprint import relation_key_expression as build_relation_key_expression
 from threetears.datasources.query_client import RelationFingerprintRequest
 
 

@@ -12,7 +12,7 @@ from threetears.agent.tools.background_operation import (
     OperationStatusTool,
     StartOperationTool,
 )
-from threetears.agent.tools.base_tool import CONFLICT
+from threetears.agent.tools.base_tool import CONFLICT, TOOL_NOT_READY
 
 
 @dataclass
@@ -283,6 +283,7 @@ async def test_both_tools_refuse_while_the_operation_is_not_built_yet() -> None:
         assert not result.success
         assert result.error is not None
         assert "not ready" in result.error
+        assert result.error_code == TOOL_NOT_READY
 
 
 def test_the_tools_are_named_and_versioned_as_given() -> None:
@@ -329,3 +330,29 @@ async def test_a_failure_is_logged_with_its_traceback(caplog: pytest.LogCaptureF
     failures = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(failures) == 2
     assert all(r.exc_info is not None for r in failures)
+
+
+async def test_a_wait_failing_after_a_run_finished_keeps_that_run_as_the_last_outcome() -> None:
+    """the status reports the newest thing that happened: a run that ended after the wait began
+    is newer than the wait's failure, so the failure does not replace it."""
+    body = _gate()
+    operation = BackgroundOperation("load", body)
+    deciding = asyncio.Event()
+    decide = asyncio.Event()
+
+    async def needed() -> bool:
+        deciding.set()
+        await decide.wait()
+        raise ValueError("the check itself is broken")
+
+    operation.start_when_needed(needed, retry_on=(ConnectionError,), retry_seconds=0)
+    await deciding.wait()
+    assert operation.start()
+    body.release.set()
+    await operation.wait()
+    decide.set()
+    with pytest.raises(ValueError):
+        await operation.wait_until_settled()
+
+    assert operation.state == "succeeded"
+    assert operation.last is not None and operation.last.result == {"rows": 3}

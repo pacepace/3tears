@@ -458,6 +458,11 @@ class BaseCollection(ABC, Generic[EntityT]):
     # attribute is typed + present on the base.
     _missing_nats_warned_tables: ClassVar[set[str]] = set()
 
+    #: this process's L1 for the table, as the registry bound it; ``None`` when it caches nowhere
+    _l1: Any
+    #: called with a row's key whenever the row changes in, or leaves, this collection's L1
+    _l1_change_listeners: list[Callable[[Any], None]]
+
     def __init__(
         self,
         registry: CollectionRegistry,
@@ -481,6 +486,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._flush_tables = frozenset(t.strip() for t in config.collection_flush_tables.split(",") if t.strip())
         # Resolve L1 and L3 from registry
         self._l1 = registry.get_l1_backend(self.table_name)
+        self._l1_change_listeners = []
         self.l3_pool = registry.get_l3_pool(self.table_name)
         self._next_absent_marker_sweep = 0.0
         self._last_generation_warning: float | None = None
@@ -1091,7 +1097,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if row is None:
             return False
         row[field] = value
-        self._l1.upsert(self.table_name, row, self.primary_key_columns)
+        self._l1_upsert(row, self.primary_key_columns)
         return True
 
     def get_row_sync(self, entity_id: Any) -> dict[str, Any] | None:
@@ -1464,7 +1470,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._l1 is None:
             return False
         pk: str | tuple[str, ...] = primary_key if primary_key is not None else self.primary_key_columns
-        self._l1.upsert(self.table_name, self._stamped(data) if from_lower_tier else data, pk)
+        self._l1_upsert(self._stamped(data) if from_lower_tier else data, pk)
         return True
 
     def exists_in_cache_sync(self, entity_id: Any) -> bool:
@@ -1551,23 +1557,58 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._l1_fence.changed(self._fence_key(entity_id))
         if self._l1 is not None:
             self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
-        for listener in tuple(self.__dict__.get("_l1_eviction_listeners", ())):
-            listener(entity_id)
+        self._l1_changed(entity_id)
 
-    def add_l1_eviction_listener(self, listener: Callable[[Any], None]) -> None:
-        """call ``listener`` with the key of every row that leaves this collection's L1, as it leaves.
+    def _l1_upsert(self, row: dict[str, Any], primary_key: str | tuple[str, ...]) -> None:
+        """write one of this table's rows into L1; the one way a row of it enters or changes there.
 
-        For a holder whose correctness depends on L1 holding every row (a complete copy,
-        :mod:`threetears.core.collections.complete_copy`): every eviction -- a write this process
-        settled, a peer's invalidation broadcast -- passes through :meth:`_evict_l1`, so a listener
-        here hears each one. It runs synchronously inside the eviction and must not raise.
-
-        :param listener: called with the evicted row's key (pk value, or tuple of pk values)
-        :ptype listener: Callable[[Any], None]
+        :param row: the row
+        :ptype row: dict[str, Any]
+        :param primary_key: its key's column name, or names in declared order
+        :ptype primary_key: str | tuple[str, ...]
         :return: nothing
         :rtype: None
         """
-        self.__dict__.setdefault("_l1_eviction_listeners", []).append(listener)
+        self._l1.upsert(self.table_name, row, primary_key)
+        columns = (primary_key,) if isinstance(primary_key, str) else tuple(primary_key)
+        key = tuple(row.get(column) for column in columns)
+        self._l1_changed(key if len(key) > 1 else key[0])
+
+    def _l1_changed(self, entity_id: Any) -> None:
+        """tell every change listener that ``entity_id``'s row changed in, or left, L1.
+
+        :param entity_id: the row's key
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        # an instance a harness assembled without running __init__ has no listeners
+        for listener in tuple(getattr(self, "_l1_change_listeners", ())):
+            listener(entity_id)
+
+    def add_l1_change_listener(self, listener: Callable[[Any], None]) -> Callable[[], None]:
+        """call ``listener`` with a row's key whenever the row changes in, or leaves, this collection's L1.
+
+        For a holder whose correctness depends on what L1 holds (a complete copy,
+        :mod:`threetears.core.collections.complete_copy`): every row this collection writes into L1
+        (a write through, a pull-through, a new entity) goes through :meth:`_l1_upsert`, and every
+        eviction (a write this process settled, a peer's invalidation broadcast) through
+        :meth:`_evict_l1`, so a listener here hears each change. It runs synchronously inside the
+        change and must not raise.
+
+        :param listener: called with the row's key (pk value, or tuple of pk values)
+        :ptype listener: Callable[[Any], None]
+        :return: a call that removes the listener
+        :rtype: Callable[[], None]
+        """
+        listeners = self.__dict__.setdefault("_l1_change_listeners", [])
+        listeners.append(listener)
+
+        def remove() -> None:
+            if listener in listeners:
+                listeners.remove(listener)
+
+        return remove
 
     @property
     def l1_backend(self) -> Any:
@@ -2049,7 +2090,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         lookup = await self._l2_lookup(entity_id)
         if lookup.row is not None:
             if self._l1 is not None and self._l1_fence.still_newest(ticket):
-                self._l1.upsert(self.table_name, self._stamped(lookup.row), self.primary_key_columns)
+                self._l1_upsert(self._stamped(lookup.row), self.primary_key_columns)
             return lookup.row
         if generation is not None and lookup.marker is not None and lookup.marker.generation == generation:
             self._write_l1_marker(entity_id, generation)
@@ -2155,7 +2196,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             else:
                 cacheable = False
         if cacheable and self._l1 is not None and self._l1_fence.still_newest(ticket):
-            self._l1.upsert(self.table_name, self._stamped(answer), self.primary_key_columns)
+            self._l1_upsert(self._stamped(answer), self.primary_key_columns)
         return answer
 
     @staticmethod
@@ -2343,7 +2384,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             data = self._write_ahead_row(data)
             self._l1_fence.changed(self._fence_key(entity_id))
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, data, self.primary_key_columns)
+                self._l1_upsert(data, self.primary_key_columns)
             await self._save_to_l2(entity_id, data)
             await self._publish_invalidation(entity_id)
             await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(data))
@@ -2695,7 +2736,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 raise
             self._l1_fence.changed(self._fence_key(entity_id))
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, data, self.primary_key_columns)
+                self._l1_upsert(data, self.primary_key_columns)
             await self._save_to_l2(entity_id, data)
             assert self._write_buffer is not None
             await self._write_buffer.add(self.table_name, entity_id, self._normalise_datetimes_for_write(data))
@@ -2925,7 +2966,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         cached = self._l1 is not None and landed and newest
         if cached:
             assert self._l1 is not None  # narrow: cached implies an L1 backend
-            self._l1.upsert(self.table_name, data, self.primary_key_columns)
+            self._l1_upsert(data, self.primary_key_columns)
         else:
             self._evict_l1(entity_id)
         if not before.fenced:
@@ -3022,7 +3063,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                     # even though no pull-through ran. Leaving it unstamped would make a
                     # freshly-reloaded row read as locally authored, and locally
                     # authored rows never expire.
-                    self._l1.upsert(self.table_name, self._stamped(data), self.primary_key_columns)
+                    self._l1_upsert(self._stamped(data), self.primary_key_columns)
                 else:
                     # a write or eviction of the key overlapped the read, so the row may already be
                     # older than L3's: the handle keeps it, L1 does not.
@@ -3388,7 +3429,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                     # cache what it read: the swap is recorded on the fence as it lands in L1.
                     if not ordered or await self._swap_still_current(entity_id, key, won_revision, payload):
                         self._l1_fence.changed(self._fence_key(entity_id))
-                        self._l1.upsert(self.table_name, new_row, self.primary_key_columns)
+                        self._l1_upsert(new_row, self.primary_key_columns)
                     else:
                         self._evict_l1(entity_id)
                 self._clear_l1_marker(entity_id)
@@ -3748,7 +3789,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             self._warn_missing_nats_client_once()
             if self._registry is not None:
-                self._registry.scan_cache.drop_for_table(self.table_name)
+                self._registry.drop_local_scans(self.table_name)
             return
         limit = asyncio.Semaphore(self.INVALIDATE_CONCURRENCY)
 
@@ -3809,15 +3850,15 @@ class BaseCollection(ABC, Generic[EntityT]):
                 await asyncio.shield(self._evict_every(write.keys))
 
     async def _evict_every(self, entity_ids: tuple[Any, ...]) -> None:
-        """evict each row in ``entity_ids`` from L1 and L2 and broadcast it (:meth:`invalidate_cache`).
+        """evict every row in ``entity_ids`` from L1 and L2 and broadcast it, in one call
+        (:meth:`invalidate_cache_many`), as a caller's transaction settles its rows.
 
         :param entity_ids: pk values (single-pk) or tuples of pk values in declared column order
         :ptype entity_ids: tuple[Any, ...]
         :return: nothing
         :rtype: None
         """
-        for entity_id in entity_ids:
-            await self.invalidate_cache(entity_id)
+        await self.invalidate_cache_many(entity_ids)
 
     def create(self, data: dict[str, Any]) -> EntityT:
         """Create new entity (not persisted until save)."""

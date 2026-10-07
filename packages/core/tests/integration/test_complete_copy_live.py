@@ -33,6 +33,7 @@ from threetears.core.collections.schema_backed import (
     collection_for_schema,
 )
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.entities.base import BaseEntity
 from threetears.core.fingerprint import key_fingerprint, postgres_fingerprint_sql
 
 pytestmark = pytest.mark.integration
@@ -52,7 +53,14 @@ _SCHEMA = TableSchema(
     on_conflict="update",
 )
 
-_COLLECTION = collection_for_schema(_SCHEMA)
+
+class _Result(BaseEntity):
+    """a result row: its own id is the time reported, within the race its key leads with."""
+
+    primary_key_field = "reported_at"
+
+
+_COLLECTION = collection_for_schema(_SCHEMA, entity_class=_Result)
 
 _START = datetime(2026, 11, 4, 1, 0, tzinfo=UTC)
 
@@ -225,3 +233,86 @@ async def test_postgres_and_python_digest_text_keys_to_the_same_number(held: _He
     python = key_fingerprint([(r["race"],) for r in races])
 
     assert (int(row["row_count"]), str(row["digest"])) == (python.row_count, python.digest)
+
+
+async def test_a_value_changed_by_another_writer_while_the_copy_is_read_is_refused(
+    held: _Held, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """the same keys with a new value: a proof over keys alone would pass a copy holding the old one."""
+    copy = CompleteCopy(held.collection, page_size=3)
+    l3 = held.collection.required_l3_pool
+    read = l3.fetch
+    pages: list[int] = []
+
+    async def fetch_then_update(query: str, *args: Any) -> Any:
+        rows = await read(query, *args)
+        pages.append(len(rows))
+        if len(pages) == 2:
+            # a row the first page already read
+            await held.pool.execute(f"UPDATE {_TABLE} SET votes = 5000 WHERE votes = 100")
+        return rows
+
+    monkeypatch.setattr(l3, "fetch", fetch_then_update)
+
+    with pytest.raises(IncompleteCopyError, match="changed while it was read"):
+        await copy.warm()
+    with pytest.raises(IncompleteCopyError):
+        copy.require()
+
+
+async def test_a_value_written_by_this_process_while_the_copy_is_read_is_refused(
+    held: _Held, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    copy = CompleteCopy(held.collection, page_size=3)
+    l3 = held.collection.required_l3_pool
+    read = l3.fetch
+    pages: list[int] = []
+
+    async def fetch_then_save(query: str, *args: Any) -> Any:
+        rows = await read(query, *args)
+        pages.append(len(rows))
+        if len(pages) == 2:
+            entity = held.collection.create({"race": "race-0", "reported_at": _START, "votes": 5000})
+            await held.collection.save_entity(entity)
+        return rows
+
+    monkeypatch.setattr(l3, "fetch", fetch_then_save)
+
+    with pytest.raises(IncompleteCopyError):
+        await copy.warm()
+    with pytest.raises(IncompleteCopyError):
+        copy.require()
+
+
+async def test_a_row_this_process_writes_into_l1_after_the_proof_voids_it(held: _Held) -> None:
+    """a write through to L1 changes the copy without leaving it: still a change the proof did not see."""
+    copy = CompleteCopy(held.collection, page_size=4)
+    await copy.warm()
+
+    held.collection.create({"race": "race-0", "reported_at": _START, "votes": 5000})
+
+    with pytest.raises(IncompleteCopyError, match="changed"):
+        copy.require()
+
+
+async def test_a_warm_that_raises_says_why_the_copy_is_refused(held: _Held, monkeypatch: pytest.MonkeyPatch) -> None:
+    copy = CompleteCopy(held.collection, page_size=4)
+
+    async def broken(query: str, *args: Any) -> Any:
+        raise ConnectionError("the L3 rail went away")
+
+    monkeypatch.setattr(held.collection.required_l3_pool, "fetch", broken)
+
+    with pytest.raises(ConnectionError):
+        await copy.warm()
+    with pytest.raises(IncompleteCopyError, match="the last warm failed: ConnectionError: the L3 rail went away"):
+        copy.require()
+
+
+async def test_a_listener_can_be_removed(held: _Held) -> None:
+    heard: list[Any] = []
+    remove = held.collection.add_l1_change_listener(heard.append)
+    held.collection.evict_from_cache_sync(("race-0", _START))
+    remove()
+    held.collection.evict_from_cache_sync(("race-1", _START))
+    assert heard == [("race-0", _START)]

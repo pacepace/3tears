@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 
-from threetears.core.backends.protocol import DurableStore, OrderedDurableStore
+from threetears.core.backends.protocol import BulkDurableStore, DurableStore, OrderedDurableStore
 from threetears.core.backends.schema_sql import (
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
@@ -1908,7 +1908,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :param max_bytes: the most JSON bytes of parameters one statement carries;
             :attr:`BULK_MAX_BYTES` when None
         :ptype max_bytes: int | None
-        :return: how many rows were written
+        :return: how many rows were submitted: every row given, whether the conflict clause updated
+            a row already held, left it as it was (``on_conflict="ignore"``) or raised
         :rtype: int
         :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the
             collection has no durable store, caches absences, defers its L3 writes or fences with a
@@ -1944,9 +1945,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             transaction.enroll(self, key)
             self._evict_l1(key)
         written = 0
-        upsert_many = getattr(store, "upsert_many", None)
-        if stamped and callable(upsert_many):
-            written = await upsert_many(
+        if stamped and isinstance(store, BulkDurableStore):
+            written = await store.upsert_many(
                 self.table_name,
                 stamped,
                 max_rows=max_rows or self.BULK_MAX_ROWS,
@@ -1956,9 +1956,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         elif stamped:
             # a store that saves one row at a time: still one transaction, a write per row
             for data in stamped:
-                written += await store.upsert(
+                await store.upsert(
                     self.table_name, data, pk=self.schema.pk_columns, on_conflict=self.schema.on_conflict, conn=conn
                 )
+                written += 1
         log.debug(
             "bulk upsert written on the caller's transaction",
             extra={"extra_data": {"table": self.table_name, "rows": written}},
@@ -2080,14 +2081,21 @@ def collection_for_schema(
 
     :param schema: the table
     :ptype schema: TableSchema
-    :param entity_class: the entities the collection builds; a plain
-        :class:`~threetears.core.entities.base.BaseEntity` keyed on the schema's first primary-key
-        column when None
+    :param entity_class: the entities the collection builds; for a single-column key, a plain
+        :class:`~threetears.core.entities.base.BaseEntity` keyed on that column when None. A
+        composite key needs one: an entity's ``id`` names its bare row id, not the column the key
+        leads with, and which column that is only the caller knows
     :ptype entity_class: type[BaseEntity] | None
     :return: a :class:`SchemaBackedCollection` subclass over ``schema``
     :rtype: type[SchemaBackedCollection[Any]]
+    :raises ValueError: for a composite key with no ``entity_class``
     """
     entity = entity_class
+    if entity is None and len(schema.pk_columns) > 1:
+        raise ValueError(
+            f"{schema.name}: a composite key {schema.pk_columns} needs an entity_class naming the row's "
+            f"own id as its primary_key_field; the first key column is not guessed"
+        )
     if entity is None:
         entity = type(
             f"{schema.name}_row",

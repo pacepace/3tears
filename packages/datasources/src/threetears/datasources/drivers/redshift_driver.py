@@ -159,13 +159,13 @@ if TYPE_CHECKING:
     RedshiftConnection = Any
     RedshiftCursor = Any
 
+from threetears.core.fingerprint import relation_key_expression
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._redshift_connector_internals import connection_socket
 from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
     build_equality_filter,
-    build_relation_key_expression,
     build_set_local_statement_timeout_sql,
     build_set_search_path_sql,
     build_set_statement_timeout_sql,
@@ -2136,7 +2136,7 @@ class RedshiftDriver(Driver):
         """
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
-        key_expression = build_relation_key_expression(key)
+        key_expression = relation_key_expression(key)
         filters, values = build_equality_filter(where)
         sql = (
             "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers

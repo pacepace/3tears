@@ -277,7 +277,7 @@ class BigQueryDriver(Driver):
         When this driver is built, note that BigQuery diverges further than the
         other engines: ``MD5()`` returns BYTES rather than a hex string, so the
         hash needs ``TO_HEX(MD5(k))`` before the substring, and the cast in
-        :func:`threetears.datasources.drivers.sql_fragments.build_relation_key_expression`
+        :func:`threetears.core.fingerprint.relation_key_expression`
         is ``STRING`` rather than ``VARCHAR``. The shared builder will need a
         dialect seam before this driver can use it.
 

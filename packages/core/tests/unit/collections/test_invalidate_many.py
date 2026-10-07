@@ -103,3 +103,27 @@ async def test_a_transaction_settles_each_collection_s_keys_in_one_call() -> Non
             transaction.enroll(first, f"a{i}")
             transaction.enroll(second, f"b{i}")
     assert calls == [("a", ["a0", "a1", "a2"]), ("b", ["b0", "b1", "b2"])]
+
+
+async def test_without_a_bus_settling_drops_scans_through_the_registry_s_local_half(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """one owner of "a local write evicts local scans": the registry, as every single-key write uses."""
+    collection = _collection()
+    local: list[str] = []
+    monkeypatch.setattr(type(collection.registry), "drop_local_scans", lambda self, table: local.append(table))
+    await collection.invalidate_cache_many(["a", "b"])
+    assert local == ["rows"]
+
+
+async def test_a_write_on_the_collection_s_own_pool_settles_its_rows_in_one_call() -> None:
+    collection = _collection()
+    calls: list[list[Any]] = []
+
+    async def many(entity_ids: Any) -> None:
+        calls.append(list(entity_ids))
+
+    collection.invalidate_cache_many = many
+    async with collection.bypassing_write("a", "b", "c"):
+        pass
+    assert calls == [["a", "b", "c"]]

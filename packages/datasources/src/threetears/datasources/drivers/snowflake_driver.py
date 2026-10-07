@@ -246,7 +246,7 @@ class SnowflakeDriver(Driver):
         ``TO_NUMBER(SUBSTR(MD5(k), 1, 8), 'XXXXXXXX')`` -- Snowflake's own
         spelling of the hash-to-number step Postgres does through ``bit(32)``
         and Redshift through ``STRTOL``. The key expression itself is shared:
-        :func:`threetears.datasources.drivers.sql_fragments.build_relation_key_expression`.
+        :func:`threetears.core.fingerprint.relation_key_expression`.
 
         :param relation: schema-qualified relation name, a TRUSTED identifier
         :ptype relation: str

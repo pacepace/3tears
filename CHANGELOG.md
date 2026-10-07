@@ -11,13 +11,17 @@ packages (bumped in lock-step).
 - **Added, `threetears.core.collections.complete_copy`:** `CompleteCopy(collection, *, page_size=999)`
   makes a collection's L1 a whole copy of its L3 table for queries that aggregate over the L1 (an
   analytic table in a `DuckDBBackend`), where an L1 holding only some rows would answer wrongly
-  without saying so. `warm()` reads the table by its key a page at a time (the L3 rail answers at
-  most a thousand rows a statement and does not say when it cut), replaces the L1 table with exactly
-  those rows, and proves it: the L3 count and key fingerprint agree before and after the read, the
-  rows read number the count, and the L1 then holds that many rows with the same keys. `require()`
-  returns the `CopyProof` or raises `IncompleteCopyError` saying why. Any row leaving the L1 (a
-  write settled here, a peer's invalidation) voids the proof until the next warm, and fails a warm
-  it lands in. Refused, as `ValueError`, for an L1 that cannot replace a table whole.
+  without saying so; the ENR tool pod's report tables are the first consumer. `warm()` reads the
+  table by its key a page at a time (the L3 rail answers at most a thousand rows a statement and
+  does not say when it cut), replaces the L1 table with exactly those rows, and proves it: the L3
+  count and a fingerprint over every column of every row agree before and after the read (so a
+  value changed under the same key is seen), the rows read number the count, and the L1 then holds
+  that many rows with the same keys. `require()` returns the `CopyProof` or raises
+  `IncompleteCopyError` saying why, including the last warm's own error when it raised. Any change
+  to the collection's L1 (a row written through, pulled through or evicted, here or by a peer's
+  invalidation) voids the proof until the next warm, and fails a warm it lands in. Build one per
+  collection. Refused, as `ValueError`, for an L1 that is not a `WholeTableL1` (`replace_all`,
+  `stored_keys`, as `DuckDBBackend` has).
 - **Added, `threetears.core.fingerprint`:** `relation_key_expression` (moved from
   `threetears.datasources.drivers.sql_fragments.build_relation_key_expression`, which stays as its
   alias), `postgres_fingerprint_sql` (now also what `AsyncpgDriver.relation_fingerprint` runs),
@@ -25,8 +29,22 @@ packages (bumped in lock-step).
   keys) and `KeyFingerprint`.
 - **Added, `DuckDBBackend.replace_all(table, rows, primary_key)`** (the table holds exactly the
   rows, in one transaction) **and `DuckDBBackend.stored_keys(table, key)`** (every key as stored).
-- **Added, `BaseCollection.add_l1_eviction_listener(listener)` and `BaseCollection.l1_backend`:**
-  a listener is called with the key of every row leaving the collection's L1.
+- **Added, `BaseCollection.add_l1_change_listener(listener)` (returns a call that removes it) and
+  `BaseCollection.l1_backend`:** a listener is called with a row's key whenever the row is written
+  into the collection's L1 or leaves it; every L1 write of the table's rows goes through one method.
+
+### Core: smaller changes to collections
+
+- **Changed, `collection_for_schema`:** a composite key with no `entity_class` is refused
+  (`ValueError` naming the table) rather than keying entities on the first key column, which on a
+  composite key is the partition, not the row's own id.
+- **Added, `CollectionRegistry.drop_local_scans(table)`:** the local half of an invalidation (this
+  process's cached scans of a table it wrote), which every local write path now goes through;
+  `invalidate_cache_many` with no bus uses it, and a `bypassing_write` on the collection's own pool
+  settles its rows in one `invalidate_cache_many` call rather than a call per key.
+- **Changed, `SchemaBackedCollection.save_rows`:** returns the rows submitted (every row given,
+  whatever the conflict clause did with it), on the row-at-a-time path too; it writes in bulk when
+  the store is a `BulkDurableStore`, checked as the protocol.
 
 ### Agent tools: a tool may refuse its arguments, or say it is not ready
 
@@ -35,6 +53,9 @@ packages (bumped in lock-step).
   argument naming something it does not have, a value it does not take), which the platform
   answers 400, and the second when it cannot answer yet (its data still loading), answered 503.
   Both are codes the platform already maps for the registry's own refusals.
+- **Changed:** `StartOperationTool` and `OperationStatusTool` name `TOOL_NOT_READY` when they refuse
+  because the operation is not built yet; a `start_when_needed` wait that fails no longer replaces
+  the last outcome of a run that finished after the wait began.
 
 ### Core: many rows upserted in a few statements, on the caller's transaction
 
