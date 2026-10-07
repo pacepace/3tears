@@ -28,6 +28,14 @@ packages (bumped in lock-step).
 - **Added, `BaseCollection.add_l1_eviction_listener(listener)` and `BaseCollection.l1_backend`:**
   a listener is called with the key of every row leaving the collection's L1.
 
+### Agent tools: a tool may refuse its arguments, or say it is not ready
+
+- **Added, `threetears.agent.tools.base_tool.MALFORMED_REQUEST` and `TOOL_NOT_READY`** to
+  `TOOL_RESULT_ERROR_CODES`: a tool names the first when it cannot serve the call as asked (an
+  argument naming something it does not have, a value it does not take), which the platform
+  answers 400, and the second when it cannot answer yet (its data still loading), answered 503.
+  Both are codes the platform already maps for the registry's own refusals.
+
 ### Core: many rows upserted in a few statements, on the caller's transaction
 
 - **Added, `SchemaBackedCollection.save_rows(rows, *, conn, max_rows=None, max_bytes=None)`:** upserts
