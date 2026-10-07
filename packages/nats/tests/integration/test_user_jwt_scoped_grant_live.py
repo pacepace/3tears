@@ -171,17 +171,15 @@ def _server_config(
 @contextlib.contextmanager
 def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
     """start a JetStream nats-server with a custom ``authorization`` config; yield its URI."""
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415
+    from threetears.core.testing.fixtures import nats_server, nats_server_uri  # noqa: PLC0415
 
     (conf_dir / "nats.conf").write_text(config_text)
     container = (
-        NatsContainer(jetstream=False)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
+        nats_server().with_volume_mapping(str(conf_dir), "/etc/nats", "ro").with_command(["-c", "/etc/nats/nats.conf"])
     )
     container.start()
     try:
-        yield container.nats_uri()
+        yield nats_server_uri(container)
     finally:
         container.stop()
 

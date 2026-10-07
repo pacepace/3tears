@@ -348,6 +348,16 @@ consider_namespace_packages = true
 # name was not re-measured when the inserts went.
 pythonpath = ["."]
 asyncio_mode = "auto"
+filterwarnings = [
+    # testcontainers deprecates its own NATS container's wait (``wait_container_is_ready`` /
+    # ``wait_for_logs``, still so in 4.15.0); ``threetears.core.testing.fixtures.nats_server``
+    # waits the supported way. An error, so a test that reaches for the deprecated path again
+    # fails instead of adding a warning nobody reads.
+    'error::DeprecationWarning:testcontainers\..*',
+    # discord.py 2.7.1, the newest release, calls ``asyncio.iscoroutinefunction`` inside its own
+    # ``Client.event``; nothing on our side can change the call. Remove when discord.py does.
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:discord.client",
+]
 markers = [
     "integration: marks tests that require docker-backed services; run with -m integration",
     "live: tests that connect to a real external service -- a warehouse, a search provider (env-gated); not run by default",

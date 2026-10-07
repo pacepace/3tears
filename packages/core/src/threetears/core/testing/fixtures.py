@@ -27,12 +27,16 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import os
 
 import pytest
 
 from threetears.core.testing.containers import check_docker_available, stagger_container_start
+
+if TYPE_CHECKING:
+    from testcontainers.core.container import DockerContainer
 
 __all__ = [
     "NATS_TEST_SYSTEM_ACCOUNT",
@@ -42,6 +46,8 @@ __all__ = [
     "db_image",
     "nats_container",
     "nats_jetstream",
+    "nats_server",
+    "nats_server_uri",
     "nats_system_account",
     "s3_container",
     "s3_credentials",
@@ -240,25 +246,49 @@ def nats_container(
         pytest.skip("Docker not available")
     stagger_container_start()
 
-    # A plain container with a structured wait: ``testcontainers.nats.NatsContainer`` waits
-    # through the library's deprecated ``wait_container_is_ready`` / ``wait_for_logs``, and
-    # every suite that started NATS carried both deprecation warnings.
-    from testcontainers.core.container import DockerContainer  # noqa: PLC0415
-    from testcontainers.core.wait_strategies import LogMessageWaitStrategy  # noqa: PLC0415
-
     conf_dir = tmp_path_factory.mktemp("nats-conf")
     (conf_dir / "nats.conf").write_text(
         _nats_container_config(jetstream=nats_jetstream, system_account=nats_system_account), encoding="utf-8"
     )
     container = (
-        DockerContainer("nats:latest")
-        .with_exposed_ports(4222, 8222)
-        .with_volume_mapping(str(conf_dir), "/etc/nats", "ro")
-        .with_command(["-c", "/etc/nats/nats.conf"])
-        .waiting_for(LogMessageWaitStrategy("Server is ready").with_startup_timeout(120))
+        nats_server().with_volume_mapping(str(conf_dir), "/etc/nats", "ro").with_command(["-c", "/etc/nats/nats.conf"])
     )
     with container:
-        yield f"nats://{container.get_container_host_ip()}:{container.get_exposed_port(4222)}"
+        yield nats_server_uri(container)
+
+
+def nats_server(image: str = "nats:latest") -> DockerContainer:
+    """a NATS server container, not yet started, that counts as started once the server says it is ready.
+
+    Use it in place of ``testcontainers.nats.NatsContainer``, which waits through the library's
+    deprecated ``wait_container_is_ready`` / ``wait_for_logs`` (still so in testcontainers 4.15.0),
+    so every test that started one carried both deprecation warnings. Configure it with the
+    usual builders (``with_volume_mapping``, ``with_command``, ``with_network``) before starting it.
+
+    :param image: the server image
+    :ptype image: str
+    :return: the container
+    :rtype: DockerContainer
+    """
+    from testcontainers.core.container import DockerContainer  # noqa: PLC0415
+    from testcontainers.core.wait_strategies import LogMessageWaitStrategy  # noqa: PLC0415
+
+    return (
+        DockerContainer(image)
+        .with_exposed_ports(4222, 8222)
+        .waiting_for(LogMessageWaitStrategy("Server is ready").with_startup_timeout(120))
+    )
+
+
+def nats_server_uri(container: DockerContainer) -> str:
+    """the ``nats://`` URI a started :func:`nats_server` container serves clients on.
+
+    :param container: the started container
+    :ptype container: DockerContainer
+    :return: the URI
+    :rtype: str
+    """
+    return f"nats://{container.get_container_host_ip()}:{container.get_exposed_port(4222)}"
 
 
 def _nats_container_config(*, jetstream: bool, system_account: bool) -> str:

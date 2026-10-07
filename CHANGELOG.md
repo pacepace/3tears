@@ -37,6 +37,18 @@ its reader which one stopped the read.
   extraction records why, in a sentence a person can read (a cap's own message names the cap).
 - **Changed, `web_fetch`:** "No readable text could be taken from <url>" ends with that reason.
 
+### Testing: a NATS server container without the deprecated wait
+
+`testcontainers.nats.NatsContainer` waits through testcontainers' deprecated
+`wait_container_is_ready` / `wait_for_logs` (still so in 4.15.0), so every live NATS test carried
+two deprecation warnings.
+
+- **Added, `threetears.core.testing.fixtures.nats_server(image)` and `nats_server_uri(container)`:**
+  a NATS container that waits with `LogMessageWaitStrategy`, and the URI it serves. The
+  `nats_container` fixture and every live NATS test use them.
+- **Changed, the workspace pytest config:** a `DeprecationWarning` from testcontainers is an error,
+  and discord.py 2.7.1's own `asyncio.iscoroutinefunction` call in `Client.event` is ignored.
+
 ## v0.65.0 -- 2026-10-05
 
 ### NATS: a declared KV bucket can carry its exact name and be refilled when it comes back empty
