@@ -138,9 +138,10 @@ class _Raw:
 
 # parity-exempt: stands in for the nats-py JetStream context; records add_consumer and refuses the stock KV watch path outright
 class _JetStream:
-    def __init__(self, log: list[str], *, failures: int = 0) -> None:
+    def __init__(self, log: list[str], *, failures: int = 0, pending: int = 0) -> None:
         self._log = log
         self._failures = failures
+        self._pending = pending
         self.creates: list[tuple[str, ConsumerConfig]] = []
 
     async def add_consumer(self, stream: str, config: ConsumerConfig) -> object:
@@ -151,10 +152,16 @@ class _JetStream:
         self.creates.append((stream, config))
         assert config.deliver_subject is not None and config.name is not None
         _CONSUMER_BY_INBOX[config.deliver_subject] = config.name
-        return object()
+        return _ConsumerInfo(num_pending=self._pending)
 
     async def key_value(self, bucket: str) -> Any:
         raise AssertionError("watch_key must not open nats-py's KeyValue: its watch() is refused under a key grant")
+
+
+# parity-exempt: stands in for nats-py's ConsumerInfo; the key listing reads only num_pending
+class _ConsumerInfo:
+    def __init__(self, *, num_pending: int) -> None:
+        self.num_pending = num_pending
 
 
 # parity-exempt: stands in for NatsClient; the watch calls only raw, is_closed and jetstream_context
@@ -450,3 +457,61 @@ class TestOnlyItsOwnConsumer:
             names.append(name.removeprefix("kw_"))
         assert all(len(name) == 32 for name in names)
         assert len({name[:8] for name in names}) > 40
+
+
+def _listed(key: str, *, pending: int, consumer: str = _OWN, stream: str = _STREAM, reply: str | None = None) -> Msg:
+    """a key listing delivery: headers only, the key's subject, ``num_pending`` in the ack reply.
+
+    :param key: the key
+    :ptype key: str
+    :param pending: the messages the consumer still has to deliver after this one
+    :ptype pending: int
+    :param consumer: the consumer the ack reply names; :data:`_OWN` is the listing's own
+    :ptype consumer: str
+    :param stream: the stream the ack reply names
+    :ptype stream: str
+    :param reply: a reply some other sender chose, in place of an ack reply
+    :ptype reply: str | None
+    :return: the message
+    :rtype: Msg
+    """
+    ack = f"$JS.ACK.{stream}.{consumer}.1.5.5.1700000000000000000.{pending}"
+    chosen = ack if reply is None else reply
+    return Msg(_client=None, subject=f"$KV.{_BUCKET}.{key}", reply=chosen, data=b"", headers=None)  # type: ignore[arg-type]
+
+
+class TestTheKeyListingReadsOnlyItsOwnConsumer:
+    """any client can get bytes delivered onto the listing's inbox; only its own consumer's count.
+
+    A forgery that counted would add a key that does not exist, or, claiming nothing is pending,
+    end the listing before the live keys arrive.
+    """
+
+    async def test_forged_deliveries_neither_add_a_key_nor_cut_the_listing_short(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        forgeries = [
+            _listed("forged-plain", pending=0, reply=""),
+            _listed("forged-stream", pending=0, stream="OBJ_forger", consumer="c1"),
+            _listed("forged-consumer", pending=0, consumer="kl_someone_else"),
+        ]
+        own = [_listed("alpha", pending=1), _listed("beta", pending=0)]
+        log: list[str] = []
+        raw = _Raw([[*forgeries, *own]], log)
+        js = _JetStream(log, pending=2)
+        bucket = NatsKvBucket(
+            client=_Client(raw, js),  # type: ignore[arg-type]
+            full_name=_BUCKET,
+            kv=_ForbiddenKv(),  # type: ignore[arg-type]
+            ttl=None,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.own_consumer"):
+            keys = await asyncio.wait_for(bucket.list_keys(), timeout=2)
+
+        assert keys == ["alpha", "beta"]
+        refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
+        assert len(refusals) == len(forgeries)
+        assert all(r.getMessage().startswith("key listing ") for r in refusals)
+        name = js.creates[0][1].name
+        assert name is not None and len(name.removeprefix("kl_")) == 32
