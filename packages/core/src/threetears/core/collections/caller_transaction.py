@@ -118,6 +118,15 @@ class CallerTransaction:
             )
         return found
 
+    @property
+    def enrolled(self) -> tuple[tuple[BaseCollection[Any], Any], ...]:
+        """the (collection, key) pairs written in this transaction so far, to be settled when it ends.
+
+        :return: the pairs, in the order they were enrolled
+        :rtype: tuple[tuple[BaseCollection[Any], Any], ...]
+        """
+        return tuple(self._enrolled)
+
     def enroll(self, collection: BaseCollection[Any], entity_id: Any) -> None:
         """record that ``collection`` wrote ``entity_id`` in this transaction, to be evicted when it ends.
 

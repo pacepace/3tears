@@ -36,18 +36,23 @@ import inspect
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 
 from threetears.core.backends.protocol import DurableStore, OrderedDurableStore
 from threetears.core.backends.schema_sql import (
+    MAX_STATEMENT_PARAMS,
+    build_bulk_insert_sql,
+    build_insert_params,
+    bulk_batches,
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
     encode_jsonb as encode_jsonb,
     json_default as _json_default,
 )
 from threetears.core.collections.base import BaseCollection, EntityT
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
 from threetears.core.entities.base import BaseEntity
@@ -1859,6 +1864,90 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk_values = self.normalize_pk(entity_id)
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         return await store.fetch_one(self.schema.name, pk)
+
+    #: the most rows one bulk statement writes: well inside a broker's statement timeout for a
+    #: row of a few dozen columns
+    BULK_MAX_ROWS: ClassVar[int] = 1000
+
+    #: the most JSON bytes of parameters one bulk statement carries: under a NATS deployment's
+    #: default 1 MiB message, with room for the request around them
+    BULK_MAX_BYTES: ClassVar[int] = 768 * 1024
+
+    async def save_rows(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        conn: Any,
+        max_rows: int | None = None,
+        max_bytes: int | None = None,
+    ) -> int:
+        """upsert many rows on a caller's transaction, as few multi-row statements as fit.
+
+        For a load: one ``INSERT ... VALUES (...), (...) ON CONFLICT`` per batch
+        (:func:`~threetears.core.backends.schema_sql.build_bulk_insert_sql`), where
+        :meth:`save_entity` would make a round trip per row. Batches split so no statement passes
+        ``max_rows`` rows, the bind-parameter limit, or ``max_bytes`` of parameters
+        (:func:`~threetears.core.backends.schema_sql.bulk_batches`).
+
+        **On the caller's transaction only, like** ``save_entity(conn=...)``: the rows are final
+        when the caller's :class:`CallerTransaction` commits, and a batch that fails fails the
+        transaction, so every batch rolls back with it. Each row's key leaves this process's L1 now
+        and is enrolled, so the transaction evicts it from every tier when it ends.
+
+        Each row is stamped ``date_created`` and ``date_updated`` (when the schema has them) with
+        the write's time; an upsert of a row already held keeps its ``date_created``, an immutable
+        column the conflict clause does not set. No CAS fence applies: a bulk write replaces.
+
+        :param rows: the rows, each keyed by column; a nullable column may be absent
+        :ptype rows: list[dict[str, Any]]
+        :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
+        :ptype conn: Any
+        :param max_rows: the most rows one statement writes; :attr:`BULK_MAX_ROWS` when None
+        :ptype max_rows: int | None
+        :param max_bytes: the most JSON bytes of parameters one statement carries;
+            :attr:`BULK_MAX_BYTES` when None
+        :ptype max_bytes: int | None
+        :return: how many rows were written
+        :rtype: int
+        :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the
+            collection caches absences or defers its L3 writes; when the schema fences with a
+            null-safe CAS; when two rows share a key (one statement cannot upsert a key twice)
+        :raises KeyError: when a row lacks a required column
+        """
+        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.save_rows")
+        if self._negative_cache_writes_advance or self._defers_l3_writes or self.schema.cas_null_safe:
+            raise ValueError(
+                f"{type(self).__name__}.save_rows: a bulk upsert cannot keep this collection's write "
+                f"contract (it caches absences, defers its L3 writes, or fences with a null-safe CAS)"
+            )
+        now = datetime.now(UTC)
+        stamps = {name: now for name in ("date_created", "date_updated") if self.schema.get_column(name) is not None}
+        keys: list[Any] = []
+        params: list[list[Any]] = []
+        for row in rows:
+            data = {**row, **stamps}
+            keys.append(tuple(data[name] for name in self.schema.pk_columns))
+            params.append(build_insert_params(self.schema, data))
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"{type(self).__name__}.save_rows: two rows share a key; one statement upserts a key once")
+        for key in keys:
+            # enrolled before the write, so a write whose outcome is unknown is settled with the rest
+            transaction.enroll(self, key if len(key) > 1 else key[0])
+            self._evict_l1(key if len(key) > 1 else key[0])
+        written = 0
+        for batch in bulk_batches(
+            params,
+            max_rows=max_rows or self.BULK_MAX_ROWS,
+            max_bytes=max_bytes or self.BULK_MAX_BYTES,
+            max_params=MAX_STATEMENT_PARAMS,
+        ):
+            await conn.execute(build_bulk_insert_sql(self.schema, rows=len(batch)), *(v for row in batch for v in row))
+            written += len(batch)
+        log.debug(
+            "bulk upsert written on the caller's transaction",
+            extra={"extra_data": {"table": self.table_name, "rows": written}},
+        )
+        return written
 
     async def save_to_store(
         self,

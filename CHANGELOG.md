@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: many rows upserted in a few statements, on the caller's transaction
+
+- **Added, `SchemaBackedCollection.save_rows(rows, *, conn, max_rows=None, max_bytes=None)`:** upserts
+  rows as multi-row `INSERT ... VALUES (...), (...) ON CONFLICT` statements on a connection whose
+  transaction a `CallerTransaction` opened, where `save_entity` makes a round trip per row. Batches
+  split so none passes `max_rows` (`BULK_MAX_ROWS`, 1,000), the 32,767 bind-parameter limit, or
+  `max_bytes` of JSON parameters (`BULK_MAX_BYTES`, 768 KiB, under a default NATS message); a
+  failing batch fails the caller's transaction, so every batch rolls back. Rows are stamped
+  `date_created` / `date_updated`; an upsert keeps a held row's `date_created`. Each key leaves L1
+  at once and is enrolled for the transaction's settling. Refused, as `ValueError`, for a collection
+  that caches absences, defers its L3 writes or fences with a null-safe CAS, and for two rows with
+  one key. The hub's L3 broker admits one such statement; it refuses `COPY`.
+- **Added, `threetears.core.backends.schema_sql`:** `build_bulk_insert_sql(schema, *, rows)`,
+  `bulk_batches(rows, *, max_rows, max_bytes, max_params)` and `MAX_STATEMENT_PARAMS`.
+- **Added, `CallerTransaction.enrolled`:** the (collection, key) pairs written so far.
+
 ### Core: a collection class built from a table schema
 
 - **Added, `threetears.core.collections.schema_backed.collection_for_schema`:** a

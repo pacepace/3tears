@@ -32,6 +32,8 @@ if TYPE_CHECKING:
     from threetears.core.collections.schema_backed import Column, TableSchema
 
 __all__ = [
+    "MAX_STATEMENT_PARAMS",
+    "build_bulk_insert_sql",
     "build_cas_params",
     "build_cas_update_sql",
     "build_cas_upsert_params",
@@ -43,6 +45,7 @@ __all__ = [
     "build_ordered_upsert_sql",
     "build_select_column_list",
     "build_where_pk",
+    "bulk_batches",
     "cas_mutable_columns_for_data",
     "coerce_datetime_for_read_tz",
     "coerce_datetime_for_write_tz",
@@ -540,7 +543,21 @@ def build_insert_sql(schema: TableSchema, data: dict[str, Any] | None = None) ->
     cols = insert_columns_for_data(schema, data or {})
     col_names = ", ".join(c.name for c in cols)
     placeholders = ", ".join(render_param(c, i + 1) for i, c in enumerate(cols))
-    sql = f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders})"
+    return _with_conflict_clause(schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders})")
+
+
+def _with_conflict_clause(schema: TableSchema, cols: list[Column], sql: str) -> str:
+    """an INSERT with the conflict clause ``schema.on_conflict`` selects (see :func:`build_insert_sql`).
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param cols: the columns the INSERT emits
+    :ptype cols: list[Column]
+    :param sql: the INSERT without a conflict clause
+    :ptype sql: str
+    :return: the INSERT with it
+    :rtype: str
+    """
     pk_cols = ", ".join(schema.pk_columns)
     if schema.on_conflict == "raise":
         result = sql
@@ -626,6 +643,76 @@ def build_cas_update_sql(schema: TableSchema, data: dict[str, Any] | None = None
     set_clause = ", ".join(set_parts)
     result = f"UPDATE {schema.name} SET {set_clause} WHERE {pk_where} AND {schema.cas_column} = ${cas_idx}"
     return result
+
+
+#: the most parameters one statement may bind: the Postgres wire protocol counts them in 16 bits,
+#: and asyncpg refuses above 32767
+MAX_STATEMENT_PARAMS: int = 32767
+
+
+def build_bulk_insert_sql(schema: TableSchema, *, rows: int) -> str:
+    """build one INSERT of ``rows`` rows, every column in declared order, with the schema's conflict clause.
+
+    The multi-row form of :func:`build_insert_sql`: ``VALUES ($1, ..., $n), ($n+1, ...)``, each
+    row's parameters in :attr:`TableSchema.columns` order (:func:`build_insert_params` with
+    every column present), and one ``ON CONFLICT`` clause for all of them. Every column is
+    emitted: a bulk write supplies every row whole, so no server default applies.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param rows: how many rows the statement inserts; at least one
+    :ptype rows: int
+    :return: parameterized INSERT SQL
+    :rtype: str
+    :raises ValueError: when ``rows`` is under one
+    """
+    if rows < 1:
+        raise ValueError(f"a bulk INSERT needs at least one row, got {rows}")
+    cols = list(schema.columns)
+    width = len(cols)
+    values = ", ".join(
+        "(" + ", ".join(render_param(c, row * width + i + 1) for i, c in enumerate(cols)) + ")" for row in range(rows)
+    )
+    col_names = ", ".join(c.name for c in cols)
+    return _with_conflict_clause(schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES {values}")
+
+
+def bulk_batches(
+    rows: list[list[Any]], *, max_rows: int, max_bytes: int, max_params: int = MAX_STATEMENT_PARAMS
+) -> list[list[list[Any]]]:
+    """split rows' parameters into consecutive batches, each one statement's worth.
+
+    A batch holds at most ``max_rows`` rows (what one statement may write inside the database's
+    statement timeout), at most ``max_params`` parameters, and at most ``max_bytes`` of the
+    parameters as JSON (what one statement may carry over the bus). A row larger than
+    ``max_bytes`` alone is a batch of its own rather than dropped.
+
+    :param rows: each row's parameters, in order
+    :ptype rows: list[list[Any]]
+    :param max_rows: the most rows in one batch
+    :ptype max_rows: int
+    :param max_bytes: the most JSON bytes of parameters in one batch
+    :ptype max_bytes: int
+    :param max_params: the most parameters in one batch
+    :ptype max_params: int
+    :return: the batches, in order, covering every row once
+    :rtype: list[list[list[Any]]]
+    """
+    batches: list[list[list[Any]]] = []
+    batch: list[list[Any]] = []
+    size = 0
+    params = 0
+    for row in rows:
+        row_bytes = len(json.dumps(row, default=json_default))
+        if batch and (len(batch) >= max_rows or size + row_bytes > max_bytes or params + len(row) > max_params):
+            batches.append(batch)
+            batch, size, params = [], 0, 0
+        batch.append(row)
+        size += row_bytes
+        params += len(row)
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 def _conflict_target_ref(schema: TableSchema) -> str:
