@@ -2148,6 +2148,88 @@ class NatsKvBucket:
             finally:
                 await consumer.close()
 
+    async def watch_prefix(
+        self,
+        *,
+        prefix: str,
+        heartbeat: timedelta = DEFAULT_KEY_WATCH_HEARTBEAT,
+        retry: timedelta = DEFAULT_KEY_WATCH_RETRY,
+    ) -> AsyncGenerator[KvKeyUpdate | None]:
+        """every key under ``prefix`` as it stands, then every later change, until the caller stops.
+
+        :meth:`watch_key` for a family of keys: one NAMED push consumer filtered in its create
+        subject (``$JS.API.CONSUMER.CREATE.{stream}.{name}.$KV.{bucket}.{prefix}>``), the shape a
+        pod's grant on its own bucket admits. It delivers each key's latest message first, and once
+        every one of those has arrived the watch yields ``None``: from there the caller has seen the
+        prefix's whole current state and every update is a change.
+
+        **It stays a true picture across a lost consumer.** When the consumer goes quiet (a broker
+        restart, a reaped consumer) or the server ends it, a replacement redelivers every key's
+        latest message; a message already yielded is not yielded again, and once the replacement has
+        caught up, a key this watch had yielded that is no longer there -- a restart that wiped a
+        memory bucket leaves no delete marker -- is yielded as deleted (``value=None``, revision
+        ``0``), and ``None`` is yielded again. A delete or purge marker of a key never yielded is not
+        yielded.
+
+        A consumer create that fails is logged and retried after ``retry``, never raised, as
+        :meth:`watch_key` does. Close it by stopping iteration.
+
+        :param prefix: the keys to watch: ``""`` for every key, or a prefix ending on a token
+            boundary (``"snap."``); a key is ``{prefix}{rest}``
+        :ptype prefix: str
+        :param heartbeat: how often a quiet consumer proves it is alive
+        :ptype heartbeat: timedelta
+        :param retry: the pause after a consumer create failed
+        :ptype retry: timedelta
+        :return: each key's updates, and ``None`` each time the watch has caught up with the prefix
+        :rtype: AsyncGenerator[KvKeyUpdate | None]
+        :raises ValueError: when ``prefix`` carries a wildcard or whitespace, or does not end on a
+            token boundary
+        :raises KvError: when the NATS connection is closed, so no consumer can ever deliver again
+        """
+        if any(char in _KEY_WATCH_FORBIDDEN for char in prefix) or (prefix and not prefix.endswith(".")):
+            raise ValueError(f"watch_prefix needs '' or a literal prefix ending in '.', got {prefix!r}")
+        key_prefix = f"$KV.{self._full_name}."
+        subject = f"{key_prefix}{prefix}>"
+        stream = f"{_KV_STREAM_PREFIX}{self._full_name}"
+        known: dict[str, int] = {}
+        while True:
+            consumer = await _KeyWatchConsumer.open(
+                client=self._client,
+                stream=stream,
+                subject=subject,
+                heartbeat=heartbeat,
+                retry=retry,
+                op_timeout_seconds=self._timings.op_timeout_seconds,
+            )
+            if consumer is None:
+                await asyncio.sleep(retry.total_seconds())
+                continue
+            remaining = consumer.pending
+            seen: set[str] = set()
+            try:
+                if remaining == 0:
+                    for gone in _forget_unseen(known, seen):
+                        yield gone
+                    yield None
+                async with aclosing(consumer.updates(key=None, key_prefix=key_prefix)) as updates:
+                    async for update in updates:
+                        seen.add(update.key)
+                        if update.deleted:
+                            if known.pop(update.key, None) is not None:
+                                yield update
+                        elif known.get(update.key) != update.revision:
+                            known[update.key] = update.revision
+                            yield update
+                        if remaining > 0:
+                            remaining -= 1
+                            if remaining == 0:
+                                for gone in _forget_unseen(known, seen):
+                                    yield gone
+                                yield None
+            finally:
+                await consumer.close()
+
     async def list_keys(self, *, prefix: str = "") -> list[str]:
         """every live key in the bucket that starts with ``prefix``.
 
@@ -2300,9 +2382,12 @@ class _KeyWatchConsumer:
     :ptype heartbeat: timedelta
     :param client: the wrapper client, asked whether it outlives the consumer's connection
     :ptype client: NatsClient
+    :param pending: how many messages the consumer held for delivery when it was created -- the
+        latest message of each matching key, which a prefix watch counts down to know it has caught up
+    :ptype pending: int
     """
 
-    __slots__ = ("_client", "_heartbeat", "_name", "_subject", "_subscription")
+    __slots__ = ("_client", "_heartbeat", "_name", "_pending", "_subject", "_subscription")
 
     def __init__(
         self,
@@ -2312,12 +2397,23 @@ class _KeyWatchConsumer:
         subject: str,
         heartbeat: timedelta,
         client: NatsClient,
+        pending: int = 0,
     ) -> None:
         self._subscription = subscription
         self._name = name
         self._subject = subject
         self._heartbeat = heartbeat
         self._client = client
+        self._pending = pending
+
+    @property
+    def pending(self) -> int:
+        """how many messages the consumer held for delivery when it was created.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._pending
 
     @classmethod
     async def open(
@@ -2370,12 +2466,19 @@ class _KeyWatchConsumer:
         js = client.jetstream_context()
         consumer: _KeyWatchConsumer | None = None
         try:
-            await run_bounded(
+            info = await run_bounded(
                 lambda: js.add_consumer(stream, config=config),
                 timeout=op_timeout_seconds,
                 what=f"key watch consumer create on {stream}",
             )
-            consumer = cls(subscription=subscription, name=name, subject=subject, heartbeat=heartbeat, client=client)
+            consumer = cls(
+                subscription=subscription,
+                name=name,
+                subject=subject,
+                heartbeat=heartbeat,
+                client=client,
+                pending=int(getattr(info, "num_pending", 0) or 0),
+            )
         # NOSILENT: logged naming the grant to check; the caller pauses and creates another
         except Exception as exc:  # noqa: BLE001 -- a failed create is retried, never raised
             log.warning(
@@ -2398,11 +2501,15 @@ class _KeyWatchConsumer:
             )
         return consumer
 
-    async def updates(self, *, key: str) -> AsyncGenerator[KvKeyUpdate]:
+    async def updates(self, *, key: str | None, key_prefix: str = "") -> AsyncGenerator[KvKeyUpdate]:
         """every message the consumer delivers, until its heartbeats stop.
 
-        :param key: the watched key, carried onto each update
-        :ptype key: str
+        :param key: the watched key, carried onto each update; ``None`` for a prefix watch, whose
+            updates carry the key their subject names
+        :ptype key: str | None
+        :param key_prefix: the subject prefix (``$KV.{bucket}.``) stripped from a message's subject
+            to name its key, when ``key`` is ``None``
+        :ptype key_prefix: str
         :return: the key's messages, in order
         :rtype: AsyncGenerator[KvKeyUpdate]
         :raises KvError: when the NATS connection is closed
@@ -2451,7 +2558,7 @@ class _KeyWatchConsumer:
                     extra={"extra_data": {"subject": self._subject, "consumer": self._name, "status": status}},
                 )
                 return
-            yield self._update_of(msg, key=key)
+            yield self._update_of(msg, key=key if key is not None else msg.subject[len(key_prefix) :])
 
     def _update_of(self, msg: Msg, *, key: str) -> KvKeyUpdate:
         """the update a delivered data message carries.
@@ -2484,6 +2591,22 @@ class _KeyWatchConsumer:
         :rtype: None
         """
         await _drop_subscription(self._subscription, subject=self._subject)
+
+
+def _forget_unseen(known: dict[str, int], seen: set[str]) -> list[KvKeyUpdate]:
+    """the keys a prefix watch had yielded that its caught-up consumer no longer delivered, forgotten.
+
+    :param known: each yielded key's revision; the unseen ones are removed
+    :ptype known: dict[str, int]
+    :param seen: the keys the current consumer delivered
+    :ptype seen: set[str]
+    :return: one deleted update per forgotten key
+    :rtype: list[KvKeyUpdate]
+    """
+    gone = sorted(key for key in known if key not in seen)
+    for key in gone:
+        del known[key]
+    return [KvKeyUpdate(key=key, value=None, revision=0) for key in gone]
 
 
 async def _drop_subscription(subscription: _NatsSubscription, *, subject: str) -> None:

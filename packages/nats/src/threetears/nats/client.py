@@ -224,6 +224,7 @@ if TYPE_CHECKING:
     from nats.aio.msg import Msg as _NatsMsg
 
     from threetears.nats.kv import KvRestoredHook, KvTimings, NatsKvBucket
+    from threetears.nats.object_store import NatsObjectStore
     from threetears.nats.transport import RawMessageCallback
 
 
@@ -5801,6 +5802,112 @@ class NatsClient:
             storage,
         )
         return full_name
+
+    async def object_store(self, *, name: str, prefix_namespace: bool = True) -> NatsObjectStore:
+        """bind an Object Store bucket another identity declared; never creates one.
+
+        A pod binds the bucket its declarer (the hub) created: a pod holds no stream-management
+        verb, so it could not create one, and a refused create is never answered.
+
+        :param name: bucket name suffix (prefixed by the namespace), or the full name
+        :ptype name: str
+        :param prefix_namespace: layer ``{namespace}-`` over ``name``; ``False`` names it exactly
+        :ptype prefix_namespace: bool
+        :return: the bound bucket
+        :rtype: NatsObjectStore
+        :raises ObjectStoreNotFoundError: when the bucket does not exist
+        :raises ObjectStoreError: when the bind fails otherwise
+        """
+        from threetears.nats.object_store import NatsObjectStore  # noqa: PLC0415 -- object_store imports client's types
+
+        full_name = f"{self._namespace}-{name}" if prefix_namespace else name
+        store = NatsObjectStore(client=self, full_name=full_name)
+        await store.bind()
+        return store
+
+    async def ensure_object_store(
+        self,
+        *,
+        name: str,
+        max_bytes: int,
+        storage: str = "memory",
+        replicas: int = 1,
+        prefix_namespace: bool = True,
+    ) -> NatsObjectStore:
+        """declare an Object Store bucket as its OWNER: create it, or reconcile a live one to this shape.
+
+        The shape is the NATS Object Store's (``OBJ_<b>`` over ``$O.<b>.C.>`` and ``$O.<b>.M.>``,
+        rollup headers allowed) with ``allow_direct`` on, so a reader's metadata read is the
+        subject-carried direct get a pod's grant admits, and ``discard: new`` under ``max_bytes``,
+        so a full bucket refuses a write rather than dropping objects someone serves. Like
+        :meth:`ensure_jetstream_stream`, the declaration is remembered and created again after every
+        reconnect, so a NATS restart that wiped the memory bucket brings it back -- empty.
+
+        A live bucket of the name is updated to the declared shape: its owner is the only declarer,
+        so there is nobody to fight over it.
+
+        :param name: bucket name suffix (prefixed by the namespace), or the full name
+        :ptype name: str
+        :param max_bytes: the most bytes the bucket may hold, chunks and metadata together
+        :ptype max_bytes: int
+        :param storage: ``"memory"`` (the default: NATS is the L2 tier) or ``"file"``
+        :ptype storage: str
+        :param replicas: how many servers hold the bucket
+        :ptype replicas: int
+        :param prefix_namespace: layer ``{namespace}-`` over ``name``; ``False`` names it exactly
+        :ptype prefix_namespace: bool
+        :return: the declared bucket
+        :rtype: NatsObjectStore
+        :raises ValueError: when ``max_bytes`` or ``replicas`` is not positive
+        :raises StreamSubjectsOverlapError: when another stream owns the bucket's subjects
+        :raises ObjectStoreError: when the create and the update both fail
+        """
+        from nats.js.api import DiscardPolicy, StorageType, StreamConfig  # noqa: PLC0415
+        from nats.js.errors import APIError  # noqa: PLC0415
+
+        from threetears.nats.errors import ObjectStoreError  # noqa: PLC0415
+        from threetears.nats.object_store import NatsObjectStore, object_store_stream_name  # noqa: PLC0415
+
+        if max_bytes <= 0:
+            raise ValueError(f"an object store needs a positive max_bytes, got {max_bytes!r}")
+        if replicas <= 0:
+            raise ValueError(f"an object store needs at least one replica, got {replicas!r}")
+        full_name = f"{self._namespace}-{name}" if prefix_namespace else name
+        stream = object_store_stream_name(full_name)
+        config = StreamConfig(
+            name=stream,
+            subjects=[f"$O.{full_name}.C.>", f"$O.{full_name}.M.>"],
+            storage=StorageType.FILE if storage == "file" else StorageType.MEMORY,
+            max_bytes=max_bytes,
+            discard=DiscardPolicy.NEW,
+            allow_rollup_hdrs=True,
+            allow_direct=True,
+            num_replicas=replicas,
+        )
+        js = self.jetstream_context()
+        try:
+            await js.add_stream(config)
+        except APIError as exc:
+            if exc.err_code == _JS_ERR_SUBJECTS_OVERLAP:
+                raise StreamSubjectsOverlapError(
+                    f"cannot create object store {full_name!r}: its subjects are claimed by a different stream"
+                ) from exc
+            if exc.err_code != _JS_ERR_STREAM_NAME_IN_USE:
+                raise ObjectStoreError(f"declaring object store {full_name!r} failed: {exc}") from exc
+            try:
+                await js.update_stream(config)
+            except APIError as update_exc:
+                raise ObjectStoreError(
+                    f"object store {full_name!r} is live with another shape and could not be updated: {update_exc}"
+                ) from update_exc
+        self._declarations[stream] = dataclasses.replace(config)
+        log.info(
+            "object store ensured",
+            extra={
+                "extra_data": {"bucket": full_name, "max_bytes": max_bytes, "storage": storage, "replicas": replicas}
+            },
+        )
+        return NatsObjectStore(client=self, full_name=full_name)
 
     async def jetstream_publish(
         self,

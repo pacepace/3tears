@@ -1208,6 +1208,35 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.geo.layers.reloaded", kind="point")
 
     @classmethod
+    def hub_object_store_declare(cls) -> Subject:
+        """request/reply subject for a tool pod asking the hub to declare its own Object Store.
+
+        A pod holds no stream-management verb, so it cannot create the Object Store bucket and the
+        pointer bucket its grant names (``{ns}-{pod scope}-objects`` and ``-pointers``). It asks
+        here (``threetears.nats.object_store_requests.declare_pod_object_store``), forwarding its
+        hub ``identity_token``; the hub verifies it and declares both, composed under the VERIFIED
+        pod's scope -- the request names no bucket.
+
+        :return: subject ``{ns}.hub.object_store.declare``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.object_store.declare", kind="point")
+
+    @classmethod
+    def hub_object_store_retire(cls) -> Subject:
+        """request/reply subject for a tool pod asking the hub to delete objects it no longer serves.
+
+        Deleting an object purges stream subjects, a management verb only the hub holds. The pod
+        names the objects (``threetears.nats.object_store_requests.retire_pod_objects``) and
+        forwards its ``identity_token``; the hub deletes them from the VERIFIED pod's own bucket
+        only, and sweeps chunks a failed write left behind.
+
+        :return: subject ``{ns}.hub.object_store.retire``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.object_store.retire", kind="point")
+
+    @classmethod
     def hub_channel_engagement_default_resolve(cls) -> Subject:
         """request/reply subject for resolving a channel's default engagement.
 

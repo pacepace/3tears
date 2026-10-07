@@ -524,6 +524,9 @@ _STREAM_MANAGEMENT_VERBS: tuple[str, ...] = ("CREATE", "UPDATE", "DELETE", "PURG
 #: a stream no pod declares, probed so a wildcard over the stream token cannot hide.
 _FOREIGN_STREAM = "KV_3tears-agent_pod-0000000000000000000000000000beef-victim"
 
+#: another pod's Object Store stream, probed so an Object Store grant cannot reach past its own bucket.
+_FOREIGN_OBJECT_STREAM = "OBJ_3tears-tool_pod-0000000000000000000000000000beef-objects"
+
 
 def _pattern_admits(pattern: str, subject: str) -> bool:
     """NATS subject matching: ``*`` spans one token, ``>`` one or more trailing tokens.
@@ -622,12 +625,26 @@ class TestNoPodManagesAStream:
         assert streams, f"{label} declares no stream; the probe below would be vacuous"
         offenders = [
             (pattern, f"$JS.API.STREAM.{verb}.{stream}")
-            for stream in (*sorted(streams), _FOREIGN_STREAM)
+            for stream in (*sorted(streams), _FOREIGN_STREAM, _FOREIGN_OBJECT_STREAM)
             for verb in _STREAM_MANAGEMENT_VERBS
             for pattern in allow
             if _pattern_admits(pattern, f"$JS.API.STREAM.{verb}.{stream}")
         ]
         assert not offenders, f"{label} may manage a stream: {offenders}"
+
+    def test_the_tool_pods_object_store_is_among_the_probed_streams(self) -> None:
+        """the probes above run over every stream the pod declares; its Object Store must be one of them."""
+        from threetears.nats.subject_permissions import JsCapability, JsResourceKind
+
+        _, permissions = _pod_permissions()[1]
+        stores = [r for r in permissions.js_resources if r.kind is JsResourceKind.OBJECT_STORE]  # type: ignore[attr-defined]
+        assert stores, "the tool pod declares no Object Store; the management probes would not cover one"
+        assert all(r.capability is JsCapability.OBJECT_STORE_OBJECTS for r in stores)
+        allow = _minted_pod_publish(permissions)
+        for store in stores:
+            for verb in ("MSG.GET", "MSG.DELETE"):
+                probe = f"$JS.API.STREAM.{verb}.{store.stream_name}"
+                assert not [p for p in allow if _pattern_admits(p, probe)], probe
 
     @pytest.mark.parametrize("index", [0, 1])
     def test_no_pod_holds_a_management_capability(self, index: int) -> None:
@@ -662,7 +679,7 @@ class TestAPodReadsOnlyItsOwnMessages:
         assert streams, f"{label} declares no stream; the probe below would be vacuous"
         probes = [
             subject
-            for stream in (*sorted(streams), _FOREIGN_STREAM)
+            for stream in (*sorted(streams), _FOREIGN_STREAM, _FOREIGN_OBJECT_STREAM)
             for subject in (
                 f"$JS.API.CONSUMER.CREATE.{stream}",
                 f"$JS.API.CONSUMER.DURABLE.CREATE.{stream}.probe",

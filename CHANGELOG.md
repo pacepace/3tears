@@ -6,6 +6,53 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Nats and core: a scoped snapshot -- tables a pod needs whole, kept in L2 and loaded in seconds
+
+The ENR tool pod is the first consumer: its report tables live in NATS as one Arrow chunk per state,
+so a starting replica loads them without reading L3, and a refresh moves only the states it changed.
+
+- **Added, `threetears.nats.object_store`: `NatsObjectStore` and `ObjectInfo`**, with
+  `NatsClient.object_store(name=, prefix_namespace=)` (bind) and
+  `NatsClient.ensure_object_store(name=, max_bytes=, storage="memory", replicas=1, prefix_namespace=)`
+  (declare as the bucket's owner, remembered and created again after a reconnect, like
+  `ensure_jetstream_stream`). The NATS Object Store's wire shape (`OBJ_<b>`, `$O.<b>.C.>`,
+  `$O.<b>.M.>`, nats-py's metadata JSON), but reads go through NAMED consumers only (nats-py's
+  `ObjectStore.get` creates an unnamed one a pod's grant refuses) and metadata through the direct get.
+  `put(name, data)` writes a name once (`Nats-Expected-Last-Subject-Sequence: 0` on the metadata;
+  `ObjectExistsError` otherwise), `get(name)` checks size and digest (`ObjectNotFoundError` when
+  absent), `info(name)`, `list_objects(prefix=)`, `bytes_held()`; `delete(name)` and
+  `purge_orphan_chunks(older_than=)` are the declarer's (they purge). New errors:
+  `ObjectStoreError`, `ObjectStoreNotFoundError`, `ObjectNotFoundError`, `ObjectExistsError`.
+- **Added, `NatsKvBucket.watch_prefix(prefix=, heartbeat=, retry=)`**: `watch_key` for a family of
+  keys, through one named consumer. It yields every key's latest value, then `None` once caught up,
+  then every change; after a lost consumer (a NATS restart that wiped the bucket) it yields keys that
+  are gone as deleted, then `None` again.
+- **Added, a tool pod's own Object Store and pointer bucket** (`threetears.nats.subject_permissions`):
+  `JsResourceKind.OBJECT_STORE`, `JsCapability.OBJECT_STORE_OBJECTS` (bind, metadata direct get,
+  named-consumer create inside the bucket, `$O.<b>.>` publish when writable -- never a management
+  verb, `STREAM.MSG.GET` or `MSG.DELETE`), `JsResource.object_store(name, writable=)`,
+  `TOOL_POD_OBJECTS_BUCKET_SUFFIX`, `TOOL_POD_POINTERS_BUCKET_SUFFIX`,
+  `tool_pod_object_store_name(pod_id, ns=)`, `tool_pod_pointers_bucket_name(pod_id, ns=)`. Every tool
+  pod is granted both under its own scope; the hub declares them when it asks.
+- **Added, `threetears.nats.object_store_requests`** and `Subjects.hub_object_store_declare()` /
+  `hub_object_store_retire()`: a tool pod asks the hub to declare its buckets
+  (`declare_pod_object_store`) and to delete objects it no longer serves (`retire_pod_objects`),
+  forwarding its identity token; the hub composes the bucket from the verified token.
+- **Added, `threetears.core.collections.scoped_snapshot`** (`3tears[snapshot]`, which adds pyarrow):
+  `ScopedSnapshot(name=, tables=[SnapshotTable(name, scope_column, key)], backend=, store=, pointers=,
+  l3=, epochs=, settled=, ensure_buckets=, retire=)`. `start()` watches the pointers and loads every
+  current chunk in parallel into the DuckDB L1 (Arrow IPC, zstd; digest and row counts checked);
+  `publish(scope, epoch, rows)` replaces the scope locally, writes its chunks, then moves its pointer,
+  and the other replicas apply that scope alone in one DuckDB transaction; `read()` is a cursor
+  holding one state of every table for a request; NATS losing the snapshot is rebuilt from L3 under a
+  claim (one replica works, the rest wait), only while no write is in progress;
+  `catch_up_from_l3()` republishes scopes whose L3 epoch is ahead of their pointer; superseded chunks
+  are retired. `status()` reports the phase, scopes done of total, rows per table, timings and the
+  last change applied.
+- **Added, `DuckDBBackend.export_partition(table, column, value, order_by=)`,
+  `replace_partitions([PartitionReplacement(...)])` (several scopes of several tables in one
+  transaction), `read_snapshot()` (a cursor in a read transaction) and `schema_digest(table)`.**
+
 ### Core and datasources: keep tables current from a source, write only what changed, one writer at a time
 
 The ENR tool pod's refresh is the first consumer of every entry below: it fingerprints each state's

@@ -7,10 +7,13 @@ with type-aware serialization/deserialization. DuckDB is an optional dependency.
 from __future__ import annotations
 
 import enum
+import hashlib
 import json
 import threading
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -23,6 +26,7 @@ from threetears.observe import get_logger
 
 __all__ = [
     "DuckDBBackend",
+    "PartitionReplacement",
 ]
 
 try:
@@ -40,6 +44,31 @@ except ImportError:
     _UUID_TYPES = (uuid.UUID,)
 
 log = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class PartitionReplacement:
+    """everything one scope of a table is to hold: its rows, or an Arrow table of them.
+
+    The scope is the rows whose ``column`` equals ``value`` (``IS NULL`` for ``None``). Give
+    ``arrow`` (an Arrow table, as :meth:`DuckDBBackend.export_partition` writes one) or ``rows``
+    (mappings, written as :meth:`DuckDBBackend.upsert_many` writes them, which needs the
+    ``primary_key``); neither, or an empty one, leaves the scope empty.
+
+    :ivar table: a table the backend created
+    :ivar column: the scope column
+    :ivar value: the scope's value
+    :ivar rows: the scope's rows as mappings
+    :ivar arrow: the scope's rows as an Arrow table
+    :ivar primary_key: the table's key, for ``rows``
+    """
+
+    table: str
+    column: str
+    value: Any
+    rows: Sequence[Mapping[str, Any]] | None = None
+    arrow: Any = None
+    primary_key: str | tuple[str, ...] = "id"
 
 
 class DuckDBBackend:
@@ -295,6 +324,137 @@ class DuckDBBackend:
             extra={"extra_data": {"table": table, "rows": count, "columns": len(columns)}},
         )
         return int(count)
+
+    def _partition_filter(self, table: str, column: str, value: Any) -> tuple[str, list[Any]]:
+        """the condition naming one scope of a table, and its parameter.
+
+        :param table: the table
+        :ptype table: str
+        :param column: the scope column
+        :ptype column: str
+        :param value: the scope's value; ``None`` is the rows where the column is null
+        :ptype value: Any
+        :return: the condition and its parameters
+        :rtype: tuple[str, list[Any]]
+        :raises ValueError: when the table is not one this backend created, or has no such column
+        """
+        schema = self._schema_info.get(table)
+        if schema is None or column not in schema:
+            raise ValueError(
+                f"unknown table or column {table!r}.{column!r}: partitions are of tables this backend created"
+            )
+        if value is None:
+            return f"{quote_identifier(column)} IS NULL", []
+        return f"{quote_identifier(column)} = ?", [self.serialize_value(value, schema[column])]
+
+    def export_partition(self, table: str, column: str, value: Any, *, order_by: Sequence[str]) -> Any:
+        """one scope of a table as an Arrow table, its rows in ``order_by`` order.
+
+        In key order, so the same rows always encode to the same bytes. Needs ``pyarrow``
+        (``3tears[snapshot]``).
+
+        :param table: a table this backend created
+        :ptype table: str
+        :param column: the scope column
+        :ptype column: str
+        :param value: the scope's value; ``None`` for the rows where the column is null
+        :ptype value: Any
+        :param order_by: the columns ordering the rows, the table's key
+        :ptype order_by: Sequence[str]
+        :return: the rows
+        :rtype: pyarrow.Table
+        :raises ValueError: when the table or column is unknown
+        """
+        condition, params = self._partition_filter(table, column, value)
+        order = ", ".join(quote_identifier(c) for c in order_by)
+        sql = f"SELECT * FROM {quote_identifier(table)} WHERE {condition}" + (f" ORDER BY {order}" if order else "")  # noqa: S608
+        with self._db_lock:
+            result = self._db.execute(sql, params)
+            # ``to_arrow_table`` replaced ``fetch_arrow_table`` (deprecated in 1.4); older releases have only the latter
+            fetch = getattr(result, "to_arrow_table", None) or result.fetch_arrow_table
+            return fetch()
+
+    def replace_partitions(self, replacements: Sequence[PartitionReplacement]) -> int:
+        """make each named scope hold exactly what its replacement gives, all in ONE transaction.
+
+        A reader on another cursor (:meth:`read_snapshot`) sees every scope as it was until the
+        commit and every one as it is after, never part of the change. A failure rolls back, so
+        every table keeps what it held.
+
+        :param replacements: the scopes and what each is to hold
+        :ptype replacements: Sequence[PartitionReplacement]
+        :return: how many rows were written
+        :rtype: int
+        :raises ValueError: when a table or column is unknown; nothing changes
+        """
+        filters = [self._partition_filter(r.table, r.column, r.value) for r in replacements]
+        written = 0
+        with self._db_lock:
+            committed = False
+            self._db.execute("BEGIN TRANSACTION")
+            try:
+                for replacement, (condition, params) in zip(replacements, filters, strict=True):
+                    table = quote_identifier(replacement.table)
+                    self._db.execute(f"DELETE FROM {table} WHERE {condition}", params)  # noqa: S608
+                    if replacement.arrow is not None and replacement.arrow.num_rows:
+                        self._db.register("_partition_chunk", replacement.arrow)
+                        try:
+                            self._db.execute(f"INSERT INTO {table} BY NAME SELECT * FROM _partition_chunk")  # noqa: S608
+                        finally:
+                            self._db.unregister("_partition_chunk")
+                        written += replacement.arrow.num_rows
+                    elif replacement.rows:
+                        self._insert_rows(self._db, replacement.table, replacement.rows, replacement.primary_key)
+                        written += len(replacement.rows)
+                self._db.execute("COMMIT")
+                committed = True
+            finally:
+                if not committed:
+                    self._db.execute("ROLLBACK")
+        return written
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[Any]:
+        """a cursor reading one state of every table, held still until the block ends.
+
+        Every query on it reads the database as it stood when the block began, whatever
+        :meth:`replace_partitions` commits meanwhile, so several queries answering one request
+        agree with each other. Read-only by use; it holds no lock, so writers are not kept waiting.
+
+        :return: the cursor, inside a read transaction
+        :rtype: Iterator[duckdb.DuckDBPyConnection]
+        :raises RuntimeError: before :meth:`initialize`
+        """
+        if not self._initialized:
+            raise RuntimeError("DuckDB not initialized - call initialize() first")
+        with self._db_lock:
+            cursor = self._db.cursor()
+        try:
+            cursor.execute("BEGIN TRANSACTION")
+            try:
+                yield cursor
+            finally:
+                cursor.execute("ROLLBACK")
+        finally:
+            cursor.close()
+
+    def schema_digest(self, table: str) -> str:
+        """a digest of a table's columns and their type codes, in declaration order.
+
+        Two backends whose tables give the same digest read and write the same columns the same
+        way, so an Arrow export of one loads into the other.
+
+        :param table: the table
+        :ptype table: str
+        :return: the hex digest
+        :rtype: str
+        :raises ValueError: when the table is not one this backend created
+        """
+        schema = self._schema_info.get(table)
+        if schema is None:
+            raise ValueError(f"unknown table {table!r}")
+        text = "\n".join(f"{name}:{code}" for name, code in schema.items())
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
     def column_types(self, table: str) -> Mapping[str, str]:
         """the type codes this backend reads and writes a table's columns by, by column name.
