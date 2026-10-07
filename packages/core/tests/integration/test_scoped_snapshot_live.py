@@ -882,3 +882,102 @@ async def test_a_replica_that_waited_on_a_rebuild_is_ready_again(platform: _Plat
     assert l3.statements == statements, "the replica rebuilt for itself rather than apply the pointers"
     assert _count(replica, "results") == 1580
     await replica.stop()
+
+
+async def test_a_staged_scope_shows_nowhere_until_its_pointer_moves_and_then_everywhere(platform: _Platform) -> None:
+    writer, _ = await platform.replica()
+    await writer.start()
+    await writer.wait_ready(timeout=_WAIT)
+    reader, _ = await platform.replica()
+    await reader.start()
+    await reader.wait_ready(timeout=_WAIT)
+    changes: list[int] = []
+    reader.on_change(lambda: changes.append(1))
+
+    # the writer changes only results in DE; counties are carried from DE's current chunk
+    await platform.pool.execute("UPDATE results SET votes = 9 WHERE state = 'DE'")
+    staged = await writer.stage("DE", 2, {"results": await _rows(platform.pool, "results", "DE")})
+    await asyncio.sleep(0.5)
+    for replica in (writer, reader):
+        with replica.read() as cursor:
+            shown = cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall()
+        assert shown == [(1000,)], "a staged chunk was shown before its pointer moved"
+
+    platform.epochs["DE"] = 2
+    moved, skipped = await writer.publish_staged([staged], carry_at={"DE": 1})
+
+    assert (moved, skipped) == (["DE"], [])
+    for replica in (writer, reader):
+        await _until(
+            lambda r=replica: r.status().last_change is not None and r.status().last_change.epoch == 2,
+            what="DE applied",
+        )
+        with replica.read() as cursor:
+            assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(9,)]
+        assert _count(replica, "counties", "DE") == 40, "the carried table lost its rows"
+    assert changes, "the reader's change listener was not called"
+    assert not any("/DE/1/counties" in name for name in platform.retired), "a carried chunk was retired"
+    assert any("/DE/1/results" in name for name in platform.retired), "the superseded chunk was kept"
+    fresh, l3 = await platform.replica()
+    await fresh.start()
+    await fresh.wait_ready(timeout=_WAIT)
+    assert l3.statements == 0 and _count(fresh, "counties", "DE") == 40
+    for replica in (writer, reader, fresh):
+        await replica.stop()
+
+
+async def test_a_staged_scope_whose_pointer_moved_elsewhere_is_left_for_the_catch_up(platform: _Platform) -> None:
+    writer, _ = await platform.replica()
+    await writer.start()
+    await writer.wait_ready(timeout=_WAIT)
+    # a write that died after its commit moved CA to 3 in L3, and CA's pointer still says 1
+    await platform.pool.execute("UPDATE counties SET total = 5 WHERE state = 'CA'")
+    await platform.pool.execute("UPDATE results SET votes = 6 WHERE state = 'CA'")
+    staged = await writer.stage("CA", 4, {"results": await _rows(platform.pool, "results", "CA")})
+    platform.epochs["CA"] = 4
+
+    moved, skipped = await writer.publish_staged([staged], carry_at={"CA": 3})
+
+    assert (moved, skipped) == ([], ["CA"]), "a chunk was carried from an epoch the writer did not see"
+    assert await writer.catch_up_from_l3() == ["CA"]
+    with writer.read() as cursor:
+        assert cursor.execute("SELECT DISTINCT total FROM counties WHERE state = 'CA'").fetchall() == [(5,)]
+    await writer.stop()
+
+
+async def test_a_whole_write_into_an_empty_snapshot_is_loaded_from_l2_with_no_rebuild(platform: _Platform) -> None:
+    async with platform.pool.acquire() as conn:
+        await conn.execute("DELETE FROM results")
+        await conn.execute("DELETE FROM counties")
+    platform.epochs.clear()
+    # the very first load: nothing in NATS, a write in progress, every replica waiting on it
+    platform.writing = True
+    writer, writer_l3 = await platform.replica()
+    await writer.start()
+    waiting, l3 = await platform.replica()
+    await waiting.start()
+    await _until(lambda: "write" in waiting.status().detail, what="the replica waiting on the write")
+
+    # both tables of DE, results alone of TX (TX has no counties yet)
+    async with platform.pool.acquire() as conn:
+        await conn.execute("INSERT INTO counties VALUES ('DE-1', 'DE', 3)")
+        await conn.execute("INSERT INTO results VALUES ('DE-gov', 'DE-1', 'DE', 3), ('TX-gov', 'TX-1', 'TX', 4)")
+    staged = [
+        await writer.stage("DE", 1, {t.name: await _rows(platform.pool, t.name, "DE") for t in _TABLES}),
+        await writer.stage("TX", 1, {"results": await _rows(platform.pool, "results", "TX")}),
+    ]
+    async with writer.holding_rebuilds() as held:
+        assert held
+        platform.epochs.update({"DE": 1, "TX": 1})
+        platform.writing = False  # the commit
+        await asyncio.sleep(0.5)  # the waiting replicas look again while the claim is held
+        moved, skipped = await writer.publish_staged(staged, carry_at={}, whole=True)
+
+    assert (sorted(moved), skipped) == (["DE", "TX"], [])
+    for replica in (writer, waiting):
+        await replica.wait_ready(timeout=_WAIT)
+        assert replica.status().source is SnapshotSource.L2, "a replica rebuilt from L3"
+        assert _count(replica, "results") == 2 and _count(replica, "counties", "TX") == 0
+    assert l3.statements == 0 and writer_l3.statements == 0, "a replica read L3"
+    await writer.stop()
+    await waiting.stop()

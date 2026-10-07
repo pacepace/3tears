@@ -248,6 +248,29 @@ async def test_the_start_tool_answers_at_once_and_the_status_tool_reports_runnin
     assert done.metadata["last"]["error"] is None
 
 
+async def test_the_status_tool_reports_the_progress_of_a_run_in_progress() -> None:
+    body = _gate()
+    operation = BackgroundOperation("load", body)
+    done = {"states": 0}
+    status = OperationStatusTool(
+        name="enr.load_status",
+        description="Report the load.",
+        operation=lambda: operation,
+        progress=lambda: {"summary": f"Loading · {done['states']} of 51 states", "states_done": done["states"]},
+    )
+    operation.start()
+    done["states"] = 37
+
+    running = await status.run()
+
+    assert running.metadata is not None
+    assert running.metadata["progress"] == {"summary": "Loading · 37 of 51 states", "states_done": 37}
+    assert "Loading · 37 of 51 states" in running.content
+    body.release.set()
+    await operation.wait()
+    assert (await status.run()).metadata["progress"]["states_done"] == 37  # type: ignore[index]
+
+
 async def test_the_start_tool_refuses_a_second_start_as_a_conflict() -> None:
     body = _gate()
     operation = BackgroundOperation("load", body)

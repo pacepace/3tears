@@ -34,7 +34,7 @@ The request and reply models, the subjects and the pod's client live here; the h
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Annotated, Final
@@ -48,6 +48,8 @@ from threetears.nats.subjects import Subject, Subjects
 
 if TYPE_CHECKING:
     from threetears.nats.client import NatsClient
+    from threetears.nats.kv import NatsKvBucket
+    from threetears.nats.object_store import NatsObjectStore
 
 __all__ = [
     "DEFAULT_OBJECT_STORE_REQUEST_TIMEOUT_SECONDS",
@@ -63,7 +65,9 @@ __all__ = [
     "ObjectStoreRequestUnavailableError",
     "ObjectStoreRetireReply",
     "ObjectStoreRetireRequest",
+    "PodObjectStore",
     "RetiredObjects",
+    "bind_pod_object_store",
     "declare_pod_object_store",
     "retire_pod_objects",
 ]
@@ -445,3 +449,90 @@ async def retire_pod_objects(
         },
     )
     return retired
+
+
+class PodObjectStore:
+    """a tool pod's own Object Store and pointer bucket, bound, with the two asks the pod makes of the hub.
+
+    What a :class:`~threetears.core.collections.scoped_snapshot.ScopedSnapshot` takes as its
+    ``store``, ``pointers``, ``ensure_buckets`` and ``retire``. Built by :func:`bind_pod_object_store`.
+
+    :param nats_client: the pod's connected NATS client
+    :ptype nats_client: NatsClient
+    :param identity_token: the pod's CURRENT identity token, read at each ask (a token rotates)
+    :ptype identity_token: Callable[[], str]
+    :param declared: what the hub declared
+    :ptype declared: DeclaredObjectStore
+    :param store: the bound Object Store
+    :ptype store: NatsObjectStore
+    :param pointers: the bound pointer bucket
+    :ptype pointers: NatsKvBucket
+    """
+
+    def __init__(
+        self,
+        nats_client: NatsClient,
+        identity_token: Callable[[], str],
+        declared: DeclaredObjectStore,
+        store: NatsObjectStore,
+        pointers: NatsKvBucket,
+    ) -> None:
+        self._client = nats_client
+        self._token = identity_token
+        self.declared = declared
+        self.store = store
+        self.pointers = pointers
+
+    async def declare(self) -> None:
+        """ask the hub to declare both buckets again, after NATS lost them; idempotent.
+
+        :return: nothing
+        :rtype: None
+        :raises ObjectStoreRequestError: when the hub refuses or does not answer
+        """
+        self.declared = await declare_pod_object_store(self._client, identity_token=self._token())
+
+    async def retire(self, names: list[str]) -> RetiredObjects:
+        """ask the hub to delete objects the pod no longer serves; declares the bucket again first
+        when the hub says NATS lost it.
+
+        :param names: the objects, at most :data:`MAX_RETIRED_OBJECTS`
+        :ptype names: list[str]
+        :return: what the hub did
+        :rtype: RetiredObjects
+        :raises ObjectStoreRequestError: when the hub refuses or does not answer
+        """
+        try:
+            retired = await retire_pod_objects(self._client, identity_token=self._token(), names=names)
+        except ObjectStoreNotDeclaredError:
+            await self.declare()
+            retired = await retire_pod_objects(self._client, identity_token=self._token(), names=names)
+        return retired
+
+
+async def bind_pod_object_store(nats_client: NatsClient, *, identity_token: Callable[[], str]) -> PodObjectStore:
+    """ask the hub to declare this pod's own Object Store and pointer bucket, then bind both.
+
+    The pod's registry row must opt in (``aibots tool-pod set-object-store POD --on``), or the hub
+    refuses with ``OBJECT_STORE_NOT_GRANTED``.
+
+    :param nats_client: this pod's connected NATS client
+    :ptype nats_client: NatsClient
+    :param identity_token: this pod's CURRENT hub identity token, read at each ask
+    :ptype identity_token: Callable[[], str]
+    :return: the bound buckets and the pod's asks
+    :rtype: PodObjectStore
+    :raises ObjectStoreRequestError: when the hub refuses or does not answer
+    :raises ObjectStoreError: when the Object Store cannot be bound
+    :raises KvError: when the pointer bucket cannot be bound
+    """
+    declared = await declare_pod_object_store(nats_client, identity_token=identity_token())
+    store = await nats_client.object_store(name=declared.bucket, prefix_namespace=False)
+    # the KV bind layers the namespace itself; the hub answers the full name
+    prefix = f"{nats_client.namespace}-"
+    if not declared.pointers_bucket.startswith(prefix):
+        raise ObjectStoreRequestUnavailableError(
+            f"the hub declared pointer bucket {declared.pointers_bucket!r} outside this pod's namespace {prefix!r}"
+        )
+    pointers = await nats_client.kv_bucket(name=declared.pointers_bucket.removeprefix(prefix), create_if_missing=False)
+    return PodObjectStore(nats_client, identity_token, declared, store, pointers)

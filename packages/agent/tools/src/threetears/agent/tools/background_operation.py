@@ -623,6 +623,10 @@ class OperationStatusTool(_OperationTool):
     :ptype operation: Callable[[], BackgroundOperation[Any] | None]
     :param render_result: turns a result into JSON values for the answer; the result as it is when None
     :ptype render_result: Callable[[Any], Any] | None
+    :param progress: what the operation is doing now, as JSON values with a short ``summary`` line
+        (phase, counts, timings): answered as ``progress`` whether or not a run is in progress, so a
+        caller sees a long run move and what the operation's other work is doing between runs
+    :ptype progress: Callable[[], dict[str, Any]] | None
     :param version: the tool's version
     :ptype version: str
     """
@@ -634,10 +638,12 @@ class OperationStatusTool(_OperationTool):
         description: str,
         operation: Callable[[], BackgroundOperation[Any] | None],
         render_result: Callable[[Any], Any] | None = None,
+        progress: Callable[[], dict[str, Any]] | None = None,
         version: str = _DEFAULT_TOOL_VERSION,
     ) -> None:
         super().__init__(name=name, description=description, operation=operation, version=version)
         self._render_result = render_result
+        self._progress = progress
 
     def answer(self, operation: BackgroundOperation[Any]) -> ToolResult:
         """the operation's status, as a sentence and as metadata.
@@ -652,6 +658,11 @@ class OperationStatusTool(_OperationTool):
         sentence = status["state"]
         if status["running"]:
             sentence = f"running since {status['started_at']}"
+        if self._progress is not None:
+            progress = self._progress()
+            status["progress"] = progress
+            if progress.get("summary"):
+                sentence += f"; now: {progress['summary']}"
         if last is not None:
             ended = "failed" if last["error"] is not None else "succeeded"
             detail = last["error"] if last["error"] is not None else last["result"]
