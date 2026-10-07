@@ -329,3 +329,35 @@ def test_the_site_reports_its_posture_and_open_rows(tmp_path: Path) -> None:
     assert site.line == 2
     assert site.posture == "verified-token"
     assert site.open_rows == ("H10",)
+
+
+def test_an_excluded_prefix_is_not_walked(tmp_path: Path) -> None:
+    """a test double shipped under src, named as excluded, holds no sites."""
+    config = _config(
+        tmp_path,
+        {
+            "src/pkg/testing/stub.py": "async def start(nc, cb):\n    await nc.subscribe(subject='x', cb=cb)\n",
+            "src/pkg/door.py": "async def start(nc, cb):\n    await nc.subscribe(subject='x', cb=cb)\n",
+        },
+    )
+    excluded = SenderPostureConfig(
+        repo_root=config.repo_root,
+        src_roots=config.src_roots,
+        allowlist_path=config.allowlist_path,
+        excluded_prefixes=("src/pkg/testing/",),
+    )
+    assert [site.path for site in find_subscribe_sites(excluded)] == ["src/pkg/door.py"]
+
+
+def test_an_excluded_prefix_that_matches_nothing_fails(tmp_path: Path) -> None:
+    """an exclusion naming no module is stale, so it is a finding rather than a silent widening."""
+    config = _config(tmp_path, {"src/pkg/door.py": "x = 1\n"})
+    excluded = SenderPostureConfig(
+        repo_root=config.repo_root,
+        src_roots=config.src_roots,
+        allowlist_path=config.allowlist_path,
+        excluded_prefixes=("src/pkg/testing/",),
+    )
+    findings = sender_posture_findings(excluded)
+    assert len(findings) == 1
+    assert "excluded prefix 'src/pkg/testing/' matches no module" in findings[0]

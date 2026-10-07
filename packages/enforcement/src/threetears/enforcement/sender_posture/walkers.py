@@ -296,9 +296,17 @@ def _scan(config: SenderPostureConfig) -> _Scan:
     :rtype: _Scan
     """
     scan = _Scan()
+    matched: set[str] = set()
     for root in config.src_roots:
         for path in iter_python_files(root):
-            _scan_module(path, config, scan)
+            relative = relative_posix_path(path, config.repo_root)
+            excluded_by = [prefix for prefix in config.excluded_prefixes if relative.startswith(prefix)]
+            matched.update(excluded_by)
+            if not excluded_by:
+                _scan_module(path, config, scan)
+    for prefix in config.excluded_prefixes:
+        if prefix not in matched:
+            scan.findings.append(f"excluded prefix {prefix!r} matches no module; remove it")
     return scan
 
 

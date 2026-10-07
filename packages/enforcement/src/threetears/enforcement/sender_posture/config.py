@@ -90,6 +90,9 @@ class SenderPostureConfig:
     :ivar site_callees: callee names treated as receiving sites
     :ivar primitive_modules: repo-relative posix paths of the modules allowed to declare
         ``primitive``
+    :ivar excluded_prefixes: repo-relative posix path prefixes left unwalked: test doubles a
+        package ships under ``src`` that no deployed process runs. each must match at least one
+        module, so a stale exclusion is a finding rather than a silent widening
     """
 
     repo_root: Path
@@ -97,3 +100,4 @@ class SenderPostureConfig:
     allowlist_path: Path
     site_callees: frozenset[str] = DEFAULT_SITE_CALLEES
     primitive_modules: frozenset[str] = frozenset()
+    excluded_prefixes: tuple[str, ...] = ()

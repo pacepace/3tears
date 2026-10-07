@@ -15,7 +15,8 @@ delivered on any subject, through a push consumer's `deliver_subject` or a reque
   `sender_posture_findings`, `find_subscribe_sites`, `SubscribeSite`, `POSTURES`,
   `DEFAULT_SITE_CALLEES`): a gate under which every receiving site declares
   `# sender-posture: <posture> [open <ROW>]`, and a repo's allowlist carries exactly the audit rows
-  still open, in both directions.
+  still open, in both directions. `excluded_prefixes` leaves test doubles shipped under `src`
+  unwalked; one that matches no module is a finding.
 - **3tears runs it** (`tests/enforcement/test_subscribers_declare_sender_posture.py`). Every
   receiving site in `packages/` now carries its marker; `tests/enforcement/_sender_posture_allowlist.txt`
   lists the receivers still open under the NATS receiver-trust audit.
