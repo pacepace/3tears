@@ -442,3 +442,11 @@ still file-backed. The durable primitives' buckets are different: once their sta
 L3 they are genuinely unused, and they are deleted after the one-time copy. Both happen on
 cobalt-dev and then prod, after every consumer is released, dry run first, and a real
 sign-in verifies each.
+
+## Known residual: a pod's L2 reads can deliver its bytes to any subject
+
+A JetStream push consumer's `deliver_subject` and every request's reply subject are not checked
+against the requester's permissions, so any pod that can write a value and read it back can put
+that value on any subject in its account (probed on nats-server 2.12.6, 2026-10-07). No grant closes
+it; the defence is the receiver's. The evidence, the scope and the pinned test:
+[design-scoped-snapshot.md](design-scoped-snapshot.md#known-residual-a-pod-can-put-its-own-bytes-on-any-subject).

@@ -2618,7 +2618,20 @@ class TestToolPodObjectStore:
     _SCOPE = kv_key_scope_for(Principal.TOOL_POD, pod_id=_POD_X)
 
     def _pod(self) -> PrincipalPermissions:
-        return build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        return build_permissions(Principal.TOOL_POD, pod_id=_POD_X, object_store=True)
+
+    def test_a_pod_that_has_not_opted_in_holds_no_object_store(self) -> None:
+        plain = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        names = {r.name for r in plain.js_resources}
+        assert tool_pod_object_store_name(_POD_X, ns=_NS) not in names
+        assert tool_pod_pointers_bucket_name(_POD_X, ns=_NS) not in names
+        assert not [s for s in plain.publish if ".hub.object_store." in s]
+        assert not [s for s in _minted_publish(plain) if s.startswith("$O.") or "OBJ_" in s]
+
+    @pytest.mark.parametrize("principal", [p for p in Principal if p is not Principal.TOOL_POD])
+    def test_only_a_tool_pod_may_opt_in(self, principal: Principal) -> None:
+        with pytest.raises(ValueError):
+            build_permissions(principal, object_store=True, **_IDS[principal])
 
     def test_the_bucket_names_are_composed_under_the_pods_own_scope(self) -> None:
         assert tool_pod_object_store_name(_POD_X, ns=_NS) == f"{_NS}-{self._SCOPE}-{TOOL_POD_OBJECTS_BUCKET_SUFFIX}"

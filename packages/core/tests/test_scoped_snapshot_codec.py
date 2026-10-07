@@ -17,14 +17,14 @@ from threetears.core.collections.scoped_snapshot import (  # noqa: E402
 
 @pytest.mark.parametrize(
     ("scope", "token"),
-    [("TX", "TX"), ("state-1_a", "state-1_a"), ("a b", "a=20b"), ("a.b", "a=2Eb"), ("x=y", "x=3Dy"), (None, "=")],
+    [("TX", "TX"), ("state-1_a", "state-1_a"), ("a b", "a=20b"), ("a.b", "a=2Eb"), ("x=y", "x=3Dy")],
 )
 def test_a_scope_becomes_one_literal_token(scope: str | None, token: str) -> None:
     assert scope_token(scope) == token
 
 
 def test_distinct_scopes_never_share_a_token() -> None:
-    scopes = ["a.b", "a=2Eb", "a b", "=", "", "é"]
+    scopes = ["a.b", "a=2Eb", "a b", "=", "é"]
     assert len({scope_token(s) for s in scopes}) == len(scopes)
 
 

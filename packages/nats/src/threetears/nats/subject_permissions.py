@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+import dataclasses
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
@@ -1237,6 +1238,7 @@ def build_permissions(
     coordination_buckets: Sequence[str] | None = None,
     agent_table_grants: Sequence[AgentTableGrant] | None = None,
     agent_bucket_grants: Sequence[AgentBucketGrant] | None = None,
+    object_store: bool = False,
 ) -> PrincipalPermissions:
     """resolve the concrete allow-list for one connecting principal.
 
@@ -1284,15 +1286,21 @@ def build_permissions(
         :func:`_agent_bucket_resources`. Read by :attr:`Principal.TOOL_POD` alone and ignored for
         every other principal. Omitting it grants none.
     :ptype agent_bucket_grants: Sequence[AgentBucketGrant] | None
+    :param object_store: this tool pod has opted in to an Object Store of its own -- the operator's
+        record on its registry row, resolved by the auth callout. Grants the pod's Object Store, its
+        pointer bucket and the two hub requests that declare and retire them. Only a
+        :attr:`Principal.TOOL_POD` may hold it.
+    :ptype object_store: bool
     :return: the resolved permissions
     :rtype: PrincipalPermissions
-    :raises ValueError: when a required id for the principal is missing, when a declared
+    :raises ValueError: when ``object_store`` is asked for another principal, when a required id for the principal is missing, when a declared
         coordination bucket suffix is malformed or the declaration exceeds
         :data:`MAX_COORDINATION_BUCKETS`, or when one agent table or one agent bucket is granted
         twice
     """
-    resolver = _RESOLVERS[principal]
-    return resolver(
+    if object_store and principal is not Principal.TOOL_POD:
+        raise ValueError(f"only a tool pod may hold an Object Store of its own, not a {principal.value}")
+    permissions = _RESOLVERS[principal](
         agent_id=agent_id,
         pod_id=pod_id,
         conn_id=conn_id,
@@ -1300,6 +1308,40 @@ def build_permissions(
         coordination_buckets=coordination_buckets,
         agent_table_grants=agent_table_grants,
         agent_bucket_grants=agent_bucket_grants,
+    )
+    if object_store:
+        permissions = _with_object_store(permissions, pod_id=_require(pod_id, name="pod_id", principal=principal))
+    return permissions
+
+
+def _with_object_store(permissions: PrincipalPermissions, *, pod_id: str) -> PrincipalPermissions:
+    """a tool pod's permissions with its own Object Store, pointer bucket and their two hub requests.
+
+    The buckets are composed under the pod's own scope, so every replica of the pod shares them and
+    no other pod can name them. The hub declares both when the pod asks; a grant on a bucket not yet
+    declared reaches nothing. The requests name no bucket: the hub composes it from the VERIFIED
+    forwarded token, so they buy reach and never authority.
+
+    :param permissions: the pod's resolved permissions
+    :ptype permissions: PrincipalPermissions
+    :param pod_id: the pod's id
+    :ptype pod_id: str
+    :return: the permissions with the Object Store added
+    :rtype: PrincipalPermissions
+    """
+    ns = _ns()
+    return dataclasses.replace(
+        permissions,
+        publish=(
+            *permissions.publish,
+            str(Subjects.hub_object_store_declare()),
+            str(Subjects.hub_object_store_retire()),
+        ),
+        js_resources=(
+            *permissions.js_resources,
+            JsResource.object_store(tool_pod_object_store_name(pod_id, ns=ns), writable=True),
+            JsResource.kv_bucket_keys(tool_pod_pointers_bucket_name(pod_id, ns=ns), writable=True),
+        ),
     )
 
 
@@ -1819,12 +1861,6 @@ def _tool_pod(
         # authority: the hub verifies the forwarded token names a tool pod and moves a layer's tile
         # version only when the pod owns the provider namespace the layer is registered under.
         str(Subjects.hub_geo_layers_reloaded()),
-        # the pod's OWN Object Store: it asks the hub to declare the bucket and its pointer bucket
-        # (a pod holds no stream-management verb) and to retire objects it no longer serves (a
-        # delete is a purge). The requests name no bucket: the hub composes it from the VERIFIED
-        # forwarded token, so these subjects buy reach and never authority.
-        str(Subjects.hub_object_store_declare()),
-        str(Subjects.hub_object_store_retire()),
         # Path-2 consume: a consuming tool resolves an object id -> its stored
         # key (forwarding the invoking agent's identity token; the hub verifies
         # + tenant-scopes). NOT hub_object_commit -- commit is agent-side.
@@ -1934,15 +1970,6 @@ def _tool_pod(
             # key id, as the collections scope above is -- so replicas share one key and no pod can
             # reach another's. READ-ONLY: the hub writes it.
             JsResource.kv_key_read(data_versions_bucket_name(ns), key=data_version_kv_key(p)),
-            # the pod's OWN Object Store and pointer bucket, composed under its own scope, so every
-            # replica of the pod shares them and no other pod can name them. the hub declares both
-            # when the pod asks; a grant on a bucket not yet declared reaches nothing.
-            JsResource.object_store(
-                coordination_bucket_name(scope, TOOL_POD_OBJECTS_BUCKET_SUFFIX, ns=ns), writable=True
-            ),
-            JsResource.kv_bucket_keys(
-                coordination_bucket_name(scope, TOOL_POD_POINTERS_BUCKET_SUFFIX, ns=ns), writable=True
-            ),
             # the AGENTS' tables an operator granted this pod, each under the owning agent's scope
             # and narrowed to that one table. LAST, so a reader sees the pod's fixed grants above
             # and its variable ones below.

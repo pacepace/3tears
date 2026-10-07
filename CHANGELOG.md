@@ -49,6 +49,24 @@ so a starting replica loads them without reading L3, and a refresh moves only th
   `catch_up_from_l3()` republishes scopes whose L3 epoch is ahead of their pointer; superseded chunks
   are retired. `status()` reports the phase, scopes done of total, rows per table, timings and the
   last change applied.
+- **Changed, after review:** the Object Store grant is an explicit opt-in --
+  `build_permissions(Principal.TOOL_POD, ..., object_store=True)`, refused for any other principal --
+  and without it a tool pod holds neither bucket nor the two hub requests. `ensure_kv_bucket(max_bytes=)`
+  bounds a bucket (an owner reconciles a live bound in place, and a self-heal re-open keeps it).
+  `NatsClient.delete_object_store` / `delete_kv_bucket` withdraw a declaration: deleted, and not put
+  back after a reconnect; `ensure_object_store` / `ensure_kv_bucket(still_wanted=)` lets a restoration ask first and
+  forget a declaration no longer wanted (its pod was removed on another replica). A declared Object Store refuses rollup headers (a rollup is a purge by
+  publish), so metadata is written without one. `watch_prefix` dedupes on revision AND value, since a
+  wiped bucket restarts its sequence. `list_keys` and the Object Store's reads share one named-consumer
+  read loop. `object_store_requests` adds `OBJECT_STORE_NOT_GRANTED`, `OBJECT_STORE_BUDGET_EXHAUSTED`
+  (both final) and `OBJECT_STORE_NOT_DECLARED` (`ObjectStoreNotDeclaredError`: declare again), and owns
+  `OBJECT_NAME_PATTERN`. `ScopedSnapshot`: chunk names carry the column digest; pointers and the index
+  move by compare-and-set and never to a lower epoch; the rebuild claim is renewed and released by
+  compare-and-set; a null scope is refused everywhere; failed reads cancel their siblings;
+  retirement asks in batches of at most `MAX_RETIRED_OBJECTS`; `catch_up_from_l3` drops scopes L3 no
+  longer holds; a watch that ends puts the status in FAILED. Design, decision and the pinned residual
+  (a pod can deliver its own bytes to any subject through a push consumer's deliver subject or a reply
+  subject): `docs/design-scoped-snapshot.md`.
 - **Added, `DuckDBBackend.export_partition(table, column, value, order_by=)`,
   `replace_partitions([PartitionReplacement(...)])` (several scopes of several tables in one
   transaction), `read_snapshot()` (a cursor in a read transaction) and `schema_digest(table)`.**

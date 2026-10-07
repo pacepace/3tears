@@ -137,7 +137,7 @@ async def test_a_tool_pod_works_inside_its_object_store_and_manages_nothing(tmp_
     previous_ns = get_default_namespace()
     set_default_namespace(_NS)
     try:
-        permissions = build_permissions(Principal.TOOL_POD, pod_id=_POD, conn_id=_POD)
+        permissions = build_permissions(Principal.TOOL_POD, pod_id=_POD, conn_id=_POD, object_store=True)
         pub_allow, sub_allow = _minted_allow_lists(permissions)
         own = tool_pod_object_store_name(_POD, ns=_NS)
         pointers = tool_pod_pointers_bucket_name(_POD, ns=_NS)

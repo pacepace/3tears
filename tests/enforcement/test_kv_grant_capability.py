@@ -580,6 +580,7 @@ def _pod_permissions() -> list[tuple[str, object]]:
         pod_id="01947100-0000-7000-8000-000000000002",
         agent_table_grants=(AgentTableGrant(owner_agent_id=owner, table="responses", writable=True),),
         agent_bucket_grants=(AgentBucketGrant(owner_agent_id=owner, suffix="checkpoints", writable=True),),
+        object_store=True,
     )
     return [("agent_pod", agent), ("tool_pod", tool)]
 

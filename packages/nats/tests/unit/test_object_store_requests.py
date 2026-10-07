@@ -19,6 +19,7 @@ from threetears.nats.object_store_requests import (
     OBJECT_STORE_REQUEST_ERROR_CODES,
     DeclaredObjectStore,
     ObjectStoreDeclareRequest,
+    ObjectStoreNotDeclaredError,
     ObjectStoreRequestRefusedError,
     ObjectStoreRequestUnavailableError,
     RetiredObjects,
@@ -140,8 +141,40 @@ class TestRetire:
             await retire_pod_objects(nc, identity_token=_TOKEN, names=["a"])  # type: ignore[arg-type]
 
 
+class TestRefusalsThePodActsOn:
+    async def test_a_pod_not_opted_in_is_refused_for_good(self) -> None:
+        nc = _ScriptedRequests({"success": False, "error_code": "OBJECT_STORE_NOT_GRANTED", "error_message": "no"})
+        with pytest.raises(ObjectStoreRequestRefusedError) as raised:
+            await declare_pod_object_store(nc, identity_token=_TOKEN)  # type: ignore[arg-type]
+        assert raised.value.error_code == "OBJECT_STORE_NOT_GRANTED"
+
+    async def test_an_exhausted_budget_is_refused_for_good(self) -> None:
+        nc = _ScriptedRequests(
+            {"success": False, "error_code": "OBJECT_STORE_BUDGET_EXHAUSTED", "error_message": "full"}
+        )
+        with pytest.raises(ObjectStoreRequestRefusedError) as raised:
+            await declare_pod_object_store(nc, identity_token=_TOKEN)  # type: ignore[arg-type]
+        assert raised.value.error_code == "OBJECT_STORE_BUDGET_EXHAUSTED"
+
+    async def test_a_retire_against_a_bucket_not_declared_says_to_declare_again(self) -> None:
+        nc = _ScriptedRequests({"success": False, "error_code": "OBJECT_STORE_NOT_DECLARED", "error_message": "gone"})
+        with pytest.raises(ObjectStoreNotDeclaredError):
+            await retire_pod_objects(nc, identity_token=_TOKEN, names=["a"])  # type: ignore[arg-type]
+        assert issubclass(ObjectStoreNotDeclaredError, ObjectStoreRequestRefusedError)
+
+
 def test_the_vocabulary_is_the_one_the_hub_answers() -> None:
     assert (
-        frozenset({"INVALID_REQUEST", "IDENTITY_REFUSED", "DECLARE_FAILED", "RETIRE_FAILED"})
+        frozenset(
+            {
+                "INVALID_REQUEST",
+                "IDENTITY_REFUSED",
+                "OBJECT_STORE_NOT_GRANTED",
+                "OBJECT_STORE_BUDGET_EXHAUSTED",
+                "OBJECT_STORE_NOT_DECLARED",
+                "DECLARE_FAILED",
+                "RETIRE_FAILED",
+            }
+        )
         == OBJECT_STORE_REQUEST_ERROR_CODES
     )

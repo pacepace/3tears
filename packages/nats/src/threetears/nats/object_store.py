@@ -9,7 +9,7 @@ design notes
 ------------
 
 - **the wire shape is the NATS Object Store's.** A bucket ``<b>`` is the stream ``OBJ_<b>`` over
-  ``$O.<b>.C.>`` (chunks) and ``$O.<b>.M.>`` (metadata, one rolled-up message per object, its subject
+  ``$O.<b>.C.>`` (chunks) and ``$O.<b>.M.>`` (metadata, one message per object -- names are written once, so no rollup -- its subject
   the base64url of the name). Metadata is nats-py's ``ObjectInfo`` JSON, so the ``nats`` CLI and
   nats-py's own Object Store read what this wrapper writes.
 - **reads use named consumers only.** nats-py's ``ObjectStore.get`` reads chunks through an
@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
-from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy, Header
+from nats.js.api import DeliverPolicy
 from nats.js.api import ObjectInfo as _NatsObjectInfo
 from nats.js.api import ObjectMetaOptions
 from nats.errors import NoRespondersError as _NatsNoRespondersError
@@ -53,7 +53,9 @@ from nats.errors import TimeoutError as _NatsTimeoutError
 from nats.js.errors import APIError, NotFoundError
 from threetears.observe import get_logger
 
+from threetears.nats._named_read import NamedRead, read_through_named_consumer
 from threetears.nats._publish import run_bounded
+from threetears.nats.object_store_requests import OBJECT_NAME_PATTERN
 from threetears.nats.errors import (
     ObjectExistsError,
     ObjectNotFoundError,
@@ -81,7 +83,7 @@ log = get_logger(__name__)
 OBJECT_STORE_STREAM_PREFIX: Final[str] = "OBJ_"
 
 #: what an object name may contain: the NATS Object Store's own key grammar.
-OBJECT_NAME_GRAMMAR: Final[re.Pattern[str]] = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
+OBJECT_NAME_GRAMMAR: Final[re.Pattern[str]] = re.compile(OBJECT_NAME_PATTERN)
 
 #: bytes per chunk message. Under the default 1 MiB ``max_payload`` with room for headers, and large
 #: enough that a few-megabyte object is a handful of messages rather than dozens.
@@ -90,10 +92,6 @@ DEFAULT_OBJECT_CHUNK_BYTES: Final[int] = 512 * 1024
 #: the ceiling on one operation's wait: a chunk, a metadata read, a consumer create.
 DEFAULT_OBJECT_OP_TIMEOUT: Final[timedelta] = timedelta(seconds=10)
 
-#: how long the server keeps a read's consumer once nothing listens to its deliver subject. A pod's
-#: grant carries no ``CONSUMER.DELETE`` (it reaches a consumer by name, whoever created it), so this,
-#: not a delete, removes a finished read's consumer.
-_READ_CONSUMER_INACTIVE_THRESHOLD_SECONDS: Final[float] = 30.0
 
 #: consumer names a read mints carry these prefixes, so an operator listing a stream's consumers can
 #: tell an object read (``og_``) and a listing (``ol_``) from anything else.
@@ -120,9 +118,6 @@ _UNANSWERED: Final[tuple[type[BaseException], ...]] = (
 
 #: an answered refusal or an unanswered request: every way a JetStream call can fail to do its work
 _FAILED: Final[tuple[type[BaseException], ...]] = (APIError, *_UNANSWERED)
-
-#: the rollup a metadata publish carries, so the subject holds one message: the object's latest.
-_ROLLUP_SUBJECT: Final[str] = "sub"
 
 _EXPECTED_LAST_SUBJECT_SEQUENCE: Final[str] = "Nats-Expected-Last-Subject-Sequence"
 
@@ -448,7 +443,7 @@ class NatsObjectStore:
             js,
             _meta_subject(self._full_name, name),
             json.dumps(record.as_dict()).encode("utf-8"),
-            headers={Header.ROLLUP: _ROLLUP_SUBJECT, _EXPECTED_LAST_SUBJECT_SEQUENCE: "0"},
+            headers={_EXPECTED_LAST_SUBJECT_SEQUENCE: "0"},
             name=name,
         )
         log.debug(
@@ -589,48 +584,19 @@ class NatsObjectStore:
         :rtype: list[bytes]
         :raises ObjectStoreError: when the consumer cannot be created or a message does not arrive
         """
-        raw = self._client.raw
-        if raw.is_closed:
-            raise ObjectStoreError(f"cannot read {self._full_name}: the NATS connection is closed")
-        inbox = raw.new_inbox()
-        subscription = await raw.subscribe(inbox)
-        payloads: list[bytes] = []
-        try:
-            config = ConsumerConfig(
-                name=f"{prefix}{uuid.uuid7().hex}",
-                deliver_subject=inbox,
+        messages = await read_through_named_consumer(
+            self._client,
+            NamedRead(
+                stream=self.stream,
                 filter_subject=filter_subject,
                 deliver_policy=deliver_policy,
-                ack_policy=AckPolicy.NONE,
-                inactive_threshold=_READ_CONSUMER_INACTIVE_THRESHOLD_SECONDS,
-                mem_storage=True,
-            )
-            js = self._client.jetstream_context()
-            try:
-                info = await self._bounded(lambda: js.add_consumer(self.stream, config=config), what="object read")
-            except _FAILED as exc:
-                raise ObjectStoreError(
-                    f"a read consumer on {self.stream} could not be created: {exc}. an ungranted create is never "
-                    f"answered -- check this principal's grant on $JS.API.CONSUMER.CREATE.{self.stream}.*.{filter_subject}"
-                ) from exc
-            wanted = int(info.num_pending or 0) if count is None else count
-            timeout = self._op_timeout.total_seconds()
-            while len(payloads) < wanted:
-                try:
-                    msg = await subscription.next_msg(timeout=timeout)
-                except TimeoutError as exc:
-                    raise ObjectStoreError(
-                        f"reading {filter_subject} from {self._full_name} stalled after {len(payloads)} of {wanted} "
-                        f"messages"
-                    ) from exc
-                payloads.append(bytes(msg.data))
-        finally:
-            try:
-                await subscription.unsubscribe()
-            # NOSILENT: logged; the consumer behind it is reaped by the server once nothing listens
-            except Exception as exc:  # noqa: BLE001 -- teardown continues regardless
-                log.debug("object read unsubscribe on %s failed: %s", filter_subject, exc)
-        return payloads
+                name_prefix=prefix,
+                count=count,
+                timeout_seconds=self._op_timeout.total_seconds(),
+            ),
+            failure=lambda message, _cause: ObjectStoreError(f"{message} ({self._full_name})"),
+        )
+        return [bytes(msg.data) for msg in messages]
 
     async def delete(self, name: str) -> bool:
         """remove one object, its chunks and its metadata: the DECLARER's operation.

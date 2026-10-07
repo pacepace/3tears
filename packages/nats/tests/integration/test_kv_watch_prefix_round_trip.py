@@ -124,3 +124,32 @@ async def test_a_prefix_must_be_literal_and_end_on_a_token(nats_container: str, 
         bucket = await nc.kv_bucket(name="pointers")
         with pytest.raises(ValueError):
             await anext(bucket.watch_prefix(prefix=prefix))
+
+
+async def test_a_key_rewritten_at_the_same_revision_after_a_wipe_is_delivered(nats_container: str) -> None:
+    """a wiped bucket restarts its sequence: a new value can carry the revision the old one had."""
+    namespace = f"wp{uuid.uuid4().hex[:6]}"
+    set_default_namespace(namespace)
+    async with (
+        await NatsClient.connect(nats_url=nats_container, nats_subject_namespace=namespace, client_name="wp-seq") as nc,
+        await NatsClient.connect(
+            nats_url=nats_container, nats_subject_namespace=namespace, client_name="wiper"
+        ) as wiper,
+    ):
+        bucket = await nc.ensure_kv_bucket(name="pointers", owns_bucket=True)
+        first_revision = await bucket.put(key="snap.TX", value=b"old")
+        async with aclosing(
+            bucket.watch_prefix(prefix="snap.", heartbeat=timedelta(seconds=1), retry=timedelta(seconds=0.2))
+        ) as watch:
+            assert [(u.key, u.value) for u in await _until_caught_up(watch)] == [("snap.TX", b"old")]
+            # wiped and written again before the watch notices: the new value lands on revision 1 again
+            await wiper.jetstream_context().delete_stream(f"KV_{bucket.name}")
+            again = await wiper.ensure_kv_bucket(name="pointers", owns_bucket=True)
+            assert await again.put(key="snap.TX", value=b"new") == first_revision
+            seen: list[tuple[str, bytes | None]] = []
+            deadline = asyncio.get_running_loop().time() + 20
+            while (("snap.TX", b"new") not in seen) and asyncio.get_running_loop().time() < deadline:
+                item = await asyncio.wait_for(anext(watch), 20)
+                if item is not None:
+                    seen.append((item.key, item.value))
+            assert ("snap.TX", b"new") in seen, f"the rewritten value was never delivered: {seen}"

@@ -52,10 +52,12 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_OBJECT_STORE_REQUEST_TIMEOUT_SECONDS",
     "MAX_RETIRED_OBJECTS",
+    "OBJECT_NAME_PATTERN",
     "OBJECT_STORE_REQUEST_ERROR_CODES",
     "DeclaredObjectStore",
     "ObjectStoreDeclareReply",
     "ObjectStoreDeclareRequest",
+    "ObjectStoreNotDeclaredError",
     "ObjectStoreRequestError",
     "ObjectStoreRequestRefusedError",
     "ObjectStoreRequestUnavailableError",
@@ -78,18 +80,33 @@ DEFAULT_OBJECT_STORE_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
 #:
 #: - ``INVALID_REQUEST`` -- the body did not decode, or broke its bounds
 #: - ``IDENTITY_REFUSED`` -- the forwarded token did not verify, or names no tool pod
+#: - ``OBJECT_STORE_NOT_GRANTED`` -- the pod has not been given an Object Store (its registry row)
+#: - ``OBJECT_STORE_BUDGET_EXHAUSTED`` -- declaring it would pass the platform's Object Store budget
+#: - ``OBJECT_STORE_NOT_DECLARED`` -- a retire found no bucket: NATS lost it; declare it again
 #: - ``DECLARE_FAILED`` -- the buckets could not be declared after verification; safe to retry
 #: - ``RETIRE_FAILED`` -- the objects could not all be deleted after verification; safe to retry
 OBJECT_STORE_REQUEST_ERROR_CODES: Final[frozenset[str]] = frozenset(
-    {"INVALID_REQUEST", "IDENTITY_REFUSED", "DECLARE_FAILED", "RETIRE_FAILED"}
+    {
+        "INVALID_REQUEST",
+        "IDENTITY_REFUSED",
+        "OBJECT_STORE_NOT_GRANTED",
+        "OBJECT_STORE_BUDGET_EXHAUSTED",
+        "OBJECT_STORE_NOT_DECLARED",
+        "DECLARE_FAILED",
+        "RETIRE_FAILED",
+    }
 )
+
+#: the code a retire answers when the pod's bucket is gone, which :class:`ObjectStoreNotDeclaredError` carries
+_NOT_DECLARED: Final[str] = "OBJECT_STORE_NOT_DECLARED"
 
 #: the codes a retry can get past; every other code, one a newer hub added included, is a refusal
 _RETRYABLE_ERROR_CODES: Final[frozenset[str]] = frozenset({"DECLARE_FAILED", "RETIRE_FAILED"})
 
-#: an object name: the NATS Object Store's own key grammar (mirrors ``object_store.OBJECT_NAME_GRAMMAR``,
-#: restated as a pattern string because pydantic takes one)
-_OBJECT_NAME_PATTERN: Final[str] = r"^[-/_=.a-zA-Z0-9]+$"
+#: an object name: the NATS Object Store's own key grammar. The ONE spelling of it: the request models
+#: validate against it and :data:`threetears.nats.object_store.OBJECT_NAME_GRAMMAR` compiles it. Kept
+#: here, in a module that imports no NATS client, so a pod that only asks can import it.
+OBJECT_NAME_PATTERN: Final[str] = r"^[-/_=.a-zA-Z0-9]+$"
 
 
 class ObjectStoreRequestError(Exception):
@@ -113,6 +130,10 @@ class ObjectStoreRequestRefusedError(ObjectStoreRequestError):
         self.error_code = error_code
         self.error_message = error_message
         super().__init__(f"object store request refused: {error_code}: {error_message}")
+
+
+class ObjectStoreNotDeclaredError(ObjectStoreRequestRefusedError):
+    """the pod's bucket does not exist (NATS lost it): declare it again, then retry."""
 
 
 class ObjectStoreRequestUnavailableError(ObjectStoreRequestError):
@@ -158,7 +179,7 @@ class ObjectStoreRetireRequest(_TokenRequest):
     """
 
     names: Annotated[
-        list[Annotated[str, Field(pattern=_OBJECT_NAME_PATTERN)]],
+        list[Annotated[str, Field(pattern=OBJECT_NAME_PATTERN)]],
         Field(min_length=1, max_length=MAX_RETIRED_OBJECTS),
     ]
 
@@ -308,6 +329,8 @@ def _check_reply(reply: ObjectStoreDeclareReply | ObjectStoreRetireReply, *, cor
             f"{what} failed hub-side (correlation_id={correlation_id}): "
             f"{reply.error_code}: {reply.error_message or 'no details'}"
         )
+    if not reply.success and reply.error_code == _NOT_DECLARED:
+        raise ObjectStoreNotDeclaredError(_NOT_DECLARED, reply.error_message or "no details")
     if not reply.success:
         raise ObjectStoreRequestRefusedError(reply.error_code or "UNKNOWN", reply.error_message or "no details")
 
@@ -383,6 +406,7 @@ async def retire_pod_objects(
     :ptype timeout_seconds: float
     :return: what the hub did
     :rtype: RetiredObjects
+    :raises ObjectStoreNotDeclaredError: when the pod's bucket is gone; declare it, then retry
     :raises ObjectStoreRequestRefusedError: when the hub refuses with a non-retryable code, or
         ``INVALID_REQUEST`` without asking when ``names`` breaks the request's bounds
     :raises ObjectStoreRequestUnavailableError: on no token, a transport failure or timeout, a reply
