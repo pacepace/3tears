@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Agent tools: a long operation started by one tool and reported by another
+
+- **Added, `threetears.agent.tools.background_operation`:** `BackgroundOperation` runs one
+  operation in the background at most once at a time and keeps how its last run ended (its result,
+  or the exception as `<Type>: <message>`); `start_when_needed` runs a pod's first run once it can
+  tell one is needed, retrying only the errors it is told mean "not reachable yet".
+  `StartOperationTool` starts a run and answers at once, refusing a start while one runs with
+  `CONFLICT`; `OperationStatusTool` reports `idle`, `running`, `succeeded` or `failed` with the last
+  run's times, result and error. Both are `face_api` and refuse, saying so, until the pod has built
+  the operation. For operations longer than the hub waits on a tool call (a warehouse load, a layer
+  rebuild); the geography pod's reload and status tools were the first copy, the ENR pod's the second.
+
 ## v0.66.0 -- 2026-10-05
 
 ### Core: a replay guard owns its nonce bucket, on memory
