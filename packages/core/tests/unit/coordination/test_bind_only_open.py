@@ -121,6 +121,20 @@ class _RecordingClient(FakeNatsClient):
         self.create_flags.append(kwargs.get("create_if_missing", True))
         return await super().kv_bucket(**kwargs)
 
+    async def ensure_kv_bucket(self, **kwargs: Any) -> Any:  # type: ignore[override]
+        """record ``create_if_missing`` and delegate to the in-memory declaration.
+
+        A primitive that owns its bucket declares it rather than opening it, and the flag it
+        asks with is the same question.
+
+        :param kwargs: the declaration's keyword arguments
+        :ptype kwargs: Any
+        :return: the in-memory bucket
+        :rtype: Any
+        """
+        self.create_flags.append(kwargs.get("create_if_missing", True))
+        return await super().ensure_kv_bucket(**kwargs)
+
 
 def _client_over_recording_jetstream() -> tuple[NatsClient, MagicMock]:
     """a real :class:`NatsClient` whose JetStream context records every call.

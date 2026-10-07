@@ -757,7 +757,7 @@ class CollectionRegistry:
         # Deliberately ahead of the `nats_client is None` return: local eviction
         # is not a broadcast and must not be skipped when there is no bus (devx,
         # tests, a pod whose NATS is down).
-        self.scan_cache.drop_for_table(table_name)
+        self.drop_local_scans(table_name)
         if nats_client is None:
             return
         if isinstance(entity_id, tuple):
@@ -808,6 +808,20 @@ class CollectionRegistry:
                     },
                 },
             )
+
+    def drop_local_scans(self, table_name: str) -> None:
+        """the local half of an invalidation: this process's cached scans of a table it just wrote.
+
+        A write changes which rows match a scan, so every cached scan of the table is stale the
+        moment it commits, and this process is the one never to hear its own broadcast. Every local
+        write path drops them through here, with a bus or without one.
+
+        :param table_name: the table written
+        :ptype table_name: str
+        :return: nothing
+        :rtype: None
+        """
+        self.scan_cache.drop_for_table(table_name)
 
     def clear(self) -> None:
         """Remove all registered collections, overrides and L1 bounds (for tests).

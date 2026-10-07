@@ -10,13 +10,15 @@ import enum
 import json
 import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from threetears.core.backends.schema_sql import json_default
-from threetears.core.cache.base import build_select_clause
+from threetears.core.cache.base import build_select_clause, bulk_columns, quote_identifier
 from threetears.observe import get_logger
 
 __all__ = [
@@ -138,29 +140,173 @@ class DuckDBBackend:
         :return: nothing
         :rtype: None
         """
-        _ = self._pk_columns(primary_key)  # validate shape, unused in SQL
-        schema = self._schema_info.get(table, {})
-        # Filter to columns this table actually has, matching SQLiteBackend.
-        # Without it any framework-injected key reaches the SQL: the L1
-        # cache-age stamp is written by the collection's pull-through for
-        # every backend, and this one declares no such column, so an
-        # unfiltered write fails on a table that is otherwise fine. Unknown
-        # schema (unregistered table) keeps the old write-everything shape.
-        columns = [c for c in data if c in schema] if schema else list(data.keys())
+        self.upsert_many(table, [data], primary_key)
 
-        values = []
-        for col_name in columns:
-            value = data[col_name]
-            col_type = schema.get(col_name, "VARCHAR")
-            values.append(self.serialize_value(value, col_type))
+    def upsert_many(
+        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...] = "id"
+    ) -> int:
+        """insert or update many rows in one columnar statement, as ``upsert`` would one by one.
 
-        column_names = ", ".join(columns)
-        placeholders = ", ".join(["?" for _ in columns])
+        each column travels as one list and is unnested in the insert, which is
+        roughly twenty times faster than DuckDB's ``executemany`` (measured on a
+        168-column table: 2.6 s against 54 s for 20,000 rows).
 
-        sql = f"INSERT OR REPLACE INTO {table} ({column_names}) VALUES ({placeholders})"
-
+        :param table: destination table name
+        :ptype table: str
+        :param rows: the rows, each keyed by column name, every pk column present
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: how many rows were written
+        :rtype: int
+        :raises ValueError: when the rows do not all name the same columns
+        """
         with self._db_lock:
-            self._db.execute(sql, values)
+            self._insert_rows(self._db, table, rows, primary_key)
+        return len(rows)
+
+    def _insert_rows(
+        self, connection: Any, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]
+    ) -> None:
+        """insert or replace ``rows`` in one columnar statement on ``connection``; the caller holds the lock.
+
+        :param connection: the connection to write on
+        :ptype connection: Any
+        :param table: destination table name
+        :ptype table: str
+        :param rows: the rows, each keyed by column name, every pk column present
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the rows do not all name the same columns
+        """
+        pk_cols = self._pk_columns(primary_key)
+        schema = self._schema_info.get(table, {})
+        # Only the table's own columns are written: the collection's pull-through
+        # injects keys (the L1 cache-age stamp among them) this backend declares no
+        # column for. An unregistered table (no schema) writes every key named.
+        columns = bulk_columns(rows, schema)
+        # DuckDB refuses to touch one key twice in a statement; one by one, the last
+        # write of a key is the one that stays, so the batch keeps only that. keys are
+        # compared as stored, so a UUID and its text are the same key, as they are in L1.
+        latest = list(
+            {
+                tuple(self.serialize_value(row[c], schema.get(c, "VARCHAR")) for c in pk_cols): row for row in rows
+            }.values()
+        )
+        if latest:
+            lists = [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in latest] for c in columns]
+            # values are already serialized to each column's storage form, so the insert's own
+            # conversion types them; the registry's names are logical (VARCHAR_UUID), not SQL
+            select = ", ".join(f"unnest(${i}) AS {quote_identifier(c)}" for i, c in enumerate(columns, 1))
+            sql = f"INSERT OR REPLACE INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) SELECT {select}"
+            connection.execute(sql, lists)
+
+    def replace_all(self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]) -> int:
+        """make a table hold exactly ``rows``, in one transaction: what it held before is gone.
+
+        For an L1 that is a whole copy of its table (:mod:`threetears.core.collections.complete_copy`):
+        a row the source no longer holds must leave the copy, which an upsert never does. A
+        failure rolls back, so the table keeps what it held. Rows repeating a key keep the last.
+
+        :param table: a table this backend created
+        :ptype table: str
+        :param rows: every row the table is to hold, each keyed by column name
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: how many rows were given
+        :rtype: int
+        :raises ValueError: when the table is not one this backend created
+        """
+        if table not in self._schema_info:
+            raise ValueError(f"unknown table {table!r}: replace_all fills tables this backend created")
+        with self._db_lock:
+            committed = False
+            self._db.execute("BEGIN TRANSACTION")
+            try:
+                self._db.execute(f"DELETE FROM {quote_identifier(table)}")
+                self._insert_rows(self._db, table, rows, primary_key)
+                self._db.execute("COMMIT")
+                committed = True
+            finally:
+                if not committed:
+                    self._db.execute("ROLLBACK")
+        log.info("replaced an L1 table whole", extra={"extra_data": {"table": table, "rows": len(rows)}})
+        return len(rows)
+
+    def stored_keys(self, table: str, key: Sequence[str]) -> list[tuple[Any, ...]]:
+        """every row's key as this backend stores it: the form :meth:`serialize_value` writes.
+
+        :param table: the table
+        :ptype table: str
+        :param key: the key's columns, in order
+        :ptype key: Sequence[str]
+        :return: one tuple of stored values per row, in no particular order
+        :rtype: list[tuple[Any, ...]]
+        """
+        columns = ", ".join(quote_identifier(column) for column in key)
+        with self._db_lock:
+            rows = self._db.execute(f"SELECT {columns} FROM {quote_identifier(table)}").fetchall()
+        return [tuple(row) for row in rows]
+
+    def load_parquet(self, table: str, path: str | Path, *, row_number_column: str | None = None) -> int:
+        """load a Parquet file into a table this backend created, in one statement.
+
+        DuckDB reads Parquet natively, so this is the fast path for an analytic
+        table filled from a file: the file's columns that the table declares are
+        loaded and the rest are ignored; table columns the file lacks stay null. A file
+        repeating a key is refused by DuckDB (one statement cannot write a key twice),
+        unlike ``upsert_many``, which keeps a batch's last row per key.
+
+        :param table: the destination table
+        :ptype table: str
+        :param path: the Parquet file
+        :ptype path: str | Path
+        :param row_number_column: a table column to fill with each row's position
+            (from 0), as a key for files that carry none
+        :ptype row_number_column: str | None
+        :return: how many rows the file held
+        :rtype: int
+        :raises ValueError: when the table is not one this backend created
+        """
+        schema = self._schema_info.get(table)
+        if schema is None:
+            raise ValueError(f"unknown table {table!r}: load_parquet fills tables this backend created")
+        with self._db_lock:
+            in_file = {
+                row[0] for row in self._db.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
+            }
+            columns = [c for c in schema if c in in_file and c != row_number_column]
+            selects = [quote_identifier(c) for c in columns]
+            if row_number_column is not None:
+                columns.insert(0, row_number_column)
+                selects.insert(0, "row_number() OVER () - 1")
+            self._db.execute(
+                f"INSERT OR REPLACE INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) "
+                f"SELECT {', '.join(selects)} FROM read_parquet(?)",
+                [str(path)],
+            )
+            (count,) = self._db.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()
+        log.info(
+            "loaded a Parquet file into an L1 table",
+            extra={"extra_data": {"table": table, "rows": count, "columns": len(columns)}},
+        )
+        return int(count)
+
+    def column_types(self, table: str) -> Mapping[str, str]:
+        """the type codes this backend reads and writes a table's columns by, by column name.
+
+        codes, not SQL types: ``VARCHAR_JSON`` is a VARCHAR column holding JSON, for one.
+
+        :param table: the table
+        :ptype table: str
+        :return: each column's type code (empty for a table it does not know)
+        :rtype: Mapping[str, str]
+        """
+        return MappingProxyType(dict(self._schema_info.get(table, {})))
 
     def select_by_id(
         self,
@@ -202,8 +348,8 @@ class DuckDBBackend:
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._pk_values(entity_id, pk_cols)
         select_clause = build_select_clause(self._schema_info.get(table), table, columns)
-        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
-        sql = f"SELECT {select_clause} FROM {table} WHERE {where_clause}"
+        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {where_clause}"
         with self._db_lock:
             result = self._db.execute(sql, list(pk_vals))
             result_columns = [desc[0] for desc in result.description]
@@ -256,12 +402,12 @@ class DuckDBBackend:
         pk_cols = self._pk_columns(primary_key)
         if len(pk_cols) == 1:
             placeholders = ", ".join(["?" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
+            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {quote_identifier(pk_cols[0])} IN ({placeholders})"
             params: list[Any] = list(entity_ids)
         else:
-            per_key = " AND ".join(f"{c} = ?" for c in pk_cols)
+            per_key = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
             disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {table} WHERE {disjunct}"
+            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {disjunct}"
             params = []
             for eid in entity_ids:
                 params.extend(self._pk_values(eid, pk_cols))
@@ -290,8 +436,8 @@ class DuckDBBackend:
         """
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._pk_values(entity_id, pk_cols)
-        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
-        sql = f"DELETE FROM {table} WHERE {where_clause}"
+        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
         with self._db_lock:
             self._db.execute(sql, list(pk_vals))
 
@@ -417,14 +563,14 @@ class DuckDBBackend:
                 nullable = " NOT NULL"
                 if not is_composite_pk:
                     primary = " PRIMARY KEY"
-            columns.append(f'"{column.name}" {ddl_type}{nullable}{primary}')
+            columns.append(f"{quote_identifier(column.name)} {ddl_type}{nullable}{primary}")
 
         if is_composite_pk:
-            pk_clause = ", ".join(f'"{c}"' for c in pk_cols)
+            pk_clause = ", ".join(quote_identifier(c) for c in pk_cols)
             columns.append(f"PRIMARY KEY ({pk_clause})")
 
         columns_sql = ", ".join(columns)
-        return f"CREATE TABLE IF NOT EXISTS {table.name} ({columns_sql})"
+        return f"CREATE TABLE IF NOT EXISTS {quote_identifier(table.name)} ({columns_sql})"
 
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:

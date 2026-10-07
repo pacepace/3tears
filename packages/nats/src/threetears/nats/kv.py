@@ -87,6 +87,7 @@ __all__ = [
     "RECONCILED_KV_STREAM_FIELDS",
     "REQUESTABLE_KV_STREAM_FIELDS",
     "KvDeclaring",
+    "KvDeclaringClient",
     "KvRestoredHook",
     "KvStreamOpening",
     "KvTimings",
@@ -2641,6 +2642,16 @@ class KvDeclaring(Protocol):
         :raises KvConfigMismatch: if ``create_if_missing`` is ``False`` and the live bucket differs
         """
         ...
+
+
+@runtime_checkable
+class KvDeclaringClient(KvCapable, KvDeclaring, Protocol):
+    """A client that can both open and DECLARE KV buckets: what a bucket's owner needs.
+
+    The union of the two slices, for a consumer that declares its bucket and also opens it, such
+    as :class:`threetears.core.coordination.ReplayGuard`. :class:`NatsClient` and the testing fake
+    satisfy it.
+    """
 
 
 @runtime_checkable

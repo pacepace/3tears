@@ -21,6 +21,9 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.geo.features import FeatureCache
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
 
+#: the tile source these caches serve
+SCOPE = "ds_test"
+
 
 async def _empty_loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
     return []
@@ -42,7 +45,7 @@ def cache(request: pytest.FixtureRequest) -> FeatureCache:
     """
     metadata = MetaData()
     Table(
-        "geo_features",
+        f"geo_features_{SCOPE}",
         metadata,
         SAColumn("layer", String, primary_key=True),
         SAColumn("source_version", Integer, primary_key=True),
@@ -61,6 +64,7 @@ def cache(request: pytest.FixtureRequest) -> FeatureCache:
         loader=_empty_loader,
         bounds_of=_row_bounds,
         feature_id_column="feature_id",
+        cache_scope=SCOPE,
     )
 
 
@@ -161,6 +165,7 @@ class TestWithoutL1:
             loader=_empty_loader,
             bounds_of=_row_bounds,
             feature_id_column="feature_id",
+            cache_scope=SCOPE,
         )
         cache.index_feature("tracts", 1, "x", BoundingBox(-1, -1, 1, 1))
         assert cache.indexed_keys_in_bbox("tracts", 1, BoundingBox(-1, -1, 1, 1)) == []
@@ -184,7 +189,7 @@ class TestChunkCoverage:
 
         metadata = MetaData()
         Table(
-            "geo_features",
+            f"geo_features_{SCOPE}",
             metadata,
             SAColumn("layer", String, primary_key=True),
             SAColumn("source_version", Integer, primary_key=True),
@@ -202,6 +207,7 @@ class TestChunkCoverage:
             loader=_loader,
             bounds_of=_row_bounds,
             feature_id_column="feature_id",
+            cache_scope=SCOPE,
         )
         return cache, calls
 

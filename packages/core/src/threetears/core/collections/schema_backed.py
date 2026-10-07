@@ -34,13 +34,13 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 
-from threetears.core.backends.protocol import DurableStore, OrderedDurableStore
+from threetears.core.backends.protocol import BulkDeletingStore, BulkDurableStore, DurableStore, OrderedDurableStore
 from threetears.core.backends.schema_sql import (
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
@@ -48,8 +48,10 @@ from threetears.core.backends.schema_sql import (
     json_default as _json_default,
 )
 from threetears.core.collections.base import BaseCollection, EntityT
+from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.l2_order import L2_EPOCH_COLUMN, L2_ORDER_COLUMNS, L2_REVISION_COLUMN
+from threetears.core.entities.base import BaseEntity
 from threetears.observe import get_logger
 
 __all__ = [
@@ -76,6 +78,7 @@ __all__ = [
     "TableSchema",
     "UUID_TYPE",
     "VECTOR_TYPE",
+    "collection_for_schema",
     "l2_order_columns",
     "spans_partitions",
 ]
@@ -1858,6 +1861,179 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         return await store.fetch_one(self.schema.name, pk)
 
+    #: the most rows one bulk statement writes: well inside a broker's statement timeout for a
+    #: row of a few dozen columns
+    BULK_MAX_ROWS: ClassVar[int] = 1000
+
+    #: the most JSON bytes of parameters one bulk statement carries: under a NATS deployment's
+    #: default 1 MiB message, with room for the request around them
+    BULK_MAX_BYTES: ClassVar[int] = 768 * 1024
+
+    async def save_rows(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        conn: Any,
+        max_rows: int | None = None,
+        max_bytes: int | None = None,
+    ) -> int:
+        """upsert many rows on a caller's transaction, through the collection's durable store.
+
+        For a load, where :meth:`save_entity` would make a round trip per row. The rows go to the
+        store's :meth:`~threetears.core.backends.protocol.BulkDurableStore.upsert_many` when it has
+        one -- a SQL store writes one ``INSERT ... VALUES (...), (...) ON CONFLICT`` per batch, each
+        batch within ``max_rows`` rows, the bind-parameter limit and ``max_bytes`` of parameters --
+        and a row at a time through ``upsert`` when it has not.
+
+        **On the caller's transaction only, like** ``save_entity(conn=...)``: the rows are final
+        when the caller's :class:`CallerTransaction` commits, and a write that fails fails the
+        transaction, so every batch rolls back with it. Each row's key leaves this process's L1 now
+        and is enrolled; when the transaction ends the keys are settled together, one call for the
+        collection (:meth:`~threetears.core.collections.base.BaseCollection.invalidate_cache_many`):
+        a collection with no bus does no L2 or broadcast work at all, and one with a bus settles its
+        keys side by side rather than one after another. The cost that remains with a bus is two
+        messages a key (its L2 delete and its broadcast), because the broadcast's envelope names one
+        entity and a peer of an older release reads no other shape.
+
+        Each row is stamped ``date_created`` and ``date_updated`` (when the schema has them) with
+        the write's time; an upsert of a row already held keeps its ``date_created``, an immutable
+        column the conflict clause does not set. No CAS fence applies: a bulk write replaces.
+
+        :param rows: the rows, each keyed by column; a nullable column may be absent
+        :ptype rows: list[dict[str, Any]]
+        :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
+        :ptype conn: Any
+        :param max_rows: the most rows one statement writes; :attr:`BULK_MAX_ROWS` when None
+        :ptype max_rows: int | None
+        :param max_bytes: the most JSON bytes of parameters one statement carries;
+            :attr:`BULK_MAX_BYTES` when None
+        :ptype max_bytes: int | None
+        :return: how many rows were submitted: every row given, whether the conflict clause updated
+            a row already held, left it as it was (``on_conflict="ignore"``) or raised
+        :rtype: int
+        :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the
+            collection has no durable store, caches absences, defers its L3 writes or fences with a
+            null-safe CAS; when two rows share a key (one statement cannot upsert a key twice); when
+            the rows disagree on which server-default columns they supply
+        :raises KeyError: when a row lacks a key column, naming the table and the column
+        """
+        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.save_rows")
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(f"{type(self).__name__}.save_rows: {self.table_name} has no durable store to write to")
+        if self._negative_cache_writes_advance or self._defers_l3_writes or self.schema.cas_null_safe:
+            raise ValueError(
+                f"{type(self).__name__}.save_rows: a bulk upsert cannot keep this collection's write "
+                f"contract (it caches absences, defers its L3 writes, or fences with a null-safe CAS)"
+            )
+        now = datetime.now(UTC)
+        stamps = {name: now for name in ("date_created", "date_updated") if self.schema.get_column(name) is not None}
+        stamped: list[dict[str, Any]] = []
+        keys: list[Any] = []
+        for index, row in enumerate(rows):
+            missing = [name for name in self.schema.pk_columns if name not in row]
+            if missing:
+                raise KeyError(f"{self.table_name}.save_rows: row {index} has no key column {missing[0]!r}")
+            data = {**row, **stamps}
+            stamped.append(data)
+            key = tuple(data[name] for name in self.schema.pk_columns)
+            keys.append(key if len(key) > 1 else key[0])
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"{type(self).__name__}.save_rows: two rows share a key; one statement upserts a key once")
+        for key in keys:
+            # enrolled before the write, so a write whose outcome is unknown is settled with the rest
+            transaction.enroll(self, key)
+            self._evict_l1(key)
+        written = 0
+        if stamped and isinstance(store, BulkDurableStore):
+            written = await store.upsert_many(
+                self.table_name,
+                stamped,
+                max_rows=max_rows or self.BULK_MAX_ROWS,
+                max_bytes=max_bytes or self.BULK_MAX_BYTES,
+                conn=conn,
+            )
+        elif stamped:
+            # a store that saves one row at a time: still one transaction, a write per row
+            for data in stamped:
+                await store.upsert(
+                    self.table_name, data, pk=self.schema.pk_columns, on_conflict=self.schema.on_conflict, conn=conn
+                )
+                written += 1
+        log.debug(
+            "bulk upsert written on the caller's transaction",
+            extra={"extra_data": {"table": self.table_name, "rows": written}},
+        )
+        return written
+
+    async def delete_rows(
+        self,
+        keys: Sequence[Sequence[Any]],
+        *,
+        conn: Any,
+        max_rows: int | None = None,
+    ) -> int:
+        """delete many rows by key on a caller's transaction, through the collection's durable store.
+
+        The other half of :meth:`save_rows`, for a load that makes a table match a source: the rows
+        the source no longer holds leave in a few multi-row ``DELETE`` statements, not one round trip
+        each. The store's :meth:`~threetears.core.backends.protocol.BulkDeletingStore.delete_many`
+        deletes them when it has one, and a key at a time through ``delete`` when it has not.
+
+        **On the caller's transaction only**, as :meth:`save_rows` is: the rows are gone when the
+        caller's :class:`CallerTransaction` commits, a failing delete fails the transaction, and every
+        key leaves this process's L1 now and is settled with the rest when the transaction ends.
+
+        :param keys: each row's key values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
+        :ptype conn: Any
+        :param max_rows: the most keys one statement names; :attr:`BULK_MAX_ROWS` when None
+        :ptype max_rows: int | None
+        :return: how many keys were named (a key no row holds is not an error)
+        :rtype: int
+        :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the collection
+            has no durable store, caches absences or defers its L3 writes; when a key is not as wide
+            as the table's key
+        """
+        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete_rows")
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(
+                f"{type(self).__name__}.delete_rows: {self.table_name} has no durable store to delete from"
+            )
+        if self._negative_cache_writes_advance or self._defers_l3_writes:
+            raise ValueError(
+                f"{type(self).__name__}.delete_rows: a bulk delete cannot keep this collection's write "
+                f"contract (it caches absences or defers its L3 writes)"
+            )
+        width = len(self.schema.pk_columns)
+        named = [tuple(key) for key in keys]
+        wrong = [key for key in named if len(key) != width]
+        if wrong:
+            raise ValueError(
+                f"{self.table_name}.delete_rows: key {wrong[0]!r} has {len(wrong[0])} values where the key has {width}"
+            )
+        for key in named:
+            entity_key = key if width > 1 else key[0]
+            # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
+            transaction.enroll(self, entity_key)
+            self._evict_l1(entity_key)
+        deleted = 0
+        if named and isinstance(store, BulkDeletingStore):
+            deleted = await store.delete_many(
+                self.table_name, named, max_rows=max_rows or self.BULK_MAX_ROWS, conn=conn
+            )
+        else:
+            for key in named:
+                await store.delete(self.table_name, dict(zip(self.schema.pk_columns, key, strict=True)), conn=conn)
+                deleted += 1
+        log.debug(
+            "bulk delete written on the caller's transaction",
+            extra={"extra_data": {"table": self.table_name, "rows": deleted}},
+        )
+        return deleted
+
     async def save_to_store(
         self,
         data: dict[str, Any],
@@ -1960,3 +2136,69 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: dict[str, Any]
         """
         return _coerce_row_fn(self.schema, row)
+
+
+def collection_for_schema(
+    schema: TableSchema, *, entity_class: type[BaseEntity] | None = None
+) -> type[SchemaBackedCollection[Any]]:
+    """a collection class over ``schema``, for a table declared as data rather than as a class.
+
+    A pod whose tables come from a catalogue (one per map layer, one per warehouse table it
+    mirrors) builds each one's collection from its schema instead of writing a class per
+    table. Build each class once and keep it: every call makes a new class.
+
+    :param schema: the table
+    :ptype schema: TableSchema
+    :param entity_class: the entities the collection builds; for a single-column key, a plain
+        :class:`~threetears.core.entities.base.BaseEntity` keyed on that column when None. A
+        composite key needs one: an entity's ``id`` names its bare row id, not the column the key
+        leads with, and which column that is only the caller knows
+    :ptype entity_class: type[BaseEntity] | None
+    :return: a :class:`SchemaBackedCollection` subclass over ``schema``
+    :rtype: type[SchemaBackedCollection[Any]]
+    :raises ValueError: for a composite key with no ``entity_class``
+    """
+    entity = entity_class
+    if entity is None and len(schema.pk_columns) > 1:
+        raise ValueError(
+            f"{schema.name}: a composite key {schema.pk_columns} needs an entity_class naming the row's "
+            f"own id as its primary_key_field; the first key column is not guessed"
+        )
+    if entity is None:
+        entity = type(
+            f"{schema.name}_row",
+            (BaseEntity,),
+            {
+                "__doc__": f"one row of {schema.name}.",
+                "primary_key_field": schema.pk_columns[0],
+            },
+        )
+    entity_type: type[BaseEntity] = entity
+
+    class _SchemaCollection(SchemaBackedCollection[Any]):
+        """one schema's rows."""
+
+        primary_key_column: str | tuple[str, ...] = schema.primary_key
+
+        @property
+        def table_name(self) -> str:
+            """the schema's table.
+
+            :return: the table name
+            :rtype: str
+            """
+            return schema.name
+
+        @property
+        def entity_class(self) -> type[Any]:
+            """the entity class.
+
+            :return: the entity class
+            :rtype: type[Any]
+            """
+            return entity_type
+
+    _SchemaCollection.schema = schema
+    _SchemaCollection.__name__ = f"SchemaCollection[{schema.name}]"
+    _SchemaCollection.__qualname__ = _SchemaCollection.__name__
+    return _SchemaCollection

@@ -188,3 +188,30 @@ class TestDatasourceIntegration:
         assert tracts.cache is CacheClassConfig.PUBLIC
         assert locations.cache is CacheClassConfig.PRIVATE
         assert locations.geometry.kind is GeometryKind.LONLAT
+
+
+class TestCheckAgainstTables:
+    """a geo block declared beside its tables names only tables and columns they declare."""
+
+    COLUMNS = {"geoid", "geometry_wkb", "source_version", "bbox_minx", "bbox_miny", "bbox_maxx", "bbox_maxy", "name"}
+
+    def test_a_layer_reading_declared_columns_passes(self) -> None:
+        geo = GeoConfig.model_validate({"layers": [_layer(features={"attributes": ["name"]})]})
+        geo.check_against_tables({"census_tracts": self.COLUMNS})
+
+    def test_a_layer_naming_an_undeclared_table_is_refused(self) -> None:
+        geo = GeoConfig.model_validate({"layers": [_layer(table="tracts_2020")]})
+        with pytest.raises(ValueError, match="reads table 'tracts_2020', which is not declared"):
+            geo.check_against_tables({"census_tracts": self.COLUMNS})
+
+    def test_a_layer_reading_an_undeclared_column_is_refused(self) -> None:
+        # the band's attribute and the rank column are reads too, not only the geometry
+        geo = GeoConfig.model_validate({"layers": [_layer(features={"attributes": ["population"], "rank_by": "area"})]})
+        with pytest.raises(ValueError, match="reads column\\(s\\) area, population that table"):
+            geo.check_against_tables({"census_tracts": self.COLUMNS})
+
+    def test_the_columns_a_layer_reads(self) -> None:
+        layer = GeoLayerConfig.model_validate(
+            _layer(aggregate={"rollup_by": "county", "measures": {"votes": "sum"}}, features={"attributes": ["name"]})
+        )
+        assert layer.columns_read() == self.COLUMNS | {"county", "votes"}

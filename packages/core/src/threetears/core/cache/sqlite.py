@@ -14,17 +14,20 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any
 
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.cache.base import (
     CACHED_AT_COLUMN,
     TABLES_WITHOUT_CACHE_STAMP,
-    entry_is_fresh,
     build_select_clause,
+    bulk_columns,
+    entry_is_fresh,
+    quote_identifier,
 )
 from threetears.observe import counter, get_logger
 
@@ -286,61 +289,69 @@ class SQLiteBackend:
         :return: nothing
         :rtype: None
         """
+        self.upsert_many(table, [data], primary_key)
+
+    def upsert_many(
+        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...] = "id"
+    ) -> int:
+        """insert or update many rows in one transaction, as ``upsert`` would one by one.
+
+        :param table: destination table name
+        :ptype table: str
+        :param rows: the rows, each keyed by column name, every pk column present
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: how many rows were written
+        :rtype: int
+        :raises ValueError: when the rows do not all name the same columns
+        """
         pk_cols = self._pk_columns(primary_key)
         schema = self._schema_info.get(table, {})
-        # Filter ``data`` to columns the L1 table actually has. The
-        # framework's ``BaseCollection.save_entity`` unconditionally
-        # injects ``date_created`` / ``date_updated`` for new entities,
-        # but not every entity's table carries those columns -- e.g.
-        # ``agent_skill_invocations`` uses ``invoked_at`` and has neither
-        # timestamp column. Writing an unknown column to SQLite raises
-        # ``OperationalError: table X has no column named date_created``.
-        # The L3 path already projects to declared columns
-        # (``save_to_store``); mirror that here so the L1 write never
-        # diverges from the table shape. When the schema is unknown
-        # (table not registered via ``_generate_create_table``), fall
-        # back to writing every key so existing behaviour is preserved.
-        if schema:
-            columns = [c for c in data if c in schema]
-        else:
-            columns = list(data.keys())
-        placeholders = ", ".join(["?" for _ in columns])
-        column_names = ", ".join(columns)
+        # Only the table's own columns are written. ``BaseCollection.save_entity``
+        # injects ``date_created`` / ``date_updated`` for new entities, and not every
+        # table carries them (``agent_skill_invocations`` has ``invoked_at`` and
+        # neither); writing an unknown column raises. The L3 path projects to declared
+        # columns too. An unregistered table (no schema) writes every key named.
+        columns = bulk_columns(rows, schema)
+        if rows:
+            # The cache stamp is preserved on absence, and that falls out of the column
+            # filter rather than needing its own branch: a key the caller did not supply
+            # is not in ``columns``, so DO UPDATE SET never names it and the stored value
+            # survives. That matters because reads strip the stamp, so a read-modify-write
+            # caller (the context-item collection touching ``date_accessed``, for one)
+            # hands back a dict without it. Clearing on absence would make an hours-old
+            # row read as locally-authored, and locally-authored rows never expire. A
+            # fresh INSERT leaves it NULL, which is exactly right: that row WAS authored
+            # locally. A table whose every column is its key has nothing to update.
+            update_cols = [c for c in columns if c not in pk_cols]
+            on_conflict = (
+                "DO UPDATE SET "
+                + ", ".join(f"{quote_identifier(c)} = EXCLUDED.{quote_identifier(c)}" for c in update_cols)
+                if update_cols
+                else "DO NOTHING"
+            )
+            sql = (
+                f"INSERT INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+                f"ON CONFLICT ({', '.join(quote_identifier(c) for c in pk_cols)}) {on_conflict}"
+            )
+            values = [tuple(self.serialize_value(row[c], schema.get(c, "TEXT")) for c in columns) for row in rows]
+            self._in_write_transaction(lambda conn: conn.executemany(sql, values))
+        return len(rows)
 
-        values = []
-        for col_name in columns:
-            value = data[col_name]
-            col_type = schema.get(col_name, "TEXT")
-            values.append(self.serialize_value(value, col_type))
+    def column_types(self, table: str) -> Mapping[str, str]:
+        """the type codes this backend reads and writes a table's columns by, by column name.
 
-        # The stamp is preserved on absence, and that falls out of the column
-        # filter above rather than needing its own branch: a key the caller did
-        # not supply is not in ``columns``, so DO UPDATE SET never names it and
-        # the stored value survives. That matters because reads strip the stamp,
-        # so a read-modify-write caller (the context-item collection touching
-        # ``date_accessed``, for one) hands back a dict without it. Clearing on
-        # absence would make an hours-old row read as locally-authored, and
-        # locally-authored rows never expire. A fresh INSERT leaves it NULL,
-        # which is exactly right: that row WAS authored locally.
-        update_cols = [c for c in columns if c not in pk_cols]
-        update_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
-        conflict_clause = ", ".join(pk_cols)
+        codes, not SQL types: ``TEXT_UUID`` is a TEXT column holding UUIDs, for one.
+        the backend's own cache-stamp column is not one of the table's.
 
-        sql = f"""
-            INSERT INTO {table} ({column_names})
-            VALUES ({placeholders})
-            ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}
+        :param table: the table
+        :ptype table: str
+        :return: each column's type code (empty for a table it does not know)
+        :rtype: Mapping[str, str]
         """
-        values_tuple = tuple(values)
-
-        conn = self.get_connection()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(sql, values_tuple)
-            conn.execute("COMMIT")
-        except sqlite3.OperationalError:
-            conn.execute("ROLLBACK")
-            raise
+        schema = self._schema_info.get(table, {})
+        return MappingProxyType({column: code for column, code in schema.items() if column != CACHED_AT_COLUMN})
 
     def select_by_id(
         self,
@@ -383,8 +394,8 @@ class SQLiteBackend:
         select_clause = build_select_clause(
             self._schema_info.get(table), table, self._with_stamp(table, columns, max_age_seconds)
         )
-        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
-        sql = f"SELECT {select_clause} FROM {table} WHERE {where_clause}"
+        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {where_clause}"
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, pk_vals)
@@ -443,14 +454,14 @@ class SQLiteBackend:
         pk_cols = self._pk_columns(primary_key)
         if len(pk_cols) == 1:
             placeholders = ", ".join(["?" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
+            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {quote_identifier(pk_cols[0])} IN ({placeholders})"
             params: tuple[Any, ...] = tuple(
                 self._serialize_pk_values(table, pk_cols, self._pk_values(eid, pk_cols))[0] for eid in entity_ids
             )
         else:
-            per_key = " AND ".join(f"{c} = ?" for c in pk_cols)
+            per_key = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
             disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
-            sql = f"SELECT {select_clause} FROM {table} WHERE {disjunct}"
+            sql = f"SELECT {select_clause} FROM {quote_identifier(table)} WHERE {disjunct}"
             flat: list[Any] = []
             for eid in entity_ids:
                 flat.extend(self._serialize_pk_values(table, pk_cols, self._pk_values(eid, pk_cols)))
@@ -504,15 +515,37 @@ class SQLiteBackend:
         """
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
-        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
-        sql = f"DELETE FROM {table} WHERE {where_clause}"
+        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
+        self._in_write_transaction(lambda conn: conn.execute(sql, pk_vals))
+
+    def _in_write_transaction(self, write: Callable[[Any], object]) -> None:
+        """run one write in an immediate transaction on this thread's connection.
+
+        Any failure inside rolls the transaction back before it propagates, so a bad
+        row or a constraint never leaves ``BEGIN IMMEDIATE`` open holding the write
+        lock for the thread's next write. ``BEGIN`` itself sits outside: a busy lock
+        there opened nothing to roll back, and its ``OperationalError`` propagates as
+        it is (callers such as the max-age drop rely on that).
+
+        :param write: issues the write's statements on the connection
+        :ptype write: Callable[[Any], object]
+        :return: nothing
+        :rtype: None
+        """
         conn = self.get_connection()
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(sql, pk_vals)
+            write(conn)
             conn.execute("COMMIT")
-        except sqlite3.OperationalError:
-            conn.execute("ROLLBACK")
+        except (
+            BaseException
+        ):  # prawduct:allow prawduct/broad-except -- rolls back whatever failed, then re-raises it unchanged
+            # SQLite rolls back by itself on some failures (a full disk, an I/O error, an
+            # interrupt), and a ROLLBACK then raises "no transaction is active" in place of
+            # the error that caused it
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
 
     def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
@@ -660,7 +693,7 @@ class SQLiteBackend:
                 nullable = " NOT NULL"
                 if not is_composite_pk:
                     primary = " PRIMARY KEY"
-            columns.append(f'"{column.name}" {ddl_type}{nullable}{primary}')
+            columns.append(f"{quote_identifier(column.name)} {ddl_type}{nullable}{primary}")
 
         if self._stamps_cache_age(table.name):
             if any(col.name == CACHED_AT_COLUMN for col in table.columns):
@@ -668,14 +701,14 @@ class SQLiteBackend:
                     f"table {table.name!r} declares {CACHED_AT_COLUMN!r}, which is reserved "
                     f"for the L1 cache-age stamp and is injected by the backend",
                 )
-            columns.append(f'"{CACHED_AT_COLUMN}" REAL')
+            columns.append(f"{quote_identifier(CACHED_AT_COLUMN)} REAL")
 
         if is_composite_pk:
-            pk_clause = ", ".join(f'"{c}"' for c in pk_cols)
+            pk_clause = ", ".join(quote_identifier(c) for c in pk_cols)
             columns.append(f"PRIMARY KEY ({pk_clause})")
 
         columns_sql = ", ".join(columns)
-        return f"CREATE TABLE IF NOT EXISTS {table.name} ({columns_sql})"
+        return f"CREATE TABLE IF NOT EXISTS {quote_identifier(table.name)} ({columns_sql})"
 
     @staticmethod
     def _stamps_cache_age(table: str) -> bool:

@@ -27,7 +27,7 @@ import pytest
 from threetears.datasources.introspection import compute_column_hash
 
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     PostgresConnectionConfig,
 )
 from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
@@ -368,6 +368,41 @@ class TestStreaming:
         finally:
             await driver.close()
 
+    @pytest.mark.asyncio
+    async def test_fetch_at_most_reads_the_first_rows_in_order_and_holds_no_more(
+        self,
+        seeded_schema: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """a statement with no LIMIT of its own over 10k rows: 3 rows read, in order, and memory far below a full read."""
+        db_url, schema = seeded_schema
+        config = _make_config_for_container(db_url, monkeypatch)
+        driver = AsyncpgDriver(config)
+        try:
+            await driver.execute(f'CREATE TABLE "{schema}"."bounded" (id integer, payload text)')
+            payload = "x" * 200
+            values = ", ".join(f"({i}, '{payload}')" for i in range(10000))
+            await driver.execute(f'INSERT INTO "{schema}"."bounded" (id, payload) VALUES {values}')
+            statement = f'SELECT id, payload FROM "{schema}"."bounded" WHERE id >= $1 ORDER BY id DESC'
+
+            tracemalloc.start()
+            everything = await driver.fetch(statement, 0, timeout_seconds=30)
+            _, fetch_peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            del everything
+
+            tracemalloc.start()
+            rows = await driver.fetch_at_most(statement, 0, max_rows=3, timeout_seconds=30)
+            _, bounded_peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+
+            assert [row["id"] for row in rows] == [9999, 9998, 9997]
+            assert bounded_peak < fetch_peak * 0.1, (
+                f"bounded read peak {bounded_peak} against a full read's {fetch_peak}"
+            )
+        finally:
+            await driver.close()
+
 
 # ---------------------------------------------------------------------------
 # Tier-2 hash byte-equivalence
@@ -498,7 +533,7 @@ class TestBorrowedPoolLive:
         )
         assert pool is not None
         try:
-            config = AgentInternalConnectionConfig(
+            config = BorrowedPoolConnectionConfig(
                 datasource_type=DataSourceType.AGENT_INTERNAL,
                 schema_name=schema,
             )
@@ -551,7 +586,7 @@ async def test_borrowed_pool_microbenchmark_under_one_ms(
     )
     assert pool is not None
     try:
-        config = AgentInternalConnectionConfig(
+        config = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name=schema,
         )

@@ -136,7 +136,7 @@ import dataclasses
 import functools
 import socket
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 try:
@@ -159,12 +159,13 @@ if TYPE_CHECKING:
     RedshiftConnection = Any
     RedshiftCursor = Any
 
+from threetears.core.fingerprint import relation_key_expression
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._redshift_connector_internals import connection_socket
 from threetears.datasources.drivers.sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers.sql_fragments import (
     translate_placeholders,
-    build_relation_key_expression,
+    build_equality_filter,
     build_set_local_statement_timeout_sql,
     build_set_search_path_sql,
     build_set_statement_timeout_sql,
@@ -178,6 +179,7 @@ from threetears.datasources.drivers.base import (
     Transaction,
     _check_otel_metrics,
     _instrument_cache,
+    check_max_rows,
     observed,
 )
 from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
@@ -232,6 +234,21 @@ WHERE table_schema IN ({placeholders})
 AND table_type = 'BASE TABLE'
 ORDER BY table_schema, table_name
 """.strip()
+
+
+#: the boolean columns of one relation, for the fingerprint: Redshift refuses to cast a boolean to
+#: text, so those columns render through a ``CASE`` instead (``relation_key_expression``). bound
+#: lower-cased: SVV_COLUMNS holds an unquoted name as Redshift folds it (checked on the warehouse,
+#: 2026-10-07: ``Reporting_Prod`` matches nothing, ``reporting_prod`` matches)
+_REDSHIFT_BOOLEAN_COLUMNS_SQL = (
+    "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = %s AND table_name = %s AND data_type = 'boolean'"
+)
+
+#: the same, for a relation named without its schema: the search path decides which table it is
+_REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL = (
+    "SELECT column_name FROM SVV_COLUMNS WHERE table_schema = ANY(current_schemas(false)) "
+    "AND table_name = %s AND data_type = 'boolean'"
+)
 
 
 #: list columns for every table in the schema allow-list. ``is_nullable``
@@ -674,6 +691,26 @@ def _drain_cache_static(
 # ---------------------------------------------------------------------------
 
 
+def _read_boolean_columns(cursor: Any, relation: str) -> frozenset[str]:
+    """the boolean columns of ``relation``, read from ``SVV_COLUMNS`` on an open cursor.
+
+    :param cursor: a cursor on a live connection
+    :ptype cursor: Any
+    :param relation: ``schema.table`` or ``table``, a TRUSTED identifier (bound here, not inlined)
+    :ptype relation: str
+    :return: the names of its boolean columns
+    :rtype: frozenset[str]
+    """
+    # only unquoted identifiers reach here (the request's grammar), and Redshift folds those to
+    # lower case: SVV_COLUMNS holds ``Reporting_Prod`` as ``reporting_prod``
+    schema, _, table = relation.lower().rpartition(".")
+    if schema:
+        cursor.execute(_REDSHIFT_BOOLEAN_COLUMNS_SQL, (schema, table))
+    else:
+        cursor.execute(_REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL, (table,))
+    return frozenset(str(row[0]) for row in cursor.fetchall())
+
+
 class RedshiftDriver(Driver):
     """concrete :class:`Driver` for Amazon Redshift via ``redshift_connector``.
 
@@ -780,6 +817,9 @@ class RedshiftDriver(Driver):
         # manual cleanup pass.
         self._backend_pids: weakref.WeakKeyDictionary[RedshiftConnection, int] = weakref.WeakKeyDictionary()
         self._closed = False
+        # each fingerprinted relation's boolean columns, kept once a fingerprint has used them and
+        # forgotten when one fails, so a relation rebuilt with a column turned boolean is read again
+        self._boolean_columns: dict[str, frozenset[str]] = {}
         # read by :func:`observed` as the ``datasource_name`` attribute
         # on every metric emission. matches the AsyncpgDriver contract.
         self._datasource_name = datasource_name
@@ -1574,8 +1614,9 @@ class RedshiftDriver(Driver):
         sql: str,
         params: tuple[Any, ...],
         timeout_seconds: int | None,
+        max_rows: int | None = None,
     ) -> list[dict[str, Any]]:
-        """run one SELECT on ``conn`` and materialize its rows (sync).
+        """run one SELECT on ``conn`` and materialize its rows (sync), at most ``max_rows`` of them.
 
         shared by :meth:`fetch` and the transaction handle so both
         apply the per-statement timeout the same way.
@@ -1588,6 +1629,8 @@ class RedshiftDriver(Driver):
         :ptype params: tuple[Any, ...]
         :param timeout_seconds: per-statement override, or None
         :ptype timeout_seconds: int | None
+        :param max_rows: the most rows to take off the cursor; every row when None
+        :ptype max_rows: int | None
         :return: list of column-name -> value dicts in row order
         :rtype: list[dict[str, Any]]
         """
@@ -1601,7 +1644,7 @@ class RedshiftDriver(Driver):
                 cursor.execute(sql, params)
             else:
                 cursor.execute(sql)
-            rows = cursor.fetchall()
+            rows = cursor.fetchall() if max_rows is None else cursor.fetchmany(max_rows)
             cols = [c[0] for c in cursor.description]
             result = [dict(zip(cols, row)) for row in rows]
         finally:
@@ -1684,6 +1727,59 @@ class RedshiftDriver(Driver):
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
                 functools.partial(self._fetch_sync, conn, translated, params, timeout_seconds),
+                cancel_cb=conn.close,
+            )
+
+        result: list[dict[str, Any]] = await self._acquire_and_run(
+            _op,
+            timeout_overridden=timeout_seconds is not None,
+        )
+        return result
+
+    @property
+    def concurrent_queries(self) -> int:
+        """the driver's own cap on open connections (``connection_cache_size``).
+
+        :return: the cap
+        :rtype: int
+        """
+        return self._config.connection_cache_size
+
+    @traced
+    @observed(driver_type="redshift")
+    async def fetch_at_most(
+        self, sql: str, *params: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> list[dict[str, Any]]:
+        """run a SELECT and take at most ``max_rows`` rows off its cursor .
+
+        ``redshift_connector`` receives a statement's whole result inside ``execute`` (it has no
+        streaming read), so this bounds the rows turned into the answer, not what crossed the wire:
+        a caller that must bound that too asks the warehouse for no more (a ``LIMIT``), as the hub's
+        responder does wherever the statement takes one.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_rows: the most rows to keep, at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` column-name -> value dicts, in row order
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``max_rows`` is below 1, or ``timeout_seconds`` is not a positive int
+        :raises RuntimeError: if the driver was previously closed
+        """
+        check_max_rows(max_rows)
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+        translated = translate_placeholders(sql, "pyformat")
+
+        async def _op(conn: RedshiftConnection) -> Any:
+            return await self._bridge.to_thread_with_cancel(
+                functools.partial(self._fetch_sync, conn, translated, params, timeout_seconds, max_rows),
                 cancel_cb=conn.close,
             )
 
@@ -2108,7 +2204,9 @@ class RedshiftDriver(Driver):
 
     @traced
     @observed(driver_type="redshift")
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count and fingerprint ``relation`` over ``key``, in one statement.
 
         Redshift turns a hash into a summable number with ``STRTOL``, which
@@ -2122,10 +2220,17 @@ class RedshiftDriver(Driver):
         relation -- and a wrapped sum fingerprints two different relations
         identically, which is the one failure a change-probe must not have.
 
+        Redshift refuses to cast a boolean to text, so the relation's boolean columns are read from
+        ``SVV_COLUMNS`` (on the same connection; kept once a fingerprint has used them, read again
+        after one fails) and rendered through a ``CASE`` as the text Postgres's cast gives; a key may
+        then name any column the relation has.
+
         :param relation: schema-qualified relation name, a TRUSTED identifier
         :ptype relation: str
-        :param key: the ordering columns, TRUSTED identifiers
+        :param key: the columns the digest covers, TRUSTED identifiers
         :ptype key: list[str]
+        :param where: equality filters, column -> value, naming the rows to fingerprint
+        :ptype where: Mapping[str, str] | None
         :return: the relation's current row count and key digest
         :rtype: RelationFingerprint
         :raises ValueError: when ``key`` is empty
@@ -2133,18 +2238,36 @@ class RedshiftDriver(Driver):
         """
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
-        key_expression = build_relation_key_expression(key)
-        sql = (
-            "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
-            "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
-            f"FROM (SELECT {key_expression} AS k FROM {relation}) AS fingerprint_source"
-        )
+        # refuses an empty key here, before a connection is taken
+        relation_key_expression(key)
+        filters, values = build_equality_filter(where)
+        known = self._boolean_columns.get(relation)
 
         def _do_sync(conn: RedshiftConnection) -> RelationFingerprint:
             cursor = conn.cursor()
             try:
-                cursor.execute(sql)
-                row = cursor.fetchone()
+                booleans = known if known is not None else _read_boolean_columns(cursor, relation)
+                sql = translate_placeholders(
+                    "SELECT COUNT(*) AS row_count, "  # noqa: S608 - relation and key are trusted identifiers
+                    "COALESCE(SUM(CAST(STRTOL(SUBSTRING(MD5(k), 1, 8), 16) AS DECIMAL(38,0))), 0) AS digest "
+                    f"FROM (SELECT {relation_key_expression(key, boolean_columns=booleans)} AS k "
+                    f"FROM {relation}{filters}) AS fingerprint_source",
+                    "pyformat",
+                )
+                try:
+                    if values:
+                        cursor.execute(sql, values)
+                    else:
+                        cursor.execute(sql)
+                    row = cursor.fetchone()
+                except (
+                    Exception
+                ):  # prawduct:allow prawduct/broad-except -- forgets the column answer, then re-raises unchanged
+                    # the answer may be why it failed (a column turned boolean): read it again next time
+                    self._boolean_columns.pop(relation, None)
+                    raise
+                # kept only once it has carried a fingerprint through
+                self._boolean_columns[relation] = booleans
                 return RelationFingerprint(row_count=int(row[0]), digest=str(row[1]))
             finally:
                 cursor.close()

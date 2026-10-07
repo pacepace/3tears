@@ -29,6 +29,7 @@ under the name this package has always used. one enum object, two names.
 from __future__ import annotations
 
 from enum import StrEnum
+from collections.abc import Collection, Mapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -232,6 +233,26 @@ class GeoLayerConfig(BaseModel):
             raise ValueError(f"layer {self.name!r}: bbox_columns must name four distinct columns")
         return self
 
+    def columns_read(self) -> frozenset[str]:
+        """every column of its table the layer reads.
+
+        :return: the feature id, geometry, version and bounding-box columns, and
+            the columns its bands carry, rank by or roll up by
+        :rtype: frozenset[str]
+        """
+        geometry = (self.geometry.column, self.geometry.longitude, self.geometry.latitude)
+        named = (
+            self.feature_id,
+            *geometry,
+            self.version_column,
+            *self.bbox_columns,
+            *self.features.attributes,
+            self.features.rank_by,
+            self.aggregate.rollup_by,
+            *self.aggregate.measures,
+        )
+        return frozenset(column for column in named if column)
+
 
 class GeoConfig(BaseModel):
     """the ``geo:`` block on a datasource definition.
@@ -260,6 +281,29 @@ class GeoConfig(BaseModel):
         if duplicates:
             raise ValueError(f"duplicate geo layer name(s): {', '.join(sorted(duplicates))}")
         return self
+
+    def check_against_tables(self, tables: Mapping[str, Collection[str]]) -> None:
+        """refuse a layer naming a table, or a column of it, that the declaring tables lack.
+
+        a geo block declared beside the tables it reads (a tool pod's data
+        section) is checked here, the one copy the SDK and the Hub both run, so
+        the two refuse the same declarations with the same words.
+
+        :param tables: the declared tables' column names, by table name
+        :ptype tables: Mapping[str, Collection[str]]
+        :return: nothing
+        :rtype: None
+        :raises ValueError: naming the first layer, table or column that is missing
+        """
+        for layer in self.layers:
+            if layer.table not in tables:
+                raise ValueError(f"geo layer {layer.name!r} reads table {layer.table!r}, which is not declared")
+            missing = sorted(layer.columns_read() - set(tables[layer.table]))
+            if missing:
+                raise ValueError(
+                    f"geo layer {layer.name!r} reads column(s) {', '.join(missing)} that table "
+                    f"{layer.table!r} does not declare"
+                )
 
     def layer(self, name: str) -> GeoLayerConfig | None:
         """return a declared layer by name.

@@ -1,14 +1,19 @@
 """epoch client -- atomic counter bump plus best-effort NATS broadcast.
 
 :class:`EpochClient` is the publish-side companion to
-:class:`~threetears.epoch.listener.EpochListener`. it owns one pair of
-operations over whichever substrate the subject belongs to:
+:class:`~threetears.epoch.listener.EpochListener`. it owns the read and the
+bump over whichever substrate the subject belongs to, and two operations
+that only a durable subject has:
 
 - :meth:`current` -- read the latest epoch for a subject (used by
   listeners on cold start and by periodic catch-up ticks)
 - :meth:`bump` -- atomically increment the epoch for a subject, then
   publish an :class:`~threetears.epoch.wire.EpochBumpMessage` on the
   same subject so sibling pods notice immediately
+- :meth:`advance_to` -- move a durable subject forward to a target, never
+  back, then broadcast as :meth:`bump` does
+- :meth:`versions` -- read a durable subject's epoch and the one its
+  latest move replaced
 
 **two substrates, routed by what the number means.** an epoch is a
 coherence signal, not a durable fact, so the counter for one lives in a
@@ -37,6 +42,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
 from threetears.core.coordination.distributed_counter import DistributedCounter
@@ -50,6 +56,7 @@ from threetears.observe import get_logger, traced
 from threetears.epoch.wire import EpochBumpMessage
 
 __all__ = [
+    "DurableEpoch",
     "EpochClient",
     "PoolLike",
 ]
@@ -238,6 +245,9 @@ _BUMP_SQL = (
     "INSERT INTO config_epochs (subject_path, epoch, payload) "
     "VALUES ($1, 1, $2::jsonb) "
     "ON CONFLICT (subject_path) DO UPDATE SET "
+    # recorded on every move, so a subject bumped one at a time answers its previous epoch
+    # the same way one advanced past a gap does (SET reads the old row)
+    "previous_epoch = config_epochs.epoch, "
     "epoch = config_epochs.epoch + 1, "
     "payload = EXCLUDED.payload, "
     "date_updated = now() "
@@ -245,6 +255,45 @@ _BUMP_SQL = (
 )
 
 _CURRENT_SQL = "SELECT epoch FROM config_epochs WHERE subject_path = $1"
+
+#: moves a durable epoch forward to a target in one statement, and never back: the row lock
+#: serializes concurrent writers and the WHERE leaves a row already at or past the target
+#: untouched, so two writers advancing to one target cannot carry it past it. no row returned
+#: means nothing moved.
+_ADVANCE_SQL = (
+    "INSERT INTO config_epochs (subject_path, epoch, payload) "
+    "VALUES ($1, $2, $3::jsonb) "
+    "ON CONFLICT (subject_path) DO UPDATE SET "
+    # the value this move replaces, read from the row as it stood (SET reads the old row)
+    "previous_epoch = config_epochs.epoch, "
+    "epoch = EXCLUDED.epoch, "
+    "payload = EXCLUDED.payload, "
+    "date_updated = now() "
+    "WHERE config_epochs.epoch < EXCLUDED.epoch "
+    "RETURNING epoch, previous_epoch"
+)
+
+#: a durable subject's epoch and the one its latest move replaced, in one read
+_VERSIONS_SQL = "SELECT epoch, previous_epoch FROM config_epochs WHERE subject_path = $1"
+
+
+@dataclass(frozen=True)
+class DurableEpoch:
+    """a durable subject's epoch and the one its latest move replaced.
+
+    ``previous`` is recorded, never inferred: a durable epoch may move forward by more
+    than one, so the epoch before ``epoch`` is not ``epoch - 1``. Both :meth:`EpochClient.bump`
+    and :meth:`EpochClient.advance_to` record it. It is ``None`` until the subject has moved
+    twice -- the first move creates the row and replaces nothing -- for a subject that has
+    never moved, whose ``epoch`` is ``0``, and for a row written before migration v002 until
+    its next move.
+
+    :ivar epoch: the subject's epoch, ``0`` when it has never moved
+    :ivar previous: the epoch the latest move replaced, or ``None``
+    """
+
+    epoch: int
+    previous: int | None
 
 
 class EpochClient:
@@ -444,3 +493,76 @@ class EpochClient:
             )
 
         return new_epoch
+
+    @traced
+    async def advance_to(
+        self,
+        subject: Subject,
+        epoch: int,
+        payload: dict[str, Any] | None = None,
+    ) -> DurableEpoch:
+        """move a durable subject's epoch forward to ``epoch``, never back, then broadcast.
+
+        for an epoch that names something outside the counter -- a tile version that must
+        equal the generation of the rows it reads -- where :meth:`bump`'s "one more" would
+        let two concurrent writers carry it past the value both meant. one statement under
+        the row lock: a subject already at or past ``epoch`` is left as it is and nothing is
+        broadcast. durable subjects only; an ephemeral counter has no target to meet.
+
+        the row records the epoch a move replaced, so a reader that must keep serving the
+        epoch before the current one (a tile version clients still hold) is told it rather
+        than inferring ``epoch - 1``, which a move by more than one makes wrong.
+
+        callers MUST invoke after the mutation the new epoch names has committed, as for
+        :meth:`bump`.
+
+        :param subject: target subject, of a durable family
+        :ptype subject: Subject
+        :param epoch: the epoch to reach, at least 1
+        :ptype epoch: int
+        :param payload: opaque hint forwarded to subscribers when the epoch moves
+        :ptype payload: dict[str, Any] | None
+        :return: the subject's epoch afterwards, and the one its latest move replaced
+        :rtype: DurableEpoch
+        :raises ValueError: for a subject outside the durable families, or an epoch below 1
+        """
+        if not _is_durable(subject):
+            raise ValueError(f"advance_to needs a durable epoch subject; {subject.path!r} counts in NATS KV")
+        if epoch < 1:
+            raise ValueError(f"an epoch to advance to is at least 1, not {epoch}")
+        payload_json = json.dumps(payload) if payload is not None else None
+        row = await self._pool.fetchrow(_ADVANCE_SQL, subject.path, epoch, payload_json)
+        result: DurableEpoch
+        if row is None:
+            result = await self.versions(subject)
+        else:
+            previous = row["previous_epoch"]
+            result = DurableEpoch(epoch=int(row["epoch"]), previous=None if previous is None else int(previous))
+            message = EpochBumpMessage(subject_path=subject.path, epoch=result.epoch, payload=payload)
+            try:
+                await self._nats.publish(subject=subject, message=message)
+            except PublishError as exc:
+                log.warning(
+                    "epoch advance broadcast failed; the row already moved, and subscribers catch up via "
+                    "the next catch-up pass or a per-message echo",
+                    extra={"extra_data": {"subject": subject.path, "epoch": result.epoch, "error": str(exc)}},
+                )
+        return result
+
+    async def versions(self, subject: Subject) -> DurableEpoch:
+        """a durable subject's epoch and the one its latest move replaced, in one read.
+
+        :param subject: target subject, of a durable family
+        :ptype subject: Subject
+        :return: the epoch (``0`` when the subject has never moved) and its previous one
+        :rtype: DurableEpoch
+        :raises ValueError: for a subject outside the durable families
+        """
+        if not _is_durable(subject):
+            raise ValueError(f"versions needs a durable epoch subject; {subject.path!r} counts in NATS KV")
+        row = await self._pool.fetchrow(_VERSIONS_SQL, subject.path)
+        result = DurableEpoch(epoch=0, previous=None)
+        if row is not None:
+            previous = row["previous_epoch"]
+            result = DurableEpoch(epoch=int(row["epoch"]), previous=None if previous is None else int(previous))
+        return result

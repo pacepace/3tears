@@ -50,7 +50,6 @@ from abc import abstractmethod
 from typing import Any, ClassVar, Generic
 
 from threetears.core.collections.base import BaseCollection, EntityT
-from threetears.nats import LockHeld, nats_distributed_lock
 from threetears.observe import get_logger, traced
 
 __all__ = ["DerivedCollection"]
@@ -216,7 +215,19 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 self._inflight.pop(key, None)
 
     async def _derive_cross_pod(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
-        """hold the cross-pod build lock, then derive and persist."""
+        """hold the cross-pod build lock, then derive and persist.
+
+        with no NATS client there is no peer pod to coordinate with: the
+        in-process gate the caller holds is the whole single-flight, so the
+        value is derived directly and the lock -- which needs the optional NATS
+        client, core's ``nats`` extra -- is never imported. a deployment with a
+        NATS client derives under the lock and so needs the extra.
+        """
+        if self._nats_client is None:
+            return await self._derive_and_save(key)
+
+        from threetears.nats import LockHeld, nats_distributed_lock
+
         lock_key = self.build_lock_key(key)
         try:
             # cancel_on_loss=False: the build lock only stops a stampede of identical
@@ -229,15 +240,19 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 cancel_on_loss=False,
             ):
                 # a peer POD may have derived it while we queued.
-                existing = await self.load_derived(key)
-                if existing is not None:
-                    return existing
-                derived = await self.compute(key)
-                if derived is not None:
-                    await self.save_to_store(derived)
-                return derived
+                return await self._derive_and_save(key)
         except LockHeld:
             return await self._await_peer_derivation(key)
+
+    async def _derive_and_save(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
+        """derive the value unless it has landed meanwhile, and persist it."""
+        existing = await self.load_derived(key)
+        if existing is not None:
+            return existing
+        derived = await self.compute(key)
+        if derived is not None:
+            await self.save_to_store(derived)
+        return derived
 
     async def _await_peer_derivation(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
         """wait for a peer pod's in-progress derivation, then derive if it never lands.

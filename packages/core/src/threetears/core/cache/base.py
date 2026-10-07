@@ -12,7 +12,7 @@ Holds four things, not one:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
@@ -21,7 +21,9 @@ __all__ = [
     "MISSING",
     "TABLES_WITHOUT_CACHE_STAMP",
     "build_select_clause",
+    "bulk_columns",
     "entry_is_fresh",
+    "quote_identifier",
 ]
 
 MISSING = object()
@@ -119,6 +121,22 @@ def entry_is_fresh(
     return now_monotonic - stored_at_monotonic <= max_age_seconds
 
 
+def quote_identifier(identifier: str) -> str:
+    """an identifier quoted for SQL, so a name with spaces, capitals or a keyword survives.
+
+    Every L1 backend quotes every table and column name it interpolates through this one
+    function: SQLite and DuckDB quote alike, and a backend that quoted some statements and not
+    others would create a table it could then not read. A converted extract's column names
+    (``% of Exp. In``) are the case that needs it.
+
+    :param identifier: a table or column name
+    :ptype identifier: str
+    :return: the quoted identifier, any double quote in it doubled
+    :rtype: str
+    """
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 def build_select_clause(
     schema: dict[str, str] | None,
     table: str,
@@ -152,7 +170,25 @@ def build_select_clause(
         unknown = [c for c in deduped if c not in schema]
         if unknown:
             raise ValueError(f"unknown columns for table {table}: {unknown}")
-    return ", ".join(deduped)
+    return ", ".join(quote_identifier(c) for c in deduped)
+
+
+def bulk_columns(rows: Sequence[Mapping[str, Any]], schema: Mapping[str, str]) -> list[str]:
+    """the columns a bulk write writes: those the rows name, in the table's order, all rows alike.
+
+    :param rows: the rows to write
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :param schema: the table's declared columns (empty when unknown: every named column is written)
+    :ptype schema: Mapping[str, str]
+    :return: the columns, filtered to the table's as ``upsert`` filters them
+    :rtype: list[str]
+    :raises ValueError: when the rows do not all name the same columns
+    """
+    named = set(rows[0]) if rows else set()
+    ragged = next((i for i, row in enumerate(rows) if set(row) != named), None)
+    if ragged is not None:
+        raise ValueError(f"row {ragged} names different columns from row 0; a bulk write needs every row alike")
+    return [c for c in schema if c in named] if schema else sorted(named)
 
 
 @runtime_checkable
@@ -184,6 +220,39 @@ class L1Backend(Protocol):
         :ptype primary_key: str | tuple[str, ...]
         :return: nothing
         :rtype: None
+        """
+        ...
+
+    def upsert_many(
+        self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...] = "id"
+    ) -> int:
+        """insert or update many rows in one statement, as ``upsert`` would one by one.
+
+        every row must name the same columns; a bulk write with ragged rows has
+        no single meaning for the columns some rows leave out.
+
+        :param table: destination table name
+        :ptype table: str
+        :param rows: the rows, each keyed by column name, every pk column present
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: how many rows were written
+        :rtype: int
+        :raises ValueError: when the rows do not all name the same columns
+        """
+        ...
+
+    def column_types(self, table: str) -> Mapping[str, str]:
+        """the type codes this backend reads and writes a table's columns by, by column name.
+
+        the backend's serialization codes (``TEXT_UUID``, ``VARCHAR_JSON``), not SQL
+        types; a backend's own bookkeeping columns are not included.
+
+        :param table: the table
+        :ptype table: str
+        :return: each column's type code (empty for a table it does not know)
+        :rtype: Mapping[str, str]
         """
         ...
 

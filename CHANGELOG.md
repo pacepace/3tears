@@ -6,6 +6,357 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core and datasources: keep tables current from a source, write only what changed, one writer at a time
+
+The ENR tool pod's refresh is the first consumer of every entry below: it fingerprints each state's
+rows in the warehouse, reads only the states that moved, writes and deletes only the rows that
+changed, moves the epochs of the scopes (races, states) it changed, and serves its reports from
+copies swapped in whole.
+
+- **Added, `threetears.core.collections.complete_copy.BufferedCopies(collections, new_backend,
+  settled, *, page_size=999)` and `Unsettled`** (used by the ENR pod's rows tool): complete copies of several L3
+  tables kept apart from the collections' own L1. `build()` copies every table into a fresh backend
+  beside the live set, proves each, and swaps the new set in with one assignment only when every
+  table is proven and the writer's record (`settled`: a stamp naming the last committed write, or
+  None while one is in progress) was the same before the first table and after the last; otherwise
+  it raises `IncompleteCopyError`, closes the half-filled backend and the live set stays. `require()`
+  answers the live `CopyGeneration` (`backend`, `proofs`, `stamp`, `built_at`), which a reader holds
+  for its whole read: a swap never changes a generation a reader holds. `build_if_behind()` builds
+  only when the writer has committed since the live set was taken, and answers the live set as it is
+  while a write is in progress; builds run one at a time. `WholeTableL1` gains `reset()`.
+- **Added, `threetears.core.collections.complete_copy.read_l3_rows`, `l3_fingerprint` and
+  `copy_table`** (the ENR pod's refresh reads its L3 rows of one state with them): the pieces
+  `CompleteCopy` was built from, public and taking equality filters (`where`). `CompleteCopy` now
+  uses them, unchanged in behaviour.
+- **Added, `threetears.core.collections.scope_epochs`** (the ENR pod's per-race and per-state epochs,
+  which name the versioned answer URLs): `ScopeEpochs(collection)` over an owner-declared L3 table
+  (`scope_epochs_schema(name)`, `scope_epochs_collection(name)`): a scope's epoch is the version of
+  the last write that changed it. `begin(conn=)` takes the next version in one statement under the
+  row's lock and marks the write in progress; the latest begin supersedes (its version is a fencing
+  token); it takes the row's lock with `NOWAIT` and raises `EpochRecordBusyError` at once when a
+  data transaction of an earlier (stale) write still holds it, or a racing begin does, never
+  waiting on a hung one (the refusal is told by its type, `asyncpg.LockNotAvailableError`, on a
+  direct pool and through the L3 broker alike). `touch(version, scopes, conn=)`, in each data
+  write's transaction, records the scopes it changed as pending, fenced as commit is (a share lock
+  on the version row, held to the transaction's end): a superseded writer's late data transaction
+  is refused and rolls back, and one write's data transactions run alongside each other. A hung
+  writer's hold ends within the broker's idle bound (an idle transaction session is rolled back
+  after 60 s, swept every 10 s); on a direct Postgres connection,
+  `ScopeEpochs(collection, idle_timeout=)` sets `idle_in_transaction_session_timeout` in each
+  transaction `begin` and `touch` join. `commit(version, scopes, conn=)` clears the in-progress mark only while that
+  version is still the write in progress (checked in the same statement, in the caller's
+  transaction), then moves every pending scope -- an abandoned write's included -- to the version,
+  never back, recording what each replaced; a scope already at or past it refuses the commit.
+  `snapshot()` reads every epoch, the version and any write in progress with when it began
+  (`EpochSnapshot.writing_since`); `settled()` is the snapshot, or `Unsettled(reason)` (which write,
+  and how long it has run; logged, at warning past `STALLED_WRITE_SECONDS`) while a write is in
+  progress, the one callback `BufferedCopies` builds against. `on_change(listener)` hears a commit here and a peer's
+  broadcast. Kept in L3, not the NATS epoch counter, because the value is in CDN URLs and must
+  never be handed out twice for different data.
+- **Added, `threetears.core.coordination.coalesced_run.CoalescedRun(lease, key, run, *, ttl,
+  renew_every)`** (the ENR pod's refresh lease, `enr/refresh`): an operation run on one replica at a
+  time under a `KVLease`, where a request made during a run runs it once more afterwards, however
+  many requests there were. `request()` records a request beside the lease key; `drain()` holds the
+  lease, runs once per request taken, looks again after letting the lease go, and returns how many
+  runs it made (0 when another replica holds the lease, which then runs what was asked). The run
+  never outlives the lease: a lost lease or a cancelled caller cancels the run, records the request
+  again, and waits for the run to end before the lease is let go (a second cancellation meanwhile is
+  held and raised after). A failed run is raised and not
+  retried. `KVLease` gains `stored_key(key)` and `bucket()`.
+- **Added, `threetears.agent.tools.background_operation.RequestOperationTool`** (the ENR pod's
+  `enr.reload`) **and `BackgroundOperation(name, run, *, request=)` with `request()`**: for an
+  operation that drains `CoalescedRun` requests, the operation owns its request step, so the tool
+  and the run cannot name different runs. `request()` records the request, then starts a run; a
+  request while a run is in progress is not refused as a conflict (`StartOperationTool` answers
+  that) but answered "requested", and the run in progress is followed by one more, which takes it
+  even when the drain had already made its last look for requests.
+- **Added, `SchemaBackedCollection.delete_rows(keys, *, conn, max_rows=None)`** (the ENR pod's
+  refresh deletes the rows the warehouse no longer holds): rows deleted by key in multi-row
+  `DELETE ... WHERE (k1, k2) IN ((...), ...)` statements on the caller's transaction, settled with
+  the rest when it ends; through `BulkDeletingStore.delete_many` (new protocol, which
+  `SqlL3Backend` implements), or a key at a time through `delete` on a store without it.
+  `schema_sql.build_bulk_delete_sql` builds the statement.
+- **Added, `nats_proxy.LOCK_NOT_AVAILABLE_ERROR_CODE`**: the broker's code for a statement whose
+  `NOWAIT` lock another transaction holds (SQLSTATE 55P03); the proxy rebuilds
+  `asyncpg.LockNotAvailableError` from it, as a direct pool raises. The hub sends it from its
+  transaction statement doors.
+- **Added, `threetears.datasources.partitioned_read`** (the ENR pod's per-state warehouse checks and
+  reads): `fingerprint_parts` and `read_parts` fingerprint or read each part of a relation (named by
+  equality filters, as `read_all` takes them) side by side, at most `concurrency` at once
+  (`DEFAULT_PART_CONCURRENCY`, 5: the hub's default open warehouse connections per datasource),
+  answering in the parts' order; the first failure cancels the rest and is raised as itself.
+  Asking for more at once than the datasource's gate on the hub admits risks `DATASOURCE_BUSY`
+  (the client retries it briefly), not only queueing.
+- **Added, `Driver.concurrent_queries` and `Driver.borrowed_pool`** (read by the hub, which gates
+  every call through a datasource's driver, a statement, a whole `fetch_iter` walk or a transaction
+  from `begin` to its end): how many queries a caller should run on a driver at once, failing closed
+  at 1 for a driver that says nothing: its own open-connection cap (`RedshiftDriver`'s
+  `connection_cache_size`, an owned `AsyncpgDriver` pool's `pool_max_size`), 1 for `SnowflakeDriver`
+  and `BigQueryDriver` (logins not guarded against a refused credential); and, separately, the pool
+  a host lends a driver (`AsyncpgDriver` for an agent_internal datasource), which the host bounds
+  across every borrower. An `AsyncpgDriver` given a `BorrowedPoolConnectionConfig` with no pool is
+  refused. Every driver's `fetch_at_most` checks its bound with the one `check_max_rows`.
+- **Added, `query_client.DATASOURCE_BUSY`** (the hub's datasource responder answers it; the ENR pod's
+  refresh fails on it and the next one runs): the refusal code for a query the hub would not queue
+  because the datasource already has as many queries running and waiting as it bears, or the query
+  waited too long for a turn. Nothing ran.
+- **Added, `asyncpg_driver.BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS`** (5 s; agent_internal datasources
+  on the hub's L3 pool): an `AsyncpgDriver` borrowing its host's pool waits that long for a
+  connection, not forever.
+- **Added, `Driver.fetch_at_most(sql, *params, max_rows, timeout_seconds=None)`** (the hub's
+  datasource responder reads every query through it, so no reply holds more than one row past its
+  cap whatever the statement says): at most `max_rows` rows in order. `AsyncpgDriver` reads through a
+  server-side cursor, so the rows past the bound are never sent; `RedshiftDriver` takes at most
+  `max_rows` off its cursor (`redshift_connector` receives a statement's whole result inside
+  `execute`, so the hub also asks the warehouse for no more where the statement takes a `LIMIT`); the
+  default (and the Snowflake and BigQuery stubs) reads through `fetch` and keeps the bound.
+- **Added, `drivers.DriverPoolBusyError`:** an `AsyncpgDriver` borrowing its host's pool raises it
+  when no connection was free within `BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS` (now 5 s, so a gate's
+  turn, a connection and the statement deadline fit inside the client's): nothing ran, which the hub
+  answers `DATASOURCE_BUSY`, not as a statement timeout.
+- **Changed, `DatasourceQueryClient.query` and `relation_fingerprint`:** a `DATASOURCE_BUSY` refusal
+  (nothing ran) is asked again up to `BUSY_RETRIES` (3) times after a growing, jittered wait from
+  `BUSY_BACKOFF_SECONDS` (0.5 s), then raised.
+- **Fixed, `RedshiftDriver.relation_fingerprint`** (found by the ENR pod's per-state check over
+  every column): a key naming a boolean column failed, because Redshift refuses to cast a boolean to
+  text. The driver reads the relation's boolean columns from `SVV_COLUMNS` (the names lower-cased as
+  Redshift folds them; a relation named without its schema is looked up on the search path), keeps
+  the answer once a fingerprint has used it and reads it again after one fails, and renders those
+  columns as `'true'` / `'false'` through a `CASE`; `relation_key_expression` takes
+  `boolean_columns`.
+
+### Core: an L1 that is a complete copy of its L3 table, proven before it is read
+
+- **Added, `threetears.core.collections.complete_copy`:** `CompleteCopy(collection, *, page_size=999)`
+  makes a collection's L1 a whole copy of its L3 table for queries that aggregate over the L1 (an
+  analytic table in a `DuckDBBackend`), where an L1 holding only some rows would answer wrongly
+  without saying so; the ENR tool pod's report tables are the first consumer. `warm()` reads the
+  table by its key a page at a time (the L3 rail answers at most a thousand rows a statement and
+  does not say when it cut), replaces the L1 table with exactly those rows, and proves it: the L3
+  count and a fingerprint over every column of every row agree before and after the read (so a
+  value changed under the same key is seen), the rows read number the count, and the L1 then holds
+  that many rows with the same keys. `require()` returns the `CopyProof` or raises
+  `IncompleteCopyError` saying why, including the last warm's own error when it raised. Any change
+  to the collection's L1 (a row written through, pulled through or evicted, here or by a peer's
+  invalidation) voids the proof until the next warm, and fails a warm it lands in. Build one per
+  collection. Refused, as `ValueError`, for an L1 that is not a `WholeTableL1` (`replace_all`,
+  `stored_keys`, as `DuckDBBackend` has).
+- **Added, `threetears.core.fingerprint`:** `relation_key_expression` (moved from
+  `threetears.datasources.drivers.sql_fragments.build_relation_key_expression`, which stays as its
+  alias), `postgres_fingerprint_sql` (now also what `AsyncpgDriver.relation_fingerprint` runs),
+  `key_fingerprint` (the same digest over keys already read; the same number as Postgres' for text
+  keys) and `KeyFingerprint`.
+- **Added, `DuckDBBackend.replace_all(table, rows, primary_key)`** (the table holds exactly the
+  rows, in one transaction) **and `DuckDBBackend.stored_keys(table, key)`** (every key as stored).
+- **Added, `BaseCollection.add_l1_change_listener(listener)` (returns a call that removes it) and
+  `BaseCollection.l1_backend`:** a listener is called with a row's key whenever the row is written
+  into the collection's L1 or leaves it; every L1 write BaseCollection itself makes goes through one method (subclasses with their own L1 write paths, such as presence and heartbeat collections, do not notify the listener).
+
+### Core: smaller changes to collections
+
+- **Changed, `collection_for_schema`:** a composite key with no `entity_class` is refused
+  (`ValueError` naming the table) rather than keying entities on the first key column, which on a
+  composite key is the partition, not the row's own id.
+- **Added, `CollectionRegistry.drop_local_scans(table)`:** the local half of an invalidation (this
+  process's cached scans of a table it wrote), which every local write path now goes through;
+  `invalidate_cache_many` with no bus uses it, and a `bypassing_write` on the collection's own pool
+  settles its rows in one `invalidate_cache_many` call rather than a call per key.
+- **Changed, `SchemaBackedCollection.save_rows`:** returns the rows submitted (every row given,
+  whatever the conflict clause did with it), on the row-at-a-time path too; it writes in bulk when
+  the store is a `BulkDurableStore`, checked as the protocol.
+
+### Agent tools: a tool may refuse its arguments, or say it is not ready
+
+- **Added, `threetears.agent.tools.base_tool.MALFORMED_REQUEST` and `TOOL_NOT_READY`** to
+  `TOOL_RESULT_ERROR_CODES`: a tool names the first when it cannot serve the call as asked (an
+  argument naming something it does not have, a value it does not take), which the platform
+  answers 400, and the second when it cannot answer yet (its data still loading), answered 503.
+  Both are codes the platform already maps for the registry's own refusals.
+- **Changed:** `StartOperationTool` and `OperationStatusTool` name `TOOL_NOT_READY` when they refuse
+  because the operation is not built yet; a `start_when_needed` wait that fails no longer replaces
+  the last outcome of a run that finished after the wait began.
+
+### Core: many rows upserted in a few statements, on the caller's transaction
+
+- **Added, `SchemaBackedCollection.save_rows(rows, *, conn, max_rows=None, max_bytes=None)`:** upserts
+  rows on a connection whose transaction a `CallerTransaction` opened, through the collection's
+  durable store, where `save_entity` makes a round trip per row. A store with `upsert_many` saves
+  them in bulk; one without is written a row at a time through `upsert`. A failing write fails the
+  caller's transaction, so everything rolls back. Rows are stamped `date_created` / `date_updated`;
+  an upsert keeps a held row's `date_created`. Each key leaves L1 at once and is settled when the
+  transaction ends. Refused, as `ValueError`, for a collection with no durable store, that caches
+  absences, defers its L3 writes or fences with a null-safe CAS, for two rows with one key, and for
+  rows that disagree on which server-default columns they supply; a row missing a key column is a
+  `KeyError` naming the table and the column.
+- **Added, `threetears.core.backends.protocol.BulkDurableStore`** (`upsert_many(table, rows, *,
+  max_rows, max_bytes, conn=None)`), implemented by `SqlL3Backend.upsert_many`: multi-row
+  `INSERT ... VALUES (...), (...) ON CONFLICT` statements, the column list derived once from the
+  rows (a server-default column every row omits is left out of the SQL and the parameters alike),
+  batches split so none passes `max_rows` (`BULK_MAX_ROWS`, 1,000), the 32,767 bind-parameter
+  limit, or `max_bytes` of JSON parameters (`BULK_MAX_BYTES`, 768 KiB, under a default NATS
+  message). The hub's L3 broker admits one such statement; it refuses `COPY`.
+- **Added, `threetears.core.backends.schema_sql`:** `build_bulk_insert_sql(schema, *, rows,
+  columns=None)`, `bulk_batches(rows, *, max_rows, max_bytes, max_params)` and `MAX_STATEMENT_PARAMS`.
+- **Added, `BaseCollection.invalidate_cache_many(entity_ids)`; changed, `CallerTransaction`'s
+  settling:** a transaction now settles each collection's written keys in one call. A collection
+  with no NATS client (no L2, no bus) evicts the keys from L1 and drops its cached scans once, with
+  no L2 or bus work. One with a bus still sends each key's L2 delete and broadcast -- two messages a
+  key, because the broadcast's envelope names one entity and a peer of an older release reads no
+  other shape -- but `INVALIDATE_CONCURRENCY` (32) at a time rather than one after another.
+
+### Core: a collection class built from a table schema
+
+- **Added, `threetears.core.collections.schema_backed.collection_for_schema`:** a
+  `SchemaBackedCollection` subclass over a `TableSchema`, for tables a pod declares as data (one
+  per map layer, one per warehouse table it mirrors) rather than as a class each. Its entities are
+  a plain `BaseEntity` keyed on the schema's first primary-key column unless an entity class is
+  given. Each call makes a new class, so build each once. The geography pod's per-layer collection
+  classes were the first copy, the ENR pod's tables the second.
+
+### Agent tools: a long operation started by one tool and reported by another
+
+- **Added, `threetears.agent.tools.background_operation`:** `BackgroundOperation` runs one
+  operation in the background at most once at a time and keeps how its last run ended (its result,
+  or the exception as `<Type>: <message>`); `start_when_needed` runs a pod's first run once it can
+  tell one is needed, retrying only the errors it is told mean "not reachable yet" (a second such
+  wait while one is deciding is refused, so `stop` and `wait_until_settled` reach the one running;
+  any other error ends the wait and is logged, since nothing may ever await it).
+  `StartOperationTool` starts a run and answers at once, refusing a start while one runs with
+  `CONFLICT`; `OperationStatusTool` reports `idle`, `running`, `succeeded` or `failed` with the last
+  run's times, result and error. Both are `face_api` and refuse, saying so, until the pod has built
+  the operation. For operations longer than the hub waits on a tool call (a warehouse load, a layer
+  rebuild); the geography pod's reload and status tools were the first copy, the ENR pod's the second.
+  A wait of `start_when_needed` that ends on an error it does not retry is kept as the last outcome,
+  so the status reports `failed` with the reason rather than `idle`; it and a failed run are logged
+  with their traceback.
+
+## v0.66.0 -- 2026-10-05
+
+### Core: a replay guard owns its nonce bucket, on memory
+
+- **Changed, `threetears.core.coordination.ReplayGuard`:** a guard that declares its bucket
+  (`create_if_missing=True`, the default) declares it through `ensure_kv_bucket` as its owner, on
+  memory storage, with `drop_file_storage=True`. A nonce bucket left live on file storage (opened
+  before it was declared, or by hand) is recreated on memory, empty, where before the guard bound it
+  as it was and NATS logged the storage mismatch at every boot. Emptying it reopens no replay: the
+  recreate's creation time refuses anything issued before it, the same rule that makes a broker
+  wipe safe. A bind-only guard (`create_if_missing=False`) still only binds and never recreates.
+  **Breaking for a client double with `kv_bucket` alone:** a declaring guard now refuses, at
+  construction with a `TypeError`, a client without `ensure_kv_bucket`; `NatsClient` and
+  `threetears.core.testing.FakeNatsClient` have it. Its constructor's overloads say the same to a
+  type checker: a declaring guard takes a `KvDeclaringClient`, a bind-only one a `KvCapable`.
+  **Breaking for a declaring consumer's NATS grants:** the identity a declaring guard runs as needs
+  `STREAM.UPDATE` and `STREAM.DELETE` on its nonce stream as well as `STREAM.CREATE`, or its bind
+  fails at startup while the bucket is still file-backed. The registry's `pop_nonces` grant already
+  carries them; the hub (proxy nonces), identity (DPoP nonces), survey and scriob check theirs before
+  relocking. `docs/design-durable-coordination.md` drops the by-hand nonce-bucket deletion.
+- **Added, `threetears.nats.kv.KvDeclaringClient`:** a client that both opens and declares KV
+  buckets (`KvCapable` and `KvDeclaring` together), for a consumer that owns its bucket.
+
+### NATS: one write-health watch for a persisted copy
+
+- **Added, `threetears.nats.CopyWriteHealth` and `WRITE_FAILURE_THRESHOLD`:** whether writes to a
+  persisted-copy bucket are landing, for a READINESS check (never liveness: a closed connection is
+  already the `nats` liveness check's to report). It counts write operations, not keys: a single
+  put or delete is one, and a pass of many writes run inside `operation()` (a sync, a write-back) is
+  one, failed if any of its writes failed and counting as nothing if it wrote nothing. `persisting`
+  turns `False` after `WRITE_FAILURE_THRESHOLD` (3) failed operations in a row, logged once at
+  ERROR, and back on the next that lands, logged at INFO. A pass belongs to the task that opened it,
+  so concurrent passes and writes (a heartbeat sweep beside a registration) are each counted alone.
+- **Changed, `threetears.registry.ToolCatalog`:** uses it instead of its own copy. A write-back, a
+  pod's deregistration sweep and a promotion each count as one operation, where before every entry
+  they wrote counted, so one failed pass over a large catalog no longer takes the registry out of
+  rotation by itself. `threetears.registry.catalog.WRITE_FAILURE_THRESHOLD` is the shared value.
+
+### Geo: a tile source's caches are its own
+
+- **Changed, breaking, `threetears.geo.TileCollection` and `FeatureCache`:** each takes a required
+  `cache_scope`, the tile source's identity, and its table name carries it
+  (`geo_tiles_<scope>`, `geo_features_<scope>`). Every tier the collection framework keys by
+  table -- the pod-local L1 table, the NATS L2 keys, the cross-pod build lock and the registry
+  entry -- was shared by every source under one name, and tiles are keyed by
+  `(layer, version, z, x, y)` alone: two sources serving a layer of the same name (two
+  datasources, or a customer's datasource and a platform layer, both starting at version 1)
+  answered for each other from whichever built a tile first, across tenants. Only the object
+  store was scoped (by `datasource_name`, unchanged). `check_cache_scope` refuses anything but
+  a lowercase identifier of at most `MAX_CACHE_SCOPE_LENGTH` (48) characters, since the scope
+  names SQL tables and NATS KV keys unquoted: `ds_<32 hex>` and `ns_<32 hex>` fit. A caller
+  whose L1 backend declares the tables by name declares the scoped names.
+
+### Geo: building layers from other layers
+
+- **Added, `threetears.geo`:** `cut` cuts one layer by another within a shared key (a state,
+  say), naming each piece `<coarse id>-<fine id>`. Each part of a cut is judged on its own and
+  dropped when narrower or smaller than the caller's thresholds (`min_width_m`, `min_area_km2`),
+  since two sources' boundaries disagree by a few meters; features no piece covers are reported.
+  `replace_features` swaps a layer's features for a set of keys, refusing replacements that cover
+  other keys. `missing_features` names the ids a consumer needs that a layer lacks. `mean_width_m`
+  and `area_km2` measure in a local projection around each shape's latitude. Measured on US
+  counties cut by congressional districts: slivers 4 to 10 m wide, coastline fragments up to
+  0.6 km², the smallest real piece 5.3 km².
+
+### Datasources: geo blocks beside their tables, and the borrowed-pool config named for what it is
+
+- **Added, `GeoConfig.check_against_tables`:** refuses a geo layer that names a table, or a column
+  of it, the declaring tables lack, with `GeoLayerConfig.columns_read` listing every column a layer
+  reads (feature id, geometry, version, bounding box, and its bands' attributes, rank and rollup).
+  The one copy the SDK and the Hub both run for a tool pod's `geo:` block.
+- **Added, `threetears.datasources.geo_reload`:** the contract a tool pod uses to report that it
+  has written a new generation of its geography layers' shapes: `report_geo_layers_reloaded`, its
+  request and reply models, and the hub's obligations. The hub moves each layer's tile version to
+  the reported generation, forward only (a generation below the version is refused
+  `GENERATION_BEHIND` with the version in the reply). A layer never reported has no version, and
+  nothing of it is served until its first report sets one. New subject
+  `Subjects.hub_geo_layers_reloaded` (`{ns}.hub.geo.layers.reloaded`), granted to tool pods to
+  publish and to the hub to answer. The hub serves a layer's tiles at exactly two versions: its
+  current one and the PREVIOUS one, the version the current one replaced, which is recorded when
+  the version moves and never inferred as one below (generations skip: a failed, unreported load
+  leaves rows stamped with a generation nobody reported). The success reply carries each layer's
+  previous version (`previous_versions`), `report_geo_layers_reloaded` returns each layer's
+  `LayerVersions` (`version`, `previous`), and `generations_to_delete` names every stamped
+  generation a pod deletes after it: all but those two, failed loads' included. A report whose
+  generations break the request's bounds is refused `INVALID_REQUEST` without asking the hub.
+- **Added, `EpochClient.advance_to`:** moves a durable epoch forward to a target in one statement and
+  never back, so concurrent writers meeting one target leave it there (where `bump` would carry it
+  past). Durable subjects only. It, and a durable `bump`, record the epoch each move replaced;
+  it returns a `DurableEpoch` (`epoch`, `previous`); `EpochClient.versions` reads both in one query. New
+  migration epoch v002 adds the nullable `config_epochs.previous_epoch` column; existing rows read
+  `None` until their next move.
+- **Changed, breaking:** `AgentInternalConnectionConfig` is now `BorrowedPoolConnectionConfig`, as
+  its docstring asked once a second use appeared: a tool pod's platform geography layers are read
+  for tiles through Hub's pool, scoped to the pod's `ns_<hex>` schema, with no datasource row. The
+  discriminator is unchanged (`agent_internal`). No alias: rename at the call site. The Hub's
+  OpenAPI schema component carries the new name too, so the TypeScript clients generated from it
+  (the SDK's `web-api-client`) and any hand-written interface naming the old one follow on their
+  next regeneration.
+
+### Core: L1 bulk writes, and imports without the NATS client
+
+- **Added, L1 backends:** `upsert_many` writes many rows as `upsert` would one by one (SQLite in
+  one transaction; DuckDB in one columnar statement, about twenty times faster than
+  `executemany`), and `upsert` is now `upsert_many` of one row, so the two cannot drift. A batch
+  repeating a key keeps its last row. `column_types` exposes the type codes a table's columns are
+  read and written by. `DuckDBBackend.load_parquet` loads a Parquet file into a table in one
+  statement. First consumer: the reports product's Tableau evaluator, which loads an extract
+  snapshot into DuckDB L1 (its backlog item RPT-T3B1) and today bulk-inserts on the backend's
+  connection and reads its private schema. **Breaking for out-of-repo implementers:** `upsert_many`
+  and `column_types` are now part of the `L1Backend` protocol, so an L1 backend written outside
+  3tears must add both to keep satisfying it.
+- **Fixed, `SQLiteBackend`:** a write that fails for any reason rolls its transaction back. It
+  rolled back only on `OperationalError`, so a constraint or binding error left `BEGIN IMMEDIATE`
+  open, holding the write lock against the thread's next write. A table whose every column is its
+  key takes an upsert (`DO NOTHING`, where it built an empty `DO UPDATE SET`). A write SQLite rolled
+  back by itself (a full disk, an I/O error, an interrupt) raises its own error, not a failed
+  `ROLLBACK`'s "no transaction is active".
+- **Fixed, L1 backends:** every table and column name either backend interpolates is quoted through
+  one helper, `threetears.core.cache.base.quote_identifier`, so a table or key column named with a
+  space or capitals (a converted extract's `% of Exp. In`) is created, written, read and deleted
+  alike. Only the bulk writes quoted before, so such a table could be filled but not read by id.
+- **Fixed:** `DerivedCollection`, and with it `threetears.geo`, no longer needs the optional NATS
+  client (core's `nats` extra) to import or to derive on a single pod. With no NATS client there is
+  no peer to coordinate with, so a derivation runs under the in-process gate alone and never
+  imports the cross-pod lock; with a client it takes the lock, which needs the extra.
+
 ## v0.65.0 -- 2026-10-05
 
 ### NATS: a declared KV bucket can carry its exact name and be refilled when it comes back empty

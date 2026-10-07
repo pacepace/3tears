@@ -503,6 +503,18 @@ class TestBootCompleteness:
         assert f"{_NS}.hub.audit.anonymize" in tool_pod.publish
         assert f"{_NS}.hub.audit.anonymize" not in tool_pod.subscribe
 
+    def test_geo_layers_reloaded_is_tool_pod_publish_hub_subscribe(self) -> None:
+        # a tool pod that registered platform geography layers reports a reloaded generation; the
+        # hub answers, moving a layer only for the pod owning its provider namespace. an agent owns
+        # no provider space, so it is not granted the subject at all.
+        tool_pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        hub = _build(Principal.HUB)
+        agent = _build(Principal.AGENT_POD)
+        assert f"{_NS}.hub.geo.layers.reloaded" in tool_pod.publish
+        assert f"{_NS}.hub.geo.layers.reloaded" not in tool_pod.subscribe
+        assert f"{_NS}.hub.geo.layers.reloaded" in hub.subscribe
+        assert f"{_NS}.hub.geo.layers.reloaded" not in agent.publish
+
     def test_engagement_scope_resolve_grant_is_pod_publish_hub_subscribe(self) -> None:
         # engagement scope (consumer A of the §2 keystone): the consuming tool pod
         # PUBLISHES the resolve (forwarding the invoking agent's identity token);

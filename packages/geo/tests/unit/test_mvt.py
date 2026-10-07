@@ -130,3 +130,37 @@ class TestEncoding:
         # a tile covering ocean is a legitimate, cacheable empty result, not
         # a failure to build.
         assert isinstance(encode_tile({"locations": []}, TileId(z=6, x=12, y=25)), bytes)
+
+
+class TestTheWireIsYDown:
+    """the encoded tile's own coordinates, as a renderer reads them, put north at the top.
+
+    The MVT spec's y runs downward. Decoding with the library's default flips y back, so a
+    tile flipped on the way out round-trips cleanly through it and every test of the
+    encoder agreed with itself while every map drew each tile mirrored. These read the
+    wire as MapLibre does: ``y_coord_down=True`` leaves the coordinates as encoded.
+    """
+
+    def test_a_point_near_the_northern_edge_is_near_the_top(self) -> None:
+        tile = TileId(z=6, x=17, y=24)
+        bounds = tile_bounds(tile)
+        mid_lon = (bounds.min_lon + bounds.max_lon) / 2
+        north = bounds.max_lat - (bounds.max_lat - bounds.min_lat) * 0.05
+        features = [TileFeature(geometry=Point(mid_lon, north), attributes={}, feature_id=1)]
+        decoded = mapbox_vector_tile.decode(
+            encode_tile({"pts": features}, tile), default_options={"y_coord_down": True}
+        )
+        _, y = decoded["pts"]["features"][0]["geometry"]["coordinates"]
+        assert y < TILE_EXTENT * 0.2
+
+    def test_the_encoded_y_is_the_projection_unchanged(self) -> None:
+        tile = TileId(z=6, x=17, y=24)
+        bounds = tile_bounds(tile)
+        point = Point((bounds.min_lon + bounds.max_lon) / 2, bounds.min_lat + (bounds.max_lat - bounds.min_lat) * 0.3)
+        expected = project_to_tile(point, tile)
+        decoded = mapbox_vector_tile.decode(
+            encode_tile({"pts": [TileFeature(geometry=point, attributes={}, feature_id=1)]}, tile),
+            default_options={"y_coord_down": True},
+        )
+        _, y = decoded["pts"]["features"][0]["geometry"]["coordinates"]
+        assert abs(y - expected.y) <= 1
