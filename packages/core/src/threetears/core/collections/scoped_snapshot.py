@@ -628,6 +628,9 @@ class ScopedSnapshot:
             phase, detail = SnapshotPhase.READY, f"ready; behind on {behind}" if behind else "ready"
         else:
             phase, detail = SnapshotPhase.STARTING, "watching the pointers"
+        if self._behind and phase is not SnapshotPhase.READY:
+            # whatever else it is doing, a replica serving an older epoch of some scopes says which
+            detail = f"{detail}; behind on {sorted(self._behind)}"
         progress = self._progress
         if progress.phase is not phase or progress.detail != detail:
             log.info("scoped snapshot %s: %s", self._name, detail, extra={"extra_data": {"phase": phase.value}})
@@ -1187,12 +1190,10 @@ class ScopedSnapshot:
             )
         finally:
             await claim.release()
+        # a rebuild that returns has applied every scope the index names at its pointer (or it raises,
+        # leaving them behind), and each scope applied left `behind` as it was applied
         for scope in rebuilt or ():
-            # current only when this L1 now holds what the scope's pointer names (a rebuild below the
-            # pointer's epoch publishes nothing, and the scope stays behind)
-            seen, applied = self._seen.get(scope), self._applied.get(scope)
-            if seen is not None and applied is not None and not seen.supersedes(applied):
-                self._behind.pop(scope, None)
+            self._behind.pop(scope, None)
 
     async def _apply_pointers(self, pointers: Mapping[str, _Pointer]) -> dict[str, str]:
         """fetch each scope's chunks and replace it in this L1, unless the L1 already holds as new.
