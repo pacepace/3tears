@@ -31,7 +31,7 @@ from threetears.agent.tools.http_operation import (
     RestAffordance,
     RestAffordanceError,
 )
-from threetears.agent.tools.server import RegistrationManifest, ToolServer
+from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry, ToolServer
 from threetears.core.http_cache import CacheClass
 
 
@@ -333,6 +333,123 @@ class TestCacheability:
             cache_version_param="build_version",
         )
         assert affordance.cache_version_param == "build_version"
+
+
+class TestShortLivedPointer:
+    """an unversioned shared read held for seconds: the pointer a client reads to find the version.
+
+    A versioned address is immutable; the small document naming the current version cannot be, so
+    it is held only briefly, and a client reads it again on its next poll.
+    """
+
+    def test_default_is_no_max_age(self) -> None:
+        """a declaration is short-lived only when it says so."""
+        assert RestAffordance(method="GET", path_template="/x").cache_max_age is None
+
+    @pytest.mark.parametrize("cache", [CacheClass.INHERIT, CacheClass.AUTHENTICATED, CacheClass.PUBLIC])
+    def test_a_shared_unversioned_read_may_be_short_lived(self, cache: CacheClass) -> None:
+        """seconds, on a read whose class may reach a shared cache.
+
+        :param cache: the declared class
+        :ptype cache: CacheClass
+        :return: nothing
+        :rtype: None
+        """
+        affordance = RestAffordance(method="GET", path_template="/x/{scope}/index", cache=cache, cache_max_age=5)
+        assert affordance.cache_max_age == 5
+
+    @pytest.mark.parametrize(
+        ("inherited", "expected"),
+        [(CacheClass.PRIVATE, None), (CacheClass.AUTHENTICATED, 5), (CacheClass.PUBLIC, 5)],
+    )
+    def test_the_effective_max_age_follows_the_effective_class(
+        self, inherited: CacheClass, expected: int | None
+    ) -> None:
+        """a pointer whose resource resolves origin-only is held nowhere, whatever it declares.
+
+        :param inherited: the resource's own class
+        :ptype inherited: CacheClass
+        :param expected: the max age a serving side may render
+        :ptype expected: int | None
+        :return: nothing
+        :rtype: None
+        """
+        affordance = RestAffordance(method="GET", path_template="/x/{scope}/index", cache_max_age=5)
+        assert affordance.resolve_cache_max_age(inherited) == expected
+
+    def test_a_versioned_read_is_never_short_lived(self) -> None:
+        """an address carrying its version is immutable; a max age on it contradicts that."""
+        with pytest.raises(RestAffordanceError, match="immutable"):
+            RestAffordance(
+                method="GET",
+                path_template="/x/{version}",
+                cache=CacheClass.AUTHENTICATED,
+                cache_version_param="version",
+                cache_max_age=5,
+            )
+
+    def test_a_private_read_has_no_max_age(self) -> None:
+        """origin-only is held nowhere, so a max age on it says something false."""
+        with pytest.raises(RestAffordanceError, match="private"):
+            RestAffordance(method="GET", path_template="/x", cache=CacheClass.PRIVATE, cache_max_age=5)
+
+    def test_a_write_has_no_max_age(self) -> None:
+        """only a verb a shared cache may hold can be held for seconds."""
+        with pytest.raises(RestAffordanceError, match="POST"):
+            RestAffordance(method="POST", path_template="/x", cache_max_age=5)
+
+    @pytest.mark.parametrize("seconds", [0, -1, 61, 3600])
+    def test_the_max_age_is_seconds_not_minutes(self, seconds: int) -> None:
+        """from one second to a minute: longer is the unversioned copy a purge would have to fix.
+
+        :param seconds: the declared max age
+        :ptype seconds: int
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(RestAffordanceError, match="cache_max_age"):
+            RestAffordance(method="GET", path_template="/x", cache_max_age=seconds)
+
+    async def test_the_max_age_round_trips_through_the_manifest(self) -> None:
+        """the wire carries it to the hub unchanged."""
+
+        class _PointerTool(_StubTool):
+            """a short-lived read."""
+
+            face_rest = RestAffordance(
+                method="GET", path_template="/surveys/{survey_id}", cache=CacheClass.AUTHENTICATED, cache_max_age=5
+            )
+
+            def __init__(self) -> None:
+                """build the stub over the survey property set.
+
+                :return: nothing
+                :rtype: None
+                """
+                super().__init__(name="test.rest_pointer", properties=_SURVEY_PROPERTIES)
+
+        mock_nc = AsyncMock()
+        server = _server(mock_nc)
+        server.register(_PointerTool())
+        await server.publish_registration()
+        manifest = mock_nc.publish.await_args.kwargs["message"]
+        restored = RegistrationManifest.model_validate_json(manifest.model_dump_json())
+        declaration = restored.tools[0].face_rest
+        assert declaration is not None
+        assert declaration.cache_max_age == 5
+
+    def test_a_declaration_from_before_the_field_reads_as_none(self) -> None:
+        """a manifest an older pod sent, with no max age, still validates: the field is additive."""
+        entry = {
+            "name": "test.old",
+            "version": "1.0",
+            "description": "",
+            "input_schema": {"type": "object", "properties": {}},
+            "face_rest": {"method": "GET", "path_template": "/x", "cache": "inherit", "cache_version_param": None},
+        }
+        declaration = ToolManifestEntry.model_validate(entry).face_rest
+        assert declaration is not None
+        assert declaration.cache_max_age is None
 
 
 class TestFaceRestDefaultsOff:

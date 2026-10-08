@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core and agent tools: answers an edge may cache, labelled with exactly the data they read
+
+- **Added:** `ScopedSnapshot.read_versioned()` yields a `VersionedRead(cursor, epochs, behind)`: a
+  read of the copy, as `read()`, the epoch of every scope whose rows the cursor sees, exactly (a
+  scope dropped is absent), and the scopes it is behind on, taken as `read_with_behind()` takes
+  them. A read opened while a swap commits waits for it and reads its result; it
+  never fails for a long swap, and a swap lets it go on every path (a failed commit, a cancelled
+  task). Blocking: call it from a worker thread; on the event loop it raises `RuntimeError` at once. Consumers: the hub's REST
+  face labels shareable answers with these epochs through the ENR pod (`enr.edge_rows`).
+- **Added:** `RestAffordance.cache_max_age` (whole seconds, 1 to `MAX_POINTER_AGE_SECONDS` = 60): a
+  short-lived pointer, the one unversioned read a shared cache may hold (an index naming the current
+  version). Refused beside `cache_version_param`, on a `PRIVATE` declaration and on a write.
+  `RestAffordance.resolve_cache_max_age(inherited)` is the sanctioned reader, beside
+  `resolve_cache_class`: the max age only where the effective class may reach a shared cache.
+- **Wire:** additive. A manifest without `cache_max_age` reads it as `None`; a hub built before it
+  ignores the field and serves the read origin-only.
+
 ### Core: a collection can declare it has no L2 by design
 
 The geography pod's layer tables and the ENR pod's report tables are built L1+L3 only on purpose,
@@ -346,7 +363,8 @@ so a starting replica loads them without reading L3, and a refresh moves only th
 - **Changed, after review, the snapshot's threads:** the state a reader on any thread takes (the
   applied pointers, the behind set, the row counts, the status) is changed only on the event loop, by
   rebinding a new read-only value, never in place, so `status()`, `read_with_behind()` and
-  `applied_epoch(s)` are safe from a worker thread; only the backend runs off the loop. A read never
+  `applied_epoch(s)` are safe from a worker thread; only the backend runs off the loop, and the
+  versioned L1 behind `read_versioned()`, which owns its lock and epochs, runs its commits there too. A read never
   waits on a write: `DuckDBBackend.read_snapshot()` opens its cursor from a connection no write
   locks, so a request on the event loop is not frozen behind a long replacement.
 - **Added, `OperationStatusTool(progress=)`** (the ENR pod's `enr.load_status`): what the operation
