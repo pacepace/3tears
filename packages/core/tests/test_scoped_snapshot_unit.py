@@ -226,6 +226,7 @@ async def test_a_scope_whose_chunks_are_gone_is_shown_behind_and_retried_at_the_
 
     await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
     assert snapshot.status().phase is SnapshotPhase.READY and "behind" in snapshot.status().detail
+    assert "enr/TX/2/results.gone" in snapshot.status().behind["TX"], "the status does not say why TX is behind"
     # a retry per recheck (0.05 s): a handful of reads, not hundreds
     reads = await _reads_in(store, 0.25)
     assert reads < 30, f"{reads} reads in 0.25 s: the failed scope is retried in a spin"
@@ -241,8 +242,8 @@ async def test_a_scope_whose_chunks_keep_failing_is_rebuilt_from_l3_and_applied(
     _point_at_a_missing_chunk(pointers)
 
     await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
-    await _until(lambda: snapshot.status().behind == (), what="TX rebuilt from L3 and applied")
-    assert snapshot.status().detail == "ready"
+    await _until(lambda: snapshot.status().behind == {}, what="TX rebuilt from L3 and applied")
+    await _until(lambda: snapshot.status().detail == "ready", what="the rebuild's step ended")
     await snapshot.stop()
 
 

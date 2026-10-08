@@ -230,7 +230,7 @@ class SnapshotStatus:
     :ivar history: the last phases entered, in order, without repeats in a row
     :ivar last_change: the last scope change applied, if any
     :ivar ready_at: when the copy first became ready
-    :ivar behind: scopes whose current chunks could not be applied here; the copy serves an older
+    :ivar behind: scope -> why its current chunks could not be applied here; the copy serves an older
         epoch of each until a retry, or a rebuild of the scope from L3, applies it
     """
 
@@ -244,7 +244,7 @@ class SnapshotStatus:
     history: tuple[SnapshotPhase, ...]
     last_change: ScopeChange | None
     ready_at: datetime | None
-    behind: tuple[str, ...] = ()
+    behind: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -556,8 +556,8 @@ class ScopedSnapshot:
         self._waiting: dict[str, str] = {}
         self._waited: dict[str, bool] = {}
         self._failure: str | None = None
-        # scope -> how many passes in a row its current chunks could not be applied
-        self._behind: dict[str, int] = {}
+        # scope -> (how many passes in a row its current chunks could not be applied, why the last failed)
+        self._behind: dict[str, tuple[int, str]] = {}
         # table -> scope -> rows the L1 holds, kept as each replacement commits, so the status never
         # queries DuckDB (a query would wait on the lock a load or a swap holds, on the event loop)
         self._rows: dict[str, dict[str, int]] = {t.name: {} for t in self._tables}
@@ -714,7 +714,7 @@ class ScopedSnapshot:
             history=tuple(progress.history),
             last_change=progress.last_change,
             ready_at=progress.ready_at,
-            behind=tuple(sorted(self._behind)),
+            behind={scope: why for scope, (_, why) in sorted(self._behind.items())},
         )
 
     @property
@@ -1157,11 +1157,11 @@ class ScopedSnapshot:
             if scope in self._seen and self._seen[scope].supersedes(self._applied.get(scope))
         }
         failed = await self._apply_pointers(moved)
-        for scope in failed:
-            self._behind[scope] = self._behind.get(scope, 0) + 1
+        for scope, why in failed.items():
+            self._behind[scope] = (self._behind.get(scope, (0, ""))[0] + 1, why)
         # a scope that failed is tried again at the next recheck, not at once; one that keeps failing
         # is rebuilt from L3, which writes its chunks again
-        stuck = {scope for scope, failures in self._behind.items() if failures >= _BEHIND_REBUILD_AFTER}
+        stuck = {scope for scope, (failures, _) in self._behind.items() if failures >= _BEHIND_REBUILD_AFTER}
         if stuck:
             await self._rebuild_stuck(stuck)
         self._settle()
@@ -1190,22 +1190,22 @@ class ScopedSnapshot:
         for scope in rebuilt or ():
             self._behind.pop(scope, None)
 
-    async def _apply_pointers(self, pointers: Mapping[str, _Pointer]) -> list[str]:
+    async def _apply_pointers(self, pointers: Mapping[str, _Pointer]) -> dict[str, str]:
         """fetch each scope's chunks and replace it in this L1, unless the L1 already holds as new.
 
         :param pointers: the scopes to apply and their pointers
         :ptype pointers: Mapping[str, _Pointer]
-        :return: the scopes whose chunks could not be read, each logged
-        :rtype: list[str]
+        :return: scope -> why its chunks could not be read, each logged
+        :rtype: dict[str, str]
         """
-        failed: list[str] = []
+        failed: dict[str, str] = {}
         for scope, pointer in pointers.items():
             started = time.perf_counter()
             try:
                 current, replacements = await self._fetch_current(scope, pointer)
             except _Lost as exc:
                 log.warning("scoped snapshot %s: scope %r could not be applied: %s", self._name, scope, exc)
-                failed.append(scope)
+                failed[scope] = str(exc)
                 continue
             async with self._local:
                 if not current.supersedes(self._applied.get(scope)):
@@ -2015,7 +2015,7 @@ class ScopedSnapshot:
                 pointers[scope] = pointer
         failed = await self._apply_pointers(pointers)
         if failed:
-            raise _Lost(f"published scopes {failed} could not be read; not ready without them")
+            raise _Lost(f"published scopes {sorted(failed)} could not be read; not ready without them")
 
     async def _remove_scopes(self, candidates: set[str]) -> None:
         """remove the scopes L3 holds no more, judged now: their pointers, then the index, this L1, their chunks.

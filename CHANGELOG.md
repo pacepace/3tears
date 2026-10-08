@@ -138,7 +138,7 @@ so a starting replica loads them without reading L3, and a refresh moves only th
   below it, deleted; at its epoch unnamed, or with no pointer, deleted only past `stray_age`. The
   phase is derived in one place from the facts (the watch's end first, then a step in progress, a
   wait outstanding, a failed pass, ready), so a catch-up can no longer show a replica whose watch
-  ended as ready. A scope whose chunks cannot be applied is shown (`SnapshotStatus.behind`), retried
+  ended as ready. A scope whose chunks cannot be applied is shown with why (`SnapshotStatus.behind`, scope -> reason), retried
   at the recheck rather than at once, and rebuilt from L3 after three failures; the rebuild claim's
   own writes no longer wake the worker. `status()` counts rows from memory, so it never waits on the
   DuckDB lock a load holds. A claim renewal that cannot reach NATS is logged and retried until the

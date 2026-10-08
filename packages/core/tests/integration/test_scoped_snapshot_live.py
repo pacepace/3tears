@@ -1033,7 +1033,7 @@ async def test_a_writers_staged_chunks_survive_a_rebuilds_sweep_and_apply_everyw
             ),
             what="DE applied at epoch 2",
         )
-        assert replica.status().behind == ()
+        assert replica.status().behind == {}
         with replica.read() as cursor:
             assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(9,)]
     await writer.stop()
