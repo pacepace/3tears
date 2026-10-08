@@ -71,6 +71,10 @@ class PartitionReplacement:
     primary_key: str | tuple[str, ...] = "id"
 
 
+#: whether this process has said pyarrow is missing (once is enough)
+_ARROW_MISSING_SAID = False
+
+
 def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], lists: Sequence[list[Any]]) -> bool:
     """insert or replace rows given as one list per column, through one Arrow table; False when it cannot.
 
@@ -91,21 +95,35 @@ def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], 
     :return: whether the rows were inserted
     :rtype: bool
     """
+    global _ARROW_MISSING_SAID  # noqa: PLW0603 -- said once per process, not per write
+    inserted = False
     try:
         import pyarrow as pa  # noqa: PLC0415 -- optional: the snapshot extra
     except ImportError:
-        return False
-    try:
-        arrow = pa.table({f"c{i}": values for i, values in enumerate(lists)})
-    except pa.ArrowInvalid, pa.ArrowTypeError, OverflowError:
-        return False
-    names = ", ".join(f"c{i}" for i in range(len(columns)))
-    connection.register("_bulk_rows", arrow)
-    try:
-        connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {names} FROM _bulk_rows")  # noqa: S608
-    finally:
-        connection.unregister("_bulk_rows")
-    return True
+        pa = None
+        if not _ARROW_MISSING_SAID:
+            _ARROW_MISSING_SAID = True
+            log.warning(
+                "pyarrow is not installed: DuckDB bulk writes bind every value through DuckDB's Python "
+                "layer, which is slow (install 3tears[snapshot])"
+            )
+    if pa is not None:
+        try:
+            arrow = pa.table({f"c{i}": values for i, values in enumerate(lists)})
+        except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError) as exc:
+            log.info(
+                "a bulk write's values do not type as one Arrow column; binding them one by one (slow)",
+                extra={"extra_data": {"target": target, "error": f"{type(exc).__name__}: {exc}"}},
+            )
+        else:
+            names = ", ".join(f"c{i}" for i in range(len(columns)))
+            connection.register("_bulk_rows", arrow)
+            try:
+                connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {names} FROM _bulk_rows")  # noqa: S608
+            finally:
+                connection.unregister("_bulk_rows")
+            inserted = True
+    return inserted
 
 
 class DuckDBBackend:

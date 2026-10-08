@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Geo: each tile's geometry is clipped to the tile and a buffer
+
+- **Changed, `threetears.geo.mvt.encode_tile`**: geometry is clipped to the tile plus a 64-unit
+  margin before it is encoded (**added `TILE_BUFFER` and `clip_to_tile(projected, buffer=)`**). A
+  shape far larger than its tile (Aleutians West at z3) reached 32,747 units on a 4,096 extent, past
+  the 16-bit range MapLibre reads ("Geometry exceeds allowed extent").
+- **Consequence for tiles already built:** a tile is cached as immutable per `(layer, version, z,
+  x, y)`, and the encoder is not part of that key. Tiles already in L1, L2, the L3 object store or a
+  CDN keep their unclipped bytes until the layer's version moves. A consumer (the hub, the
+  geography pod) that served a refused tile must bump or reload each affected layer to get clipped
+  tiles.
+
+### Core: a DuckDB bulk write converts its rows once, through Arrow
+
+- **Changed, `DuckDBBackend` bulk writes (`upsert_many`, `replace_all`, `replace_partitions`,
+  `export_rows`)**: rows go through one Arrow table when pyarrow is installed. Binding Python lists
+  made DuckDB try to import pandas once per value, a search of the whole import path where pandas
+  is absent: seconds for a few thousand rows. A column Arrow cannot type as one, or no pyarrow,
+  falls back to binding the values, and says so in the log. Output is unchanged.
+
 ### Datasources: the catalog is what the datasource's own user can SELECT
 
 - **Changed, `AsyncpgDriver` and `RedshiftDriver`**: `list_tables`, `list_columns` and
