@@ -33,6 +33,17 @@ later, unprompted.
   geography pod) that served a refused tile must bump or reload each affected layer to get clipped
   tiles.
 
+### Core: one home for SQL identifiers, and a typed L3 seam for the copies
+
+- **Added, `threetears.core.sql_fragments`:** `quote_identifier` (moved here; still importable from
+  `threetears.core.cache.base`), `equality_conditions(where, first=, quote=)` and `as_written`. The
+  L1 backends, the whole-table copies, scope epochs, the scoped snapshot and the datasources drivers
+  all spell identifiers and equality filters through it. The drivers' `build_equality_filter` keeps
+  its columns unquoted (`as_written`), as the rest of its statement is: no behaviour change.
+- **Added, `threetears.core.backends.L3Reader`:** the two reads (`fetch`, `fetchrow`) the copies
+  make. `l3_fingerprint`, `read_l3_rows`, `copy_table`, `ScopedSnapshot` and
+  `open_tool_pod_snapshot` take it where they took `Any`; every `L3Backend` is one.
+
 ### Core: a DuckDB bulk write converts its rows once, through Arrow
 
 - **Changed, `DuckDBBackend` bulk writes (`upsert_many`, `replace_all`, `replace_partitions`,

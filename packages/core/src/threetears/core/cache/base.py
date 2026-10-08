@@ -25,6 +25,8 @@ __all__ = [
     "build_select_clause",
     "bulk_columns",
     "entry_is_fresh",
+    # released here (v0.66.0) before it moved to threetears.core.sql_fragments; still importable
+    "quote_identifier",
 ]
 
 MISSING = object()
