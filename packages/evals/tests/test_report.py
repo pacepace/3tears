@@ -619,7 +619,10 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         assert Report.model_validate(document) == report
 
         markdown = report_markdown(report)
-        assert markdown.startswith(f"# Campaign {report.source.campaign_id}: its evidence, with no analysis\n")
+        # Titled by the campaign's name; the byline under it still names the campaign by its id.
+        assert report.source.campaign_name
+        assert markdown.startswith(f"# Campaign {report.source.campaign_name}: its evidence, with no analysis\n")
+        assert f"Code-only report of campaign {report.source.campaign_id}" in markdown.splitlines()[2]
         assert "No analysis was generated." in markdown and "(blank headline)" not in markdown
         page = report_html(report)
         assert 'data-basis="code_only"' in page and 'data-chart-type="distribution"' in page

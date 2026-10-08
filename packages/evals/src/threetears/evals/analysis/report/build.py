@@ -625,7 +625,9 @@ NO_ANALYSIS = (
 )
 
 
-def build_code_only_report(bundle: AnalysisContextBundle, *, measures: MeasureRegistry, assembled_at: str) -> Report:
+def build_code_only_report(
+    bundle: AnalysisContextBundle, *, measures: MeasureRegistry, assembled_at: str, campaign_name: str | None = None
+) -> Report:
     """Lay a campaign's assembled evidence out as a report, when no analysis exists to report through.
 
     Everything here is code's: the arm table (every arm ``unresolved``, since a verdict is a decision's
@@ -640,6 +642,7 @@ def build_code_only_report(bundle: AnalysisContextBundle, *, measures: MeasureRe
             assembled it.
         measures: The host's measure registry, which a chart's payload reads.
         assembled_at: When the bundle was assembled (ISO-8601), stated as the report's ``generated_at``.
+        campaign_name: The campaign's name, which titles the report; ``None`` titles it by the campaign's id.
 
     Returns:
         The report, ``basis="code_only"``.
@@ -684,6 +687,7 @@ def build_code_only_report(bundle: AnalysisContextBundle, *, measures: MeasureRe
         finding_count=0,
         source=ReportSource(
             campaign_id=bundle.campaign_id,
+            campaign_name=campaign_name or None,
             scope_id=bundle.scope_id,
             subject_id=bundle.subject_id,
             subject_kind=bundle.subject_kind,
