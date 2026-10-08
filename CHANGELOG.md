@@ -19,6 +19,32 @@ silently disabled ... wiring gap: datasource-task-06 DS-06-04` on its first writ
   keeps its meaning and its WARNING, which now names `NO_L2` as the declaration for a deliberate
   opt-out. Integration guide §8.2 says which to use.
 
+### Core: reads and deletes by many keys stay bounded on a hash-sharded key
+
+The geography pod's census tracts (84,091 polygons a generation, two or three generations held)
+stopped loading: on YugabyteDB a statement no key leads reads every row of the table, geometry
+included, and runs into the broker's five-second statement ceiling. The pod wrote the bounded
+forms itself; they are the collection's now.
+
+- **Added, `SchemaBackedCollection.read_rows_led_by(values, *, columns=None, max_values=None,
+  conn=None)`**: the rows whose leading key column is one of `values` (each read once), the key
+  columns and any `columns` named beside them, read from L3 around the caches. Every statement
+  is led by the key: `LED_READ_MAX_VALUES` (250) values a statement as
+  `WHERE <lead> = ANY($1::<type>[])`; an answer that reaches the L3 rail's row cap
+  (`L3_ROW_CAP`, 1,000, which cuts without saying so) is read again in halves; and a single value
+  that alone reaches it is paged by the rest of its key
+  (`WHERE <lead> = $1 AND (<rest>) > (...) ORDER BY <rest> LIMIT <cap>`), which is the key's own
+  order inside one hash bucket. Through `KeyLedReadingStore.fetch_led_by` (new protocol, which
+  `SqlL3Backend` implements), or an equality `scan` a value at a time on a store without it.
+  `schema_sql` gains `build_led_by_select_sql`, `build_led_page_sql`, `build_key_led_delete_sql`
+  and `key_array_type`.
+- **Changed, `SchemaBackedCollection.delete_rows`** (unreleased): its statements are key-led, as
+  above, in place of a row-constructor `IN` list, which YugabyteDB need not look up by key.
+  `schema_sql.build_bulk_delete_sql` is gone.
+- Not changed: `complete_copy.read_l3_rows` still pages `ORDER BY` the whole key. It reads a table
+  whole by design, and on a hash-sharded key each page sorts every row its filters leave; its
+  docstring now says so and names `read_rows_led_by` for a key-bounded read.
+
 ### Observe: a log line names the class of the instance that logged it
 
 - **Fixed, `ThreeTearsLogger`**: the call-site class a record carries (`call_site_class`, the
@@ -246,11 +272,13 @@ copies swapped in whole.
   that) but answered "requested", and the run in progress is followed by one more, which takes it
   even when the drain had already made its last look for requests.
 - **Added, `SchemaBackedCollection.delete_rows(keys, *, conn, max_rows=None)`** (the ENR pod's
-  refresh deletes the rows the warehouse no longer holds): rows deleted by key in multi-row
-  `DELETE ... WHERE (k1, k2) IN ((...), ...)` statements on the caller's transaction, settled with
-  the rest when it ends; through `BulkDeletingStore.delete_many` (new protocol, which
-  `SqlL3Backend` implements), or a key at a time through `delete` on a store without it.
-  `schema_sql.build_bulk_delete_sql` builds the statement.
+  refresh deletes the rows the warehouse no longer holds): rows deleted by key in key-led
+  statements on the caller's transaction, settled with the rest when it ends; through
+  `BulkDeletingStore.delete_many` (new protocol, which `SqlL3Backend` implements), or a key at a
+  time through `delete` on a store without it. Each statement is
+  `DELETE ... WHERE <k> = ANY($1::<type>[]) AND <rest of the key> = $2 ...`
+  (`schema_sql.build_key_led_delete_sql`): the keys are grouped by all but one key column, the one
+  leaving the fewest groups, so the ENR refresh's keys of one race go as one array of geographies.
 - **Added, `nats_proxy.LOCK_NOT_AVAILABLE_ERROR_CODE`**: the broker's code for a statement whose
   `NOWAIT` lock another transaction holds (SQLSTATE 55P03); the proxy rebuilds
   `asyncpg.LockNotAvailableError` from it, as a direct pool raises. The hub sends it from its

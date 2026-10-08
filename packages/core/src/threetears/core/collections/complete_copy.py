@@ -299,6 +299,13 @@ async def read_l3_rows(
     that did not page would be silently short: this asks for one row more than a page and pages on
     the key until a page comes back without it.
 
+    **A whole-table read, not a bounded one.** Each page is ``ORDER BY`` the whole key, which a
+    btree key answers in order but a YugabyteDB hash-sharded key answers by reading and sorting
+    every row the filters leave, once a page. Fine for a table copied whole that is small enough
+    to copy; for the rows some leading-key values hold, read
+    :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.read_rows_led_by`,
+    every statement of which the key leads.
+
     :param l3: the L3 backend
     :ptype l3: L3Backend
     :param table: the table, a TRUSTED identifier

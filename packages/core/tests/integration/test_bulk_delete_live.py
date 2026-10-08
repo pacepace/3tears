@@ -1,8 +1,9 @@
-"""Integration: rows deleted by key in multi-row statements on the caller's transaction.
+"""Integration: rows deleted, and read, by many keys in key-led statements.
 
-What the unit tests' recording connection cannot prove: that Postgres accepts the row-constructor
-``IN`` list with typed parameters, deletes exactly the keys named, and keeps them when the
-transaction rolls back.
+What the unit tests' recording connections cannot prove: that Postgres accepts the typed arrays
+(``= ANY($1::timestamptz[])`` beside the rest of the key), deletes exactly the keys named and keeps
+them when the transaction rolls back, and that a key-led read cut at a row cap, read again in halves
+and paged by the rest of the key, answers every row the values hold and no other.
 
 Uses the session-scoped ``db_container`` fixture; a checkout without docker skips cleanly.
 """
@@ -111,3 +112,47 @@ async def test_a_rolled_back_delete_keeps_every_row(pool: asyncpg.Pool) -> None:
             raise ConnectionError("the write after it failed")
 
     assert await _held(pool) == [0, 1, 2, 3, 4, 5]
+
+
+def _capped(pool: asyncpg.Pool, cap: int) -> Any:
+    """the collection, reading as if the rail answered at most ``cap`` rows a statement."""
+    cls = collection_for_schema(_SCHEMA, entity_class=_Snapshot)
+    cls.L3_ROW_CAP = cap
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=SqlL3Backend(_CuttingPool(pool, cap)))
+    return cls(registry, DefaultCoreConfig(), None)
+
+
+class _CuttingPool:
+    """a pool that answers at most ``cap`` rows a statement, as the L3 rail does, without saying so."""
+
+    def __init__(self, pool: asyncpg.Pool, cap: int) -> None:
+        self._pool = pool
+        self._cap = cap
+        self.statements: list[str] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[Any]:
+        self.statements.append(query)
+        return list(await self._pool.fetch(query, *params))[: self._cap]
+
+
+async def test_a_key_led_read_answers_every_row_the_values_hold(pool: asyncpg.Pool) -> None:
+    for minute in range(6, 30):
+        await pool.execute(
+            "INSERT INTO snapshots VALUES ($1, $2, $3)", "r2", _START + timedelta(minutes=minute), minute
+        )
+
+    # r0 and r1 hold three rows each, r2 twenty-four: the batch is cut, then r2 alone is
+    held = await _capped(pool, 4).read_rows_led_by(["r0", "r2", "r1", "nope"], columns=["votes"])
+
+    assert sorted(row["votes"] for row in held) == list(range(30))
+    assert all(isinstance(row["reported_at"], datetime) for row in held)
+
+
+async def test_a_key_led_read_takes_one_statement_when_nothing_is_cut(pool: asyncpg.Pool) -> None:
+    collection = _capped(pool, 1000)
+
+    held = await collection.read_rows_led_by(["r1"])
+
+    assert sorted(row["reported_at"] for row in held) == [_START + timedelta(minutes=m) for m in (1, 3, 5)]
+    assert set(held[0]) == {"race", "reported_at"}

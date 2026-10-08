@@ -11,9 +11,9 @@ from typing import Any
 import pytest
 
 from threetears.core.backends.schema_sql import (
-    build_bulk_delete_sql,
     build_bulk_insert_sql,
     build_insert_params,
+    build_key_led_delete_sql,
     bulk_batches,
     json_default,
 )
@@ -359,9 +359,10 @@ async def test_save_rows_answers_how_many_rows_it_submitted() -> None:
 # -- delete_rows: the bulk write's other half -------------------------------------------------------
 
 
-def test_one_statement_deletes_every_key_named() -> None:
-    sql = build_bulk_delete_sql(SCHEMA, rows=2)
-    assert sql == "DELETE FROM results WHERE (office_key, geo_id) IN (($1, $2), ($3, $4))"
+def test_one_statement_deletes_every_key_named_led_by_the_key() -> None:
+    # the race's geographies as one array, the race fixed: led by the key, so bounded on a hashed key
+    sql = build_key_led_delete_sql(SCHEMA, varying="geo_id")
+    assert sql == "DELETE FROM results WHERE geo_id = ANY($1::text[]) AND office_key = $2"
 
 
 async def test_delete_rows_deletes_them_in_one_statement_on_the_caller_s_transaction() -> None:
@@ -370,8 +371,8 @@ async def test_delete_rows_deletes_them_in_one_statement_on_the_caller_s_transac
         deleted = await collection.delete_rows([("sn_NC1", "00001"), ("sn_NC1", "00007")], conn=conn)
     assert deleted == 2
     [(sql, params)] = conn.committed
-    assert sql == build_bulk_delete_sql(SCHEMA, rows=2)
-    assert params == ("sn_NC1", "00001", "sn_NC1", "00007")
+    assert sql == build_key_led_delete_sql(SCHEMA, varying="geo_id")
+    assert params == (["00001", "00007"], "sn_NC1")
 
 
 async def test_keys_to_delete_are_split_so_no_statement_passes_the_row_limit() -> None:
@@ -379,7 +380,7 @@ async def test_keys_to_delete_are_split_so_no_statement_passes_the_row_limit() -
     keys = [("sn_NC1", f"{i:05d}") for i in range(5)]
     async with CallerTransaction(conn):
         await collection.delete_rows(keys, conn=conn, max_rows=2)
-    assert [len(params) // 2 for _, params in conn.committed] == [2, 2, 1]
+    assert [len(params[0]) for _, params in conn.committed] == [2, 2, 1]
 
 
 async def test_a_failing_delete_rolls_the_whole_transaction_back() -> None:

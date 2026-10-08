@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -33,7 +34,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MAX_STATEMENT_PARAMS",
-    "build_bulk_delete_sql",
     "build_bulk_insert_sql",
     "build_cas_params",
     "build_cas_update_sql",
@@ -43,6 +43,9 @@ __all__ = [
     "build_fetch_sql",
     "build_insert_params",
     "build_insert_sql",
+    "build_key_led_delete_sql",
+    "build_led_by_select_sql",
+    "build_led_page_sql",
     "build_ordered_upsert_sql",
     "build_select_column_list",
     "build_where_pk",
@@ -59,6 +62,7 @@ __all__ = [
     "encode_vector",
     "insert_columns_for_data",
     "json_default",
+    "key_array_type",
     "normalize_read_value",
     "normalize_write_value",
     "pull_value",
@@ -68,6 +72,8 @@ __all__ = [
 # column type tags (string-duplicated here so this module stays import-cycle-free;
 # the canonical definitions live in ``schema_backed`` and these mirror them verbatim).
 _UUID_TYPE = "uuid"
+_STRING_TYPE = "string"
+_ENUM_TYPE = "enum"
 _DATETIMETZ_TYPE = "datetimetz"
 _JSONB_TYPE = "jsonb"
 _BYTES_TYPE = "bytes"
@@ -681,28 +687,148 @@ def build_bulk_insert_sql(schema: TableSchema, *, rows: int, columns: list[Colum
     return _with_conflict_clause(schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES {values}")
 
 
-def build_bulk_delete_sql(schema: TableSchema, *, rows: int) -> str:
-    """build one DELETE of ``rows`` rows named by their primary keys.
+#: column type tag -> the Postgres type of an array of its values, for a key-led ``= ANY($1::t[])``.
+#: A tag missing here (jsonb, vector, tsvector) has no array form a key would be named by.
+_ARRAY_TYPES: dict[str, str] = {
+    _STRING_TYPE: "text[]",
+    _UUID_TYPE: "uuid[]",
+    _INT_TYPE: "integer[]",
+    _BIGINT_TYPE: "bigint[]",
+    _BOOL_TYPE: "boolean[]",
+    _NUMERIC_TYPE: "numeric[]",
+    _DATETIMETZ_TYPE: "timestamptz[]",
+    _BYTES_TYPE: "bytea[]",
+}
 
-    ``DELETE FROM t WHERE (a, b) IN (($1, $2), ($3, $4))``: each key's parameters in the order of
-    the schema's key columns, every key one row of the ``IN`` list.
+
+def key_array_type(schema: TableSchema, column: str) -> str | None:
+    """the Postgres array type a key-led statement casts its ``$1`` of ``column``'s values to.
 
     :param schema: table schema
     :ptype schema: TableSchema
-    :param rows: how many keys the statement names; at least one
-    :ptype rows: int
+    :param column: one of its columns
+    :ptype column: str
+    :return: the array type, ``text[]`` for a string column, ``<enum_name>[]`` for an enum; None
+        for a type with no array form a key is named by (jsonb, vector, tsvector)
+    :rtype: str | None
+    """
+    col = schema.column(column)
+    if col.column_type == _ENUM_TYPE and col.enum_name is not None:
+        return f"{col.enum_name}[]"
+    return _ARRAY_TYPES.get(col.column_type)
+
+
+def _required_array_type(schema: TableSchema, column: str) -> str:
+    """:func:`key_array_type`, or a refusal naming the table and the column.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param column: one of its columns
+    :ptype column: str
+    :return: the array type
+    :rtype: str
+    :raises ValueError: when the column's type has no array form
+    """
+    cast = key_array_type(schema, column)
+    if cast is None:
+        kind = schema.column(column).column_type
+        raise ValueError(f"{schema.name}.{column} is {kind}, which no key-led statement names as an array")
+    return cast
+
+
+def build_key_led_delete_sql(schema: TableSchema, *, varying: str) -> str:
+    """build one DELETE of the rows whose key is ``varying`` in an array and the rest of the key as given.
+
+    ``DELETE FROM t WHERE <varying> = ANY($1::<type>[]) AND <k2> = $2 ...``: ``$1`` is the varying
+    column's values, and every other key column, in the key's order, takes the next parameter.
+    The key is named whole, a column an array and the rest single values, so the statement is led
+    by the key on any primary key: a hash-sharded table (YugabyteDB hashes the leading key column)
+    is looked up at each named key, never read whole, as a row-constructor ``IN`` list may be.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param varying: the key column whose values the array carries
+    :ptype varying: str
     :return: parameterized DELETE SQL
     :rtype: str
-    :raises ValueError: when ``rows`` is under one
+    :raises ValueError: when ``varying`` is not a key column, or its type has no array form
     """
-    if rows < 1:
-        raise ValueError(f"a bulk DELETE needs at least one key, got {rows}")
-    key = [schema.column(name) for name in schema.pk_columns]
-    width = len(key)
-    keys = ", ".join(
-        "(" + ", ".join(render_param(c, row * width + i + 1) for i, c in enumerate(key)) + ")" for row in range(rows)
+    if varying not in schema.pk_columns:
+        raise ValueError(f"{schema.name}: {varying!r} is not a key column of {schema.pk_columns}")
+    conditions = [f"{varying} = ANY($1::{_required_array_type(schema, varying)})"]
+    fixed = [schema.column(name) for name in schema.pk_columns if name != varying]
+    conditions += [f"{col.name} = {render_param(col, index)}" for index, col in enumerate(fixed, start=2)]
+    return f"DELETE FROM {schema.name} WHERE {' AND '.join(conditions)}"
+
+
+def _projection(schema: TableSchema, columns: Sequence[str]) -> str:
+    """the SELECT list for ``columns``, a codec-less column cast to text as :func:`build_select_column_list` does.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param columns: the columns, each declared
+    :ptype columns: Sequence[str]
+    :return: comma-joined projection
+    :rtype: str
+    """
+    parts: list[str] = []
+    for name in columns:
+        col = schema.column(name)
+        parts.append(f"{name}::text AS {name}" if col.column_type in (_VECTOR_TYPE, _TSVECTOR_TYPE) else name)
+    return ", ".join(parts)
+
+
+def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
+    """build one SELECT of ``columns`` from the rows whose leading key column is one of ``$1``.
+
+    ``SELECT ... FROM t WHERE <lead> = ANY($1::<type>[])``: led by the key, so a hash-sharded
+    table is looked up at each value rather than read whole.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param columns: the columns to read, each declared
+    :ptype columns: Sequence[str]
+    :return: parameterized SELECT SQL
+    :rtype: str
+    :raises ValueError: when the leading key column's type has no array form
+    """
+    lead = schema.pk_columns[0]
+    return (
+        f"SELECT {_projection(schema, columns)} FROM {schema.name} "
+        f"WHERE {lead} = ANY($1::{_required_array_type(schema, lead)})"
     )
-    return f"DELETE FROM {schema.name} WHERE ({', '.join(c.name for c in key)}) IN ({keys})"
+
+
+def build_led_page_sql(schema: TableSchema, columns: Sequence[str], *, after: bool, limit: int) -> str:
+    """build one page of the rows one leading-key value holds, in the order of the rest of the key.
+
+    ``SELECT ... FROM t WHERE <lead> = $1 [AND (<k2>, ...) > ($2, ...)] ORDER BY <k2>, ... LIMIT n``:
+    the leading value pins one hash bucket and the rest of the key is its range order, so a page is
+    bounded on a hash-sharded table where ``ORDER BY`` the whole key is a sort of every row.
+
+    :param schema: table schema; its key has more than one column
+    :ptype schema: TableSchema
+    :param columns: the columns to read, each declared, the key's among them
+    :ptype columns: Sequence[str]
+    :param after: whether the page starts past a cursor: the rest of the key's values, from ``$2``
+    :ptype after: bool
+    :param limit: the most rows the page answers
+    :ptype limit: int
+    :return: parameterized SELECT SQL
+    :rtype: str
+    :raises ValueError: when the key has one column (a value holds one row, with nothing to page by)
+    """
+    lead, *rest = schema.pk_columns
+    if not rest:
+        raise ValueError(f"{schema.name}: a one-column key holds one row a value; there is nothing to page by")
+    conditions = [f"{lead} = {render_param(schema.column(lead), 1)}"]
+    if after:
+        marks = ", ".join(render_param(schema.column(name), index) for index, name in enumerate(rest, start=2))
+        conditions.append(f"({', '.join(rest)}) > ({marks})")
+    return (
+        f"SELECT {_projection(schema, columns)} FROM {schema.name} WHERE {' AND '.join(conditions)} "
+        f"ORDER BY {', '.join(rest)} LIMIT {limit}"
+    )
 
 
 def bulk_batches(

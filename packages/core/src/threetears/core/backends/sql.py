@@ -28,7 +28,6 @@ The wrapped pool is the previously-untyped ``l3_pool`` (a bare asyncpg ``Pool`` 
 from __future__ import annotations
 
 import os
-import sys
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
@@ -163,6 +162,35 @@ def _quote_ident(name: str) -> str:
     if '"' in name:
         raise ValueError(f"illegal SQL identifier {name!r}")
     return f'"{name}"'
+
+
+def _key_led_groups(schema: TableSchema, keys: list[tuple[Any, ...]]) -> tuple[int, dict[tuple[Any, ...], list[Any]]]:
+    """group whole keys for key-led deletes: one key column varies in an array, the rest are fixed.
+
+    The varying column is the one leaving the fewest groups, the leading column on a tie, among the
+    key columns with an array form. Each group maps the fixed columns' values, in key order, to
+    the varying column's values, in the order the keys came.
+
+    :param schema: the table's schema
+    :ptype schema: TableSchema
+    :param keys: whole keys, write-coerced, in the schema's key order
+    :ptype keys: list[tuple[Any, ...]]
+    :return: the varying column's index in the key, and the groups
+    :rtype: tuple[int, dict[tuple[Any, ...], list[Any]]]
+    :raises ValueError: when no key column has an array form
+    """
+    best: tuple[int, dict[tuple[Any, ...], list[Any]]] | None = None
+    for index, name in enumerate(schema.pk_columns):
+        if schema_sql.key_array_type(schema, name) is None:
+            continue
+        groups: dict[tuple[Any, ...], list[Any]] = {}
+        for key in keys:
+            groups.setdefault(key[:index] + key[index + 1 :], []).append(key[index])
+        if best is None or len(groups) < len(best[1]):
+            best = (index, groups)
+    if best is None:
+        raise ValueError(f"{schema.name}: no key column of {schema.pk_columns} has an array form to delete by")
+    return best
 
 
 class SqlL3Backend:
@@ -484,11 +512,14 @@ class SqlL3Backend:
         max_rows: int,
         conn: Any = None,
     ) -> int:
-        """Delete the rows of a schema-registered table named by ``keys``, in multi-row statements.
+        """Delete the rows of a schema-registered table named by ``keys``, every statement led by the key.
 
-        Each statement names at most ``max_rows`` keys (and at most the parameters one statement
-        may bind). On ``conn`` a failing statement fails the caller's transaction, so every batch
-        rolls back with it.
+        The keys are grouped by all but one key column, the varying one, chosen to make the fewest
+        groups (the leading column on a tie), and each group goes ``max_rows`` keys a statement as
+        ``DELETE ... WHERE <varying> = ANY($1) AND <rest of the key> = ...``
+        (:func:`~threetears.core.backends.schema_sql.build_key_led_delete_sql`). Every statement
+        names whole keys, so a hash-sharded table is looked up at each one and never read whole. On
+        ``conn`` a failing statement fails the caller's transaction, so every batch rolls back with it.
 
         :param table: the table; its schema must be registered (:meth:`register_schema`)
         :ptype table: str
@@ -500,37 +531,158 @@ class SqlL3Backend:
         :ptype conn: Any
         :return: keys named
         :rtype: int
-        :raises ValueError: when no schema is registered for ``table``, or a key is not as wide as
-            the table's key
+        :raises ValueError: when no schema is registered for ``table``, a key is not as wide as
+            the table's key, or no key column has an array form
         """
         schema = self._schemas.get(table)
         if schema is None:
             raise ValueError(f"delete_many needs the schema of {table!r} registered")
         key_columns = [schema.column(name) for name in schema.pk_columns]
-        params: list[list[Any]] = []
+        named: list[tuple[Any, ...]] = []
         for key in keys:
             if len(key) != len(key_columns):
                 raise ValueError(
                     f"{table}: a key to delete has {len(key)} values where the table's key has {len(key_columns)}"
                 )
-            params.append(
-                [
+            named.append(
+                tuple(
                     schema_sql.normalize_write_value(column, value)
                     for column, value in zip(key_columns, key, strict=True)
-                ]
+                )
             )
-        deleted = 0
-        # no byte limit: a key is a few short values, so the row count binds first
-        for batch in schema_sql.bulk_batches(
-            params, max_rows=max_rows, max_bytes=sys.maxsize, max_params=schema_sql.MAX_STATEMENT_PARAMS
-        ):
-            await self._execute(
-                schema_sql.build_bulk_delete_sql(schema, rows=len(batch)),
-                *(value for key in batch for value in key),
-                conn=conn,
+        if not named:
+            return 0
+        varying, groups = _key_led_groups(schema, named)
+        sql = schema_sql.build_key_led_delete_sql(schema, varying=schema.pk_columns[varying])
+        for fixed, values in groups.items():
+            for start in range(0, len(values), max_rows):
+                await self._execute(sql, values[start : start + max_rows], *fixed, conn=conn)
+        return len(named)
+
+    async def fetch_led_by(
+        self,
+        table: str,
+        values: Sequence[Any],
+        *,
+        columns: Sequence[str],
+        max_values: int,
+        row_cap: int,
+        conn: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Read ``columns`` of the rows whose leading key column is one of ``values``, every statement led by the key.
+
+        ``max_values`` values a statement, ``WHERE <lead> = ANY($1)``. The transport may cut an
+        answer at ``row_cap`` rows without saying so, so an answer that reaches it is read again in
+        halves, and a single value that alone reaches it is paged by the rest of its key
+        (``WHERE <lead> = $1 AND (<rest>) > (...) ORDER BY <rest> LIMIT``), which is the key's own
+        order inside one hash bucket. No statement reads or sorts the whole table.
+
+        :param table: the table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param values: the leading key column's values, each named once
+        :ptype values: Sequence[Any]
+        :param columns: the columns to read, the key's among them
+        :ptype columns: Sequence[str]
+        :param max_values: the most values one statement names
+        :ptype max_values: int
+        :param row_cap: the most rows the transport answers a statement; at least two
+        :ptype row_cap: int
+        :param conn: the caller's connection; ``None`` uses the pool
+        :ptype conn: Any
+        :return: the rows, read-coerced
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: when no schema is registered for ``table``, or ``row_cap`` is under two
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            raise ValueError(f"fetch_led_by needs the schema of {table!r} registered")
+        if row_cap < 2:
+            raise ValueError(f"{table}: a row cap of {row_cap} leaves no room to tell a full answer from a cut one")
+        lead = schema.column(schema.pk_columns[0])
+        normalized = [schema_sql.normalize_write_value(lead, value) for value in values]
+        sql = schema_sql.build_led_by_select_sql(schema, columns)
+        rows: list[dict[str, Any]] = []
+        for start in range(0, len(normalized), max_values):
+            rows += await self._fetch_led(schema, sql, columns, normalized[start : start + max_values], row_cap, conn)
+        return [schema_sql.coerce_row(schema, row) for row in rows]
+
+    async def _fetch_led(
+        self, schema: TableSchema, sql: str, columns: Sequence[str], values: list[Any], row_cap: int, conn: Any
+    ) -> list[dict[str, Any]]:
+        """one batch of a key-led read: in halves while an answer reaches the cap, then a value by pages.
+
+        :param schema: the table's schema
+        :ptype schema: TableSchema
+        :param sql: the batch statement (:func:`~threetears.core.backends.schema_sql.build_led_by_select_sql`)
+        :ptype sql: str
+        :param columns: the columns read
+        :ptype columns: Sequence[str]
+        :param values: the batch's leading-key values, write-coerced
+        :ptype values: list[Any]
+        :param row_cap: the most rows the transport answers a statement
+        :ptype row_cap: int
+        :param conn: the caller's connection, or None
+        :ptype conn: Any
+        :return: the rows the values hold
+        :rtype: list[dict[str, Any]]
+        """
+        rows = await self._fetch(sql, values, conn=conn)
+        if len(rows) < row_cap:
+            return rows
+        if len(values) > 1:
+            half = len(values) // 2
+            return await self._fetch_led(schema, sql, columns, values[:half], row_cap, conn) + await self._fetch_led(
+                schema, sql, columns, values[half:], row_cap, conn
             )
-            deleted += len(batch)
-        return deleted
+        return await self._fetch_value_paged(schema, columns, values[0], row_cap, conn)
+
+    async def _fetch_value_paged(
+        self, schema: TableSchema, columns: Sequence[str], value: Any, row_cap: int, conn: Any
+    ) -> list[dict[str, Any]]:
+        """every row one leading-key value holds, a page under the cap at a time, in the rest of the key's order.
+
+        :param schema: the table's schema; its key has more than one column, or one value could
+            not hold more rows than a cap of two
+        :ptype schema: TableSchema
+        :param columns: the columns read, the key's among them
+        :ptype columns: Sequence[str]
+        :param value: the leading-key value, write-coerced
+        :ptype value: Any
+        :param row_cap: the most rows the transport answers a statement
+        :ptype row_cap: int
+        :param conn: the caller's connection, or None
+        :ptype conn: Any
+        :return: the rows
+        :rtype: list[dict[str, Any]]
+        """
+        rest = schema.pk_columns[1:]
+        page_size = row_cap - 1
+        rows: list[dict[str, Any]] = []
+        cursor: tuple[Any, ...] | None = None
+        while True:
+            sql = schema_sql.build_led_page_sql(schema, columns, after=cursor is not None, limit=row_cap)
+            page = await self._fetch(sql, value, *(cursor or ()), conn=conn)
+            kept = page[:page_size]
+            rows += kept
+            if len(page) <= page_size or not kept:
+                return rows
+            cursor = tuple(kept[-1][name] for name in rest)
+
+    async def _fetch(self, query: str, *params: Any, conn: Any = None) -> list[dict[str, Any]]:
+        """Fetch rows on ``conn`` when supplied, else the pool.
+
+        :param query: the statement
+        :ptype query: str
+        :param params: its parameters
+        :ptype params: Any
+        :param conn: the caller's connection, or None
+        :ptype conn: Any
+        :return: the rows as dicts
+        :rtype: list[dict[str, Any]]
+        """
+        if conn is not None:
+            return [dict(row) for row in await conn.fetch(query, *params)]
+        return await self.fetch(query, *params)
 
     async def _update_fenced(
         self,

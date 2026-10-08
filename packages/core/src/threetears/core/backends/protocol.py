@@ -32,6 +32,7 @@ __all__ = [
     "BulkDeletingStore",
     "BulkDurableStore",
     "DurableStore",
+    "KeyLedReadingStore",
     "L3Backend",
     "OrderedDurableStore",
     "parse_rowcount",
@@ -232,6 +233,50 @@ class BulkDeletingStore(Protocol):
         :ptype conn: Any
         :return: keys named (a key no row holds is not an error)
         :rtype: int
+        """
+        ...
+
+
+@runtime_checkable
+class KeyLedReadingStore(Protocol):
+    """A durable store that reads the rows many leading-key values hold, every statement led by the key.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.read_rows_led_by`
+    reads through. A store without it is scanned a value at a time through :meth:`DurableStore.scan`.
+    No method takes SQL.
+    """
+
+    async def fetch_led_by(
+        self,
+        table: str,
+        values: Sequence[Any],
+        *,
+        columns: Sequence[str],
+        max_values: int,
+        row_cap: int,
+        conn: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Read ``columns`` of every row of ``table`` whose leading key column is one of ``values``.
+
+        Each statement is led by the key and names at most ``max_values`` values. A transport that
+        answers at most ``row_cap`` rows a statement without saying it cut is read so that no row
+        is lost: an answer that reaches the cap is read again in halves, and one value holding that
+        many rows is paged by the rest of its key.
+
+        :param table: the table
+        :ptype table: str
+        :param values: the leading key column's values, each named once
+        :ptype values: Sequence[Any]
+        :param columns: the columns to read, the key's among them
+        :ptype columns: Sequence[str]
+        :param max_values: the most values one statement names
+        :ptype max_values: int
+        :param row_cap: the most rows the transport answers a statement; at least two
+        :ptype row_cap: int
+        :param conn: the caller's connection the reads run on; ``None`` uses the backend's own
+        :ptype conn: Any
+        :return: the rows
+        :rtype: list[dict[str, Any]]
         """
         ...
 
