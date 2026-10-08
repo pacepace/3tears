@@ -652,6 +652,34 @@ class TestShapeI:
 
         assert shape_i_violations((tests,), tmp_path, (src,)) == []
 
+    def test_state_an_ancestor_two_levels_up_keeps_is_reported(self, tmp_path: Path) -> None:
+        """the live case: a test subclass of a collection writing what the collection's base sets."""
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "base.py", "class BaseCollection:\n    def __init__(self):\n        self._l1 = None\n")
+        _write(
+            src / "pkg" / "collection.py",
+            "from pkg.base import BaseCollection\n\nclass Conversations(BaseCollection[int]):\n    def find(self):\n"
+            "        return 1\n",
+        )
+        _write(
+            tests / "test_x.py",
+            "from pkg.collection import Conversations\n\nclass Harness(Conversations):\n    def __init__(self):\n"
+            "        self._l1 = None\n",
+        )
+
+        assert [v.symbol for v in shape_i_violations((tests,), tmp_path, (src,))] == ["_l1"]
+
+    def test_state_reached_through_a_test_defined_middle_class_is_reported(self, tmp_path: Path) -> None:
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "backend.py", self._BASE)
+        _write(
+            tests / "test_x.py",
+            "from pkg.backend import Backend\n\nclass Middle(Backend):\n    def own(self):\n        return 1\n\n"
+            "class Leaf(Middle):\n    def go(self):\n        return self._lock\n",
+        )
+
+        assert [v.symbol for v in shape_i_violations((tests,), tmp_path, (src,))] == ["_lock"]
+
     def test_a_base_defined_in_the_tests_is_the_tests_own(self, tmp_path: Path) -> None:
         tests = tmp_path / "tests"
         _write(

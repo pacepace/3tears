@@ -1164,7 +1164,8 @@ def shape_i_violations(
     """walk the classes ``scan_roots`` define for a reach into a production base's private state (shape I).
 
     a class violates shape I when one of its own methods reads or writes ``self._x`` /
-    ``cls._x`` where ``_x`` is private state of a base class the inheritance roots define
+    ``cls._x`` where ``_x`` is private state of any production ancestor (a base, its bases, and
+    so on, followed through test-defined classes in between) the inheritance roots define
     (see :func:`_collect_class_private_state`) and the class does not declare ``_x`` itself
     (as a method or a class-body binding; assigning ``self._x`` is writing the base's state).
     a base's private methods are not state, and calling one is not flagged. meant for the
@@ -1180,33 +1181,95 @@ def shape_i_violations(
     :rtype: list[Violation]
     """
     base_state = _collect_class_private_state(inheritance_roots)
-    violations: list[Violation] = []
+    production_bases = _collect_class_bases(inheritance_roots)
+    scanned: list[tuple[ast.ClassDef, Path]] = []
     for root in scan_roots:
+        for file in iter_python_files(root):
+            tree = parse_python_file(file)
+            if tree is not None:
+                scanned.extend((n, file) for n in ast.walk(tree) if isinstance(n, ast.ClassDef))
+    # a test class's ancestors run through test-defined classes too (a harness over a harness)
+    test_bases = {cls.name: _base_names_generic(cls) for cls, _ in scanned}
+    test_declares = {cls.name: _class_defines(cls) for cls, _ in scanned}
+    violations: list[Violation] = []
+    for cls, file in scanned:
+        ancestry = _ancestors(cls, test_bases, production_bases)
+        violations.extend(_base_state_reaches(cls, file, ancestry, base_state, test_declares, repo_root))
+    return violations
+
+
+def _collect_class_bases(src_roots: tuple[Path, ...]) -> dict[str, list[str]]:
+    """``class_name`` -> its bases' last-segment names, over every class the roots define.
+
+    :param src_roots: every src root the scanner should consider
+    :ptype src_roots: tuple[Path, ...]
+    :return: class -> base names (merged across same-named classes, as the other maps are)
+    :rtype: dict[str, list[str]]
+    """
+    result: dict[str, list[str]] = {}
+    for root in src_roots:
         for file in iter_python_files(root):
             tree = parse_python_file(file)
             if tree is None:
                 continue
-            for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
-                violations.extend(_base_state_reaches(cls, file, base_state, repo_root))
-    return violations
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    result.setdefault(node.name, []).extend(_base_names_generic(node))
+    return result
+
+
+def _ancestors(
+    cls: ast.ClassDef,
+    test_bases: dict[str, list[str]],
+    production_bases: dict[str, list[str]],
+) -> tuple[list[str], list[str]]:
+    """every ancestor of ``cls`` by name, nearest first: those the tests define, and production ones.
+
+    a name the tests define is followed through the tests' classes; any other through the
+    production classes. each name is visited once, so a cycle of same-named classes ends.
+
+    :return: (test-defined ancestors, production ancestors)
+    :rtype: tuple[list[str], list[str]]
+    """
+    test_side: list[str] = []
+    production: list[str] = []
+    seen = {cls.name}
+    pending = [name for name in _base_names_generic(cls) if name != cls.name]
+    while pending:
+        name = pending.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+        if name in test_bases:
+            test_side.append(name)
+            pending.extend(test_bases[name])
+        else:
+            production.append(name)
+            pending.extend(production_bases.get(name, []))
+    return test_side, production
 
 
 def _base_state_reaches(
     cls: ast.ClassDef,
     file: Path,
+    ancestry: tuple[list[str], list[str]],
     base_state: dict[str, dict[str, tuple[Path, int]]],
+    test_declares: dict[str, set[str]],
     repo_root: Path,
 ) -> list[Violation]:
-    """the shape-I violations of one class.
+    """the shape-I violations of one class, against the state every production ancestor keeps.
 
     :return: the violations
     :rtype: list[Violation]
     """
-    bases = [name for name in _base_names_textual(cls) if name != cls.name]
-    inherited = {name: (base, where) for base in bases for name, where in base_state.get(base, {}).items()}
+    test_side, production = ancestry
+    inherited: dict[str, tuple[str, tuple[Path, int]]] = {}
+    for base in production:
+        for name, where in base_state.get(base, {}).items():
+            inherited.setdefault(name, (base, where))
     if not inherited:
         return []
-    own = _class_defines(cls)
+    own = _class_defines(cls).union(*(test_declares.get(name, set()) for name in test_side))
     found: list[Violation] = []
     for node in _own_nodes(cls):
         if not (
@@ -1236,3 +1299,24 @@ def _base_state_reaches(
             )
         )
     return found
+
+
+def _base_names_generic(cls: ast.ClassDef) -> list[str]:
+    """every base's last-segment name, a generic one (``Base[T]``) included by its class.
+
+    shape I follows ancestry through generic bases (``SchemaBackedCollection[Conversation]``),
+    which :func:`_base_names_textual` skips for shape D.
+
+    :param cls: class definition to inspect
+    :ptype cls: ast.ClassDef
+    :return: last-segment base names in source order
+    :rtype: list[str]
+    """
+    names: list[str] = []
+    for base in cls.bases:
+        target = base.value if isinstance(base, ast.Subscript) else base
+        if isinstance(target, ast.Name):
+            names.append(target.id)
+        elif isinstance(target, ast.Attribute):
+            names.append(target.attr)
+    return names
