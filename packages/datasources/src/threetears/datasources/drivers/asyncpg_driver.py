@@ -232,17 +232,29 @@ def _pool_start_budget_seconds(pool_min_size: int) -> float:
 # ---------------------------------------------------------------------------
 
 
+#: the privilege test every catalog query applies: the datasource's own user can SELECT the
+#: relation. ``information_schema`` lists a table its user holds ANY privilege on (an INSERT, a
+#: REFERENCES), and a least-privilege warehouse user is granted a few tables of a schema it can
+#: see whole; without this the catalog carried tables every later read of which -- the coverage
+#: probe, the schema tool -- raised 42501 permission denied. the name is schema-qualified and
+#: quoted so a mixed-case or keyword name resolves to itself; every row comes out of the catalog,
+#: so the name always exists. the catalog therefore follows the grants by construction: a revoked
+#: table drops out at the next introspection, a new grant comes in.
+_SELECTABLE = "has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT')"
+
+
 #: list tables visible inside the schema allow-list.
 #:
 #: originally migrated verbatim from Hub's
 #: ``aibots.hub.datasources.schema_introspector``; the shard-13 rewire has
 #: since landed and the introspector calls this driver directly instead of
 #: embedding its own copy of the SQL.
-_POSTGRES_TABLES_SQL = """
+_POSTGRES_TABLES_SQL = f"""
 SELECT table_schema, table_name
 FROM information_schema.tables
 WHERE table_schema = ANY($1)
 AND table_type = 'BASE TABLE'
+AND {_SELECTABLE}
 ORDER BY table_schema, table_name
 """.strip()
 
@@ -253,10 +265,11 @@ ORDER BY table_schema, table_name
 #: the :class:`ColumnRow` TypedDict pins it that way so the Tier-2 hash
 #: stays byte-equivalent with the warehouse-side MD5 (see
 #: :data:`_POSTGRES_TABLE_HASHES_SQL`).
-_POSTGRES_COLUMNS_SQL = """
+_POSTGRES_COLUMNS_SQL = f"""
 SELECT table_schema, table_name, column_name, data_type, is_nullable, ordinal_position
 FROM information_schema.columns
 WHERE table_schema = ANY($1)
+AND {_SELECTABLE}
 ORDER BY table_schema, table_name, ordinal_position
 """.strip()
 
@@ -276,11 +289,12 @@ ORDER BY table_schema, table_name, ordinal_position
 #: formula to stay byte-identical to the Redshift driver and to
 #: ``column_hash_payload``, which had to change because Redshift's LISTAGG
 #: does. All three move together or none of them do.
-_POSTGRES_TABLE_HASHES_SQL = """
+_POSTGRES_TABLE_HASHES_SQL = f"""
 SELECT table_schema, table_name,
        MD5(STRING_AGG(MD5(column_name || ':' || data_type || ':' || COALESCE(is_nullable, '')), ',' ORDER BY ordinal_position)) AS column_hash
 FROM information_schema.columns
 WHERE table_schema = ANY($1)
+AND {_SELECTABLE}
 GROUP BY table_schema, table_name
 ORDER BY table_schema, table_name
 """.strip()

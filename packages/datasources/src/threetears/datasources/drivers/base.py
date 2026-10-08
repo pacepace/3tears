@@ -1001,6 +1001,12 @@ class Driver(ABC):
     async def list_tables(self, schemas: list[str]) -> list[TableRow]:
         """list tables visible to the connection within the given schemas.
 
+        only tables the connected user can SELECT, and ``list_columns`` /
+        ``table_hashes`` apply the same filter: ``allowed_schemas`` names whole
+        schemas, a least-privilege user is granted a few of their tables, and
+        a table catalogued but not readable fails every later read of it with
+        permission denied (see ``IMPLEMENTING_DRIVERS.md``).
+
         :param schemas: schema-name allow-list. empty list means "no
             tables" (callers gate against the agent.yaml schema
             whitelist before calling)

@@ -173,6 +173,21 @@ from prose. If you convert to bool here, the Python-side hash diverges
 from the warehouse-side MD5 and the change-probe breaks for this
 datasource.
 
+## Only what the connected user can SELECT
+
+`list_tables`, `list_columns` and `table_hashes` return only relations
+the connected user can SELECT -- on a Postgres-family engine,
+`has_table_privilege(current_user, <schema>.<table>, 'SELECT')`.
+`allowed_schemas` names whole schemas, and a least-privilege warehouse
+user is granted a few of their tables; the hub reads its catalog for
+every later step (the coverage probe, the schema tool), so a table
+listed but not readable becomes a `42501` permission-denied on each of
+them. All three methods must apply the same filter, or the hash probe
+and the column list disagree about which tables exist. Mind relations
+the privilege check cannot see: Redshift's `has_table_privilege` raises
+on a Spectrum external table, so the Redshift driver guards it with a
+`CASE` on `SVV_TABLES.table_type`.
+
 `data_type` is also the raw warehouse-reported type string. Don't
 normalize it.
 

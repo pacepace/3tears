@@ -431,6 +431,48 @@ class TestIntrospectionRouting:
         assert "AS column_hash" in sql
 
 
+#: the privilege test every catalog query applies: the datasource's own user can SELECT the table,
+#: named schema-qualified and quoted so a mixed-case or keyword name resolves to itself
+_SELECTABLE = "has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT')"
+
+
+class TestIntrospectionCatalogsOnlySelectableTables:
+    """a table the datasource user cannot SELECT is never catalogued, hashed or listed.
+
+    the warehouse users are least-privilege by design: ``allowed_schemas`` names a whole
+    schema, the grants name a few of its tables. a catalog that listed the rest sent every
+    later read of them (the coverage probe, the schema tool) into ``42501`` permission denied.
+    the live proof against a real engine is ``test_asyncpg_driver_live.py``'s.
+    """
+
+    @pytest.mark.asyncio
+    async def test_list_tables_filters_on_the_select_grant(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pool = _build_mock_pool(fetch_records=[])
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        await driver.list_tables(["s1"])
+        assert _SELECTABLE in _single_catalog_query(pool, ["s1"])
+
+    @pytest.mark.asyncio
+    async def test_list_columns_filters_on_the_select_grant(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pool = _build_mock_pool(fetch_records=[])
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        await driver.list_columns(["s1"])
+        assert _SELECTABLE in _single_catalog_query(pool, ["s1"])
+
+    @pytest.mark.asyncio
+    async def test_table_hashes_filters_on_the_select_grant(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pool = _build_mock_pool(fetch_records=[])
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        await driver.table_hashes(["s1"])
+        assert _SELECTABLE in _single_catalog_query(pool, ["s1"])
+
+
 # ---------------------------------------------------------------------------
 # test_connection sanitization (DS-10-06)
 # ---------------------------------------------------------------------------

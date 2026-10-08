@@ -205,6 +205,21 @@ log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
+#: the privilege test every catalog query applies: the datasource's own user can SELECT the
+#: relation. a least-privilege warehouse user is granted a few tables of a schema it can see
+#: whole, and ``SVV_TABLES`` / ``SVV_COLUMNS`` list them all; without this the catalog carried
+#: tables every later read of which -- the coverage probe, the schema tool -- raised 42501
+#: permission denied. the name is schema-qualified and quoted so a keyword or case-sensitive
+#: name resolves to itself. the catalog therefore follows the grants by construction: a revoked
+#: table drops out at the next introspection, a new grant comes in.
+#:
+#: ``has_table_privilege`` RAISES on a relation outside ``pg_class`` -- a Spectrum external table,
+#: whose access is the external schema's USAGE, not a per-table grant -- and one such row would fail
+#: the query for every table in scope. so each use sits behind a ``CASE`` on ``table_type``: SQL
+#: takes a ``CASE`` branch only when it applies, where the operands of an ``AND`` have no order.
+_SELECTABLE = "has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT')"
+
+
 #: list tables visible inside the schema allow-list.
 #:
 #: NOTE 1 (placeholder shape): Redshift's ``redshift_connector`` lib
@@ -227,13 +242,35 @@ log = get_logger(__name__)
 #: execute in seconds and support arbitrary aggregates (which
 #: ``information_schema.columns`` does NOT -- LISTAGG over it raises
 #: ``Specified types or functions not supported on Redshift tables``).
-_REDSHIFT_TABLES_SQL_TEMPLATE = """
+_REDSHIFT_TABLES_SQL_TEMPLATE = (
+    """
 SELECT table_schema, table_name
 FROM SVV_TABLES
 WHERE table_schema IN ({placeholders})
 AND table_type = 'BASE TABLE'
+AND CASE WHEN table_type = 'BASE TABLE' THEN """
+    + _SELECTABLE
+    + """ ELSE FALSE END
 ORDER BY table_schema, table_name
-""".strip()
+"""
+).strip()
+
+
+#: the relations in the allow-list the user can read, joined into the column queries:
+#: ``SVV_COLUMNS`` carries no ``table_type`` to guard the privilege test with, ``SVV_TABLES`` does.
+#: a local table or view is read only with its SELECT grant; an external table passes, its access
+#: being the external schema's USAGE (see :data:`_SELECTABLE`). the derived table renames its
+#: columns so the outer query's unqualified ``table_schema`` / ``table_name`` stay SVV_COLUMNS'.
+_REDSHIFT_SELECTABLE_RELATIONS_JOIN = (
+    """JOIN (
+    SELECT table_schema AS selectable_schema, table_name AS selectable_table
+    FROM SVV_TABLES
+    WHERE table_schema IN ({placeholders})
+    AND CASE WHEN table_type IN ('BASE TABLE', 'VIEW') THEN """
+    + _SELECTABLE
+    + """ ELSE TRUE END
+) AS selectable ON selectable.selectable_schema = table_schema AND selectable.selectable_table = table_name"""
+)
 
 
 #: the boolean columns of one relation, for the fingerprint: Redshift refuses to cast a boolean to
@@ -264,12 +301,17 @@ _REDSHIFT_UNQUALIFIED_BOOLEAN_COLUMNS_SQL = (
 #: as long as both sides observe SVV_COLUMNS, byte-equivalence holds.
 #: cross-driver hash equivalence (asyncpg vs redshift) is NOT
 #: guaranteed; same-driver python-vs-SQL IS guaranteed.
-_REDSHIFT_COLUMNS_SQL_TEMPLATE = """
+_REDSHIFT_COLUMNS_SQL_TEMPLATE = (
+    """
 SELECT table_schema, table_name, column_name, data_type, is_nullable, ordinal_position
 FROM SVV_COLUMNS
+"""
+    + _REDSHIFT_SELECTABLE_RELATIONS_JOIN
+    + """
 WHERE table_schema IN ({placeholders})
 ORDER BY table_schema, table_name, ordinal_position
-""".strip()
+"""
+).strip()
 
 
 #: per-table MD5 over the column shape (Tier-2 change-probe). same
@@ -294,14 +336,19 @@ ORDER BY table_schema, table_name, ordinal_position
 #: in ``threetears.datasources.introspection.column_hash_payload`` must
 #: change identically in the same commit or the two stop agreeing and
 #: every sweep reports spurious changes forever.
-_REDSHIFT_TABLE_HASHES_SQL_TEMPLATE = """
+_REDSHIFT_TABLE_HASHES_SQL_TEMPLATE = (
+    """
 SELECT table_schema, table_name,
        MD5(LISTAGG(MD5(column_name || ':' || data_type || ':' || COALESCE(is_nullable, '')), ',') WITHIN GROUP (ORDER BY ordinal_position)) AS column_hash
 FROM SVV_COLUMNS
+"""
+    + _REDSHIFT_SELECTABLE_RELATIONS_JOIN
+    + """
 WHERE table_schema IN ({placeholders})
 GROUP BY table_schema, table_name
 ORDER BY table_schema, table_name
-""".strip()
+"""
+).strip()
 
 
 def _build_in_clause(n: int) -> str:
@@ -2208,7 +2255,8 @@ class RedshiftDriver(Driver):
             raise RuntimeError("RedshiftDriver is closed")
 
         sql = _REDSHIFT_COLUMNS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
-        params = tuple(schemas)
+        # the allow-list appears twice: SVV_COLUMNS' filter and the selectable-relations join
+        params = tuple(schemas) * 2
 
         def _do_sync(
             conn: RedshiftConnection,
@@ -2346,7 +2394,8 @@ class RedshiftDriver(Driver):
             raise RuntimeError("RedshiftDriver is closed")
 
         sql = _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
-        params = tuple(schemas)
+        # the allow-list appears twice: SVV_COLUMNS' filter and the selectable-relations join
+        params = tuple(schemas) * 2
 
         def _do_sync(
             conn: RedshiftConnection,

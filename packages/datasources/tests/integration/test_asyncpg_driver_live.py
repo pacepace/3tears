@@ -245,6 +245,78 @@ class TestHappyPath:
 
 
 # ---------------------------------------------------------------------------
+# least-privilege users: the catalog is what the user can SELECT
+# ---------------------------------------------------------------------------
+
+
+_READER_ROLE = "ds_it_least_privilege_reader"
+_READER_PASSWORD = "ds-it-reader"  # noqa: S105 - a throwaway role inside the test container
+
+
+@pytest.fixture
+async def least_privilege_reader(
+    seeded_schema: tuple[str, str],
+) -> AsyncIterator[tuple[str, str]]:
+    """a login role that can SELECT ``widgets`` and a mixed-case ``"Gadgets"``, and only INSERT ``secrets``.
+
+    the INSERT grant is the point: ``information_schema`` lists a table its user holds ANY
+    privilege on, so ``secrets`` is visible to this role and still unreadable -- the shape the
+    reports warehouse users had, where the catalog listed tables every read of which raised 42501.
+
+    yields ``(db_url_as_the_reader, schema)``.
+    """
+    db_url, schema = seeded_schema
+    parsed = _parse_db_url(db_url)
+    conn = await asyncpg.connect(
+        host=parsed["host"],
+        port=parsed["port"],
+        database=parsed["database"],
+        user=parsed["username"],
+        password=parsed["password"],
+    )
+    try:
+        await conn.execute(f'CREATE TABLE "{schema}"."secrets" (id integer, token text)')
+        await conn.execute(f'CREATE TABLE "{schema}"."Gadgets" (id integer)')
+        await conn.execute(f"DROP ROLE IF EXISTS {_READER_ROLE}")
+        await conn.execute(f"CREATE ROLE {_READER_ROLE} LOGIN PASSWORD '{_READER_PASSWORD}'")
+        await conn.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO {_READER_ROLE}')
+        await conn.execute(f'GRANT SELECT ON "{schema}"."widgets", "{schema}"."Gadgets" TO {_READER_ROLE}')
+        await conn.execute(f'GRANT INSERT ON "{schema}"."secrets" TO {_READER_ROLE}')
+        reader_url = (
+            f"postgresql://{_READER_ROLE}:{_READER_PASSWORD}@{parsed['host']}:{parsed['port']}/{parsed['database']}"
+        )
+        yield reader_url, schema
+    finally:
+        # the role owns no objects but holds grants on the schema; drop those first
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.execute(f"DROP ROLE IF EXISTS {_READER_ROLE}")
+        await conn.close()
+
+
+class TestIntrospectionCatalogsOnlySelectableTables:
+    """a table the datasource user cannot SELECT never reaches the catalog, the hash probe or the columns."""
+
+    @pytest.mark.asyncio
+    async def test_every_catalog_read_sees_only_the_selectable_tables(
+        self,
+        least_privilege_reader: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        reader_url, schema = least_privilege_reader
+        config = _make_config_for_container(reader_url, monkeypatch)
+        driver = AsyncpgDriver(config)
+        try:
+            tables = {row["table_name"] for row in await driver.list_tables([schema])}
+            columns = {row["table_name"] for row in await driver.list_columns([schema])}
+            hashed = {table for _schema, table in await driver.table_hashes([schema])}
+        finally:
+            await driver.close()
+        assert tables == {"widgets", "Gadgets"}
+        assert columns == {"widgets", "Gadgets"}
+        assert hashed == {"widgets", "Gadgets"}
+
+
+# ---------------------------------------------------------------------------
 # search_path: connection-scope ``SET search_path`` from allowed_schemas
 # ---------------------------------------------------------------------------
 

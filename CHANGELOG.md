@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Datasources: the catalog is what the datasource's own user can SELECT
+
+- **Changed, `AsyncpgDriver` and `RedshiftDriver`**: `list_tables`, `list_columns` and
+  `table_hashes` return only relations the connected user can SELECT
+  (`has_table_privilege(current_user, <schema>.<table>, 'SELECT')`). `allowed_schemas` names whole
+  schemas while a least-privilege warehouse user is granted a few of their tables, so the hub's
+  catalog carried every other table too, and each later read of one -- the coverage probe, the
+  schema tool -- raised `42501` permission denied (131 tables on one local datasource, 159 on
+  another, every sweep). The catalog now follows the grants by construction: a revoked table
+  leaves at the next change-driven introspection, a new grant comes in. On Redshift the check sits
+  behind a `CASE` on `SVV_TABLES.table_type`, since `has_table_privilege` raises on a Spectrum
+  external table (which passes, its access being the external schema's USAGE), and the column
+  queries join `SVV_TABLES` for that type, binding the allow-list twice. The column-hash formula is
+  unchanged, so no stored hash moves.
+
 ### Datasources: a Redshift keepalive no longer gives up before the statement ceiling
 
 - **Fixed, `RedshiftDriver`**: the TCP keepalive window (idle + count x interval) is widened to at
