@@ -33,6 +33,7 @@ from threetears.core.exceptions import (
     DataVersionSupersededError,
 )
 from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
+from threetears.core.security.door_request import DOOR_TOKEN_FIELD, DoorCredential
 
 # Subject comes from its own module, and NatsClient only under TYPE_CHECKING.
 # `threetears.core.collections` MUST import with nats-py absent -- that is the
@@ -45,6 +46,8 @@ from threetears.nats.subjects import Subject
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
     from threetears.nats import NatsClient
 
 __all__ = [
@@ -544,6 +547,7 @@ class NatsProxyL3Backend:
         timeout_ms: int | None = None,
         identity_token: Callable[[], str | None] | None = None,
         on_superseded: Callable[[DataVersionSupersededError], None] | None = None,
+        holder_key: Callable[[], Ed25519PrivateKey | None] | None = None,
     ) -> None:
         """initialize NatsProxyL3Backend.
 
@@ -612,6 +616,12 @@ class NatsProxyL3Backend:
             raises is logged and does not replace the error the caller receives. ``None`` means
             no one is told, and the error is still raised.
         :ptype on_superseded: Callable[[DataVersionSupersededError], None] | None
+        :param holder_key: zero-arg PROVIDER of the key the identity token binds (its ``cnf``), read
+            per request like the token. When it answers a key, every request also carries a proof
+            of possession over its body (:mod:`threetears.core.security.door_request`), so the token
+            is useless to anyone who lifts it from the wire. ``None``, or a provider answering
+            ``None``, sends the token alone, which the broker accepts until its window closes
+        :ptype holder_key: Callable[[], Ed25519PrivateKey | None] | None
         :raises ValueError: when neither an agent id nor an owned namespace was
             supplied, so there is no namespace to send anything to
         """
@@ -635,6 +645,7 @@ class NatsProxyL3Backend:
         self.ns = namespace_prefix
         self.agent_id = agent_id
         self._identity_token = identity_token
+        self._holder_key = holder_key
         self._on_superseded = on_superseded
         self._superseded_reported = False
         self.default_namespace = resolved_namespace
@@ -963,7 +974,7 @@ class NatsProxyL3Backend:
         :raises DataLayerUnavailableError: if NATS request times out,
             the broker returns malformed JSON, or the client is closed
         """
-        payload_bytes = json.dumps(payload, default=json_default).encode("utf-8")
+        payload_bytes = self._encode(payload)
         nats_timeout = (self.timeout_ms / 1000) + 2
 
         try:
@@ -977,6 +988,24 @@ class NatsProxyL3Backend:
             raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
 
         return result
+
+    def _encode(self, payload: dict[str, Any]) -> bytes:
+        """the request's wire bytes, proven with the holder key when this backend has one.
+
+        The proof signs the body as the broker will parse it, so the body is first put through the
+        same encoder the wire uses and read back as JSON values.
+
+        :param payload: the request payload
+        :ptype payload: dict[str, Any]
+        :return: the encoded request
+        :rtype: bytes
+        """
+        text = json.dumps(payload, default=json_default)
+        key = self._holder_key() if self._holder_key is not None else None
+        token = payload.get(DOOR_TOKEN_FIELD)
+        if key is not None and isinstance(token, str) and token:
+            text = json.dumps(DoorCredential(token=token, holder_key=key).present(json.loads(text)))
+        return text.encode("utf-8")
 
     def acquire(self) -> "_ProxyAcquireCM":
         """return an asyncpg-Pool-style ``acquire()`` context manager.

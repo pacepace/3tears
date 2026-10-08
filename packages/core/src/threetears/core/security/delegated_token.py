@@ -10,9 +10,10 @@ The pod proves possession of its key on every door request
 (:mod:`threetears.core.security.pop`), so the token is useless to anyone else, after the call, and
 at any other door. An agent presents its own token the same way, proving its own key.
 
-Signed with the registry's proxy-assertion key, which the hub JWKS publishes; the header's ``typ``
-and the claims keep it from being taken for a proxy assertion or an identity token, and the other
-way round. EdDSA-pinned.
+Signed with the registry's delegated-token key, a key of its own that the hub JWKS publishes, so a
+compromise or rotation of the proxy-assertion key moves none of these; the header's ``typ`` and the
+claims keep it from being taken for a proxy assertion or an identity token, and the other way
+round. EdDSA-pinned.
 """
 
 from __future__ import annotations
@@ -161,7 +162,7 @@ def mint_delegated_token(
 ) -> str:
     """sign a delegated token for one forwarded call.
 
-    :param signing_key: the registry's proxy-assertion key
+    :param signing_key: the registry's delegated-token key
     :ptype signing_key: Ed25519PrivateKey
     :param kid: its JWKS id
     :ptype kid: str

@@ -38,6 +38,8 @@ public surface:
 - delegated tokens (``delegated_token``): :func:`mint_delegated_token` / :func:`verify_delegated_token`
   / :func:`verify_door_caller` -- a tool call's own token for its pod, proven with the pod's key, and
   the door check on whoever presents a token.
+- door requests (``door_request``): :class:`DoorCredential` / :func:`verify_door_request` /
+  :func:`door_request_hash` -- a door request's credential and its proof of possession over the body.
 - turn assertions (``turn_assertion``): :func:`mint_turn_assertion` / :func:`verify_turn_assertion` /
   :func:`new_turn_id` -- the hub's signed statement of whose turn an agent runs, kept out of
   ``CallContext``.
@@ -123,6 +125,13 @@ from threetears.core.security.delegated_token import (
     verify_delegated_token,
     verify_door_caller,
 )
+from threetears.core.security.door_request import (
+    DOOR_PROOF_FIELD,
+    DOOR_TOKEN_FIELD,
+    DoorCredential,
+    door_request_hash,
+    verify_door_request,
+)
 from threetears.core.security.turn_assertion import (
     TURN_ASSERTION_AUDIENCE,
     TURN_ASSERTION_LIFETIME,
@@ -177,6 +186,12 @@ __all__ = [
     "mint_delegated_token",
     "verify_delegated_token",
     "verify_door_caller",
+    # door requests
+    "DOOR_PROOF_FIELD",
+    "DOOR_TOKEN_FIELD",
+    "DoorCredential",
+    "door_request_hash",
+    "verify_door_request",
     # turn assertions
     "TURN_ASSERTION_AUDIENCE",
     "TURN_ASSERTION_LIFETIME",
