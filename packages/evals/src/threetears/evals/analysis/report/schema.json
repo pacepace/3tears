@@ -934,6 +934,20 @@
           "title": "Campaign Id",
           "type": "string"
         },
+        "campaign_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The campaign's name, which a code-only report's title reads by; None where the report was built without it, and the title then names the campaign by its id.",
+          "title": "Campaign Name"
+        },
         "generated_at": {
           "description": "When the analysis was generated (ISO-8601); on a code-only report, when the evidence was assembled for it.",
           "minLength": 1,

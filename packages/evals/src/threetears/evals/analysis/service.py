@@ -1040,7 +1040,9 @@ def campaign_report(host: EvalHost, campaign_id: str, scope_id: str) -> Report:
         return build_report(live[0])
     assembled_at = utc_now_iso()
     bundle = assemble_context_bundle(campaign, storage=host.storage, profile=host.profile)
-    return build_code_only_report(bundle, measures=host.profile.measures, assembled_at=assembled_at)
+    return build_code_only_report(
+        bundle, measures=host.profile.measures, assembled_at=assembled_at, campaign_name=campaign.name
+    )
 
 
 def finding_chart_intent(storage: AnalysisStore, analysis_id: str, scope_id: str, finding_id: str) -> ChartIntent:

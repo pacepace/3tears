@@ -292,6 +292,14 @@ class ReportSource(EvalBaseModel):
         default=None, min_length=1, description="The analysis the report renders; None on a code-only report."
     )
     campaign_id: str = Field(min_length=1, description="The campaign the analysis is of.")
+    campaign_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The campaign's name, which a code-only report's title reads by; None where the report was built "
+            "without it, and the title then names the campaign by its id."
+        ),
+    )
     scope_id: str = Field(min_length=1, description="The scope both live in.")
     subject_id: str = Field(min_length=1, description="The analysed subject.")
     subject_kind: str = Field(description="The subject's kind; empty when the campaign declared none.")
@@ -438,6 +446,9 @@ class Report(EvalBaseModel):
 def report_title(report: Report) -> str:
     """The report's title, as every serializer prints it: the author's headline, or what a code-only report is.
 
+    A code-only report is titled by its campaign's name when the report carries one, and by its id when
+    not; the byline names the id either way.
+
     Args:
         report: The report.
 
@@ -445,7 +456,7 @@ def report_title(report: Report) -> str:
         The title, one line before escaping.
     """
     if report.basis == "code_only":
-        return f"Campaign {report.source.campaign_id}: its evidence, with no analysis"
+        return f"Campaign {report.source.campaign_name or report.source.campaign_id}: its evidence, with no analysis"
     return report.headline.strip() or "(blank headline)"
 
 
