@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from threetears.core.serialization import json_datetime
+from threetears.core.sql_fragments import as_written, equality_conditions
 
 if TYPE_CHECKING:
     from threetears.core.collections.schema_backed import Column, TableSchema
@@ -755,10 +756,31 @@ def build_key_led_delete_sql(schema: TableSchema, *, varying: str) -> str:
     """
     if varying not in schema.pk_columns:
         raise ValueError(f"{schema.name}: {varying!r} is not a key column of {schema.pk_columns}")
-    conditions = [f"{varying} = ANY($1::{_required_array_type(schema, varying)})"]
-    fixed = [schema.column(name) for name in schema.pk_columns if name != varying]
-    conditions += [f"{col.name} = {render_param(col, index)}" for index, col in enumerate(fixed, start=2)]
+    conditions = [f"{as_written(varying)} = ANY($1::{_required_array_type(schema, varying)})"]
+    fixed, _ = equality_conditions(_plain_key_columns(schema, exclude=varying), first=2, quote=as_written)
+    if fixed:
+        conditions.append(fixed)
     return f"DELETE FROM {schema.name} WHERE {' AND '.join(conditions)}"
+
+
+def _plain_key_columns(schema: TableSchema, *, exclude: str) -> dict[str, None]:
+    """the key columns but ``exclude``, in key order, as the columns of :func:`equality_conditions`.
+
+    Each is bound as a plain ``$n`` there, which a column needing a write cast (jsonb, vector)
+    would not survive, so such a key column is refused rather than compared uncast.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param exclude: the key column left out
+    :ptype exclude: str
+    :return: column -> None, in key order
+    :rtype: dict[str, None]
+    :raises ValueError: when one of them is not a plain scalar type
+    """
+    names = [name for name in schema.pk_columns if name != exclude]
+    for name in names:
+        _required_array_type(schema, name)
+    return dict.fromkeys(names)
 
 
 def _projection(schema: TableSchema, columns: Sequence[str]) -> str:
@@ -774,7 +796,8 @@ def _projection(schema: TableSchema, columns: Sequence[str]) -> str:
     parts: list[str] = []
     for name in columns:
         col = schema.column(name)
-        parts.append(f"{name}::text AS {name}" if col.column_type in (_VECTOR_TYPE, _TSVECTOR_TYPE) else name)
+        spelled = as_written(name)
+        parts.append(f"{spelled}::text AS {spelled}" if col.column_type in (_VECTOR_TYPE, _TSVECTOR_TYPE) else spelled)
     return ", ".join(parts)
 
 
@@ -795,7 +818,7 @@ def build_led_by_select_sql(schema: TableSchema, columns: Sequence[str]) -> str:
     lead = schema.pk_columns[0]
     return (
         f"SELECT {_projection(schema, columns)} FROM {schema.name} "
-        f"WHERE {lead} = ANY($1::{_required_array_type(schema, lead)})"
+        f"WHERE {as_written(lead)} = ANY($1::{_required_array_type(schema, lead)})"
     )
 
 
@@ -821,13 +844,16 @@ def build_led_page_sql(schema: TableSchema, columns: Sequence[str], *, after: bo
     lead, *rest = schema.pk_columns
     if not rest:
         raise ValueError(f"{schema.name}: a one-column key holds one row a value; there is nothing to page by")
-    conditions = [f"{lead} = {render_param(schema.column(lead), 1)}"]
+    _required_array_type(schema, lead)
+    led, _ = equality_conditions({lead: None}, first=1, quote=as_written)
+    conditions = [led]
+    order = ", ".join(as_written(name) for name in rest)
     if after:
         marks = ", ".join(render_param(schema.column(name), index) for index, name in enumerate(rest, start=2))
-        conditions.append(f"({', '.join(rest)}) > ({marks})")
+        conditions.append(f"({order}) > ({marks})")
     return (
         f"SELECT {_projection(schema, columns)} FROM {schema.name} WHERE {' AND '.join(conditions)} "
-        f"ORDER BY {', '.join(rest)} LIMIT {limit}"
+        f"ORDER BY {order} LIMIT {limit}"
     )
 
 
