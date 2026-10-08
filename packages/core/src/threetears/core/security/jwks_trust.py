@@ -55,6 +55,7 @@ from typing import Any, Final
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from threetears.observe import get_logger
+from threetears.observe.metrics import counter
 
 from threetears.core.security.door_proof import DoorProofSwitch, DoorWindow, ProofOutcome
 from threetears.core.security.identity_token import jwk_thumbprint
@@ -86,6 +87,10 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: the prometheus counter of refused JWKS replies (labels ``door``, ``cause``): a verifier that keeps
+#: refusing goes on trusting its last taken key set, so this is what an operator alerts on.
+_REFUSED_COUNTER: Final[str] = "jwks_reply_refused"
 
 #: how long a key missing from the publisher's set is still trusted, when a verified reply brought
 #: it in. At least the longest lifetime of anything signed under a platform key (the hub's user
@@ -429,6 +434,8 @@ class ReplyJudgement:
 
     trust: ReplyTrust
     reason: str = ""
+    #: the refusal's class, the ``cause`` label of the ``jwks_reply_refused`` counter; empty otherwise
+    cause: str = ""
     #: a verified statement stamped behind the newest one taken, inside the leeway: adopted additively
     behind: bool = False
 
@@ -499,6 +506,11 @@ class JwksTrust:
         judgement = self._judge(document)
         merge: KeyringMerge | None = None
         if judgement.trust is ReplyTrust.REFUSED:
+            counter(
+                _REFUSED_COUNTER,
+                description="JWKS replies a verifier refused, by publisher door and cause",
+                label_names=("door", "cause"),
+            ).labels(door=self._door, cause=judgement.cause).inc()
             log.warning(
                 "%s reply refused: %s",
                 self._door,
@@ -529,11 +541,13 @@ class JwksTrust:
         statement = document.get(JWKS_STATEMENT_FIELD)
         judgement: ReplyJudgement
         if not isinstance(keys, list):
-            judgement = ReplyJudgement(ReplyTrust.REFUSED, "keys is not a list")
+            judgement = ReplyJudgement(ReplyTrust.REFUSED, "keys is not a list", cause="malformed")
         elif isinstance(statement, str) and self._root is not None:
             judgement = self._judge_statement(statement, keys)
         elif self._newest_statement_iat is not None:
-            judgement = ReplyJudgement(ReplyTrust.REFUSED, "no statement, after the publisher has signed one")
+            judgement = ReplyJudgement(
+                ReplyTrust.REFUSED, "no statement, after the publisher has signed one", cause="downgrade"
+            )
         else:
             if isinstance(statement, str):
                 log.warning(
@@ -559,7 +573,7 @@ class JwksTrust:
         try:
             claims = verify_jwks_statement(statement, keys, root_public_key=self._root, issuer=self._issuer)
         except JwksStatementError as exc:
-            judgement = ReplyJudgement(ReplyTrust.REFUSED, f"statement does not verify: {exc}")
+            judgement = ReplyJudgement(ReplyTrust.REFUSED, f"statement does not verify: {exc}", cause="unverified")
         else:
             newest = self._newest_statement_iat
             if newest is not None and claims.iat < newest - STATEMENT_ORDER_LEEWAY.total_seconds():
@@ -567,6 +581,7 @@ class JwksTrust:
                     ReplyTrust.REFUSED,
                     f"statement is older than one already verified (iat {claims.iat}, newest {newest}, "
                     f"leeway {STATEMENT_ORDER_LEEWAY.total_seconds():g}s)",
+                    cause="older",
                 )
             else:
                 if newest is not None and claims.iat < newest:
@@ -588,13 +603,15 @@ class JwksTrust:
         mismatches = thumbprint_mismatches(keys)
         if statement_outcome is ProofOutcome.REFUSED_WITHOUT_PROOF:
             judgement = ReplyJudgement(
-                ReplyTrust.REFUSED, "no statement this verifier can check, and the door requires one"
+                ReplyTrust.REFUSED, "no statement this verifier can check, and the door requires one", cause="unsigned"
             )
         elif mismatches:
             outcome = self._thumbprint_switch.judge(presented=False, claimed_sender=self._issuer)
             if outcome is ProofOutcome.REFUSED_WITHOUT_PROOF:
                 judgement = ReplyJudgement(
-                    ReplyTrust.REFUSED, "an entry's kid is not its key's thumbprint: " + "; ".join(mismatches)
+                    ReplyTrust.REFUSED,
+                    "an entry's kid is not its key's thumbprint: " + "; ".join(mismatches),
+                    cause="thumbprint",
                 )
             else:
                 log.warning(

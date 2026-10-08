@@ -50,6 +50,11 @@ then accepts.
   in one place.
 - **Added**: a gate (`tests/enforcement/test_door_windows_are_open.py`) that fails once any
   `DoorWindow` declared in source is past its date.
+- **Added, the `jwks_reply_refused` counter** (labels `door`, `cause`: `malformed`, `downgrade`,
+  `unverified`, `older`, `unsigned`, `thumbprint`). A verifier that keeps refusing keeps trusting
+  its last taken key set, so this is the signal to alert on; readiness is deliberately not tied to
+  it, because any client in the account can get a refused reply delivered and would then take the
+  verifier out.
 
 ### NATS: inbox names cannot be predicted, and a JetStream delivery counts only from the receiver's own consumer
 

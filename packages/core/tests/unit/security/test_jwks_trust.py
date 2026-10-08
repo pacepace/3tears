@@ -588,6 +588,23 @@ class TestTheOrderFloorNeverWalksBack:
         assert (judgement.trust is ReplyTrust.VERIFIED) is taken
 
 
+class TestARefusalIsCounted:
+    """a verifier that keeps refusing keeps trusting its last key set; the counter is what says so."""
+
+    def test_each_refusal_counts_once_under_its_cause(self) -> None:
+        from prometheus_client import REGISTRY
+
+        now = int(time.time())
+        trust = _trust()
+        labels = {"door": "hub.jwks", "cause": "older"}
+        before = REGISTRY.get_sample_value("jwks_reply_refused_total", labels) or 0.0
+        trust.take(_signed_document(_keys(_HUB_PUBLIC), now))
+
+        trust.take(_signed_document(_keys(_HUB_PUBLIC), now - 60))
+
+        assert REGISTRY.get_sample_value("jwks_reply_refused_total", labels) == before + 1
+
+
 class TestAReplyStampedBehindAddsOnly:
     """a genuine reply from a replica whose clock runs behind cannot undo the newest key set."""
 
