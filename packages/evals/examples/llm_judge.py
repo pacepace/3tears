@@ -55,7 +55,9 @@ SYSTEM += "If the policy does not say, tell them you don't know.\n\n" + POLICY
 # from the usage the API reports. The rates are Anthropic's list prices for the model; check them
 # against the current price list before you trust the dollars.
 
-RATES_PER_MILLION = {"claude-haiku-5-5": (0.10, 0.50)}  # (input, output) USD per million tokens
+# (input, output) USD per million tokens, for prompts up to 100K tokens; Haiku 5.5 bills $0.50 / $2.50 past
+# that, which these short prompts never reach.
+RATES_PER_MILLION = {"claude-haiku-5-5": (0.10, 0.50)}
 
 # The engine's words for why a completion stopped; anything it does not know reads as an error.
 STOP_REASONS = {

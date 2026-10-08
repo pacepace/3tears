@@ -5,9 +5,9 @@ functions, builds what a host would — a kind over the callable, a profile with
 scorer, the in-memory reference store — launches through the engine's own launch path, and returns
 an :class:`EvalSummary`. Handed each case's expected label (``expected=``), it grades the candidate as a
 classifier, and the summary carries its confusion matrix (:class:`ConfusionCount`) and each label's
-precision, recall and F1 (:class:`LabelStatistics`). :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls`` and
-``report`` over a host named ``module:factory``, or mounted under a product's own CLI with its host
-factory and any subcommands of its own (:class:`HostCommand`).
+precision, recall and F1 (:class:`LabelStatistics`). :func:`run_cli` is ``python -m threetears.evals``:
+``run``, ``ls``, ``report``, ``bundle`` and ``spend`` over a host named ``module:factory``, or mounted
+under a product's own CLI with its host factory and any subcommands of its own (:class:`HostCommand`).
 
 This package composes the others and is composed by nothing: it may import ``contracts``, ``run``,
 ``analysis`` and ``storage``, and no package of the engine imports it.

@@ -115,7 +115,29 @@ graded by its expected labels, beside one scorer.
 
 ## Grading with an LLM judge
 
-<!-- TODO(onramp): filled in when examples/llm_judge.py lands -->
+When no code can grade an answer (is it helpful? does it stick to its source?), give `run_eval` a
+`Judge`: a completion client, the model it calls, and a rubric. The engine's own judge scores each answer
+on each dimension (1-5 by default) and records the judge's spend as the client prices it. Scorers and
+`expected=` still work beside it.
+
+```python
+from threetears.evals.quick import Judge, run_eval
+
+judge = Judge(
+    client=my_client,            # any CompletionClient; you own it, and the run never closes it
+    model="claude-haiku-5-5",
+    rubric={"helpful": "Resolves the question.", "grounded": "Claims only what the policy says."},
+    case_material=lambda case: f"Policy:\n{POLICY}\n\nQuestion: {case['question']}",
+)
+summary = await run_eval(cases, answer, [concise], judge=judge, scope_id="faq")
+print(summary.render())   # adds "answer.helpful (judged 1-5): mean ..." and "judge spend: $..."
+```
+
+A bare rubric name is placed under the judge's `context` (`answer` by default), so `helpful` is reported
+as `answer.helpful`. Only the judge's spend reaches the summary: the candidate is your code, so the engine
+never sees what it spent. `examples/llm_judge.py` is the whole thing in one file, including a small
+adapter from the `anthropic` SDK; it calls Claude when `ANTHROPIC_API_KEY` is set and runs labelled
+offline stand-ins otherwise.
 
 ## What's in the package
 
