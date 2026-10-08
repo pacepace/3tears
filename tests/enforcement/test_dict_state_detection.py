@@ -375,6 +375,26 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_seen",
+        rationale=(
+            "a read-through mirror of the pointers the NATS KV watch delivered, scope -> pointer; "
+            "the shared state IS the KV bucket, this is the watch's last delivery, rebuilt by the "
+            "watch on every start and after every lost consumer, never written anywhere else"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_applied",
+        rationale=(
+            "which pointer each scope's rows in THIS process's DuckDB L1 came from, scope -> "
+            "pointer; it describes the L1 beside it and dies with it (both are rebuilt at start), "
+            "so moving it to another backend would let it outlive or diverge from what it describes"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/registry/src/threetears/registry/catalog.py",
         class_name="ToolCatalog",
         attr_name="_entries",

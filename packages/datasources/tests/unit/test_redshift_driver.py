@@ -488,6 +488,87 @@ class TestConnectionCaching:
                     applied_any = True
             assert applied_any, "no granular keepalive option applied on this platform"
 
+    @staticmethod
+    async def _applied_keepalive(cfg: RedshiftConnectionConfig) -> dict[str, int]:
+        """open one connection with ``cfg`` and read back the keepalive the driver set.
+
+        :param cfg: the connection config to open with
+        :ptype cfg: RedshiftConnectionConfig
+        :return: ``{"TCP_KEEPIDLE" | "TCP_KEEPINTVL" | "TCP_KEEPCNT": value}`` for each
+            option this platform exposes
+        :rtype: dict[str, int]
+        """
+        conn = RedshiftConnectionWithSocket(_build_mock_connection(fetchall_rows=[], description=[]))
+        usock = conn.socket
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            await RedshiftDriver(cfg).fetch("SELECT 1")
+        opts = {(call.args[0], call.args[1]): call.args[2] for call in usock.setsockopt.call_args_list}
+        applied: dict[str, int] = {}
+        for opt_name in ("TCP_KEEPIDLE", "TCP_KEEPINTVL", "TCP_KEEPCNT"):
+            opt = getattr(socket, opt_name, None)
+            if opt is not None:
+                applied[opt_name] = opts[(socket.IPPROTO_TCP, opt)]
+        return applied
+
+    @pytest.mark.asyncio
+    async def test_keepalive_never_gives_up_before_the_statement_ceiling(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """a connection whose keepalive probes go unanswered is not declared dead while the
+        warehouse may still be running its statement.
+
+        the local devx stack runs the hub under Docker Desktop, whose VM network answers no
+        TCP keepalive probe (measured: a socket to the cluster, or to any outside host, dies
+        with ``ETIMEDOUT`` after exactly idle + count x interval, while the same socket from
+        the macOS host lives on). there the keepalive window IS a statement timeout: with the
+        30s + 3 x 10s defaults every statement the warehouse is silent on for 60s died with
+        ``TimeoutError: [Errno 110]``, under a 300s statement ceiling -- the hub's table-hash
+        probe on ``geography-warehouse`` failed that way on every sweep, 61s after the
+        warehouse's last message. the probe count rises until the window reaches the
+        ceiling; idle and interval stay, so the probe cadence is unchanged.
+        """
+        cfg = redshift_config.model_copy(update={"query_timeout_seconds": 300})
+        applied = await self._applied_keepalive(cfg)
+        idle = applied.get("TCP_KEEPIDLE", cfg.tcp_keepalive_idle_seconds)
+        assert idle == 30
+        assert applied["TCP_KEEPINTVL"] == 10
+        assert idle + applied["TCP_KEEPCNT"] * applied["TCP_KEEPINTVL"] >= 300
+        # no more probes than reaching the ceiling takes
+        assert idle + (applied["TCP_KEEPCNT"] - 1) * applied["TCP_KEEPINTVL"] < 300
+
+    @pytest.mark.asyncio
+    async def test_keepalive_window_past_the_probe_count_limit_widens_the_interval(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """a build datasource's hour-long ceiling needs more than Linux's 127 probes at 10s, so the
+        count stops at 127 and the interval widens to still reach the ceiling."""
+        cfg = redshift_config.model_copy(update={"query_timeout_seconds": 3600})
+        applied = await self._applied_keepalive(cfg)
+        idle = applied.get("TCP_KEEPIDLE", cfg.tcp_keepalive_idle_seconds)
+        assert applied["TCP_KEEPCNT"] == 127
+        assert idle + applied["TCP_KEEPCNT"] * applied["TCP_KEEPINTVL"] >= 3600
+
+    @pytest.mark.asyncio
+    async def test_keepalive_window_already_past_the_ceiling_is_kept(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """a configured window already longer than the ceiling is applied exactly as configured."""
+        cfg = redshift_config.model_copy(
+            update={
+                "query_timeout_seconds": 60,
+                "tcp_keepalive_idle_seconds": 120,
+                "tcp_keepalive_interval_seconds": 15,
+                "tcp_keepalive_count": 4,
+            }
+        )
+        applied = await self._applied_keepalive(cfg)
+        assert applied.get("TCP_KEEPIDLE", 120) == 120
+        assert applied["TCP_KEEPINTVL"] == 15
+        assert applied["TCP_KEEPCNT"] == 4
+
     @pytest.mark.asyncio
     async def test_connect_passes_verify_full_sslmode(self, redshift_config: RedshiftConnectionConfig) -> None:
         """verify-full (for a proxy-fronted cluster) reaches connect unchanged."""
@@ -786,6 +867,122 @@ class TestQueryRouting:
             assert "FROM SVV_COLUMNS" in sql
             assert "WHERE table_schema IN (%s)" in sql
             assert calls[0].args[1] == ("s1",)
+
+    @pytest.mark.asyncio
+    async def test_a_fingerprint_renders_the_relations_boolean_columns_without_a_cast(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """Redshift refuses ``CAST(boolean AS VARCHAR)``, so the driver asks which columns are booleans first."""
+        conn = _build_mock_connection(fetchall_rows=[("incumbent",)], fetchone_row=(7, 99))
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            first = await driver.relation_fingerprint("s1.results", ["race", "incumbent"], {"state": "VA"})
+            await driver.relation_fingerprint("s1.results", ["race", "incumbent"], {"state": "TX"})
+            assert (first["row_count"], first["digest"]) == (7, "99")
+            calls = [
+                c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
+            ]
+            lookups = [c for c in calls if "FROM SVV_COLUMNS" in c.args[0]]
+            prints = [c for c in calls if "AS digest" in c.args[0]]
+            # the column types are read once per relation, bound rather than inlined
+            assert len(lookups) == 1
+            assert "data_type = 'boolean'" in lookups[0].args[0]
+            assert lookups[0].args[1] == ("s1", "results")
+            assert len(prints) == 2
+            assert "CAST(incumbent AS VARCHAR)" not in prints[0].args[0]
+            assert "WHEN incumbent THEN 'true' ELSE 'false' END" in prints[0].args[0]
+            assert "CAST(race AS VARCHAR)" in prints[0].args[0]
+
+    @pytest.mark.asyncio
+    async def test_a_mixed_case_relation_finds_its_columns_as_redshift_stores_them(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """an unquoted name is folded to lower case, and SVV_COLUMNS holds it so (checked on the warehouse)."""
+        conn = _build_mock_connection(fetchall_rows=[], fetchone_row=(1, 1))
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            await driver.relation_fingerprint("Reporting_Prod.Report_Results", ["race"])
+            await driver.relation_fingerprint("Report_Results", ["race"])
+        lookups = [c for c in conn.recorded_cursor.execute.call_args_list if c.args and "FROM SVV_COLUMNS" in c.args[0]]
+        assert lookups[0].args[1] == ("reporting_prod", "report_results")
+        assert "current_schemas(false)" in lookups[1].args[0]
+        assert lookups[1].args[1] == ("report_results",)
+
+    @pytest.mark.asyncio
+    async def test_boolean_columns_are_read_again_after_a_fingerprint_fails(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """an answer that let a fingerprint fail is not kept: a column turned boolean is learned on the next call."""
+        conn = _build_mock_connection(fetchall_rows=[], fetchone_row=(3, 9))
+        statements: list[str] = []
+        failing = {"on": False}
+
+        def execute(sql: str, *args: Any) -> None:
+            statements.append(sql)
+            if failing["on"] and "AS digest" in sql:
+                raise redshift_connector.ProgrammingError("cannot cast type boolean to character varying")
+
+        conn.recorded_cursor.execute.side_effect = execute
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            await driver.relation_fingerprint("s1.results", ["race", "incumbent"])
+            failing["on"] = True
+            with pytest.raises(redshift_connector.ProgrammingError):
+                await driver.relation_fingerprint("s1.results", ["race", "incumbent"])
+            failing["on"] = False
+            await driver.relation_fingerprint("s1.results", ["race", "incumbent"])
+        lookups = [sql for sql in statements if "FROM SVV_COLUMNS" in sql]
+        assert len(lookups) == 2, "the boolean columns were not read again after the fingerprint failed"
+
+    @pytest.mark.asyncio
+    async def test_boolean_columns_are_not_kept_from_a_fingerprint_that_failed(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        conn = _build_mock_connection(fetchall_rows=[], fetchone_row=(3, 9))
+        statements: list[str] = []
+        calls = {"n": 0}
+
+        def execute(sql: str, *args: Any) -> None:
+            statements.append(sql)
+            if "AS digest" in sql:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise redshift_connector.ProgrammingError("relation is being rebuilt")
+
+        conn.recorded_cursor.execute.side_effect = execute
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            with pytest.raises(redshift_connector.ProgrammingError):
+                await driver.relation_fingerprint("s1.results", ["race"])
+            await driver.relation_fingerprint("s1.results", ["race"])
+        assert len([sql for sql in statements if "FROM SVV_COLUMNS" in sql]) == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_at_most_keeps_no_more_rows_than_asked(self, redshift_config: RedshiftConnectionConfig) -> None:
+        """the rows taken off the cursor stop at the bound; nothing past it is turned into a reply row."""
+        conn = _build_mock_connection(description=[("n", None)])
+        conn.recorded_cursor.fetchmany = MagicMock(return_value=[(0,), (1,), (2,)])
+        conn.recorded_cursor.fetchall = MagicMock(side_effect=AssertionError("read every row"))
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            rows = await driver.fetch_at_most("SELECT n FROM big", max_rows=3, timeout_seconds=30)
+        assert rows == [{"n": 0}, {"n": 1}, {"n": 2}]
+        conn.recorded_cursor.fetchmany.assert_called_once_with(3)
 
     @pytest.mark.asyncio
     async def test_table_hashes_returns_dict_keyed_by_schema_table(

@@ -111,6 +111,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     )
 
     from threetears.nats.kv import NatsKvBucket
+    from threetears.nats.object_store import NatsObjectStore, ObjectInfo
     from threetears.nats.oplog import AppendResult, OpLog, OpRecord
     from threetears.nats.raw_errors import (
         JS_ERR_STREAM_NOT_FOUND,
@@ -150,6 +151,10 @@ from threetears.nats.errors import (
     NamespaceNotConfiguredError,
     NatsClientError,
     NoRespondersError,
+    ObjectExistsError,
+    ObjectNotFoundError,
+    ObjectStoreError,
+    ObjectStoreNotFoundError,
     OpLogError,
     OpLogSequenceConflict,
     PayloadTooLargeError,
@@ -158,7 +163,7 @@ from threetears.nats.errors import (
     RequestTimeoutError,
     SubscribeError,
 )
-from threetears.nats.persisted_copy import PersistedCopyBucket
+from threetears.nats.persisted_copy import WRITE_FAILURE_THRESHOLD, CopyWriteHealth, PersistedCopyBucket
 from threetears.nats.renewal_request import (
     CREDENTIAL_RENEWAL_SUBJECT_TOKEN,
     CredentialRenewalReason,
@@ -316,6 +321,7 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "ResolvedPrincipal",
     ),
     "kv": ("NatsKvBucket",),
+    "object_store": ("NatsObjectStore", "ObjectInfo"),
     "oplog": ("AppendResult", "OpLog", "OpRecord"),
     "raw_errors": ("JS_ERR_STREAM_NOT_FOUND", "is_bucket_not_found", "is_key_not_found", "is_nats_error"),
     "user_jwt": (
@@ -528,6 +534,11 @@ __all__ = [
     # KV
     "NatsKvBucket",
     "PersistedCopyBucket",
+    # Object Store
+    "NatsObjectStore",
+    "ObjectInfo",
+    "CopyWriteHealth",
+    "WRITE_FAILURE_THRESHOLD",
     # op-log (durable write-path WAL)
     "AppendResult",
     "OpLog",
@@ -580,6 +591,10 @@ __all__ = [
     "KvError",
     "NamespaceNotConfiguredError",
     "NatsClientError",
+    "ObjectExistsError",
+    "ObjectNotFoundError",
+    "ObjectStoreError",
+    "ObjectStoreNotFoundError",
     "OpLogError",
     "OpLogSequenceConflict",
     "PayloadTooLargeError",

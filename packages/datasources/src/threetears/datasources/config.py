@@ -26,10 +26,9 @@ per-driver :class:`ConnectionConfig` members (added in
   a stub in shard 12, full impl tracked separately).
 - :class:`BigQueryConnectionConfig` -- BigQuery via
   ``google-cloud-bigquery`` (stateless HTTPS; stub in shard 12).
-- :class:`AgentInternalConnectionConfig` -- sentinel for agent-created
-  tables (data-task-01). carries no external connection identity; the
-  driver borrows Hub's L3 pool via the factory's ``hub_l3_pool=``
-  kwarg.
+- :class:`BorrowedPoolConnectionConfig` -- a schema in Hub's L3, read
+  through Hub's own pool (the factory's ``hub_l3_pool=`` kwarg) with no
+  external connection identity; its class docstring names its uses.
 
 ``ConnectionConfig`` itself is the discriminated union keyed on
 ``datasource_type``; pydantic routes incoming dicts to the right
@@ -77,7 +76,7 @@ from threetears.datasources.entities import DataSourceAccessMode, DataSourceType
 from threetears.datasources.secrets import resolve_secret, validate_ref
 
 __all__ = [
-    "AgentInternalConnectionConfig",
+    "BorrowedPoolConnectionConfig",
     "BigQueryConnectionConfig",
     "ConnectionConfig",
     "DatasourceConfig",
@@ -439,7 +438,10 @@ class RedshiftConnectionConfig(BaseModel):
     tcp_keepalive_count: int = Field(
         default=3,
         description="unacknowledged keepalive probes before the OS marks the socket dead and fails "
-        "the blocked read. detection time is ~ idle + count*interval (~60s with the defaults).",
+        "the blocked read. detection time is ~ idle + count*interval, but never shorter than "
+        "query_timeout_seconds: the driver raises the count (past 127, the interval) until it "
+        "reaches that ceiling, because a path that answers no probe (Docker Desktop's VM "
+        "network) otherwise turns this window into a statement timeout.",
     )
     allowed_schemas: list[str] = Field(
         default_factory=list,
@@ -592,26 +594,28 @@ class BigQueryConnectionConfig(BaseModel):
         return resolve_secret(self.credentials_json_ref)
 
 
-class AgentInternalConnectionConfig(BaseModel):
-    """sentinel config for agent-created tables (data-task-01).
+class BorrowedPoolConnectionConfig(BaseModel):
+    """a schema in Hub's L3, read through Hub's own pool rather than a connection of its own.
 
-    carries no external connection identity because the driver
-    BORROWS Hub's L3 pool (the same yugabyte cluster that backs the
-    Hub itself). this config is Hub-coupled by construction —
-    documented as such; if a second use case for borrowed pools
-    appears, lift to a generic ``BorrowedPoolConnectionConfig`` then.
+    carries no external connection identity because the driver BORROWS Hub's
+    L3 pool (the same yugabyte cluster that backs the Hub itself), scoped to
+    one schema; Hub-coupled by construction. two uses: an agent's tables
+    (data-task-01), behind an ``agent_internal`` datasource row, and a tool
+    pod's platform geography layers, read for tiles with no datasource row at
+    all. the discriminator stays ``AGENT_INTERNAL``, the datasource type whose
+    rows carry this config.
 
     :param datasource_type: discriminator; must be ``DataSourceType.AGENT_INTERNAL``
-    :param schema_name: the ``agent_<hex>`` schema in Hub's L3 that
-        agent-created tables live in. immutable per the v056 db
-        constraint
+    :param schema_name: the schema in Hub's L3 the tables live in: an agent's
+        ``agent_<hex>`` (immutable per the v056 db constraint) or a tool pod's
+        provider space ``ns_<hex>``
     """
 
     model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.AGENT_INTERNAL]
     schema_name: str = Field(
-        description="agent_<hex> schema in Hub's L3 owning this datasource's tables",
+        description="the schema in Hub's L3 holding the tables: an agent's agent_<hex> or a provider space's ns_<hex>",
     )
 
 
@@ -632,7 +636,7 @@ ConnectionConfig = Annotated[
     | RedshiftConnectionConfig
     | SnowflakeConnectionConfig
     | BigQueryConnectionConfig
-    | AgentInternalConnectionConfig,
+    | BorrowedPoolConnectionConfig,
     Field(discriminator="datasource_type"),
 ]
 

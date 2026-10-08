@@ -1834,8 +1834,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         still reachable by direct id / alias recall.
 
         Cache coherence: the raw L3 decay leaves L1/L2 holding the
-        pre-decay salience, so each decayed pk is invalidated (via
-        :meth:`invalidate_cache`) -- otherwise a later full-entity save
+        pre-decay salience, so every decayed pk is invalidated (in one
+        :meth:`invalidate_cache_many` call) -- otherwise a later full-entity save
         from the stale cache could write the old salience back. The
         ``salience``/``last_decayed_at`` columns are also ``immutable`` to
         the entity-UPDATE generator, so the two defenses compose: the

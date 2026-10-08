@@ -20,7 +20,7 @@ import asyncpg
 import pytest
 
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
@@ -29,7 +29,8 @@ from threetears.datasources.drivers import (
     DriverConnectError,
     DriverMissingCredentialError,
 )
-from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
+from threetears.datasources.drivers.asyncpg_driver import BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS, AsyncpgDriver
+from threetears.datasources.drivers.errors import DriverPoolBusyError
 from threetears.datasources.entities import DataSourceType
 
 
@@ -96,8 +97,11 @@ def _build_mock_pool(
     conn.fetchval = AsyncMock(return_value=fetchval_value)
 
     # async-context-manager shape for ``pool.acquire()``
+    pool.acquire_options = []
+
     @asynccontextmanager
-    async def _acquire() -> Any:
+    async def _acquire(**options: Any) -> Any:
+        pool.acquire_options.append(options)
         yield conn
 
     pool.acquire = _acquire
@@ -186,9 +190,9 @@ def yugabyte_config() -> YugabyteConnectionConfig:
 
 
 @pytest.fixture
-def agent_internal_config() -> AgentInternalConnectionConfig:
-    """default :class:`AgentInternalConnectionConfig`."""
-    return AgentInternalConnectionConfig(
+def agent_internal_config() -> BorrowedPoolConnectionConfig:
+    """default :class:`BorrowedPoolConnectionConfig`."""
+    return BorrowedPoolConnectionConfig(
         datasource_type=DataSourceType.AGENT_INTERNAL,
         schema_name="agent_abc123",
     )
@@ -223,7 +227,7 @@ class TestConstruction:
 
     @pytest.mark.asyncio
     async def test_init_agent_internal_with_external_pool(
-        self, agent_internal_config: AgentInternalConnectionConfig, monkeypatch: pytest.MonkeyPatch
+        self, agent_internal_config: BorrowedPoolConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """agent-internal driver borrows the passed-in pool: queries run on it, none is created, close leaves it."""
         create_pool = AsyncMock()
@@ -234,6 +238,19 @@ class TestConstruction:
         create_pool.assert_not_awaited()
         await driver.close()
         external.close.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_borrowed_pool_is_waited_on_for_a_bounded_time(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        """the host's pool may be busy with its own work; a query does not wait on it past its caller."""
+        external = _build_mock_pool(fetch_records=[{"x": 1}])
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        await driver.fetch("SELECT 1")
+
+        assert external.acquire_options == [{"timeout": BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS}]
+        assert BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS <= 30
 
     @pytest.mark.asyncio
     async def test_init_datasource_name_default_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -283,7 +300,7 @@ class TestClose:
 
     @pytest.mark.asyncio
     async def test_close_borrowed_pool_does_not_call_pool_close(
-        self, agent_internal_config: AgentInternalConnectionConfig
+        self, agent_internal_config: BorrowedPoolConnectionConfig
     ) -> None:
         """borrowed-pool path: :meth:`close` MUST NOT close the pool."""
         pool = _build_mock_pool()
@@ -461,7 +478,7 @@ class TestBorrowedPool:
     """AGENT_INTERNAL config branch uses the external pool, doesn't close it."""
 
     @pytest.mark.asyncio
-    async def test_external_pool_used_for_fetch(self, agent_internal_config: AgentInternalConnectionConfig) -> None:
+    async def test_external_pool_used_for_fetch(self, agent_internal_config: BorrowedPoolConnectionConfig) -> None:
         """fetch routes through the borrowed pool's acquired connection."""
         pool = _build_mock_pool(fetch_records=[{"x": 1}])
         driver = AsyncpgDriver(agent_internal_config, external_pool=pool)
@@ -470,7 +487,7 @@ class TestBorrowedPool:
 
     @pytest.mark.asyncio
     async def test_owns_pool_false_for_borrowed(
-        self, agent_internal_config: AgentInternalConnectionConfig, monkeypatch: pytest.MonkeyPatch
+        self, agent_internal_config: BorrowedPoolConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """the borrowed path never creates a pool of its own, even after use."""
         create_pool = AsyncMock()
@@ -485,7 +502,7 @@ class TestBorrowedPool:
 
     @pytest.mark.asyncio
     async def test_close_does_not_close_borrowed_pool(
-        self, agent_internal_config: AgentInternalConnectionConfig
+        self, agent_internal_config: BorrowedPoolConnectionConfig
     ) -> None:
         """borrowed pool is NOT closed by the driver's :meth:`close`."""
         pool = _build_mock_pool()
@@ -844,7 +861,7 @@ class TestABorrowedConnectionIsScopedToItsSchema:
     @pytest.mark.asyncio
     async def test_fetch_sets_search_path_on_the_borrowed_connection(
         self,
-        agent_internal_config: AgentInternalConnectionConfig,
+        agent_internal_config: BorrowedPoolConnectionConfig,
     ) -> None:
         """
         :return: nothing
@@ -873,7 +890,7 @@ class TestABorrowedConnectionIsScopedToItsSchema:
         :return: nothing
         :rtype: None
         """
-        cfg = AgentInternalConnectionConfig(
+        cfg = BorrowedPoolConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name='weird"name',
         )
@@ -914,3 +931,93 @@ class TestABorrowedConnectionIsScopedToItsSchema:
         conn = fake_pool.recorded_conn
         executed = [call.args[0] for call in conn.execute.await_args_list]
         assert not any("search_path" in statement for statement in executed)
+
+
+class TestFetchAtMost:
+    """a read that stops after ``max_rows`` rows: the rest are never fetched from the server."""
+
+    @pytest.mark.asyncio
+    async def test_rows_are_read_through_a_cursor_that_fetches_no_more_than_asked(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        external = _build_mock_pool()
+        conn = external.recorded_conn
+        cursor = MagicMock(name="MockCursor")
+        cursor.fetch = AsyncMock(return_value=[{"n": 0}, {"n": 1}, {"n": 2}])
+        opened: list[tuple[Any, ...]] = []
+
+        async def open_cursor(*args: Any) -> Any:
+            opened.append(args)
+            return cursor
+
+        conn.cursor = MagicMock(side_effect=lambda *args: open_cursor(*args))
+
+        @asynccontextmanager
+        async def transaction() -> Any:
+            yield None
+
+        conn.transaction = MagicMock(side_effect=transaction)
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        rows = await driver.fetch_at_most("SELECT n FROM big WHERE a = $1", 7, max_rows=3)
+
+        assert rows == [{"n": 0}, {"n": 1}, {"n": 2}]
+        assert opened == [("SELECT n FROM big WHERE a = $1", 7)]
+        cursor.fetch.assert_awaited_once_with(3)
+        conn.fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_bound_below_one_is_refused(self, agent_internal_config: BorrowedPoolConnectionConfig) -> None:
+        driver = AsyncpgDriver(agent_internal_config, external_pool=_build_mock_pool())
+        with pytest.raises(ValueError, match="max_rows"):
+            await driver.fetch_at_most("SELECT 1", max_rows=0)
+
+
+class TestABorrowedPoolThatHasNoConnectionToSpare:
+    @pytest.mark.asyncio
+    async def test_a_timed_out_wait_for_a_connection_says_the_pool_is_busy_not_that_a_statement_timed_out(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        external = _build_mock_pool()
+
+        @asynccontextmanager
+        async def exhausted(**options: Any) -> Any:
+            raise TimeoutError
+            yield  # pragma: no cover - never reached
+
+        external.acquire = exhausted
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        with pytest.raises(DriverPoolBusyError):
+            await driver.fetch("SELECT 1")
+        with pytest.raises(DriverPoolBusyError):
+            await driver.fetch_at_most("SELECT 1", max_rows=2)
+
+    @pytest.mark.asyncio
+    async def test_every_way_into_a_borrowed_pool_says_busy_when_it_has_no_connection(
+        self, agent_internal_config: BorrowedPoolConnectionConfig
+    ) -> None:
+        """a transaction and a streamed read take their connection by other routes than fetch; each must say busy."""
+
+        class _Exhausted:
+            """a pool's acquire that runs out of time whether it is awaited or entered."""
+
+            def __await__(self) -> Any:
+                raise TimeoutError
+                yield  # pragma: no cover - never reached
+
+            async def __aenter__(self) -> Any:
+                raise TimeoutError
+
+            async def __aexit__(self, *exc_info: Any) -> bool:
+                return False
+
+        external = _build_mock_pool()
+        external.acquire = lambda **options: _Exhausted()
+        driver = AsyncpgDriver(agent_internal_config, external_pool=external)
+
+        with pytest.raises(DriverPoolBusyError):
+            await driver.begin()
+        with pytest.raises(DriverPoolBusyError):
+            async for _row in driver.fetch_iter("SELECT 1"):
+                pass  # pragma: no cover - the acquire fails before any row

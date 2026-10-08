@@ -25,6 +25,8 @@ from threetears.nats.subject_permissions import (
     AGENT_POD_PLATFORM_BUCKET_SUFFIXES,
     CROSS_PLATFORM_CACHE_INVALIDATE,
     SERVER_USER_INFO_SUBJECT,
+    TOOL_POD_OBJECTS_BUCKET_SUFFIX,
+    TOOL_POD_POINTERS_BUCKET_SUFFIX,
     DATA_VERSIONS_BUCKET_SUFFIX,
     MAX_COORDINATION_BUCKETS,
     WORKSPACE_LOCKS_BUCKET_SUFFIX,
@@ -46,6 +48,8 @@ from threetears.nats.subject_permissions import (
     kv_bucket_names,
     kv_key_scope_for,
     kv_key_scope_for_service,
+    tool_pod_object_store_name,
+    tool_pod_pointers_bucket_name,
 )
 from threetears.nats.result_delivery import result_stream_name
 from threetears.nats.subjects import Subjects, parse_tool_pod_audit_subject, set_default_namespace
@@ -502,6 +506,18 @@ class TestBootCompleteness:
         tool_pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
         assert f"{_NS}.hub.audit.anonymize" in tool_pod.publish
         assert f"{_NS}.hub.audit.anonymize" not in tool_pod.subscribe
+
+    def test_geo_layers_reloaded_is_tool_pod_publish_hub_subscribe(self) -> None:
+        # a tool pod that registered platform geography layers reports a reloaded generation; the
+        # hub answers, moving a layer only for the pod owning its provider namespace. an agent owns
+        # no provider space, so it is not granted the subject at all.
+        tool_pod = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        hub = _build(Principal.HUB)
+        agent = _build(Principal.AGENT_POD)
+        assert f"{_NS}.hub.geo.layers.reloaded" in tool_pod.publish
+        assert f"{_NS}.hub.geo.layers.reloaded" not in tool_pod.subscribe
+        assert f"{_NS}.hub.geo.layers.reloaded" in hub.subscribe
+        assert f"{_NS}.hub.geo.layers.reloaded" not in agent.publish
 
     def test_engagement_scope_resolve_grant_is_pod_publish_hub_subscribe(self) -> None:
         # engagement scope (consumer A of the §2 keystone): the consuming tool pod
@@ -2588,3 +2604,133 @@ class TestSharedPodBucketsAreOwnerScoped:
         resource = JsResource.kv_owner_keys(f"{_NS}-leases", scope=self._TOOL_SCOPE, writable=True)
         assert resource.capability is JsCapability.KV_OWNER_KEYS
         assert resource.key_prefix == self._TOOL_SCOPE
+
+
+class TestToolPodObjectStore:
+    """a tool pod's own Object Store bucket and its pointer bucket: the hub declares, the pod works inside.
+
+    Both are composed under the pod's own scope, so the grant names no other principal's data. The
+    Object Store grant is bind, a subject-carried metadata read, a NAMED consumer filtered inside the
+    bucket, and the ``$O.`` publish -- never a stream-management verb, never ``STREAM.MSG.GET`` or
+    ``STREAM.MSG.DELETE``, never the unnamed consumer nats-py's own ``ObjectStore.get`` creates.
+    """
+
+    _SCOPE = kv_key_scope_for(Principal.TOOL_POD, pod_id=_POD_X)
+
+    def _pod(self) -> PrincipalPermissions:
+        return build_permissions(Principal.TOOL_POD, pod_id=_POD_X, object_store=True)
+
+    def test_a_pod_that_has_not_opted_in_holds_no_object_store(self) -> None:
+        plain = build_permissions(Principal.TOOL_POD, pod_id=_POD_X)
+        names = {r.name for r in plain.js_resources}
+        assert tool_pod_object_store_name(_POD_X, ns=_NS) not in names
+        assert tool_pod_pointers_bucket_name(_POD_X, ns=_NS) not in names
+        assert not [s for s in plain.publish if ".hub.object_store." in s]
+        assert not [s for s in _minted_publish(plain) if s.startswith("$O.") or "OBJ_" in s]
+
+    @pytest.mark.parametrize("principal", [p for p in Principal if p is not Principal.TOOL_POD])
+    def test_only_a_tool_pod_may_opt_in(self, principal: Principal) -> None:
+        with pytest.raises(ValueError):
+            build_permissions(principal, object_store=True, **_IDS[principal])
+
+    def test_the_bucket_names_are_composed_under_the_pods_own_scope(self) -> None:
+        assert tool_pod_object_store_name(_POD_X, ns=_NS) == f"{_NS}-{self._SCOPE}-{TOOL_POD_OBJECTS_BUCKET_SUFFIX}"
+        assert tool_pod_pointers_bucket_name(_POD_X, ns=_NS) == f"{_NS}-{self._SCOPE}-{TOOL_POD_POINTERS_BUCKET_SUFFIX}"
+        assert tool_pod_object_store_name(_POD_X, ns=_NS) != tool_pod_object_store_name(_POD_VICTIM, ns=_NS)
+
+    def test_the_pod_holds_its_object_store_and_pointer_bucket(self) -> None:
+        by_name = {r.name: r for r in self._pod().js_resources}
+        store = by_name[tool_pod_object_store_name(_POD_X, ns=_NS)]
+        assert store.kind is JsResourceKind.OBJECT_STORE
+        assert store.capability is JsCapability.OBJECT_STORE_OBJECTS
+        assert store.writable
+        assert store.stream_name == f"OBJ_{store.name}"
+        pointers = by_name[tool_pod_pointers_bucket_name(_POD_X, ns=_NS)]
+        assert (pointers.kind, pointers.capability, pointers.writable) == (
+            JsResourceKind.KV_BUCKET,
+            JsCapability.KV_BUCKET_KEYS,
+            True,
+        )
+
+    def test_the_object_store_grant_is_exactly_bind_read_named_consumer_and_write(self) -> None:
+        bucket = tool_pod_object_store_name(_POD_X, ns=_NS)
+        stream = f"OBJ_{bucket}"
+        minted = _minted_publish(self._pod())
+        assert sorted(s for s in minted if bucket in s) == sorted(
+            [
+                f"$O.{bucket}.>",
+                f"$JS.API.STREAM.INFO.{stream}",
+                f"$JS.API.DIRECT.GET.{stream}.$O.{bucket}.M.>",
+                f"$JS.API.CONSUMER.CREATE.{stream}.*.$O.{bucket}.>",
+            ]
+        )
+
+    @pytest.mark.parametrize(
+        "subject",
+        [
+            "$JS.API.STREAM.CREATE.{stream}",
+            "$JS.API.STREAM.UPDATE.{stream}",
+            "$JS.API.STREAM.DELETE.{stream}",
+            "$JS.API.STREAM.PURGE.{stream}",
+            "$JS.API.STREAM.SNAPSHOT.{stream}",
+            "$JS.API.STREAM.RESTORE.{stream}",
+            "$JS.API.STREAM.MSG.GET.{stream}",
+            "$JS.API.STREAM.MSG.DELETE.{stream}",
+            # the unnamed create nats-py's ObjectStore.get and watch use: filter only in the body
+            "$JS.API.CONSUMER.CREATE.{stream}",
+            "$JS.API.CONSUMER.DURABLE.CREATE.{stream}.c1",
+            "$JS.API.CONSUMER.DELETE.{stream}.c1",
+            "$JS.API.CONSUMER.MSG.NEXT.{stream}.c1",
+            "$JS.API.DIRECT.GET.{stream}",
+            # another pod's bucket, by every route
+            "$JS.API.STREAM.INFO.{victim}",
+            "$JS.API.DIRECT.GET.{victim}.$O.{victim_bucket}.M.x",
+            "$JS.API.CONSUMER.CREATE.{victim}.c1.$O.{victim_bucket}.C.x",
+            "$O.{victim_bucket}.C.x",
+        ],
+    )
+    def test_no_object_store_management_or_foreign_reach(self, subject: str) -> None:
+        bucket = tool_pod_object_store_name(_POD_X, ns=_NS)
+        victim_bucket = tool_pod_object_store_name(_POD_VICTIM, ns=_NS)
+        concrete = subject.format(stream=f"OBJ_{bucket}", victim=f"OBJ_{victim_bucket}", victim_bucket=victim_bucket)
+        minted = _minted_publish(self._pod())
+        assert not any(_subject_matches(p, concrete) for p in minted), concrete
+
+    def test_a_read_only_object_store_grant_mints_no_publish(self) -> None:
+        resource = JsResource.object_store(f"{_NS}-somebody-objects", writable=False)
+        permissions = PrincipalPermissions(
+            publish=(), subscribe=(), allow_responses=False, inbox_prefix="_INBOX_x", js_resources=(resource,)
+        )
+        assert not [s for s in _minted_publish(permissions) if s.startswith("$O.")]
+
+    @pytest.mark.parametrize(
+        ("kind", "capability"),
+        [
+            (JsResourceKind.KV_BUCKET, JsCapability.OBJECT_STORE_OBJECTS),
+            (JsResourceKind.STREAM, JsCapability.OBJECT_STORE_OBJECTS),
+            (JsResourceKind.OBJECT_STORE, JsCapability.KV_BUCKET_KEYS),
+            (JsResourceKind.OBJECT_STORE, JsCapability.STREAM_CONSUMER),
+        ],
+    )
+    def test_the_object_store_capability_and_kind_go_together(
+        self, kind: JsResourceKind, capability: JsCapability
+    ) -> None:
+        with pytest.raises(ValueError):
+            JsResource(
+                name=f"{_NS}-x-objects",
+                kind=kind,
+                capability=capability,
+                scope=None,
+                writable=False,
+                filter_subject="a.b.c" if capability is JsCapability.STREAM_CONSUMER else None,
+            )
+
+    def test_object_store_requests_are_tool_pod_publish_hub_subscribe(self) -> None:
+        pod = self._pod()
+        hub = _build(Principal.HUB)
+        agent = _build(Principal.AGENT_POD)
+        for subject in (f"{_NS}.hub.object_store.declare", f"{_NS}.hub.object_store.retire"):
+            assert subject in pod.publish
+            assert subject not in pod.subscribe
+            assert subject in hub.subscribe
+            assert subject not in agent.publish

@@ -37,6 +37,7 @@ from threetears.geo.bands import AggregateSpec, BandResult, FeatureSpec, aggrega
 from threetears.geo.features import FeatureCache
 from threetears.geo.geometry import decode_geometry, point_geometry
 from threetears.geo.mvt import encode_tile
+from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
 from threetears.media.contracts.keys import build_object_key
 from threetears.observe import get_logger, traced
@@ -196,6 +197,11 @@ class TileCollection(DerivedCollection[TileEntity]):
     :param datasource_name: names the object-key namespace, so two
         datasources declaring a layer of the same name cannot collide
     :ptype datasource_name: str
+    :param cache_scope: the tile source's cache identity: names the collection's table, and
+        through it the L1 table, the L2 keys, the build locks and the registry entry, so a
+        layer of the same name from another source is never served from this one's caches
+        (see :mod:`threetears.geo.scope`)
+    :ptype cache_scope: str
     :param feature_caches: per-layer source-feature caches. omitted means
         every build reads L3 directly: correct, just slower
     :ptype feature_caches: dict[str, FeatureCache] | None
@@ -219,9 +225,12 @@ class TileCollection(DerivedCollection[TileEntity]):
         loader: SourceLoader,
         object_store: Any,
         datasource_name: str,
+        cache_scope: str,
         feature_caches: dict[str, FeatureCache] | None = None,
         **kwargs: Any,
     ) -> None:
+        # before the base constructor: it reads table_name to resolve and register every tier
+        self._cache_scope = check_cache_scope(cache_scope)
         super().__init__(*args, **kwargs)
         self._layers = layers
         self._loader = loader
@@ -234,7 +243,7 @@ class TileCollection(DerivedCollection[TileEntity]):
 
     @property
     def table_name(self) -> str:
-        return "geo_tiles"
+        return f"geo_tiles_{self._cache_scope}"
 
     @property
     def entity_class(self) -> type[TileEntity]:

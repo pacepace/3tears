@@ -63,10 +63,10 @@ def _rows(count: int) -> list[dict[str, Any]]:
     return out
 
 
-def _metadata() -> MetaData:
+def _metadata(cache_scope: str) -> MetaData:
     metadata = MetaData()
     Table(
-        "geo_tiles",
+        f"geo_tiles_{cache_scope}",
         metadata,
         SAColumn("layer", String, primary_key=True),
         SAColumn("version", Integer, primary_key=True),
@@ -100,6 +100,8 @@ def _make_pod(
     rows: list[dict[str, Any]],
     calls: list[str],
     isolation: str,
+    cache_scope: str = "ds_aibotsmap",
+    datasource_name: str = "aibotsmap-data",
 ) -> TileCollection:
     """one pod: its own SQLite L1, the shared NATS L2, the shared object store.
 
@@ -115,7 +117,7 @@ def _make_pod(
         return list(rows)
 
     backend = SQLiteBackend(f"geo_tiles_{isolation}_{name}")
-    backend.initialize(_metadata())
+    backend.initialize(_metadata(cache_scope))
     registry = CollectionRegistry()
     registry.configure(l1_backend=backend, l2_client=nats_client, l3_pool=None, kv_key_scope="test-principal")
     return TileCollection(
@@ -126,7 +128,8 @@ def _make_pod(
         layers={"census_tracts": _layer()},
         loader=_loader,
         object_store=FilesystemObjectStore(tmp_path),
-        datasource_name="aibotsmap-data",
+        datasource_name=datasource_name,
+        cache_scope=cache_scope,
     )
 
 
@@ -177,6 +180,45 @@ class TestL2RoundTrip:
         second = await pod_b.get(key)
         assert second is not None
         assert calls == ["a"], f"pod b rebuilt the tile: {calls}"
+
+    async def test_another_sources_layer_of_the_same_name_is_never_served_from_l2(
+        self,
+        tmp_path: Path,
+        nats_client: NatsClient,
+    ) -> None:
+        """a customer datasource and a platform layer both named ``census_tracts``.
+
+        both pods share the NATS L2 and build the same address; the second must build
+        its own tile from its own rows, never take the first source's off the shared tier.
+        """
+        calls: list[str] = []
+        customer = _make_pod(
+            tmp_path,
+            nats_client,
+            name="customer",
+            rows=_rows(3),
+            calls=calls,
+            isolation="crosssource",
+            cache_scope="ds_customer",
+            datasource_name="customer-data",
+        )
+        platform = _make_pod(
+            tmp_path,
+            nats_client,
+            name="platform",
+            rows=_rows(5),
+            calls=calls,
+            isolation="crosssource",
+            cache_scope="ns_platform",
+            datasource_name="platform-geography",
+        )
+        key = ("census_tracts", 104, _TILE.z, _TILE.x, _TILE.y)
+
+        mine = await customer.get(key)
+        theirs = await platform.get(key)
+        assert mine is not None and theirs is not None
+        assert calls == ["customer", "platform"], f"a source served another's tile: {calls}"
+        assert len(mapbox_vector_tile.decode(theirs.mvt)["census_tracts"]["features"]) == 5
 
     async def test_l1_hit_avoids_every_lower_tier(
         self,

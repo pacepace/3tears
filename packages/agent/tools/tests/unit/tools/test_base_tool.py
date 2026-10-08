@@ -11,6 +11,8 @@ import pytest
 
 from threetears.agent.tools.base_tool import (
     CONFLICT,
+    MALFORMED_REQUEST,
+    TOOL_NOT_READY,
     TOOL_RESULT_ERROR_CODES,
     MCPToolDefinition,
     TearsTool,
@@ -222,6 +224,13 @@ class TestToolResultErrorCode:
     def test_conflict_is_a_declared_code(self) -> None:
         assert CONFLICT == "CONFLICT"
         assert CONFLICT in TOOL_RESULT_ERROR_CODES
+
+    def test_a_malformed_request_and_a_tool_not_ready_are_declared_codes(self) -> None:
+        """a tool refusing its arguments (400) or not ready to answer (503) names the platform's own codes."""
+        assert (MALFORMED_REQUEST, TOOL_NOT_READY) == ("MALFORMED_REQUEST", "TOOL_NOT_READY")
+        assert {MALFORMED_REQUEST, TOOL_NOT_READY} <= TOOL_RESULT_ERROR_CODES
+        refused = ToolResult(success=False, content="", error="no such report", error_code=MALFORMED_REQUEST)
+        assert refused.error_code == "MALFORMED_REQUEST"
 
     def test_a_lowercase_spelling_is_refused_and_the_message_names_the_canonical_one(self) -> None:
         """one condition, one code: ``conflict`` and ``CONFLICT`` must never both reach the wire."""

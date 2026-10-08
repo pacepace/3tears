@@ -107,6 +107,11 @@ def encode_tile(layers: dict[str, Sequence[TileFeature]], tile: TileId) -> bytes
         encoded_layers.append({"name": name, "features": encoded_features})
 
     # ``default_options`` rather than the legacy ``extents=`` kwarg, which the
-    # library deprecated in 2.x.
-    result: bytes = mapbox_vector_tile.encode(encoded_layers, default_options={"extents": TILE_EXTENT})
+    # library deprecated in 2.x. ``y_coord_down``: the projection above already puts y
+    # downward, as the format wants; left at its default the library flips it a second time,
+    # and every tile renders mirrored about its own middle. Its decoder flips back by default,
+    # so a round trip through it cannot see this -- tests read the wire y-down
+    result: bytes = mapbox_vector_tile.encode(
+        encoded_layers, default_options={"extents": TILE_EXTENT, "y_coord_down": True}
+    )
     return result

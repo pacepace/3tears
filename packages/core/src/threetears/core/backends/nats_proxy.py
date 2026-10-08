@@ -51,6 +51,7 @@ __all__ = [
     "CONSTRAINT_VIOLATION_ERROR_CODE",
     "DATA_VERSION_NOT_READY_ERROR_CODE",
     "DATA_VERSION_SUPERSEDED_ERROR_CODE",
+    "LOCK_NOT_AVAILABLE_ERROR_CODE",
     "NatsProxyL3Backend",
 ]
 
@@ -62,6 +63,15 @@ _logger = get_logger(__name__)
 #: optionally, ``detail`` -- from which the proxy rebuilds the asyncpg exception a direct pool
 #: raises. the hub imports this name, so the two halves of the contract spell it once.
 CONSTRAINT_VIOLATION_ERROR_CODE = "CONSTRAINT_VIOLATION"
+
+#: the broker's ``error_code`` for a statement whose ``NOWAIT`` lock another transaction holds
+#: (SQLSTATE 55P03). a reply carrying it also carries that ``sqlstate``; the proxy rebuilds the
+#: ``asyncpg.LockNotAvailableError`` a direct pool raises, so a caller that refuses rather than waits
+#: tells the refusal from an outage by its type. the hub imports this name.
+LOCK_NOT_AVAILABLE_ERROR_CODE = "LOCK_NOT_AVAILABLE"
+
+#: SQLSTATE for "could not obtain lock" (``NOWAIT``)
+_LOCK_NOT_AVAILABLE_SQLSTATE = "55P03"
 
 #: the broker's ``error_code`` for a pod whose identity token carries a data version OLDER than
 #: its space's target. fatal: the proxy raises :class:`DataVersionSupersededError` and hands it to
@@ -129,6 +139,7 @@ def _raise_for_failed_reply(
     :raises DataVersionSupersededError: for :data:`DATA_VERSION_SUPERSEDED_ERROR_CODE`
     :raises DataVersionNotReadyError: for :data:`DATA_VERSION_NOT_READY_ERROR_CODE`
     :raises asyncpg.IntegrityConstraintViolationError: for a well-formed constraint violation
+    :raises asyncpg.LockNotAvailableError: for :data:`LOCK_NOT_AVAILABLE_ERROR_CODE` with SQLSTATE 55P03
     :raises DataLayerUnavailableError: for every other failed reply
     """
     error_code = response.get("error_code")
@@ -157,6 +168,8 @@ def _raise_for_failed_reply(
             },
         )
         raise asyncpg.PostgresError.new(fields)
+    if error_code == LOCK_NOT_AVAILABLE_ERROR_CODE and sqlstate == _LOCK_NOT_AVAILABLE_SQLSTATE:
+        raise asyncpg.PostgresError.new({"C": sqlstate, "M": str(response.get("error_message", ""))})
     raise DataLayerUnavailableError(message)
 
 

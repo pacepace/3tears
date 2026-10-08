@@ -59,7 +59,7 @@ import functools
 import inspect
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from types import TracebackType
 from typing import Any, TypeAlias, TypedDict, TypeVar
 
@@ -70,6 +70,7 @@ __all__ = [
     "ColumnCoverage",
     "ColumnRow",
     "Driver",
+    "check_max_rows",
     "RelationFingerprint",
     "TableRow",
     "Transaction",
@@ -724,6 +725,19 @@ class TransactionContext:
 # ---------------------------------------------------------------------------
 
 
+def check_max_rows(max_rows: int) -> None:
+    """refuse a read bound below one row: the one check every driver's ``fetch_at_most`` makes first.
+
+    :param max_rows: the bound
+    :ptype max_rows: int
+    :return: nothing
+    :rtype: None
+    :raises ValueError: if ``max_rows`` is below 1
+    """
+    if max_rows < 1:
+        raise ValueError(f"max_rows must be at least 1, got {max_rows}")
+
+
 class Driver(ABC):
     """abstract base for all datasource drivers.
 
@@ -806,6 +820,42 @@ class Driver(ABC):
         ``wait=True`` deadlocks the asyncio event loop.
     """
 
+    @property
+    def concurrent_queries(self) -> int:
+        """the most queries a caller should run on this driver at once.
+
+        Fails closed: a driver that says nothing is asked one query at a time. A driver that caps
+        its own open connections answers that cap, so a caller running queries side by side gates
+        them there and they wait at the caller's gate (which can refuse, with a deadline) rather than
+        on the driver's own connection semaphore, which has neither. A driver whose logins are not
+        guarded against a refused credential answers 1, so a caller cannot send a burst of failing
+        logins.
+
+        A driver querying through a pool its host lends it (:attr:`borrowed_pool` is not None) is
+        bounded with every other borrower of that pool, by the host; its own answer is not the bound
+        then, and stays 1.
+
+        The hub gates every call through a datasource's driver this way (its ``DrainableDriver``
+        takes a turn for each statement, for a whole ``fetch_iter`` walk and for a transaction from
+        ``begin`` to commit or rollback).
+
+        :return: the bound, at least 1
+        :rtype: int
+        """
+        return 1
+
+    @property
+    def borrowed_pool(self) -> Any | None:
+        """the host's own pool this driver queries through, or None when it opens its own connections.
+
+        A caller running queries side by side bounds every driver borrowing one pool together, or
+        they starve the host that lent it; :attr:`concurrent_queries` is not that bound.
+
+        :return: the borrowed pool
+        :rtype: Any | None
+        """
+        return None
+
     @abstractmethod
     async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         """run an arbitrary SELECT statement; materialize all rows in memory.
@@ -834,6 +884,34 @@ class Driver(ABC):
         :raises RuntimeError: if the driver was previously closed
         :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
+
+    async def fetch_at_most(
+        self, sql: str, *params: Any, max_rows: int, timeout_seconds: int | None = None
+    ) -> list[dict[str, Any]]:
+        """run a SELECT and read at most ``max_rows`` rows of its result, in order.
+
+        For a caller that answers with a bounded number of rows (a responder capping its reply at a
+        thousand and saying whether there were more): ask for one row past the cap, and no result
+        larger than that is held. Every driver checks the bound first with :func:`check_max_rows`, the
+        one check; a driver that can stop reading early (a server-side cursor) overrides this, and
+        the default reads the result through :meth:`fetch` and keeps the first ``max_rows``. So the bound on what
+        is kept holds for every driver, and the bound on what is read only where the driver says so.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param max_rows: the most rows to read; at least 1
+        :ptype max_rows: int
+        :param timeout_seconds: per-statement timeout override, as :meth:`fetch` takes it
+        :ptype timeout_seconds: int | None
+        :return: at most ``max_rows`` column-name -> value dicts, in row order
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``max_rows`` is below 1
+        """
+        check_max_rows(max_rows)
+        rows = await self.fetch(sql, *params, timeout_seconds=timeout_seconds)
+        return rows[:max_rows]
 
     @abstractmethod
     async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
@@ -945,7 +1023,9 @@ class Driver(ABC):
         """
 
     @abstractmethod
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> RelationFingerprint:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, str] | None = None
+    ) -> RelationFingerprint:
         """count a relation and fingerprint its ordering key, in one statement.
 
         The completeness check a paged read rests on. Taken before the first page
@@ -974,6 +1054,9 @@ class Driver(ABC):
             a fingerprint over no columns would answer the same for every
             relation of the same size, which is a count wearing a digest's name
         :ptype key: list[str]
+        :param where: equality filters, column -> value, naming the rows to fingerprint;
+            columns are TRUSTED identifiers, values are bound as parameters
+        :ptype where: Mapping[str, str] | None
         :return: the relation's current row count and key digest
         :rtype: RelationFingerprint
         :raises ValueError: when ``key`` is empty

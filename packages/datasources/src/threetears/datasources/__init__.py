@@ -69,7 +69,7 @@ from threetears.datasources.geo_config import (
     MeasureAggregation,
 )
 from threetears.datasources.config import (
-    AgentInternalConnectionConfig,
+    BorrowedPoolConnectionConfig,
     BigQueryConnectionConfig,
     ConnectionConfig,
     DatasourceConfig,
@@ -119,7 +119,7 @@ __all__ = [
     "CacheClassConfig",
     "AggregateBandConfig",
     "DATASOURCE_NAMESPACE_TYPE",
-    "AgentInternalConnectionConfig",
+    "BorrowedPoolConnectionConfig",
     "BigQueryConnectionConfig",
     "CapabilitySourceCollection",
     "CapabilitySourceEntity",

@@ -361,3 +361,136 @@ class TestUpsertFiltersToTheRegisteredSchema:
         assert row is not None
         assert row["name"] == "alice"
         assert row["age"] == 30
+
+
+def _partitioned_backend() -> DuckDBBackend:
+    metadata = MetaData()
+    Table(
+        "results",
+        metadata,
+        Column("race", String(64), primary_key=True),
+        Column("county", String(64), primary_key=True),
+        Column("state", String(8)),
+        Column("votes", Integer),
+        Column("counted_at", DateTime(timezone=True)),
+    )
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    return backend
+
+
+def _result(race: str, county: str, state: str | None, votes: int) -> dict[str, object]:
+    return {
+        "race": race,
+        "county": county,
+        "state": state,
+        "votes": votes,
+        "counted_at": datetime(2026, 11, 3, 23, 0, tzinfo=timezone.utc),
+    }
+
+
+class TestPartitions:
+    """one scope of a table at a time: exported as Arrow, replaced whole in one transaction."""
+
+    def test_a_partition_exports_as_arrow_in_key_order(self) -> None:
+        pytest.importorskip("pyarrow")
+        backend = _partitioned_backend()
+        backend.upsert_many(
+            "results",
+            [_result("r1", "c2", "TX", 2), _result("r1", "c1", "TX", 1), _result("r1", "c9", "CA", 9)],
+            ("race", "county"),
+        )
+        exported = backend.export_partition("results", "state", "TX", order_by=("race", "county"))
+        assert exported.num_rows == 2
+        assert exported.column("county").to_pylist() == ["c1", "c2"]
+        assert backend.export_partition("results", "state", None, order_by=("race",)).num_rows == 0
+
+    def test_replacing_partitions_swaps_each_scope_whole_and_leaves_the_rest(self) -> None:
+        pytest.importorskip("pyarrow")
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        source = _partitioned_backend()
+        source.upsert_many(
+            "results", [_result("r1", "c1", "TX", 10), _result("r2", "c1", "TX", 20)], ("race", "county")
+        )
+        chunk = source.export_partition("results", "state", "TX", order_by=("race", "county"))
+
+        backend = _partitioned_backend()
+        backend.upsert_many(
+            "results",
+            [_result("r1", "c1", "TX", 1), _result("r9", "c9", "TX", 9), _result("r1", "c5", "CA", 5)],
+            ("race", "county"),
+        )
+        written = backend.replace_partitions(
+            [
+                PartitionReplacement(table="results", column="state", value="TX", arrow=chunk),
+                PartitionReplacement(
+                    table="results",
+                    column="state",
+                    value="DE",
+                    rows=[_result("r3", "c3", "DE", 3)],
+                    primary_key=("race", "county"),
+                ),
+            ]
+        )
+        assert written == 3
+        rows = backend.execute_query("SELECT race, state, votes FROM results ORDER BY state, race")
+        assert rows == [
+            {"race": "r1", "state": "CA", "votes": 5},
+            {"race": "r3", "state": "DE", "votes": 3},
+            {"race": "r1", "state": "TX", "votes": 10},
+            {"race": "r2", "state": "TX", "votes": 20},
+        ]
+
+    def test_a_failing_replacement_changes_nothing(self) -> None:
+        pytest.importorskip("pyarrow")
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        backend = _partitioned_backend()
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1)], ("race", "county"))
+        with pytest.raises(ValueError):
+            backend.replace_partitions(
+                [
+                    PartitionReplacement(table="results", column="state", value="TX", rows=[]),
+                    PartitionReplacement(table="nope", column="state", value="TX", rows=[]),
+                ]
+            )
+        assert backend.execute_query("SELECT count(*) AS n FROM results") == [{"n": 1}]
+
+    def test_an_empty_replacement_removes_the_scope(self) -> None:
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        backend = _partitioned_backend()
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1), _result("r1", "c2", None, 2)], ("race", "county"))
+        backend.replace_partitions([PartitionReplacement(table="results", column="state", value=None, rows=[])])
+        assert backend.execute_query("SELECT county FROM results") == [{"county": "c1"}]
+
+    def test_a_read_snapshot_holds_still_across_a_replacement(self) -> None:
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        backend = _partitioned_backend()
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1)], ("race", "county"))
+        with backend.read_snapshot() as cursor:
+            assert cursor.execute("SELECT votes FROM results").fetchall() == [(1,)]
+            backend.replace_partitions(
+                [
+                    PartitionReplacement(
+                        table="results",
+                        column="state",
+                        value="TX",
+                        rows=[_result("r1", "c1", "TX", 2)],
+                        primary_key=("race", "county"),
+                    )
+                ]
+            )
+            assert cursor.execute("SELECT votes FROM results").fetchall() == [(1,)]
+        with backend.read_snapshot() as cursor:
+            assert cursor.execute("SELECT votes FROM results").fetchall() == [(2,)]
+
+    def test_the_schema_digest_names_the_columns_and_their_types(self) -> None:
+        assert _partitioned_backend().schema_digest("results") == _partitioned_backend().schema_digest("results")
+        other = DuckDBBackend()
+        metadata = MetaData()
+        Table("results", metadata, Column("race", String(64), primary_key=True), Column("votes", String(8)))
+        other.initialize(metadata)
+        assert other.schema_digest("results") != _partitioned_backend().schema_digest("results")

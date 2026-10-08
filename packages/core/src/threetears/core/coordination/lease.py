@@ -605,6 +605,27 @@ class KVLease:
         """
         return "leases"
 
+    def stored_key(self, key: str) -> str:
+        """the KV key a lease named ``key`` is stored under: led by the factory's owner scope, if any.
+
+        For state kept beside a lease under the same grant (a run's pending request, say), which must
+        land where the owner's keys do or a scoped grant refuses it.
+
+        :param key: the name
+        :ptype key: str
+        :return: the stored key
+        :rtype: str
+        """
+        return owner_scoped_key(self._key_scope, key)
+
+    async def bucket(self) -> "KvBucketLike":
+        """the bucket this factory's leases live in, opened as an acquire opens it.
+
+        :return: the bucket
+        :rtype: KvBucketLike
+        """
+        return await self._ensure_bucket()
+
     async def _ensure_bucket(self) -> "KvBucketLike":
         """open the bucket with history=1 on first call: declare it, or bind only when so configured.
 

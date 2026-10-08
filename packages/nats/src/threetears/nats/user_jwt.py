@@ -185,6 +185,20 @@ def js_api_grants_for_stream(
     ``$KV.`` publish for a writable grant is minted by :func:`mint_user_jwt` from the resource, not
     here.
 
+    :attr:`JsCapability.OBJECT_STORE_OBJECTS` is a pod's grant on an Object Store bucket of its own
+    (``OBJ_<b>`` over ``$O.<b>.>``), the whole bucket through addressed reads and named consumers:
+
+    - ``$JS.API.STREAM.INFO.{stream}`` -- the bind.
+    - ``$JS.API.DIRECT.GET.{stream}.$O.{bucket}.M.>`` -- an object's metadata, read by its subject
+      (the bucket runs ``allow_direct``, which the hub declares). Chunks are never read this way.
+    - ``$JS.API.CONSUMER.CREATE.{stream}.*.$O.{bucket}.>`` -- a NAMED consumer whose filter rides in
+      the subject, to read one object's chunks or list the metadata. The unnamed create nats-py's
+      ``ObjectStore.get`` and ``watch`` issue is NOT granted.
+
+    Not ``STREAM.MSG.GET`` or ``STREAM.MSG.DELETE``, and no management verb: deleting an object is a
+    purge, which the hub performs on the pod's request. The ``$O.`` publish for a writable grant is
+    minted by :func:`mint_user_jwt`.
+
     :attr:`JsCapability.STREAM_CONSUMER` is a pod's grant on a plain stream it collects its OWN
     messages from, and it is exactly ONE subject:
 
@@ -237,6 +251,17 @@ def js_api_grants_for_stream(
             f"$JS.API.STREAM.MSG.GET.{stream}",
             f"$JS.API.DIRECT.GET.{stream}.$KV.{bucket}.>",
             f"$JS.API.CONSUMER.CREATE.{stream}.*.$KV.{bucket}.>",
+        ]
+    elif capability is JsCapability.OBJECT_STORE_OBJECTS:
+        if bucket is None:
+            raise ValueError(
+                f"{capability.value} grants for stream {stream!r} need the bucket name: the metadata read is "
+                f"$JS.API.DIRECT.GET.{stream}.$O.<bucket>.M.>, in which $O and the bucket are separate tokens"
+            )
+        grants = [
+            f"$JS.API.STREAM.INFO.{stream}",
+            f"$JS.API.DIRECT.GET.{stream}.$O.{bucket}.M.>",
+            f"$JS.API.CONSUMER.CREATE.{stream}.*.$O.{bucket}.>",
         ]
     elif capability is JsCapability.STREAM_CONSUMER:
         if not filter_subject:
@@ -418,7 +443,10 @@ def mint_user_jwt(
         if resource.kind is JsResourceKind.KV_BUCKET and resource.writable:
             tail = ">" if resource.key_prefix is None else f"{resource.key_prefix}.>"
             kv_data.append(f"$KV.{resource.name}.{tail}")
-        bucket = resource.name if resource.kind is JsResourceKind.KV_BUCKET else None
+        if resource.kind is JsResourceKind.OBJECT_STORE and resource.writable:
+            # chunks and metadata alike: a put publishes both, each acknowledged on the own inbox
+            kv_data.append(f"$O.{resource.name}.>")
+        bucket = resource.name if resource.kind in (JsResourceKind.KV_BUCKET, JsResourceKind.OBJECT_STORE) else None
         js_control.extend(
             js_api_grants_for_stream(
                 resource.stream_name,

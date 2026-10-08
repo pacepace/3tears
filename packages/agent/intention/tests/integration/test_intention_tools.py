@@ -17,6 +17,7 @@ a pgvector/pg16 container:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
@@ -618,14 +619,23 @@ class TestIntentionCacheCoherence:
                     customer_id,
                     user_id,
                 )
+            # record every pk the collection invalidates, whichever entry point carries it: a
+            # bypassing_write settles its rows in one invalidate_cache_many call (86e0d749), a
+            # single-row path calls invalidate_cache.
             calls: list[Any] = []
             original = coll.invalidate_cache
+            original_many = coll.invalidate_cache_many
 
             async def _spy(entity_id: Any) -> None:
                 calls.append(entity_id)
                 await original(entity_id)
 
+            async def _spy_many(entity_ids: Sequence[Any]) -> None:
+                calls.extend(entity_ids)
+                await original_many(entity_ids)
+
             coll.invalidate_cache = _spy  # type: ignore[method-assign]
+            coll.invalidate_cache_many = _spy_many  # type: ignore[method-assign]
 
             await coll.decay_salience(half_life_days=60.0, floor=0.1)
             assert (agent_id, wid) in calls

@@ -30,6 +30,7 @@ from typing import Any, ClassVar
 
 from threetears.core.collections.base import BaseCollection
 from threetears.core.entities.base import BaseEntity
+from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import BoundingBox, TileId, bounds_to_tile_range, tile_bounds
 from threetears.observe import get_logger, traced
 
@@ -60,6 +61,10 @@ class FeatureCache(BaseCollection[FeatureEntity]):
     :ptype bounds_of: Callable[[dict[str, Any]], BoundingBox]
     :param feature_id_column: column holding each row's stable identity
     :ptype feature_id_column: str
+    :param cache_scope: the tile source this cache serves; names its tables, so another
+        source's features of the same layer name are never read (see :mod:`threetears.geo.scope`)
+    :ptype cache_scope: str
+    :raises ValueError: for a cache scope that is not a lowercase identifier
     """
 
     primary_key_column: tuple[str, ...] = ("layer", "source_version", "feature_id")
@@ -76,8 +81,11 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         loader: FeatureLoader,
         bounds_of: Callable[[dict[str, Any]], BoundingBox],
         feature_id_column: str,
+        cache_scope: str,
         **kwargs: Any,
     ) -> None:
+        # before the base constructor: it reads table_name to resolve and register every tier
+        self._cache_scope = check_cache_scope(cache_scope)
         super().__init__(*args, **kwargs)
         self._loader = loader
         self._bounds_of = bounds_of
@@ -91,7 +99,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
 
     @property
     def table_name(self) -> str:
-        return "geo_features"
+        return f"geo_features_{self._cache_scope}"
 
     @property
     def entity_class(self) -> type[FeatureEntity]:

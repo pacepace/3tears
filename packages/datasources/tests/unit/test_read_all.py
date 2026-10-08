@@ -27,6 +27,7 @@ sentinel row, these tests fail.
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 from uuid import uuid7
 
@@ -34,8 +35,11 @@ import pytest
 
 from threetears.datasources.drivers.sql_fragments import translate_placeholders
 from threetears.datasources.query_client import (
+    RESULT_TOO_LARGE,
+    DatasourceQueryError,
     DatasourceQueryResult,
     IncompleteReadError,
+    RelationFingerprintRequest,
     RelationFingerprintResult,
     read_all,
 )
@@ -1005,3 +1009,135 @@ class TestARelationThatChangedUnderTheReadIsRefused:
 
         assert len(rows) == 6
         assert warehouse.fingerprints == 2, "one reading before the first page and one after the last"
+
+
+class _FilteringWarehouse(_PagingWarehouse):
+    """a warehouse holding several parts of one relation, honouring equality filters.
+
+    Its fingerprint covers only the rows the filters keep, as a warehouse running the
+    filtered statement would; its pages read the filter values off the front of the bound
+    parameters, which is where ``read_all`` must put them.
+    """
+
+    def __init__(self, dataset: list[dict[str, Any]]) -> None:
+        super().__init__(dataset)
+        self.fingerprint_filters: list[dict[str, str]] = []
+
+    def _kept(self, where: dict[str, str]) -> list[dict[str, Any]]:
+        return [r for r in self.current_rows() if all(str(r[c]) == v for c, v in where.items())]
+
+    async def query(
+        self, datasource_name: str, query: str, *, params: list[Any] | None = None, **_: Any
+    ) -> DatasourceQueryResult:
+        bound = list(params or [])
+        self.pages.append(query)
+        self.page_params.append(bound)
+        filters = {"period": bound[0]} if "period = $1" in query else {}
+        candidates = self._kept(filters)
+        cursor_params = bound[len(filters) :]
+        if cursor_params:
+            cursor = tuple(cursor_params[-len(_KEY) :])
+            candidates = [r for r in candidates if tuple(r[c] for c in _KEY) > cursor]
+        served = candidates[: _limit_of(query)]
+        return DatasourceQueryResult(rows=served, row_count=len(served), truncated=False, correlation_id=uuid7())
+
+    async def relation_fingerprint(
+        self, datasource_name: str, *, relation: str, key: Any, where: Any = None, **_: Any
+    ) -> RelationFingerprintResult:
+        filters = dict(where or {})
+        self.fingerprint_filters.append(filters)
+        kept = self._kept(filters)
+        payload = "\x1e".join("\x1f".join(str(row[c]) for c in tuple(key)) for row in kept)
+        return RelationFingerprintResult(
+            row_count=len(kept), digest=hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        )
+
+
+class TestAFilteredReadIsTheWholeOfItsPart:
+    """``where`` names one part of a relation; the read is complete for that part, and only it."""
+
+    @pytest.mark.asyncio
+    async def test_every_row_of_the_part_and_no_other_comes_back_across_pages(self) -> None:
+        dataset = [_row(f"s{i:02d}", period) for i in range(9) for period in ("2026-01", "2026-02")]
+        warehouse = _FilteringWarehouse(dataset)
+
+        rows = await _read(warehouse, page_size=4, where={"period": "2026-02"})
+
+        assert [r["jurisdiction"] for r in rows] == [f"s{i:02d}" for i in range(9)]
+        assert {r["period"] for r in rows} == {"2026-02"}
+        # both fingerprints describe the part, so the count proves THIS part complete
+        assert warehouse.fingerprint_filters == [{"period": "2026-02"}, {"period": "2026-02"}]
+
+    @pytest.mark.asyncio
+    async def test_the_filter_is_bound_first_and_the_cursor_after_it(self) -> None:
+        dataset = [_row(f"s{i:02d}", "2026-02") for i in range(6)]
+        warehouse = _FilteringWarehouse(dataset)
+
+        await _read(warehouse, page_size=4, where={"period": "2026-02"})
+
+        assert warehouse.pages[0].count("$") == 1
+        assert warehouse.page_params[0] == ["2026-02"]
+        second, params = warehouse.pages[1], warehouse.page_params[1]
+        assert "(period = $1) AND (" in second
+        assert params[0] == "2026-02"
+        # every placeholder names a parameter: none points past the end, none is unused
+        numbers = sorted({int(n) for n in re.findall(r"\$(\d+)", second)})
+        assert numbers == list(range(1, len(params) + 1))
+
+
+def test_a_filter_column_that_is_not_an_identifier_is_refused() -> None:
+    with pytest.raises(ValueError, match="not plain SQL identifiers"):
+        RelationFingerprintRequest(relation="a.b", key_columns=["k"], where={"level; DROP TABLE x": "State"})
+
+
+def test_the_equality_filter_binds_its_values() -> None:
+    from threetears.datasources.drivers.sql_fragments import build_equality_filter
+
+    assert build_equality_filter({"geo_level": "State", "kind": "x"}) == (
+        " WHERE geo_level = $1 AND kind = $2",
+        ["State", "x"],
+    )
+    assert build_equality_filter(None) == ("", [])
+
+
+class _ByteCappedWarehouse(_PagingWarehouse):
+    """a hub that refuses a page whose rows weigh more than one reply may carry.
+
+    Each row's weight is its ``period``'s length here; the refusal is the hub's typed code,
+    as the broker answers an oversized reply rather than leaving the caller to time out.
+    """
+
+    def __init__(self, dataset: list[dict[str, Any]], budget: int) -> None:
+        super().__init__(dataset)
+        self.budget = budget
+        self.limits: list[int] = []
+
+    async def query(
+        self, datasource_name: str, query: str, *, params: list[Any] | None = None, **_: Any
+    ) -> DatasourceQueryResult:
+        page = await super().query(datasource_name, query, params=params)
+        self.limits.append(_limit_of(query))
+        if sum(len(r["period"]) for r in page.rows) > self.budget:
+            raise DatasourceQueryError(RESULT_TOO_LARGE, "too large for one reply")
+        return page
+
+
+class TestAPageTooLargeForOneReplyIsReadInSmallerPages:
+    @pytest.mark.asyncio
+    async def test_a_heavy_stretch_shrinks_the_page_and_every_row_still_comes_back(self) -> None:
+        dataset = [_row(f"s{i:02d}", "x" * (40 if i == 7 else 1)) for i in range(20)]
+        warehouse = _ByteCappedWarehouse(dataset, budget=45)
+
+        rows = await _read(warehouse, page_size=8)
+
+        assert [r["jurisdiction"] for r in rows] == [f"s{i:02d}" for i in range(20)]
+        # shrank around the heavy row, then grew back toward the asked-for size
+        assert min(warehouse.limits) < 9
+        assert warehouse.limits[-1] == 9
+
+    @pytest.mark.asyncio
+    async def test_a_single_row_too_large_for_a_reply_is_refused_not_looped(self) -> None:
+        warehouse = _ByteCappedWarehouse([_row("s00", "x" * 50)], budget=10)
+        with pytest.raises(DatasourceQueryError) as raised:
+            await _read(warehouse, page_size=8)
+        assert raised.value.error_code == RESULT_TOO_LARGE

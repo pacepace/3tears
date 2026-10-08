@@ -224,6 +224,7 @@ if TYPE_CHECKING:
     from nats.aio.msg import Msg as _NatsMsg
 
     from threetears.nats.kv import KvRestoredHook, KvTimings, NatsKvBucket
+    from threetears.nats.object_store import NatsObjectStore
     from threetears.nats.transport import RawMessageCallback
 
 
@@ -2899,6 +2900,7 @@ class NatsClient:
         "_successor_move",
         "_longest_request_seconds",
         "_kv_timings",
+        "_declaration_guards",
         "_declarations",
         "_owned_buckets",
         "_kv_refills",
@@ -2954,6 +2956,11 @@ class NatsClient:
         # configuration reconciles it, as the declaration did, rather than leaving it as it is
         # (:meth:`_redeclare_stream`).
         self._owned_buckets: dict[str, _OwnedBucket] = {}
+        # the backing stream name -> the declarer's answer to "is this still wanted?", for a
+        # declaration whose owner can go away (a tool pod deleted, perhaps on another replica). a
+        # restoration asks it first and FORGETS a declaration no longer wanted rather than putting it
+        # back (:meth:`_restore_once`).
+        self._declaration_guards: dict[str, Callable[[], Awaitable[bool]]] = {}
         # the backing stream name -> the refill of every remembered KV declaration given an
         # ``on_restored`` (``ensure_kv_bucket``). a bucket created again comes back EMPTY, and its
         # entries are the declarer's to write back; this is how the declarer learns it is owed that.
@@ -3315,6 +3322,8 @@ class NatsClient:
         failures: list[str] = []
         js = self.jetstream_context()
         for name, config in list(self._declarations.items()):
+            if not await self._still_wanted(name):
+                continue
             try:
                 await self._redeclare_stream(js, config)
             except asyncio.CancelledError:
@@ -3361,6 +3370,53 @@ class NatsClient:
                 )
                 failures.append(f"durable {consumer.durable}")
         return failures
+
+    async def _still_wanted(self, stream: str) -> bool:
+        """whether a remembered declaration is still wanted; one that is not is forgotten.
+
+        A declaration with no guard is always wanted. A guard that fails is logged and the
+        declaration is kept: a restoration must not drop a bucket because a database read failed.
+
+        :param stream: the declared stream's name
+        :ptype stream: str
+        :return: whether to restore it
+        :rtype: bool
+        """
+        guard = self._declaration_guards.get(stream)
+        wanted = True
+        if guard is not None:
+            try:
+                wanted = bool(await guard())
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- logged; the declaration is kept and restored
+                log.error(
+                    "asking whether stream %s is still wanted failed; it is restored: %s",
+                    stream,
+                    exc,
+                    extra={"extra_data": {"stream": stream, "client_name": self._client_name}},
+                )
+        if not wanted:
+            self._forget_declaration(stream)
+            log.info(
+                "declared stream %s is no longer wanted; it is not restored after the reconnect",
+                stream,
+                extra={"extra_data": {"stream": stream, "client_name": self._client_name}},
+            )
+        return wanted
+
+    def _forget_declaration(self, stream: str) -> None:
+        """drop everything remembered about one declared stream.
+
+        :param stream: the stream's name
+        :ptype stream: str
+        :return: nothing
+        :rtype: None
+        """
+        self._declarations.pop(stream, None)
+        self._owned_buckets.pop(stream, None)
+        self._kv_refills.pop(stream, None)
+        self._declaration_guards.pop(stream, None)
 
     async def _redeclare_stream(self, js: Any, config: _NatsStreamConfig) -> None:
         """create one declared stream again, exactly as declared; reconcile a live one only when its declarer owns it.
@@ -5497,6 +5553,8 @@ class NatsClient:
         drop_file_storage: bool = False,
         prefix_namespace: bool = True,
         on_restored: KvRestoredHook | None = None,
+        max_bytes: int | None = None,
+        still_wanted: Callable[[], Awaitable[bool]] | None = None,
     ) -> NatsKvBucket:
         """DECLARE a KV bucket's configuration, reconciling a live one.
 
@@ -5634,6 +5692,14 @@ class NatsClient:
             declaration; a re-declaration without it gives it up. only with
             ``create_if_missing=True``
         :ptype on_restored: KvRestoredHook | None
+        :param max_bytes: the most bytes the bucket may hold; a write past it is refused
+            (``discard: new``) and nothing else on the server is touched. ``None`` (the default)
+            leaves it unbounded. an owner reconciles a live bucket's bound in place
+        :ptype max_bytes: int | None
+        :param still_wanted: asked before each restoration after a reconnect; a declaration it says
+            is no longer wanted is forgotten instead of put back. for a bucket whose owner can go away
+            without this client hearing of it. ``None`` restores it always
+        :ptype still_wanted: Callable[[], Awaitable[bool]] | None
         :return: ready KV bucket handle, also installed in the client's cache
         :rtype: NatsKvBucket
         :raises ValueError: if ``owns_bucket=True`` with ``create_if_missing=False``
@@ -5666,6 +5732,7 @@ class NatsClient:
             history=history,
             storage_type=StorageType.FILE if storage == "file" else StorageType.MEMORY,
             direct=direct,
+            max_bytes=max_bytes,
         )
         stream = declared.name or full_name
         async with self._kv_locks.setdefault(full_name, asyncio.Lock()):
@@ -5681,6 +5748,7 @@ class NatsClient:
                 owns_bucket=owns_bucket,
                 drop_file_storage=drop_file_storage,
                 on_recreated=functools.partial(self._note_refill_owed, stream) if create_if_missing else None,
+                max_bytes=max_bytes,
             )
             self._buckets[full_name] = bucket
         if create_if_missing:
@@ -5689,6 +5757,10 @@ class NatsClient:
             # declarer -- so the declarer puts it back after every reconnect (:meth:`_restore_once`),
             # with the same backing-stream config created here.
             self._declarations[stream] = declared
+            if still_wanted is None:
+                self._declaration_guards.pop(stream, None)
+            else:
+                self._declaration_guards[stream] = still_wanted
             # the LATEST declaration is the one remembered, its ownership of the bucket included:
             # a re-declaration without it gives the ownership up.
             if owns_bucket:
@@ -5801,6 +5873,177 @@ class NatsClient:
             storage,
         )
         return full_name
+
+    async def object_store(self, *, name: str, prefix_namespace: bool = True) -> NatsObjectStore:
+        """bind an Object Store bucket another identity declared; never creates one.
+
+        A pod binds the bucket its declarer (the hub) created: a pod holds no stream-management
+        verb, so it could not create one, and a refused create is never answered.
+
+        :param name: bucket name suffix (prefixed by the namespace), or the full name
+        :ptype name: str
+        :param prefix_namespace: layer ``{namespace}-`` over ``name``; ``False`` names it exactly
+        :ptype prefix_namespace: bool
+        :return: the bound bucket
+        :rtype: NatsObjectStore
+        :raises ObjectStoreNotFoundError: when the bucket does not exist
+        :raises ObjectStoreError: when the bind fails otherwise
+        """
+        from threetears.nats.object_store import NatsObjectStore  # noqa: PLC0415 -- object_store imports client's types
+
+        full_name = f"{self._namespace}-{name}" if prefix_namespace else name
+        store = NatsObjectStore(client=self, full_name=full_name)
+        await store.bind()
+        return store
+
+    async def ensure_object_store(
+        self,
+        *,
+        name: str,
+        max_bytes: int,
+        storage: str = "memory",
+        replicas: int = 1,
+        prefix_namespace: bool = True,
+        still_wanted: Callable[[], Awaitable[bool]] | None = None,
+    ) -> NatsObjectStore:
+        """declare an Object Store bucket as its OWNER: create it, or reconcile a live one to this shape.
+
+        The shape is the NATS Object Store's (``OBJ_<b>`` over ``$O.<b>.C.>`` and ``$O.<b>.M.>``)
+        with rollup headers refused (a rollup is a purge by publish), with ``allow_direct`` on, so a reader's metadata read is the
+        subject-carried direct get a pod's grant admits, and ``discard: new`` under ``max_bytes``,
+        so a full bucket refuses a write rather than dropping objects someone serves. Like
+        :meth:`ensure_jetstream_stream`, the declaration is remembered and created again after every
+        reconnect, so a NATS restart that wiped the memory bucket brings it back -- empty.
+
+        A live bucket of the name is updated to the declared shape: its owner is the only declarer,
+        so there is nobody to fight over it.
+
+        :param name: bucket name suffix (prefixed by the namespace), or the full name
+        :ptype name: str
+        :param max_bytes: the most bytes the bucket may hold, chunks and metadata together
+        :ptype max_bytes: int
+        :param storage: ``"memory"`` (the default: NATS is the L2 tier) or ``"file"``
+        :ptype storage: str
+        :param replicas: how many servers hold the bucket
+        :ptype replicas: int
+        :param prefix_namespace: layer ``{namespace}-`` over ``name``; ``False`` names it exactly
+        :ptype prefix_namespace: bool
+        :param still_wanted: asked before each restoration after a reconnect; a declaration it says
+            is no longer wanted is forgotten instead of put back (:meth:`ensure_kv_bucket`)
+        :ptype still_wanted: Callable[[], Awaitable[bool]] | None
+        :return: the declared bucket
+        :rtype: NatsObjectStore
+        :raises ValueError: when ``max_bytes`` or ``replicas`` is not positive
+        :raises StreamSubjectsOverlapError: when another stream owns the bucket's subjects
+        :raises ObjectStoreError: when the create and the update both fail
+        """
+        from nats.js.api import DiscardPolicy, StorageType, StreamConfig  # noqa: PLC0415
+        from nats.js.errors import APIError  # noqa: PLC0415
+
+        from threetears.nats.errors import ObjectStoreError  # noqa: PLC0415
+        from threetears.nats.object_store import NatsObjectStore, object_store_stream_name  # noqa: PLC0415
+
+        if max_bytes <= 0:
+            raise ValueError(f"an object store needs a positive max_bytes, got {max_bytes!r}")
+        if replicas <= 0:
+            raise ValueError(f"an object store needs at least one replica, got {replicas!r}")
+        full_name = f"{self._namespace}-{name}" if prefix_namespace else name
+        stream = object_store_stream_name(full_name)
+        config = StreamConfig(
+            name=stream,
+            subjects=[f"$O.{full_name}.C.>", f"$O.{full_name}.M.>"],
+            storage=StorageType.FILE if storage == "file" else StorageType.MEMORY,
+            max_bytes=max_bytes,
+            discard=DiscardPolicy.NEW,
+            # off: a rollup header purges a subject's -- or with ``all`` the whole stream's -- history,
+            # a purge by publish that a writer holding only ``$O.`` must not have. objects are written
+            # once, so a metadata subject holds one message without it.
+            allow_rollup_hdrs=False,
+            allow_direct=True,
+            num_replicas=replicas,
+        )
+        js = self.jetstream_context()
+        try:
+            await js.add_stream(config)
+        except APIError as exc:
+            if exc.err_code == _JS_ERR_SUBJECTS_OVERLAP:
+                raise StreamSubjectsOverlapError(
+                    f"cannot create object store {full_name!r}: its subjects are claimed by a different stream"
+                ) from exc
+            if exc.err_code != _JS_ERR_STREAM_NAME_IN_USE:
+                raise ObjectStoreError(f"declaring object store {full_name!r} failed: {exc}") from exc
+            try:
+                await js.update_stream(config)
+            except APIError as update_exc:
+                raise ObjectStoreError(
+                    f"object store {full_name!r} is live with another shape and could not be updated: {update_exc}"
+                ) from update_exc
+        self._declarations[stream] = dataclasses.replace(config)
+        if still_wanted is None:
+            self._declaration_guards.pop(stream, None)
+        else:
+            self._declaration_guards[stream] = still_wanted
+        log.info(
+            "object store ensured",
+            extra={
+                "extra_data": {"bucket": full_name, "max_bytes": max_bytes, "storage": storage, "replicas": replicas}
+            },
+        )
+        return NatsObjectStore(client=self, full_name=full_name)
+
+    async def _withdraw(self, stream: str) -> None:
+        """forget a declared stream and delete it: it is not put back after a reconnect.
+
+        :param stream: the stream's name
+        :ptype stream: str
+        :return: nothing
+        :rtype: None
+        :raises NatsClientError: when the delete is refused for any reason but absence
+        """
+        from nats.js.errors import NotFoundError  # noqa: PLC0415
+
+        self._forget_declaration(stream)
+        try:
+            await self.jetstream_context().delete_stream(stream)
+        except NotFoundError:
+            log.debug("withdrawn stream %s was already gone", stream)
+        except Exception as exc:
+            raise NatsClientError(f"deleting stream {stream!r} failed: {exc}") from exc
+        log.info("declared stream withdrawn and deleted", extra={"extra_data": {"stream": stream}})
+
+    async def delete_object_store(self, *, name: str, prefix_namespace: bool = True) -> None:
+        """withdraw an Object Store this client declared: delete it, and stop putting it back after a reconnect.
+
+        For the bucket's owner when what it served is gone (its pod was deleted). Deleting an absent
+        bucket is not an error.
+
+        :param name: bucket name suffix (prefixed by the namespace), or the full name
+        :ptype name: str
+        :param prefix_namespace: layer ``{namespace}-`` over ``name``; ``False`` names it exactly
+        :ptype prefix_namespace: bool
+        :return: nothing
+        :rtype: None
+        :raises NatsClientError: when the delete is refused
+        """
+        from threetears.nats.object_store import object_store_stream_name  # noqa: PLC0415
+
+        full_name = f"{self._namespace}-{name}" if prefix_namespace else name
+        await self._withdraw(object_store_stream_name(full_name))
+
+    async def delete_kv_bucket(self, *, name: str, prefix_namespace: bool = True) -> None:
+        """withdraw a KV bucket this client declared: delete it, and stop putting it back after a reconnect.
+
+        :param name: bucket name suffix (prefixed by the namespace), or the full name
+        :ptype name: str
+        :param prefix_namespace: layer ``{namespace}-`` over ``name``; ``False`` names it exactly
+        :ptype prefix_namespace: bool
+        :return: nothing
+        :rtype: None
+        :raises NatsClientError: when the delete is refused
+        """
+        full_name = f"{self._namespace}-{name}" if prefix_namespace else name
+        self._buckets.pop(full_name, None)
+        await self._withdraw(f"KV_{full_name}")
 
     async def jetstream_publish(
         self,
