@@ -395,6 +395,34 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_waiting",
+        rationale=(
+            "the waits this process's own control flows (its worker pass, a catch-up) have outstanding, "
+            "flow -> reason, read only to derive this replica's status phase; another replica's waits "
+            "are its own, and a restart has none, so nothing to share or persist"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_waited",
+        rationale=(
+            "whether the run of each of this process's control flows now in progress has waited, "
+            "flow -> bool; it lives for one run and is meaningless outside the process running it"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_behind",
+        rationale=(
+            "scopes whose chunks THIS process's DuckDB L1 failed to apply, scope -> failures in a row; "
+            "it describes the L1 beside it, as _applied does, and a restart reloads the L1 and starts afresh"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/registry/src/threetears/registry/catalog.py",
         class_name="ToolCatalog",
         attr_name="_entries",

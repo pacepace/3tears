@@ -55,7 +55,7 @@ from threetears.observe import get_logger
 
 from threetears.nats._named_read import NamedRead, read_through_named_consumer
 from threetears.nats._publish import run_bounded
-from threetears.nats.object_store_requests import OBJECT_NAME_PATTERN
+from threetears.nats.object_store_requests import OBJECT_NAME_PATTERN, ORPHAN_CHUNK_MIN_AGE
 from threetears.nats.errors import (
     ObjectExistsError,
     ObjectNotFoundError,
@@ -630,7 +630,7 @@ class NatsObjectStore:
             raise ObjectStoreError(f"deleting object {name!r} from {self._full_name} failed: {exc}") from exc
         return True
 
-    async def purge_orphan_chunks(self, *, older_than: timedelta = timedelta(minutes=10)) -> int:
+    async def purge_orphan_chunks(self, *, older_than: timedelta = ORPHAN_CHUNK_MIN_AGE) -> int:
         """remove chunks no object names, once they are old enough not to be a put in progress.
 
         A put writes its chunks before its metadata, so chunks with no metadata are either a put

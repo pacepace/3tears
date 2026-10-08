@@ -18,6 +18,7 @@ skips cleanly.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import uuid
@@ -546,6 +547,16 @@ async def test_a_watch_that_ends_says_so(platform: _Platform) -> None:
     await platform.clients[-1].shutdown(drain_timeout=timedelta(seconds=1))
     await _until(lambda: replica.status().phase is SnapshotPhase.FAILED, what="the watch's end")
     assert "watch" in replica.status().detail
+
+    # a catch-up on a replica whose watch has ended must not make it look ready again
+    await platform.pool.execute("UPDATE results SET votes = 3 WHERE state = 'DE'")
+    platform.epochs["DE"] = 4
+    with contextlib.suppress(
+        Exception
+    ):  # NOSILENT: this replica's bus is closed; the call may fail, the status must not lie
+        await replica.catch_up_from_l3()
+    assert replica.status().phase is SnapshotPhase.FAILED, "a catch-up hid a replica that no longer applies changes"
+    assert "watch" in replica.status().detail
     await replica.stop()
 
 
@@ -981,3 +992,49 @@ async def test_a_whole_write_into_an_empty_snapshot_is_loaded_from_l2_with_no_re
     assert l3.statements == 0 and writer_l3.statements == 0, "a replica read L3"
     await writer.stop()
     await waiting.stop()
+
+
+async def test_a_writers_staged_chunks_survive_a_rebuilds_sweep_and_apply_everywhere(platform: _Platform) -> None:
+    """a write stages its chunks long before it moves their pointer; a rebuild that sweeps chunks no
+    pointer names in the meantime must not take them, or the pointer would move onto nothing."""
+    writer, writer_l3 = await platform.replica()
+    await writer.start()
+    await writer.wait_ready(timeout=_WAIT)
+
+    # the write: DE's results change in L3 and are staged at the write's version, its pointer unmoved
+    await platform.pool.execute("UPDATE results SET votes = 9 WHERE state = 'DE'")
+    staged = await writer.stage("DE", 2, {"results": await _rows(platform.pool, "results", "DE")})
+
+    # meanwhile NATS loses the pointers (not the chunks): the writer rebuilds every scope and sweeps
+    before = writer_l3.statements
+    js = platform.hub.jetstream_context()
+    await js.delete_stream(f"KV_{platform.namespace}-pod-pointers")
+    await platform.hub.reconnect()
+    await _until(
+        lambda: writer_l3.statements > before and writer.status().phase is SnapshotPhase.READY,
+        what="the rebuild and its sweep",
+    )
+    objects = await (await platform.hub.object_store(name="pod-objects")).list_objects(prefix="enr/DE/2/")
+    assert {info.name for info in objects} == set(staged.objects.values()), "the sweep took a staged chunk"
+
+    reader, _ = await platform.replica()
+    await reader.start()
+    await reader.wait_ready(timeout=_WAIT)
+    platform.epochs["DE"] = 2  # the commit
+    moved, skipped = await writer.publish_staged([staged], carry_at={"DE": 1})
+
+    assert (moved, skipped) == (["DE"], [])
+    for replica in (writer, reader):
+        await _until(
+            lambda r=replica: (
+                r.status().last_change is not None
+                and r.status().last_change.scope == "DE"
+                and r.status().last_change.epoch == 2
+            ),
+            what="DE applied at epoch 2",
+        )
+        assert replica.status().behind == ()
+        with replica.read() as cursor:
+            assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(9,)]
+    await writer.stop()
+    await reader.stop()

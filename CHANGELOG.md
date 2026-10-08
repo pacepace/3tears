@@ -113,6 +113,36 @@ so a starting replica loads them without reading L3, and a refresh moves only th
 - **Added, `DuckDBBackend.export_partition(table, column, value, order_by=)`,
   `replace_partitions([PartitionReplacement(...)])` (several scopes of several tables in one
   transaction), `read_snapshot()` (a cursor in a read transaction) and `schema_digest(table)`.**
+- **Added, a writer that stages (the ENR pod's refresh):** `ScopedSnapshot.stage(scope, epoch, rows)`
+  writes a scope's chunks under the write's version (which becomes the scope's epoch) without moving
+  its pointer or touching the L1, so a writer keeps compressed chunks rather than every row until it
+  commits; `publish_staged(staged, carry_at=, whole=)` then moves the pointers. A table a stage left
+  out keeps its chunk only from the epoch the writer saw before its write (`carry_at`), and moves
+  only from the exact pointer entry it judged that against; any other scope is skipped and left to
+  `catch_up_from_l3`. `holding_rebuilds()` holds the rebuild claim across the commit and the publish;
+  `on_change(listener)` calls back after every commit to the L1; a cold load writes scopes in scope
+  order, so replicas sum the same rows in the same order. `DuckDBBackend.export_rows(...)` is the
+  Arrow a scope would hold with given rows, in a rolled-back transaction.
+- **Added, a tool pod's own snapshot (the ENR pod):** `bind_pod_object_store(nats_client,
+  identity_token=)` / `PodObjectStore` (`threetears.nats.object_store_requests`) bind the hub-declared
+  Object Store and pointer bucket with the two asks (a retire after NATS lost the bucket declares it
+  again and retries); `open_tool_pod_snapshot(...)` builds and starts a `ScopedSnapshot` over them,
+  refusing `store`/`pointers`/`ensure_buckets`/`retire` it wires itself. `ORPHAN_CHUNK_MIN_AGE` states
+  the hub's orphan-chunk sweep bound, and is `purge_orphan_chunks`'s default.
+- **Added, `OperationStatusTool(progress=)`** (the ENR pod's `enr.load_status`): what the operation
+  is doing now, answered with its status; a progress that raises is reported as unavailable, never
+  taking the last run's error with it.
+- **Changed, after review, the snapshot's chunk lifecycle and status:** one rule decides whether a
+  chunk may be deleted, judged against its scope's pointer read from KV (never a replica's lagging
+  view): named by the pointer, kept; above the pointer's epoch (a stage not yet published), kept;
+  below it, deleted; at its epoch unnamed, or with no pointer, deleted only past `stray_age`. The
+  phase is derived in one place from the facts (the watch's end first, then a step in progress, a
+  wait outstanding, a failed pass, ready), so a catch-up can no longer show a replica whose watch
+  ended as ready. A scope whose chunks cannot be applied is shown (`SnapshotStatus.behind`), retried
+  at the recheck rather than at once, and rebuilt from L3 after three failures; the rebuild claim's
+  own writes no longer wake the worker. `status()` counts rows from memory, so it never waits on the
+  DuckDB lock a load holds. A claim renewal that cannot reach NATS is logged and retried until the
+  claim's lifetime is spent.
 
 ### Core and datasources: keep tables current from a source, write only what changed, one writer at a time
 

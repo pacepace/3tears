@@ -659,7 +659,11 @@ class OperationStatusTool(_OperationTool):
         if status["running"]:
             sentence = f"running since {status['started_at']}"
         if self._progress is not None:
-            progress = self._progress()
+            try:
+                progress = self._progress()
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- the status (the last run's error above all) must answer even when what reports progress fails; logged and said
+                log.exception("operation %s: its progress could not be read", operation.name)
+                progress = {"summary": f"progress unavailable ({type(exc).__name__})", "error": str(exc)}
             status["progress"] = progress
             if progress.get("summary"):
                 sentence += f"; now: {progress['summary']}"

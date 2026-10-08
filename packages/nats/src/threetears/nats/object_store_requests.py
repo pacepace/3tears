@@ -28,6 +28,11 @@ The request and reply models, the subjects and the pod's client live here; the h
    names anything but a tool pod, is answered ``IDENTITY_REFUSED``.
 3. Declare or retire in the VERIFIED pod's own buckets only; a failure after verification is
    answered ``DECLARE_FAILED`` / ``RETIRE_FAILED``, and a retry is safe.
+4. The sweep of chunks a failed write left behind takes only chunk subjects no object names that
+   are OLDER than :data:`ORPHAN_CHUNK_MIN_AGE`. A retire runs while other replicas of the same pod
+   are writing (every publish ends in one), and an object's chunks are stored before its
+   metadata, so a younger unnamed chunk may be a put still in flight; sweeping it tears that put.
+   :meth:`threetears.nats.object_store.NatsObjectStore.purge_orphan_chunks` holds to it by default.
 
 ``error_code`` vocabulary: :data:`OBJECT_STORE_REQUEST_ERROR_CODES`.
 """
@@ -56,6 +61,7 @@ __all__ = [
     "MAX_RETIRED_OBJECTS",
     "OBJECT_NAME_PATTERN",
     "OBJECT_STORE_REQUEST_ERROR_CODES",
+    "ORPHAN_CHUNK_MIN_AGE",
     "DeclaredObjectStore",
     "ObjectStoreDeclareReply",
     "ObjectStoreDeclareRequest",
@@ -76,6 +82,10 @@ log = get_logger(__name__)
 
 #: objects one retire request may name
 MAX_RETIRED_OBJECTS: Final[int] = 1000
+
+#: how old a chunk subject no object names must be before the hub's retire sweeps it: well above the
+#: longest put (an object's chunks land before its metadata, so a younger one may be a put in flight)
+ORPHAN_CHUNK_MIN_AGE: Final[timedelta] = timedelta(minutes=10)
 
 #: seconds a pod waits for the hub's answer
 DEFAULT_OBJECT_STORE_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
