@@ -519,3 +519,27 @@ class TestSealedModel:
         signer = ServiceEnvelopeSigner(signing_key=priv, kid="idc-1", issuer="identity-core")
         with pytest.raises(ValueError, match="no service_envelope field"):
             signer.sealed(_NoField(pod_id="p"), audience="a", op="o")
+
+
+class TestARequiredDoor:
+    async def test_a_message_without_an_envelope_is_refused_and_a_signed_one_admitted(self) -> None:
+        from threetears.core.security import ServiceEnvelopeDoor
+
+        priv, jwks = _keys()
+        door = ServiceEnvelopeDoor.required(
+            door="hub.merge",
+            issuer="identity-core",
+            audience="hub.claim_grant",
+            jwks=_Jwks(jwks),
+            replay_guard=FakeReplayGuard(),
+        )
+        assert door.door == "hub.merge"
+        assert await door.admit(_BODY, op="ensure") is False
+        assert await door.admit(_with_envelope(_mint(priv)), op="ensure") is True
+
+    def test_a_door_with_neither_switch_nor_name_is_refused(self) -> None:
+        from threetears.core.security import ServiceEnvelopeDoor
+
+        _, jwks = _keys()
+        with pytest.raises(ValueError, match="needs a name"):
+            ServiceEnvelopeDoor(switch=None, issuer="i", audience="a", jwks=_Jwks(jwks), replay_guard=FakeReplayGuard())

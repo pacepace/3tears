@@ -627,17 +627,19 @@ class ServiceEnvelopeDoor:
     def __init__(
         self,
         *,
-        switch: DoorProofSwitch,
+        switch: DoorProofSwitch | None,
         issuer: str,
         audience: str,
         jwks: EnvelopeJwksSource,
         replay_guard: EnvelopeLedger,
+        door: str | None = None,
     ) -> None:
         """
         build a door for messages from ``issuer``.
 
-        :param switch: the door's window, from the process's door registry
-        :ptype switch: DoorProofSwitch
+        :param switch: the door's window, from the process's door registry; ``None`` for a door born
+            requiring the envelope (:meth:`required`), which refuses a message without one
+        :ptype switch: DoorProofSwitch | None
         :param issuer: the one service this door takes messages from
         :ptype issuer: str
         :param audience: this door's name in the envelope, so an envelope for another door is refused
@@ -646,25 +648,62 @@ class ServiceEnvelopeDoor:
         :ptype jwks: EnvelopeJwksSource
         :param replay_guard: the door's single-use ledger
         :ptype replay_guard: EnvelopeLedger
+        :param door: the door's name when it has no switch; a switch names its own door
+        :ptype door: str | None
         :raises ValueError: when ``replay_guard`` was not sized for :data:`SERVICE_ENVELOPE_LEEWAY`,
-            so a mis-sized ledger fails the boot rather than a replay
+            so a mis-sized ledger fails the boot rather than a replay; or when neither a switch nor a
+            name names the door
         """
         replay_guard.require_covers(SERVICE_ENVELOPE_LEEWAY)
-        self._switch = switch
+        name = switch.door if switch is not None else door
+        if not name:
+            raise ValueError("a service envelope door without a switch needs a name")
+        self._switch: DoorProofSwitch | None = switch
+        self._name: str = name
         self._issuer = issuer
         self._audience = audience
         self._jwks = jwks
         self._replay_guard = replay_guard
+
+    @classmethod
+    def required(
+        cls,
+        *,
+        door: str,
+        issuer: str,
+        audience: str,
+        jwks: EnvelopeJwksSource,
+        replay_guard: EnvelopeLedger,
+    ) -> ServiceEnvelopeDoor:
+        """a door born requiring the envelope: it has no sender that predates it, so no window.
+
+        A message without an envelope is refused, logged and counted like one that does not verify.
+
+        :param door: the door's name, for logs and metrics
+        :ptype door: str
+        :param issuer: the one service this door takes messages from
+        :ptype issuer: str
+        :param audience: this door's name in the envelope
+        :ptype audience: str
+        :param jwks: the sender's trusted JWKS
+        :ptype jwks: EnvelopeJwksSource
+        :param replay_guard: the door's single-use ledger
+        :ptype replay_guard: EnvelopeLedger
+        :return: the door
+        :rtype: ServiceEnvelopeDoor
+        :raises ValueError: when ``replay_guard`` was not sized for :data:`SERVICE_ENVELOPE_LEEWAY`
+        """
+        return cls(switch=None, door=door, issuer=issuer, audience=audience, jwks=jwks, replay_guard=replay_guard)
 
     @property
     def door(self) -> str:
         """
         answer the door's name.
 
-        :return: the switch's door name
+        :return: the door's name, its switch's when it has one
         :rtype: str
         """
-        return self._switch.door
+        return self._name
 
     async def admit(self, body: Mapping[str, Any], *, op: str) -> bool:
         """whether the receiver may act on ``body`` for ``op``.
@@ -679,6 +718,8 @@ class ServiceEnvelopeDoor:
         envelope = body.get(SERVICE_ENVELOPE_FIELD)
         if isinstance(envelope, str) and envelope:
             admitted = await self._verified(envelope, body=body, op=op)
+        elif self._switch is None:
+            admitted = self._refused(op=op, cause="absent", reason="the door requires an envelope")
         else:
             admitted = (
                 self._switch.judge(presented=False, claimed_sender=self._issuer) is ProofOutcome.ACCEPTED_WITHOUT_PROOF
@@ -734,17 +775,30 @@ class ServiceEnvelopeDoor:
         except KvError as exc:
             # the ledger cannot say whether the id was used: refuse rather than admit a replay
             cause, reason = "ledger_unavailable", type(exc).__name__
-        if cause:
-            counter(
-                _REFUSED_COUNTER,
-                description="service envelopes a door refused",
-                label_names=("door", "cause"),
-            ).labels(door=self.door, cause=cause).inc()
-            log.warning(
-                "service envelope refused",
-                extra={"extra_data": {"door": self.door, "op": op, "cause": cause, "reason": reason}},
-            )
-        return not cause
+        return self._refused(op=op, cause=cause, reason=reason) if cause else True
+
+    def _refused(self, *, op: str, cause: str, reason: str) -> bool:
+        """log and count a refusal, and answer it.
+
+        :param op: the operation refused
+        :ptype op: str
+        :param cause: the refusal's class, the counter's ``cause`` label
+        :ptype cause: str
+        :param reason: what failed
+        :ptype reason: str
+        :return: ``False``
+        :rtype: bool
+        """
+        counter(
+            _REFUSED_COUNTER,
+            description="service envelopes a door refused",
+            label_names=("door", "cause"),
+        ).labels(door=self.door, cause=cause).inc()
+        log.warning(
+            "service envelope refused",
+            extra={"extra_data": {"door": self.door, "op": op, "cause": cause, "reason": reason}},
+        )
+        return False
 
     async def _jwks_naming(self, envelope: str) -> Mapping[str, Any]:
         """the sender's JWKS, fetched afresh once when it lacks the envelope's kid (a rotated key).
