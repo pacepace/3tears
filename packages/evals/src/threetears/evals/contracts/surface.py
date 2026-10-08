@@ -118,6 +118,53 @@ class JudgedDimensionFacts(EvalDocumentModel):
     )
 
 
+#: The fewest distinct cases a stratum holds before its figures are read on their own. Below it a
+#: stratum's figures are still stated, with their intervals and n, and the report says the stratum is too
+#: small to read: at ten cases a 90% rate's Wilson interval runs from about 60% to 98%, which is the floor
+#: the classifier guide sets per label (``docs/designing-classifier-evals.md`` § 4). Flagged, never a
+#: reason to leave a stratum out.
+STRATUM_MIN_CASES = 10
+
+
+class StratumFacts(EvalDocumentModel):
+    """Everything measured in one stratum of one cell — the cell's figures again, over one kind of case.
+
+    The same population and the same rules as the cell's own: the stratum's results are a subset of the
+    cell's, summarised by the walk that summarised the cell (classifier per-label statistics included,
+    derived from the stratum's own confusion matrix) and judged by the same transposition. So a stratum's
+    figure and the cell's pooled figure differ only in which observations they read.
+    """
+
+    stratum: str | None = Field(
+        description=(
+            "The stratum the cases declare (`EvalTestCase.stratum`). None for the cases in this cell that declare "
+            "none — or whose case document no longer resolves, so nothing can say which stratum they were — kept "
+            "as their own entry so the strata still add up to the cell."
+        ),
+    )
+    n_observations: int = Field(
+        ge=1, description="Observations of this stratum's cases in the cell, over every repeat — faulted ones included."
+    )
+    n_cases: int = Field(
+        ge=1,
+        description=(
+            f"Distinct cases behind those observations — the independent draws every figure here rests on. Below "
+            f"{STRATUM_MIN_CASES} the stratum is too small to read on its own: its figures are stated, and its "
+            "intervals are wide."
+        ),
+    )
+    n_infra_excluded: int = Field(
+        default=0, ge=0, description="Observations the harness faulted, excluded from every value below."
+    )
+    measures: MeasureCollection = Field(
+        default_factory=MeasureCollection,
+        description="Every measure over the stratum's observations, by the cell's own rules.",
+    )
+    judged: list[JudgedReading] = Field(
+        default_factory=list, description="Every judged dimension scored in this stratum, sorted by dimension."
+    )
+
+
 class CellFacts(EvalDocumentModel):
     """Everything measured in one cell — one arm, under one rig.
 
@@ -157,6 +204,51 @@ class CellFacts(EvalDocumentModel):
     incomplete_runs: dict[str, str] = Field(
         default_factory=dict, description="Member runs of this cell that did not complete, each with its status."
     )
+    strata: list[StratumFacts] = Field(
+        default_factory=list,
+        description=(
+            "The cell read again per stratum of its cases, beside the pooled figures above: named strata in name "
+            "order, then the cases that declare none, when some do. Every observation of the cell is in exactly "
+            "one entry. Empty when none of the cell's cases declares a stratum, and on a time-axis position, whose "
+            "cells are not broken down by stratum."
+        ),
+    )
+
+    @field_validator("strata")
+    @classmethod
+    def _strata_are_distinct_and_named(cls, strata: list[StratumFacts]) -> list[StratumFacts]:
+        """Refuse a stratum listed twice, or a breakdown whose only entry is the cases that declare none.
+
+        Raises:
+            ValueError: Two entries share a stratum, or every entry is the undeclared one — a cell none of
+                whose cases declares a stratum is not broken down at all, and says so by an empty list.
+        """
+        names = [stratum.stratum for stratum in strata]
+        if len(set(names)) != len(names):
+            raise ValueError(f"a cell lists each stratum once; got {names}")
+        if strata and all(name is None for name in names):
+            raise ValueError("a cell whose cases declare no stratum carries no strata, not one undeclared stratum")
+        return strata
+
+    @model_validator(mode="after")
+    def _strata_add_up_to_the_cell(self) -> CellFacts:
+        """Refuse strata that do not partition the cell's observations and cases.
+
+        A stratum left out would leave its observations in the pooled figure and in no stratum, and a
+        reader adding the strata up would meet a cell larger than its parts with nothing saying why.
+
+        Raises:
+            ValueError: The strata's observations, faulted observations or cases do not sum to the cell's.
+        """
+        if not self.strata:
+            return self
+        if sum(stratum.n_observations for stratum in self.strata) != self.n_observations:
+            raise ValueError("a cell's strata hold every one of its observations, each in one stratum")
+        if sum(stratum.n_infra_excluded for stratum in self.strata) != self.n_infra_excluded:
+            raise ValueError("a cell's strata hold every one of its faulted observations, each in one stratum")
+        if self.n_cases is not None and sum(stratum.n_cases for stratum in self.strata) != self.n_cases:
+            raise ValueError("a cell's strata hold every one of its cases, each in one stratum")
+        return self
 
 
 #: What a campaign's time positions are: the builds a host labels (``release``), or the UTC days its runs
@@ -284,11 +376,13 @@ class DecisionSurface(EvalDocumentModel):
 
 
 __all__ = [
+    "STRATUM_MIN_CASES",
     "CellFacts",
     "DecisionSurface",
     "JudgedDimensionFacts",
     "JudgedReading",
     "MeasureFacts",
+    "StratumFacts",
     "TimeAxis",
     "TimeAxisBasis",
     "TimePosition",

@@ -131,6 +131,8 @@ CORE_PINNED: tuple[tuple[tuple[int, int], frozenset[str]], ...] = (
     # 39/10: a role's request settings may name a reasoning effort, so every recorded settings level gains
     # that key and the simulator's confound reads differently; the apparatus partition is unchanged.
     ((39, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
+    # 40/10: each cell carries its figures per stratum of its cases; the apparatus partition is unchanged.
+    ((40, 10), _CORE_V24 | {"judge_request_settings", "simulator_request_settings"}),
 )
 
 

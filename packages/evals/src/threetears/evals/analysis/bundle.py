@@ -161,6 +161,7 @@ from threetears.evals.contracts.surface import (
     JudgedDimensionFacts,
     JudgedReading,
     MeasureFacts,
+    StratumFacts,
     TimeAxis,
     TimeAxisBasis,
     TimePosition,
@@ -170,15 +171,16 @@ from threetears.evals.contracts.usage_capture import count_substituted_deliverie
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.contracts.host.measures import MeasureRegistry
     from threetears.evals.contracts.campaign import EvalCampaign
-    from threetears.evals.contracts.models import EvalRun
+    from threetears.evals.contracts.models import EvalCaseStratum, EvalRun
 
 
 class CampaignReadStore(Protocol):
-    """The five reads assembling a campaign's context bundle needs.
+    """The six reads assembling a campaign's context bundle needs.
 
     Cut to what :func:`assemble_context_bundle` calls rather than to what a
     storage layer offers: the bundle reads member runs (in one batch, without the
     payload paths the host declares a listing may leave out), each run's results, the
+    stratum each of their cases declares, the
     people's calibration ratings of those results, the
     subject's prior insights, and — for an insight that names one — whether the
     analysis that minted it is archived, and writes nothing at all. That flag is read
@@ -216,6 +218,14 @@ class CampaignReadStore(Protocol):
 
     def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
         """Every result belonging to one run within a scope."""
+        ...
+
+    def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]:
+        """The stratum each named test case declares, within a scope, in one read; an absent case is skipped.
+
+        Read so each cell can be summarised again per kind of case (:attr:`CellFacts.strata`). Only the
+        stratum is asked for, so a case's stimulus — the host's, and possibly large — is never shipped.
+        """
         ...
 
     def query_calibration_ratings(self, scope_id: str, /, *, run_id: str) -> list[CalibrationRating]:
@@ -1330,7 +1340,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # A/B set spanning a bump must be read as spanning it. Why each earlier version moved is in
     # this file's history.
     schema_version: int = Field(
-        default=39, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=40, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---
@@ -4804,6 +4814,19 @@ def assemble_context_bundle(
         cells,
         results_by_cell,
         bundle.judged_measures,
+        # Each cell again per kind of case, over the same grouping, population and tiers — read only for
+        # the cases the results name, and only their strata.
+        strata=_cell_strata(
+            results_by_cell,
+            {
+                case.id: case.stratum
+                for case in storage.load_case_strata(sorted({result.test_case_id for result in results}), scope_id)
+            },
+            projection.records,
+            campaign.declared_design,
+            tiers=bundle.judge_evidence_tiers,
+            profile=profile,
+        ),
         short_runs=bundle.short_runs,
         incomplete_runs=bundle.incomplete_runs,
         profile=profile,
@@ -4869,7 +4892,7 @@ def _measure_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> 
     collections = [
         bundle.telemetry.measures,
         *(summary.measures for summary in bundle.run_summaries),
-        *(cell.measures for cell in bundle.cell_measures),
+        *(collection for cell in bundle.cell_measures for collection in _cell_collections(cell)),
         *(cell.measures for cell in _time_axis_cells(bundle)),
     ]
     names = {measure.name for collection in collections for measure in collection.measures}
@@ -4878,6 +4901,18 @@ def _measure_catalog(bundle: AnalysisContextBundle, *, profile: HostProfile) -> 
 
 #: A cell's two coordinates, ``(variant_key, apparatus_class_id)`` — how the per-arm surfaces key it.
 _CellKey = tuple[str, str]
+
+
+def _cell_collections(cell: CellFacts) -> Iterator[MeasureCollection]:
+    """A cell's measure collection, then each of its strata's.
+
+    Walked wherever a reader needs every measure NAME a cell holds: a stratum is a smaller set of results,
+    so it can carry a name the pooled cell does not — two carriers sharing a leaf name are refused pooling
+    over the cell and may each be alone in a stratum.
+    """
+    yield cell.measures
+    for stratum in cell.strata:
+        yield stratum.measures
 
 
 def _results_by_cell(cells: list[Cell], results: list[EvalResult]) -> dict[_CellKey, list[EvalResult]]:
@@ -5632,11 +5667,105 @@ def _multiple_comparisons(
     return MultipleComparisons(families=families)
 
 
+def _judged_by_cell(judged_measures: list[JudgedMeasure]) -> dict[_CellKey, list[JudgedReading]]:
+    """The judged measures transposed — each cell's readings, one per dimension it was scored on.
+
+    Args:
+        judged_measures: Judged measures, from :func:`_judged_measures`, sorted by name.
+
+    Returns:
+        Each cell's readings, sorted by dimension, keyed by the cell's coordinates.
+    """
+    judged_by_cell: dict[_CellKey, list[JudgedReading]] = {}
+    # Judged measures are sorted by name, so each cell's readings arrive sorted by dimension.
+    for measure in judged_measures:
+        for arm in measure.arms:
+            judged_by_cell.setdefault((arm.variant_key, arm.apparatus_class_id), []).append(
+                JudgedReading(
+                    dimension=measure.name,
+                    mean=arm.mean,
+                    sem=arm.sem,
+                    n=arm.n,
+                    n_independent=arm.n_independent,
+                    n_infra_excluded=arm.n_infra_excluded,
+                    n_cannot_tell=arm.n_cannot_tell,
+                    evidence_tier=arm.evidence_tier,
+                )
+            )
+    return judged_by_cell
+
+
+#: How a stratum is keyed while the strata are built: a declared stratum, or None for the cases that declare none.
+_StratumKey = str | None
+
+
+def _cell_strata(
+    results_by_cell: dict[_CellKey, list[EvalResult]],
+    stratum_of_case: dict[str, str | None],
+    records: list[ScoreRecord],
+    design: CampaignDesign | None,
+    *,
+    tiers: list[JudgeEvidenceTier],
+    profile: HostProfile,
+) -> dict[_CellKey, list[StratumFacts]]:
+    """Each cell read again per stratum of its cases — the same walk and transposition, over each stratum's results.
+
+    A cell is broken down only when some case of it declares a stratum; one whose cases declare none has no
+    entry here, and reads exactly as an unstratified cell does. Within a broken-down cell every result lands
+    in one stratum — its case's, or the undeclared one — so the strata partition the cell.
+
+    **The judged readings are scored over each stratum's own slice** by :func:`_judged_measures`, with the
+    campaign's evidence tiers: a judge's reliability is measured over the whole campaign, not one kind of
+    case of it.
+
+    Args:
+        results_by_cell: Each cell's results, from :func:`_results_by_cell`.
+        stratum_of_case: The stratum each case declares, by case id; a case that did not resolve is absent
+            and reads as declaring none.
+        records: The score projection, for judged dimensions.
+        design: The campaign's declaration, for the bar a judged dimension carries.
+        tiers: The judges' evidence tiers.
+        profile: The host whose vocabulary this reads.
+
+    Returns:
+        Each broken-down cell's strata — named strata in name order, then the undeclared one — keyed by the
+        cell's coordinates.
+    """
+    by_stratum: dict[_StratumKey, dict[_CellKey, list[EvalResult]]] = {}
+    for key, members in results_by_cell.items():
+        if not any(stratum_of_case.get(result.test_case_id) is not None for result in members):
+            continue
+        for result in members:
+            by_stratum.setdefault(stratum_of_case.get(result.test_case_id), {}).setdefault(key, []).append(result)
+    strata: dict[_CellKey, list[StratumFacts]] = {}
+    for stratum in sorted(by_stratum, key=lambda name: (name is None, name or "")):
+        slice_by_cell = by_stratum[stratum]
+        result_ids = {result.id for members in slice_by_cell.values() for result in members}
+        judged = _judged_by_cell(
+            _judged_measures(
+                [record for record in records if record.result_id in result_ids], slice_by_cell, design, tiers=tiers
+            )
+        )
+        for key, members in slice_by_cell.items():
+            strata.setdefault(key, []).append(
+                StratumFacts(
+                    stratum=stratum,
+                    n_observations=len(members),
+                    n_cases=len({result.test_case_id for result in members}),
+                    n_infra_excluded=len(members) - len(_non_faulted(members)),
+                    measures=_measure_collection(members, profile=profile, undeclared="scored"),
+                    judged=judged.get(key, []),
+                )
+            )
+    return strata
+
+
 def _cell_measures(
     cells: list[Cell],
     results_by_cell: dict[_CellKey, list[EvalResult]],
     judged_measures: list[JudgedMeasure],
     *,
+    strata: dict[_CellKey, list[StratumFacts]],
     short_runs: dict[str, str],
     incomplete_runs: dict[str, str],
     profile: HostProfile,
@@ -5656,6 +5785,7 @@ def _cell_measures(
         cells: The pooled cells, for their replication.
         results_by_cell: Each cell's results, from :func:`_results_by_cell`.
         judged_measures: The bundle's judged measures, from :func:`_judged_measures`.
+        strata: Each broken-down cell's strata, from :func:`_cell_strata`; a cell absent from it carries none.
         short_runs: The bundle's short-run sentences, by run id.
         incomplete_runs: The bundle's incomplete-run statuses, by run id.
         profile: The host whose vocabulary this reads.
@@ -5663,22 +5793,7 @@ def _cell_measures(
     Returns:
         One entry per cell, ordered by ``(variant_key, apparatus_class_id)``.
     """
-    judged_by_cell: dict[_CellKey, list[JudgedReading]] = {}
-    # Judged measures are sorted by name, so each cell's readings arrive sorted by dimension.
-    for measure in judged_measures:
-        for arm in measure.arms:
-            judged_by_cell.setdefault((arm.variant_key, arm.apparatus_class_id), []).append(
-                JudgedReading(
-                    dimension=measure.name,
-                    mean=arm.mean,
-                    sem=arm.sem,
-                    n=arm.n,
-                    n_independent=arm.n_independent,
-                    n_infra_excluded=arm.n_infra_excluded,
-                    n_cannot_tell=arm.n_cannot_tell,
-                    evidence_tier=arm.evidence_tier,
-                )
-            )
+    judged_by_cell = _judged_by_cell(judged_measures)
     facts = []
     for cell in sorted(cells, key=lambda c: (c.variant_key, c.apparatus_class_id)):
         key = (cell.variant_key, cell.apparatus_class_id)
@@ -5701,6 +5816,7 @@ def _cell_measures(
                 judged=judged_by_cell.get(key, []),
                 short_runs={run_id: short_runs[run_id] for run_id in run_ids if run_id in short_runs},
                 incomplete_runs={run_id: incomplete_runs[run_id] for run_id in run_ids if run_id in incomplete_runs},
+                strata=strata.get(key, []),
             )
         )
     return facts
@@ -5766,10 +5882,13 @@ def _time_axis(
                 first_run_at=members[0].created_at,
                 last_run_at=members[-1].created_at,
                 run_ids=sorted(member_ids),
+                # A position's cells are not broken down by stratum: the breakdown is read over the whole
+                # campaign, and per position it would multiply the bundle by every stratum at every build.
                 cells=_cell_measures(
                     slice_cells,
                     by_cell,
                     judged,
+                    strata={},
                     short_runs=short_runs,
                     incomplete_runs=incomplete_runs,
                     profile=profile,
@@ -5868,7 +5987,9 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
         One entry per measure name appearing in any cell — the time axis's included — in name order.
     """
     cells = [*bundle.cell_measures, *_time_axis_cells(bundle)]
-    names = sorted({measure.name for cell in cells for measure in cell.measures.measures})
+    names = sorted(
+        {measure.name for cell in cells for collection in _cell_collections(cell) for measure in collection.measures}
+    )
     return {
         name: MeasureFacts(
             unit=bundle.measure_catalog[name].unit,

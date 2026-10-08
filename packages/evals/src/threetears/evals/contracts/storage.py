@@ -47,6 +47,7 @@ from threetears.evals.contracts.models import (
     EvalCassette,
     EvalResult,
     EvalRun,
+    EvalCaseStratum,
     EvalRunStamp,
     EvalRunStatus,
     EvalTemplate,
@@ -327,6 +328,10 @@ class DefinitionStore(Protocol):
 
     def load_test_cases_by_ids(self, test_case_ids: list[str], scope_id: str, /) -> list[EvalTestCase]:
         """See :meth:`EvalStorage.load_test_cases_by_ids`."""
+        ...
+
+    def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]:
+        """See :meth:`EvalStorage.load_case_strata`."""
         ...
 
     def delete_test_case(self, test_case_id: str, scope_id: str, /) -> bool:
@@ -920,6 +925,27 @@ class EvalStorage:
         """
         items = self._store.get_many("eval_test_case", test_case_ids, scope_id)
         return self._hydrate_all(EvalTestCase, items)
+
+    def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]:
+        """Load the id and stratum of the named test cases, in one batch read.
+
+        The store reduces each case to those two fields before it is shipped, so a reader of a
+        campaign's strata pays for one short string a case rather than the host's whole stimulus.
+        Absent ids are skipped, as :meth:`load_test_cases_by_ids` skips them.
+
+        Args:
+            test_case_ids: The cases to read. Empty asks the store nothing.
+            scope_id: The scope they live in.
+
+        Returns:
+            One entry per case that resolved.
+        """
+        if not test_case_ids:
+            return []
+        items = self._store.get_many(
+            "eval_test_case", list(test_case_ids), scope_id, keep=list(EvalCaseStratum.model_fields)
+        )
+        return self._hydrate_all(EvalCaseStratum, items)
 
     def delete_test_case(self, test_case_id: str, scope_id: str) -> bool:
         """Delete a test case by id + scope."""
