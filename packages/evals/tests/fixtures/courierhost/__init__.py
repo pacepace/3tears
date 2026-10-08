@@ -214,10 +214,11 @@ def courier_levers(run: EvalRun) -> dict[str, SweepableValue]:
     """A run's level of the courier's own lever, its search depth; the engine resolves the planner model.
 
     A run of another kind in the courier's store — one ``run_eval`` launched over a plain function,
-    say — has no search depth, and sits at a level of its own rather than at a number it never had.
+    say — has no search depth, and sits at the engine's "not a run of this kind" level rather than at a
+    number it never had: that level is the one a report knows not to name an arm by.
     """
     if run.candidate_kind != COURIER_KIND:
-        return {"search_depth": SweepableValue.of(None, display=f"(not a {COURIER_KIND} run)")}
+        return {"search_depth": SweepableValue.not_this_kind(COURIER_KIND)}
     depth = (run.host_payload or {}).get(_PAYLOAD, {}).get("search_depth")
     return {"search_depth": SweepableValue.of(depth, scale=IntervalScale(value=float(depth), unit=None))}
 
