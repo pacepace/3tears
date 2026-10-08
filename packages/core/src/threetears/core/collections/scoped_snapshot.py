@@ -256,6 +256,8 @@ class _Pointer:
     objects: Mapping[str, str]
     rows: Mapping[str, int]
     schema: Mapping[str, str]
+    #: when it was written (epoch seconds); None for a pointer written before it was recorded
+    published_at: float | None = field(default=None, compare=False)
 
     def encode(self) -> bytes:
         """the pointer as the KV entry's value.
@@ -269,6 +271,7 @@ class _Pointer:
                 "epoch": self.epoch,
                 "tables": {t: {"object": self.objects[t], "rows": self.rows[t]} for t in self.objects},
                 "schema": dict(self.schema),
+                "at": time.time() if self.published_at is None else self.published_at,
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -292,6 +295,7 @@ class _Pointer:
             objects={t: str(v["object"]) for t, v in tables.items()},
             rows={t: int(v["rows"]) for t, v in tables.items()},
             schema={t: str(v) for t, v in body["schema"].items()},
+            published_at=float(body["at"]) if "at" in body else None,
         )
 
     def supersedes(self, other: _Pointer | None) -> bool:
@@ -626,6 +630,9 @@ class ScopedSnapshot:
         elif self._ready.is_set():
             behind = sorted(self._behind)
             phase, detail = SnapshotPhase.READY, f"ready; behind on {behind}" if behind else "ready"
+            foreign = sorted(scope for scope, pointer in self._seen.items() if not self._loadable(pointer))
+            if foreign:
+                detail += f"; {len(foreign)} scopes' pointers carry other columns, so they are served from L3"
         else:
             phase, detail = SnapshotPhase.STARTING, "watching the pointers"
         if self._behind and phase is not SnapshotPhase.READY:
@@ -955,7 +962,7 @@ class ScopedSnapshot:
             and all(scope in self._seen or scope in removing for scope in index)
         )
         mismatched = complete and any(
-            self._seen[scope].schema != self._schema for scope in index or () if scope in self._seen
+            not self._loadable(self._seen[scope]) for scope in index or () if scope in self._seen
         )
         loaded = False
         if not self._ready.is_set() and complete and not mismatched:
@@ -966,7 +973,7 @@ class ScopedSnapshot:
                 log.warning("scoped snapshot %s: the snapshot in L2 is not loadable: %s", self._name, exc)
         if loaded:
             pass
-        elif not self._ready.is_set() or not complete or mismatched:
+        elif not self._ready.is_set() or not complete:
             await self._rebuild(reason=self._why_rebuild(index, complete, mismatched))
         else:
             await self._apply_moved(index or frozenset())
@@ -998,6 +1005,42 @@ class ScopedSnapshot:
     # loading from L2
     # ------------------------------------------------------------------
 
+    def _loadable(self, pointer: _Pointer) -> bool:
+        """whether this replica can load ``pointer``'s chunks: they hold exactly its own columns.
+
+        :return: True when the pointer's column digests are this replica's
+        :rtype: bool
+        """
+        return dict(pointer.schema) == self._schema
+
+    def _ahead(self, pointer: _Pointer, applied: _Pointer | None) -> bool:
+        """whether this L1 should take ``pointer``: chunks it can load, past what it holds.
+
+        The one judgement every apply makes. A pointer of other columns is never ahead: a replica of
+        another code version wrote it, and its chunks would load wrong columns here.
+
+        :return: True when the pointer is loadable and moves the scope forward
+        :rtype: bool
+        """
+        return self._loadable(pointer) and pointer.supersedes(applied)
+
+    def _foreign_ahead(self, pointer: _Pointer, applied: _Pointer | None) -> bool:
+        """whether a pointer of other columns names a LATER epoch than this L1 holds: a write this
+        replica cannot load from its chunks, which it rebuilds from L3 instead.
+
+        :return: True for a later epoch under other columns
+        :rtype: bool
+        """
+        return not self._loadable(pointer) and (applied is None or pointer.epoch > applied.epoch)
+
+    def _mark_foreign(self, scope: str) -> None:
+        """record a scope whose later epoch is under other columns: rebuilt from L3 at the next pass.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._behind[scope] = (_BEHIND_REBUILD_AFTER, "its pointer carries other columns; rebuilt from L3")
+
     async def _fetch(self, pointer: _Pointer) -> list[PartitionReplacement]:
         """every table's chunk of one scope, decoded and checked.
 
@@ -1009,6 +1052,9 @@ class ScopedSnapshot:
         """
         from threetears.nats import ObjectNotFoundError, ObjectStoreError  # noqa: PLC0415
 
+        if not self._loadable(pointer):
+            # every load passes here: no path can put another column set's chunks in this L1
+            raise _Lost(f"scope {pointer.scope!r}'s pointer carries other columns than this replica's")
         replacements: list[PartitionReplacement] = []
         for table in self._tables:
             name = pointer.objects.get(table.name)
@@ -1157,8 +1203,11 @@ class ScopedSnapshot:
         moved = {
             scope: self._seen[scope]
             for scope in index
-            if scope in self._seen and self._seen[scope].supersedes(self._applied.get(scope))
+            if scope in self._seen and self._ahead(self._seen[scope], self._applied.get(scope))
         }
+        for scope in index:
+            if scope in self._seen and self._foreign_ahead(self._seen[scope], self._applied.get(scope)):
+                self._mark_foreign(scope)
         failed = await self._apply_pointers(moved)
         for scope, why in failed.items():
             self._behind[scope] = (self._behind.get(scope, (0, ""))[0] + 1, why)
@@ -1590,7 +1639,7 @@ class ScopedSnapshot:
             attempts += 1
             entry = await self._pointers_bucket.get_entry(key=key)
             current = None if entry is None else _Pointer.decode(entry[0])
-            if current is not None and not pointer.supersedes(current):
+            if current is not None and (not pointer.supersedes(current) or self._yields_to(current, pointer)):
                 held = current
             elif entry is None:
                 held = pointer if await self._pointers_bucket.create(key=key, value=pointer.encode()) else None
@@ -1601,6 +1650,24 @@ class ScopedSnapshot:
             raise RuntimeError(f"the pointer of scope {pointer.scope!r} kept moving under {_CAS_ATTEMPTS} attempts")
         self._note_seen(held)
         return held
+
+    def _yields_to(self, current: _Pointer, pointer: _Pointer) -> bool:
+        """whether a move to ``pointer`` leaves ``current`` in place: the mixed-version rule.
+
+        While two code versions run together (a rolling deploy of a column change), a rebuild must
+        not repoint a scope another version published at the same epoch, or each version would
+        repoint the other's scopes on every rebuild. So a same-epoch pointer of other columns stays
+        until it is older than the stray age (by then the other version is gone); this replica
+        serves its own L1, rebuilt from L3, meanwhile. A later epoch (a write) always moves the
+        pointer, to the writer's columns.
+
+        :return: True when ``current`` stays
+        :rtype: bool
+        """
+        fresh = (
+            current.published_at is not None and time.time() - current.published_at < self._stray_age.total_seconds()
+        )
+        return current.epoch == pointer.epoch and dict(current.schema) != dict(pointer.schema) and fresh
 
     def _note_seen(self, pointer: _Pointer) -> None:
         """record a pointer this replica wrote or read, ahead of the watch's delivery.
@@ -2010,7 +2077,10 @@ class ScopedSnapshot:
             finally:
                 await claim.release()
             for scope in caught:
-                await self._retire_older(scope, self._seen[scope].epoch)
+                # the watch may have delivered a removal meanwhile, or a stale publish noted nothing
+                seen = self._seen.get(scope)
+                if seen is not None:
+                    await self._retire_older(scope, seen.epoch)
         return caught
 
     async def _apply_published(self) -> None:
@@ -2030,8 +2100,10 @@ class ScopedSnapshot:
             if pointer is None:
                 raw = await self._pointers_bucket.get(key=self._pointer_key(scope))
                 pointer = None if raw is None else _Pointer.decode(raw)
-            if pointer is not None and pointer.supersedes(self._applied.get(scope)):
+            if pointer is not None and self._ahead(pointer, self._applied.get(scope)):
                 pointers[scope] = pointer
+            elif pointer is not None and self._foreign_ahead(pointer, self._applied.get(scope)):
+                self._mark_foreign(scope)
         failed = await self._apply_pointers(pointers)
         if failed:
             raise _Lost(f"published scopes {sorted(failed)} could not be read; not ready without them")

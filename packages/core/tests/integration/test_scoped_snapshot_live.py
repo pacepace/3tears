@@ -1040,3 +1040,77 @@ async def _de_chunks(platform: _Platform) -> set[str]:
     """every chunk of DE in the store."""
     store = await platform.hub.object_store(name="pod-objects")
     return {info.name for info in await store.list_objects(prefix="enr/DE/")}
+
+
+def _new_backend_with_note() -> DuckDBBackend:
+    """the next code version's L1: counties gains a column."""
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    TableSchema(
+        name="counties",
+        primary_key="county",
+        columns=[
+            Column("county", STRING_TYPE),
+            Column("state", STRING_TYPE),
+            Column("total", BIGINT_TYPE),
+            Column("note", STRING_TYPE, nullable=True),
+        ],
+        on_conflict="update",
+    ).to_sqlalchemy_table(metadata)
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    return backend
+
+
+async def _pointer_revisions(platform: _Platform) -> dict[str, int]:
+    pointers = await platform.hub.kv_bucket(name="pod-pointers", create_if_missing=False)
+    revisions = {}
+    for state in _STATES:
+        entry = await pointers.get_entry(key=f"enr.s.{state}")
+        assert entry is not None
+        revisions[state] = entry[1]
+    return revisions
+
+
+async def test_two_code_versions_with_other_columns_never_load_or_repoint_each_others_chunks(
+    platform: _Platform,
+) -> None:
+    """a rolling deploy of a column change: the old version and the new one run together over the
+    same pointers. Neither ever holds the other's columns, neither repoints the other's scopes on a
+    rebuild, and a write either one publishes reaches the other, which rebuilds that scope from L3."""
+    await platform.pool.execute("ALTER TABLE counties ADD COLUMN note TEXT")
+    await platform.pool.execute("UPDATE counties SET note = 'from L3'")
+    old, _ = await platform.replica()
+    await old.start()
+    await old.wait_ready(timeout=_WAIT)
+    before = await _pointer_revisions(platform)
+
+    new, new_l3 = await platform.replica(backend=_new_backend_with_note())
+    await new.start()
+    await new.wait_ready(timeout=_WAIT)
+    await asyncio.sleep(1.0)  # several passes of both workers
+
+    assert new.status().source is SnapshotSource.L3, "the new version loaded the old one's chunks"
+    assert new_l3.statements > 0
+    with new.read() as cursor:
+        assert cursor.execute("SELECT DISTINCT note FROM counties").fetchall() == [("from L3",)]
+    assert "other columns" in new.status().detail
+    assert await _pointer_revisions(platform) == before, "a rebuild repointed the other version's scopes"
+    assert old.status().phase is SnapshotPhase.READY and "note" not in str(old.backend.column_types("counties"))
+
+    # the old version writes DE at epoch 2: the new one cannot load those chunks and rebuilds DE from L3
+    await platform.pool.execute("UPDATE results SET votes = 11 WHERE state = 'DE'")
+    platform.epochs["DE"] = 2
+    await old.publish("DE", 2, {t.name: await _rows(platform.pool, t.name, "DE") for t in _TABLES})
+
+    def new_has_de() -> bool:
+        with new.read() as cursor:
+            return cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(11,)]
+
+    await _until(new_has_de, what="the new version to rebuild DE from L3")
+    with new.read() as cursor:
+        assert cursor.execute("SELECT DISTINCT note FROM counties WHERE state = 'DE'").fetchall() == [("from L3",)]
+    with old.read() as cursor:
+        assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(11,)]
+    await old.stop()
+    await new.stop()
