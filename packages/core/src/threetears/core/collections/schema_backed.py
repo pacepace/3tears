@@ -40,7 +40,13 @@ from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 
-from threetears.core.backends.protocol import BulkDeletingStore, BulkDurableStore, DurableStore, OrderedDurableStore
+from threetears.core.backends.protocol import (
+    BulkDeletingStore,
+    BulkDurableStore,
+    DurableStore,
+    KeyLedReadingStore,
+    OrderedDurableStore,
+)
 from threetears.core.backends.schema_sql import (
     coerce_row as _coerce_row_fn,
     decode_l2_value as _decode_l2_value,
@@ -1869,6 +1875,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: default 1 MiB message, with room for the request around them
     BULK_MAX_BYTES: ClassVar[int] = 768 * 1024
 
+    #: the most leading-key values one key-led read names: a value usually holds a few rows, so a
+    #: batch's answer stays under the L3 rail's row cap
+    #: (:data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP`) and is rarely read again in halves
+    LED_READ_MAX_VALUES: ClassVar[int] = 250
+
     async def save_rows(
         self,
         rows: list[dict[str, Any]],
@@ -1988,13 +1999,13 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :ptype keys: Sequence[Sequence[Any]]
         :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
         :ptype conn: Any
-        :param max_rows: the most keys one statement names; :attr:`BULK_MAX_ROWS` when None
+        :param max_rows: the most keys one statement names, at least one; :attr:`BULK_MAX_ROWS` when None
         :ptype max_rows: int | None
         :return: how many keys were named (a key no row holds is not an error)
         :rtype: int
         :raises ValueError: when no :class:`CallerTransaction` is open on ``conn``; when the collection
-            has no durable store, caches absences or defers its L3 writes; when a key is not as wide
-            as the table's key
+            has no durable store, caches absences or defers its L3 writes; when ``max_rows`` is under
+            one; when a key is not as wide as the table's key
         """
         transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete_rows")
         store = self._durable_store()
@@ -2007,6 +2018,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"{type(self).__name__}.delete_rows: a bulk delete cannot keep this collection's write "
                 f"contract (it caches absences or defers its L3 writes)"
             )
+        if max_rows is not None and max_rows < 1:
+            raise ValueError(f"{self.table_name}.delete_rows: max_rows must be at least 1, got {max_rows}")
         width = len(self.schema.pk_columns)
         named = [tuple(key) for key in keys]
         wrong = [key for key in named if len(key) != width]
@@ -2033,6 +2046,84 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             extra={"extra_data": {"table": self.table_name, "rows": deleted}},
         )
         return deleted
+
+    async def read_rows_led_by(
+        self,
+        values: Sequence[Any],
+        *,
+        columns: Sequence[str] | None = None,
+        max_values: int | None = None,
+        conn: Any = None,
+    ) -> list[dict[str, Any]]:
+        """the rows whose leading key column is one of ``values``, read from L3 with every statement led by the key.
+
+        For a table whose key leads with a column many rows share (a feature and its generations, a
+        race and its geographies): which keys are held for these values, or a few columns of those
+        rows. On YugabyteDB the leading key column is the hashed one, so a statement it does not
+        lead reads every row of the table -- ``SELECT DISTINCT``, ``ORDER BY`` the key, a filter on
+        a later key column -- and runs into the statement timeout on a big table. Here each
+        statement names a batch of values, ``WHERE <lead> = ANY($1)``; an answer that reaches the
+        transport's row cap (on the L3 rail
+        :data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP`), which cuts without saying so,
+        is read again in halves; and a value that alone holds that many rows is paged by the rest
+        of its key.
+
+        Reads L3 only, around the caches: nothing is read from or written to L1 or L2. The
+        store's :meth:`~threetears.core.backends.protocol.KeyLedReadingStore.fetch_led_by` reads
+        them when it has one. A store without it is scanned a value at a time through
+        ``DurableStore.scan``, which takes no connection, so there a ``conn`` is refused rather
+        than read around.
+
+        :param values: the leading key column's values; each is read once, however often named
+        :ptype values: Sequence[Any]
+        :param columns: columns to read beside the key; the key alone when None. Every row carries
+            the key columns either way
+        :ptype columns: Sequence[str] | None
+        :param max_values: the most values one statement names, at least one;
+            :attr:`LED_READ_MAX_VALUES` when None
+        :ptype max_values: int | None
+        :param conn: a connection to read on (the caller's transaction); the store's own when None.
+            Only a :class:`~threetears.core.backends.protocol.KeyLedReadingStore` can read on one
+        :ptype conn: Any
+        :return: the rows, each keyed by column, in no promised order
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: when the collection has no durable store, a column is not the table's,
+            ``max_values`` is under one, or ``conn`` is given to a store that cannot read on it
+        """
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(f"{type(self).__name__}.read_rows_led_by: {self.table_name} has no durable store to read")
+        key = list(self.schema.pk_columns)
+        wanted = key + [name for name in dict.fromkeys(columns or ()) if name not in key]
+        unknown = [name for name in wanted if self.schema.get_column(name) is None]
+        if unknown:
+            raise ValueError(f"{self.table_name}.read_rows_led_by: the table has no column {unknown[0]!r}")
+        per_statement = self.LED_READ_MAX_VALUES if max_values is None else max_values
+        if per_statement < 1:
+            raise ValueError(f"{self.table_name}.read_rows_led_by: max_values must be at least 1, got {max_values}")
+        reads_on_conn = isinstance(store, KeyLedReadingStore)
+        if conn is not None and not reads_on_conn:
+            raise ValueError(
+                f"{self.table_name}.read_rows_led_by: its store has no key-led read and scans without a "
+                f"connection, so it cannot read on the conn given; call it without conn"
+            )
+        unique = list(dict.fromkeys(values))
+        if not unique:
+            return []
+        if isinstance(store, KeyLedReadingStore):
+            rows = await store.fetch_led_by(
+                self.table_name, unique, columns=wanted, max_values=per_statement, conn=conn
+            )
+        else:
+            rows = []
+            for value in unique:
+                held = await store.scan(self.table_name, {key[0]: value})
+                rows += [{name: row[name] for name in wanted} for row in held]
+        log.debug(
+            "key-led read",
+            extra={"extra_data": {"table": self.table_name, "values": len(unique), "rows": len(rows)}},
+        )
+        return rows
 
     async def save_to_store(
         self,
