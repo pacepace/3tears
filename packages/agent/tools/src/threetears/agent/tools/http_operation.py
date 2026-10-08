@@ -403,3 +403,19 @@ class RestAffordance(PathTemplateBinding):
             :attr:`~threetears.core.http_cache.CacheClass.INHERIT`
         """
         return narrow_cache_class(inherited, self.cache)
+
+    def resolve_cache_max_age(self, inherited: CacheClass) -> int | None:
+        """the seconds a shared cache may hold this short-lived pointer, given the resource's own class.
+
+        The sanctioned way to read ``cache_max_age``, beside :meth:`resolve_cache_class`: a max age
+        is honoured only where the effective class may reach a shared cache at all, so a pointer
+        declared ``INHERIT`` over a resource that resolves ``PRIVATE`` is held nowhere.
+
+        :param inherited: the resolved resource's own classification
+        :ptype inherited: CacheClass
+        :return: the max age, or ``None`` when the read is not a short-lived shared one
+        :rtype: int | None
+        """
+        effective = self.resolve_cache_class(inherited)
+        shared = effective in (CacheClass.PUBLIC, CacheClass.AUTHENTICATED)
+        return self.cache_max_age if shared else None

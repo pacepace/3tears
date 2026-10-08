@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core and agent tools: answers an edge may cache, labelled with exactly the data they read
+
+- **Added:** `ScopedSnapshot.read_versioned()` yields a `VersionedRead(cursor, epochs)`: a read of
+  the copy, as `read()`, and the epoch of every scope whose rows the cursor sees, exactly (a scope
+  dropped is absent). A read opened while a swap commits waits for it and reads its result; it
+  never fails for a long swap. Blocking: call it from a worker thread. Consumers: the hub's REST
+  face labels shareable answers with these epochs through the ENR pod (`enr.edge_rows`).
+- **Added:** `RestAffordance.cache_max_age` (whole seconds, 1 to `MAX_POINTER_AGE_SECONDS` = 60): a
+  short-lived pointer, the one unversioned read a shared cache may hold (an index naming the current
+  version). Refused beside `cache_version_param`, on a `PRIVATE` declaration and on a write.
+  `RestAffordance.resolve_cache_max_age(inherited)` is the sanctioned reader, beside
+  `resolve_cache_class`: the max age only where the effective class may reach a shared cache.
+- **Wire:** additive. A manifest without `cache_max_age` reads it as `None`; a hub built before it
+  ignores the field and serves the read origin-only.
+
 ### Datasources: the catalog is what the datasource's own user can SELECT
 
 - **Changed, `AsyncpgDriver` and `RedshiftDriver`**: `list_tables`, `list_columns` and

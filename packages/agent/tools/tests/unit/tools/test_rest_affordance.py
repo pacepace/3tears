@@ -358,6 +358,25 @@ class TestShortLivedPointer:
         affordance = RestAffordance(method="GET", path_template="/x/{scope}/index", cache=cache, cache_max_age=5)
         assert affordance.cache_max_age == 5
 
+    @pytest.mark.parametrize(
+        ("inherited", "expected"),
+        [(CacheClass.PRIVATE, None), (CacheClass.AUTHENTICATED, 5), (CacheClass.PUBLIC, 5)],
+    )
+    def test_the_effective_max_age_follows_the_effective_class(
+        self, inherited: CacheClass, expected: int | None
+    ) -> None:
+        """a pointer whose resource resolves origin-only is held nowhere, whatever it declares.
+
+        :param inherited: the resource's own class
+        :ptype inherited: CacheClass
+        :param expected: the max age a serving side may render
+        :ptype expected: int | None
+        :return: nothing
+        :rtype: None
+        """
+        affordance = RestAffordance(method="GET", path_template="/x/{scope}/index", cache_max_age=5)
+        assert affordance.resolve_cache_max_age(inherited) == expected
+
     def test_a_versioned_read_is_never_short_lived(self) -> None:
         """an address carrying its version is immutable; a max age on it contradicts that."""
         with pytest.raises(RestAffordanceError, match="immutable"):
