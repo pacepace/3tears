@@ -307,14 +307,28 @@ ORDER BY src.table_schema, src.table_name, src.ordinal_position
 #: formula to stay byte-identical to the Redshift driver and to
 #: ``column_hash_payload``, which had to change because Redshift's LISTAGG
 #: does. All three move together or none of them do.
-_POSTGRES_TABLE_HASHES_SQL = f"""
-SELECT src.table_schema, src.table_name,
-       MD5(STRING_AGG(MD5(src.column_name || ':' || src.data_type || ':' || COALESCE(src.is_nullable, '')), ',' ORDER BY src.ordinal_position)) AS column_hash,
-       {_SELECTABLE} AS selectable
-FROM information_schema.columns AS src
+_POSTGRES_TABLE_HASHES_SQL = """
+SELECT table_schema, table_name,
+       MD5(STRING_AGG(MD5(column_name || ':' || data_type || ':' || COALESCE(is_nullable, '')), ',' ORDER BY ordinal_position)) AS column_hash
+FROM information_schema.columns
+WHERE table_schema = ANY($1)
+GROUP BY table_schema, table_name
+ORDER BY table_schema, table_name
+""".strip()
+
+
+#: what :meth:`AsyncpgDriver.table_hashes` runs: :data:`_POSTGRES_TABLE_HASHES_SQL`, unchanged, as a
+#: subquery, each hashed table joined to its snapshot ``pg_class`` row and answered with
+#: :data:`_SELECTABLE`. the privilege check composes AROUND the formula's one owner rather than
+#: restating it (``tests/enforcement/test_hash_formula_has_two_owners.py``), so the hash stays
+#: whatever that constant says, over the same rows. one statement, so the formula and the check
+#: read one snapshot.
+_POSTGRES_SELECTABLE_TABLE_HASHES_SQL = f"""
+SELECT src.table_schema, src.table_name, src.column_hash, {_SELECTABLE} AS selectable
+FROM (
+{_POSTGRES_TABLE_HASHES_SQL}
+) AS src
 {_RELATION_JOIN}
-WHERE src.table_schema = ANY($1)
-GROUP BY src.table_schema, src.table_name, rel.oid
 ORDER BY src.table_schema, src.table_name
 """.strip()
 
@@ -1391,7 +1405,7 @@ class AsyncpgDriver(Driver):
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
         records = await self._acquire_and_run(
-            lambda conn: conn.fetch(_POSTGRES_TABLE_HASHES_SQL, schemas),
+            lambda conn: conn.fetch(_POSTGRES_SELECTABLE_TABLE_HASHES_SQL, schemas),
         )
         result: dict[tuple[str, str], str] = {
             (r["table_schema"], r["table_name"]): r["column_hash"] for r in records if r["selectable"]

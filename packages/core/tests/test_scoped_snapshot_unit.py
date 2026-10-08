@@ -450,3 +450,36 @@ async def test_a_carry_whose_chunk_is_gone_is_left_for_the_catch_up() -> None:
 
     assert (moved, skipped) == ([], ["TX"]), "a pointer was moved onto a carried chunk that is gone"
     await snapshot.stop()
+
+
+async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on_every_look() -> None:
+    """L3 never reaches the pointer's epoch: every rebuild of TX publishes nothing (a stale epoch) and
+    its pointer's chunk still cannot be read, so TX is behind at every look across many rechecks and
+    rebuilds, its reason named, never reported current in between."""
+    snapshot, pointers, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    takes = [0]
+    real_create = pointers.create
+
+    async def counting(*, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
+        takes[0] += key == "enr.rebuild"
+        return await real_create(key=key, value=value, ttl=ttl)
+
+    pointers.create = counting  # type: ignore[method-assign]
+    _point_at_a_missing_chunk(pointers)
+    await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
+
+    looks = []
+    while takes[0] < 2:  # rebuilds of TX ran, each taking and letting go of the claim
+        looks.append(snapshot.status())
+        await asyncio.sleep(0.01)
+    for _ in range(20):  # and several rechecks after
+        looks.append(snapshot.status())
+        await asyncio.sleep(0.01)
+
+    assert all("TX" in look.behind and "TX" in look.detail for look in looks), [
+        (look.phase, sorted(look.behind)) for look in looks if "TX" not in look.behind
+    ][:3]
+    await snapshot.stop()
