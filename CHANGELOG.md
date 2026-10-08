@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Channels: a channel answer carries its turn's id and the hub's turn assertion
+
+- `ChannelDeliveryMessage` gains optional `turn_id` (32 hex characters) and `turn_assertion`. The
+  dedup key is `{conversation}-{turn_id}` when the turn id is present: a correlation id is known to
+  every tool pod in the turn, so a forged answer sent first under it could claim the key and
+  suppress the real one. An answer without a turn id keeps its old key. A delivery worker can post
+  only an answer to a turn the hub signed. A reader that predates the fields ignores them.
+
 ### Core: a turn assertion, the hub's signed statement of whose turn an agent runs
 
 - `threetears.core.security.turn_assertion`: `mint_turn_assertion` / `verify_turn_assertion` /
