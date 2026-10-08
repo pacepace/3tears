@@ -41,10 +41,16 @@ then accepts.
     `THUMBPRINT_WINDOW`'s date (2027-01-05), accepted and counted before it;
   - `RefreshGate`, the single-flight reactive refresh, one per `REACTIVE_REFRESH_WINDOW_SECONDS`.
 - **Changed, `CachedHubJwksProvider`**: every reply goes through `JwksTrust`; a reply whose `keys`
-  is not a list is refused; `refresh_now` runs through the `RefreshGate`. **Every verifier (the
-  registry, every tool pod, the gateway) must set `THREETEARS_HUB_JWKS_ROOT_PUBLIC_KEY` before
-  2027-01-05**, or it refuses every hub JWKS reply from that date; a provider built without one,
-  and a reply carrying a statement it cannot check, each log a warning saying so.
+  is not a list is refused; `refresh_now` runs through the `RefreshGate`. **Every verifier must set
+  `THREETEARS_HUB_JWKS_ROOT_PUBLIC_KEY` before 2027-01-05**, or it refuses every hub JWKS reply
+  from that date; a provider built without one, and a reply carrying a statement it cannot check,
+  each log a warning saying so. Inventory, by a search of every `CachedHubJwksProvider(` in 3tears,
+  the hub and the SDK on 2026-10-08: the registry (`threetears.registry`, and the hub's registry
+  factories in the same process) and the hub's gateway. Tool pods and agents build none. The one
+  publisher is the hub's JWKS responder, which signs once its root key is set. All of them ship in
+  the hub image, so the window opened when the change was decided (2026-10-07) rather than at a
+  release: no deployment outside that one release has to act. A host running `threetears.registry`
+  on its own must set the key too.
 - **Added, `door_proof.process_door_proofs`** and `DOOR_PROOF_REQUIRED_EARLY_ENV`: one door registry
   per process, from `THREETEARS_DOOR_PROOF_REQUIRED_EARLY`, so every door's absent senders are read
   in one place.
