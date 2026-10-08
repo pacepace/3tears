@@ -318,7 +318,7 @@ class TestIntrospectionCatalogsOnlySelectableTables:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "statement", ["_POSTGRES_TABLES_SQL", "_POSTGRES_COLUMNS_SQL", "_POSTGRES_TABLE_HASHES_SQL"]
+        "statement", ["_POSTGRES_TABLES_SQL", "_POSTGRES_COLUMNS_SQL", "_POSTGRES_SELECTABLE_TABLE_HASHES_SQL"]
     )
     async def test_a_table_dropped_while_the_catalog_is_read_is_skipped_not_fatal(
         self, seeded_schema: tuple[str, str], statement: str

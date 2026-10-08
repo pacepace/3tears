@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import importlib
 import sys
 import threading
@@ -404,6 +406,48 @@ class TestPartitions:
         assert exported.num_rows == 2
         assert exported.column("county").to_pylist() == ["c1", "c2"]
         assert backend.export_partition("results", "state", None, order_by=("race",)).num_rows == 0
+
+    def test_a_bulk_insert_converts_its_rows_once_not_value_by_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """binding rows as Python lists makes DuckDB try to import pandas once per value, a search of
+        the whole import path each time where pandas is absent: seconds for a few thousand rows, and
+        a rebuild that never finishes on a starved host. The rows go through one Arrow table instead."""
+        pytest.importorskip("pyarrow")
+        import importlib.machinery
+
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        backend = _partitioned_backend()
+        backend.replace_partitions(  # warm: pyarrow's own first import is not the subject
+            [
+                PartitionReplacement(
+                    table="results",
+                    column="state",
+                    value="CA",
+                    rows=[_result("r", "c", "CA", 1)],
+                    primary_key=("race", "county"),
+                )
+            ]
+        )
+        searches = [0]
+        real = importlib.machinery.PathFinder.find_spec
+
+        def counting(name: str, path: Any = None, target: Any = None) -> Any:
+            searches[0] += 1
+            return real(name, path, target)
+
+        monkeypatch.setattr(importlib.machinery.PathFinder, "find_spec", staticmethod(counting))
+        rows = [_result("r1", f"c{i:04d}", "TX", i) for i in range(2000)]
+
+        backend.replace_partitions(
+            [
+                PartitionReplacement(
+                    table="results", column="state", value="TX", rows=rows, primary_key=("race", "county")
+                )
+            ]
+        )
+
+        assert searches[0] < 20, f"{searches[0]} import-path searches for one bulk insert of 2000 rows"
+        assert backend.export_partition("results", "state", "TX", order_by=("race", "county")).num_rows == 2000
 
     def test_rows_export_as_the_partition_would_hold_them_and_change_nothing(self) -> None:
         pytest.importorskip("pyarrow")

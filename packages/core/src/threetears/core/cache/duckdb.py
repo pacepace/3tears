@@ -71,6 +71,43 @@ class PartitionReplacement:
     primary_key: str | tuple[str, ...] = "id"
 
 
+def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], lists: Sequence[list[Any]]) -> bool:
+    """insert or replace rows given as one list per column, through one Arrow table; False when it cannot.
+
+    Binding Python lists as parameters converts every value through DuckDB's Python layer, which for
+    each one tries to import ``pandas`` (to recognise its types); where pandas is not installed that
+    is a search of the whole import path per value -- seconds for a few thousand rows, and far longer
+    on a starved host. One Arrow table is one conversion. Without pyarrow, or for a column whose values
+    Arrow cannot type as one (mixed kinds), the caller binds the lists instead.
+
+    :param connection: the connection to write on, its lock held by the caller
+    :ptype connection: Any
+    :param target: the quoted table and column list
+    :ptype target: str
+    :param columns: the columns, in order
+    :ptype columns: Sequence[str]
+    :param lists: each column's values, serialized to its storage form
+    :ptype lists: Sequence[list[Any]]
+    :return: whether the rows were inserted
+    :rtype: bool
+    """
+    try:
+        import pyarrow as pa  # noqa: PLC0415 -- optional: the snapshot extra
+    except ImportError:
+        return False
+    try:
+        arrow = pa.table({f"c{i}": values for i, values in enumerate(lists)})
+    except pa.ArrowInvalid, pa.ArrowTypeError, OverflowError:
+        return False
+    names = ", ".join(f"c{i}" for i in range(len(columns)))
+    connection.register("_bulk_rows", arrow)
+    try:
+        connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {names} FROM _bulk_rows")  # noqa: S608
+    finally:
+        connection.unregister("_bulk_rows")
+    return True
+
+
 class DuckDBBackend:
     """L1 cache backend using DuckDB in-memory database.
 
@@ -229,9 +266,10 @@ class DuckDBBackend:
             lists = [[self.serialize_value(row[c], schema.get(c, "VARCHAR")) for row in latest] for c in columns]
             # values are already serialized to each column's storage form, so the insert's own
             # conversion types them; the registry's names are logical (VARCHAR_UUID), not SQL
-            select = ", ".join(f"unnest(${i}) AS {quote_identifier(c)}" for i, c in enumerate(columns, 1))
-            sql = f"INSERT OR REPLACE INTO {quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)}) SELECT {select}"
-            connection.execute(sql, lists)
+            target = f"{quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)})"
+            if not _insert_through_arrow(connection, target, columns, lists):
+                select = ", ".join(f"unnest(${i}) AS {quote_identifier(c)}" for i, c in enumerate(columns, 1))
+                connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {select}", lists)  # noqa: S608
 
     def replace_all(self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]) -> int:
         """make a table hold exactly ``rows``, in one transaction: what it held before is gone.
