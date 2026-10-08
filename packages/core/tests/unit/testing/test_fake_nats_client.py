@@ -618,3 +618,34 @@ async def test_a_declaration_no_longer_wanted_is_not_put_back() -> None:
     assert client.bucket_exists("kept")
     assert not client.bucket_exists("pointers")
     assert "pointers" not in client.remembered_declarations
+
+
+@pytest.mark.asyncio
+async def test_a_still_wanted_that_raises_keeps_the_declaration(caplog: pytest.LogCaptureFixture) -> None:
+    # the real restoration logs a failing guard at ERROR and restores the bucket: a restoration must
+    # not drop a bucket because a database read failed
+    client = FakeNatsClient()
+
+    async def _broken() -> bool:
+        raise ConnectionError("database unreachable")
+
+    await client.ensure_kv_bucket(name="pointers", still_wanted=_broken)
+    with caplog.at_level("ERROR", logger="threetears.core.testing.kv"):
+        await client.restart_broker()
+    assert client.bucket_exists("pointers")
+    assert "pointers" in client.remembered_declarations
+    assert any("still wanted" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_entry_stops_counting_against_the_bound() -> None:
+    # the server removes an expired message on its own, so its bytes free room for any key, not
+    # only once the expired key is read again
+    client = FakeNatsClient()
+    bucket = await client.ensure_kv_bucket(name="pointers", owns_bucket=True, max_bytes=400)
+    await bucket.put(key="brief", value=b"x" * 250, ttl=timedelta(seconds=5))
+    with pytest.raises(KvError):
+        await bucket.put(key="other", value=b"y" * 250)
+    bucket.advance_clock(timedelta(seconds=6))
+    await bucket.put(key="other", value=b"y" * 250)
+    assert await bucket.get(key="other") == b"y" * 250

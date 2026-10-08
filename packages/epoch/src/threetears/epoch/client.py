@@ -667,8 +667,12 @@ class EpochClient:
 
         the hook that keeps a ``max_age`` read current across processes: another process's
         :meth:`advance_to` or :meth:`bump` broadcasts the new epoch, and this process's copy, older
-        than it, must not answer after it arrives. a broadcast at or below the cached epoch -- this
-        process hearing its own advance, or a redelivery -- leaves the copy alone.
+        than it, must not answer after it arrives, and a read in flight when it arrives must not
+        cache what it brings back. a broadcast at or below the cached epoch -- this process hearing
+        its own advance, or a redelivery -- leaves the copy alone.
+
+        the message's ``subject_path`` is the key; a listener that fills an empty one from the
+        subject it subscribed passes the message with the path filled.
 
         :class:`~threetears.epoch.listener.EpochListener` calls this for every broadcast it receives,
         so a process subscribed to the subject through one needs nothing more. a process with its own
@@ -680,7 +684,9 @@ class EpochClient:
         :rtype: None
         """
         cached = self._versions.get(message.subject_path)
-        if cached is not None and message.epoch > cached.value.epoch:
+        if cached is None or message.epoch > cached.value.epoch:
+            # with nothing cached the fence still moves: a read already in flight may have read the
+            # row before this broadcast's move, and must not cache what it brings back
             self._forget_versions(message.subject_path)
 
     def _remember_versions(self, path: str, value: DurableEpoch) -> None:

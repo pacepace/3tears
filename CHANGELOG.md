@@ -22,9 +22,12 @@ bound could not be tested against it.
   lands nothing, unless it replaces a key's latest message no smaller than itself, which the server
   admits. Size is counted per retained message as the server's memory store counts it: subject
   `$KV.<bucket>.<key>`, value, a delete marker's header, and 16 bytes. Headers of TTL and CAS
-  writes are not counted. `FakeKvBucket(max_bytes=...)` and `FakeKvBucket.max_bytes` are added.
+  writes are not counted. An entry whose per-entry TTL has lapsed stops counting at once, as the
+  server removes it on its own. `FakeKvBucket(max_bytes=...)` and `FakeKvBucket.max_bytes` are
+  added.
 - **`still_wanted`** is asked by `restart_broker` before a declaration is put back; one answering
-  `False` is forgotten and its bucket stays absent, as the real restoration does.
+  `False` is forgotten and its bucket stays absent; one that raises is logged at ERROR and the
+  declaration is restored. Both are what the real restoration does.
 
 ### Epoch: a durable subject's versions can be read from a per-process copy
 
@@ -40,9 +43,14 @@ TileJSON and tile request; that read failed live when a pool connection dropped.
   raises `ValueError`. A read that left for the pool before this process moved the subject cannot
   overwrite the move.
 - **Added, `EpochClient.observe_broadcast(message: EpochBumpMessage) -> None`**: drops the cached
-  copy when a broadcast names a later epoch than it holds. `EpochListener` now calls it for every
-  broadcast it receives, before its dedupe, so another process's advance invalidates the copy as
-  its broadcast arrives.
+  copy when a broadcast names a later epoch than it holds, and fences any read in flight when it
+  arrives (cached or not), so that read cannot cache the row as it stood before the move.
+  `EpochListener` now calls it for every broadcast it receives, before its dedupe, so another
+  process's advance invalidates the copy as its broadcast arrives. A broadcast with an empty
+  `subject_path` is keyed by the subscribed subject for both the dedupe and the cache.
+- **Changed, for stand-in epoch clients**: because `EpochListener` calls `observe_broadcast` on every
+  broadcast, an object handed to it as the epoch client must have that method. A real `EpochClient`
+  or a subclass of it does; a hand-rolled duck-typed stub must add it (a no-op is enough).
 - **Constraint for callers**: a cached value may lag the row by up to `max_age` when a broadcast
   is missed, so it is for choosing what to serve or advertise, never for building at a version
   whose rows may already be gone. Read without `max_age` before reading source rows.
@@ -62,10 +70,20 @@ maps, with or without an L1.
   a later tile there loads that chunk alone. A z0 build through a cache-wired `TileCollection` is
   one loader call.
 - **Fixed, held rows are bounded**: `FeatureCache(max_cached_rows=...)`, default
-  `FeatureCache.max_cached_rows` (100,000 row entries across covered chunks). Past it the least
-  recently read chunk is evicted, its features leaving the R-Tree once no held chunk carries them,
-  and it is loaded again when next asked for. A wide read carrying more rows than the bound is not
-  held. A read answers from the rows it gathered, so an eviction mid-read cannot make it partial.
+  `FeatureCache.max_cached_rows` (100,000 row entries across covered chunks; a row in two chunks
+  counts twice, an empty chunk once). Past it the least recently read chunk is evicted, its rows
+  and R-Tree entries leaving once no held chunk carries them, and it is loaded again when next asked
+  for. Eviction never takes a chunk a read in progress depends on, and is logged at DEBUG. One read
+  may claim at most half the bound, counted the same way: a denser chunk or a wider rectangle is
+  answered from its own rows and not held, so it cannot flush the working set.
+- **Changed, the R-Tree answers the read**: once a rectangle's chunks are covered, the held features
+  overlapping it come from an R-Tree query, then an exact rectangle test. Before, the index was
+  written and never read. `index_feature` and the read path share one insert. The layer prefix is
+  matched exactly rather than with `LIKE`, so a layer name containing `%` or `_` cannot match
+  another layer's features.
+- **Changed, one rule for every read path**: rows with no feature id are dropped and every row is
+  tested against the rectangle, with or without an L1, narrow or wide. Before, the no-L1 and wide
+  paths returned id-less rows and the no-L1 path returned rows outside the rectangle.
 - **Added**: `FeatureCache.max_chunk_reads: ClassVar[int] = 16`, `FeatureCache.max_cached_rows:
   ClassVar[int] = 100_000`, and the `max_cached_rows: int | None = None` keyword (below 1 raises
   `ValueError`).

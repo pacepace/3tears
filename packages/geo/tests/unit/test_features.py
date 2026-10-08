@@ -482,3 +482,140 @@ class TestHeldRowsAreBounded:
     def test_a_bound_below_one_is_refused(self, request: pytest.FixtureRequest) -> None:
         with pytest.raises(ValueError, match="max_cached_rows"):
             _cache_over(request, _empty_loader, max_cached_rows=0)
+
+
+def _point_row(feature_id: str, tile: TileId) -> dict[str, Any]:
+    """a tiny row at the inner corner of ``tile``, inside it and inside its z8 chunk."""
+    bounds = tile_bounds(tile)
+    lon = bounds.min_lon + (bounds.max_lon - bounds.min_lon) / 4
+    lat = bounds.min_lat + (bounds.max_lat - bounds.min_lat) / 4
+    return {"feature_id": feature_id, "bounds": BoundingBox(lon, lat, lon + 1e-6, lat + 1e-6)}
+
+
+def _chunk_tile(dx: int) -> TileId:
+    """a z12 tile in the z8 chunk ``dx`` chunks east of :func:`_inside_z3`'s, off every chunk edge."""
+    base = _inside_z3()
+    return TileId(z=12, x=base.x + 16 * dx, y=base.y)
+
+
+class TestEvictionOrderAndSharing:
+    """the eviction mechanics the bound rests on, each pinned so removing it fails a test."""
+
+    async def test_the_least_recently_read_chunk_goes_first(self, request: pytest.FixtureRequest) -> None:
+        a, b, c = _chunk_tile(0), _chunk_tile(1), _chunk_tile(2)
+        loader, calls = _recording_loader([_point_row("a", a), _point_row("b", b), _point_row("c", c)])
+        cache = _cache_over(request, loader, max_cached_rows=2)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(a))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(b))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(a))  # a is now the most recent
+        await cache.features_in_bbox("tracts", 1, tile_bounds(c))  # evicts b, not a
+        assert len(calls) == 3
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(a))
+        assert len(calls) == 3, "the chunk read most recently was evicted (FIFO, not LRU)"
+        await cache.features_in_bbox("tracts", 1, tile_bounds(b))
+        assert len(calls) == 4, "the least recently read chunk was kept"
+
+    async def test_a_feature_in_two_chunks_survives_one_of_them_leaving(self, request: pytest.FixtureRequest) -> None:
+        a, b, c = _chunk_tile(0), _chunk_tile(1), _chunk_tile(2)
+        a_bounds, b_bounds = tile_bounds(a), tile_bounds(b)
+        shared = {
+            "feature_id": "s",
+            "bounds": BoundingBox(a_bounds.min_lon, a_bounds.min_lat, b_bounds.max_lon, b_bounds.max_lat),
+        }
+        loader, calls = _recording_loader([shared, _point_row("c", c)])
+        cache = _cache_over(request, loader, max_cached_rows=2)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(a))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(b))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(c))  # evicts a, which also held "s"
+
+        found = await cache.features_in_bbox("tracts", 1, b_bounds)
+        assert len(calls) == 3, "b should still be held"
+        assert [row["feature_id"] for row in found] == ["s"], "a feature b still holds was dropped with a"
+        assert cache.indexed_keys_in_bbox("tracts", 1, b_bounds) == ["s"]
+
+    async def test_eviction_is_logged(self, request: pytest.FixtureRequest, caplog: pytest.LogCaptureFixture) -> None:
+        a, b = _chunk_tile(0), _chunk_tile(1)
+        loader, _ = _recording_loader([_point_row("a", a), _point_row("b", b)])
+        cache = _cache_over(request, loader, max_cached_rows=1)
+
+        with caplog.at_level("DEBUG", logger="threetears.geo.features"):
+            await cache.features_in_bbox("tracts", 1, tile_bounds(a))
+            await cache.features_in_bbox("tracts", 1, tile_bounds(b))
+
+        assert any("evicted" in record.getMessage() for record in caplog.records)
+
+
+class TestOneReadNeverFlushesTheWorkingSet:
+    """a read whose own rows would claim more than half the bound is answered and not held, so one
+    dense chunk or one wide rectangle cannot evict everything the pod was holding for its
+    neighbours. the guard counts what the bound counts: row entries, one per empty chunk."""
+
+    async def test_an_oversized_chunk_is_answered_and_not_held(self, request: pytest.FixtureRequest) -> None:
+        small, dense = _chunk_tile(0), _chunk_tile(1)
+        rows = [_point_row("small", small)] + [_point_row(f"d{i}", dense) for i in range(3)]
+        loader, calls = _recording_loader(rows)
+        cache = _cache_over(request, loader, max_cached_rows=2)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(small))
+        found = await cache.features_in_bbox("tracts", 1, tile_bounds(dense))
+        assert sorted(row["feature_id"] for row in found) == ["d0", "d1", "d2"]
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(small))
+        assert len(calls) == 2, "the dense chunk flushed the chunk held before it"
+        await cache.features_in_bbox("tracts", 1, tile_bounds(dense))
+        assert len(calls) == 3, "a chunk over the bound was held"
+
+    async def test_a_wide_read_with_more_rows_than_the_bound_is_not_held(self, request: pytest.FixtureRequest) -> None:
+        # 20 chunks (over max_chunk_reads, so one wide read) holding 24 entries: within the bound
+        # of 40, over the half of it one read may claim
+        north_west = tile_bounds(TileId(z=8, x=48, y=112))
+        south_east = tile_bounds(TileId(z=8, x=52, y=115))
+        wide = BoundingBox(north_west.min_lon, south_east.min_lat, south_east.max_lon, north_west.max_lat)
+        inner = TileId(z=12, x=50 * 16 + 5, y=113 * 16 + 5)
+        loader, calls = _recording_loader([_point_row(f"r{i}", inner) for i in range(5)])
+        cache = _cache_over(request, loader, max_cached_rows=40)
+
+        found = await cache.features_in_bbox("tracts", 1, wide)
+        assert len(calls) == 1
+        assert len(found) == 5
+        await cache.features_in_bbox("tracts", 1, tile_bounds(inner))
+        assert len(calls) == 2, "a wide read over half the bound covered its chunks"
+
+    async def test_a_wide_read_counts_its_empty_chunks_against_the_bound(self, request: pytest.FixtureRequest) -> None:
+        # one row, but 1,024 contained chunks: by rows it fits a bound of 100, by entries it does not
+        held, inner = _chunk_tile(40), _inside_z3()
+        loader, calls = _recording_loader([_point_row("held", held), _point_row("inner", inner)])
+        cache = _cache_over(request, loader, max_cached_rows=100)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(held))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(_Z3))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(held))
+        assert len(calls) == 2, "the wide read's empty chunks flushed the chunk held before it"
+        await cache.features_in_bbox("tracts", 1, tile_bounds(inner))
+        assert len(calls) == 3
+
+
+class TestOneRuleForEveryReadPath:
+    """the same rectangle yields the same features whichever path answers it: rows with no feature
+    id are dropped and every row is filtered to the rectangle, with or without an L1, narrow or
+    wide. a tile built from either is cached as immutable, so the paths must agree."""
+
+    @pytest.mark.parametrize("path", ["no-l1", "chunk", "wide"])
+    async def test_id_less_and_outside_rows_are_dropped(self, request: pytest.FixtureRequest, path: str) -> None:
+        tile = _inside_z3()
+        good = _point_row("good", tile)
+        no_id = {"feature_id": None, "bounds": good["bounds"]}
+        outside = {"feature_id": "outside", "bounds": BoundingBox(10.0, 10.0, 11.0, 11.0)}
+
+        async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+            # a loader answering a little more than asked, as a coarse bbox-column query can
+            return [good, no_id, outside]
+
+        cache = _cache_over(request, _loader, l1=path != "no-l1")
+        bounds = tile_bounds(_Z3) if path == "wide" else tile_bounds(tile)
+
+        found = await cache.features_in_bbox("tracts", 1, bounds)
+        assert [row["feature_id"] for row in found] == ["good"]

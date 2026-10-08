@@ -722,3 +722,53 @@ class TestCachedVersions:
         client = EpochClient(_versions_pool(), _nats_mock())
         with pytest.raises(ValueError, match="max_age"):
             await client.versions(_durable_subject(), max_age=timedelta(seconds=-1))
+
+    async def test_a_read_racing_a_broadcast_with_nothing_cached_does_not_cache(self) -> None:
+        # nothing cached (a fresh process, or right after a bump): a read leaves for the pool, another
+        # process's advance commits and its broadcast arrives, then the read answers the row as it
+        # stood before. caching that would answer a superseded epoch for a full max_age.
+        release = asyncio.Event()
+        answers = [{"epoch": 3, "previous_epoch": 2}, {"epoch": 5, "previous_epoch": 3}]
+
+        async def _fetchrow(sql: str, *args: Any) -> Any:
+            answer = answers.pop(0)
+            if answer["epoch"] == 3:
+                await release.wait()
+            return answer
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+
+        slow_read = asyncio.create_task(client.versions(subject, max_age=_HOUR))
+        await asyncio.sleep(0)
+        client.observe_broadcast(EpochBumpMessage(subject_path=subject.path, epoch=5))
+        release.set()
+        assert await slow_read == DurableEpoch(epoch=3, previous=2)
+
+        assert await client.versions(subject, max_age=_HOUR) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 2, "the read that raced the broadcast was cached"
+
+    async def test_a_broadcast_naming_no_subject_invalidates_the_subscribed_one(self) -> None:
+        # the listener keys a broadcast with an empty subject path by the subject it subscribed; the
+        # cached versions must be keyed the same way, or such a broadcast drops nothing
+        nats = FakeNatsClient()
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        client = EpochClient(pool, nats)
+        subject = _durable_subject()
+
+        async def _on_bump(epoch: int, payload: dict[str, object] | None) -> None:
+            return None
+
+        await EpochListener(nats, client).subscribe(subject, _on_bump, primed_epoch=3)
+        await client.versions(subject, max_age=_HOUR)
+        await nats.publish(subject=subject, message=EpochBumpMessage(subject_path="", epoch=4))
+
+        assert await client.versions(subject, max_age=_HOUR) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 2
+
+    async def test_a_negative_grace_is_refused(self) -> None:
+        client = EpochClient(_versions_pool(), _nats_mock())
+        with pytest.raises(ValueError, match="grace"):
+            await client.versions(_durable_subject(), max_age=_HOUR, grace=timedelta(seconds=-1))

@@ -325,8 +325,13 @@ class FakeKvBucket:
             message of the key no smaller than itself -- the server's ``maximum bytes exceeded``
         """
         size = len(f"$KV.{self._bucket_name}.{key}") + payload + _STORED_MESSAGE_OVERHEAD
-        old = self._sizes.get(key)
         bound = self._max_bytes
+        if bound is not None and bound > 0:
+            for held in list(self._entries):
+                # the server removes an expired message on its own, so a lapsed entry frees its
+                # room whether or not its key is read again
+                self._live(held)
+        old = self._sizes.get(key)
         if bound is not None and bound > 0 and self._stored_bytes + size >= bound and (old is None or old < size):
             raise KvError(
                 f"KV write refused: bucket={self._bucket_name} key={key}: maximum bytes exceeded "
@@ -883,13 +888,23 @@ class FakeNatsClient:
         the bucket back. Entries are put back only by their declarer: a declaration given
         ``on_restored`` is owed its refill once its bucket is created again, and :meth:`reconnect`
         runs it with the bucket. A declaration whose ``still_wanted`` answers ``False`` is forgotten
-        first, and its bucket stays absent like any other.
+        first, and its bucket stays absent like any other; one whose ``still_wanted`` raises is
+        logged at ERROR and restored, as the real client does.
 
         :return: None
         :rtype: None
         """
         for name, still_wanted in list(self._still_wanted.items()):
-            if name in self._remembered and not await still_wanted():
+            if name not in self._remembered:
+                continue
+            try:
+                wanted = bool(await still_wanted())
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- logged; the declaration is kept, as in the real client
+                log.error("asking whether KV bucket %s is still wanted failed; it is restored: %s", name, exc)
+                wanted = True
+            if not wanted:
                 # forgotten instead of put back, as the real restoration does
                 self._remembered.discard(name)
                 self._refills.pop(name, None)

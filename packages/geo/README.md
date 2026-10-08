@@ -91,6 +91,15 @@ tile containing a request and records that chunk as covered. A run of
 neighbouring tiles, which overlap almost entirely in source features, then
 pays one L3 read between them instead of one each.
 
+Once a rectangle's chunks are covered, the R-Tree answers which held features
+overlap it, and an exact rectangle test follows (the R-Tree stores 32-bit
+floats rounded outward, so it can over-answer but never under-answer). What a
+pod holds is bounded by `max_cached_rows` and evicted least recently read
+first, rows and index entries together. One read may claim at most half the
+bound, so a dense chunk or a wide low-zoom rectangle is answered and not held.
+A rectangle over more than `max_chunk_reads` uncovered chunks is one loader
+call, and with no L1 bound every read is one loader call.
+
 ### Attribute coercion is fixed, not per-caller
 
 MVT carries only strings, numbers and booleans, so every other SQL type
