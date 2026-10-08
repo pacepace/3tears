@@ -33,6 +33,8 @@ from threetears.core.security.jwks_provider import HUB_JWKS_ISSUER, CachedHubJwk
 from threetears.core.security.jwks_trust import (
     HUB_JWKS_ROOT_PUBLIC_KEY_ENV,
     HUB_JWKS_STATEMENT_WINDOW,
+    MAX_STATEMENT_LIFETIME,
+    THUMBPRINT_WINDOW,
     JWKS_STATEMENT_FIELD,
     ROTATION_OVERLAP,
     JwksKeyring,
@@ -73,8 +75,7 @@ def _client(*replies: bytes) -> MagicMock:
     return nc
 
 
-def _switch(*, required: bool) -> DoorProofSwitch:
-    window = HUB_JWKS_STATEMENT_WINDOW
+def _switch(*, required: bool, window: DoorWindow = HUB_JWKS_STATEMENT_WINDOW) -> DoorProofSwitch:
     today = window.required_from if required else window.opened
     return DoorProofSwitch(window, today=lambda: today)
 
@@ -114,16 +115,44 @@ class TestThumbprintIsKid:
     def test_a_malformed_entry_is_a_mismatch(self, entry: Any) -> None:
         assert len(thumbprint_mismatches([entry])) == 1
 
-    async def test_a_reply_with_one_renamed_key_changes_nothing(self) -> None:
+    async def test_from_the_windows_date_an_unsigned_reply_with_a_renamed_key_changes_nothing(self) -> None:
         renamed = _keys(_ATTACKER_PUBLIC)[0] | {"kid": "the-hubs-next-kid"}
         provider = CachedHubJwksProvider(
             _client(_reply(_keys(_HUB_PUBLIC)), _reply([*_keys(_HUB_PUBLIC), renamed])),
             request_timeout_seconds=1.0,
             statement_switch=_switch(required=False),
+            thumbprint_switch=_switch(required=True, window=THUMBPRINT_WINDOW),
         )
         await provider.refresh()
         await provider.refresh()
         assert _kids(provider) == {_HUB_KID}
+
+    async def test_before_the_windows_date_a_misnamed_key_is_taken_and_counted(self) -> None:
+        """a publisher still on a release that names a key otherwise is not refused before the date."""
+        renamed = _keys(_HUB_PUBLIC)[0] | {"kid": "a-pre-thumbprint-kid"}
+        thumbprint = _switch(required=False, window=THUMBPRINT_WINDOW)
+        provider = CachedHubJwksProvider(
+            _client(_reply([renamed])),
+            request_timeout_seconds=1.0,
+            statement_switch=_switch(required=False),
+            thumbprint_switch=thumbprint,
+        )
+        await provider.refresh()
+        assert _kids(provider) == {"a-pre-thumbprint-kid"}
+        (absent,) = thumbprint.absent_senders()
+        assert absent.door == "hub.jwks.thumbprint"
+
+    async def test_a_signed_reply_needs_no_thumbprint_check_its_statement_covers_the_keys(self) -> None:
+        renamed = _keys(_HUB_PUBLIC)[0] | {"kid": "a-pre-thumbprint-kid"}
+        provider = CachedHubJwksProvider(
+            _client(_reply([renamed], signed_by=_ROOT)),
+            request_timeout_seconds=1.0,
+            root_public_key=_ROOT.public_key(),
+            statement_switch=_switch(required=True),
+            thumbprint_switch=_switch(required=True, window=THUMBPRINT_WINDOW),
+        )
+        await provider.refresh()
+        assert _kids(provider) == {"a-pre-thumbprint-kid"}
 
 
 class TestAddOnlyMerge:
@@ -170,26 +199,26 @@ class TestAddOnlyMerge:
     def test_a_key_is_retired_only_when_missing_for_the_overlap(self) -> None:
         now = [0.0]
         ring = JwksKeyring(overlap=timedelta(hours=1), clock=lambda: now[0])
-        ring.merge(_keys(_HUB_PUBLIC))
+        ring.adopt(_keys(_HUB_PUBLIC), verified=True)
         now[0] = 10.0
-        first = ring.merge(_keys(_ATTACKER_PUBLIC))
+        first = ring.adopt(_keys(_ATTACKER_PUBLIC), verified=True)
         assert first.held == (_HUB_KID,) and first.retired == ()
         now[0] = 10.0 + 3599.0
-        assert ring.merge(_keys(_ATTACKER_PUBLIC)).held == (_HUB_KID,)
+        assert ring.adopt(_keys(_ATTACKER_PUBLIC), verified=True).held == (_HUB_KID,)
         now[0] = 10.0 + 3600.0
-        assert ring.merge(_keys(_ATTACKER_PUBLIC)).retired == (_HUB_KID,)
+        assert ring.adopt(_keys(_ATTACKER_PUBLIC), verified=True).retired == (_HUB_KID,)
         assert _HUB_KID not in ring
 
     def test_a_key_that_comes_back_restarts_its_overlap(self) -> None:
         now = [0.0]
         ring = JwksKeyring(overlap=timedelta(hours=1), clock=lambda: now[0])
-        ring.merge(_keys(_HUB_PUBLIC))
+        ring.adopt(_keys(_HUB_PUBLIC), verified=True)
         now[0] = 100.0
-        ring.merge([])
+        ring.adopt([], verified=True)
         now[0] = 200.0
-        ring.merge(_keys(_HUB_PUBLIC))
+        ring.adopt(_keys(_HUB_PUBLIC), verified=True)
         now[0] = 3700.0
-        assert ring.merge([]).held == (_HUB_KID,)
+        assert ring.adopt([], verified=True).held == (_HUB_KID,)
 
     def test_the_overlap_outlives_the_longest_platform_token(self) -> None:
         assert timedelta(hours=1) <= ROTATION_OVERLAP
@@ -400,3 +429,93 @@ class TestNoAttackerTimedRefresh:
         now[0] = 5.0
         assert await gate.run() is True
         assert runs == [0.0, 5.0]
+
+
+class TestProvenance:
+    """a key only an unsigned reply vouched for never outlives the next genuine reply, signed or not."""
+
+    async def test_an_unsigned_forgery_then_a_signed_genuine_reply_leaves_no_attacker_key(self) -> None:
+        """the sequence a forger wins inside the window: its key, then the hub's first signed reply.
+
+        The signed reply holds a key it omits through the rotation overlap only when a verified
+        reply brought that key in; the attacker's was brought by an unsigned forgery, so it goes.
+        """
+        provider = CachedHubJwksProvider(
+            _client(_reply(_keys(_HUB_PUBLIC, _ATTACKER_PUBLIC)), _reply(_keys(_HUB_PUBLIC), signed_by=_ROOT)),
+            request_timeout_seconds=1.0,
+            root_public_key=_ROOT.public_key(),
+            statement_switch=_switch(required=False),
+        )
+        await provider.refresh()  # the forgery, taken while the window is open
+        assert _ATTACKER_KID in _kids(provider)
+        await provider.refresh()  # the hub's first signed reply
+
+        assert _kids(provider) == {_HUB_KID}
+        with pytest.raises(Exception, match="kid"):
+            verify_identity_token(_token(_ATTACKER_SIGNING, _ATTACKER_KID), jwks=provider(), issuer="aibots-hub")
+
+    def test_the_keyring_holds_only_what_a_verified_reply_brought(self) -> None:
+        ring = JwksKeyring(overlap=timedelta(hours=1))
+        ring.adopt(_keys(_HUB_PUBLIC), verified=True)
+        ring.adopt(_keys(_HUB_PUBLIC, _ATTACKER_PUBLIC), verified=False)
+
+        merged = ring.adopt([], verified=True)
+
+        assert merged.retired == (_ATTACKER_KID,)
+        assert merged.held == (_HUB_KID,)
+
+
+class TestTheReplyShape:
+    @pytest.mark.parametrize("bad", ['"x"', '{"a": 1}', "7"])
+    async def test_a_reply_whose_keys_is_not_a_list_changes_nothing_and_does_not_warm(self, bad: str) -> None:
+        provider = CachedHubJwksProvider(
+            _client(f'{{"keys": {bad}}}'.encode("utf-8")),
+            request_timeout_seconds=1.0,
+            statement_switch=_switch(required=False),
+        )
+        await provider.refresh()
+        assert provider() == {"keys": []}
+        assert provider.is_warmed is False
+
+
+class TestNoReplay:
+    """a stored genuine reply cannot be replayed to bring back a key the hub has rotated out."""
+
+    async def test_a_statement_older_than_one_already_verified_is_refused(self) -> None:
+        now = int(time.time())
+
+        def signed(keys: list[dict[str, Any]], at: int) -> bytes:
+            statement = sign_jwks_statement(
+                keys, signing_key=_ROOT, issuer=HUB_JWKS_ISSUER, now=at, ttl=timedelta(minutes=5)
+            )
+            return json.dumps({"keys": keys, JWKS_STATEMENT_FIELD: statement}).encode("utf-8")
+
+        provider = CachedHubJwksProvider(
+            _client(signed(_keys(_HUB_PUBLIC), now), signed(_keys(_HUB_PUBLIC, _ATTACKER_PUBLIC), now - 60)),
+            request_timeout_seconds=1.0,
+            root_public_key=_ROOT.public_key(),
+            statement_switch=_switch(required=True),
+        )
+        await provider.refresh()
+        await provider.refresh()  # the replay, signed a minute before the reply already taken
+
+        assert _kids(provider) == {_HUB_KID}
+
+    def test_a_statement_claiming_a_longer_life_than_the_maximum_is_refused(self) -> None:
+        keys = _keys(_HUB_PUBLIC)
+        statement = sign_jwks_statement(
+            keys,
+            signing_key=_ROOT,
+            issuer=HUB_JWKS_ISSUER,
+            now=int(time.time()),
+            ttl=MAX_STATEMENT_LIFETIME + timedelta(minutes=1),
+        )
+        with pytest.raises(JwksStatementError, match="longer life"):
+            verify_jwks_statement(statement, keys, root_public_key=_ROOT.public_key(), issuer=HUB_JWKS_ISSUER)
+
+
+class TestTheMissingRootIsSaid:
+    def test_a_provider_built_without_a_root_key_warns_naming_the_date(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING"):
+            CachedHubJwksProvider(_client(), request_timeout_seconds=1.0, statement_switch=_switch(required=False))
+        assert any("no pinned root key" in r.getMessage() and "2027-01-05" in r.getMessage() for r in caplog.records)

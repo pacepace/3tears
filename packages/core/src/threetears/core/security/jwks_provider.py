@@ -21,40 +21,35 @@ loop: no exception type can end it (only cancellation), so the self-heal source 
 :attr:`is_warmed` flag exposes the first-fetch-succeeded state so a consuming verifier can gate its
 k8s readiness on the cache being able to verify anything at all.
 
-**A reply is never trusted blind** (:mod:`threetears.core.security.jwks_trust`). Any client in the
-account can get bytes delivered onto the fetch's reply inbox, so a fetched key set must earn its
-place: a reply with an entry whose ``kid`` is not its key's thumbprint is refused whole; a reply
-carrying the hub's signed statement is checked against the pinned root key, and from the hub JWKS
-door's date a reply without one is refused; a verified reply is merged add-only, a key retired only
-after it has been missing for :data:`~threetears.core.security.jwks_trust.ROTATION_OVERLAP`, while
-an unsigned reply accepted inside the window replaces the cache, so a key it forged is gone at the
-next genuine reply; and the reactive refresh runs once per
-:data:`~threetears.core.security.jwks_trust.REACTIVE_REFRESH_WINDOW_SECONDS` whatever the callers.
+**A reply is never trusted blind.** Any client in the account can get bytes delivered onto the
+fetch's reply inbox, so every reply goes through one
+:class:`~threetears.core.security.jwks_trust.JwksTrust`: the hub's signed statement is checked
+against the root pinned in ``THREETEARS_HUB_JWKS_ROOT_PUBLIC_KEY``; an unsigned reply is taken only
+while the hub JWKS door's window is open and the hub has not yet signed one; a key a verified reply
+brought in is held through the rotation overlap, and a key only an unsigned reply vouched for is
+dropped by the next reply that omits it. The reactive refresh runs through a
+:class:`~threetears.core.security.jwks_trust.RefreshGate`, once per window whatever the callers.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
-import time
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from threetears.nats import Subjects
 from threetears.observe import PeriodicTask, get_logger
 
-from threetears.core.security.door_proof import DoorProofModes, DoorProofSwitch, ProofOutcome
+from threetears.core.security.door_proof import DoorProofSwitch, process_door_proofs
 from threetears.core.security.jwks_trust import (
     HUB_JWKS_STATEMENT_WINDOW,
-    JWKS_STATEMENT_FIELD,
     REACTIVE_REFRESH_WINDOW_SECONDS,
+    THUMBPRINT_WINDOW,
     JwksKeyring,
+    JwksTrust,
+    RefreshGate,
     hub_jwks_root_public_key_from_env,
-    JwksStatementError,
-    jwks_keys,
-    thumbprint_mismatches,
-    verify_jwks_statement,
 )
 
 if TYPE_CHECKING:
@@ -69,9 +64,6 @@ _EMPTY_JWKS: dict[str, Any] = {"keys": []}
 
 #: the issuer a hub JWKS statement names.
 HUB_JWKS_ISSUER = "hub"
-
-#: the pod environment entry listing doors to require before their window's date.
-DOOR_PROOF_REQUIRED_EARLY_ENV = "THREETEARS_DOOR_PROOF_REQUIRED_EARLY"
 
 
 class CachedHubJwksProvider:
@@ -99,10 +91,12 @@ class CachedHubJwksProvider:
         read from the pod environment when not given, and when the environment has none either,
         no statement can be verified
     :ptype root_public_key: Ed25519PublicKey | None
-    :param statement_switch: the hub JWKS door's switch; built from the pod environment's
-        required-early list when not given
+    :param statement_switch: the hub JWKS statement door's switch; the process registry's
+        (:func:`~threetears.core.security.door_proof.process_door_proofs`) when not given
     :ptype statement_switch: DoorProofSwitch | None
-    :param keyring: the add-only key set; a fresh one when not given
+    :param thumbprint_switch: the thumbprint window's switch; the process registry's when not given
+    :ptype thumbprint_switch: DoorProofSwitch | None
+    :param keyring: the key set with each key's provenance; a fresh one when not given
     :ptype keyring: JwksKeyring | None
     """
 
@@ -116,17 +110,19 @@ class CachedHubJwksProvider:
         reactive_min_interval_seconds: float = REACTIVE_REFRESH_WINDOW_SECONDS,
         root_public_key: Ed25519PublicKey | None = None,
         statement_switch: DoorProofSwitch | None = None,
+        thumbprint_switch: DoorProofSwitch | None = None,
         keyring: JwksKeyring | None = None,
     ) -> None:
         self._nc = nats_client
-        self._root_public_key = root_public_key if root_public_key is not None else hub_jwks_root_public_key_from_env()
-        self._statement_switch = statement_switch or DoorProofModes.parse(
-            os.environ.get(DOOR_PROOF_REQUIRED_EARLY_ENV, "")
-        ).switch(HUB_JWKS_STATEMENT_WINDOW)
-        self._keyring = keyring if keyring is not None else JwksKeyring()
-        #: set once a reply's statement has verified: the hub signs from then on, so a reply
-        #: without a statement is a downgrade and is refused whatever the window says
-        self._statement_seen = False
+        doors = process_door_proofs()
+        self._trust = JwksTrust(
+            door="hub.jwks",
+            issuer=HUB_JWKS_ISSUER,
+            root_public_key=root_public_key if root_public_key is not None else hub_jwks_root_public_key_from_env(),
+            statement_switch=statement_switch or doors.switch(HUB_JWKS_STATEMENT_WINDOW),
+            thumbprint_switch=thumbprint_switch or doors.switch(THUMBPRINT_WINDOW),
+            keyring=keyring,
+        )
         if not all(0 < v < float("inf") for v in (refresh_interval_seconds, initial_retry_interval_seconds)):
             raise ValueError(
                 "refresh_interval_seconds and initial_retry_interval_seconds must be positive, got "
@@ -143,11 +139,8 @@ class CachedHubJwksProvider:
         self._stop_requested = False
         #: True after the first SUCCESSFUL fetch; gates the fast cold-start retry vs the steady loop
         self._warmed = False
-        #: collapses concurrent reactive triggers onto a single in-flight refresh (no Hub stampede)
-        self._reactive_lock = asyncio.Lock()
-        self._reactive_min_interval = reactive_min_interval_seconds
-        #: monotonic timestamp of the last reactive refresh; rate-limits :meth:`refresh_now`
-        self._last_reactive_refresh: float | None = None
+        #: the reactive refresh: concurrent triggers share one in-flight fetch, one per window
+        self._refresh_gate = RefreshGate(self.refresh, window_seconds=reactive_min_interval_seconds)
 
     @property
     def is_warmed(self) -> bool:
@@ -240,12 +233,9 @@ class CachedHubJwksProvider:
                 timeout=timedelta(seconds=self._request_timeout),
             )
             jwks = json.loads(response)
-            if not isinstance(jwks, dict) or "keys" not in jwks:
+            if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
                 raise ValueError("hub jwks reply is not a JWKS document")
-            verdict = self._judge_reply(jwks)
-            if verdict is None:
-                return
-            if not jwks.get("keys"):
+            if not jwks["keys"]:
                 # a shape-valid but EMPTY keyset can verify NOTHING (every token rejects fail-closed),
                 # so treat it like a transient blip: keep the last-good cache (never clear to empty)
                 # and stay UN-warmed, so the readiness gate keeps holding traffic and the fast
@@ -253,14 +243,21 @@ class CachedHubJwksProvider:
                 # misconfiguration, not a reason to report ready.
                 log.warning("hub jwks reply has no keys; keeping cached keys, staying un-warmed")
                 return
-            keys = jwks_keys(jwks)
-            merged = self._keyring.merge(keys) if verdict else self._keyring.replace(keys)
-            self._jwks = self._keyring.document()
+            judgement, merged = self._trust.take(jwks)
+            if merged is None:
+                return
+            self._jwks = self._trust.keyring.document()
             self._warmed = True
             if merged.added or merged.retired:
                 log.info(
                     "hub jwks keys changed",
-                    extra={"extra_data": {"added": list(merged.added), "retired": list(merged.retired)}},
+                    extra={
+                        "extra_data": {
+                            "added": list(merged.added),
+                            "retired": list(merged.retired),
+                            "trust": judgement.trust.value,
+                        }
+                    },
                 )
             log.debug("hub jwks refreshed: keys=%d held=%d", len(self._jwks["keys"]), len(merged.held))
         except Exception as exc:
@@ -275,60 +272,6 @@ class CachedHubJwksProvider:
                 "hub jwks refresh failed; keeping cached keys",
                 extra={"extra_data": {"reason": type(exc).__name__, "detail": str(exc)}},
             )
-
-    def _judge_reply(self, jwks: dict[str, Any]) -> bool | None:
-        """how a fetched reply may be taken: every kid its thumbprint, and its statement checked.
-
-        A refused reply changes nothing: the cache keeps what it had, and one warning names why.
-
-        :param jwks: the decoded reply
-        :ptype jwks: dict[str, Any]
-        :return: ``True`` when its statement verified (merge add-only), ``False`` when it carried no
-            statement this pod can verify and the door's window still accepts it (replace the cache),
-            ``None`` when it is refused
-        :rtype: bool | None
-        """
-        keys = jwks_keys(jwks)
-        mismatches = thumbprint_mismatches(keys)
-        if mismatches:
-            log.warning(
-                "hub jwks reply refused: an entry's kid is not its key's thumbprint",
-                extra={"extra_data": {"door": "hub.jwks", "reason": "thumbprint_mismatch", "entries": mismatches}},
-            )
-            return None
-        statement = jwks.get(JWKS_STATEMENT_FIELD)
-        verifiable = isinstance(statement, str) and self._root_public_key is not None
-        if verifiable:
-            assert isinstance(statement, str) and self._root_public_key is not None  # narrows for mypy
-            try:
-                verify_jwks_statement(statement, keys, root_public_key=self._root_public_key, issuer=HUB_JWKS_ISSUER)
-            except JwksStatementError as exc:
-                log.warning(
-                    "hub jwks reply refused: its statement does not verify against the pinned root",
-                    extra={"extra_data": {"door": "hub.jwks", "reason": "bad_statement", "detail": str(exc)}},
-                )
-                return None
-            self._statement_seen = True
-        elif self._statement_seen:
-            log.warning(
-                "hub jwks reply refused: no statement, after the hub has signed one",
-                extra={"extra_data": {"door": "hub.jwks", "reason": "statement_downgrade"}},
-            )
-            return None
-        outcome = self._statement_switch.judge(presented=verifiable, claimed_sender="hub")
-        if outcome is ProofOutcome.REFUSED_WITHOUT_PROOF:
-            log.warning(
-                "hub jwks reply refused: no statement this pod can verify, and the door requires one",
-                extra={
-                    "extra_data": {
-                        "door": "hub.jwks",
-                        "reason": "statement_required",
-                        "root_configured": self._root_public_key is not None,
-                    }
-                },
-            )
-            return None
-        return verifiable
 
     async def refresh_now(self) -> bool:
         """trigger at most ONE immediate JWKS refresh, debounced + rate-limited; for reactive re-key.
@@ -351,20 +294,7 @@ class CachedHubJwksProvider:
             either way -- a concurrent/recent refresh may already have brought the key)
         :rtype: bool
         """
-        # fast-path rate-limit (no lock): a refresh ran very recently, so the cache is already as
-        # fresh as a reactive fetch would make it -- skip without contending for the lock.
-        last = self._last_reactive_refresh
-        if last is not None and (time.monotonic() - last) < self._reactive_min_interval:
-            return False
-        async with self._reactive_lock:
-            # re-check under the lock: a concurrent trigger may have refreshed while we waited for it.
-            # collapse onto that refresh's result rather than firing a second, redundant Hub request.
-            last = self._last_reactive_refresh
-            if last is not None and (time.monotonic() - last) < self._reactive_min_interval:
-                return False
-            await self.refresh()
-            self._last_reactive_refresh = time.monotonic()
-            return True
+        return await self._refresh_gate.run()
 
     def _next_delay(self) -> float:
         """the sleep before the next refresh: short until the first success, then the steady interval.

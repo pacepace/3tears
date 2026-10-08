@@ -29,6 +29,7 @@ message says it is, unverified by definition: a lead for the operator, not an id
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -36,10 +37,11 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Final
 
-from threetears.observe import get_logger
+from threetears.observe import BuildOnce, get_logger
 from threetears.observe.metrics import counter
 
 __all__ = [
+    "DOOR_PROOF_REQUIRED_EARLY_ENV",
     "MAX_COUNTED_SENDERS",
     "MAX_PROOF_WINDOW",
     "AbsentSender",
@@ -49,6 +51,7 @@ __all__ = [
     "ProofMode",
     "ProofOutcome",
     "expired_windows",
+    "process_door_proofs",
 ]
 
 log = get_logger(__name__)
@@ -68,6 +71,11 @@ _UNCLAIMED: Final[str] = "unclaimed"
 MAX_COUNTED_SENDERS: Final[int] = 1024
 
 _ABSENT_COUNTER: Final[str] = "door_proof_absent"
+
+#: the process environment entry listing doors to require before their window's date, read by
+#: :func:`process_door_proofs`. A host with its own config layer (the hub's ``DoorProofConfig``)
+#: builds its registry from that instead.
+DOOR_PROOF_REQUIRED_EARLY_ENV: Final[str] = "THREETEARS_DOOR_PROOF_REQUIRED_EARLY"
 
 
 class ProofMode(StrEnum):
@@ -342,3 +350,23 @@ class DoorProofModes:
         with self._lock:
             switches = sorted(self._switches.items())
         return tuple(sender for _, switch in switches for sender in switch.absent_senders())
+
+
+_PROCESS_DOOR_PROOFS: BuildOnce[str, DoorProofModes] = BuildOnce()
+
+
+def process_door_proofs() -> DoorProofModes:
+    """
+    answer this process's one door registry, built once from :data:`DOOR_PROOF_REQUIRED_EARLY_ENV`.
+
+    Every door in a pod that has no config layer of its own takes its switch here, so the absent
+    senders of every door are counted in one registry an operator can read.
+
+    :return: the process registry
+    :rtype: DoorProofModes
+    :raises ValueError: when the environment entry lists something that is not a door name
+    """
+    return _PROCESS_DOOR_PROOFS.get(
+        DOOR_PROOF_REQUIRED_EARLY_ENV,
+        lambda: DoorProofModes.parse(os.environ.get(DOOR_PROOF_REQUIRED_EARLY_ENV, "")),
+    )

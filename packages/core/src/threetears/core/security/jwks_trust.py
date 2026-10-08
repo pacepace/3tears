@@ -1,29 +1,40 @@
-"""a JWKS reply is never trusted blind: what a verifier checks before a fetched key set reaches it.
+"""a fetched JWKS is never trusted blind: what a verifier checks before a key set reaches it.
 
 A verifier fetches the key set it checks tokens against over NATS request/reply, and any client in
 the account can get bytes delivered onto a subject it can name. A forged reply that adds the
-forger's own key would let it mint any identity the verifier then accepts. Four rules close that:
+forger's own key would let it mint any identity the verifier then accepts.
 
-**Thumbprint = kid.** Every platform issuer names a key by its RFC 7638 thumbprint
-(:func:`~threetears.core.security.identity_token.jwk_thumbprint`). An entry whose key material does
-not hash to its ``kid`` is a forgery, and the whole reply is refused: :func:`thumbprint_mismatches`.
+:class:`JwksTrust` is the one place a verifier decides what to trust. Each reply is judged once,
+into a :class:`ReplyTrust`, and its keys are adopted with their provenance:
 
-**Add-only merge, for a reply the verifier could authenticate.** A reply whose signed statement
-verified may add keys and never replaces the cache: a key missing from it is retired only once it
-has been missing for :data:`ROTATION_OVERLAP`, so the publisher's own rotation cannot strand a
-token it signed a moment before (:meth:`JwksKeyring.merge`). A reply the verifier could NOT
-authenticate, accepted only while its door's window is open, replaces the cache exactly
-(:meth:`JwksKeyring.replace`): merging it add-only would let a forged key outlive the next genuine
-reply by the whole overlap.
+**A signed statement.** The publisher signs a statement over exactly its key set with a root key
+the verifier pins from deployment configuration, never from this channel (:func:`sign_jwks_statement`,
+:func:`verify_jwks_statement`). A verified reply is :attr:`ReplyTrust.VERIFIED`. A statement is
+refused when it is older than the newest one already verified, or claims a life longer than
+:data:`MAX_STATEMENT_LIFETIME`, so a stored genuine reply cannot be replayed to bring back a key the
+publisher has rotated out.
 
-**A signed statement.** The publisher signs a statement over the exact key set with a root key the
-verifier pins, delivered to it out of band (deployment configuration, never this channel):
-:func:`sign_jwks_statement` and :func:`verify_jwks_statement`. A verifier adopts the statement
-through the dated window :data:`HUB_JWKS_STATEMENT_WINDOW`; before its date an unsigned reply is
-accepted, counted and logged, and from its date it is refused.
+**The window, and no downgrade.** A reply without a statement the verifier can check is
+:attr:`ReplyTrust.UNVERIFIED`, taken only while the door's dated window is open. Once the
+publisher has signed one reply, an unsigned one is refused as a downgrade: the publisher signs from
+then on. This only tightens. Its cost, recorded: a publisher rolling out the signing release should
+finish the rollout promptly, because a verifier that has seen one signed reply refuses the replies
+of publisher replicas still on the old release; and rolling the publisher BACK to a release that
+does not sign needs every long-lived verifier restarted.
 
-**No attacker-timed refresh.** The reactive refresh a verifier makes on an unknown ``kid`` is single
-flight and runs at most once per :data:`REACTIVE_REFRESH_WINDOW_SECONDS`: :class:`RefreshGate`.
+**Provenance decides what a missing key costs.** :class:`JwksKeyring` holds a key missing from a
+reply for :data:`ROTATION_OVERLAP` only if a verified reply brought that key in, so the publisher's
+own rotation cannot strand a token it signed a moment before. A key only an unverified reply
+vouched for is dropped by the first reply that omits it, verified or not: a forged key never
+outlives the next genuine reply.
+
+**Thumbprint = kid, for an unverified reply.** Every key a platform JWKS serves is named by its
+RFC 7638 thumbprint (the hub identity issuer, the proxy assertion signer, identity-core's signer).
+An unverified reply whose entry is not is refused from :data:`THUMBPRINT_WINDOW`'s date, and
+before it accepted and counted. A verified reply needs no such check: its statement covers the keys.
+
+**No attacker-timed refresh.** A verifier's reactive refresh on an unknown ``kid`` goes through a
+:class:`RefreshGate`: single flight, at most once per :data:`REACTIVE_REFRESH_WINDOW_SECONDS`.
 """
 
 from __future__ import annotations
@@ -37,29 +48,36 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from enum import StrEnum
 from typing import Any, Final
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from threetears.observe import get_logger
 
-from threetears.core.security.door_proof import DoorWindow
+from threetears.core.security.door_proof import DoorProofSwitch, DoorWindow, ProofOutcome
 from threetears.core.security.identity_token import jwk_thumbprint
 
 __all__ = [
     "HUB_JWKS_ROOT_PUBLIC_KEY_ENV",
     "HUB_JWKS_STATEMENT_WINDOW",
     "JWKS_STATEMENT_FIELD",
+    "MAX_STATEMENT_LIFETIME",
     "REACTIVE_REFRESH_WINDOW_SECONDS",
     "ROTATION_OVERLAP",
+    "THUMBPRINT_WINDOW",
     "JwksKeyring",
     "JwksStatementError",
+    "JwksTrust",
     "KeyringMerge",
     "RefreshGate",
+    "ReplyJudgement",
+    "ReplyTrust",
+    "StatementClaims",
     "hub_jwks_root_public_key_from_env",
     "jwks_keys",
-    "root_public_key_from_text",
     "keys_digest",
+    "root_public_key_from_text",
     "sign_jwks_statement",
     "thumbprint_mismatches",
     "verify_jwks_statement",
@@ -67,9 +85,10 @@ __all__ = [
 
 log = get_logger(__name__)
 
-#: how long a key missing from the publisher's set is still trusted. At least the longest lifetime
-#: of anything signed under a platform key (the hub's user assertion, an hour), so a key the
-#: publisher has just rotated out still verifies the tokens it signed before the rotation.
+#: how long a key missing from the publisher's set is still trusted, when a verified reply brought
+#: it in. At least the longest lifetime of anything signed under a platform key (the hub's user
+#: assertion, an hour), so a key the publisher has just rotated out still verifies the tokens it
+#: signed before the rotation.
 ROTATION_OVERLAP: Final[timedelta] = timedelta(hours=1)
 
 #: the shortest gap between two reactive refreshes. A genuine re-key heals on the first token
@@ -77,8 +96,13 @@ ROTATION_OVERLAP: Final[timedelta] = timedelta(hours=1)
 #: per window, never one per token.
 REACTIVE_REFRESH_WINDOW_SECONDS: Final[float] = 5.0
 
+#: the longest life a verifier accepts a statement claiming. A publisher signs a fresh statement
+#: per reply, so this needs to outlive only a round trip and clock skew; a longer claimed life
+#: would let a stored reply stand for the key set long after it changed.
+MAX_STATEMENT_LIFETIME: Final[timedelta] = timedelta(minutes=15)
+
 #: the pod environment entry carrying the hub's pinned JWKS root public key: the 32 raw Ed25519
-#: bytes, base64url. It reaches a pod through deployment configuration, never over NATS.
+#: bytes, base64 or base64url. It reaches a pod through deployment configuration, never over NATS.
 HUB_JWKS_ROOT_PUBLIC_KEY_ENV: Final[str] = "THREETEARS_HUB_JWKS_ROOT_PUBLIC_KEY"
 
 #: the field of a JWKS reply that carries the publisher's signed statement over its ``keys``.
@@ -86,9 +110,19 @@ HUB_JWKS_ROOT_PUBLIC_KEY_ENV: Final[str] = "THREETEARS_HUB_JWKS_ROOT_PUBLIC_KEY"
 JWKS_STATEMENT_FIELD: Final[str] = "statement"
 
 #: the hub JWKS door's window for adopting the signed statement. Until ``required_from`` a reply
-#: without a statement is accepted (counted, logged); from it, refused.
+#: without one is accepted (counted, logged); from it, refused. Every verifier -- the registry,
+#: every tool pod, the gateway -- must carry :data:`HUB_JWKS_ROOT_PUBLIC_KEY_ENV` before that date,
+#: or it refuses every reply from it.
 HUB_JWKS_STATEMENT_WINDOW: Final[DoorWindow] = DoorWindow(
     door="hub.jwks.statement",
+    opened=date(2026, 10, 7),
+    required_from=date(2027, 1, 5),
+)
+
+#: the window for refusing an unverified reply whose key is not named by its thumbprint. Until
+#: ``required_from`` such a reply is accepted (counted, logged); from it, refused.
+THUMBPRINT_WINDOW: Final[DoorWindow] = DoorWindow(
+    door="hub.jwks.thumbprint",
     opened=date(2026, 10, 7),
     required_from=date(2027, 1, 5),
 )
@@ -101,6 +135,18 @@ _STATEMENT_REQUIRED: Final[tuple[str, ...]] = ("iss", "iat", "exp", "keys_sha256
 class JwksStatementError(Exception):
     """a JWKS statement is malformed, signed by a key other than the pinned root, expired, or
     signed over a different key set. Carries the reason only, never key material."""
+
+
+@dataclass(frozen=True)
+class StatementClaims:
+    """what a verified statement says about itself.
+
+    :ivar iat: when it was signed, unix seconds
+    :ivar exp: when it stops standing, unix seconds
+    """
+
+    iat: int
+    exp: int
 
 
 def keys_digest(keys: list[dict[str, Any]]) -> str:
@@ -122,7 +168,7 @@ def keys_digest(keys: list[dict[str, Any]]) -> str:
 def thumbprint_mismatches(keys: list[Any]) -> list[str]:
     """every entry whose key material does not hash to its ``kid``, as a reason per entry.
 
-    An entry that is not an Ed25519 or EC public JWK, or carries no ``kid``, is a mismatch too.
+    An entry that is not an Ed25519 public JWK, or carries no ``kid``, is a mismatch too.
 
     :param keys: the JWKS ``keys`` entries
     :ptype keys: list[Any]
@@ -165,7 +211,7 @@ def sign_jwks_statement(
     :ptype issuer: str
     :param now: unix seconds
     :ptype now: int
-    :param ttl: how long the statement stands
+    :param ttl: how long the statement stands; at most :data:`MAX_STATEMENT_LIFETIME`
     :ptype ttl: timedelta
     :return: a compact EdDSA JWS
     :rtype: str
@@ -187,8 +233,8 @@ def verify_jwks_statement(
     root_public_key: Ed25519PublicKey,
     issuer: str,
     leeway_seconds: int = 30,
-) -> None:
-    """check ``statement`` is the pinned root's signature over exactly ``keys``.
+) -> StatementClaims:
+    """check ``statement`` is the pinned root's signature over exactly ``keys``, and say when it was made.
 
     :param statement: the compact JWS from the reply
     :ptype statement: str
@@ -200,9 +246,10 @@ def verify_jwks_statement(
     :ptype issuer: str
     :param leeway_seconds: clock-skew tolerance on ``exp`` and ``iat``
     :ptype leeway_seconds: int
-    :return: nothing
-    :rtype: None
-    :raises JwksStatementError: when any check fails
+    :return: the statement's issue and expiry times
+    :rtype: StatementClaims
+    :raises JwksStatementError: when any check fails, including a claimed life longer than
+        :data:`MAX_STATEMENT_LIFETIME`
     """
     try:
         header = jwt.get_unverified_header(statement)
@@ -227,15 +274,19 @@ def verify_jwks_statement(
         raise JwksStatementError(f"statement verification failed ({type(exc).__name__})") from None
     if payload.get("keys_sha256") != keys_digest(keys):
         raise JwksStatementError("statement is signed over a different key set")
+    iat, exp = int(payload["iat"]), int(payload["exp"])
+    if exp - iat > MAX_STATEMENT_LIFETIME.total_seconds():
+        raise JwksStatementError("statement claims a longer life than a verifier accepts")
+    return StatementClaims(iat=iat, exp=exp)
 
 
 @dataclass(frozen=True)
 class KeyringMerge:
-    """what one refresh changed in a :class:`JwksKeyring`.
+    """what one adoption changed in a :class:`JwksKeyring`.
 
-    :ivar added: kids this refresh brought in
-    :ivar retired: kids this refresh retired, missing for at least the rotation overlap
-    :ivar held: kids missing from this refresh that are still trusted
+    :ivar added: kids this reply brought in
+    :ivar retired: kids this reply retired
+    :ivar held: kids missing from this reply that are still trusted
     """
 
     added: tuple[str, ...]
@@ -245,60 +296,52 @@ class KeyringMerge:
 
 @dataclass
 class JwksKeyring:
-    """the key set a verifier trusts, merged add-only from successive refreshes.
+    """the key set a verifier trusts, each key with where it came from.
 
-    :ivar overlap: how long a key missing from the publisher's set stays trusted
+    :ivar overlap: how long a key a verified reply brought in stays trusted once missing
     :ivar clock: monotonic seconds
     """
 
     overlap: timedelta = ROTATION_OVERLAP
     clock: Callable[[], float] = time.monotonic
     _keys: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
+    _verified: set[str] = field(default_factory=set, init=False)
     _missing_since: dict[str, float] = field(default_factory=dict, init=False)
 
-    def merge(self, keys: list[dict[str, Any]]) -> KeyringMerge:
-        """fold one refresh's keys in: add new ones, hold missing ones, retire long-missing ones.
+    def adopt(self, keys: list[dict[str, Any]], *, verified: bool) -> KeyringMerge:
+        """fold one taken reply's keys in.
 
-        The caller has already refused a reply whose kids are not their thumbprints, so a kid
-        names one key: a known kid's material cannot change.
+        A verified reply's keys are marked verified. A key missing from a reply is held until it has
+        been missing for the overlap only if a verified reply brought it in; any other missing key
+        -- one only an unverified reply vouched for -- is dropped at once.
 
-        :param keys: the refresh's ``keys`` entries, every one named by its thumbprint
+        :param keys: the reply's ``keys`` entries
         :ptype keys: list[dict[str, Any]]
+        :param verified: whether the reply's statement verified
+        :ptype verified: bool
         :return: what changed
         :rtype: KeyringMerge
         """
         now = self.clock()
-        seen = {entry["kid"]: entry for entry in keys}
+        seen = {entry["kid"]: entry for entry in keys if isinstance(entry, dict) and isinstance(entry.get("kid"), str)}
         added = tuple(sorted(kid for kid in seen if kid not in self._keys))
         for kid, entry in seen.items():
             self._keys.setdefault(kid, dict(entry))
             self._missing_since.pop(kid, None)
+            if verified:
+                self._verified.add(kid)
         retired: list[str] = []
         held: list[str] = []
         for kid in sorted(set(self._keys) - set(seen)):
             first_missed = self._missing_since.setdefault(kid, now)
-            if now - first_missed >= self.overlap.total_seconds():
+            if kid not in self._verified or now - first_missed >= self.overlap.total_seconds():
                 del self._keys[kid]
                 del self._missing_since[kid]
+                self._verified.discard(kid)
                 retired.append(kid)
             else:
                 held.append(kid)
         return KeyringMerge(added=added, retired=tuple(retired), held=tuple(held))
-
-    def replace(self, keys: list[dict[str, Any]]) -> KeyringMerge:
-        """trust exactly ``keys``, for a reply nothing authenticated: nothing it omits is held.
-
-        :param keys: the refresh's ``keys`` entries, every one named by its thumbprint
-        :ptype keys: list[dict[str, Any]]
-        :return: what changed; ``held`` is always empty
-        :rtype: KeyringMerge
-        """
-        seen = {entry["kid"]: dict(entry) for entry in keys}
-        added = tuple(sorted(kid for kid in seen if kid not in self._keys))
-        retired = tuple(sorted(kid for kid in self._keys if kid not in seen))
-        self._keys = seen
-        self._missing_since = {}
-        return KeyringMerge(added=added, retired=retired, held=())
 
     def document(self) -> dict[str, Any]:
         """the trusted keys as a JWKS document, a fresh copy each call.
@@ -317,6 +360,192 @@ class JwksKeyring:
         :rtype: bool
         """
         return kid in self._keys
+
+
+class ReplyTrust(StrEnum):
+    """what one reply is worth."""
+
+    #: refused: nothing in it is adopted
+    REFUSED = "refused"
+    #: its statement verified under the pinned root
+    VERIFIED = "verified"
+    #: no statement the verifier could check, taken because the door's window is still open
+    UNVERIFIED = "unverified"
+
+
+@dataclass(frozen=True)
+class ReplyJudgement:
+    """the verdict on one reply.
+
+    :ivar trust: what it is worth
+    :ivar reason: why it was refused, empty otherwise
+    """
+
+    trust: ReplyTrust
+    reason: str = ""
+
+
+class JwksTrust:
+    """everything a verifier trusts about one publisher's key set, decided in one place.
+
+    :param door: the publisher's door name, for logs
+    :ptype door: str
+    :param issuer: the ``iss`` the publisher's statement names
+    :ptype issuer: str
+    :param root_public_key: the publisher's pinned root key, or ``None`` when this verifier has none
+    :ptype root_public_key: Ed25519PublicKey | None
+    :param statement_switch: the switch of the door's statement window
+    :ptype statement_switch: DoorProofSwitch
+    :param thumbprint_switch: the switch of the thumbprint window
+    :ptype thumbprint_switch: DoorProofSwitch
+    :param keyring: the key set; a fresh one when not given
+    :ptype keyring: JwksKeyring | None
+    """
+
+    def __init__(
+        self,
+        *,
+        door: str,
+        issuer: str,
+        root_public_key: Ed25519PublicKey | None,
+        statement_switch: DoorProofSwitch,
+        thumbprint_switch: DoorProofSwitch,
+        keyring: JwksKeyring | None = None,
+    ) -> None:
+        self._door = door
+        self._issuer = issuer
+        self._root = root_public_key
+        self._statement_switch = statement_switch
+        self._thumbprint_switch = thumbprint_switch
+        self._keyring = keyring if keyring is not None else JwksKeyring()
+        #: the newest verified statement's issue time; set once the publisher has signed a reply,
+        #: after which an unsigned one is a downgrade
+        self._newest_statement_iat: int | None = None
+        if root_public_key is None:
+            required_from = statement_switch.window.required_from.isoformat()
+            log.warning(
+                "%s verifier has no pinned root key: it cannot check the publisher's statement, and refuses "
+                "every reply from %s",
+                door,
+                required_from,
+                extra={"extra_data": {"door": door, "required_from": required_from}},
+            )
+
+    @property
+    def keyring(self) -> JwksKeyring:
+        """the trusted key set.
+
+        :return: the keyring
+        :rtype: JwksKeyring
+        """
+        return self._keyring
+
+    def take(self, document: Mapping[str, Any]) -> tuple[ReplyJudgement, KeyringMerge | None]:
+        """judge one reply and adopt its keys when it is taken.
+
+        :param document: the decoded reply
+        :ptype document: Mapping[str, Any]
+        :return: the verdict, and what adopting the reply changed (``None`` when refused)
+        :rtype: tuple[ReplyJudgement, KeyringMerge | None]
+        """
+        judgement = self._judge(document)
+        merge: KeyringMerge | None = None
+        if judgement.trust is ReplyTrust.REFUSED:
+            log.warning(
+                "%s reply refused: %s",
+                self._door,
+                judgement.reason,
+                extra={
+                    "extra_data": {
+                        "door": self._door,
+                        "reason": judgement.reason,
+                        "root_configured": self._root is not None,
+                    }
+                },
+            )
+        else:
+            merge = self._keyring.adopt(jwks_keys(document), verified=judgement.trust is ReplyTrust.VERIFIED)
+        return judgement, merge
+
+    def _judge(self, document: Mapping[str, Any]) -> ReplyJudgement:
+        """what one reply is worth; adopts nothing.
+
+        :param document: the decoded reply
+        :ptype document: Mapping[str, Any]
+        :return: the verdict
+        :rtype: ReplyJudgement
+        """
+        keys = document.get("keys")
+        statement = document.get(JWKS_STATEMENT_FIELD)
+        judgement: ReplyJudgement
+        if not isinstance(keys, list):
+            judgement = ReplyJudgement(ReplyTrust.REFUSED, "keys is not a list")
+        elif isinstance(statement, str) and self._root is not None:
+            judgement = self._judge_statement(statement, keys)
+        elif self._newest_statement_iat is not None:
+            judgement = ReplyJudgement(ReplyTrust.REFUSED, "no statement, after the publisher has signed one")
+        else:
+            if isinstance(statement, str):
+                log.warning(
+                    "%s reply carries a statement this verifier cannot check: it has no pinned root key",
+                    self._door,
+                    extra={"extra_data": {"door": self._door}},
+                )
+            judgement = self._judge_unverified(keys)
+        return judgement
+
+    def _judge_statement(self, statement: str, keys: list[Any]) -> ReplyJudgement:
+        """the verdict on a reply carrying a statement this verifier can check.
+
+        :param statement: the statement
+        :ptype statement: str
+        :param keys: the reply's keys
+        :ptype keys: list[Any]
+        :return: the verdict
+        :rtype: ReplyJudgement
+        """
+        assert self._root is not None  # the caller checked
+        judgement = ReplyJudgement(ReplyTrust.VERIFIED)
+        try:
+            claims = verify_jwks_statement(statement, keys, root_public_key=self._root, issuer=self._issuer)
+        except JwksStatementError as exc:
+            judgement = ReplyJudgement(ReplyTrust.REFUSED, f"statement does not verify: {exc}")
+        else:
+            if self._newest_statement_iat is not None and claims.iat < self._newest_statement_iat:
+                judgement = ReplyJudgement(ReplyTrust.REFUSED, "statement is older than one already verified")
+            else:
+                self._newest_statement_iat = claims.iat
+                self._statement_switch.judge(presented=True, claimed_sender=self._issuer)
+        return judgement
+
+    def _judge_unverified(self, keys: list[Any]) -> ReplyJudgement:
+        """the verdict on a reply this verifier cannot authenticate, through both windows.
+
+        :param keys: the reply's keys
+        :ptype keys: list[Any]
+        :return: the verdict
+        :rtype: ReplyJudgement
+        """
+        judgement = ReplyJudgement(ReplyTrust.UNVERIFIED)
+        statement_outcome = self._statement_switch.judge(presented=False, claimed_sender=self._issuer)
+        mismatches = thumbprint_mismatches(keys)
+        if statement_outcome is ProofOutcome.REFUSED_WITHOUT_PROOF:
+            judgement = ReplyJudgement(
+                ReplyTrust.REFUSED, "no statement this verifier can check, and the door requires one"
+            )
+        elif mismatches:
+            outcome = self._thumbprint_switch.judge(presented=False, claimed_sender=self._issuer)
+            if outcome is ProofOutcome.REFUSED_WITHOUT_PROOF:
+                judgement = ReplyJudgement(
+                    ReplyTrust.REFUSED, "an entry's kid is not its key's thumbprint: " + "; ".join(mismatches)
+                )
+            else:
+                log.warning(
+                    "%s reply has entries not named by their thumbprint; taken while the window is open",
+                    self._door,
+                    extra={"extra_data": {"door": self._door, "entries": mismatches}},
+                )
+        return judgement
 
 
 class RefreshGate:
@@ -388,7 +617,7 @@ def hub_jwks_root_public_key_from_env(environ: Mapping[str, str] | None = None) 
     :ptype environ: Mapping[str, str] | None
     :return: the public key, or ``None`` when this pod was given none
     :rtype: Ed25519PublicKey | None
-    :raises ValueError: when the entry is set but is not a base64url 32-byte Ed25519 public key
+    :raises ValueError: when the entry is set but is not a base64 32-byte Ed25519 public key
     """
     raw = (os.environ if environ is None else environ).get(HUB_JWKS_ROOT_PUBLIC_KEY_ENV, "").strip()
     return root_public_key_from_text(raw, what=HUB_JWKS_ROOT_PUBLIC_KEY_ENV) if raw else None

@@ -12,19 +12,30 @@ Any client in the account can get bytes delivered onto a verifier's JWKS reply i
 forged reply that adds the forger's key would let it mint any identity the registry or a tool pod
 then accepts.
 
-- **Added, `threetears.core.security.jwks_trust`**: `thumbprint_mismatches` (an entry whose key
-  does not hash to its `kid` refuses the whole reply), `sign_jwks_statement` /
-  `verify_jwks_statement` (a publisher's EdDSA statement over exactly its key set, under a root
-  key verifiers pin), `JwksKeyring` (add-only `merge` for a verified reply, a key retired only
-  after `ROTATION_OVERLAP`; exact `replace` for an unsigned one), `RefreshGate` (single-flight,
-  one refresh per `REACTIVE_REFRESH_WINDOW_SECONDS`), `HUB_JWKS_STATEMENT_WINDOW` (the hub JWKS
-  door's dated window, required from 2027-01-05) and `root_public_key_from_text`.
-- **Changed, `CachedHubJwksProvider`**: it refuses a reply with a misnamed key, checks the hub's
-  statement against the root pinned in `THREETEARS_HUB_JWKS_ROOT_PUBLIC_KEY`, refuses an
-  unsigned reply from the window's date or once the hub has signed one (no downgrade), merges a
-  verified reply add-only and replaces the cache on an unsigned one, so a key an unsigned reply
-  forged is gone at the next genuine reply. Pods require the door early through
-  `THREETEARS_DOOR_PROOF_REQUIRED_EARLY`.
+- **Added, `threetears.core.security.jwks_trust`**, with `JwksTrust`, the one place a verifier
+  decides what a reply is worth (`ReplyTrust`: refused, verified, unverified):
+  - the publisher signs a statement over exactly its key set under a root key the verifier pins
+    (`sign_jwks_statement` / `verify_jwks_statement`). A statement older than one already verified,
+    or claiming a life longer than `MAX_STATEMENT_LIFETIME`, is refused, so a stored reply cannot
+    bring back a rotated-out key;
+  - an unsigned reply is taken only while `HUB_JWKS_STATEMENT_WINDOW` is open (required from
+    2027-01-05) and the publisher has not yet signed one. This ratchet only tightens: a publisher
+    rolling out the signing release should finish promptly, and rolling the publisher back to a
+    release that does not sign needs every long-lived verifier restarted;
+  - `JwksKeyring` records where each key came from: a key a verified reply brought in is held
+    through `ROTATION_OVERLAP` once missing; a key only an unsigned reply vouched for is dropped by
+    the next reply that omits it, signed or not;
+  - an unsigned reply with an entry not named by its RFC 7638 thumbprint is refused from
+    `THUMBPRINT_WINDOW`'s date (2027-01-05), accepted and counted before it;
+  - `RefreshGate`, the single-flight reactive refresh, one per `REACTIVE_REFRESH_WINDOW_SECONDS`.
+- **Changed, `CachedHubJwksProvider`**: every reply goes through `JwksTrust`; a reply whose `keys`
+  is not a list is refused; `refresh_now` runs through the `RefreshGate`. **Every verifier (the
+  registry, every tool pod, the gateway) must set `THREETEARS_HUB_JWKS_ROOT_PUBLIC_KEY` before
+  2027-01-05**, or it refuses every hub JWKS reply from that date; a provider built without one,
+  and a reply carrying a statement it cannot check, each log a warning saying so.
+- **Added, `door_proof.process_door_proofs`** and `DOOR_PROOF_REQUIRED_EARLY_ENV`: one door registry
+  per process, from `THREETEARS_DOOR_PROOF_REQUIRED_EARLY`, so every door's absent senders are read
+  in one place.
 - **Added**: a gate (`tests/enforcement/test_door_windows_are_open.py`) that fails once any
   `DoorWindow` declared in source is past its date.
 
