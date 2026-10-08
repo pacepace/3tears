@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid7
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_serializer, field_validator, model_validator
+from threetears.core.sql_fragments import as_written, equality_conditions
 from threetears.nats.errors import RequestError
 from threetears.nats.subjects import Subject, Subjects
 from threetears.observe import get_logger, traced
@@ -1100,11 +1101,12 @@ def _filtered(where: Mapping[str, str], predicate: str, params: list[Any]) -> tu
     """
     if not where:
         return predicate, params
-    filters = " AND ".join(f"{column} = ${index + 1}" for index, column in enumerate(where))
-    shift = len(where)
+    # unquoted, as the relation and key columns in the same statement are (sql_fragments.as_written)
+    filters, values = equality_conditions(where, quote=as_written)
+    shift = len(values)
     keyset = re.sub(r"\$(\d+)", lambda m: f"${int(m.group(1)) + shift}", predicate.removeprefix(" WHERE "))
     combined = f" WHERE ({filters}) AND ({keyset})" if keyset else f" WHERE {filters}"
-    return combined, [*where.values(), *params]
+    return combined, [*values, *params]
 
 
 def _keyset_predicate(key: Sequence[str], cursor: tuple[Any, ...] | None) -> tuple[str, list[Any]]:

@@ -34,9 +34,27 @@ __all__ = [
     "DurableStore",
     "KeyLedReadingStore",
     "L3Backend",
+    "L3Reader",
     "OrderedDurableStore",
     "parse_rowcount",
 ]
+
+
+class L3Reader(Protocol):
+    """the read half of :class:`L3Backend` a whole-table copy needs: parameterized SELECTs.
+
+    Every :class:`L3Backend` is one. The copies (:mod:`threetears.core.collections.complete_copy`,
+    the scoped snapshot) take this narrower seam so a test double need answer only the reads they
+    make, while mypy still refuses an object that cannot run SQL at all (a :class:`DurableStore`).
+    """
+
+    async def fetch(self, query: str, /, *params: Any) -> list[dict[str, Any]]:
+        """Run a SELECT and return all rows as dicts (empty list on no rows)."""
+        ...
+
+    async def fetchrow(self, query: str, /, *params: Any) -> Any:
+        """Run a SELECT and return the first row dict, or ``None``."""
+        ...
 
 
 @runtime_checkable

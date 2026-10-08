@@ -387,16 +387,6 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
         class_name="ScopedSnapshot",
-        attr_name="_applied",
-        rationale=(
-            "which pointer each scope's rows in THIS process's DuckDB L1 came from, scope -> "
-            "pointer; it describes the L1 beside it and dies with it (both are rebuilt at start), "
-            "so moving it to another backend would let it outlive or diverge from what it describes"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
-        class_name="ScopedSnapshot",
         attr_name="_waiting",
         rationale=(
             "the waits this process's own control flows (its worker pass, a catch-up) have outstanding, "
@@ -411,15 +401,6 @@ _ALLOWLIST = (
         rationale=(
             "whether the run of each of this process's control flows now in progress has waited, "
             "flow -> bool; it lives for one run and is meaningless outside the process running it"
-        ),
-    ),
-    DictStateAllowlistEntry(
-        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
-        class_name="ScopedSnapshot",
-        attr_name="_behind",
-        rationale=(
-            "scopes whose chunks THIS process's DuckDB L1 failed to apply, scope -> failures in a row; "
-            "it describes the L1 beside it, as _applied does, and a restart reloads the L1 and starts afresh"
         ),
     ),
     DictStateAllowlistEntry(

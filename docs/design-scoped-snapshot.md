@@ -66,7 +66,7 @@ publishing after the commit with the rows in hand would hold them all in memory.
 
 ## Chunk lifecycle
 
-One rule (`_deletable`) decides whether a chunk may be deleted. It is judged against the scope's
+One rule (`_Sweeper.deletable`, beside the snapshot in its module) decides whether a chunk may be deleted. It is judged against the scope's
 pointer as KV holds it, never a replica's view of the pointers, which lags another replica's publish:
 
 | The chunk | Kept or deleted |
@@ -79,6 +79,21 @@ pointer as KV holds it, never a replica's view of the pointers, which lags anoth
 A stage whose write never commits is below the scope's pointer after its next publish, which
 retires it. The hub's own sweep of chunk subjects no object names takes only those older than
 `ORPHAN_CHUNK_MIN_AGE`, since an object's chunks land before its metadata.
+
+## Two code versions at once
+
+A rolling deploy of a column change runs replicas with different column sets over the same
+pointers. Each pointer names the columns its chunks hold (`schema`, per-table digests).
+
+- **A replica loads only chunks of its own columns.** One check (`_loadable`) sits in the fetch
+  every load passes through, so no path can put another version's chunks in its L1.
+- **It does not repoint the other version's scopes.** A rebuild moves a scope's pointer only
+  forward: a same-epoch pointer of other columns stays until it is older than `stray_age` (the
+  other version is gone by then). Meanwhile the replica serves the scope from its own L1, rebuilt
+  from L3, and its status says how many scopes that is. Without this rule each version would
+  repoint the other's scopes on every rebuild, each round the slow path.
+- **A write moves the pointer to the writer's columns.** A later epoch always moves it. A replica
+  of the other columns cannot load it, so it rebuilds that scope from L3 and serves it.
 
 ## The pod's own buckets
 
