@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Workspace: a workspace-create event carries the creating agent's token
+
+- `WorkspaceCreateEvent` gains an optional `identity_token`, and `workspace_create` attaches the
+  call scope's identity token. The hub takes the workspace's owner and customer from it, never
+  the event's fields, and refuses an event without one from 2027-01-05. A hub that predates the
+  field ignores it.
+
 ### Registry: the usage emitter factory receives the registry's own identity
 
 - `THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY`'s factory is called with the connected client and
