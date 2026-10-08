@@ -35,6 +35,9 @@ public surface:
   :class:`ServiceEnvelopeError` / :class:`ServiceEnvelopeDoor` (one door's acceptance inside its dated
   window) -- a service with no caller token to forward signs "from me, for
   this door and operation, over this body, now, once" with its own JWKS key.
+- delegated tokens (``delegated_token``): :func:`mint_delegated_token` / :func:`verify_delegated_token`
+  / :func:`verify_door_caller` -- a tool call's own token for its pod, proven with the pod's key, and
+  the door check on whoever presents a token.
 - turn assertions (``turn_assertion``): :func:`mint_turn_assertion` / :func:`verify_turn_assertion` /
   :func:`new_turn_id` -- the hub's signed statement of whose turn an agent runs, kept out of
   ``CallContext``.
@@ -105,6 +108,19 @@ from threetears.core.security.service_envelope import (
     verify_and_record,
     verify_service_envelope,
 )
+from threetears.core.security.delegated_token import (
+    DELEGATED_TOKEN_ISSUER,
+    DELEGATED_TOKEN_MAX_LIFETIME,
+    DELEGATED_TOKEN_TYPE,
+    DelegatedClaims,
+    DelegatedTokenError,
+    DoorCaller,
+    ProofAbsentError,
+    is_delegated_token,
+    mint_delegated_token,
+    verify_delegated_token,
+    verify_door_caller,
+)
 from threetears.core.security.turn_assertion import (
     TURN_ASSERTION_AUDIENCE,
     TURN_ASSERTION_LIFETIME,
@@ -145,6 +161,18 @@ __all__ = [
     "DEFAULT_PROOF_MAX_AGE",
     "ISSUE_TIME_FUTURE_TOLERANCE",
     "issue_time_is_fresh",
+    # delegated tokens
+    "DELEGATED_TOKEN_ISSUER",
+    "DELEGATED_TOKEN_MAX_LIFETIME",
+    "DELEGATED_TOKEN_TYPE",
+    "DelegatedClaims",
+    "DelegatedTokenError",
+    "DoorCaller",
+    "ProofAbsentError",
+    "is_delegated_token",
+    "mint_delegated_token",
+    "verify_delegated_token",
+    "verify_door_caller",
     # turn assertions
     "TURN_ASSERTION_AUDIENCE",
     "TURN_ASSERTION_LIFETIME",

@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: a call-scoped delegated token, and the door check on whoever presents a token
+
+- `threetears.core.security.delegated_token`: `mint_delegated_token` (the registry, per forwarded
+  call: `sub` the agent, `act` the tool pod, `user_id`, `customer_id`, `aud` the doors the call may
+  reach, `cnf` the pod's own key, `exp` the call's deadline, `corr` the call; `typ`
+  `delegated+jwt`; at most an hour) / `verify_delegated_token` / `verify_door_caller` (a delegated
+  token proven with the pod's key, or an agent's identity token proven with its own `cnf` key; the
+  proof binds the token and the request body; `ProofAbsentError` leaves a bearer request to the
+  door's dated window). Additive: nothing mints or verifies them yet.
+
 ### Channels: a channel answer carries its turn's id and the hub's turn assertion
 
 - `ChannelDeliveryMessage` gains optional `turn_id` (32 hex characters) and `turn_assertion`. The
