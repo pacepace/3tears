@@ -792,6 +792,15 @@ class ScopedSnapshot:
         applied = self._applied.get(scope)
         return None if applied is None else applied.epoch
 
+    def applied_epochs(self) -> dict[str, int]:
+        """every scope this replica's L1 holds, and its epoch. A scope is listed only once its
+        replacement has committed, so a read opened after this call sees at least these epochs.
+
+        :return: scope -> epoch
+        :rtype: dict[str, int]
+        """
+        return {scope: pointer.epoch for scope, pointer in self._applied.items()}
+
     @contextmanager
     def read(self) -> Iterator[Any]:
         """a cursor reading one state of every table for the whole block; hold it for one request.

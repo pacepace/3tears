@@ -531,6 +531,7 @@ async def test_a_read_carries_the_behind_set_of_the_data_it_reads() -> None:
             pa.table({"county": ["c1"], "state": ["TX"], "votes": pa.array([5], pa.int64())})
         )
         await _until(lambda: snapshot.applied_epoch("TX") == 2, what="TX applied at epoch 2")
+        assert snapshot.applied_epochs()["TX"] == 2
         assert "TX" in behind, "the read's behind set changed under it"
         assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(1,)]
     with snapshot.read_with_behind() as (cursor, behind):
