@@ -66,7 +66,7 @@ publishing after the commit with the rows in hand would hold them all in memory.
 
 ## Chunk lifecycle
 
-One rule (`_deletable`) decides whether a chunk may be deleted. It is judged against the scope's
+One rule (`_Sweeper.deletable`, beside the snapshot in its module) decides whether a chunk may be deleted. It is judged against the scope's
 pointer as KV holds it, never a replica's view of the pointers, which lags another replica's publish:
 
 | The chunk | Kept or deleted |

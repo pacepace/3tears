@@ -47,7 +47,7 @@ drops scopes L3 no longer holds. A rebuild reads L3 only while no write is in pr
 it read only when no write committed meanwhile (``settled``, the writer's seqlock).
 
 **Retirement.** Chunks are deleted by the bucket's declarer, since a delete is a purge no pod holds
-(``retire``), in batches the declarer accepts, and only as one rule allows (``_deletable``), judged
+(``retire``), in batches the declarer accepts, and only as one rule allows (``_Sweeper.deletable``), judged
 against the scope's pointer as KV holds it: never a chunk the pointer names or one above its epoch
 (a writer's stage), always a superseded one below it, and an unnamed one at its epoch or of a scope
 with no pointer only once it is older than ``stray_age``. A reader that lost the race to a retired
@@ -466,6 +466,248 @@ class _Claim:
                     log.warning("releasing snapshot rebuild claim %s failed; it expires on its own: %s", self._key, exc)
 
 
+@dataclass(frozen=True)
+class _Layout:
+    """every key and object name of one snapshot, and how each is read back: the one place each
+    grammar lives, so a writer and the sweep that judges what it wrote can never disagree.
+
+    Keys: ``{name}.index``, ``{name}.rebuild`` (the claim) and ``{name}.s.{token}`` (a scope's
+    pointer). Objects: ``{name}/{token}/{epoch}/{table}.{column digest}``. ``token`` is
+    :func:`scope_token` of the scope.
+    """
+
+    name: str
+    schema: Mapping[str, str]
+
+    @property
+    def watch_prefix(self) -> str:
+        """the prefix of every key the snapshot keeps."""
+        return f"{self.name}."
+
+    @property
+    def index_key(self) -> str:
+        """the index's key."""
+        return f"{self.name}.index"
+
+    @property
+    def claim_key(self) -> str:
+        """the rebuild claim's key."""
+        return f"{self.name}.rebuild"
+
+    def pointer_key(self, scope: str) -> str:
+        """a scope's pointer key."""
+        return self.pointer_key_of_token(scope_token(scope))
+
+    def pointer_key_of_token(self, token: str) -> str:
+        """the pointer key of a scope by its token."""
+        return f"{self.name}.s.{token}"
+
+    def is_pointer_key(self, key: str) -> bool:
+        """whether a key is a scope's pointer."""
+        return key.startswith(f"{self.name}.s.")
+
+    @property
+    def objects_prefix(self) -> str:
+        """the prefix of every object the snapshot writes."""
+        return f"{self.name}/"
+
+    def object_prefix(self, scope: str) -> str:
+        """the prefix of a scope's objects."""
+        return self.object_prefix_of_token(scope_token(scope))
+
+    def object_prefix_of_token(self, token: str) -> str:
+        """the prefix of a scope's objects, by its token."""
+        return f"{self.name}/{token}/"
+
+    def object_name(self, scope: str, epoch: int, table: str) -> str:
+        """a chunk's name: it names the scope, the epoch, the table and the columns it holds."""
+        return f"{self.object_prefix(scope)}{epoch}/{table}.{self.schema[table]}"
+
+    def token_of(self, object_name: str) -> str | None:
+        """the scope token an object of this snapshot is under; ``None`` for any other name."""
+        rest = object_name[len(self.objects_prefix) :] if object_name.startswith(self.objects_prefix) else ""
+        token = rest.split("/", 1)[0] if "/" in rest else ""
+        return token or None
+
+    def epoch_in_token(self, token: str, object_name: str) -> int | None:
+        """the epoch an object under ``token`` was written at; ``None`` when it is not a chunk of it."""
+        prefix = self.object_prefix_of_token(token)
+        head = object_name[len(prefix) :].split("/", 1)[0] if object_name.startswith(prefix) else ""
+        return int(head) if head.isdigit() else None
+
+    def epoch_of(self, scope: str, object_name: str) -> int | None:
+        """the epoch an object of ``scope`` was written at; ``None`` when it is not one of the scope's."""
+        return self.epoch_in_token(scope_token(scope), object_name)
+
+
+class _Sweeper:
+    """retires the chunks the one deletion rule (:meth:`deletable`) allows, each judged against its
+    scope's pointer as KV holds it, through the declarer's retire, in batches it accepts.
+
+    Apart from the replica so the rule and both sweeps can be read, and changed, on their own: they
+    need the layout, the store, the pointer bucket and the retire, and nothing the replica holds.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        layout: _Layout,
+        store: NatsObjectStore,
+        pointers: NatsKvBucket,
+        retire: Callable[[list[str]], Awaitable[Any]] | None,
+        retire_batch: int,
+        stray_age: timedelta,
+    ) -> None:
+        self._name = name
+        self._layout = layout
+        self._store = store
+        self._pointers_bucket = pointers
+        self._retire = retire
+        self._retire_batch = retire_batch
+        self._stray_age = stray_age
+
+    async def retire_names(self, names: list[str]) -> None:
+        """ask the declarer to delete objects, in batches it accepts; never raises.
+
+        :param names: the objects
+        :ptype names: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        if self._retire is None or not names:
+            return
+        for start in range(0, len(names), self._retire_batch):
+            batch = names[start : start + self._retire_batch]
+            try:
+                await self._retire(batch)
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- retirement is housekeeping; a failure leaves old chunks for the next retire and must not fail a publish that already succeeded
+                log.warning(
+                    "scoped snapshot %s: retiring %d chunks failed; they stay until the next retire: %s",
+                    self._name,
+                    len(batch),
+                    exc,
+                    extra={"extra_data": {"objects": batch}},
+                )
+
+    def deletable(self, info: ObjectInfo, epoch: int | None, reference: _Pointer | None, now: datetime) -> bool:
+        """whether one chunk may be deleted: the one rule every retirement goes by.
+
+        Four things decide it, and only the pointer read from KV knows them all -- never this
+        replica's view of the pointers, which lags another replica's publish:
+
+        1. a chunk its scope's pointer names is being served: kept;
+        2. a chunk at an epoch ABOVE its scope's pointer is a writer's stage whose pointer has not
+           moved yet: kept (if that write never commits, the scope's next publish, at a later epoch
+           still, finds it below and retires it);
+        3. a chunk at an epoch BELOW the pointer, and not named by it, is superseded: deleted;
+        4. a chunk at the pointer's own epoch it does not name (a rebuild of that epoch under other
+           columns), or of a scope with no pointer at all (a stage for a new scope), is deleted only
+           once it is older than the stray age. (A removal empties its scope itself, in
+           :meth:`retire_older`: what the deleted pointer served is no keep-reference.)
+
+        :param info: the chunk, as the store lists it
+        :ptype info: ObjectInfo
+        :param epoch: its epoch, from its name; ``None`` when the name is not a chunk's
+        :ptype epoch: int | None
+        :param reference: its scope's pointer, read from KV
+        :ptype reference: _Pointer | None
+        :param now: the time the ages are judged at
+        :ptype now: datetime
+        :return: whether it may be deleted
+        :rtype: bool
+        """
+        written = info.mtime if info.mtime is None or info.mtime.tzinfo else info.mtime.replace(tzinfo=UTC)
+        aged = written is not None and now - written > self._stray_age
+        deletable: bool
+        if epoch is None:
+            deletable = aged
+        elif reference is None:
+            deletable = aged
+        elif info.name in reference.objects.values() or epoch > reference.epoch:
+            deletable = False
+        elif epoch < reference.epoch:
+            deletable = True
+        else:
+            deletable = aged
+        return deletable
+
+    async def pointer_now(self, key: str) -> _Pointer | None:
+        """a scope's pointer as KV holds it now, by its key.
+
+        :return: the pointer, or ``None`` when there is none
+        :rtype: _Pointer | None
+        """
+        raw = await self._pointers_bucket.get(key=key)
+        return None if raw is None else _Pointer.decode(raw)
+
+    async def retire_older(self, scope: str, epoch: int, *, removed: _Pointer | None = None) -> None:
+        """retire the scope's chunks of epochs before ``epoch`` that may go; never raises.
+
+        Judged by :meth:`deletable` against the scope's pointer in KV. After a removal
+        (``removed``, the pointer it deleted) with no pointer standing again, the scope serves
+        nothing: every chunk at or below the deleted pointer's epoch goes, the ones it named
+        included, since a writer recreating the scope writes at a later epoch. If a recreating
+        writer's pointer already stands, it is the judge, as for any scope.
+
+        :param scope: the scope
+        :ptype scope: str
+        :param epoch: retire only chunks below this epoch
+        :ptype epoch: int
+        :param removed: the pointer a removal of the scope just deleted
+        :ptype removed: _Pointer | None
+        :return: nothing
+        :rtype: None
+        """
+        if self._retire is None:
+            return
+        try:
+            infos = await self._store.list_objects(prefix=self._layout.object_prefix(scope))
+            reference = await self.pointer_now(self._layout.pointer_key(scope))
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names
+            log.warning("scoped snapshot %s: listing scope %r's chunks failed: %s", self._name, scope, exc)
+            return
+        # a removed scope with no pointer standing again serves nothing up to the removed epoch
+        emptied = removed.epoch if removed is not None and reference is None else None
+        now = datetime.now(UTC)
+        stale = []
+        for info in infos:
+            chunk_epoch = self._layout.epoch_of(scope, info.name)
+            if chunk_epoch is None or chunk_epoch >= epoch:
+                continue
+            if (emptied is not None and chunk_epoch <= emptied) or self.deletable(info, chunk_epoch, reference, now):
+                stale.append(info.name)
+        await self.retire_names(stale)
+
+    async def retire_unreferenced(self) -> None:
+        """retire every chunk :meth:`deletable` allows, each judged by its scope's pointer in KV; never raises.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._retire is None:
+            return
+        try:
+            infos = await self._store.list_objects(prefix=self._layout.objects_prefix)
+            by_token: dict[str, list[ObjectInfo]] = {}
+            for info in infos:
+                token = self._layout.token_of(info.name)
+                if token is not None:
+                    by_token.setdefault(token, []).append(info)
+            pointers = {token: await self.pointer_now(self._layout.pointer_key_of_token(token)) for token in by_token}
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names
+            log.warning("scoped snapshot %s: listing chunks failed: %s", self._name, exc)
+            return
+        now = datetime.now(UTC)
+        stale = []
+        for token, scope_infos in by_token.items():
+            for info in scope_infos:
+                epoch = self._layout.epoch_in_token(token, info.name)
+                if self.deletable(info, epoch, pointers[token], now):
+                    stale.append(info.name)
+        await self.retire_names(stale)
+
+
 class ScopedSnapshot:
     """tables a pod needs whole, held in L2 as one chunk per scope and per table, loaded into DuckDB.
 
@@ -542,8 +784,6 @@ class ScopedSnapshot:
         self._epochs = epochs
         self._settled = settled
         self._ensure_buckets = ensure_buckets
-        self._retire = retire
-        self._retire_batch = max(1, min(retire_batch, MAX_RETIRED_OBJECTS))
         self._l2_concurrency = l2_concurrency
         self._l3_concurrency = l3_concurrency
         self._claim_ttl = claim_ttl
@@ -551,6 +791,16 @@ class ScopedSnapshot:
         self._heartbeat = pointer_watch_heartbeat
         self._stray_age = stray_age
         self._schema = {t.name: backend.schema_digest(t.name) for t in self._tables}
+        self._layout = _Layout(name, self._schema)
+        self._sweeper = _Sweeper(
+            name=name,
+            layout=self._layout,
+            store=store,
+            pointers=pointers,
+            retire=retire,
+            retire_batch=max(1, min(retire_batch, MAX_RETIRED_OBJECTS)),
+            stray_age=stray_age,
+        )
         self._replica = uuid.uuid7().hex.encode("utf-8")
         # what the pointer bucket says, as the watch last delivered it
         self._seen: dict[str, _Pointer] = {}
@@ -592,38 +842,6 @@ class ScopedSnapshot:
     # ------------------------------------------------------------------
     # keys and names: the one pattern for each
     # ------------------------------------------------------------------
-
-    @property
-    def _index_key(self) -> str:
-        return f"{self._name}.index"
-
-    @property
-    def _claim_key(self) -> str:
-        return f"{self._name}.rebuild"
-
-    def _pointer_key(self, scope: str) -> str:
-        return f"{self._name}.s.{scope_token(scope)}"
-
-    def _object_prefix(self, scope: str) -> str:
-        return f"{self._name}/{scope_token(scope)}/"
-
-    def _object_name(self, scope: str, epoch: int, table: str) -> str:
-        """``{name}/{scope}/{epoch}/{table}.{column digest}``: a chunk names the columns it holds.
-
-        :return: the object name
-        :rtype: str
-        """
-        return f"{self._object_prefix(scope)}{epoch}/{table}.{self._schema[table]}"
-
-    def _epoch_of(self, scope: str, object_name: str) -> int | None:
-        """the epoch an object of ``scope`` was written under, or ``None`` when it is not one of the scope's.
-
-        :return: the epoch
-        :rtype: int | None
-        """
-        prefix = self._object_prefix(scope)
-        head = object_name[len(prefix) :].split("/", 1)[0] if object_name.startswith(prefix) else ""
-        return int(head) if head.isdigit() else None
 
     # ------------------------------------------------------------------
     # status
@@ -765,7 +983,9 @@ class ScopedSnapshot:
         """
         return self._ready.is_set()
 
-    async def _commit(self, replacements: Sequence[PartitionReplacement], current: Sequence[str]) -> None:
+    async def _commit(
+        self, replacements: Sequence[PartitionReplacement], current: Sequence[str], *, count: bool = True
+    ) -> None:
         """commit replacements in this L1 on a worker thread, then, back on the event loop, take the
         scopes they bring current off ``behind`` and count what each scope holds.
 
@@ -777,12 +997,15 @@ class ScopedSnapshot:
         :ptype replacements: Sequence[PartitionReplacement]
         :param current: the scopes they bring current
         :ptype current: Sequence[str]
+        :param count: whether to count what each scope now holds (a drop forgets them instead)
+        :ptype count: bool
         :return: nothing
         :rtype: None
         """
         await asyncio.to_thread(self._backend.replace_partitions, replacements)
         self._behind = _updated(self._behind, drop=current)
-        self._count(replacements)
+        if count:
+            self._count(replacements)
 
     @contextmanager
     def read_with_behind(self) -> Iterator[tuple[Any, Mapping[str, str]]]:
@@ -941,7 +1164,7 @@ class ScopedSnapshot:
         :rtype: None
         """
         try:
-            await self._follow(f"{self._name}.")
+            await self._follow(self._layout.watch_prefix)
             ended = "the pointer watch ended"
         except asyncio.CancelledError:
             raise
@@ -964,13 +1187,13 @@ class ScopedSnapshot:
             async for update in watch:
                 if update is None:
                     self._caught_up = True
-                elif update.key == self._index_key:
+                elif update.key == self._layout.index_key:
                     body = None if update.value is None else json.loads(update.value)
                     self._index = None if body is None else frozenset(body["scopes"])
                     self._index_partial = body is not None and bool(body.get("partial", False))
                     self._ever_indexed = self._ever_indexed or self._index is not None
                     self._removing &= self._index or frozenset()
-                elif update.key.startswith(f"{prefix}s."):
+                elif self._layout.is_pointer_key(update.key):
                     self._record_pointer(update.key, update.value)
                 else:
                     # the rebuild claim shares the prefix: its takes, renewals and releases are no
@@ -989,7 +1212,7 @@ class ScopedSnapshot:
         :rtype: None
         """
         if value is None:
-            for scope in [s for s in self._seen if self._pointer_key(s) == key]:
+            for scope in [s for s in self._seen if self._layout.pointer_key(s) == key]:
                 del self._seen[scope]
                 self._removing.add(scope)
             return
@@ -1168,7 +1391,7 @@ class ScopedSnapshot:
         try:
             replacements = await self._fetch(pointer)
         except _Lost:
-            raw = await self._pointers_bucket.get(key=self._pointer_key(scope))
+            raw = await self._pointers_bucket.get(key=self._layout.pointer_key(scope))
             if raw is None or not _Pointer.decode(raw).supersedes(pointer):
                 raise
             current = _Pointer.decode(raw)
@@ -1323,9 +1546,9 @@ class ScopedSnapshot:
             )
         finally:
             await claim.release()
-        # a rebuild that returns has applied every scope the index names at its pointer (or it raises,
-        # leaving them behind), and each scope applied left `behind` as it was applied
-        self._behind = _updated(self._behind, drop=rebuilt or ())
+        # a scope the rebuild brought current left `behind` at its commit (_commit); one it could not
+        # (L3 below its pointer, or a pointer of other columns it may not load) stays behind
+        log.info("scoped snapshot %s: rebuilt %s from L3", self._name, sorted(rebuilt or ()))
 
     async def _apply_pointers(self, pointers: Mapping[str, _Pointer]) -> dict[str, str]:
         """fetch each scope's chunks and replace it in this L1, unless the L1 already holds as new.
@@ -1362,6 +1585,10 @@ class ScopedSnapshot:
         :rtype: None
         """
         async with self._local:
+            # forgotten BEFORE the drop commits: a scope listed by applied_epochs() is one a read opened
+            # after holds, and a dropped scope's rows may already be gone (under-listing is the safe side)
+            self._applied = _updated(self._applied, drop=scopes)
+            self._rows = _updated({table: _updated(held, drop=scopes) for table, held in self._rows.items()})
             await self._commit(
                 [
                     PartitionReplacement(table=t.name, column=t.scope_column, value=scope, rows=[])
@@ -1369,9 +1596,8 @@ class ScopedSnapshot:
                     for t in self._tables
                 ],
                 list(scopes),
+                count=False,
             )
-            self._applied = _updated(self._applied, drop=scopes)
-            self._rows = _updated({table: _updated(held, drop=scopes) for table, held in self._rows.items()})
         self._notify()
         log.info("scoped snapshot %s: scopes dropped", self._name, extra={"extra_data": {"scopes": list(scopes)}})
 
@@ -1435,7 +1661,7 @@ class ScopedSnapshot:
             ]
             self._record_change(scope, pointer, replacements, started)
             await self._update_index(add={scope})
-            await self._retire_older(scope, epoch)
+            await self._sweeper.retire_older(scope, epoch)
 
     async def _publish_locked(
         self, scope: str, epoch: int, rows: Mapping[str, Sequence[Mapping[str, Any]]]
@@ -1446,7 +1672,7 @@ class ScopedSnapshot:
         :return: the pointer written, or ``None`` when the scope is already at a later epoch
         :rtype: _Pointer | None
         """
-        held = await self._pointers_bucket.get(key=self._pointer_key(scope))
+        held = await self._pointers_bucket.get(key=self._layout.pointer_key(scope))
         current = None if held is None else _Pointer.decode(held)
         applied = self._applied.get(scope)
         stale = (current is not None and current.epoch > epoch) or (applied is not None and applied.epoch > epoch)
@@ -1470,18 +1696,25 @@ class ScopedSnapshot:
                 for t in self._tables
             ]
             await self._commit(local, [scope])
-            self._notify()
-            objects: dict[str, str] = {}
-            counts: dict[str, int] = {}
-            for table in self._tables:
-                arrow = await asyncio.to_thread(
-                    self._backend.export_partition, table.name, table.scope_column, scope, order_by=table.key
-                )
-                objects[table.name] = await self._put_chunk(scope, epoch, table, arrow)
-                counts[table.name] = arrow.num_rows
-            pointer = _Pointer(scope=scope, epoch=epoch, objects=objects, rows=counts, schema=self._schema)
-            self._applied = _updated(self._applied, {scope: pointer})
-            result = await self._move_pointer(pointer)
+            try:
+                objects: dict[str, str] = {}
+                counts: dict[str, int] = {}
+                for table in self._tables:
+                    arrow = await asyncio.to_thread(
+                        self._backend.export_partition, table.name, table.scope_column, scope, order_by=table.key
+                    )
+                    objects[table.name] = await self._put_chunk(scope, epoch, table, arrow)
+                    counts[table.name] = arrow.num_rows
+                pointer = _Pointer(scope=scope, epoch=epoch, objects=objects, rows=counts, schema=self._schema)
+                self._applied = _updated(self._applied, {scope: pointer})
+            finally:
+                # after `_applied` moves, as every other commit path does, so a listener reading
+                # applied_epoch sees the epoch of what it reads; on a failed chunk write, still told
+                self._notify()
+            # the change recorded is this replica's own: a racing writer's later pointer, or a fresh
+            # one of other columns it yields to, is not what this L1 holds
+            await self._move_pointer(pointer)
+            result = pointer
         return result
 
     async def _put_chunk(self, scope: str, epoch: int, table: SnapshotTable, arrow: Any) -> str:
@@ -1501,7 +1734,7 @@ class ScopedSnapshot:
         from threetears.nats import ObjectExistsError  # noqa: PLC0415
 
         data = await asyncio.to_thread(encode_chunk, arrow)
-        name = self._object_name(scope, epoch, table.name)
+        name = self._layout.object_name(scope, epoch, table.name)
         # NOSILENT: a replica rebuilding the same scope at the same epoch under the same columns wrote the same rows
         with suppress(ObjectExistsError):
             await self._store.put(name, data)
@@ -1515,7 +1748,7 @@ class ScopedSnapshot:
         its rows are written to L3, keeping only the compressed chunks rather than every row, and
         after its commit moves every pointer at once (:meth:`publish_staged`). Nothing reads a
         staged chunk until its pointer moves, so a write that never commits shows nothing. A staged
-        chunk is above its scope's pointer, which no retirement touches (:meth:`_deletable`); if its
+        chunk is above its scope's pointer, which no retirement touches (:meth:`_Sweeper.deletable`); if its
         write never commits, the scope's next publish retires it.
 
         :param scope: the scope; never ``None``
@@ -1611,7 +1844,7 @@ class ScopedSnapshot:
             await self._update_index(add=moved, whole=whole and not skipped)
         for scope in staged:
             if scope.scope in moved:
-                await self._retire_older(scope.scope, scope.epoch)
+                await self._sweeper.retire_older(scope.scope, scope.epoch)
         if skipped:
             log.warning(
                 "scoped snapshot %s: %d staged scopes left for the catch-up from L3",
@@ -1641,7 +1874,7 @@ class ScopedSnapshot:
         pointer = _Pointer(scope=staged.scope, epoch=staged.epoch, objects=objects, rows=counts, schema=self._schema)
         result: tuple[_Pointer, int | None | object] | None = (pointer, _ANY_ENTRY)
         if missing:
-            entry = await self._pointers_bucket.get_entry(key=self._pointer_key(staged.scope))
+            entry = await self._pointers_bucket.get_entry(key=self._layout.pointer_key(staged.scope))
             current = None if entry is None else _Pointer.decode(entry[0])
             result = (pointer, None if entry is None else entry[1])
             index_whole = self._index is not None and not self._index_partial
@@ -1676,12 +1909,9 @@ class ScopedSnapshot:
         :return: True when each is
         :rtype: bool
         """
-        wanted = set(names)
-        prefixes = {name.rsplit("/", 2)[0] + "/" for name in wanted}
-        found: set[str] = set()
-        for prefix in prefixes:
-            found |= {info.name for info in await self._store.list_objects(prefix=prefix)}
-        return wanted <= found
+        # one direct read per name, not a listing of the bucket
+        missing = [name for name in names if await self._store.info(name) is None]
+        return not missing
 
     async def _move_exactly(self, pointer: _Pointer, revision: int | None | object) -> bool:
         """move a scope's pointer to ``pointer`` only from the entry at ``revision`` (``None``: from none).
@@ -1689,7 +1919,7 @@ class ScopedSnapshot:
         :return: whether it moved
         :rtype: bool
         """
-        key = self._pointer_key(pointer.scope)
+        key = self._layout.pointer_key(pointer.scope)
         if revision is None:
             moved = await self._pointers_bucket.create(key=key, value=pointer.encode()) is not None
         else:
@@ -1708,7 +1938,7 @@ class ScopedSnapshot:
         :rtype: _Pointer
         :raises RuntimeError: when racing writers kept moving it through every attempt
         """
-        key = self._pointer_key(pointer.scope)
+        key = self._layout.pointer_key(pointer.scope)
         held: _Pointer | None = None
         attempts = 0
         while held is None and attempts < _CAS_ATTEMPTS:
@@ -1776,7 +2006,7 @@ class ScopedSnapshot:
         attempts = 0
         while settled is None and attempts < _CAS_ATTEMPTS:
             attempts += 1
-            entry = await self._pointers_bucket.get_entry(key=self._index_key)
+            entry = await self._pointers_bucket.get_entry(key=self._layout.index_key)
             body = {} if entry is None else json.loads(entry[0])
             held: frozenset[str] = frozenset(body.get("scopes", ()))
             held_partial = entry is None or bool(body.get("partial", False))
@@ -1786,154 +2016,17 @@ class ScopedSnapshot:
             if entry is not None and wanted == held and partial == held_partial:
                 settled = held
             elif entry is None:
-                settled = wanted if await self._pointers_bucket.create(key=self._index_key, value=value) else None
+                settled = (
+                    wanted if await self._pointers_bucket.create(key=self._layout.index_key, value=value) else None
+                )
             else:
-                moved = await self._pointers_bucket.update(key=self._index_key, value=value, revision=entry[1])
+                moved = await self._pointers_bucket.update(key=self._layout.index_key, value=value, revision=entry[1])
                 settled = wanted if moved is not None else None
         if settled is None:
             raise RuntimeError(f"the index of snapshot {self._name!r} kept moving under {_CAS_ATTEMPTS} attempts")
         self._index = settled
         self._index_partial = partial
         self._ever_indexed = True
-
-    async def _retire_names(self, names: list[str]) -> None:
-        """ask the declarer to delete objects, in batches it accepts; never raises.
-
-        :param names: the objects
-        :ptype names: list[str]
-        :return: nothing
-        :rtype: None
-        """
-        if self._retire is None or not names:
-            return
-        for start in range(0, len(names), self._retire_batch):
-            batch = names[start : start + self._retire_batch]
-            try:
-                await self._retire(batch)
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- retirement is housekeeping; a failure leaves old chunks for the next retire and must not fail a publish that already succeeded
-                log.warning(
-                    "scoped snapshot %s: retiring %d chunks failed; they stay until the next retire: %s",
-                    self._name,
-                    len(batch),
-                    exc,
-                    extra={"extra_data": {"objects": batch}},
-                )
-
-    def _deletable(self, info: ObjectInfo, epoch: int | None, reference: _Pointer | None, now: datetime) -> bool:
-        """whether one chunk may be deleted: the one rule every retirement goes by.
-
-        Four things decide it, and only the pointer read from KV knows them all -- never this
-        replica's view of the pointers, which lags another replica's publish:
-
-        1. a chunk its scope's pointer names is being served: kept;
-        2. a chunk at an epoch ABOVE its scope's pointer is a writer's stage whose pointer has not
-           moved yet: kept (if that write never commits, the scope's next publish, at a later epoch
-           still, finds it below and retires it);
-        3. a chunk at an epoch BELOW the pointer, and not named by it, is superseded: deleted;
-        4. a chunk at the pointer's own epoch it does not name (a rebuild of that epoch under other
-           columns), or of a scope with no pointer at all (a stage for a new scope), is deleted only
-           once it is older than the stray age. (A removal empties its scope itself, in
-           :meth:`_retire_older`: what the deleted pointer served is no keep-reference.)
-
-        :param info: the chunk, as the store lists it
-        :ptype info: ObjectInfo
-        :param epoch: its epoch, from its name; ``None`` when the name is not a chunk's
-        :ptype epoch: int | None
-        :param reference: its scope's pointer, read from KV
-        :ptype reference: _Pointer | None
-        :param now: the time the ages are judged at
-        :ptype now: datetime
-        :return: whether it may be deleted
-        :rtype: bool
-        """
-        written = info.mtime if info.mtime is None or info.mtime.tzinfo else info.mtime.replace(tzinfo=UTC)
-        aged = written is not None and now - written > self._stray_age
-        deletable: bool
-        if epoch is None:
-            deletable = aged
-        elif reference is None:
-            deletable = aged
-        elif info.name in reference.objects.values() or epoch > reference.epoch:
-            deletable = False
-        elif epoch < reference.epoch:
-            deletable = True
-        else:
-            deletable = aged
-        return deletable
-
-    async def _pointer_now(self, key: str) -> _Pointer | None:
-        """a scope's pointer as KV holds it now, by its key.
-
-        :return: the pointer, or ``None`` when there is none
-        :rtype: _Pointer | None
-        """
-        raw = await self._pointers_bucket.get(key=key)
-        return None if raw is None else _Pointer.decode(raw)
-
-    async def _retire_older(self, scope: str, epoch: int, *, removed: _Pointer | None = None) -> None:
-        """retire the scope's chunks of epochs before ``epoch`` that may go; never raises.
-
-        Judged by :meth:`_deletable` against the scope's pointer in KV. After a removal
-        (``removed``, the pointer it deleted) with no pointer standing again, the scope serves
-        nothing: every chunk at or below the deleted pointer's epoch goes, the ones it named
-        included, since a writer recreating the scope writes at a later epoch. If a recreating
-        writer's pointer already stands, it is the judge, as for any scope.
-
-        :param scope: the scope
-        :ptype scope: str
-        :param epoch: retire only chunks below this epoch
-        :ptype epoch: int
-        :param removed: the pointer a removal of the scope just deleted
-        :ptype removed: _Pointer | None
-        :return: nothing
-        :rtype: None
-        """
-        if self._retire is None:
-            return
-        try:
-            infos = await self._store.list_objects(prefix=self._object_prefix(scope))
-            reference = await self._pointer_now(self._pointer_key(scope))
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in _retire_names
-            log.warning("scoped snapshot %s: listing scope %r's chunks failed: %s", self._name, scope, exc)
-            return
-        # a removed scope with no pointer standing again serves nothing up to the removed epoch
-        emptied = removed.epoch if removed is not None and reference is None else None
-        now = datetime.now(UTC)
-        stale = []
-        for info in infos:
-            chunk_epoch = self._epoch_of(scope, info.name)
-            if chunk_epoch is None or chunk_epoch >= epoch:
-                continue
-            if (emptied is not None and chunk_epoch <= emptied) or self._deletable(info, chunk_epoch, reference, now):
-                stale.append(info.name)
-        await self._retire_names(stale)
-
-    async def _retire_unreferenced(self) -> None:
-        """retire every chunk :meth:`_deletable` allows, each judged by its scope's pointer in KV; never raises.
-
-        :return: nothing
-        :rtype: None
-        """
-        if self._retire is None:
-            return
-        try:
-            infos = await self._store.list_objects(prefix=f"{self._name}/")
-            by_token: dict[str, list[ObjectInfo]] = {}
-            for info in infos:
-                by_token.setdefault(info.name[len(self._name) + 1 :].split("/", 1)[0], []).append(info)
-            pointers = {token: await self._pointer_now(f"{self._name}.s.{token}") for token in by_token}
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in _retire_names
-            log.warning("scoped snapshot %s: listing chunks failed: %s", self._name, exc)
-            return
-        now = datetime.now(UTC)
-        stale = []
-        for token, scope_infos in by_token.items():
-            for info in scope_infos:
-                head = info.name[len(self._name) + 1 + len(token) + 1 :].split("/", 1)[0]
-                epoch = int(head) if head.isdigit() else None
-                if self._deletable(info, epoch, pointers[token], now):
-                    stale.append(info.name)
-        await self._retire_names(stale)
 
     # ------------------------------------------------------------------
     # rebuilding from L3
@@ -1980,7 +2073,7 @@ class ScopedSnapshot:
         :return: the claim
         :rtype: _Claim
         """
-        return _Claim(self._pointers_bucket, key=self._claim_key, owner=self._replica, ttl=self._claim_ttl)
+        return _Claim(self._pointers_bucket, key=self._layout.claim_key, owner=self._replica, ttl=self._claim_ttl)
 
     async def _rebuild(self, *, reason: str) -> None:
         """rebuild every scope's chunks from L3 under the claim, or wait for whoever holds it.
@@ -1999,7 +2092,7 @@ class ScopedSnapshot:
             finally:
                 await claim.release()
             if caught is not None:
-                await self._retire_unreferenced()
+                await self._sweeper.retire_unreferenced()
         else:
             self._wait("sync", f"{reason}; another replica is rebuilding or publishing it")
 
@@ -2160,7 +2253,7 @@ class ScopedSnapshot:
                 # the watch may have delivered a removal meanwhile, or a stale publish noted nothing
                 seen = self._seen.get(scope)
                 if seen is not None:
-                    await self._retire_older(scope, seen.epoch)
+                    await self._sweeper.retire_older(scope, seen.epoch)
         return caught
 
     async def _apply_published(self) -> None:
@@ -2178,7 +2271,7 @@ class ScopedSnapshot:
         for scope in sorted(self._index or ()):
             pointer = self._seen.get(scope)
             if pointer is None:
-                raw = await self._pointers_bucket.get(key=self._pointer_key(scope))
+                raw = await self._pointers_bucket.get(key=self._layout.pointer_key(scope))
                 pointer = None if raw is None else _Pointer.decode(raw)
             if pointer is not None and self._ahead(pointer, self._applied.get(scope)):
                 pointers[scope] = pointer
@@ -2203,14 +2296,16 @@ class ScopedSnapshot:
         :rtype: None
         :raises ValueError: when a table holds rows with no scope
         """
-        held = {scope: await self._pointers_bucket.get_entry(key=self._pointer_key(scope)) for scope in candidates}
+        held = {
+            scope: await self._pointers_bucket.get_entry(key=self._layout.pointer_key(scope)) for scope in candidates
+        }
         l3_now = await self._l3_scopes()
         removed: dict[str, _Pointer | None] = {}
         for scope in sorted(candidates - l3_now):
             entry = held[scope]
             if entry is None:
                 removed[scope] = None
-            elif await self._pointers_bucket.delete(key=self._pointer_key(scope), revision=entry[1]):
+            elif await self._pointers_bucket.delete(key=self._layout.pointer_key(scope), revision=entry[1]):
                 removed[scope] = _Pointer.decode(entry[0])
             else:
                 log.info("scoped snapshot %s: scope %r moved while it was removed; kept", self._name, scope)
@@ -2218,7 +2313,9 @@ class ScopedSnapshot:
             return
         await self._update_index(remove=removed)
         standing = {
-            scope for scope in removed if await self._pointers_bucket.get(key=self._pointer_key(scope)) is not None
+            scope
+            for scope in removed
+            if await self._pointers_bucket.get(key=self._layout.pointer_key(scope)) is not None
         }
         if standing:
             await self._update_index(add=standing)
@@ -2232,7 +2329,7 @@ class ScopedSnapshot:
             # epoch and stay. a scope that had no pointer judged nothing; its strays age out of the
             # next rebuild's unreferenced sweep
             if pointer is not None:
-                await self._retire_older(scope, pointer.epoch + 1, removed=pointer)
+                await self._sweeper.retire_older(scope, pointer.epoch + 1, removed=pointer)
 
 
 async def open_tool_pod_snapshot(

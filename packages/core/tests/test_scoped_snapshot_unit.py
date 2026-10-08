@@ -88,10 +88,12 @@ class _Pointers:
         return self._revision
 
     async def get(self, *, key: str) -> bytes | None:
+        await asyncio.sleep(0)  # a read yields, as a real one does, so what the loop shows between reads is seen
         entry = self.entries.get(key)
         return None if entry is None else entry[0]
 
     async def get_entry(self, *, key: str) -> tuple[bytes, int] | None:
+        await asyncio.sleep(0)
         return self.entries.get(key)
 
     async def create(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
@@ -130,6 +132,7 @@ class _Store:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.gets = 0
+        self.listings = 0
 
     async def put(self, name: str, data: bytes) -> None:
         self.objects[name] = data
@@ -142,11 +145,20 @@ class _Store:
         return self.objects[name]
 
     async def list_objects(self, *, prefix: str = "") -> list[ObjectInfo]:
+        self.listings += 1
         return [
             ObjectInfo(name=n, size=len(d), chunks=1, digest="", nuid="", mtime=datetime.now(UTC))
             for n, d in self.objects.items()
             if n.startswith(prefix)
         ]
+
+    async def info(self, name: str) -> ObjectInfo | None:
+        data = self.objects.get(name)
+        return (
+            None
+            if data is None
+            else ObjectInfo(name=name, size=len(data), chunks=1, digest="", nuid="", mtime=datetime.now(UTC))
+        )
 
 
 class _L3:
@@ -499,6 +511,51 @@ async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on
     await snapshot.stop()
 
 
+async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_behind_on_every_look() -> None:
+    """another code version wrote TX at epoch 3 under other columns, with a chunk that reads fine, and
+    L3's epochs still say 2: each rebuild of TX publishes nothing (a stale epoch) and the pointer's
+    chunks may not be loaded here, so TX is behind at every look across many rebuilds, never
+    reported current in between while the L1 holds epoch 1."""
+    snapshot, pointers, store, l3 = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    l3.epochs["TX"] = 2
+    takes = [0]
+    real_create = pointers.create
+
+    async def counting(*, key: str, value: bytes, ttl: timedelta | None = None) -> int | None:
+        takes[0] += key == "enr.rebuild"
+        return await real_create(key=key, value=value, ttl=ttl)
+
+    pointers.create = counting  # type: ignore[method-assign]
+    tx = json.loads(pointers.entries["enr.s.TX"][0])
+    store.objects["enr/TX/3/results.other"] = encode_chunk(_tx_arrow(7).drop_columns(["votes"]))
+    foreign = {
+        **tx,
+        "epoch": 3,
+        "tables": {"results": {"object": "enr/TX/3/results.other", "rows": 1}},
+        "schema": {"results": "the other version's columns"},
+    }
+    pointers.put_now("enr.s.TX", json.dumps(foreign).encode())
+    await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
+
+    looks = []
+    first = takes[0]
+    deadline = asyncio.get_running_loop().time() + 5
+    while takes[0] < first + 3 and asyncio.get_running_loop().time() < deadline:
+        # rebuilds of TX ran, each taking and letting go of the claim; looked at between every step
+        looks.append(snapshot.status())
+        await asyncio.sleep(0)
+    assert takes[0] >= first + 3, "TX was not rebuilt again and again"
+
+    assert all("TX" in look.behind for look in looks), [
+        (look.phase, sorted(look.behind)) for look in looks if "TX" not in look.behind
+    ][:3]
+    assert snapshot.applied_epoch("TX") == 1
+    await snapshot.stop()
+
+
 async def test_a_scope_removed_before_it_was_ever_applied_leaves_nothing_behind() -> None:
     snapshot, pointers, _, l3 = _snapshot()
     await snapshot.start()
@@ -671,45 +728,38 @@ async def test_a_reader_on_a_worker_thread_paused_mid_iteration_is_untouched_by_
     await snapshot.stop()
 
 
-class _HeldWrites(DuckDBBackend):
-    """a DuckDB L1 whose next replacement is held on its worker thread until released: a long write."""
+class _HeldRows(list[dict[str, Any]]):
+    """a scope's rows whose reading is held until released: a publish of them stops inside its write,
+    after the replacement's DELETE and before its INSERT and COMMIT, on the write's worker thread."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.hold_next = False
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        super().__init__(rows)
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def replace_partitions(self, replacements: Any) -> int:
-        if self.hold_next:
-            self.hold_next = False
-            with self._db_lock:  # as the real write holds it across its transaction
-                self.entered.set()
-                self.release.wait(10)
-        written: int = super().replace_partitions(replacements)
-        return written
+    def __iter__(self) -> Any:
+        self.entered.set()
+        self.release.wait(10)
+        return super().__iter__()
 
 
 async def test_a_read_during_a_long_write_neither_waits_for_it_nor_is_told_its_scope_is_current() -> None:
-    """while a replacement bringing TX current is held mid-write on its worker thread, a read opened
-    on the event loop opens at once (the loop is not frozen behind the write), reads TX's old rows and
-    is told TX is behind; once the write commits, a new read has the new rows and TX current."""
-    metadata = MetaData()
-    _RESULTS.to_sqlalchemy_table(metadata)
-    backend = _HeldWrites()
-    backend.initialize(metadata)
-    snapshot, pointers, store, _ = _snapshot(backend=backend)
+    """while a publish bringing TX current is held inside its DuckDB write (TX's rows deleted, the new
+    ones not yet inserted, nothing committed), a read opened on the event loop opens at once (the loop
+    is not frozen behind the write), reads TX's old rows and is told TX is behind; once the write
+    commits, a new read has the new rows and TX current."""
+    snapshot, pointers, _, _ = _snapshot()
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
     await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
     pointers.put_now("enr.rebuild", b"another replica")
     _point_at_a_missing_chunk(pointers)
     await _until(lambda: "TX" in snapshot.status().behind, what="TX behind")
-    backend.hold_next = True
-    store.objects["enr/TX/2/results.gone"] = _tx_chunk(5)
-    await _until(backend.entered.is_set, what="the write bringing TX current to start")
+    rows = _HeldRows([{"county": "c1", "state": "TX", "votes": 5}])
+    publishing = asyncio.create_task(snapshot.publish("TX", 2, {"results": rows}))
+    await _until(rows.entered.is_set, what="the write bringing TX current to be inside its transaction")
     # if the read waited for the write, this lets it go after 3 s so the test fails rather than hangs
-    threading.Timer(3.0, backend.release.set).start()
+    threading.Timer(3.0, rows.release.set).start()
 
     started = time.perf_counter()
     with snapshot.read_with_behind() as (cursor, behind):
@@ -719,8 +769,9 @@ async def test_a_read_during_a_long_write_neither_waits_for_it_nor_is_told_its_s
     assert opened < 0.5, f"the read waited {opened:.1f} s on the event loop for a write in progress"
     assert "TX" in snapshot.status().behind
 
-    backend.release.set()
-    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="TX applied at epoch 2")
+    rows.release.set()
+    await publishing
+    assert snapshot.applied_epoch("TX") == 2
     with snapshot.read_with_behind() as (cursor, behind):
         assert "TX" not in behind
         assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(5,)]
@@ -887,4 +938,108 @@ async def test_a_pointer_of_other_columns_found_on_the_re_read_after_a_retired_c
     assert snapshot.applied_epoch("TX") == 1, "the L1 took a pointer whose chunks hold other columns"
     with snapshot.read() as cursor:
         assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(1,)]
+    await snapshot.stop()
+
+
+async def test_a_carry_checks_its_chunks_one_by_one_without_listing_the_bucket() -> None:
+    snapshot, _, store, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    staged = await _staged_carry(snapshot)
+    listings = store.listings
+
+    moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 1})
+
+    assert (moved, skipped) == (["TX"], [])
+    assert store.listings == listings, "the carry listed the bucket to find chunks it names"
+    await snapshot.stop()
+
+
+async def test_a_listener_told_of_a_publish_made_here_reads_its_new_epoch() -> None:
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    told: list[int | None] = []
+    snapshot.on_change(lambda: told.append(snapshot.applied_epoch("TX")))
+
+    await snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 5}]})
+
+    assert told and told[-1] == 2, f"the listener read epoch {told} after the publish committed epoch 2"
+    await snapshot.stop()
+
+
+async def test_a_publish_overtaken_by_a_racing_writer_records_the_change_this_replica_made() -> None:
+    """another writer moves TX to epoch 5 while this replica writes its epoch 3 chunks: the last
+    change recorded is this replica's epoch 3, the one its L1 holds, not the racing writer's."""
+    snapshot, pointers, store, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    real_put = store.put
+    raced = [False]
+
+    async def racing_put(name: str, data: bytes) -> None:
+        await real_put(name, data)
+        if name.startswith("enr/TX/3/") and not raced[0]:
+            raced[0] = True
+            later = json.loads(pointers.entries["enr.s.TX"][0])
+            later["epoch"], later["tables"]["results"]["object"] = 5, "enr/TX/5/results.elsewhere"
+            pointers.put_now("enr.s.TX", json.dumps(later).encode())
+
+    store.put = racing_put  # type: ignore[method-assign]
+
+    await snapshot.publish("TX", 3, {"results": [{"county": "c1", "state": "TX", "votes": 5}]})
+
+    change = snapshot.status().last_change
+    assert raced[0] and change is not None
+    assert (change.scope, change.epoch) == ("TX", 3)
+    assert snapshot.applied_epoch("TX") == 3
+    await snapshot.stop()
+
+
+class _HeldReplacements(DuckDBBackend):
+    """a DuckDB L1 whose next replacement waits, before it starts, until released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hold_next = False
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def replace_partitions(self, replacements: Any) -> int:
+        if self.hold_next:
+            self.hold_next = False
+            self.entered.set()
+            self.release.wait(10)
+        written: int = super().replace_partitions(replacements)
+        return written
+
+
+async def test_a_scope_being_dropped_is_no_longer_listed_as_held_while_the_drop_commits() -> None:
+    """applied_epochs() promises a read opened after it holds every scope it lists: a scope whose
+    drop is committing may already be gone, so it is not listed from the moment the drop starts."""
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    backend = _HeldReplacements()
+    backend.initialize(metadata)
+    snapshot, pointers, _, _ = _snapshot(backend=backend)
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await snapshot.publish("NV", 1, {"results": [{"county": "c9", "state": "NV", "votes": 9}]})
+    assert "NV" in snapshot.applied_epochs()
+    threading.Timer(5.0, backend.release.set).start()  # never hangs the test
+    backend.hold_next = True
+
+    await pointers.delete(key="enr.s.NV")
+    index = json.loads(pointers.entries["enr.index"][0])
+    pointers.put_now("enr.index", json.dumps({**index, "scopes": ["DE", "TX"]}).encode())
+    await _until(backend.entered.is_set, what="NV's drop to start")
+
+    assert "NV" not in snapshot.applied_epochs(), "a scope whose rows are being dropped is still listed"
+    backend.release.set()
+
+    def nv_rows() -> int:
+        with snapshot.read() as cursor:
+            return int(cursor.execute("SELECT count(*) FROM results WHERE state = 'NV'").fetchone()[0])
+
+    await _until(lambda: nv_rows() == 0, what="the drop to commit")
     await snapshot.stop()
