@@ -2,7 +2,8 @@
 
 **Status:** DESIGN, nothing built. The direction was decided by the product owner on
 2026-10-08 and is recorded under "The Decision"; it is not re-argued here. What this note
-adds is the model, the costs, the rollout, and the questions that are still his.
+adds is the model, the costs, the rollout, his answers to the questions it raised, and the
+three that wait on the measurement.
 **Scope:** `3tears-core` (`collections/base.py`, `collections/registry.py`,
 `collections/generation.py`, `collections/caller_transaction.py`, `collections/flush.py`),
 `3tears-epoch` (`generation.py`, a generation catch-up pass beside `tick.py`), `3tears-nats`
@@ -106,10 +107,11 @@ bucket was not found in either repo.
 
 This is the hard part of "by default". An agent pod writes collection tables and cannot
 advance a generation. No existing `JsCapability` expresses "write these literal keys of an
-unscoped bucket"; `KV_KEY_READ` is the read half only. Two ways through, and the choice is
-an open question: add the write sibling and grant each pod the keys of the tables it may
-write, or have the hub's L3 broker advance after it commits a pod's write, so no pod writes
-the bucket. Whether the broker sees commit boundaries was not confirmed.
+unscoped bucket"; `KV_KEY_READ` is the read half only. Two ways through: add the write
+sibling and grant each pod the keys of the tables it may write, or have the hub's L3 broker
+advance after it commits a pod's write, so no pod writes the bucket. **Decided: the broker
+advances.** Whether the broker sees commit boundaries was not confirmed, and is the first
+thing the build establishes.
 
 ## The Model
 
@@ -271,20 +273,49 @@ with `actor_type="group"` evicts that group's own entry, which is right inside `
 delete has to read and announce each cascaded member by hand, because no collection sees the
 cascade.
 
-**On generations.** `AclCache` follows `groups`, `group_members`, `roles` and
-`role_assignments`. When any of the four moves, it calls `invalidate_all`. That is coarser
-than today's per-actor eviction and it is the price of exactness: the row broadcast carries
-the primary key `(group_id, id)`, not the member, so it cannot name an actor's entry. The
-nested-group and cascade cases stop being special. Whether `namespaces` belongs in the set
-was not confirmed. The refill cost under a burst of rbac writes (bootstrap, reconcilers,
-agent access materialization) is part of the measurement.
+**On generations, row by row.** `AclCache` follows `groups`, `group_members`, `roles` and
+`role_assignments`, and a change evicts exactly the entries it reaches. It does not empty the
+cache for a change (owner, 2026-10-08: "we cannot be invalidating entire caches for a change,
+this has to be row by row or ALL if that is needed").
+
+The row broadcast cannot do that today: it carries the primary key, which for
+`group_members` is `(group_id, id)` and does not name the member. So a collection may declare
+the columns its invalidation message carries beyond the key:
+
+    invalidation_columns: ClassVar[tuple[str, ...]] = ("member_type", "member_id")
+
+`CacheInvalidationMessage` gains one optional field for them, written from the row the write
+saw (the row being deleted, for a delete), so a receiver needs no read to know what the row
+was. A derived cache registers, per table, how a row maps to its own entries:
+
+- `group_members`: the member. A person's row evicts that person. A group's row (a bundle
+  nested in a state group) evicts every cached actor whose resolved groups include that
+  group; `AclCache` keeps, for each cached actor, the groups its walk passed through, which
+  it computes at read today and throws away.
+- `role_assignments`: the group it grants to, by the same index.
+- `roles`: every actor holding an assignment of that role, through the assignment index; a
+  role whose reach cannot be bounded this way is the one routine case that may take ALL.
+- `groups`: a delete evicts the actors resolved through it; the cascade to its members
+  arrives as `group_members` rows once deletes carry their row (the hub's hand-written
+  per-member announce in the group delete goes away).
+
+**ALL is for when the reach is unknown, not for convenience:** a missed broadcast (the pass
+finds a count unheard, so some row changed and the pod cannot say which), a replaced bucket,
+or a change a cache has no index for. Those drop the table's cached rows and every entry
+derived from it, as "The Model" describes. A heard change never does.
+
+Whether `namespaces` belongs in the set was not confirmed. The eviction cost under a burst of
+rbac writes (bootstrap, reconcilers, agent access materialization) is part of the
+measurement, counted in entries evicted, not caches emptied.
 
 **The `acl.*.invalidate` subjects** stay through expand and migrate and are removed at
 contract: subscribers first, then `publish_acl_invalidation` and
 `evict_after_rbac_write`'s publish half, then the grants. `ttl_seconds` goes with them, per
 decision 5.
 
-**A tool pod** follows the same four tables for its per-caller cache. It needs
+**A tool pod** follows the same four tables for its per-caller cache, by the same rule: a
+person's membership row drops that person's entry, a group's row drops the callers resolved
+through it. It needs
 `JsResource.kv_key_read(f"{ns}-epochs", key=...)` for each of the four keys (the shape it
 already holds on the data-versions bucket), and it already hears the row broadcasts. It
 needs no epoch subject and no `acl.*` subject.
@@ -302,9 +333,9 @@ Each item in the second line is, under decision 5, a gap to close in the epoch s
 reason for a timer. With the write-path inventory complete, a max age covers nothing a
 generation-carrying table lacks.
 
-**Recommendation:** leave `set_l1_max_age` in place and off by default through expand and
-migrate, add no new callers, and take **removing it as a named decision for the owner** at
-contract, together with the hub's one existing caller. `ScanCache`'s
+**Decided (owner, 2026-10-08):** `set_l1_max_age` stays in place and off by default through
+expand and migrate, takes no new callers, and is removed at contract together with the hub's
+one existing caller. `ScanCache`'s
 `DEFAULT_SCAN_TTL_SECONDS` is the same question and should be answered with it.
 
 ## One Class per Table
@@ -342,7 +373,7 @@ every stage.
 4. **Flip the default.** After the measurement and the one-class cleanup. From here a new
    collection bumps unless it declares otherwise.
 5. **Contract.** Remove the `acl.*.invalidate` subscribers, publishers and grants and
-   `AclCache.ttl_seconds`. The L1 max age and the scan TTL wait on the owner's decision.
+   `AclCache.ttl_seconds`, and the L1 max age and the scan TTL with the hub's one caller.
 
 The public API grows (`advance`'s return, the declaration, the follower), so this takes a
 minor bump across the family.
@@ -359,28 +390,32 @@ minor bump across the family.
   count by one, and a follower that hears all of them does not drop.
 - A flush bumps once per table.
 - `GenerationUnavailableError` on a pass does not drop and does not move the mark.
-- A derived cache: a `group_members` write on one registry empties an `AclCache` on another
-  with no `acl.*` subscription bound.
+- A derived cache, row by row: a `group_members` write for one person on one registry evicts
+  that person's entry in an `AclCache` on another, with no `acl.*` subscription bound, and
+  leaves every other entry; nesting a group evicts exactly the actors resolved through it; a
+  missed broadcast evicts all.
 - **Enforcement.** Enumerate every `BaseCollection` subclass in the family: each carries
   the default or a `NoWriteGeneration` with a non-empty reason, and no two classes share a
   `table_name`. A second test fails when a bootstrap wires a generation source and
   schedules no pass. A grant test pairs each principal's epoch-bucket keys with the keys
   `EpochGenerationSource` opens, as epoch-task-01 did for the bucket.
 
-## Open Questions for the Owner
+## Decided on the Open Questions (Owner, 2026-10-08)
 
-1. **Who advances for a pod.** A new key-scoped write grant per pod, or the hub's broker
-   advancing after it commits the pod's write.
-2. **A failed advance after a committed write.** Raise, as `save_entity` does today for
-   absence caching, or log. Recommended: raise; it is the only way the write is covered.
-3. **The pass interval for the access tables,** or a `watch_key` on those four keys instead.
-   It is the bound on a missed broadcast.
-4. **The generation key for per-agent tables.** The key carries the table name only, so
+1. **Who advances for a pod: the hub's broker,** after it commits the pod's write. No pod
+   writes the epoch bucket, so a pod still cannot fake a bump. Whether the broker sees commit
+   boundaries is the first thing to confirm in the build.
+2. **A failed advance after a committed write raises.**
+3. **The four access tables are followed by `watch_key`,** not a timed pass.
+4. **The L1 max age and the scan TTL are removed at contract,** with the hub's one caller.
+5. **Derived caches are invalidated row by row, or ALL only when that is needed.** Not
+   `invalidate_all` on any change. See "Derived Caches".
+
+## Still Open, After the Measurement
+
+1. **The opt-out threshold:** the fraction of p99 write latency that puts a table on the
+   list.
+2. **The six undecided tables:** opt out, or split the per-event columns off.
+3. **The generation key for per-agent tables.** The key carries the table name only, so
    every agent's `memories` would share one generation. Right for platform tables; for
    per-agent namespaces it is correct but noisy. Most such tables are on the opt-out list.
-5. **The opt-out threshold:** the fraction of p99 write latency that puts a table on the
-   list.
-6. **Remove the L1 max age and the scan TTL at contract, or keep them.**
-7. **The six undecided tables:** opt out, or split the per-event columns off.
-8. **`AclCache` granularity:** is `invalidate_all` on any of the four tables acceptable, or
-   must the row broadcast carry enough to evict one actor.
