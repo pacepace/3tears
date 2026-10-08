@@ -12,8 +12,11 @@ that contract:
 - shape D: subclass shadows a base-class private name
 - shape E: ``__all__`` lists a private name
 - shape F: a private name reached through ``setattr`` / ``getattr`` /
-  ``delattr`` / ``hasattr`` with the name as a string -- the spelling
-  SLF001 cannot see. it scans the ``tests/`` trees as well as ``src``
+  ``delattr`` / ``hasattr`` with the name as a string (or a variable the
+  code around it feeds from literals: a ``for`` over them, a
+  ``parametrize``), or read out of a namespace (``vars(x)["_y"]``,
+  ``x.__dict__["_y"]``) -- the spellings SLF001 cannot see. it scans the
+  ``tests/`` trees as well as ``src``
 
 per-repo configuration goes through :class:`UnderscoreAccessConfig`;
 :func:`run_underscore_enforcement` is the pytest-friendly entry point

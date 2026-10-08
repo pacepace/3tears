@@ -741,7 +741,7 @@ def _reflective_private_violations(tree: ast.Module, file: Path) -> list[Violati
     candidates: list[tuple[ast.Call, str, str]] = []
     for call, scopes in _reflective_private_calls(tree):
         accessor = call.func.id if isinstance(call.func, ast.Name) else ""
-        name = _private_name_argument(call)
+        name = _private_name_argument(call, scopes)
         receiver = call.args[0]
         if isinstance(receiver, ast.Name) and receiver.id in _OWNER_RECEIVERS:
             continue
@@ -750,7 +750,7 @@ def _reflective_private_violations(tree: ast.Module, file: Path) -> list[Violati
                 owned_markers.add(name)
             continue
         candidates.append((call, accessor, name))
-    violations: list[Violation] = []
+    violations: list[Violation] = _namespace_subscript_violations(tree, file)
     for call, accessor, name in candidates:
         if name in owned_markers:
             continue
@@ -787,7 +787,7 @@ def _reflective_private_calls(tree: ast.Module) -> list[tuple[ast.Call, tuple[_S
             if isinstance(child, _NESTED_SCOPES):
                 _visit(child, (*scopes, child))
                 continue
-            if isinstance(child, ast.Call) and _private_name_argument(child):
+            if isinstance(child, ast.Call) and _private_name_argument(child, scopes):
                 found.append((child, scopes))
             _visit(child, scopes)
 
@@ -795,25 +795,147 @@ def _reflective_private_calls(tree: ast.Module) -> list[tuple[ast.Call, tuple[_S
     return sorted(found, key=lambda pair: (pair[0].lineno, pair[0].col_offset))
 
 
-def _private_name_argument(call: ast.Call) -> str:
+def _private_name_argument(call: ast.Call, scopes: tuple[_ScopeNode, ...] = ()) -> str:
     """the private attribute name a reflective builtin call names, or ``""`` when it names none.
+
+    The name is a string literal, or a variable whose values the enclosing code spells as literals:
+    a ``for`` over a literal list or tuple, or a ``pytest.mark.parametrize`` of the function it sits
+    in. ``getattr(module, name)`` over ``["_A", "_B"]`` binds the privates as surely as the literal.
 
     :param call: a call node
     :ptype call: ast.Call
+    :param scopes: the call's enclosing scopes, outermost first
+    :ptype scopes: tuple[_ScopeNode, ...]
     :return: the private name, or the empty string for any other call
     :rtype: str
     """
     result = ""
-    if (
-        isinstance(call.func, ast.Name)
-        and call.func.id in _REFLECTIVE_ACCESSORS
-        and len(call.args) >= 2
-        and isinstance(call.args[1], ast.Constant)
-        and isinstance(call.args[1].value, str)
-        and is_private_name(call.args[1].value)
-    ):
-        result = call.args[1].value
+    if isinstance(call.func, ast.Name) and call.func.id in _REFLECTIVE_ACCESSORS and len(call.args) >= 2:
+        argument = call.args[1]
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str) and is_private_name(argument.value):
+            result = argument.value
+        elif isinstance(argument, ast.Name):
+            result = next((v for v in _literal_values(argument.id, scopes) if is_private_name(v)), "")
     return result
+
+
+def _literal_values(name: str, scopes: tuple[_ScopeNode, ...]) -> list[str]:
+    """the string literals a variable is given by the code around it: the ``for`` loops over literal
+    sequences that bind it, and a ``parametrize`` decorator of an enclosing function that names it.
+
+    :param name: the variable
+    :ptype name: str
+    :param scopes: the enclosing scopes, outermost first
+    :ptype scopes: tuple[_ScopeNode, ...]
+    :return: the literal strings, in source order
+    :rtype: list[str]
+    """
+    values: list[str] = []
+    for scope in scopes:
+        for node in ast.walk(scope):
+            if (
+                isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension))
+                and isinstance(node.target, ast.Name)
+                and node.target.id == name
+            ):
+                values += _strings_in(node.iter)
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for decorator in scope.decorator_list:
+                values += _parametrized_strings(decorator, name)
+    return values
+
+
+def _parametrized_strings(decorator: ast.expr, name: str) -> list[str]:
+    """the strings a ``parametrize(...)`` decorator gives ``name``, or none.
+
+    :param decorator: a decorator expression
+    :ptype decorator: ast.expr
+    :param name: the parameter
+    :ptype name: str
+    :return: its literal strings
+    :rtype: list[str]
+    """
+    found: list[str] = []
+    if (
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr == "parametrize"
+        and len(decorator.args) >= 2
+        and isinstance(decorator.args[0], ast.Constant)
+        and isinstance(decorator.args[0].value, str)
+    ):
+        names = [n.strip() for n in decorator.args[0].value.split(",")]
+        if name in names:
+            position = names.index(name)
+            for case in getattr(decorator.args[1], "elts", []):
+                if len(names) == 1:
+                    found += _strings_in(case)
+                elif isinstance(case, (ast.Tuple, ast.List)) and position < len(case.elts):
+                    found += _strings_in(case.elts[position])
+    return found
+
+
+def _strings_in(expr: ast.expr) -> list[str]:
+    """the string constants an expression is, or holds as a literal list, tuple or set.
+
+    :param expr: the expression
+    :ptype expr: ast.expr
+    :return: its strings
+    :rtype: list[str]
+    """
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return [expr.value]
+    if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+        return [e.value for e in expr.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+    return []
+
+
+def _namespace_subscript_violations(tree: ast.Module, file: Path) -> list[Violation]:
+    """a private name read out of another object's namespace by subscript: ``vars(x)["_y"]`` or
+    ``x.__dict__["_y"]`` -- the getattr of shape F, spelled as a dictionary lookup.
+
+    :param tree: the parsed module
+    :ptype tree: ast.Module
+    :param file: the module's path
+    :ptype file: Path
+    :return: the violations, in source order
+    :rtype: list[Violation]
+    """
+    violations: list[Violation] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+            and is_private_name(node.slice.value)
+        ):
+            continue
+        namespace = node.value
+        receiver: ast.expr | None = None
+        if (
+            isinstance(namespace, ast.Call)
+            and isinstance(namespace.func, ast.Name)
+            and namespace.func.id == "vars"
+            and namespace.args
+        ):
+            receiver = namespace.args[0]
+        elif isinstance(namespace, ast.Attribute) and namespace.attr == "__dict__":
+            receiver = namespace.value
+        if receiver is None or (isinstance(receiver, ast.Name) and receiver.id in _OWNER_RECEIVERS):
+            continue
+        violations.append(
+            Violation(
+                category="underscore_access.F",
+                file=file,
+                line=node.lineno,
+                symbol=node.slice.value,
+                reason=(
+                    f"reads private '{node.slice.value}' out of another object's namespace (vars() / "
+                    f"__dict__), which SLF001 cannot see; reach it through public behaviour, or promote it"
+                ),
+            )
+        )
+    return violations
 
 
 def _is_module_own_object(

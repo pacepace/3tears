@@ -482,6 +482,30 @@ class TestShapeF:
 
         assert [(v.category, v.file, v.line, v.symbol) for v in violations] == [("underscore_access.F", path, 2, "_nc")]
 
+    def test_a_private_read_out_of_a_namespace_is_reported(self, tmp_path: Path) -> None:
+        tests = tmp_path / "tests"
+        _write(
+            tests / "test_x.py",
+            "from pkg import mod\n\ndef test_x():\n    assert vars(mod)['_SQL']\n    assert mod.__dict__['_OTHER']\n"
+            "    assert vars(mod)['PUBLIC']\n",
+        )
+
+        assert [v.symbol for v in shape_f_violations((tests,), tmp_path)] == ["_SQL", "_OTHER"]
+
+    def test_a_private_name_fed_to_getattr_from_literals_is_reported(self, tmp_path: Path) -> None:
+        tests = tmp_path / "tests"
+        _write(
+            tests / "test_x.py",
+            "import pytest\nfrom pkg import mod\n\n"
+            "@pytest.mark.parametrize('statement', ['_A_SQL', '_B_SQL'])\n"
+            "def test_p(statement):\n    getattr(mod, statement)\n\n"
+            "def test_loop():\n    for name in ('_C', 'D'):\n        getattr(mod, name)\n\n"
+            "@pytest.mark.parametrize('read', ['list_tables', 'table_hashes'])\n"
+            "def test_public(read, driver):\n    getattr(driver, read)\n",
+        )
+
+        assert [v.symbol for v in shape_f_violations((tests,), tmp_path)] == ["_A_SQL", "_C"]
+
     def test_every_reflective_builtin_is_covered(self, tmp_path: Path) -> None:
         src = tmp_path / "src"
         _write(

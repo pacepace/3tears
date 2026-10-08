@@ -440,6 +440,13 @@ _SELECTABLE = "has_table_privilege(current_user, rel.oid, 'SELECT')"
 
 _LOGGER = "threetears.datasources.drivers.base"
 
+#: the column-hash formula as the warehouse defines it: MD5 over each column's name, type and
+#: nullability, in ordinal order (``column_hash_payload`` and the Redshift driver hash the same way)
+_COLUMN_HASH_FORMULA = (
+    "MD5(STRING_AGG(MD5(column_name || ':' || data_type || ':' || COALESCE(is_nullable, '')), "
+    "',' ORDER BY ordinal_position)) AS column_hash"
+)
+
 
 def _column(table: str, selectable: bool | None, column: str = "c1") -> dict[str, Any]:
     """one ``list_columns`` record as the catalog query returns it, its privilege answer included."""
@@ -552,13 +559,17 @@ class TestIntrospectionCatalogsOnlySelectableTables:
     async def test_the_hash_probe_runs_the_formula_constant_verbatim(
         self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """the privilege check wraps the formula's one owner; it never restates the formula."""
-        from threetears.datasources.drivers import asyncpg_driver
+        """the privilege check wraps the column-hash formula; it never restates or alters it.
 
+        The formula is the warehouse's as much as this driver's (the Redshift driver and
+        ``column_hash_payload`` hash the same way), so this test owns its own copy of it and finds
+        it, whole and once, in what ``table_hashes`` sends.
+        """
         pool = _build_mock_pool(fetch_records=[])
         driver = _driver_owning(pool, postgres_config, monkeypatch)
         await driver.table_hashes(["s1"])
-        assert vars(asyncpg_driver)["_POSTGRES_TABLE_HASHES_SQL"] in _single_catalog_query(pool, ["s1"])
+        sent = _single_catalog_query(pool, ["s1"])
+        assert sent.count(_COLUMN_HASH_FORMULA) == 1, sent
 
     @pytest.mark.asyncio
     async def test_nothing_left_out_logs_nothing(
