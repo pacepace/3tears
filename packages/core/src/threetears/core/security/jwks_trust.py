@@ -106,9 +106,10 @@ MAX_STATEMENT_LIFETIME: Final[timedelta] = timedelta(minutes=15)
 #: how far behind the newest verified statement a statement may be issued and still be taken.
 #: Replicas behind one queue group each stamp ``iat`` from their own clock, so genuine replies
 #: arrive out of order by up to the replicas' clock skew; refusing every one of those would read
-#: as a forgery signal on each fetch that lands on the slower replica. A replay inside this leeway
-#: can bring back only a key the publisher served within it, which a verified key's rotation
-#: overlap holds anyway.
+#: as a forgery signal on each fetch that lands on the slower replica. A reply stamped behind the
+#: newest is adopted additively: it adds a kid the keyring lacks and rebinds, retires or restarts
+#: the overlap of nothing, so a replay inside this leeway cannot undo the newest key set. The floor
+#: is the newest ``iat`` ever taken, so a chain of such replays never walks it back.
 STATEMENT_ORDER_LEEWAY: Final[timedelta] = timedelta(seconds=30)
 
 #: the pod environment entry carrying the hub's pinned JWKS root public key: the 32 raw Ed25519
@@ -318,7 +319,7 @@ class JwksKeyring:
     _verified: set[str] = field(default_factory=set, init=False)
     _missing_since: dict[str, float] = field(default_factory=dict, init=False)
 
-    def adopt(self, keys: list[dict[str, Any]], *, verified: bool) -> KeyringMerge:
+    def adopt(self, keys: list[dict[str, Any]], *, verified: bool, additive: bool = False) -> KeyringMerge:
         """fold one taken reply's keys in.
 
         A verified reply is authoritative for every kid it names: its material replaces whatever
@@ -332,12 +333,44 @@ class JwksKeyring:
         :ptype keys: list[dict[str, Any]]
         :param verified: whether the reply's statement verified
         :ptype verified: bool
+        :param additive: the reply is genuine but stamped behind the newest one taken (a replica
+            whose clock runs behind): it only adds the kids the keyring lacks, and rebinds,
+            retires and restarts the missing clock of nothing, so an older key set cannot undo a
+            newer one
+        :ptype additive: bool
         :return: what changed
         :rtype: KeyringMerge
         """
         now = self.clock()
         seen = {entry["kid"]: entry for entry in keys if isinstance(entry, dict) and isinstance(entry.get("kid"), str)}
         added = tuple(sorted(kid for kid in seen if kid not in self._keys))
+        retired: list[str] = []
+        held: list[str] = []
+        if additive:
+            for kid in added:
+                self._keys[kid] = dict(seen[kid])
+                if verified:
+                    self._verified.add(kid)
+        else:
+            self._fold(seen, verified=verified, now=now, retired=retired, held=held)
+        return KeyringMerge(added=added, retired=tuple(retired), held=tuple(held))
+
+    def _fold(self, seen: dict[str, Any], *, verified: bool, now: float, retired: list[str], held: list[str]) -> None:
+        """fold a current reply in: bind its kids, and hold or retire the kids it omits.
+
+        :param seen: the reply's entries by kid
+        :ptype seen: dict[str, Any]
+        :param verified: whether the reply's statement verified
+        :ptype verified: bool
+        :param now: the clock's reading for this reply
+        :ptype now: float
+        :param retired: collects the kids retired
+        :ptype retired: list[str]
+        :param held: collects the missing kids still held
+        :ptype held: list[str]
+        :return: nothing
+        :rtype: None
+        """
         for kid, entry in seen.items():
             if verified or kid not in self._verified:
                 # the one place a kid is bound to material: a verified reply always, an unverified
@@ -346,8 +379,6 @@ class JwksKeyring:
             self._missing_since.pop(kid, None)
             if verified:
                 self._verified.add(kid)
-        retired: list[str] = []
-        held: list[str] = []
         for kid in sorted(set(self._keys) - set(seen)):
             first_missed = self._missing_since.setdefault(kid, now)
             if kid not in self._verified or now - first_missed >= self.overlap.total_seconds():
@@ -357,7 +388,6 @@ class JwksKeyring:
                 retired.append(kid)
             else:
                 held.append(kid)
-        return KeyringMerge(added=added, retired=tuple(retired), held=tuple(held))
 
     def document(self) -> dict[str, Any]:
         """the trusted keys as a JWKS document, a fresh copy each call.
@@ -399,6 +429,8 @@ class ReplyJudgement:
 
     trust: ReplyTrust
     reason: str = ""
+    #: a verified statement stamped behind the newest one taken, inside the leeway: adopted additively
+    behind: bool = False
 
 
 class JwksTrust:
@@ -480,7 +512,9 @@ class JwksTrust:
                 },
             )
         else:
-            merge = self._keyring.adopt(jwks_keys(document), verified=judgement.trust is ReplyTrust.VERIFIED)
+            merge = self._keyring.adopt(
+                jwks_keys(document), verified=judgement.trust is ReplyTrust.VERIFIED, additive=judgement.behind
+            )
         return judgement, merge
 
     def _judge(self, document: Mapping[str, Any]) -> ReplyJudgement:
@@ -529,8 +563,14 @@ class JwksTrust:
         else:
             newest = self._newest_statement_iat
             if newest is not None and claims.iat < newest - STATEMENT_ORDER_LEEWAY.total_seconds():
-                judgement = ReplyJudgement(ReplyTrust.REFUSED, "statement is older than one already verified")
+                judgement = ReplyJudgement(
+                    ReplyTrust.REFUSED,
+                    f"statement is older than one already verified (iat {claims.iat}, newest {newest}, "
+                    f"leeway {STATEMENT_ORDER_LEEWAY.total_seconds():g}s)",
+                )
             else:
+                if newest is not None and claims.iat < newest:
+                    judgement = ReplyJudgement(ReplyTrust.VERIFIED, behind=True)
                 self._newest_statement_iat = claims.iat if newest is None else max(newest, claims.iat)
                 self._statement_switch.judge(presented=True, claimed_sender=self._issuer)
         return judgement

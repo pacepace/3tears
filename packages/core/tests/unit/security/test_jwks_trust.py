@@ -588,6 +588,38 @@ class TestTheOrderFloorNeverWalksBack:
         assert (judgement.trust is ReplyTrust.VERIFIED) is taken
 
 
+class TestAReplyStampedBehindAddsOnly:
+    """a genuine reply from a replica whose clock runs behind cannot undo the newest key set."""
+
+    def test_it_does_not_restart_a_rotated_out_keys_overlap(self) -> None:
+        clock = [1000.0]
+        keyring = JwksKeyring(overlap=timedelta(seconds=60), clock=lambda: clock[0])
+        trust = _trust(keyring)
+        _, old = generate_signing_keypair()
+        now = int(time.time())
+        trust.take(_signed_document(_keys(_HUB_PUBLIC, old), now - 10))
+        clock[0] = 1100.0
+        trust.take(_signed_document(_keys(_HUB_PUBLIC), now))  # the rotation: old is missing from here
+        clock[0] = 1130.0
+        judgement, _ = trust.take(_signed_document(_keys(_HUB_PUBLIC, old), now - 1))  # a replica behind
+        assert judgement.trust is ReplyTrust.VERIFIED
+
+        clock[0] = 1161.0  # the rotation's overlap has run; a restarted one would not have
+        trust.take(_signed_document(_keys(_HUB_PUBLIC), now + 1))
+
+        assert jwk_thumbprint(old) not in trust.keyring
+
+    def test_it_still_brings_in_a_key_the_newest_set_lacks(self) -> None:
+        trust = _trust()
+        _, new = generate_signing_keypair()
+        now = int(time.time())
+        trust.take(_signed_document(_keys(_HUB_PUBLIC), now))
+
+        trust.take(_signed_document(_keys(_HUB_PUBLIC, new), now - 1))
+
+        assert jwk_thumbprint(new) in trust.keyring
+
+
 class TestTheMissingRootIsSaid:
     def test_a_provider_built_without_a_root_key_warns_naming_the_date(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("WARNING"):
