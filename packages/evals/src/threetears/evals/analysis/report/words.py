@@ -12,7 +12,7 @@ import typing
 from collections.abc import Callable
 from typing import Any, Literal
 
-from threetears.evals.analysis.arms import ArmStatus, arm_label, arm_levels, distinguishing_axes
+from threetears.evals.analysis.arms import ArmStatus, arm_label, arm_names
 from threetears.evals.analysis.bundle import ComparisonVerdict
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.viz_refs import cell_arm_labels
@@ -112,8 +112,7 @@ def arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
         A function from a cell reference to its arm's name.
     """
     labels = cell_arm_labels(analysis.decision_surface, analysis.variant_index)
-    index = {entry.variant_key: entry for entry in analysis.variant_index}
-    distinguishing = distinguishing_axes(analysis.variant_index)
+    names = arm_names(analysis.variant_index)
 
     def name(ref: str) -> str:
         if ref in labels:
@@ -121,13 +120,7 @@ def arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
         variant = variant_of_cell_ref(ref)
         if variant is None:
             return "a cell this analysis cannot read"
-        entry = index.get(variant)
-        return arm_label(
-            variant,
-            arm_levels(entry, distinguishing),
-            levels_unavailable=entry.levels_unavailable if entry else None,
-            placed=entry is not None,
-        )
+        return arm_label(variant, names)
 
     return name
 

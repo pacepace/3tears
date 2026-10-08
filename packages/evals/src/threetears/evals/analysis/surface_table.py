@@ -14,7 +14,8 @@ for the arm table.
 stored analysis carries no layout a later reader would have to un-decide.
 
 **What a surface still does itself: style the row and mark the control.** A row's name is served
-as ``label``, computed by :func:`~threetears.evals.analysis.arms.arm_label` — the labeller the arm
+as ``label``, computed by :func:`~threetears.evals.analysis.arms.arm_label` over the analysis's
+:func:`~threetears.evals.analysis.arms.arm_names` — the labeller the arm
 table's rows are served through — so the page and the MCP render print one spelling rather than
 each re-spelling the arm, and a surface whose two tables named one arm two ways would tell its
 reader they were two arms.
@@ -35,9 +36,10 @@ from pydantic import Field, computed_field, model_validator
 from threetears.evals.analysis.arms import (
     ArmLevel,
     arm_label,
-    arm_levels,
+    arm_names,
     distinguishing_axes,
     multi_rig_variants,
+    naming_levels,
     short_digest,
 )
 from threetears.evals.analysis.numbers import format_number
@@ -189,12 +191,20 @@ class SurfaceRow(EvalDocumentModel):
             "under levels the arm never ran."
         )
     )
+    label: str = Field(
+        min_length=1,
+        description=(
+            "What this row is called — `arm_label` over the analysis's `arm_names` and this row's `rig`, the arm "
+            "table's labeller, so one arm reads alike in both tables and no two rows read alike. Without the "
+            "control marker, which each surface spells for itself."
+        ),
+    )
     levels: list[ArmLevel] = Field(
         default_factory=list,
         description=(
-            "What the arm carried, axis by axis, exactly as the arm table's row for it carries them — so `label` "
-            "names this row as the arm table names that one. Empty when unplaced, or when the index "
-            "cannot describe the arm (`levels_unavailable`)."
+            "What the arm is NAMED by, axis by axis, exactly as the arm table's row for it carries them (that "
+            "row's `settings` holds everything it ran). Empty when unplaced, or when the index cannot describe "
+            "the arm (`levels_unavailable`)."
         ),
     )
     levels_unavailable: str | None = Field(
@@ -225,20 +235,6 @@ class SurfaceRow(EvalDocumentModel):
             "latency measure it did not carry, or a bar the server wrote no verdict on for it."
         ),
     )
-
-    @computed_field(  # type: ignore[prop-decorator]  # pydantic's documented form; mypy cannot type a decorator above @property
-        description=(
-            "What this row is called — `arm_label` over the row's own `variant_key`, `levels`, "
-            "`levels_unavailable`, `placed` and `rig`, the arm table's labeller, so one arm reads alike in both "
-            "tables. Without the control marker, which each surface spells for itself."
-        )
-    )
-    @property
-    def label(self) -> str:
-        """The row's name, as :func:`~threetears.evals.analysis.arms.arm_label` spells it from this row's own fields."""
-        return arm_label(
-            self.variant_key, self.levels, levels_unavailable=self.levels_unavailable, placed=self.placed, rig=self.rig
-        )
 
 
 class SurfaceUnadjudicatedBar(EvalDocumentModel):
@@ -508,22 +504,25 @@ def surface_table_of(surface: DecisionSurface, variant_index: Sequence[VariantIn
 
     index = {entry.variant_key: entry for entry in variant_index}
     distinguishing = distinguishing_axes(variant_index)
+    names = arm_names(variant_index)
     multi_rig = multi_rig_variants(cells)
 
     rows = []
     for cell in cells:
         entry = index.get(cell.variant_key)
         notes = _run_notes(cell)
+        rig = short_digest(cell.apparatus_class_id) if cell.variant_key in multi_rig else None
         rows.append(
             SurfaceRow(
                 variant_key=cell.variant_key,
                 apparatus_class_id=cell.apparatus_class_id,
                 is_control=cell.variant_key == control,
                 placed=entry is not None,
-                # The arm table's own function, so the two tables name one arm alike.
-                levels=arm_levels(entry, distinguishing),
+                # The arm table's own functions, so the two tables name one arm alike.
+                label=arm_label(cell.variant_key, names, rig=rig),
+                levels=naming_levels(entry, distinguishing),
                 levels_unavailable=entry.levels_unavailable if entry else None,
-                rig=short_digest(cell.apparatus_class_id) if cell.variant_key in multi_rig else None,
+                rig=rig,
                 replication=_replication(cell),
                 flags=[flag for flag, runs in _flag_sources(cell) if runs],
                 run_notes=notes,

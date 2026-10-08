@@ -86,10 +86,6 @@ _DISPLAY_LIMIT = 60
 #: two names: ``gm.house_rules`` is the whole rule set as one level, ``gm.house_rules.*`` the family.
 _FAMILY_SUFFIX = ".*"
 
-#: What the "not a run of this kind" level is addressed by, ahead of the kind's name. A NUL byte never
-#: begins canonical JSON, so this level's hash can equal no value a field holds — ``None`` included.
-_NOT_THIS_KIND = b"\x00not a run of kind "
-
 #: Renders any validated Python value in its JSON form, as ``model_dump(mode="json")`` would.
 _JSON_FORM: TypeAdapter[Any] = TypeAdapter(Any)
 
@@ -330,7 +326,7 @@ class KindContract:
         """
         overlays = self._overlays_of(run)
         if overlays is None:
-            absent = SweepableValue.of_bytes(_NOT_THIS_KIND + self.kind.encode(), display=f"(not a {self.kind} run)")
+            absent = SweepableValue.not_this_kind(self.kind)
             return {knob.lever: absent for knob in self._knobs}
         return {knob.lever: _level(knob, overlays.get(knob.field_name)) for knob in self._knobs}
 

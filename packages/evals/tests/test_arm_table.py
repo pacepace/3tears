@@ -511,11 +511,15 @@ class TestAnArmIsNamedByTheKnobItSwept:
         assert {row.levels[0].display: row.status for row in table.rows} == {"2": "winner", "3": "unresolved"}
         assert table.unplaced_decision_cells == []
 
-    def test_the_unfolded_index_names_every_arm_alike_and_still_places_the_verdict(self) -> None:
+    def test_the_unfolded_index_levels_every_arm_alike_and_still_places_the_verdict(self) -> None:
         table = arm_table(self._analysis(self._entries(folded=False)))
 
         labels = [", ".join(f"{level.axis_id}={level.display}" for level in row.levels) for row in table.rows]
         assert labels == [f"{self._SURFACE}=1 entries"] * 2
+        # Levels that read alike never make two arms read alike (#567): each label adds its arm's digest.
+        assert sorted(row.label for row in table.rows) == sorted(
+            f"{self._SURFACE}=1 entries (arm {row.variant_key[:12]})" for row in table.rows
+        )
         entries = self._entries(folded=False)
         assert {row.variant_key: row.status for row in table.rows} == {
             entries[0].variant_key: "winner",

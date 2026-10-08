@@ -62,6 +62,13 @@ class IntervalScale(BaseModel):
 #: the case that motivates having the field at all.
 Scale = Annotated[NominalScale | OrdinalScale | IntervalScale, Field(discriminator="kind")]
 
+#: What the "not a run of this kind" level is addressed by, ahead of the kind's name. A NUL byte never
+#: begins canonical JSON, so this level's hash can equal no value a field holds — ``None`` included.
+_NOT_THIS_KIND = b"\x00not a run of kind "
+
+#: How the "not a run of this kind" level reads, around the kind's name.
+_NOT_THIS_KIND_DISPLAY = ("(not a ", " run)")
+
 
 class SweepableValue(BaseModel):
     """One level of one swept input: what it *is*, what to call it, and what kind of axis it is on.
@@ -163,6 +170,43 @@ class SweepableValue(BaseModel):
         """
         digest = bytes_digest(payload)
         return cls._build(digest, display=display or f"sha256:{digest[:12]}", scale=scale, raw=None)
+
+    @classmethod
+    def not_this_kind(cls, kind: str) -> SweepableValue:
+        """The level a lever of ``kind`` sits at on a run of another kind — the lever does not apply to it.
+
+        Every such run shares it, so the lever splits nothing among them, and it hashes apart from every
+        value a field can hold, ``None`` included, so a pivot over the lever never joins a run of another
+        kind with a run of ``kind`` whose field is ``None``. Build this level, rather than a value of your
+        own displayed alike, wherever a host's reader answers for a run its lever does not apply to: it is
+        what :attr:`not_of_kind` recognises, and a report never names an arm by a lever that does not apply
+        to it.
+
+        Args:
+            kind: The kind whose lever this is, as a template's ``candidate_kind`` spells it.
+
+        Returns:
+            The level.
+        """
+        opening, closing = _NOT_THIS_KIND_DISPLAY
+        return cls.of_bytes(_NOT_THIS_KIND + kind.encode(), display=f"{opening}{kind}{closing}")
+
+    @property
+    def not_of_kind(self) -> str | None:
+        """The kind this level says its run is not, when it is :meth:`not_this_kind`'s level; else ``None``.
+
+        Read off the content hash, which is the level's identity: the display only proposes the kind, and
+        the hash must be the one :meth:`not_this_kind` mints for it. So a value of a host's own that merely
+        reads ``(not a … run)`` is a value like any other, and is shown like one.
+
+        Returns:
+            The kind's name, or ``None``.
+        """
+        opening, closing = _NOT_THIS_KIND_DISPLAY
+        if not (self.display.startswith(opening) and self.display.endswith(closing)):
+            return None
+        kind = self.display[len(opening) : -len(closing)]
+        return kind if self.content_hash == bytes_digest(_NOT_THIS_KIND + kind.encode()) else None
 
     @classmethod
     def _build(cls, digest: str, *, display: str | None, scale: Scale | None, raw: Any | None) -> SweepableValue:

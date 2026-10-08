@@ -289,20 +289,29 @@ class TestWhatARowCarriesForItsLabel:
 
     def test_a_swept_member_names_the_arm_as_the_arm_table_does(self) -> None:
         # `named_levers` folds a resolved surface into the knob it swept; an arm table built from it
-        # and a surface built from `levers` would name the same arm two ways.
-        levers = {"tool_config": level("surface-hash")}
-        swept = VariantIndexEntry(
-            variant_key=compute_variant_key(levers),
-            levers=levers,
-            swept={"planner.max_rounds": level("2")},
-            folded=["tool_config"],
-        )
+        # and a surface built from `levers` would name the same arm two ways. Two arms, because an arm
+        # is named by what tells it from the others (#567): a lone arm is named by no lever at all.
+        swept = []
+        for rounds in ("2", "3"):
+            levers = {"tool_config": level(f"surface-hash-{rounds}")}
+            swept.append(
+                VariantIndexEntry(
+                    variant_key=compute_variant_key(levers),
+                    levers=levers,
+                    swept={"planner.max_rounds": level(rounds)},
+                    folded=["tool_config"],
+                )
+            )
         subject = analysis(
-            DecisionSurface(cells=[cell(variant=swept.variant_key)], measures=measures()), variant_index=[swept]
+            DecisionSurface(cells=[cell(variant=arm.variant_key) for arm in swept], measures=measures()),
+            variant_index=swept,
         )
-        (row,) = build_surface_table(subject).rows
-        assert [lv.axis_id for lv in row.levels] == ["planner.max_rounds"]
-        assert row.levels == next(r for r in arm_table(subject).rows if r.variant_key == swept.variant_key).levels
+        rows = build_surface_table(subject).rows
+        assert [[lv.axis_id for lv in row.levels] for row in rows] == [["planner.max_rounds"]] * 2
+        arm_rows = {r.variant_key: r for r in arm_table(subject).rows}
+        for row in rows:
+            assert row.levels == arm_rows[row.variant_key].levels
+            assert row.label == arm_rows[row.variant_key].label
 
     def test_levels_unavailable_travels_with_its_reason(self) -> None:
         index = [VariantIndexEntry(variant_key="c" * 64, levers={}, levels_unavailable="minted under predicate v3")]
@@ -632,7 +641,9 @@ class TestTheTableRefusesAnInconsistentShape:
             SurfaceColumn(**self._merit(**overrides))
 
     def _row(self, values: list) -> SurfaceRow:
-        return SurfaceRow(variant_key="v", apparatus_class_id="r", placed=True, replication="6 obs", values=values)
+        return SurfaceRow(
+            variant_key="v", apparatus_class_id="r", label="v", placed=True, replication="6 obs", values=values
+        )
 
     def test_the_valid_table_constructs(self) -> None:
         table = SurfaceTable(

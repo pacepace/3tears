@@ -262,12 +262,17 @@ def _chart_block(analysis: EvalAnalysis, position: int, viz: Viz) -> ChartBlock:
 
 
 def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
-    """The arm table — every arm the campaign observed and where it stands — and what the join could not place."""
+    """The arm table — every arm the campaign observed and where it stands — and what the join could not place.
+
+    The one place an arm's full lever set is stated: every other block names the arm by its label, which
+    carries only what tells it from the other arms.
+    """
     rows: list[dict[str, Cell]] = [
         {
             "arm": f"{row.label} (control)" if row.is_control else row.label,
             "status": ARM_STATUS_WORDS[row.status],
             "findings": positions([int(finding) for finding in row.finding_ids]) or None,
+            "levers": "; ".join(f"{level.axis_id}={level.display}" for level in row.settings) or None,
         }
         for row in table.rows
     ]
@@ -280,6 +285,7 @@ def _arm_blocks(table: ArmTable) -> list[ReportBlock]:
                 TableColumn(key="arm", header="Arm"),
                 TableColumn(key="status", header="Status"),
                 TableColumn(key="findings", header="Rests on finding"),
+                TableColumn(key="levers", header="Every lever it ran"),
             ],
             rows=rows,
             order="winner, then ruled out, then replaced incumbent, then unresolved",

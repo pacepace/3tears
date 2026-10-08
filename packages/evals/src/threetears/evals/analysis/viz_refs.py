@@ -32,10 +32,10 @@ from pydantic import Field
 
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.arms import (
+    applicable_levers,
     arm_label,
-    arm_levels,
-    arm_levers,
-    distinguishing_axes,
+    arm_names,
+    elide_level,
     multi_rig_variants,
     short_digest,
 )
@@ -175,10 +175,11 @@ def _repeated(values: Sequence[str]) -> str:
 def cell_arm_labels(surface: DecisionSurface, variant_index: list[VariantIndexEntry]) -> dict[str, str]:
     """Name every cell on the surface the way the arm table and decision surface name its arm.
 
-    The words are :func:`~threetears.evals.analysis.arms.arm_label`'s — the labeller the MCP render's
-    arm and surface tables call — and the facts behind them (the levels, the multi-rig test, the
-    digest width) are the arm module's, so one arm reads alike in a chart, in either table, and in
-    the memo the reporter eval's judge reads (:func:`~threetears.evals.analysis.reporter_kind.render_memo_as_written`).
+    The words are :func:`~threetears.evals.analysis.arms.arm_label`'s over the analysis's
+    :func:`~threetears.evals.analysis.arms.arm_names` — the labeller the MCP render's arm and surface
+    tables call — and the facts behind them (the levels, the cut, the multi-rig test, the digest width)
+    are the arm module's, so one arm reads alike in a chart, in either table, and in the memo the
+    reporter eval's judge reads (:func:`~threetears.evals.analysis.reporter_kind.render_memo_as_written`).
 
     Args:
         surface: The decision surface whose cells to name.
@@ -187,22 +188,18 @@ def cell_arm_labels(surface: DecisionSurface, variant_index: list[VariantIndexEn
     Returns:
         ``cell_ref -> label`` for every cell.
     """
-    index = {entry.variant_key: entry for entry in variant_index}
     # Over EVERY cell rather than the ones a chart draws, as the surface table asks it: a label is
     # the arm's name on this analysis, and a name must not change with the chart it appears in.
     multi_rig = multi_rig_variants(surface.cells)
-    distinguishing = distinguishing_axes(variant_index)
-    labels = {}
-    for ref, cell in cell_index(surface).items():
-        entry = index.get(cell.variant_key)
-        labels[ref] = arm_label(
+    names = arm_names(variant_index)
+    return {
+        ref: arm_label(
             cell.variant_key,
-            arm_levels(entry, distinguishing),
-            levels_unavailable=entry.levels_unavailable if entry else None,
-            placed=entry is not None,
+            names,
             rig=short_digest(cell.apparatus_class_id) if cell.variant_key in multi_rig else None,
         )
-    return labels
+        for ref, cell in cell_index(surface).items()
+    }
 
 
 # --- Shared readers --------------------------------------------------------------------------------
@@ -677,9 +674,12 @@ def _sweep_configs(
     """Each cell's configuration — its arm's levels — over the levers that actually vary among them.
 
     A lever one arm carries and another does not reads as the absence sentinel the payload already
-    knows. A lever every row holds at the same level is dropped: a barcode column that never
-    changes says nothing and still spends a hue. Orderedness is DECLARED from each level's scale
-    rather than left to the compiler's text inference, because the scale is what the host said.
+    knows — and so does a lever that does not apply to an arm's kind, which that arm did not run. A
+    lever every row holds at the same level is dropped: a barcode column that never changes says
+    nothing and still spends a hue. Orderedness is DECLARED from each level's scale rather than left
+    to the compiler's text inference, because the scale is what the host said. Each level is cut as
+    an arm's name cuts it (:func:`~threetears.evals.analysis.arms.elide_level`) wherever the cut keeps
+    that column's levels apart, so no two configurations come to read alike.
 
     Raises:
         UnresolvableReference: A cell's levels cannot be described, or the cells differ on nothing.
@@ -689,7 +689,7 @@ def _sweep_configs(
     levers: list[dict[str, Any]] = []
     for ref, cell in zip(cells, chosen, strict=True):
         entry = index.get(cell.variant_key)
-        named = arm_levers(entry)
+        named = applicable_levers(entry)
         if entry is None or entry.levels_unavailable or not named:
             raise UnresolvableReference(
                 f"sweep_ranking places cell {ref!r} by its levels, and this analysis cannot say what its arm ran — "
@@ -718,6 +718,11 @@ def _sweep_configs(
         raise UnresolvableReference(
             f"sweep_ranking's cells ({', '.join(cells)}) run at identical levels — there is no configuration to rank"
         )
+    for name in varying:
+        column = {config[name] for config in configs}
+        if len({elide_level(level) for level in column}) == len(column):
+            for config in configs:
+                config[name] = elide_level(config[name])
     return (
         [{name: config[name] for name in varying} for config in configs],
         [{"name": name, "ordered": ordered[name]} for name in varying],
