@@ -27,6 +27,8 @@ packages (bumped in lock-step).
   only when it verifies and its id is unspent (the sender's JWKS fetched afresh once for an unknown
   kid; an unreachable ledger refuses); a message without one is the door's `DoorProofSwitch`'s to
   judge, accepted until the window's date. Refusals are counted in `service_envelope_refused{door,cause}`.
+- `ServiceEnvelopeDoor.admit_message(data, op=)` hashes the message exactly as sent, for a receiver
+  whose model is a tolerant reader: a field a newer sender adds still counts toward the hash.
 - `ServiceEnvelopeSigner` holds one sending service's key, kid and issuer; `seal` returns a body with
   its envelope added, ready to send.
 

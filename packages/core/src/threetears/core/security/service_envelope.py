@@ -455,6 +455,26 @@ class ServiceEnvelopeDoor:
             )
         return admitted
 
+    async def admit_message(self, data: bytes, *, op: str) -> bool:
+        """whether the receiver may act on the message ``data`` for ``op``, hashed exactly as sent.
+
+        The door to use when the receiver's own model of the message is a tolerant reader: a model
+        that ignores a field it does not know would hash less than the sender signed, so a sender a
+        release ahead, adding a field, would be refused. Here every field as sent counts.
+
+        :param data: the message bytes, a JSON object
+        :ptype data: bytes
+        :param op: the operation the receiver is about to perform
+        :ptype op: str
+        :return: ``True`` to act, ``False`` to refuse; a body that is not a JSON object is refused
+        :rtype: bool
+        """
+        try:
+            body = json.loads(data)
+        except ValueError, UnicodeDecodeError:
+            body = None
+        return isinstance(body, dict) and await self.admit(body, op=op)
+
     async def _verified(self, envelope: str, *, body: Mapping[str, Any], op: str) -> bool:
         """verify and spend ``envelope``, logging and counting a refusal.
 

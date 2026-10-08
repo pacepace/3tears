@@ -336,3 +336,20 @@ class TestServiceEnvelopeSigner:
         sealed = signer.seal(audience="hub.claim_grant", op="ensure", body=_BODY)
         assert set(sealed) == {*_BODY, SERVICE_ENVELOPE_FIELD}
         _verify(sealed[SERVICE_ENVELOPE_FIELD], jwks, body=sealed)
+
+
+class TestAdmitMessage:
+    async def test_a_field_the_receiver_does_not_model_still_counts_toward_the_hash(self) -> None:
+        import json
+
+        priv, jwks = _keys()
+        door = _door(_Jwks(jwks))
+        newer = {**_BODY, "added_by_a_newer_sender": True}
+        signer_body = {**newer, SERVICE_ENVELOPE_FIELD: _mint(priv, body=newer)}
+        assert await door.admit_message(json.dumps(signer_body).encode(), op="ensure") is True
+
+    async def test_a_body_that_is_not_a_json_object_is_refused(self) -> None:
+        _, jwks = _keys()
+        door = _door(_Jwks(jwks))
+        assert await door.admit_message(b"[1, 2]", op="ensure") is False
+        assert await door.admit_message(b"\xff", op="ensure") is False
