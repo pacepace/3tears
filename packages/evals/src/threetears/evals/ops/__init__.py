@@ -18,6 +18,10 @@ and its siblings) beside them, so a command line and an agent read one rendering
 :func:`scope_out_of_run_spend` reads the out-of-run ledger — the spend no run's results carry — into an
 :class:`OutOfRunSpendReport` of its own, with :func:`out_of_run_spend_text` beside it.
 
+The reporter case bank's operations — :func:`reporter_case_freeze`, :func:`reporter_cases_list` and
+:func:`reporter_case_archive` — are how a surface makes the cases a reporter run measures: each is one
+campaign's analysis bundle, frozen, and a reporter template launches nothing until one is.
+
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
 """
@@ -80,6 +84,17 @@ from threetears.evals.ops.lenses import (
     scope_out_of_run_spend,
     scope_pivot,
 )
+from threetears.evals.analysis.reporter_bank import FrozenReporterCase
+from threetears.evals.ops.reporter import (
+    AmbiguousReporterPair,
+    ReporterCaseEntry,
+    ReporterCaseFreeze,
+    ReporterCaseListing,
+    UnreadableReporterCase,
+    reporter_case_archive,
+    reporter_case_freeze,
+    reporter_cases_list,
+)
 from threetears.evals.ops.runs import (
     LaunchArguments,
     ResultRated,
@@ -104,6 +119,7 @@ __all__ = [
     "ANALYSIS_JOB_PREFIX",
     "RUN_JOB_PREFIX",
     "TERMINAL_JOB_STATES",
+    "AmbiguousReporterPair",
     "AnalysisDeleted",
     "AnalysisGenerationEstimate",
     "ArmEstimate",
@@ -115,6 +131,7 @@ __all__ = [
     "CampaignListing",
     "CostEstimate",
     "EvalSummary",
+    "FrozenReporterCase",
     "HistoryResult",
     "JobHandle",
     "JobKind",
@@ -130,6 +147,9 @@ __all__ = [
     "PivotTable",
     "ReportDocument",
     "ReportFormat",
+    "ReporterCaseEntry",
+    "ReporterCaseFreeze",
+    "ReporterCaseListing",
     "ResultRated",
     "RunDeleted",
     "RunLine",
@@ -137,6 +157,7 @@ __all__ = [
     "ScoreExport",
     "TemplateLine",
     "TemplateListing",
+    "UnreadableReporterCase",
     "analyses_list",
     "analysis_archive",
     "analysis_delete",
@@ -158,6 +179,9 @@ __all__ = [
     "parse_job_id",
     "pivot_text",
     "report_read",
+    "reporter_case_archive",
+    "reporter_case_freeze",
+    "reporter_cases_list",
     "serialize_report",
     "result_rate",
     "run_archive",

@@ -31,6 +31,7 @@ from threetears.evals.ops import (
     CampaignListing,
     LaunchEstimate,
     EvalSummary,
+    FrozenReporterCase,
     HistoryResult,
     JobsStarted,
     JobStatus,
@@ -39,6 +40,8 @@ from threetears.evals.ops import (
     OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
+    ReporterCaseFreeze,
+    ReporterCaseListing,
     ResultRated,
     RunDeleted,
     RunLine,
@@ -57,6 +60,9 @@ from threetears.evals.ops import (
     job_poll,
     launch_estimate,
     report_read,
+    reporter_case_archive,
+    reporter_case_freeze,
+    reporter_cases_list,
     result_rate,
     run_archive,
     run_delete,
@@ -88,6 +94,17 @@ IncludeArchived = Annotated[bool, Field(description="List archived records too; 
 Archived = Annotated[bool, Field(description="The state to set: true retires the record, false restores it.")]
 Reason = Annotated[str | None, Field(description="Why, recorded on a cancelled run.")]
 Confirm = Annotated[str, Field(description="Must echo the id of what is destroyed, exactly.")]
+ArchiveReason = Annotated[
+    str | None,
+    Field(
+        description="Why the record is archived (an analysis shown false or superseded, a reporter case that can no "
+        "longer measure anything); cleared on restore."
+    ),
+]
+ReporterCaseId = Annotated[
+    str,
+    Field(min_length=1, description="A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it."),
+]
 Name = Annotated[str, Field(min_length=1, description="The campaign's name, as an operator reads it.")]
 Behavior = Annotated[str, Field(min_length=1, description="Which aspect of the subject is under test.")]
 Description = Annotated[str, Field(description="A longer description of the campaign.")]
@@ -233,10 +250,7 @@ class AnalysisArchiveParams(EvalBaseModel):
 
     analysis_id: AnalysisId
     archived: Archived
-    archive_reason: Annotated[
-        str | None,
-        Field(description="Why the analysis is archived (it was shown false, or superseded); cleared on restore."),
-    ] = None
+    archive_reason: ArchiveReason = None
 
 
 class AnalysisGenerateParams(EvalBaseModel):
@@ -251,6 +265,29 @@ class ReportReadParams(EvalBaseModel):
 
     campaign_id: CampaignId
     format: Format = "markdown"
+
+
+class ReporterCaseFreezeParams(ReporterCaseFreeze):
+    """``reporter_case_freeze`` — the freeze's own arguments, declared once on :class:`~threetears.evals.ops.ReporterCaseFreeze`.
+
+    Derived rather than restated, as :class:`RunLaunchParams` is, so a field the operation gains is a parameter
+    the action offers.
+    """
+
+
+class ReporterCasesListParams(EvalBaseModel):
+    """``reporter_cases_list``."""
+
+    template_id: TemplateId
+    include_archived: IncludeArchived = False
+
+
+class ReporterCaseArchiveParams(EvalBaseModel):
+    """``reporter_case_archive``."""
+
+    test_case_id: ReporterCaseId
+    archived: Archived = True
+    archive_reason: ArchiveReason = None
 
 
 class ScopePivotParams(EvalBaseModel):
@@ -455,6 +492,36 @@ async def _report_read(host: OpsHost, caller: Caller, params: ReportReadParams) 
     )
 
 
+async def _reporter_case_freeze(host: OpsHost, caller: Caller, params: ReporterCaseFreezeParams) -> FrozenReporterCase:
+    eval_host = host.eval_host
+    freeze = ReporterCaseFreeze.model_validate(params.model_dump())
+    return await run_blocking(eval_host.blocking_executor, reporter_case_freeze, eval_host, freeze, caller.scope_id)
+
+
+async def _reporter_cases_list(host: OpsHost, caller: Caller, params: ReporterCasesListParams) -> ReporterCaseListing:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(reporter_cases_list, include_archived=params.include_archived),
+        eval_host,
+        params.template_id,
+        caller.scope_id,
+    )
+
+
+async def _reporter_case_archive(
+    host: OpsHost, caller: Caller, params: ReporterCaseArchiveParams
+) -> FrozenReporterCase:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(reporter_case_archive, archived=params.archived, reason=params.archive_reason),
+        eval_host,
+        params.test_case_id,
+        caller.scope_id,
+    )
+
+
 async def _scope_pivot(host: OpsHost, caller: Caller, params: ScopePivotParams) -> PivotTable:
     eval_host = host.eval_host
     return await run_blocking(
@@ -579,6 +646,7 @@ def engine_actions() -> tuple[Action, ...]:
         The actions.
     """
     run_id, campaign_id, analysis_id = "0193a1b2-run", "0193a1b2-campaign", "0193a1b2-analysis"
+    reporter_template_id, reporter_case_id = "tmpl-reporter", "0193a1b2-reporter-case"
     return (
         Action(
             name="templates_list",
@@ -756,6 +824,49 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id, "format": "markdown"},
         ),
         Action(
+            name="reporter_case_freeze",
+            summary="Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template.",
+            workflow=ANALYSE,
+            permission="write",
+            params=ReporterCaseFreezeParams,
+            result=FrozenReporterCase,
+            handler=_reporter_case_freeze,
+            render=render.render_reporter_case,
+            example={
+                "template_id": reporter_template_id,
+                "campaign_id": campaign_id,
+                "recorded_analysis_id": analysis_id,
+                "labels": [{"dimension": "reporter.groundedness", "direction": "high", "quote": "every number checks"}],
+            },
+            detail=(
+                "A reporter run measures the analysis writer, and its cases are never generated: each is one "
+                "campaign's bundle, frozen with its fingerprint, and a reporter template launches nothing until one "
+                "is frozen. With recorded_analysis_id the case also pins that analysis's memo, which the as-recorded "
+                "candidate replays and labels are written about; without it only a generating candidate can run "
+                "the case. One campaign and memo is one case: a freeze matching the pair's live case returns it, and "
+                "one that differs (other labels, or evidence that moved) is refused unless supersedes names the live "
+                "case. limits states what the frozen evidence cannot support. Then run_launch the template; "
+                "reporter_cases_list reads its bank, reporter_case_archive retires a case. Calls no model."
+            ),
+        ),
+        Action(
+            name="reporter_cases_list",
+            summary="List a reporter template's cases: which each campaign and memo launches, superseded or retired.",
+            workflow=ANALYSE,
+            permission="read",
+            params=ReporterCasesListParams,
+            result=ReporterCaseListing,
+            handler=_reporter_cases_list,
+            render=render.render_reporter_cases,
+            example={"template_id": reporter_template_id},
+            detail=(
+                "Each case with whether a launch runs it and what superseded it. A case this build cannot read is "
+                "listed rather than refused, since this is where it is found; while one is listed, which case is "
+                "live cannot be decided. A pair holding more than one live case is named, since every launch of the "
+                "template refuses until one freeze supersedes them all."
+            ),
+        ),
+        Action(
             name="scope_pivot",
             summary="Aggregate one measure over the scope's observations by two coordinates, cell by cell.",
             workflow=ANALYSE,
@@ -873,6 +984,25 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_analysis_archive,
             render=render.render_analysis_line,
             example={"analysis_id": analysis_id, "archived": True, "archive_reason": "superseded"},
+        ),
+        Action(
+            name="reporter_case_archive",
+            summary="Retire a reporter case (or restore it): no launch runs it again, nothing destroyed.",
+            workflow=CURATE,
+            permission="write",
+            params=ReporterCaseArchiveParams,
+            result=FrozenReporterCase,
+            handler=_reporter_case_archive,
+            render=render.render_reporter_case,
+            example={
+                "test_case_id": reporter_case_id,
+                "archived": True,
+                "archive_reason": "its bundle no longer re-assembles",
+            },
+            detail=(
+                "For a case that can no longer measure anything. It stays readable for every run measured against "
+                "it. A restore is refused when it would give its campaign and memo a second live case."
+            ),
         ),
         Action(
             name="run_delete",

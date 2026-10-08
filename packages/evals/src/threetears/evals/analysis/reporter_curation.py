@@ -94,9 +94,10 @@ def set_reporter_case_archived(
         NotFoundError: No such case in that scope.
         ValidationFailedError: It carries no reporter case — the reporter case bank is the one
             launch path that reads the flag, so retiring any other case would record a retirement
-            no launch honours — or carries one this build cannot read, or restoring it would make a
-            second live case of its pair (or its template holds a case this build cannot read, or it
-            names no template, so that cannot be decided).
+            no launch honours — or carries one under no template, which is in no bank for the same
+            reason, or carries one this build cannot read, or restoring it would make a second live
+            case of its pair (or its template holds a case this build cannot read, so that cannot be
+            decided).
         StorageError: The updated case could not be persisted.
     """
     from threetears.evals.contracts.models import EvalTestCase
@@ -117,18 +118,19 @@ def set_reporter_case_archived(
             "reporter case bank is the one launch path that reads a case's retirement, so retiring any other case "
             "would record a retirement no launch honours."
         )
+    template_id = current.template_id
+    if template_id is None:
+        # The bank is read per template, so a case naming none is in no bank: no launch would honour its
+        # retirement, and whether restoring it makes a second live case of its pair cannot be decided.
+        raise ValidationFailedError(
+            f"test case {test_case_id!r} carries a reporter case but names no template, so it is in no template's "
+            "case bank: no launch reads its retirement, and whether restoring it makes a second live case of its "
+            "pair cannot be decided. A freeze stores every reporter case under its template."
+        )
     target_reason = reason if archived else None
     if current.archived == archived and current.archived_reason == target_reason:
         return current
     if not archived:
-        template_id = current.template_id
-        if template_id is None:
-            # Its rivals are the cases of its template, so a case naming none cannot be decided live or not.
-            raise ValidationFailedError(
-                f"test case {test_case_id!r} carries a reporter case but names no template, so whether restoring it "
-                "makes a second live case of its pair cannot be decided; a freeze stores every reporter case under "
-                "its template"
-            )
         bank = decidable_reporter_case_bank(
             storage.query_test_cases(scope_id, template_id=template_id), template_id=template_id
         )

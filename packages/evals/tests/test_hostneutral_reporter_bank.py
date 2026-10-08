@@ -441,3 +441,15 @@ def test_a_reporter_case_naming_no_template_cannot_be_restored() -> None:
     storage.save_test_case(case)
     with pytest.raises(ValidationFailedError, match="names no template"):
         set_reporter_case_archived(storage, "c-orphan", SCOPE, archived=False)
+
+
+def test_a_reporter_case_naming_no_template_cannot_be_retired() -> None:
+    """No template's bank holds it, so no launch would honour its retirement — refused like a non-reporter case."""
+    storage, _ = memory_storage()
+    storage.save_test_case(
+        EvalTestCase(id="c-orphan", scope_id=SCOPE, template_id=None, host_payload=reporter_case_payload(_case()))
+    )
+    with pytest.raises(ValidationFailedError, match="names no template"):
+        set_reporter_case_archived(storage, "c-orphan", SCOPE, archived=True, reason="orphaned")
+    stored = storage.load_test_case("c-orphan", SCOPE)
+    assert stored is not None and not stored.archived

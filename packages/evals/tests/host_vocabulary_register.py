@@ -163,6 +163,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "ops/host.py": {},
     "ops/jobs.py": {},
     "ops/lenses.py": {},
+    "ops/reporter.py": {},
     "ops/runs.py": {},
     "ops/summary.py": {},
     "actions/__init__.py": {},

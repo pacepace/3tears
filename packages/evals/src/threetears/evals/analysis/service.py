@@ -39,6 +39,7 @@ from threetears.evals.analysis.generator import generate_analysis as _generate_a
 from threetears.evals.analysis.numbers import format_number
 from threetears.evals.analysis.reporter_bank import case_limits, decidable_reporter_case_bank, read_calibration
 from threetears.evals.analysis.reporter_kind import (
+    REPORTER_KIND,
     LabelCriterion,
     ReporterCase,
     ReporterLabel,
@@ -1304,7 +1305,9 @@ def freeze_reporter_case(
 
     Raises:
         NotFoundError: The template, campaign or analysis does not exist.
-        ValidationFailedError: A label that does not validate or names an unscored dimension,
+        ValidationFailedError: A template that is not of the reporter kind
+            (:data:`~threetears.evals.analysis.reporter_kind.REPORTER_KIND`), a label that does not
+            validate or names an unscored dimension,
             labels with no recorded memo to be about, an analysis of another campaign,
             a bundle resolving no runs, a label change or a moved re-assembly that
             does not name the live case in ``supersedes``, a ``supersedes`` naming a case outside this pair or one
@@ -1320,6 +1323,13 @@ def freeze_reporter_case(
         raise TypeError("supersedes is a sequence of case ids; a bare string would be read one character per id")
     replaced = [case_id for case_id in supersedes if case_id]
     template = load_template(template_id)  # NotFoundError if absent
+    if template.candidate_kind != REPORTER_KIND:
+        # A reporter case in any other kind's template is a case nothing reads: only the reporter
+        # kind's launch runs one, and every other kind would meet a case it cannot interpret.
+        raise ValidationFailedError(
+            f"template {template_id!r} is of kind {template.candidate_kind!r}, not {REPORTER_KIND!r} — a reporter "
+            f"case is frozen into a template of the {REPORTER_KIND!r} kind, whose launch is what runs it."
+        )
     try:
         parsed = [
             label if isinstance(label, ReporterLabel) else ReporterLabel.model_validate(label) for label in labels
