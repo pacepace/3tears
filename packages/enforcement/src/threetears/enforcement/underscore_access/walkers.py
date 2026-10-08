@@ -31,6 +31,12 @@ implementation notes:
   of a private access that every attribute-node check, SLF001
   included, cannot see. unlike A, C, D and E it is meant to scan the
   ``tests/`` trees too.
+- shape I walks the classes a ``tests/`` tree defines for ``self._x`` / ``cls._x`` reaching a
+  PRIVATE STATE attribute a production base class keeps (one its methods assign on ``self`` or
+  ``cls``, or its class body binds to a non-function value), and that the test class does not
+  define itself. a base's private METHODS stay callable: a protected hook is what a subclass is
+  for. its state is the base's implementation, and a test bound to it passes vacuously once the
+  base keeps that state another way.
 """
 
 from __future__ import annotations
@@ -57,6 +63,7 @@ __all__ = [
     "shape_d_violations",
     "shape_e_violations",
     "shape_f_violations",
+    "shape_i_violations",
 ]
 
 
@@ -1042,3 +1049,190 @@ def _extract_all_value(node: ast.stmt) -> tuple[ast.expr | None, int]:
             return node.value, node.lineno
         return None, 0
     return None, 0
+
+
+def _collect_class_private_state(
+    src_roots: tuple[Path, ...],
+) -> dict[str, dict[str, tuple[Path, int]]]:
+    """build a map of ``class_name`` -> ``{_private state name -> (file, line)}``.
+
+    state is a private name the class's own methods assign on ``self`` / ``cls``
+    (``self._lock = ...``), or that its class body binds to anything but a function.
+    keyed by bare class name, as :func:`_collect_class_private_attrs` is, with the
+    same accepted imprecision.
+
+    :param src_roots: every src root the scanner should consider
+    :ptype src_roots: tuple[Path, ...]
+    :return: nested map class -> private state name -> defining (file, line)
+    :rtype: dict[str, dict[str, tuple[Path, int]]]
+    """
+    result: dict[str, dict[str, tuple[Path, int]]] = {}
+    for root in src_roots:
+        for file in iter_python_files(root):
+            tree = parse_python_file(file)
+            if tree is None:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    entries = result.setdefault(node.name, {})
+                    for name, line in _class_state(node):
+                        entries.setdefault(name, (file, line))
+    return result
+
+
+def _class_state(cls: ast.ClassDef) -> list[tuple[str, int]]:
+    """every private state name ``cls`` binds: class-body values, and ``self``/``cls`` stores in its methods.
+
+    :param cls: the class
+    :ptype cls: ast.ClassDef
+    :return: (name, line) pairs
+    :rtype: list[tuple[str, int]]
+    """
+    found: list[tuple[str, int]] = []
+    for item in cls.body:
+        targets: list[ast.expr] = []
+        if isinstance(item, ast.Assign):
+            targets = list(item.targets)
+        elif isinstance(item, ast.AnnAssign):
+            targets = [item.target]
+        found.extend(
+            (target.id, item.lineno)
+            for target in targets
+            if isinstance(target, ast.Name) and is_private_name(target.id)
+        )
+    for node in _own_nodes(cls):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, ast.Store)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in _OWNER_RECEIVERS
+            and is_private_name(node.attr)
+        ):
+            found.append((node.attr, node.lineno))
+    return found
+
+
+def _own_nodes(cls: ast.ClassDef) -> list[ast.AST]:
+    """every node in ``cls``'s body that belongs to it, not to a class nested in it.
+
+    :param cls: the class
+    :ptype cls: ast.ClassDef
+    :return: the nodes
+    :rtype: list[ast.AST]
+    """
+    out: list[ast.AST] = []
+    stack: list[ast.AST] = list(cls.body)
+    while stack:
+        node = stack.pop()
+        out.append(node)
+        stack.extend(child for child in ast.iter_child_nodes(node) if not isinstance(child, ast.ClassDef))
+    return out
+
+
+def _class_defines(cls: ast.ClassDef) -> set[str]:
+    """every private name ``cls`` itself declares: its methods and its class-body bindings.
+
+    a ``self._x = ...`` in its methods is not a declaration of ``_x`` when a base keeps ``_x``:
+    that is a write of the base's state.
+
+    :param cls: the class
+    :ptype cls: ast.ClassDef
+    :return: the names
+    :rtype: set[str]
+    """
+    names: set[str] = set()
+    for item in cls.body:
+        targets: list[ast.expr] = []
+        if isinstance(item, ast.Assign):
+            targets = list(item.targets)
+        elif isinstance(item, ast.AnnAssign):
+            targets = [item.target]
+        names.update(target.id for target in targets if isinstance(target, ast.Name) and is_private_name(target.id))
+    names.update(
+        item.name
+        for item in cls.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and is_private_name(item.name)
+    )
+    return names
+
+
+def shape_i_violations(
+    scan_roots: tuple[Path, ...],
+    repo_root: Path,
+    inheritance_roots: tuple[Path, ...],
+) -> list[Violation]:
+    """walk the classes ``scan_roots`` define for a reach into a production base's private state (shape I).
+
+    a class violates shape I when one of its own methods reads or writes ``self._x`` /
+    ``cls._x`` where ``_x`` is private state of a base class the inheritance roots define
+    (see :func:`_collect_class_private_state`) and the class does not declare ``_x`` itself
+    (as a method or a class-body binding; assigning ``self._x`` is writing the base's state).
+    a base's private methods are not state, and calling one is not flagged. meant for the
+    ``tests/`` trees: a test subclass reaches its base through the front door.
+
+    :param scan_roots: where to look; the ``tests/`` trees
+    :ptype scan_roots: tuple[Path, ...]
+    :param repo_root: repo root for the relative-path rendering in the reason text
+    :ptype repo_root: Path
+    :param inheritance_roots: src roots whose classes' private state is protected
+    :ptype inheritance_roots: tuple[Path, ...]
+    :return: shape-I violations
+    :rtype: list[Violation]
+    """
+    base_state = _collect_class_private_state(inheritance_roots)
+    violations: list[Violation] = []
+    for root in scan_roots:
+        for file in iter_python_files(root):
+            tree = parse_python_file(file)
+            if tree is None:
+                continue
+            for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+                violations.extend(_base_state_reaches(cls, file, base_state, repo_root))
+    return violations
+
+
+def _base_state_reaches(
+    cls: ast.ClassDef,
+    file: Path,
+    base_state: dict[str, dict[str, tuple[Path, int]]],
+    repo_root: Path,
+) -> list[Violation]:
+    """the shape-I violations of one class.
+
+    :return: the violations
+    :rtype: list[Violation]
+    """
+    bases = [name for name in _base_names_textual(cls) if name != cls.name]
+    inherited = {name: (base, where) for base in bases for name, where in base_state.get(base, {}).items()}
+    if not inherited:
+        return []
+    own = _class_defines(cls)
+    found: list[Violation] = []
+    for node in _own_nodes(cls):
+        if not (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in _OWNER_RECEIVERS
+            and node.attr in inherited
+            and node.attr not in own
+        ):
+            continue
+        base, (defining_file, defining_line) = inherited[node.attr]
+        try:
+            rel_def: Path | str = defining_file.relative_to(repo_root)
+        except ValueError:
+            rel_def = defining_file
+        found.append(
+            Violation(
+                category="underscore_access.I",
+                file=file,
+                line=node.lineno,
+                symbol=node.attr,
+                reason=(
+                    f"class '{cls.name}' reaches '{node.attr}', private state of its base "
+                    f"'{base}' ({rel_def}:{defining_line}); reach the base through its public "
+                    f"surface, or a protected method it offers subclasses"
+                ),
+            )
+        )
+    return found

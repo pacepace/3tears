@@ -13,6 +13,7 @@ from threetears.enforcement.underscore_access.walkers import (
     shape_d_violations,
     shape_e_violations,
     shape_f_violations,
+    shape_i_violations,
 )
 
 
@@ -598,3 +599,65 @@ class TestShapeF:
         )
 
         assert [v.symbol for v in shape_f_violations((tests,), tmp_path)] == ["_slot"]
+
+
+class TestShapeI:
+    """a test subclass reaching its production base's private state through ``self``."""
+
+    _BASE = (
+        "class Backend:\n"
+        "    _LIMIT = 3\n"
+        "    def __init__(self):\n"
+        "        self._lock = object()\n"
+        "    def _hook(self):\n"
+        "        return 1\n"
+    )
+
+    def test_it_reports_the_snippet_it_exists_for(self, tmp_path: Path) -> None:
+        """the fallibility test: a test subclass holding its base's private lock is reported."""
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "backend.py", self._BASE)
+        path = _write(
+            tests / "test_x.py",
+            "from pkg.backend import Backend\n\nclass Held(Backend):\n    def write(self):\n"
+            "        with self._lock:\n            pass\n",
+        )
+
+        violations = shape_i_violations((tests,), tmp_path, (src,))
+
+        assert [(v.category, v.file, v.line, v.symbol) for v in violations] == [
+            ("underscore_access.I", path, 5, "_lock")
+        ]
+
+    def test_class_state_and_a_write_of_it_are_reported_too(self, tmp_path: Path) -> None:
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "backend.py", self._BASE)
+        _write(
+            tests / "test_x.py",
+            "from pkg.backend import Backend\n\nclass Held(Backend):\n    def go(self):\n"
+            "        self._LIMIT\n        self._lock = None\n",
+        )
+
+        assert sorted(v.symbol for v in shape_i_violations((tests,), tmp_path, (src,))) == ["_LIMIT", "_lock"]
+
+    def test_a_protected_method_and_the_subclass_s_own_state_are_not_reported(self, tmp_path: Path) -> None:
+        src, tests = tmp_path / "src", tmp_path / "tests"
+        _write(src / "pkg" / "backend.py", self._BASE)
+        _write(
+            tests / "test_x.py",
+            "from pkg.backend import Backend\n\nclass Held(Backend):\n    def __init__(self):\n"
+            "        super().__init__()\n        self._mine = 1\n    def go(self):\n"
+            "        return self._hook() + self._mine\n",
+        )
+
+        assert shape_i_violations((tests,), tmp_path, (src,)) == []
+
+    def test_a_base_defined_in_the_tests_is_the_tests_own(self, tmp_path: Path) -> None:
+        tests = tmp_path / "tests"
+        _write(
+            tests / "test_x.py",
+            "class Base:\n    def __init__(self):\n        self._x = 1\n\nclass Sub(Base):\n"
+            "    def go(self):\n        return self._x\n",
+        )
+
+        assert shape_i_violations((tests,), tmp_path, (tmp_path / "src",)) == []

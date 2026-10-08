@@ -33,6 +33,17 @@ later, unprompted.
   geography pod) that served a refused tile must bump or reload each affected layer to get clipped
   tiles.
 
+### Enforcement: a test subclass may not reach its base's private state
+
+- **Added, underscore-access shape I (`shape_i_violations`, walker `"shape_i"`, in `"all"`):** a
+  class a `tests/` tree defines that reads or writes `self._x` / `cls._x` where `_x` is private
+  STATE of a production base (assigned on `self` in its methods, or a class-body value) is
+  reported. A base's private methods stay callable, as protected hooks. SLF001 exempts every
+  `self` access, so a test borrowing its base's lock passed every gate and would go on passing,
+  testing nothing, once the base kept that state another way. Two members here were fixed: an
+  epoch test that wrote its listener's last-seen map, and a fake NATS client that replaced its
+  base's subscriber map with a list of another shape.
+
 ### Core: one home for SQL identifiers, and a typed L3 seam for the copies
 
 - **Added, `threetears.core.sql_fragments`:** `quote_identifier` (moved here; still importable from

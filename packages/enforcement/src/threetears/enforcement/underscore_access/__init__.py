@@ -114,6 +114,7 @@ from threetears.enforcement.underscore_access.walkers import (
     shape_d_violations,
     shape_e_violations,
     shape_f_violations,
+    shape_i_violations,
 )
 
 __all__ = [
@@ -169,4 +170,5 @@ __all__ = [
     "shape_d_violations",
     "shape_e_violations",
     "shape_f_violations",
+    "shape_i_violations",
 ]
