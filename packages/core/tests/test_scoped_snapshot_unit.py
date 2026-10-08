@@ -847,3 +847,36 @@ def test_the_loop_only_public_methods_say_so() -> None:
             f"{name} does not say it is loop-only"
         )
 
+
+async def test_a_pointer_of_other_columns_found_on_the_re_read_after_a_retired_chunk_is_never_loaded() -> None:
+    """a rolling deploy: this replica is applying its own version's epoch 2 of TX when the other
+    version writes epoch 3 under other columns and retires epoch 2's chunk, before the watch delivers
+    epoch 3. The re-read after the missing chunk finds epoch 3, which supersedes what it was fetching;
+    its chunks hold another column set, so TX stays behind at epoch 1 and the L1 never holds them."""
+    import pyarrow as pa  # noqa: PLC0415
+
+    snapshot, pointers, store, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    pointers.put_now("enr.rebuild", b"another replica")  # no rebuild here: the other version's write stands
+    tx = json.loads(pointers.entries["enr.s.TX"][0])
+    store.objects["enr/TX/3/results"] = encode_chunk(pa.table({"county": ["c1"], "state": ["TX"]}))
+    foreign = {
+        **tx,
+        "epoch": 3,
+        "tables": {"results": {"object": "enr/TX/3/results", "rows": 1}},
+        "schema": {"results": "the other version's columns"},
+    }
+
+    _point_at_a_missing_chunk(pointers)  # the watch delivers this replica's own epoch 2 ...
+    # ... and, before this replica reads it, the other version's epoch 3 is in KV, not yet delivered
+    pointers.entries["enr.s.TX"] = (json.dumps(foreign).encode(), pointers.entries["enr.s.TX"][1])
+
+    await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
+    assert "other columns" in snapshot.status().behind["TX"]
+    await asyncio.sleep(0.3)  # several rechecks, each re-reading epoch 3
+    assert snapshot.applied_epoch("TX") == 1, "the L1 took a pointer whose chunks hold other columns"
+    with snapshot.read() as cursor:
+        assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(1,)]
+    await snapshot.stop()

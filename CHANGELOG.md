@@ -149,6 +149,13 @@ so a starting replica loads them without reading L3, and a refresh moves only th
   again and retries); `open_tool_pod_snapshot(...)` builds and starts a `ScopedSnapshot` over them,
   refusing `store`/`pointers`/`ensure_buckets`/`retire` it wires itself. `ORPHAN_CHUNK_MIN_AGE` states
   the hub's orphan-chunk sweep bound, and is `purge_orphan_chunks`'s default.
+- **Added, reads that say what they are behind on, and the mixed-version rule:**
+  `ScopedSnapshot.read_with_behind()` is a read with the scopes its data is an epoch behind on (taken
+  before the read opens and cleared only after a scope's commit, so it may over-report, never
+  under-report); `applied_epoch(scope)` / `applied_epochs()` are the epochs the L1 holds, each listed
+  only once committed. During a rolling deploy a replica never loads chunks of other columns: a later
+  epoch under other columns marks the scope behind and rebuilds it from L3, and a same-epoch pointer
+  of other columns stays until `stray_age` while the replica serves that scope from L3.
 - **Changed, after review, the snapshot's threads:** the state a reader on any thread takes (the
   applied pointers, the behind set, the row counts, the status) is changed only on the event loop, by
   rebinding a new read-only value, never in place, so `status()`, `read_with_behind()` and
