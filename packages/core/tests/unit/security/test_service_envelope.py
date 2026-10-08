@@ -488,3 +488,34 @@ class TestHubJwksSource:
         assert await source.get_jwks() == jwks
         await source.get_jwks(refresh=True)
         assert provider.refreshed == 1
+
+
+class TestSealedModel:
+    def test_a_sealed_model_verifies_over_what_goes_on_the_wire(self) -> None:
+        import json
+
+        from pydantic import BaseModel
+
+        from threetears.core.security import ServiceEnvelopeSigner
+
+        class _Wire(BaseModel):
+            pod_id: str
+            service_envelope: str | None = None
+
+        priv, jwks = _keys()
+        signer = ServiceEnvelopeSigner(signing_key=priv, kid="idc-1", issuer="identity-core")
+        sent = json.loads(signer.sealed(_Wire(pod_id="p"), audience="hub.claim_grant", op="ensure").model_dump_json())
+        _verify(sent[SERVICE_ENVELOPE_FIELD], jwks, body=sent)
+
+    def test_a_model_without_the_field_is_refused(self) -> None:
+        from pydantic import BaseModel
+
+        from threetears.core.security import ServiceEnvelopeSigner
+
+        class _NoField(BaseModel):
+            pod_id: str
+
+        priv, _ = _keys()
+        signer = ServiceEnvelopeSigner(signing_key=priv, kid="idc-1", issuer="identity-core")
+        with pytest.raises(ValueError, match="no service_envelope field"):
+            signer.sealed(_NoField(pod_id="p"), audience="a", op="o")

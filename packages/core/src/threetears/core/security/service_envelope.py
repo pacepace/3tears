@@ -30,10 +30,11 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol, TypeVar
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from pydantic import BaseModel
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter
@@ -69,6 +70,8 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+_M = TypeVar("_M", bound=BaseModel)
 
 #: the longest life an envelope may claim. It covers one hop and clock skew; a longer life would let a
 #: captured envelope stand for its body long after it was sent.
@@ -278,6 +281,27 @@ class ServiceEnvelopeSigner:
         return mint_service_envelope(
             signing_key=self.signing_key, kid=self.kid, issuer=self.issuer, audience=audience, op=op, body=body
         )
+
+    def sealed(self, message: _M, *, audience: str, op: str) -> _M:
+        """``message`` with its envelope in its ``service_envelope`` field, over the rest of it.
+
+        For a wire model that carries the field: the envelope signs ``model_dump(mode="json")``,
+        which is what ``model_dump_json`` puts on the wire.
+
+        :param message: the wire model, its ``service_envelope`` unset
+        :ptype message: BaseModel
+        :param audience: the receiving door
+        :ptype audience: str
+        :param op: the operation within the door
+        :ptype op: str
+        :return: a copy carrying the envelope
+        :rtype: BaseModel
+        :raises ValueError: when the model has no ``service_envelope`` field
+        """
+        if SERVICE_ENVELOPE_FIELD not in type(message).model_fields:
+            raise ValueError(f"{type(message).__name__} has no {SERVICE_ENVELOPE_FIELD} field to carry an envelope")
+        envelope = self.sign(audience=audience, op=op, body=message.model_dump(mode="json"))
+        return message.model_copy(update={SERVICE_ENVELOPE_FIELD: envelope})
 
     def seal(self, *, audience: str, op: str, body: Mapping[str, Any]) -> dict[str, Any]:
         """``body`` with its envelope added under :data:`SERVICE_ENVELOPE_FIELD`, ready to send.

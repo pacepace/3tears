@@ -45,6 +45,8 @@ packages (bumped in lock-step).
 - For a sender with no JWKS of its own (the gateway, a channel adapter): `ServiceEnvelopeSigner.from_seed_text`
   builds the signer from its configured base64 seed, its kid the key's thumbprint, and
   `PinnedEnvelopeJwks` is the door's key set from the pinned public half (none pinned: nothing verifies).
+- `ServiceEnvelopeSigner.sealed(message, audience=, op=)` returns a wire model carrying its envelope in
+  its `service_envelope` field, signed over what `model_dump_json` puts on the wire.
 - `ServiceEnvelopeSigner.from_secret_ref` reads the seed through a secret reference and answers `None`
   while it is not provisioned, warning with the receiving door's date.
 
