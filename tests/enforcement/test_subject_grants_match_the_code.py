@@ -520,6 +520,8 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             _there("hub:src/aibots/hub/tools/registry_identity.py:281", str(Subjects.hub_handshake())),
             # the RBAC stack and the hub's registry_auth factories read L3 through the broker
             _here("packages/registry/src/threetears/registry/rbac_stack.py", "NatsProxyL3Backend", *_l3()),
+            # the hub's usage_emitter factory, loaded into the registry process, reports endpoint usage
+            _there("hub:src/aibots/hub/tools/registry_auth.py:523", str(Subjects.hub_endpoint_usage_track())),
             invalidate,
         ),
         Principal.GATEWAY: (
@@ -535,6 +537,8 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
             _there("hub:src/aibots/channels/install_fetch.py:87", str(Subjects.hub_channel_installs())),
             _there("hub:src/aibots/channels/router.py:247", str(Subjects.hub_user_resolve())),
             _there("hub:src/aibots/hub/approvals/resolve_client.py:168", str(Subjects.hub_approval_resolve())),
+            # dispatch_to_agent's JetStream publish of the turn
+            _there("hub:src/aibots/hub/router/agent_dispatch.py:288", str(Subjects.agent_turn(_AGENT))),
             _there("hub:src/aibots/channels/router.py:481", f"{ns}.hub.channel.installs.changed"),
             # the delivery worker verifies the hub's turn assertion against the hub's key set
             _there("hub:src/aibots/channels/delivery_worker.py:770", str(Subjects.hub_jwks())),
@@ -579,19 +583,6 @@ _WITHHELD: Final[Mapping[Principal, Mapping[str, Callable[[], str]]]] = {
         # survey usage_reporting_service.py:124; usage is token-carrying, and no admin path emits it
         "survey:src/survey_engine/services/usage_reporting_service.py:124: hub.usage.endpoint (latent)": (
             lambda: str(Subjects.hub_endpoint_usage_track())
-        ),
-    },
-    Principal.REGISTRY: {
-        # the hub's usage_emitter factory publishes it from inside the registry; usage is token-carrying
-        "hub:src/aibots/hub/tools/registry_auth.py:523: hub.usage.endpoint": lambda: str(
-            Subjects.hub_endpoint_usage_track()
-        ),
-    },
-    Principal.CHANNEL_ADAPTER: {
-        # dispatch_to_agent's JetStream publish of the turn; a turn carries the hub's turn assertion.
-        # The static `slack` user holds the namespace on publish, so nothing is refused today.
-        "hub:src/aibots/hub/router/agent_dispatch.py:288: agents.turn.<agent>": lambda: str(
-            Subjects.agent_turn(_AGENT)
         ),
     },
 }

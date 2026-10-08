@@ -2020,6 +2020,9 @@ def _registry(
         str(Subjects.l3_query()),
         str(Subjects.l3_batch()),
         f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all six ops
+        # the hub's ``usage_emitter`` factory, loaded into this process, reports each endpoint tool
+        # call's usage
+        str(Subjects.hub_endpoint_usage_track()),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
@@ -2317,9 +2320,7 @@ def _channel_adapter(
     ns = _ns()
     # NO ``agents.route.*``: the adapter has dispatched a turn as a JetStream publish of
     # ``agents.turn.{agent}`` since the hub's router-mediated delivery (2026-07-10), and nothing
-    # subscribes ``agents.route`` any more. That publish is not granted here: a turn carries the hub's
-    # turn assertion, and widening a token-carrying grant is its owner's decision -- the static
-    # ``slack`` user holds the namespace on publish, so nothing is refused today.
+    # subscribes ``agents.route`` any more.
     # NO ``channels.room.*`` either way: ``RoomFanout`` is constructed by no process in any repository.
     publish = (
         str(Subjects.hub_channel_installs()),  # fetches its bot installs
@@ -2327,6 +2328,11 @@ def _channel_adapter(
         # HITL: the router (in this sandboxed adapter) forwards an operator reply to the approval
         # broker, which authorizes + resolves it into a resume verdict. reply only; no marker write.
         str(Subjects.hub_approval_resolve()),
+        # dispatches a resolved channel message as a turn, a JetStream publish of ``agents.turn.{agent}``.
+        # One token: the adapter fronts every agent a workspace binds, so there is no list of agent
+        # ids to mint literals from. The router and the agent run a turn only on the hub's turn
+        # assertion, which the adapter gets from the hub and cannot sign.
+        f"{ns}.agents.turn.*",
         f"{ns}.hub.channel.installs.changed",  # best-effort orphan-reload signal
         # the delivery worker verifies the hub's turn assertion on each answer against the hub's keys
         str(Subjects.hub_jwks()),
