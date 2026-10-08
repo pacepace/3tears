@@ -361,6 +361,10 @@ async def test_a_tool_pods_snapshot_is_started_and_retires_through_the_hub() -> 
     await snapshot.stop()
 
 
+#: any value for an option the tool pod's snapshot wires itself: it is refused before it is used
+_refused_option: Any = object()
+
+
 @pytest.mark.parametrize("option", ["retire", "ensure_buckets", "store", "pointers"])
 async def test_a_tool_pods_snapshot_refuses_an_option_it_wires_itself(option: str) -> None:
     client = _BindingClient()
@@ -374,7 +378,7 @@ async def test_a_tool_pods_snapshot_refuses_an_option_it_wires_itself(option: st
             backend=_backend(),
             l3=_L3([]),
             epochs=_epochs,
-            **{option: object()},
+            **{option: _refused_option},
         )
     assert client.sent == [], "the hub was asked before the options were checked"
 
@@ -522,8 +526,6 @@ async def test_a_scope_removed_before_it_was_ever_applied_leaves_nothing_behind(
 async def test_a_read_carries_the_behind_set_of_the_data_it_reads() -> None:
     """a scope applied while a read is open is still behind for that read, whose data is the old
     epoch's; a read opened after sees it current and the new data."""
-    import pyarrow as pa  # noqa: PLC0415
-
     snapshot, pointers, store, _ = _snapshot()
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
@@ -533,9 +535,7 @@ async def test_a_read_carries_the_behind_set_of_the_data_it_reads() -> None:
     await _until(lambda: "TX" in snapshot.status().behind, what="TX behind")
 
     with snapshot.read_with_behind() as (cursor, behind):
-        store.objects["enr/TX/2/results.gone"] = encode_chunk(
-            pa.table({"county": ["c1"], "state": ["TX"], "votes": pa.array([5], pa.int64())})
-        )
+        store.objects["enr/TX/2/results.gone"] = _tx_chunk(5)
         await _until(lambda: snapshot.applied_epoch("TX") == 2, what="TX applied at epoch 2")
         assert snapshot.applied_epochs()["TX"] == 2
         assert "TX" in behind, "the read's behind set changed under it"
@@ -551,10 +551,20 @@ async def test_a_read_carries_the_behind_set_of_the_data_it_reads() -> None:
 # ----------------------------------------------------------------------
 
 
-def _tx_chunk(votes: int) -> bytes:
-    import pyarrow as pa  # noqa: PLC0415
+def _tx_arrow(votes: int) -> Any:
+    """TX's one row as Arrow, typed by the L1's own columns (its export, so the test needs no pyarrow)."""
+    return _backend().export_rows(
+        "results",
+        "state",
+        "TX",
+        [{"county": "c1", "state": "TX", "votes": votes}],
+        primary_key=("county",),
+        order_by=("county",),
+    )
 
-    return encode_chunk(pa.table({"county": ["c1"], "state": ["TX"], "votes": pa.array([votes], pa.int64())}))
+
+def _tx_chunk(votes: int) -> bytes:
+    return encode_chunk(_tx_arrow(votes))
 
 
 async def _ready_with_tx_and_de_behind() -> tuple[ScopedSnapshot, _Pointers, _Store]:
@@ -853,15 +863,13 @@ async def test_a_pointer_of_other_columns_found_on_the_re_read_after_a_retired_c
     version writes epoch 3 under other columns and retires epoch 2's chunk, before the watch delivers
     epoch 3. The re-read after the missing chunk finds epoch 3, which supersedes what it was fetching;
     its chunks hold another column set, so TX stays behind at epoch 1 and the L1 never holds them."""
-    import pyarrow as pa  # noqa: PLC0415
-
     snapshot, pointers, store, _ = _snapshot()
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
     await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
     pointers.put_now("enr.rebuild", b"another replica")  # no rebuild here: the other version's write stands
     tx = json.loads(pointers.entries["enr.s.TX"][0])
-    store.objects["enr/TX/3/results"] = encode_chunk(pa.table({"county": ["c1"], "state": ["TX"]}))
+    store.objects["enr/TX/3/results"] = encode_chunk(_tx_arrow(1).drop_columns(["votes"]))  # other columns
     foreign = {
         **tx,
         "epoch": 3,
