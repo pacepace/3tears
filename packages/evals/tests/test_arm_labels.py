@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from threetears.evals.analysis import Report, campaign_report, report_html, report_markdown
+from threetears.evals.analysis import Report, build_report, campaign_report, report_html, report_markdown
 from threetears.evals.analysis.arms import (
     ELISION,
     LABEL_LEVEL_CHARS,
@@ -40,9 +40,12 @@ from threetears.evals.analysis.arms import (
     short_digest,
     writer_arms,
 )
-from threetears.evals.analysis.report import ChartBlock, TableBlock
+from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.report import ChartBlock, TableBlock, TextBlock
+from threetears.evals.contracts.authored import NO_CHART, AuthoredAnalysis
 from threetears.evals.contracts import EvalCampaign
-from threetears.evals.contracts.campaign import VariantIndexEntry
+from threetears.evals.contracts.campaign import EvalAnalysis, FindingResolution, VariantIndexEntry
+from threetears.evals.contracts.surface import DecisionSurface, StratumFacts
 from threetears.evals.contracts.host import HostProfile, KindContract, SweepableValue
 from threetears.evals.contracts.identity import compute_variant_key
 from threetears.evals.contracts.models import EvalRun
@@ -59,6 +62,7 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.report_support import toy_campaign_host
+from packages.evals.tests.test_surface_table import RIG, RIG_B, analysis, cell, measures
 
 # =============================================================================
 # The rule, on the naming functions
@@ -404,3 +408,186 @@ class TestTheCutNeverMergesTwoArms:
         stated = [str(row["levers"]) for row in _table(cut_alike, "arms").rows]
         for text in _PARTING_IN_THE_MIDDLE:
             assert sum(text[:59] in levers for levers in stated) == 1
+
+
+# =============================================================================
+# An analysis report: its decisions, findings and evidence name arms the same way
+# =============================================================================
+
+_RIG_C = "c" * 64
+
+#: What only the shared lever set holds — a reader meets it once, in the Arms table, or the label leaked it.
+_LEVER_DUMP_MARK = "A late-night DJ who"
+
+
+def _rig_only_index() -> list[VariantIndexEntry]:
+    """#567's campaign: one persona stack, carrying another kind's lever, measured under three rigs."""
+    return [_entry(**_SHARED, classifier__prompt=SweepableValue.not_this_kind("classifier"))]
+
+
+def _mixed_index() -> list[VariantIndexEntry]:
+    """A persona arm and a classifier arm, each carrying the other kind's levers as the engine resolves them."""
+    not_persona = SweepableValue.not_this_kind("persona")
+    return [
+        _entry(**_SHARED, classifier__prompt=SweepableValue.not_this_kind("classifier")),
+        _entry(
+            candidate_kind=_value("classifier"),
+            model=_value("openai/gpt-5-mini"),
+            backstory=not_persona,
+            directives=not_persona,
+            classifier__prompt=_value("Label the request."),
+        ),
+    ]
+
+
+def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry]) -> EvalAnalysis:
+    """An analysis whose decision and finding evidence name every cell in ``cells``, generated over ``index``."""
+    refs = [cell_ref(variant, rig) for variant, rig in cells]
+    rows = [
+        {"cell_ref": ref, "measure_id": "total_ms", "reading": "measure", "value": 41250.0, "n": 6, "dispersion": "sem"}
+        for ref in refs
+    ]
+    document = AuthoredAnalysis.model_validate(
+        {
+            "headline": "Keep the current persona prompt.",
+            "summary": "",
+            "findings": [
+                {
+                    "title": "No rig moved the latency.",
+                    "body": "",
+                    "confidence": "high",
+                    "axes": [],
+                    "evidence": [{"cell": ref, "measure_id": "total_ms", "reading": "measure"} for ref in refs],
+                    "chart": {"type": NO_CHART, "cells": [], "measures": [], "axis": "", "note": "", "caption": ""},
+                    "caveats": [],
+                    "invalidates": [],
+                    "durable": "",
+                }
+            ],
+            "decisions": [
+                {
+                    "proposal": "Keep the current persona prompt.",
+                    "disposition": "deferred",
+                    "cells": refs,
+                    "confidence": "high",
+                    "rests_on": [0],
+                    "revisit_when": "a second persona is measured",
+                }
+            ],
+            "questions": [],
+            "next": [],
+        }
+    )
+    surface = DecisionSurface(
+        cells=sorted(
+            (
+                cell(variant=variant, rig=rig, strata=[StratumFacts(stratum="easy", n_observations=6, n_cases=2)])
+                for variant, rig in cells
+            ),
+            key=lambda c: (c.variant_key, c.apparatus_class_id),
+        ),
+        measures=measures(),
+    )
+    return analysis(
+        surface,
+        document=document,
+        design_snapshot=None,
+        variant_index=index,
+        resolutions=[FindingResolution.model_validate({"evidence": rows})],
+    )
+
+
+def _rig_only_analysis() -> tuple[EvalAnalysis, list[str]]:
+    (arm,) = _rig_only_index()
+    rigs = [RIG, RIG_B, _RIG_C]
+    names = [f"candidate_kind=persona, model=openai/gpt-5-mini @ rig {rig[:12]}" for rig in rigs]
+    return _analysis_naming([(arm.variant_key, rig) for rig in rigs], [arm]), names
+
+
+def _mixed_analysis() -> tuple[EvalAnalysis, list[str]]:
+    persona, classifier = index = _mixed_index()
+    return (
+        _analysis_naming([(persona.variant_key, RIG), (classifier.variant_key, RIG)], index),
+        ["candidate_kind=persona", "candidate_kind=classifier"],
+    )
+
+
+@pytest.fixture(params=[_rig_only_analysis, _mixed_analysis], ids=["one-arm-three-rigs", "two-kinds"])
+def named(request: pytest.FixtureRequest) -> tuple[Report, list[str]]:
+    """An analysis report, and the names its decision and evidence must give the cells they name, in order."""
+    subject, names = request.param()
+    return build_report(subject), names
+
+
+class TestAnAnalysisReportNamesArmsByTheRule:
+    def test_the_decision_line_names_each_arm_and_nothing_else(self, named: tuple[Report, list[str]]) -> None:
+        report, names = named
+        (decision,) = [block for block in report.blocks if isinstance(block, TextBlock) and block.role == "decision"]
+        assert {fact.name: fact.value for fact in decision.facts}["Arms"] == "; ".join(names)
+        line = next(line for line in report_markdown(report).splitlines() if "Disposition: deferred" in line)
+        assert line == (
+            "- **Keep the current persona prompt.** — Disposition: deferred · Confidence: high · Arms: "
+            + "; ".join(names)
+            + ". Rests on finding 1."
+        )
+        assert f"Arms: {html.escape('; '.join(names))}" in report_html(report)
+
+    def test_the_evidence_the_surface_and_the_strata_name_the_cells_alike(
+        self, named: tuple[Report, list[str]]
+    ) -> None:
+        report, names = named
+        assert _arm_column(report, "evidence") == names
+        assert sorted(_arm_column(report, "surface")) == sorted(names)
+        assert set(_arm_column(report, "strata")) == set(names)
+
+    def test_no_output_carries_a_lever_dump_or_an_inapplicable_lever(self, named: tuple[Report, list[str]]) -> None:
+        """The shared settings are stated once — the Arms table's lever column — and never in a name."""
+        report, _ = named
+        for output in (report_markdown(report), report_html(report), report.to_canonical_json()):
+            assert output.count(_LEVER_DUMP_MARK) == 1
+            assert "(not a " not in output
+
+
+# =============================================================================
+# A sweep chart's configurations follow the same rule
+# =============================================================================
+
+
+def _sweep_configs(index: list[VariantIndexEntry]) -> list[dict[str, str]]:
+    """The configurations a sweep ranking draws over one cell per arm of ``index``."""
+    from threetears.evals.contracts.analysis_measures import MeasureCollection, MeasureSummary
+    from packages.evals.tests.test_viz_refs import VALID, build, surface
+
+    def reading(name: str, mean: float, higher_is_better: bool) -> MeasureSummary:
+        return MeasureSummary(
+            population="scored",
+            name=name,
+            attribution_scope="end_to_end",
+            higher_is_better=higher_is_better,
+            n=6,
+            n_independent=2,
+            mean=mean,
+            sem=mean * 0.05,
+        )
+
+    readings = MeasureCollection(measures=[reading("cost_usd", 0.01, False), reading("pass_rate", 0.8, True)])
+    cells = [cell(variant=entry.variant_key, measures=readings) for entry in index]
+    return [row["config"] for row in build(VALID["sweep_ranking"], surface(cells, timed=False), index)["rows"]]
+
+
+class TestASweepConfigurationIsCutAndNamedAlike:
+    def test_a_lever_that_does_not_apply_is_an_absent_level_not_a_placeholder(self) -> None:
+        from threetears.evals.analysis.viz.payloads import ABSENT_LEVEL
+
+        configs = _sweep_configs(_mixed_index())
+        assert sorted(config["classifier.prompt"] for config in configs) == sorted([ABSENT_LEVEL, "Label the request."])
+        assert "(not a " not in repr(configs)
+
+    def test_a_long_level_is_cut_as_an_arm_name_cuts_it(self) -> None:
+        texts = [_PARTING_IN_THE_MIDDLE[0] + suffix for suffix in (" — rev 1", " — rev 2")]
+        configs = _sweep_configs([_entry(**_SHARED, opening=_value(text)) for text in texts])
+        assert sorted(config["opening"] for config in configs) == sorted(elide_level(text) for text in texts)
+
+    def test_a_cut_that_would_merge_two_configurations_is_not_made(self) -> None:
+        configs = _sweep_configs([_entry(**_SHARED, opening=_value(text)) for text in _PARTING_IN_THE_MIDDLE])
+        assert sorted(config["opening"] for config in configs) == sorted(_PARTING_IN_THE_MIDDLE)

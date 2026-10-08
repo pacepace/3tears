@@ -237,7 +237,10 @@ them — with its `candidate_model` and its `candidate_kind` — into the varian
 `host_sweepables` (the shared core extended with your own levers) and its `variant_levers` reader
 cover only the levers you declare beyond those; a host with none wires no reader. A run is one arm
 with one `candidate_model`; a launch naming several models starts one run per model, and runs of
-different kinds are always different variants.
+different kinds are always different variants. A reader of yours that answers for a run its lever does
+not apply to (a run of another kind) returns `SweepableValue.not_this_kind(kind)` — the level a kind
+contract's own levers sit at there — rather than a value of its own displayed alike: that level is what
+a report recognises, by its content hash, as a lever the arm did not run, and never prints.
 
 **A world, through the cell's session.** A host whose subject lives in a stateful world declares it
 on the profile (`WorldRegistry`), and each cell's `prepare` is handed a `WorldSession` over it as
@@ -352,6 +355,17 @@ the contrasts the evidence tested against the control, a distribution chart per 
 dimension, the results by stratum when the cases declare strata (below), and every disclosure the evidence
 carries, opening with a statement that no analysis was generated and what one would add. `Report.basis` says
 which a report is; `REPORT_VERSION` is 3.
+
+**How an arm is named.** Every block that names an arm — decisions, evidence rows, the arm table, the
+decision surface, the results by stratum, the contrasts and every chart group — prints one name for it,
+built once (`threetears.evals.analysis.arms.arm_names`). An arm is named by the levers whose levels differ
+across the report's arms, each lever compared only among the arms it applies to; one that differs on none
+is named by its candidate kind and model. A lever that does not apply to the arm's kind is never named. A
+cell adds `@ rig <digest>` when its arm was measured under more than one rig. Each level is put on one line
+and cut in the middle past 48 characters, alike in Markdown, HTML and the chart intents, and two arms that
+would still read alike carry their variant keys' digests (`(arm <digest>)`), so no two arms of one report
+share a name. What an arm ran in full is stated once, in the arm table's "Every lever it ran" column
+(`ArmRow.settings`). A stored analysis's own charts keep the names they were drawn with at generation.
 
 **What the schema checks, and what only the model does.** `schema.json` holds the report's shape and every
 cross-field rule JSON Schema can state: a code-only report names no analysis or model and holds no headline,
