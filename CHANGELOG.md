@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: the host states how long one request can take; the wall-clock ceilings count requests (breaking)
+
+- **`generation_ceiling_s`, `judge_phase_ceiling_s` and `reporter_cell_timeout_s` take `request_s:
+  RequestCeiling`** (`threetears.evals.contracts.RequestCeiling = Callable[[int], float]`): the longest one request
+  capped at that many output tokens can take on the host's client, every provider call and retry wait in it. The
+  formulas are now request counts times it: a generation is `MAX_GENERATION_CALLS * request_s(generator_max_tokens)`,
+  a judge phase `waves * judge_call_attempts * request_s(judge_max_tokens)`, a reporter cell their sum. They took
+  `attempts_per_request`, `output_rate_floor_tps` and `prefill_allowance_s` and modelled a request as that many calls
+  each at its cap over the rate plus the prefill, with no term for the client's sleeps between calls, so a host whose
+  client retries could not state its own worst case. Those three parameters are gone; a host passes its own
+  request ceiling (Discodon: `CallTiming.request_s`).
+- **`PROVIDER_REQUEST_ATTEMPTS` is removed** from `threetears.evals.contracts`. It stated a host client's calls per
+  request as a package fact, which the package cannot know: Discodon's client makes three times as many, and a host
+  reading it would have undercounted every ceiling by that much.
+- **`DEFAULT_LLM_OUTPUT_RATE_FLOOR_TPS` and `DEFAULT_LLM_CALL_PREFILL_ALLOWANCE_S` are removed** from
+  `threetears.evals.analysis.reporter_kind`. They were defaults for the per-call inputs the ceilings no longer take,
+  and nothing read them.
+
 ### 3tears-evals: results by kind of case (strata) (#565)
 
 - **`EvalTestCase.stratum`** (optional, non-blank): the kind of case a case is, in the author's words. The engine

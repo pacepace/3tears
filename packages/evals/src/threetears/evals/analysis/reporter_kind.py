@@ -71,6 +71,7 @@ from threetears.evals.contracts.models import DimName, EvalTestCase, JudgedArtif
 from threetears.evals.contracts.provider import (
     CompletionGenerator,
     CompletionResult,
+    RequestCeiling,
     describe_failure,
     log_provider_failure,
 )
@@ -89,109 +90,79 @@ AS_RECORDED_MODEL = "as-recorded"
 #: The key under which a reporter case lives inside ``EvalTestCase.host_payload``.
 REPORTER_CASE_KEY = "reporter_case"
 
-#: The output rate, in tokens a second, an eval call ceiling assumes when the host sets none — a reporter
-#: cell's and the analysis generation's alike. An operational limit — a floor under a sampled rate, which
-#: a slower writer or judge breaks — so a host passes its own configured value to the ceiling functions.
-DEFAULT_LLM_OUTPUT_RATE_FLOOR_TPS = 50.0
-
-#: Seconds an eval call ceiling allows each call before its first output token when the host sets none:
-#: the prefill of a bundle-sized prompt and the provider's queue. Passed as the rate floor is.
-DEFAULT_LLM_CALL_PREFILL_ALLOWANCE_S = 60.0
-
 
 def judge_phase_ceiling_s(
     *,
     judge_dims: int,
     judge_concurrency: int,
-    attempts_per_request: int,
     judge_call_attempts: int,
     judge_max_tokens: int,
-    output_rate_floor_tps: float,
-    prefill_allowance_s: float,
+    request_s: RequestCeiling,
 ) -> float:
-    """The wall-clock ceiling of one cell's judge phase, derived from the ceilings of its calls.
+    """The wall-clock ceiling of one cell's judge phase, derived from the ceilings of its requests.
 
     The judge scores ``judge_dims`` dimensions in waves of ``judge_concurrency``, each dimension up to
-    ``judge_call_attempts`` calls, each of which the host's client can re-send whole
-    (``attempts_per_request``); a call is bounded by its output cap at ``output_rate_floor_tps`` plus
-    ``prefill_allowance_s``. Every kind whose cell ends in a judge phase adds this to its ceiling, since the
+    ``judge_call_attempts`` requests capped at ``judge_max_tokens``, each bounded by the host's own answer
+    for one such request (``request_s``), which counts every provider call and retry wait the host's
+    client spends on it. Every kind whose cell ends in a judge phase adds this to its ceiling, since the
     cell's deadline bounds the judging too, and a ceiling without it cuts a slow cell off while it is scored.
 
     Args:
         judge_dims: Dimensions the judge scores on each cell.
-        judge_concurrency: Judge calls in flight at once.
-        attempts_per_request: Full provider calls the host's client makes for one request that completes.
-        judge_call_attempts: Calls one judge dimension can make, its parse retries included.
+        judge_concurrency: Judge requests in flight at once.
+        judge_call_attempts: Requests one judge dimension can make, its parse retries included.
         judge_max_tokens: The judge's output cap, as its requests are built with.
-        output_rate_floor_tps: The slowest output rate a finishing call is assumed to write at.
-        prefill_allowance_s: Seconds each call is allowed before its first output token.
+        request_s: The host's ceiling for one request on its client, by output cap.
 
     Returns:
-        The judge phase's ceiling in seconds.
+        The judge phase's ceiling in seconds: ``waves * judge_call_attempts * request_s(judge_max_tokens)``,
+        with ``waves`` the dimensions over the concurrency, rounded up.
     """
     judge_waves = -(-max(judge_dims, 0) // max(judge_concurrency, 1))
-    call_s = judge_max_tokens / output_rate_floor_tps + prefill_allowance_s
-    return judge_waves * judge_call_attempts * attempts_per_request * call_s
+    return judge_waves * judge_call_attempts * request_s(judge_max_tokens)
 
 
 def reporter_cell_timeout_s(
     *,
     judge_dims: int,
     judge_concurrency: int,
-    attempts_per_request: int,
     generator_max_tokens: int,
     judge_call_attempts: int,
     judge_max_tokens: int,
-    output_rate_floor_tps: float,
-    prefill_allowance_s: float,
+    request_s: RequestCeiling,
 ) -> float:
     """The wall-clock ceiling of one reporter cell, derived from the ceilings it wraps.
 
-    A reporter cell is one generation (its ceiling is
-    :func:`~threetears.evals.analysis.generator.generation_ceiling_s`, so the call count lives in one place), then its
-    rubric's judge calls in waves of ``judge_concurrency``, each dimension up to ``judge_call_attempts``
-    calls. Every request can be re-sent whole by the host's
-    client (``attempts_per_request``). Each call is bounded by its output cap at ``output_rate_floor_tps``
-    plus ``prefill_allowance_s``, so the ceiling sits above the slowest finishing cell rather than at a
-    sampled duration: the engine's generic 600s cancelled a generation that was still writing inside its
-    own output cap.
+    A reporter cell is one generation (:func:`~threetears.evals.analysis.generator.generation_ceiling_s`,
+    so the generation's request count lives in one place), then its rubric's judge phase
+    (:func:`judge_phase_ceiling_s`). Every request in either is bounded by the host's own answer for one
+    request at its output cap (``request_s``), so the ceiling sits above the slowest finishing cell
+    rather than at a sampled duration: the engine's generic 600s cancelled a generation that was still
+    writing inside its own output cap.
 
     Every operational input is a parameter, so the host passes the values its launch read and the
     ceiling is derived from the same generator cap the run's clients are built with. The judge's limits
     are parameters too: they belong to the judge, which the run package owns, and analysis imports
     nothing from run.
 
-    Not covered: the provider SDK's own transport retries (connection errors and 408/429/5xx statuses),
-    which fail before a completion is written rather than after one.
-
     Args:
         judge_dims: Rubric dimensions the run's judge scores on each cell.
-        judge_concurrency: Judge calls in flight at once.
-        attempts_per_request: Full provider calls the host's client makes for one request that
-            completes — a completion whose body fails to parse is re-sent.
+        judge_concurrency: Judge requests in flight at once.
         generator_max_tokens: The generator's output cap, as its clients are built with.
-        judge_call_attempts: Calls one judge dimension can make, its parse retries included.
+        judge_call_attempts: Requests one judge dimension can make, its parse retries included.
         judge_max_tokens: The judge's output cap, as its requests are built with.
-        output_rate_floor_tps: The slowest output rate a finishing call is assumed to write at.
-        prefill_allowance_s: Seconds each call is allowed before its first output token.
+        request_s: The host's ceiling for one request on its client, by output cap.
 
     Returns:
-        The cell ceiling in seconds.
+        The cell ceiling in seconds: the generation's ceiling plus the judge phase's.
     """
-    generation_s = generation_ceiling_s(
-        attempts_per_request=attempts_per_request,
-        generator_max_tokens=generator_max_tokens,
-        output_rate_floor_tps=output_rate_floor_tps,
-        prefill_allowance_s=prefill_allowance_s,
-    )
+    generation_s = generation_ceiling_s(request_s=request_s, generator_max_tokens=generator_max_tokens)
     judging_s = judge_phase_ceiling_s(
         judge_dims=judge_dims,
         judge_concurrency=judge_concurrency,
-        attempts_per_request=attempts_per_request,
         judge_call_attempts=judge_call_attempts,
         judge_max_tokens=judge_max_tokens,
-        output_rate_floor_tps=output_rate_floor_tps,
-        prefill_allowance_s=prefill_allowance_s,
+        request_s=request_s,
     )
     return generation_s + judging_s
 
@@ -1137,8 +1108,6 @@ class AsRecordedReporterKind:
 
 __all__ = [
     "AS_RECORDED_MODEL",
-    "DEFAULT_LLM_CALL_PREFILL_ALLOWANCE_S",
-    "DEFAULT_LLM_OUTPUT_RATE_FLOOR_TPS",
     "LABEL_BANDS",
     "REPLAY_NOTES_HEADING",
     "REPORTER_CASE_KEY",

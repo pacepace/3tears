@@ -125,7 +125,7 @@ from threetears.evals.contracts.host.profile import HostProfile
 from threetears.evals.contracts.host.style import prompt_fragment
 from threetears.evals.contracts.identity import IDENTITY_VERSION
 from threetears.evals.contracts.models import ClientRequestSettings, utc_now_iso
-from threetears.evals.contracts.provider import describe_incomplete_completion, extract_json
+from threetears.evals.contracts.provider import RequestCeiling, describe_incomplete_completion, extract_json
 from threetears.evals.contracts.surface import DecisionSurface
 from threetears.observe import get_logger
 
@@ -178,38 +178,26 @@ CallAdmission = Callable[[str, str, "dict[str, Any] | None"], None]
 MAX_GENERATION_CALLS = 2
 
 
-def generation_ceiling_s(
-    *,
-    attempts_per_request: int,
-    generator_max_tokens: int,
-    output_rate_floor_tps: float,
-    prefill_allowance_s: float,
-) -> float:
+def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float:
     """The wall-clock ceiling of one :func:`generate_analysis`, derived from the ceilings it wraps.
 
-    Up to :data:`MAX_GENERATION_CALLS` requests run back to back, each re-sendable whole by the host's
-    client (``attempts_per_request``), and each bounded by its output cap written at
-    ``output_rate_floor_tps`` plus ``prefill_allowance_s``. A budget over a generation must sit ABOVE
-    this: one below it cancels a repair round-trip that is still writing inside its cap, after both
-    calls were billed and with nothing stored.
+    Up to :data:`MAX_GENERATION_CALLS` requests run back to back, each capped at ``generator_max_tokens``
+    and each bounded by the host's own answer for one such request (``request_s``), which counts every
+    provider call and retry wait the host's client spends on it. A budget over a generation must sit
+    ABOVE this: one below it cancels a repair round-trip that is still writing inside its cap, after
+    both calls were billed and with nothing stored.
 
-    Not covered: the provider SDK's own transport retries, which fail before a completion is written,
-    and whatever the caller does around the generation (assembling the bundle, storing the result).
+    Not covered: whatever the caller does around the generation (assembling the bundle, storing the
+    result).
 
     Args:
-        attempts_per_request: Full provider calls the host's client makes for one request that completes.
+        request_s: The host's ceiling for one request on its client, by output cap.
         generator_max_tokens: The generator's output cap, as its clients are built with.
-        output_rate_floor_tps: The slowest output rate a finishing call is assumed to write at.
-        prefill_allowance_s: Seconds each call is allowed before its first output token.
 
     Returns:
-        The ceiling in seconds.
+        The ceiling in seconds: ``MAX_GENERATION_CALLS * request_s(generator_max_tokens)``.
     """
-    return (
-        MAX_GENERATION_CALLS
-        * attempts_per_request
-        * (generator_max_tokens / output_rate_floor_tps + prefill_allowance_s)
-    )
+    return MAX_GENERATION_CALLS * request_s(generator_max_tokens)
 
 
 # A lever's coverage status maps to a starting confidence for its point estimate.

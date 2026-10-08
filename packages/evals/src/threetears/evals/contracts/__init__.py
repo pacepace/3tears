@@ -182,12 +182,12 @@ from threetears.evals.contracts.out_of_run import (
 from threetears.evals.contracts.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt, SeedSection, SeedTemplate
 from threetears.evals.contracts.prose import PROSE_SCHEMA_KEY
 from threetears.evals.contracts.provider import (
-    PROVIDER_REQUEST_ATTEMPTS,
     BoundCompletionClient,
     CompletionClient,
     PricedCompletion,
     ProviderFailure,
     ProviderFailureDescriber,
+    RequestCeiling,
     SimulatorLLM,
     VariationLLM,
     describe_and_log_failure,
@@ -366,7 +366,6 @@ __all__ = [
     "NON_TERMINAL_RUN_STATUSES",
     "OUTCOME_DIM_ID",
     "PROSE_SCHEMA_KEY",
-    "PROVIDER_REQUEST_ATTEMPTS",
     "RESERVED_DIM_IDS",
     "DROPPED_TOOL_CALLS_KEY",
     "REFUSED_TOOL_ATTACHES_KEY",
@@ -558,6 +557,7 @@ __all__ = [
     "Recordable",
     "RecordedCall",
     "ReplayedDelivery",
+    "RequestCeiling",
     "ResolvedUsage",
     "ResultStore",
     "ResultCondition",
