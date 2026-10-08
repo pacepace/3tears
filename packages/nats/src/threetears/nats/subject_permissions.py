@@ -1203,29 +1203,29 @@ def _ns() -> str:
     return get_default_namespace()
 
 
-def _deadletter(ns: str) -> str:
-    """the deadletter subtree EVERY subscribing principal must be able to publish.
+def _deadletters(subscribe: Sequence[str], *, inbox: str) -> tuple[str, ...]:
+    """the dead-letter subjects of one principal's own subscriptions, and no others.
 
     ``NatsClient.subscribe`` and ``subscribe_typed`` both default ``deadletter_on_failure=True``:
     a callback that raises -- and, on the typed path, a payload that fails validation -- is
-    republished to ``{ns}.deadletter.{original_subject}``. The original subject carries its own
-    dots, so this is a ``>`` subtree rather than a single wildcard token.
+    republished to ``{ns}.deadletter.{subscription subject}``, the subject the subscription was
+    made on (``NatsClient._deadletter``), wildcards and all. A principal can only hold the
+    subscriptions its subscribe list grants, so the dead-letter of each one is everything its code
+    can need. The inbox is left out: the subscriptions under it (the credential renewal and refusal
+    doors) turn dead-lettering off, and every other inbox receiver is a raw nats-py subscription.
 
-    Granted to every principal because every principal subscribes to something. No principal held
-    it before: the registry was incidentally covered by its static ``aibots.>``, and a
-    callout-minted agent pod was not, so its deadletter publish was refused and the diagnostic it
-    exists to preserve was dropped at WARNING inside the very handler that was already failing.
+    Derived rather than listed so the two lists cannot drift. Each principal used to hold the whole
+    ``{ns}.deadletter.>`` subtree, which let it publish a forged dead-letter for any subscription on
+    the bus; ``tests/enforcement/test_subject_grants_match_the_code.py`` holds it to this.
 
-    Hand-typed rather than built through :class:`Subjects`, which mints a CONCRETE deadletter
-    subject for one original path and has no wildcard constructor; the surrounding resolvers
-    hand-type their wildcard families for the same reason.
-
-    :param ns: the subject namespace prefix
-    :ptype ns: str
-    :return: the deadletter publish grant
-    :rtype: str
+    :param subscribe: the principal's subscribe allow-list
+    :ptype subscribe: Sequence[str]
+    :param inbox: the principal's scoped inbox prefix
+    :ptype inbox: str
+    :return: one dead-letter subject per subscribed subject, in subscribe order
+    :rtype: tuple[str, ...]
     """
-    return f"{ns}.deadletter.>"
+    return tuple(str(Subjects.deadletter(subject)) for subject in subscribe if not subject.startswith(f"{inbox}."))
 
 
 def build_permissions(
@@ -1648,7 +1648,6 @@ def _agent_pod(
         f"{ns}.channels.deliver.*",  # publishes finished answers (any inbound channel type)
         f"{ns}.hub.stream.{_seg(a)}.*",  # streams tokens for its own (per-request) correlation ids under its own authed agent id
         f"{ns}.agents.complete.*",  # resilience-task-07: per-turn completion signal the router awaits to ack the durable turn (keyed by correlation id)
-        _deadletter(ns),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
@@ -1669,10 +1668,12 @@ def _agent_pod(
         str(Subjects.acl_invalidate("role")),
         CROSS_PLATFORM_CACHE_INVALIDATE,
         f"{ns}.gateway.stream.{_seg(a)}.*",  # token stream for its own in-flight requests under its own authed agent id
-        str(Subjects.mcp_rbac_epoch()),
+        # NO ``mcp.rbac.epoch``. Its one subscriber is ``threetears.mcp``'s ``LocalGrantAuthorizer``,
+        # which the hub constructs and no agent pod does: the SDK has never imported
+        # ``threetears.mcp`` or ``threetears.epoch``, so no release of an agent ever subscribed it.
     )
     return PrincipalPermissions(
-        publish=publish,
+        publish=(*publish, *_deadletters(subscribe, inbox=inbox)),
         subscribe=subscribe,
         allow_responses=True,  # replies to the hub's route request
         inbox_prefix=inbox,
@@ -1892,7 +1893,6 @@ def _tool_pod(
         # that will end the connection at expiry. A pod that guessed longer than the hub minted
         # renewed after the server had already closed it, and crash-looped.
         SERVER_USER_INFO_SUBJECT,
-        _deadletter(ns),
         # THE GLOBAL, DELIBERATELY UN-NAMESPACED INVALIDATION SUBJECT, and granting it is a
         # DECISION rather than a detail -- ``coll-task-07c`` TP-02. A tool pod that holds an L2
         # collection must announce its own writes or every peer replica serves a value it has
@@ -1917,7 +1917,7 @@ def _tool_pod(
         *pipe_up,  # own authorized tools' streams, own pod id, caller's half only
     )
     return PrincipalPermissions(
-        publish=publish,
+        publish=(*publish, *_deadletters(subscribe, inbox=inbox)),
         subscribe=subscribe,
         allow_responses=True,  # replies to the registry's forwarded call + probe
         inbox_prefix=inbox,
@@ -2013,7 +2013,13 @@ def _registry(
         # primitive is enforced in the proxy, not here: it publishes only to a subject naming the
         # call's VERIFIED agent id (re-stamped from the identity token, never the claimed envelope).
         str(Subjects.tools_reply_wildcard()),
-        _deadletter(ns),
+        # the hub's ``registry_identity`` factory, loaded into this process, takes a hub-minted token
+        # for the registry's own reads; the RBAC stack and the hub's ``registry_auth`` factories then
+        # read L3 through the broker (``NatsProxyL3Backend``), which checks that token at its door.
+        str(Subjects.hub_handshake()),
+        str(Subjects.l3_query()),
+        str(Subjects.l3_batch()),
+        f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all six ops
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
@@ -2028,7 +2034,7 @@ def _registry(
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(
-        publish=publish,
+        publish=(*publish, *_deadletters(subscribe, inbox=inbox)),
         subscribe=subscribe,
         allow_responses=True,  # replies to agents' tools.call / tools.discover
         inbox_prefix=inbox,
@@ -2105,7 +2111,6 @@ def _hub(
         # exact literals from. what stays exact is the DIRECTION -- the hub publishes only on ``up``,
         # so no wildcard here reaches an owner's own half of any stream.
         str(Subjects.pipe_any_pod_wildcard("up")),
-        _deadletter(ns),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
@@ -2162,7 +2167,7 @@ def _hub(
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(
-        publish=publish,
+        publish=(*publish, *_deadletters(subscribe, inbox=inbox)),
         subscribe=subscribe,
         allow_responses=True,
         inbox_prefix=inbox,
@@ -2263,7 +2268,7 @@ def _gateway(
         # the seam that keeps media resolution customer-safe. NOT hub_object_commit:
         # the gateway produces no objects.
         str(Subjects.hub_object_resolve()),
-        _deadletter(ns),
+        str(Subjects.hub_jwks()),  # verifies the caller's hub-minted token against the hub's key set
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
@@ -2278,7 +2283,7 @@ def _gateway(
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(
-        publish=publish,
+        publish=(*publish, *_deadletters(subscribe, inbox=inbox)),
         subscribe=subscribe,
         allow_responses=True,  # replies to completion / embedding / health requests
         inbox_prefix=inbox,
@@ -2310,26 +2315,37 @@ def _channel_adapter(
     inbox = inbox_prefix_for(Principal.CHANNEL_ADAPTER, conn_id=c)
     scope = kv_key_scope_for(Principal.CHANNEL_ADAPTER)
     ns = _ns()
+    # NO ``agents.route.*``: the adapter has dispatched a turn as a JetStream publish of
+    # ``agents.turn.{agent}`` since the hub's router-mediated delivery (2026-07-10), and nothing
+    # subscribes ``agents.route`` any more. That publish is not granted here: a turn carries the hub's
+    # turn assertion, and widening a token-carrying grant is its owner's decision -- the static
+    # ``slack`` user holds the namespace on publish, so nothing is refused today.
+    # NO ``channels.room.*`` either way: ``RoomFanout`` is constructed by no process in any repository.
     publish = (
-        f"{ns}.agents.route.*",  # routes inbound channel messages to agents
         str(Subjects.hub_channel_installs()),  # fetches its bot installs
         str(Subjects.hub_user_resolve()),  # resolves a channel sender to a platform user
         # HITL: the router (in this sandboxed adapter) forwards an operator reply to the approval
         # broker, which authorizes + resolves it into a resume verdict. reply only; no marker write.
         str(Subjects.hub_approval_resolve()),
         f"{ns}.hub.channel.installs.changed",  # best-effort orphan-reload signal
-        _deadletter(ns),
+        # the delivery worker verifies the hub's turn assertion on each answer against the hub's keys
+        str(Subjects.hub_jwks()),
+        # the delivery consumer's dead-letter once an answer exhausts its budget (NatsClient's
+        # redelivery policy publishes it); a stream grant does not cover a publish of its subjects
+        str(Subjects.channels_deliver("deadletter")),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
+    # NOT ``channels.deliver.*``: the delivery worker drains it through a JetStream PULL consumer,
+    # whose fetches arrive on the inbox; the stream grant below is what that consumer needs.
     subscribe = (
         f"{inbox}.>",
-        str(Subjects.channels_deliver_wildcard()),  # durable consumer of agent answers
         f"{ns}.hub.channel.installs.changed",  # reconcile live connections on install changes
-        f"{ns}.channels.room.*",  # cross-pod room fanout (live socket delivery)
+        # ``dispatch_to_agent`` waits for the agent's answer on a random-token reply subject
+        f"{ns}.agents.reply.*",  # one token: Subjects.agent_reply of a random hex token
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(
-        publish=(*publish, f"{ns}.channels.room.*"),  # publishes room frames too
+        publish=(*publish, *_deadletters(subscribe, inbox=inbox)),
         subscribe=subscribe,
         allow_responses=True,
         inbox_prefix=inbox,
@@ -2368,7 +2384,10 @@ def _agent_router(
         f"{ns}.agents.internal.*.*",  # forwards a turn to the sticky pod ({agent_id}.{pod_id})
         f"{ns}.agents.reregister_request.*.*",  # nudges a pod to re-register
         str(Subjects.agent_turn_deadletter()),  # parks a turn that exhausted its redelivery budget
-        _deadletter(ns),
+        # the agent's answer, an early ack or a routing error, to the turn's own reply subject; the
+        # router refuses any reply subject but one token under ``agents.reply``, and so does this
+        f"{ns}.agents.reply.*",  # one token: Subjects.agent_reply of a random hex token
+        str(Subjects.hub_jwks()),  # ``CachedHubJwksProvider``: verifies the hub's turn assertion
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
@@ -2376,12 +2395,13 @@ def _agent_router(
         str(Subjects.agent_register()),
         str(Subjects.agent_deregister()),
         str(Subjects.agent_heartbeat_wildcard()),  # liveness monitor over every agent + pod
-        str(Subjects.agent_turn_wildcard()),  # the durable consumer's filter
+        # NOT ``agents.turn.*``: the turn consumer is a JetStream PUSH consumer, which nats-py
+        # delivers on a ``new_inbox()`` subject; the stream grant below is what it needs.
         f"{ns}.agents.complete.*",  # the per-turn completion signal it awaits before acking
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(
-        publish=publish,
+        publish=(*publish, *_deadletters(subscribe, inbox=inbox)),
         subscribe=subscribe,
         allow_responses=True,  # answers the hub's route request
         inbox_prefix=inbox,
@@ -2446,17 +2466,14 @@ def _dataset_executor(
     inbox = inbox_prefix_for(Principal.DATASET_EXECUTOR, conn_id=c)
     scope = kv_key_scope_for(Principal.DATASET_EXECUTOR)
     ns = _ns()
-    publish = (
-        str(Subjects.hub_usage_track()),
-        _deadletter(ns),
-        CROSS_PLATFORM_CACHE_INVALIDATE,
-    )
+    # NO ``hub.usage.track``: the executor publishes no usage event, and never has.
+    publish = (CROSS_PLATFORM_CACHE_INVALIDATE,)
     subscribe = (
         f"{inbox}.>",
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     return PrincipalPermissions(
-        publish=publish,
+        publish=(*publish, *_deadletters(subscribe, inbox=inbox)),
         subscribe=subscribe,
         allow_responses=True,
         inbox_prefix=inbox,

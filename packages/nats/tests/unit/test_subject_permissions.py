@@ -245,6 +245,9 @@ class TestIdentityIsolation:
             tool_subjects(p1)
             == tool_subjects(p2)
             == [
+                # the dead-letters of the two subscriptions, under the same agent subtree
+                f"{_NS}.deadletter.{_NS}.tools.internal.{_AGENT_A}.>",
+                f"{_NS}.deadletter.{_NS}.tools.probe.{_AGENT_A}.>",
                 f"{_NS}.tools.heartbeat.{_AGENT_A}.>",
                 f"{_NS}.tools.internal.{_AGENT_A}.>",
                 f"{_NS}.tools.probe.{_AGENT_A}.>",
@@ -363,7 +366,9 @@ class TestBootCompleteness:
             ),
             (Principal.HUB, [f"{_NS}.hub.handshake", f"{_NS}.hub.jwks", f"{_NS}.hub.secrets.request"]),
             (Principal.GATEWAY, [f"{_NS}.gateway.completion", f"{_NS}.gateway.embedding"]),
-            (Principal.CHANNEL_ADAPTER, [f"{_NS}.channels.deliver.*", f"{_NS}.hub.channel.installs"]),
+            # the answers arrive through a pull consumer on the inbox, not on ``channels.deliver.*``; what
+            # the adapter subscribes is the reply subject ``dispatch_to_agent`` waits on.
+            (Principal.CHANNEL_ADAPTER, [f"{_NS}.agents.reply.*", f"{_NS}.hub.channel.installs"]),
         ],
     )
     def test_boot_critical_subjects_present(self, principal: Principal, required: list[str]) -> None:
@@ -979,15 +984,25 @@ class TestDeadletterGrant:
     """``subscribe`` and ``subscribe_typed`` both deadletter by default, and nobody was granted it.
 
     A callback that raises -- and, on the typed path, a payload that fails validation -- republishes
-    to ``{ns}.deadletter.{original_subject}``. Grepping this module for ``deadletter`` used to
+    to ``{ns}.deadletter.{subscription subject}``. Grepping this module for ``deadletter`` used to
     return nothing: the registry was incidentally covered by its static ``aibots.>``, and a
     callout-minted agent pod was not, so the one diagnostic a failing handler leaves behind was
-    itself refused and dropped at WARNING inside that same failing handler.
+    itself refused and dropped at WARNING inside that same failing handler. The grant is the
+    dead-letter of each subscription the principal holds, not the whole subtree, which would let it
+    forge a dead-letter for anybody's subscription.
     """
 
     @pytest.mark.parametrize("principal", list(Principal))
-    def test_every_principal_may_publish_the_deadletter_subtree(self, principal: Principal) -> None:
-        assert f"{_NS}.deadletter.>" in _build(principal).publish, principal
+    def test_every_principal_may_dead_letter_each_of_its_subscriptions(self, principal: Principal) -> None:
+        perm = _build(principal)
+        subscribed = [s for s in perm.subscribe if not s.startswith(f"{perm.inbox_prefix}.")]
+        assert subscribed, principal
+        missing = [s for s in subscribed if f"{_NS}.deadletter.{s}" not in perm.publish]
+        assert not missing, f"{principal}: cannot dead-letter {missing}"
+
+    @pytest.mark.parametrize("principal", list(Principal))
+    def test_no_principal_may_publish_the_whole_deadletter_subtree(self, principal: Principal) -> None:
+        assert f"{_NS}.deadletter.>" not in _build(principal).publish, principal
 
     @pytest.mark.parametrize("principal", list(Principal))
     def test_no_principal_subscribes_the_deadletter_subtree(self, principal: Principal) -> None:

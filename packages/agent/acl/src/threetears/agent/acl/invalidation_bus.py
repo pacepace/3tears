@@ -155,7 +155,8 @@ async def subscribe_acl_invalidation(nats: AclInvalidationSubscriber, cache: Acl
     ``{ns}.deadletter.{subject}`` and the handler is NEVER reached. That is stricter than the
     warn-and-continue the consuming apps hand-rolled before they adopted this function: a
     malformed broadcast now leaves an inspectable artefact instead of one log line. Every
-    principal's grant carries ``{ns}.deadletter.>`` on publish, so the republish is not refused.
+    principal's grant carries the dead-letter of each subscription it holds on publish, so the
+    republish is not refused.
 
     Pair with :func:`unsubscribe_acl_invalidation` at shutdown; do NOT call
     ``Subscription.unsubscribe()`` on the returned handles, which is not the same operation.

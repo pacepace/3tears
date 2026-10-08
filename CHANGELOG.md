@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### NATS: each principal's subject grants are the subjects its code uses, held by a gate
+
+- `tests/enforcement/test_subject_grants_match_the_code.py` holds `subject_permissions` equal to the
+  receive and publish sites, both ways: every site's subject (built through its own `Subjects`
+  builder) is granted, every grant has a site or a dated keep-for-older-releases row, every receiver
+  the sender-posture walker finds is placed, and the subjects deliberately withheld are listed with
+  why. The hub is not gated (it is the unrestricted static user); the gate says so.
+- Dead-letters: each principal now publishes `{ns}.deadletter.<subscription>` for each subscription
+  it holds, derived from its subscribe list, in place of the whole `{ns}.deadletter.>` subtree.
+  `NatsClient` dead-letters to the subscription subject, so nothing a principal can receive loses
+  its dead-letter.
+- Agent pod: no longer subscribes `mcp.rbac.epoch`; no agent release ever constructed its one
+  subscriber (`threetears.mcp.LocalGrantAuthorizer`, which the hub runs).
+- Channel adapter: subscribes `agents.reply.*` (`dispatch_to_agent`'s reply subject) and no longer
+  `channels.deliver.*` (a pull consumer, on the inbox) or `channels.room.*` (never wired); publishes
+  `hub.jwks` and `channels.deliver.deadletter` and no longer `agents.route.*` (retired with the
+  durable turn path) or `channels.room.*`. Its `agents.turn.*` publish is withheld: a turn carries
+  the hub's turn assertion.
+- Agent router: publishes `agents.reply.*` and `hub.jwks`; no longer subscribes `agents.turn.>`
+  (its push consumer delivers on the inbox).
+- Registry: publishes `hub.handshake` and `l3.query` / `l3.batch` / `l3.tx.*` (the hub factories it
+  loads read L3 through the broker). Gateway: publishes `hub.jwks`. Dataset executor: no longer
+  publishes `hub.usage.track`, which it never sent.
+- Only the agent pod and tool pod are minted by the callout; the rest are the model the hub's static
+  conf follows. No minted pod grant loses a subject any release uses.
+
 ### Core: a call-scoped delegated token, and the door check on whoever presents a token
 
 - `threetears.core.security.delegated_token`: `mint_delegated_token` (the registry, per forwarded
