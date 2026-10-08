@@ -8,9 +8,10 @@ packages (bumped in lock-step).
 
 ### Core and agent tools: answers an edge may cache, labelled with exactly the data they read
 
-- **Added:** `ScopedSnapshot.read_versioned()` yields a `VersionedRead(cursor, epochs)`: a read of
-  the copy, as `read()`, and the epoch of every scope whose rows the cursor sees, exactly (a scope
-  dropped is absent). A read opened while a swap commits waits for it and reads its result; it
+- **Added:** `ScopedSnapshot.read_versioned()` yields a `VersionedRead(cursor, epochs, behind)`: a
+  read of the copy, as `read()`, the epoch of every scope whose rows the cursor sees, exactly (a
+  scope dropped is absent), and the scopes it is behind on, taken as `read_with_behind()` takes
+  them. A read opened while a swap commits waits for it and reads its result; it
   never fails for a long swap. Blocking: call it from a worker thread. Consumers: the hub's REST
   face labels shareable answers with these epochs through the ENR pod (`enr.edge_rows`).
 - **Added:** `RestAffordance.cache_max_age` (whole seconds, 1 to `MAX_POINTER_AGE_SECONDS` = 60): a

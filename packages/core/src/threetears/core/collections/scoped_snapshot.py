@@ -226,10 +226,13 @@ class VersionedRead:
 
     :ivar cursor: the read's cursor: one state of every table, held still for the block
     :ivar epochs: scope -> the epoch whose rows the cursor reads, exactly
+    :ivar behind: scope -> why it is behind, as :meth:`ScopedSnapshot.read_with_behind` takes it:
+        every scope the cursor's data is behind on, and perhaps one brought current as it opened
     """
 
     cursor: Any
     epochs: Mapping[str, int]
+    behind: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
 
 @dataclass(frozen=True)
@@ -1137,7 +1140,7 @@ class ScopedSnapshot:
         for the swap and its epochs' move, and reads their result; it never fails for a swap however
         long. Blocking: call it from a worker thread.
 
-        :return: the read and its epochs
+        :return: the read, its epochs and the scopes it is behind on
         :rtype: Iterator[VersionedRead]
         """
         table = quote_identifier(self._tables[0].name)
@@ -1145,11 +1148,18 @@ class ScopedSnapshot:
         with ExitStack() as stack:
             with lock:
                 epochs = self._held  # taken once, under the lock: the loop rebinds it, never changes it
+                # taken before the read opens, and a scope leaves it only after its commit (as
+                # read_with_behind): it names every scope the read is behind on
+                behind = self._behind
                 cursor = stack.enter_context(backend.read_snapshot())
                 # DuckDB fixes a read's state at its first statement, not at BEGIN: pin it while no
                 # swap can commit, so the state read is the one the epochs name
                 cursor.execute(f"SELECT 1 FROM {table} LIMIT 0").fetchall()
-            yield VersionedRead(cursor=cursor, epochs=epochs)
+            yield VersionedRead(
+                cursor=cursor,
+                epochs=epochs,
+                behind=MappingProxyType({scope: why for scope, (_, why) in behind.items()}),
+            )
 
     async def wait_ready(self, *, timeout: float) -> None:
         """wait until every scope has been loaded.

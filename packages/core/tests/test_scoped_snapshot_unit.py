@@ -718,6 +718,29 @@ async def test_a_read_carries_the_behind_set_of_the_data_it_reads() -> None:
     await snapshot.stop()
 
 
+async def test_a_versioned_read_carries_the_behind_set_of_the_data_it_reads() -> None:
+    """as a plain read: a scope applied while a versioned read is open is still behind for that read,
+    whose data and epoch are the old ones; a versioned read opened after sees it current."""
+    snapshot, pointers, store, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    pointers.put_now("enr.rebuild", b"another replica")
+    _point_at_a_missing_chunk(pointers)
+    await _until(lambda: "TX" in snapshot.status().behind, what="TX behind")
+
+    with snapshot.read_versioned() as read:
+        store.objects["enr/TX/2/results.gone"] = _tx_chunk(5)
+        await _until(lambda: snapshot.applied_epoch("TX") == 2, what="TX applied at epoch 2")
+        assert "TX" in read.behind, "the read's behind set changed under it"
+        assert read.epochs["TX"] == 1
+        assert read.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(1,)]
+    with snapshot.read_versioned() as read:
+        assert "TX" not in read.behind and read.epochs["TX"] == 2
+        assert read.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(5,)]
+    await snapshot.stop()
+
+
 # ----------------------------------------------------------------------
 # readers on other threads: the loop is the one writer of what they read
 # ----------------------------------------------------------------------
