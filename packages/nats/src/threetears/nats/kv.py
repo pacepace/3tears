@@ -689,7 +689,7 @@ async def open_kv_stream(
                 bucket=full_name,
             ) from bind_exc
         raise KvError(
-            f"open KV bucket failed: bucket={full_name}: create={add_exc!r} bind={bind_exc!r}: {bind_exc}. "
+            f"open KV bucket failed: bucket={full_name}: create={add_exc!r}: {add_exc} bind={bind_exc!r}: {bind_exc}. "
             f"{_failure_remedy(bind_exc, full_name=full_name, answered=_ANSWERED_NOT_A_GRANT)}"
         ) from bind_exc
     return KvStreamOpening(kv=kv, created=created)

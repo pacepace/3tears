@@ -239,3 +239,19 @@ async def test_an_answered_error_that_is_no_outage_is_not_blamed_on_a_grant_eith
     for advice in _GRANT_ADVICE:
         assert advice not in message, f"an answered refusal was blamed on a grant: {message}"
     assert "temporarily unavailable" not in message, "a configuration answer is not an outage"
+
+
+async def test_a_create_and_a_bind_that_fail_differently_both_say_why() -> None:
+    """a nats-py APIError's repr is empty, so the create's own words must be printed beside it."""
+    create_refusal = {"code": 500, "err_code": 10023, "description": "insufficient resources"}
+    bind_refusal = _OUTAGE_REPLIES["stream-offline"]
+
+    def _answer(subject: str) -> dict[str, Any]:
+        if ".STREAM.CREATE." in subject:
+            return {"error": create_refusal}
+        return {"error": bind_refusal}
+
+    message = await _put_error(_answer, "declaring")
+
+    assert "insufficient resources" in message, f"the create's reason was dropped: {message}"
+    assert "stream is offline" in message, message
