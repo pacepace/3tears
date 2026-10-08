@@ -14,6 +14,10 @@ core measures no host declares, and the summary reads them wherever a result car
 as a measure whose mean is the share of answers that matched, and the ``confusion_cell`` counts as the
 confusion matrix and each label's precision, recall and F1, counted by
 :func:`~threetears.evals.analysis.confusion.label_statistics` as the analysis bundle counts them.
+
+**A judged run's rubric is read too.** Each dimension a judge scored is summarised over the results that
+carry its score, beside how many the judge could not tell on, and the judge's spend is the sum of the
+results' ``judge`` usage rows — unknown, never zero, when any judge call went unpriced.
 """
 
 from __future__ import annotations
@@ -24,8 +28,17 @@ from pydantic import BaseModel, ConfigDict
 
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics, confusion_matrix, label_statistics
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.contracts import CONFUSION_CELL_MEASURE, MATCH_MEASURE, ResultOutcome, classify_result
+from threetears.evals.contracts import (
+    CONFUSION_CELL_MEASURE,
+    MATCH_MEASURE,
+    EvalResult,
+    ResultOutcome,
+    RubricScale,
+    UsageRole,
+    classify_result,
+)
 from threetears.evals.contracts.host import EvalHost
+from threetears.evals.contracts.usage_capture import blended_cost
 from threetears.evals.run import get_run, list_results
 
 
@@ -50,6 +63,31 @@ class MeasureSummary(BaseModel):
     maximum: float | None
 
 
+class DimensionSummary(BaseModel):
+    """One judged rubric dimension over a run's results.
+
+    Attributes:
+        name: The dimension, as the template's rubric names it.
+        scale: How it was answered: ``ordinal`` (1 to 5) or ``pass_fail`` (1 pass, 0 fail); ``None`` when
+            no result carries a score to say.
+        n: How many results carry a score on it.
+        mean: Their mean; ``None`` when none does.
+        minimum: The lowest score; ``None`` when none does.
+        maximum: The highest score; ``None`` when none does.
+        cannot_tell: How many results the judge answered it could not score on it — not failures, and in no mean.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    scale: RubricScale | None
+    n: int
+    mean: float | None
+    minimum: float | None
+    maximum: float | None
+    cannot_tell: int
+
+
 class EvalSummary(BaseModel):
     """One run, summarised.
 
@@ -70,6 +108,11 @@ class EvalSummary(BaseModel):
         confusion: The confusion matrix of the results' ``confusion_cell`` values, by expected then
             predicted label; empty for a run that classified nothing.
         labels: Each label's precision, recall and F1 from that matrix, by label; empty with it.
+        judged: Each rubric dimension a judge scored or could not tell on, in the order first met; empty
+            for an unjudged run.
+        judge_calls: How many judge calls the results' ``judge`` usage rows count.
+        judge_cost_usd: What those calls cost, as their client priced them; ``None`` when any went
+            unpriced, and for a run no judge was called in.
         errors: Each failed or excluded result's error, prefixed by its case, then the run's own.
     """
 
@@ -89,6 +132,9 @@ class EvalSummary(BaseModel):
     measures: list[MeasureSummary]
     confusion: list[ConfusionCount]
     labels: list[LabelStatistics]
+    judged: list[DimensionSummary] = []
+    judge_calls: int = 0
+    judge_cost_usd: float | None = None
     errors: list[str]
 
     def render(self) -> str:
@@ -121,6 +167,12 @@ class EvalSummary(BaseModel):
             )
             lines.append("  per label:")
             lines.extend(f"    {_label_line(statistics)}" for statistics in self.labels)
+        lines.extend(f"  {_dimension_line(dimension)}" for dimension in self.judged)
+        if self.judged:
+            spend = (
+                "unknown: a judge call went unpriced" if self.judge_cost_usd is None else f"${self.judge_cost_usd:.6f}"
+            )
+            lines.append(f"  judge spend: {spend} over {self.judge_calls} call(s)")
         lines.extend(f"  error: {error}" for error in self.errors)
         return "\n".join(lines)
 
@@ -137,6 +189,19 @@ def _proportion(name: str, rate: float | None, hits: int, n: int, interval: tupl
     if interval is not None:
         shown += f", {INTERVAL_LEVEL:.0%} CI {interval[0]:.2g}-{interval[1]:.2g}"
     return shown + ")"
+
+
+def _dimension_line(dimension: DimensionSummary) -> str:
+    """One judged dimension's line: its scale, its mean and range, and how often the judge could not tell."""
+    scale = {"ordinal": "judged 1-5", "pass_fail": "judged pass/fail", None: "judged"}[dimension.scale]
+    line = f"{dimension.name} ({scale}): "
+    if dimension.mean is None or dimension.minimum is None or dimension.maximum is None:
+        line += "no result carries a score"
+    else:
+        line += f"mean {dimension.mean:.3g} (n={dimension.n}, min {dimension.minimum:.3g}, max {dimension.maximum:.3g})"
+    if dimension.cannot_tell:
+        line += f", the judge could not tell on {dimension.cannot_tell}"
+    return line
 
 
 def _label_line(statistics: LabelStatistics) -> str:
@@ -189,15 +254,18 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
             )
         )
     errors = [
-        f"case {result.test_case_id}: {result.runner_error}"
+        f"case {result.test_case_id}: {error}"
         for result, outcome in zip(results, outcomes, strict=True)
-        if outcome is not ResultOutcome.OK and result.runner_error
+        if outcome is not ResultOutcome.OK
+        for error in (result.runner_error, None if result.judge_error is None else f"judge: {result.judge_error}")
+        if error
     ]
     errors.extend(run.error_details)
     cells = Counter(
         cell for result in results if isinstance(cell := result.host_measures.get(CONFUSION_CELL_MEASURE), str)
     )
     confusion = confusion_matrix(cells)
+    judge_rows = [row for result in results for row in result.usage if row.role == "judge"]
     return EvalSummary(
         run_id=run.id,
         scope_id=scope_id,
@@ -213,8 +281,41 @@ def summarize_run(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
         measures=measures,
         confusion=confusion,
         labels=label_statistics(confusion),
+        judged=_judged_dimensions(results),
+        judge_calls=sum(row.call_count or 0 for row in judge_rows),
+        judge_cost_usd=blended_cost(judge_rows, _JUDGE_ROLE) if judge_rows else None,
         errors=errors,
     )
 
 
-__all__ = ["EvalSummary", "MeasureSummary", "summarize_run"]
+#: The one role a run's judge spends under, which the summary's judge spend sums.
+_JUDGE_ROLE: tuple[UsageRole, ...] = ("judge",)
+
+
+def _judged_dimensions(results: list[EvalResult]) -> list[DimensionSummary]:
+    """Each rubric dimension the results carry a judge's score or a judge's "cannot tell" on, in the order first met."""
+    scores: dict[str, list[float]] = {}
+    scales: dict[str, RubricScale] = {}
+    cannot_tell: Counter[str] = Counter()
+    for result in results:
+        for score in result.rubric_scores:
+            scores.setdefault(score.dim, []).append(float(score.score))
+            scales.setdefault(score.dim, score.scale)
+        for dim in result.judge_cannot_tell:
+            scores.setdefault(dim, [])
+            cannot_tell[dim] += 1
+    return [
+        DimensionSummary(
+            name=name,
+            scale=scales.get(name),
+            n=len(values),
+            mean=sum(values) / len(values) if values else None,
+            minimum=min(values) if values else None,
+            maximum=max(values) if values else None,
+            cannot_tell=cannot_tell[name],
+        )
+        for name, values in scores.items()
+    ]
+
+
+__all__ = ["DimensionSummary", "EvalSummary", "MeasureSummary", "summarize_run"]
