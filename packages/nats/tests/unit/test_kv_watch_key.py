@@ -517,6 +517,46 @@ class TestTheKeyListingReadsOnlyItsOwnConsumer:
         assert name is not None and len(name.removeprefix("kl_")) == 32
 
 
+class TestTheSharedNamedReadReadsOnlyItsOwnConsumer:
+    """the one read loop the key listing and the Object Store share refuses what its consumer did not deliver."""
+
+    async def test_an_object_store_read_takes_only_its_own_consumers_chunks(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from threetears.nats._named_read import NamedRead, read_through_named_consumer
+
+        forged = [
+            _delivered(b"forged", sequence=1, stream="OBJ_forger"),
+            _delivered(b"forged", sequence=2, consumer="obr_someone_else"),
+        ]
+        own = [_delivered(b"chunk-1", sequence=3), _delivered(b"chunk-2", sequence=4)]
+        log: list[str] = []
+        raw = _Raw([[*forged, *own]], log)
+        js = _JetStream(log)
+
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.own_consumer"):
+            messages = await read_through_named_consumer(
+                _Client(raw, js),  # type: ignore[arg-type]
+                NamedRead(
+                    stream=_STREAM,
+                    filter_subject=_SUBJECT,
+                    deliver_policy=DeliverPolicy.ALL,
+                    name_prefix="obr_",
+                    count=2,
+                    timeout_seconds=1.0,
+                    receiver="object store read",
+                ),
+                failure=lambda message, _cause: KvError(message),
+            )
+
+        assert [bytes(m.data) for m in messages] == [b"chunk-1", b"chunk-2"]
+        refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
+        assert len(refusals) == len(forged)
+        assert all(r.getMessage().startswith("object store read ") for r in refusals)
+        name = js.creates[0][1].name
+        assert name is not None and len(name.removeprefix("obr_")) == 32
+
+
 class TestForgeriesAreNoProofOfLife:
     """a consumer the broker lost is replaced even while forgeries keep arriving on its inbox."""
 

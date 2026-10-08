@@ -21,6 +21,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import mapbox_vector_tile
+from shapely import clip_by_rect
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform
 
@@ -28,9 +29,19 @@ from threetears.geo.bands import TileFeature
 from threetears.geo.tiles import TILE_EXTENT, MAX_MERCATOR_LATITUDE, TileId, tile_bounds
 from threetears.observe import get_logger
 
-__all__ = ["encode_tile", "project_to_tile"]
+__all__ = ["TILE_BUFFER", "clip_to_tile", "encode_tile", "project_to_tile"]
 
 log = get_logger(__name__)
+
+#: how far past its own square, in tile units, a tile carries geometry. Features are
+#: picked by their bounds, so a shape much larger than the tile -- a state at a high
+#: zoom, or a county whose islands sit at both ends of the longitude range (Aleutians
+#: West, across the antimeridian) -- would otherwise arrive whole, running tiles past
+#: the edge: heavy to ship and, past the 16-bit range renderers read tile coordinates
+#: in, refused ("Geometry exceeds allowed extent, reduce your vector tile buffer
+#: size"). The margin keeps strokes and fills seamless where tiles meet; 64 of 4096
+#: is the usual choice for data layers.
+TILE_BUFFER: int = 64
 
 
 def _mercator_y(latitude: float) -> float:
@@ -68,6 +79,29 @@ def project_to_tile(geometry: BaseGeometry, tile: TileId) -> BaseGeometry:
     return transform(_project, geometry)
 
 
+def clip_to_tile(projected: BaseGeometry, buffer: int = TILE_BUFFER) -> BaseGeometry:
+    """cut tile-local geometry to the tile's square and a ``buffer`` around it.
+
+    a shape across the antimeridian is stored with parts at both ends of the
+    longitude range; projected into a tile at one end, the parts at the other land
+    far outside it, so the cut leaves each tile only its own side's parts.
+
+    :param projected: geometry already in the tile's local coordinates
+    :ptype projected: BaseGeometry
+    :param buffer: the margin kept past each edge, in tile units
+    :ptype buffer: int
+    :return: the part within the square and its margin; empty when nothing is
+    :rtype: BaseGeometry
+    """
+    low = -float(buffer)
+    high = float(TILE_EXTENT + buffer)
+    minx, miny, maxx, maxy = projected.bounds
+    if minx >= low and miny >= low and maxx <= high and maxy <= high:
+        return projected
+    clipped: BaseGeometry = clip_by_rect(projected, low, low, high, high)
+    return clipped
+
+
 def encode_tile(layers: dict[str, Sequence[TileFeature]], tile: TileId) -> bytes:
     """encode one or more named layers into a single MVT tile.
 
@@ -86,7 +120,7 @@ def encode_tile(layers: dict[str, Sequence[TileFeature]], tile: TileId) -> bytes
     for name, features in layers.items():
         encoded_features: list[dict[str, Any]] = []
         for feature in features:
-            projected = project_to_tile(feature.geometry, tile)
+            projected = clip_to_tile(project_to_tile(feature.geometry, tile))
             if projected.is_empty:
                 continue
             entry: dict[str, Any] = {

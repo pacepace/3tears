@@ -101,6 +101,144 @@ delivered on any subject, through a push consumer's `deliver_subject` or a reque
   receiving site in `packages/` now carries its marker; `tests/enforcement/_sender_posture_allowlist.txt`
   lists the receivers still open under the NATS receiver-trust audit.
 
+### Datasources: the catalog is what the datasource's own user can SELECT
+
+- **Changed, `AsyncpgDriver` and `RedshiftDriver`**: `list_tables`, `list_columns` and
+  `table_hashes` return only relations the connected user can SELECT
+  (`has_table_privilege(current_user, <schema>.<table>, 'SELECT')`). `allowed_schemas` names whole
+  schemas while a least-privilege warehouse user is granted a few of their tables, so the hub's
+  catalog carried every other table too, and each later read of one -- the coverage probe, the
+  schema tool -- raised `42501` permission denied (131 tables on one local datasource, 159 on
+  another, every sweep). The catalog now follows the grants by construction: a revoked table
+  leaves at the next change-driven introspection, a new grant comes in. On Redshift the check sits
+  behind a `CASE` on `SVV_TABLES.table_type`, since `has_table_privilege` raises on a Spectrum
+  external table (which passes, its access being the external schema's USAGE). `list_columns` and
+  `table_hashes` take the readable set from that check as a statement of its own and drop the rest
+  in Python: `has_table_privilege` is leader-node-only and the hash query's `LISTAGG` runs on the
+  compute nodes, and Redshift refuses a statement mixing the two (`0A000 Specified types or
+  functions ... not supported on Redshift tables`, which the first version, joining the check into
+  the hash query, hit on the warehouse). The column-hash formula and both column queries are
+  unchanged, so no stored hash moves.
+- **A relation dropped or renamed while the catalog is read no longer fails it.** A name handed to
+  `has_table_privilege` resolves against the current catalog, not the query's snapshot, so a dbt
+  promote's DROP mid-read raised `relation does not exist` for every table in scope. Postgres asks
+  by the snapshot's `pg_class` OID instead (`has_table_privilege(current_user, rel.oid, 'SELECT')`,
+  NULL for a vanished relation, which is left out). `SVV_TABLES` has no OID, so Redshift runs the
+  privilege statement again on `42P01`, after a rollback, at most `NAME_RACE_ATTEMPTS` (3) times.
+- **Added, `threetears.datasources.drivers.base.log_unselectable_relations`**: each catalog call
+  that leaves relations out for want of a grant logs it once at INFO, with the count and up to five
+  names, so a table missing because a `GRANT SELECT` was forgotten says why. Both drivers now
+  answer the privilege check as a `selectable` column and filter in Python, which is how they know
+  what they left out.
+- Not covered: a relation readable only through column-level grants (`GRANT SELECT (col) ON t`)
+  fails the table-level check and is left out. No datasource uses column-level grants today.
+
+### Datasources: a Redshift keepalive no longer gives up before the statement ceiling
+
+- **Fixed, `RedshiftDriver`**: the TCP keepalive window (idle + count x interval) is widened to at
+  least `query_timeout_seconds`, by raising the probe count (past Linux's 127, the interval), so
+  idle and interval, and with them the probe cadence, stay as configured. A path that answers no
+  keepalive probe -- Docker Desktop's VM network, the whole local devx stack on macOS -- cannot be
+  told from a dead socket, and there the 60s default acted as a 60s statement timeout under a 300s
+  ceiling: the hub's table-hash probe died with `TimeoutError: [Errno 110]` on every sweep. A dead
+  socket is now detected by the ceiling (300s by default) instead of 60s; a configured window
+  already past the ceiling is unchanged.
+
+### Nats and core: a scoped snapshot -- tables a pod needs whole, kept in L2 and loaded in seconds
+
+The ENR tool pod is the first consumer: its report tables live in NATS as one Arrow chunk per state,
+so a starting replica loads them without reading L3, and a refresh moves only the states it changed.
+
+- **Added, `threetears.nats.object_store`: `NatsObjectStore` and `ObjectInfo`**, with
+  `NatsClient.object_store(name=, prefix_namespace=)` (bind) and
+  `NatsClient.ensure_object_store(name=, max_bytes=, storage="memory", replicas=1, prefix_namespace=)`
+  (declare as the bucket's owner, remembered and created again after a reconnect, like
+  `ensure_jetstream_stream`). The NATS Object Store's wire shape (`OBJ_<b>`, `$O.<b>.C.>`,
+  `$O.<b>.M.>`, nats-py's metadata JSON), but reads go through NAMED consumers only (nats-py's
+  `ObjectStore.get` creates an unnamed one a pod's grant refuses) and metadata through the direct get.
+  `put(name, data)` writes a name once (`Nats-Expected-Last-Subject-Sequence: 0` on the metadata;
+  `ObjectExistsError` otherwise), `get(name)` checks size and digest (`ObjectNotFoundError` when
+  absent), `info(name)`, `list_objects(prefix=)`, `bytes_held()`; `delete(name)` and
+  `purge_orphan_chunks(older_than=)` are the declarer's (they purge). New errors:
+  `ObjectStoreError`, `ObjectStoreNotFoundError`, `ObjectNotFoundError`, `ObjectExistsError`.
+- **Added, `NatsKvBucket.watch_prefix(prefix=, heartbeat=, retry=)`**: `watch_key` for a family of
+  keys, through one named consumer. It yields every key's latest value, then `None` once caught up,
+  then every change; after a lost consumer (a NATS restart that wiped the bucket) it yields keys that
+  are gone as deleted, then `None` again.
+- **Added, a tool pod's own Object Store and pointer bucket** (`threetears.nats.subject_permissions`):
+  `JsResourceKind.OBJECT_STORE`, `JsCapability.OBJECT_STORE_OBJECTS` (bind, metadata direct get,
+  named-consumer create inside the bucket, `$O.<b>.>` publish when writable -- never a management
+  verb, `STREAM.MSG.GET` or `MSG.DELETE`), `JsResource.object_store(name, writable=)`,
+  `TOOL_POD_OBJECTS_BUCKET_SUFFIX`, `TOOL_POD_POINTERS_BUCKET_SUFFIX`,
+  `tool_pod_object_store_name(pod_id, ns=)`, `tool_pod_pointers_bucket_name(pod_id, ns=)`. Every tool
+  pod is granted both under its own scope; the hub declares them when it asks.
+- **Added, `threetears.nats.object_store_requests`** and `Subjects.hub_object_store_declare()` /
+  `hub_object_store_retire()`: a tool pod asks the hub to declare its buckets
+  (`declare_pod_object_store`) and to delete objects it no longer serves (`retire_pod_objects`),
+  forwarding its identity token; the hub composes the bucket from the verified token.
+- **Added, `threetears.core.collections.scoped_snapshot`** (`3tears[snapshot]`, which adds pyarrow):
+  `ScopedSnapshot(name=, tables=[SnapshotTable(name, scope_column, key)], backend=, store=, pointers=,
+  l3=, epochs=, settled=, ensure_buckets=, retire=)`. `start()` watches the pointers and loads every
+  current chunk in parallel into the DuckDB L1 (Arrow IPC, zstd; digest and row counts checked);
+  `publish(scope, epoch, rows)` replaces the scope locally, writes its chunks, then moves its pointer,
+  and the other replicas apply that scope alone in one DuckDB transaction; `read()` is a cursor
+  holding one state of every table for a request; NATS losing the snapshot is rebuilt from L3 under a
+  claim (one replica works, the rest wait), only while no write is in progress;
+  `catch_up_from_l3()` republishes scopes whose L3 epoch is ahead of their pointer; superseded chunks
+  are retired. `status()` reports the phase, scopes done of total, rows per table, timings and the
+  last change applied.
+- **Changed, after review:** the Object Store grant is an explicit opt-in --
+  `build_permissions(Principal.TOOL_POD, ..., object_store=True)`, refused for any other principal --
+  and without it a tool pod holds neither bucket nor the two hub requests. `ensure_kv_bucket(max_bytes=)`
+  bounds a bucket (an owner reconciles a live bound in place, and a self-heal re-open keeps it).
+  `NatsClient.delete_object_store` / `delete_kv_bucket` withdraw a declaration: deleted, and not put
+  back after a reconnect; `ensure_object_store` / `ensure_kv_bucket(still_wanted=)` lets a restoration ask first and
+  forget a declaration no longer wanted (its pod was removed on another replica). A declared Object Store refuses rollup headers (a rollup is a purge by
+  publish), so metadata is written without one. `watch_prefix` dedupes on revision AND value, since a
+  wiped bucket restarts its sequence. `list_keys` and the Object Store's reads share one named-consumer
+  read loop. `object_store_requests` adds `OBJECT_STORE_NOT_GRANTED`, `OBJECT_STORE_BUDGET_EXHAUSTED`
+  (both final) and `OBJECT_STORE_NOT_DECLARED` (`ObjectStoreNotDeclaredError`: declare again), and owns
+  `OBJECT_NAME_PATTERN`. `ScopedSnapshot`: chunk names carry the column digest; pointers and the index
+  move by compare-and-set and never to a lower epoch; the rebuild claim is renewed and released by
+  compare-and-set; a null scope is refused everywhere; failed reads cancel their siblings;
+  retirement asks in batches of at most `MAX_RETIRED_OBJECTS`; `catch_up_from_l3` drops scopes L3 no
+  longer holds; a watch that ends puts the status in FAILED. Design, decision and the pinned residual
+  (a pod can deliver its own bytes to any subject through a push consumer's deliver subject or a reply
+  subject): `docs/design-scoped-snapshot.md`.
+- **Added, `DuckDBBackend.export_partition(table, column, value, order_by=)`,
+  `replace_partitions([PartitionReplacement(...)])` (several scopes of several tables in one
+  transaction), `read_snapshot()` (a cursor in a read transaction) and `schema_digest(table)`.**
+- **Added, a writer that stages (the ENR pod's refresh):** `ScopedSnapshot.stage(scope, epoch, rows)`
+  writes a scope's chunks under the write's version (which becomes the scope's epoch) without moving
+  its pointer or touching the L1, so a writer keeps compressed chunks rather than every row until it
+  commits; `publish_staged(staged, carry_at=, whole=)` then moves the pointers. A table a stage left
+  out keeps its chunk only from the epoch the writer saw before its write (`carry_at`), and moves
+  only from the exact pointer entry it judged that against; any other scope is skipped and left to
+  `catch_up_from_l3`. `holding_rebuilds()` holds the rebuild claim across the commit and the publish;
+  `on_change(listener)` calls back after every commit to the L1; a cold load writes scopes in scope
+  order, so replicas sum the same rows in the same order. `DuckDBBackend.export_rows(...)` is the
+  Arrow a scope would hold with given rows, in a rolled-back transaction.
+- **Added, a tool pod's own snapshot (the ENR pod):** `bind_pod_object_store(nats_client,
+  identity_token=)` / `PodObjectStore` (`threetears.nats.object_store_requests`) bind the hub-declared
+  Object Store and pointer bucket with the two asks (a retire after NATS lost the bucket declares it
+  again and retries); `open_tool_pod_snapshot(...)` builds and starts a `ScopedSnapshot` over them,
+  refusing `store`/`pointers`/`ensure_buckets`/`retire` it wires itself. `ORPHAN_CHUNK_MIN_AGE` states
+  the hub's orphan-chunk sweep bound, and is `purge_orphan_chunks`'s default.
+- **Added, `OperationStatusTool(progress=)`** (the ENR pod's `enr.load_status`): what the operation
+  is doing now, answered with its status; a progress that raises is reported as unavailable, never
+  taking the last run's error with it.
+- **Changed, after review, the snapshot's chunk lifecycle and status:** one rule decides whether a
+  chunk may be deleted, judged against its scope's pointer read from KV (never a replica's lagging
+  view): named by the pointer, kept; above the pointer's epoch (a stage not yet published), kept;
+  below it, deleted; at its epoch unnamed, or with no pointer, deleted only past `stray_age`. The
+  phase is derived in one place from the facts (the watch's end first, then a step in progress, a
+  wait outstanding, a failed pass, ready), so a catch-up can no longer show a replica whose watch
+  ended as ready. A scope whose chunks cannot be applied is shown with why (`SnapshotStatus.behind`, scope -> reason), retried
+  at the recheck rather than at once, and rebuilt from L3 after three failures; the rebuild claim's
+  own writes no longer wake the worker. `status()` counts rows from memory, so it never waits on the
+  DuckDB lock a load holds. A claim renewal that cannot reach NATS is logged and retried until the
+  claim's lifetime is spent.
+
 ### Core and datasources: keep tables current from a source, write only what changed, one writer at a time
 
 The ENR tool pod's refresh is the first consumer of every entry below: it fingerprints each state's

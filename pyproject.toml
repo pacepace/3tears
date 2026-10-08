@@ -56,6 +56,8 @@ dev-dependencies = [
     "opentelemetry-instrumentation-logging>=0.61b0,<1",
     "opentelemetry-instrumentation>=0.61b0,<1",
     "duckdb>=1.0",
+    # the scoped snapshot's chunk codec (3tears[snapshot]); installed in dev so its tests run.
+    "pyarrow>=17",
     # the NATS client is an optional extra of 3tears-nats (`[client]`) so that
     # an L1-SQLite-only consumer is not forced to build `nkeys`, which ships no
     # wheels. installed in dev so the nats + L2 test suites exercise the real
@@ -518,6 +520,8 @@ ignore_missing_imports = true
 module = [
     "threetears.core.cache.sqlite",
     "threetears.core.cache.duckdb",
+    # pyarrow ships no py.typed marker; the scoped snapshot's chunk codec is its one importer.
+    "threetears.core.collections.scoped_snapshot",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
     # redshift_connector ships no py.typed/stubs; suppress its import-untyped

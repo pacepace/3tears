@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -246,6 +247,51 @@ async def test_the_start_tool_answers_at_once_and_the_status_tool_reports_runnin
     assert done.metadata["state"] == "succeeded"
     assert done.metadata["last"]["result"] == {"rows": 3}
     assert done.metadata["last"]["error"] is None
+
+
+async def test_the_status_tool_reports_the_progress_of_a_run_in_progress() -> None:
+    body = _gate()
+    operation = BackgroundOperation("load", body)
+    done = {"states": 0}
+    status = OperationStatusTool(
+        name="enr.load_status",
+        description="Report the load.",
+        operation=lambda: operation,
+        progress=lambda: {"summary": f"Loading · {done['states']} of 51 states", "states_done": done["states"]},
+    )
+    operation.start()
+    done["states"] = 37
+
+    running = await status.run()
+
+    assert running.metadata is not None
+    assert running.metadata["progress"] == {"summary": "Loading · 37 of 51 states", "states_done": 37}
+    assert "Loading · 37 of 51 states" in running.content
+    body.release.set()
+    await operation.wait()
+    assert (await status.run()).metadata["progress"]["states_done"] == 37  # type: ignore[index]
+
+
+async def test_a_progress_that_fails_still_answers_the_last_runs_error() -> None:
+    body = _gate()
+    body.fail_with = RuntimeError("the warehouse went away")
+    operation = BackgroundOperation("load", body)
+
+    def broken() -> dict[str, Any]:
+        raise LookupError("no copy yet")
+
+    status = OperationStatusTool(
+        name="enr.load_status", description="Report the load.", operation=lambda: operation, progress=broken
+    )
+    operation.start()
+    body.release.set()
+    await operation.wait()
+
+    answer = await status.run()
+
+    assert answer.success and answer.metadata is not None
+    assert answer.metadata["last"]["error"] is not None and "warehouse went away" in answer.metadata["last"]["error"]
+    assert answer.metadata["progress"]["summary"] == "progress unavailable (LookupError)"
 
 
 async def test_the_start_tool_refuses_a_second_start_as_a_conflict() -> None:

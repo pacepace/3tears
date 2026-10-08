@@ -16,6 +16,10 @@ __all__ = [
     "NamespaceNotConfiguredError",
     "NatsClientError",
     "NoRespondersError",
+    "ObjectExistsError",
+    "ObjectNotFoundError",
+    "ObjectStoreError",
+    "ObjectStoreNotFoundError",
     "OpLogError",
     "OpLogSequenceConflict",
     "PayloadTooLargeError",
@@ -247,6 +251,90 @@ class KvBucketNotFoundError(KvError):
         """
         super().__init__(message)
         self.bucket = bucket
+
+
+class ObjectStoreError(NatsClientError):
+    """raised when a JetStream Object Store operation fails.
+
+    covers binding, declaring, putting, getting, listing and deleting objects. the narrower
+    subclasses name the outcomes a caller acts on: an absent bucket, an absent object, a name
+    already taken.
+    """
+
+
+class ObjectStoreNotFoundError(ObjectStoreError):
+    """raised when an Object Store bucket does not exist: the server ANSWERED that its stream is absent.
+
+    for a process that only binds a bucket, the declaring identity has not declared it yet, or a
+    NATS restart wiped it (memory storage). a bucket this principal may not reach is never answered
+    and arrives as a plain :class:`ObjectStoreError` naming the grant.
+
+    :ivar bucket: the fully-qualified name of the bucket that does not exist
+    """
+
+    def __init__(self, message: str, *, bucket: str) -> None:
+        """build the error, carrying the absent bucket's name on the instance.
+
+        :param message: human-readable explanation, naming the bucket
+        :ptype message: str
+        :param bucket: fully-qualified name of the absent bucket
+        :ptype bucket: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.bucket = bucket
+
+
+class ObjectNotFoundError(ObjectStoreError):
+    """raised when an object is absent from its bucket, or was deleted.
+
+    :ivar bucket: the fully-qualified bucket name
+    :ivar name: the object's name
+    """
+
+    def __init__(self, message: str, *, bucket: str, name: str) -> None:
+        """build the error, carrying the bucket and object names on the instance.
+
+        :param message: human-readable explanation
+        :ptype message: str
+        :param bucket: fully-qualified bucket name
+        :ptype bucket: str
+        :param name: the object's name
+        :ptype name: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.bucket = bucket
+        self.name = name
+
+
+class ObjectExistsError(ObjectStoreError):
+    """raised when a put names an object the bucket already holds.
+
+    objects are immutable: a name is written once. a changed object is a new name (a new epoch),
+    and replacing one in place would need the stream purge only the bucket's declarer holds.
+
+    :ivar bucket: the fully-qualified bucket name
+    :ivar name: the object's name
+    """
+
+    def __init__(self, message: str, *, bucket: str, name: str) -> None:
+        """build the error, carrying the bucket and object names on the instance.
+
+        :param message: human-readable explanation
+        :ptype message: str
+        :param bucket: fully-qualified bucket name
+        :ptype bucket: str
+        :param name: the object's name
+        :ptype name: str
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(message)
+        self.bucket = bucket
+        self.name = name
 
 
 class KvConfigMismatch(NatsClientError):
