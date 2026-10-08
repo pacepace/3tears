@@ -257,15 +257,41 @@ meant. Fix those first.
 
 ### Reading results by kind of case
 
-> **Contingent on [#565](https://github.com/pacepace/3tears/issues/565).** The analysis reports results per
-> arm and per label, but not yet per kind of case. Once a case can carry a stratum the analysis reads, one
-> run over the whole set will report accuracy and the confusion matrix for plain cases, boundary cases,
-> lookalikes and context cases separately.
+Overall accuracy across a mixed set is dominated by the easy majority. A model at 97% on plain cases and 60%
+on lookalikes reads as about 90% overall if a fifth of the set are lookalikes, and the 60% is the number to act
+on. So give each case the kind it is, and read the results per kind.
 
-Until then, put each kind of case you need to read on its own (lookalikes, say) in its own template, so it
-runs as its own run and reports its own figures. Overall accuracy across a mixed set is dominated by the easy
-majority. A model at 97% on plain cases and 60% on lookalikes reads as about 90% overall if a fifth of the set
-are lookalikes, and the 60% is the number to act on.
+Set the kind as the test case's **stratum** when you write the case:
+
+```python
+EvalTestCase(
+    scope_id=scope_id,
+    template_id=template.id,
+    stratum="lookalike",
+    host_payload={"messages": [...], "label": "NONE", "why": "A city, not the assistant."},
+)
+```
+
+Use the kinds from [section 3](#3-what-kinds-of-cases-to-write) as the names: `plain`, `boundary`, `lookalike`,
+`contrast`, `context`. Keep the stratum out of `host_payload` and `variation_params`. The candidate never sees
+the stratum, but it does see the case's input, and a case that says it is a lookalike tells the model what to
+look out for.
+
+Run the whole set as one run, in a campaign, and read the campaign's report
+(`python -m threetears.evals report CAMPAIGN`). The report has a **By stratum** table beside the decision
+surface. Each arm has a row per reading (accuracy, the confusion matrix, each label's precision, recall and F1,
+and any judged dimension), with the figure over all cases first and then one column per stratum. Each arm's
+first row is `cases`: how many cases and results each column rests on.
+
+Read a stratum's figures with its count. A stratum with fewer than 10 cases is marked "too few cases to read
+alone" and is listed in a note below the table. Its figures are still shown, but their intervals are wide:
+three lookalikes with one right gives a recall interval of about 6% to 79%. Add cases to that stratum before
+acting on it.
+
+Cases that declare no stratum, in a set where others do, get their own "(no stratum)" column, so the strata's
+case counts add up to the count under "All cases". If you generate cases from a template, mark the variation axis that names the kind with
+`stratum=True`, and each generated case takes that axis's value as its stratum. `run_eval` cannot set a
+stratum yet, so strata need cases stored as test cases, as a classifier kind's are.
 
 ## 8. Maintaining the set
 
@@ -349,6 +375,7 @@ input, expected label and reason in the test case's `host_payload`.
 - [ ] Lookalikes exist, each paired with a real counterpart.
 - [ ] Context cases exist, with context-missing twins that match what production actually passes.
 - [ ] Each label has at least ten cases, and per-label figures are read, not just overall accuracy.
+- [ ] Each case declares its kind as its stratum, and each kind you act on has at least ten cases.
 - [ ] The eval calls the production request builder and parser, and unusable answers have their own label.
 - [ ] Variation axes preserve the label, start from plain single-input cases, and a sample was read.
 - [ ] `k` is 2 or more, and cases that flip between repeats were looked at.

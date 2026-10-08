@@ -327,8 +327,9 @@ when it has none, a **code-only report** of its evidence (`build_code_only_repor
 `basis="code_only"` and no author's words — no headline, no findings, no text block, which the published
 schema and the model both refuse — and holds the arm table (every arm unresolved, since nothing decided), the decision surface,
 the contrasts the evidence tested against the control, a distribution chart per measure and judged
-dimension, and every disclosure the evidence carries, opening with a statement that no analysis was
-generated and what one would add. `Report.basis` says which a report is; `REPORT_VERSION` is 2.
+dimension, the results by stratum when the cases declare strata (below), and every disclosure the evidence
+carries, opening with a statement that no analysis was generated and what one would add. `Report.basis` says
+which a report is; `REPORT_VERSION` is 3.
 
 **What the schema checks, and what only the model does.** `schema.json` holds the report's shape and every
 cross-field rule JSON Schema can state: a code-only report names no analysis or model and holds no headline,
@@ -348,6 +349,35 @@ host's palette — `StyleProfile.chart_palette`, a renderer-neutral `ChartPalett
 slots, slots 1-4 validated; a sequential ramp; background, ink, muted, grid, rule, context and on-fill),
 every colour resolved `#rrggbb`. The presentation rules are checked on the intent (`check_intent`), so they hold for any
 renderer, and the core ships no charting library.
+
+### Results by kind of case: strata
+
+A test case may declare a **stratum**, the kind of case it is (`EvalTestCase(stratum="lookalike")`), in the
+author's own words. The engine puts it in no prompt; a kind, which is handed the whole case, must leave it
+out of what it renders too, so the candidate is never told what kind of case it faces. When any case
+of a cell declares one, the analysis reads that cell again per stratum: every measure, a classifier's
+confusion matrix and per-label precision, recall and F1 included, and every judged dimension, each over that
+stratum's cases alone, by the same rules as the cell's pooled figure (`CellFacts.strata`, a list of
+`StratumFacts` on the decision surface). Cases declaring none in such a cell are their own entry, so the strata
+add up to the cell. A cell none of whose cases declares a stratum is not broken down, and its report reads as
+if strata did not exist.
+
+Both reports carry it as a `strata` table: a row per arm and reading, the pooled figure under `All cases`, then a
+column per stratum. Each arm opens with a `cases` row giving the cases and observations behind each column.
+A stratum holding fewer than `STRATUM_MIN_CASES` (10) cases is still shown, marked too few to read alone, and
+named in a `strata` disclosure below the table. A rate is shown with its Wilson interval and a mean with its
+standard error, each with its n.
+
+Generated cases take their stratum from the template: mark one `enum` or `sample` variation axis
+`VariationAxis(..., stratum=True)` and each case generated takes that axis's value as its stratum. A case
+generated before the axis was nominated keeps the stratum it was written with, which is none.
+
+An analysis's writer reads the strata in its bundle, but a finding's evidence still cites a cell's pooled
+figure: a reference names a cell and a measure, and there is no reference to one stratum of a cell yet.
+
+A stratum enters no identity key. A stored case never changes, so its id already pins its stratum, and two
+arms run over the same cases share their strata. It is not part of `content_hash` either, which digests what
+the candidate is given.
 
 ### How far a judged score can be leaned on: evidence tiers
 

@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### 3tears-evals: results by kind of case (strata) (#565)
+
+- **`EvalTestCase.stratum`** (optional, non-blank): the kind of case a case is, in the author's words. The engine
+  puts it in no prompt. **`VariationAxis.stratum`** nominates one `enum` or `sample`
+  axis of a template whose value each generated case takes as its stratum; a template nominating two, or an `llm`
+  axis, is refused. A case or template written before either field reads as declaring none, which is what it did,
+  so stored documents still load (no `EVAL_SCHEMA_VERSION` bump). A stratum enters no identity key and not
+  `content_hash`: a stored case never changes, so its id already pins it.
+- **`CellFacts.strata`** (`list[StratumFacts]`, on the decision surface and the bundle's `cell_measures`): when any
+  case of a cell declares a stratum, the cell is summarised again per stratum by the same walk (classifier per-label
+  statistics from the stratum's own confusion matrix) and the same judged transposition, with each stratum's
+  cases, observations and faulted observations. Cases declaring none are their own entry, so the strata partition
+  the cell; the model refuses strata that do not. Empty for a cell none of whose cases declares one, and on a
+  time-axis position. An analysis stored before reads as having no strata, which is what it had. Bundle
+  `schema_version` 39 -> 40.
+- **`CampaignReadStore` gains `load_case_strata(test_case_ids, scope_id, /)`**: a host store implementing the port
+  must add it. `EvalStorage.load_case_strata` reads only each case's id and stratum (`EvalCaseStratum`).
+- **The report** (`REPORT_VERSION` 2 -> 3): a `strata` table (a row per arm and reading, the pooled figure, then a
+  column per stratum, each arm opening with its `cases` row) on both the analysis and the code-only report, and a
+  `strata` disclosure naming every stratum under `STRATUM_MIN_CASES` (10) cases. A campaign whose cases declare no
+  stratum gets neither, and reads as before.
+
 ### 3tears-evals: the simulated user asks for its reasoning by effort, and a role's settings can record one
 
 - **`ClientRequestSettings.reasoning_effort`** (`ReasoningEffort`: `max`/`xhigh`/`high`/`medium`/`low`/`minimal`/`none`,

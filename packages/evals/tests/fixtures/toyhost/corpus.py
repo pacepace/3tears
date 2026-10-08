@@ -31,6 +31,7 @@ from typing import Any
 from threetears.evals.contracts import (
     CalibrationRating,
     EvalAnalysis,
+    EvalCaseStratum,
     EvalInsight,
     EvalResult,
     EvalRun,
@@ -253,9 +254,9 @@ TOYHOST_JUDGED_DIMENSION = "extraction.layout_fidelity"
 
 
 class ToyhostStorage:
-    """The three reads the bundle assembler makes, over an in-memory toy-host corpus.
+    """The reads the bundle assembler makes, over an in-memory toy-host corpus.
 
-    The three reads :func:`~threetears.evals.analysis.assemble_context_bundle` makes, and nothing
+    The reads :func:`~threetears.evals.analysis.assemble_context_bundle` makes, and nothing
     else — the narrow port a read-only consumer implements over data it already holds. It honours
     the scope partition on runs and results, so a wrong-scope read misses exactly as a real store's
     does.
@@ -305,6 +306,12 @@ class ToyhostStorage:
     def query_eval_results_by_run(self, run_id: str, scope_id: str) -> list[EvalResult]:
         """Every observation of this batch in this scope."""
         return [r for r in self._results_by_run.get(run_id, []) if r.scope_id == scope_id]
+
+    def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str) -> list[EvalCaseStratum]:
+        """The stratum each named document declares in this scope: none, since the toy host sorts its documents into no kinds."""
+        if scope_id != TOYHOST_SCOPE:
+            return []
+        return [EvalCaseStratum(id=document) for document in test_case_ids if document in TOYHOST_DOCUMENTS]
 
     def load_eval_result(self, result_id: str, scope_id: str) -> EvalResult | None:
         """The observation with this id in this scope, or None — what a calibration rating reads first."""
