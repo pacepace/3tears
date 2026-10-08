@@ -164,6 +164,17 @@ class VariationAxis(EvalDocumentModel):
     generator: Literal["enum", "sample", "llm"]
     values: list[str] = Field(default_factory=list)
     description: str = Field(default="")
+    stratum: bool = Field(
+        default=False,
+        description=(
+            "Whether this axis's value is the stratum of every case generated from it — the kind of case the "
+            "analysis reads results by (`EvalTestCase.stratum`). The generator copies the value into the case's "
+            "stratum when it writes the case; nothing reads this flag afterwards, since the case carries its own "
+            "stratum. At most one axis of a template is nominated, and only an `enum` or `sample` axis, whose "
+            "values are a closed set: an `llm` axis writes a new value for every case, so each case would be a "
+            "stratum of one."
+        ),
+    )
 
 
 class ActorPolicy(EvalDocumentModel):
@@ -1216,6 +1227,28 @@ class EvalTemplate(EvalDocumentModel):
             raise ValueError(f"doc_type must be 'eval_template', got '{v}'")
         return v
 
+    @field_validator("variation_axes")
+    @classmethod
+    def _one_closed_stratum_axis(cls, axes: list[VariationAxis]) -> list[VariationAxis]:
+        """Refuse more than one stratum axis, or a stratum axis whose values are not a closed set.
+
+        Two nominated axes would give a generated case two strata, and the case holds one. An ``llm``
+        axis writes a new value per case, so every case it wrote would be a stratum of one.
+
+        Raises:
+            ValueError: Two or more axes are nominated, or a nominated axis is ``llm``.
+        """
+        nominated = [axis for axis in axes if axis.stratum]
+        if len(nominated) > 1:
+            names = ", ".join(repr(axis.name) for axis in nominated)
+            raise ValueError(f"at most one variation axis is a template's stratum; {names} are all nominated")
+        if nominated and nominated[0].generator == "llm":
+            raise ValueError(
+                f"variation axis {nominated[0].name!r} is nominated as the stratum but is written by a model, which "
+                "writes a new value for every case; nominate an `enum` or `sample` axis"
+            )
+        return axes
+
     def resolve_preconditions(self, world: WorldRegistry | None) -> list[Precondition]:
         """Refuse a presumption naming a dimension this host's world does not declare.
 
@@ -1456,6 +1489,23 @@ class EvalTestCase(EvalDocumentModel):
         ),
     )
 
+    stratum: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The kind of case this is — `plain`, `boundary`, `lookalike`, in the author's own words — which the "
+            "analysis reads results by: every measure of a cell is summarised again over the cases of each "
+            "stratum, beside the figure pooled over all of them. Metadata about the case, never stimulus: the "
+            "engine puts it in no prompt — not the candidate's variation, the simulated user's or the judge's — "
+            "and a kind, which is handed the whole case, must leave it out of what it renders, so naming a case a "
+            "lookalike never tells the candidate what to look out for. Not part of `content_hash` or of any identity key, because "
+            "the case's id already pins it (a stored case never changes) and two arms over the same cases share "
+            "their strata. None when the case declares none; a run none of whose cases declares one reads "
+            "exactly as an unstratified run. A generated case takes it from the template's nominated axis "
+            "(`VariationAxis.stratum`)."
+        ),
+    )
+
     content_hash: str | None = Field(
         default=None,
         description=(
@@ -1493,6 +1543,19 @@ class EvalTestCase(EvalDocumentModel):
         if v != "eval_test_case":
             raise ValueError(f"doc_type must be 'eval_test_case', got '{v}'")
         return v
+
+
+class EvalCaseStratum(EvalDocumentModel):
+    """What the analysis reads off a test case: which case, and the stratum it declares.
+
+    Read in place of the whole case wherever the stratum is all a reader needs — assembling a
+    campaign's bundle reads one per case its results name, and a case document carries the host's
+    whole stimulus. Built from a stored row reduced to these two fields, so it is on the document base
+    and hydrated like every other stored eval model, as :class:`EvalRunStamp` is for a run.
+    """
+
+    id: str
+    stratum: str | None = EvalTestCase.model_fields["stratum"].default
 
 
 # =============================================================================

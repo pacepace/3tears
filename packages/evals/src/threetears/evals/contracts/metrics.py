@@ -1938,25 +1938,60 @@ CONFUSION_SEPARATOR = " → "
 
 #: Characters escaped inside a label so a cell always splits into exactly the two labels it was made of.
 _CONFUSION_ESCAPES: tuple[tuple[str, str], ...] = (("%", "%25"), ("→", "%E2%86%92"))
-_CONFUSION_DECODED = {code: char for char, code in _CONFUSION_ESCAPES}
-_CONFUSION_UNESCAPE = re.compile("|".join(re.escape(code) for code in _CONFUSION_DECODED))
+
+#: A run of percent-encoded UTF-8 bytes: how every escape in a minted label is written.
+_PERCENT_RUN = re.compile(r"(?:%[0-9A-F]{2})+")
+
+
+def _percent_encoded(text: str) -> str:
+    return "".join(f"%{byte:02X}" for byte in text.encode())
+
+
+def _percent_decoded(text: str) -> str:
+    """``text`` with every percent-encoded run decoded; a run that is not UTF-8 is left as written.
+
+    One pass, so a decoded ``%`` is never read again as the start of another escape. Every escape a
+    minted label carries is the percent-encoding of the character it stands for, so this one decoder
+    reads all of them.
+    """
+
+    def decoded(run: re.Match[str]) -> str:
+        try:
+            return bytes.fromhex(run.group(0).replace("%", "")).decode()
+        except UnicodeDecodeError:
+            return run.group(0)
+
+    return _PERCENT_RUN.sub(decoded, text)
+
+
+def _keeping_edge_whitespace(text: str) -> str:
+    """``text`` with the whitespace at either end percent-encoded, so a model that strips its strings keeps it.
+
+    Every eval model strips the strings it holds
+    (:class:`~threetears.evals.contracts.base.EvalBaseModel`), a stored result's measures included, so a
+    label ending in a space would be read back without it: ``"positive "`` counted as ``"positive"``, the
+    label it is not. Encoded, the label comes back exactly. Interior whitespace is never stripped and is
+    left as written.
+    """
+    start = len(text) - len(text.lstrip())
+    if start == len(text):
+        return _percent_encoded(text)
+    end = len(text.rstrip())
+    return _percent_encoded(text[:start]) + text[start:end] + _percent_encoded(text[end:])
 
 
 def _escape_label(label: str) -> str:
     for char, code in _CONFUSION_ESCAPES:
         label = label.replace(char, code)
-    return label
-
-
-def _unescape_label(label: str) -> str:
-    return _CONFUSION_UNESCAPE.sub(lambda m: _CONFUSION_DECODED[m.group(0)], label)
+    return _keeping_edge_whitespace(label)
 
 
 def confusion_cell(expected: str, predicted: str) -> str:
     """The value a classification reports under ``confusion_cell``: ``expected → predicted``.
 
-    A label is free text, so the separator's arrow is escaped inside each label; :func:`confusion_of`
-    reads the two labels back exactly.
+    A label is free text, so the separator's arrow is escaped inside each label, and so is any whitespace
+    at a label's ends, which a stored result would otherwise strip; :func:`confusion_of` reads the two
+    labels back exactly.
 
     Args:
         expected: The label the case expected.
@@ -1985,7 +2020,7 @@ def confusion_of(cell: str) -> tuple[str, str] | None:
     parts = cell.split(CONFUSION_SEPARATOR)
     if len(parts) != 2 or not all(part.strip() for part in parts):
         return None
-    return _unescape_label(parts[0]), _unescape_label(parts[1])
+    return _percent_decoded(parts[0]), _percent_decoded(parts[1])
 
 
 #: The per-label statistics a classifier's confusion matrix yields, each minted per label.
@@ -2008,7 +2043,8 @@ def classifier_label_measure(statistic: ClassifierStatistic, label: str) -> str:
         label: The label.
 
     Returns:
-        ``classifier:<statistic>:<label>``, the label escaped as a figure reference requires.
+        ``classifier:<statistic>:<label>``, the label escaped as a figure reference requires and with the
+        whitespace at its ends encoded, so a summary's stripped name still names this label and no other.
 
     Raises:
         ValueError: The label is blank.
@@ -2017,7 +2053,7 @@ def classifier_label_measure(statistic: ClassifierStatistic, label: str) -> str:
     escaped = label
     for char, code in _REFERENCE_ESCAPES:
         escaped = escaped.replace(char, code)
-    return f"{CLASSIFIER_LABEL_MEASURE_PREFIX}{statistic}:{escaped}"
+    return f"{CLASSIFIER_LABEL_MEASURE_PREFIX}{statistic}:{_keeping_edge_whitespace(escaped)}"
 
 
 def classifier_label_of(name: str) -> tuple[ClassifierStatistic, str] | None:
@@ -2032,7 +2068,7 @@ def classifier_label_of(name: str) -> tuple[ClassifierStatistic, str] | None:
     if not name.startswith(CLASSIFIER_LABEL_MEASURE_PREFIX):
         return None
     statistic, _, escaped = name[len(CLASSIFIER_LABEL_MEASURE_PREFIX) :].partition(":")
-    label = _REFERENCE_UNESCAPE.sub(lambda m: _REFERENCE_DECODED[m.group(0)], escaped)
+    label = _percent_decoded(escaped)
     if statistic not in _CLASSIFIER_STATISTICS or not label.strip():
         return None
     return statistic, label

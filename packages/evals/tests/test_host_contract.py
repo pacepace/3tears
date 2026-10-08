@@ -776,7 +776,8 @@ _SELF_KEYED_PAYLOAD_READERS: dict[str, tuple[str, str]] = {
     # defined, written and read in this one module.
     "analysis/reporter_kind.py": ("REPORTER_CASE_KEY", "reporter_case_payload"),
     # run_eval's kind hands the candidate the caller's case, which run_eval stored under its own key
-    # in this module; the payload is this module's schema, not a host's.
+    # in this module, beside a classifier's expected label under another of its own; the payload is this
+    # module's schema, not a host's.
     "quick/one_call.py": ("_CASE_KEY", "_case_payload"),
 }
 

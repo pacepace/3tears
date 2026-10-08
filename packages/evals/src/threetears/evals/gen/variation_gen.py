@@ -23,6 +23,8 @@ Three axis generator types:
 Cross-axis combination is the Cartesian product, truncated (or sampled
 without replacement) to ``n_variations``. Existing test cases are reused
 when their ``variation_params`` match; only new combinations get persisted.
+A new case's stratum is the value of the axis the template nominates
+(``VariationAxis.stratum``), when it nominates one.
 
 Where the store calls run
 -------------------------
@@ -245,6 +247,10 @@ async def generate_variations(
         rng.shuffle(combos)
         combos = combos[:n_variations]
 
+    # The axis whose value is each case's stratum, when the template nominates one. A reused case keeps the
+    # stratum it was written with: a stored case never changes, and dedup is by content, so a case written
+    # before its axis was nominated reads as declaring none rather than being minted a second time.
+    stratum_axis = next((axis.name for axis in template.variation_axes if axis.stratum), None)
     out: list[EvalTestCase] = []
     reused = 0
     for combo in combos:
@@ -258,6 +264,7 @@ async def generate_variations(
             template_id=template.id,
             scope_id=scope_id,
             variation_params=params,
+            stratum=params[stratum_axis] if stratum_axis is not None else None,
             content_hash=compute_content_hash(params),
         )
         if not preview:

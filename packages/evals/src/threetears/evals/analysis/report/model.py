@@ -59,7 +59,10 @@ from threetears.evals.contracts.prose import ModelProse
 #: and ``source.generated_at`` / ``source.bundle_fingerprint`` mean the assembly's on a code-only report;
 #: disclosure sources ``runs``, ``measurement``, ``apparatus`` and ``comparisons`` added; the
 #: ``comparisons`` and ``questions`` tables added; a chart block with no finding (a chart code chose).
-REPORT_VERSION: Literal[2] = 2
+#:
+#: 3: the ``strata`` table added (each arm's figures per stratum of its cases, beside the pooled figure) and
+#: the ``strata`` disclosure source (a stratum too small to read on its own).
+REPORT_VERSION: Literal[3] = 3
 
 #: What a report is of: a generated analysis, or the campaign's evidence alone with no analysis.
 ReportBasis = Literal["analysis", "code_only"]
@@ -96,8 +99,9 @@ TextRole = Literal[
 #: Who a disclosure speaks for. ``runs``: member runs left out, unfinished or short. ``measurement``: how
 #: and when the runs were launched and measured. ``apparatus``: the rig — controls, confounds, cells that
 #: did not pool. ``comparisons``: how the contrasts against the control were tested and corrected.
+#: ``strata``: a stratum of cases too small to be read on its own.
 DisclosureSource = Literal[
-    "chart", "arms", "surface", "time_axis", "generation", "runs", "measurement", "apparatus", "comparisons"
+    "chart", "arms", "surface", "time_axis", "generation", "runs", "measurement", "apparatus", "comparisons", "strata"
 ]
 
 
@@ -189,7 +193,9 @@ class TableBlock(_Block):
         min_length=1,
         description=(
             "Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts "
-            "against the control, as code tested them) or `questions` (the declared questions, on a code-only report)."
+            "against the control, as code tested them), `questions` (the declared questions, on a code-only report) "
+            "or `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases "
+            "declare strata)."
         ),
     )
     title: str = Field(min_length=1, description="The table's heading.")
@@ -360,7 +366,7 @@ class Report(EvalBaseModel):
         }
     )
 
-    report_version: Literal[2] = Field(default=REPORT_VERSION, description="This shape's version.")
+    report_version: Literal[3] = Field(default=REPORT_VERSION, description="This shape's version.")
     basis: ReportBasis = Field(
         description=(
             "`analysis` when the report renders a generated analysis; `code_only` when no analysis exists and the "

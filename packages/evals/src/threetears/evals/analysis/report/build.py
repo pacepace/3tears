@@ -51,7 +51,18 @@ from threetears.evals.analysis.viz_refs import DistributionRef, build_viz_payloa
 from threetears.evals.contracts.authored import NO_CHART, Finding
 from threetears.evals.contracts.campaign import EvalAnalysis, FindingResolution, ReadingKind, Viz
 from threetears.evals.contracts.host.measures import MeasureRegistry
-from threetears.evals.contracts.surface import CellFacts, DecisionSurface, TimeAxis
+from threetears.evals.analysis.numbers import format_number
+from threetears.evals.analysis.viz.quantities import display_scale
+from threetears.evals.contracts.analysis_measures import MeasureSummary
+from threetears.evals.contracts.campaign import VariantIndexEntry
+from threetears.evals.contracts.surface import (
+    STRATUM_MIN_CASES,
+    CellFacts,
+    DecisionSurface,
+    JudgedReading,
+    StratumFacts,
+    TimeAxis,
+)
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -117,6 +128,7 @@ def build_report(analysis: EvalAnalysis) -> Report:
 
     blocks.extend(_arm_blocks(arm_table(analysis)))
     blocks.extend(_surface_blocks(build_surface_table(analysis)))
+    blocks.extend(_strata_blocks(analysis.decision_surface, analysis.variant_index))
 
     for step in document.next:
         facts = [Fact(name="Leverage", value=step.leverage)]
@@ -369,6 +381,205 @@ def _surface_blocks(table: SurfaceTable) -> list[ReportBlock]:
     return blocks
 
 
+# =============================================================================
+# Results by stratum — each cell read again per kind of case
+# =============================================================================
+
+#: The column a stratum's cases are listed under when they declare no stratum, in a cell where others do.
+#: Parenthesised so it cannot read as a stratum an author named.
+NO_STRATUM = "(no stratum)"
+
+#: Said beside a stratum's case count when it holds fewer than :data:`STRATUM_MIN_CASES` cases.
+TOO_FEW_CASES = "too few cases to read alone"
+
+
+def _strata_blocks(surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry]) -> list[ReportBlock]:
+    """Each broken-down cell's figures per stratum, beside its pooled figure — or nothing, when no cell has strata.
+
+    One table, a row per arm and reading, a column per stratum: the arm's pooled figure first, then the same
+    figure over each stratum's cases. Each arm opens with a ``cases`` row stating how many cases and
+    observations each figure rests on, so a stratum's n is read before its numbers, and a stratum holding
+    fewer than :data:`STRATUM_MIN_CASES` cases is called too few to read alone — there and in a disclosure
+    below the table, never by leaving it out.
+
+    Args:
+        surface: The decision surface whose cells to lay out.
+        variant_index: The variant index that names their arms.
+
+    Returns:
+        The table and its disclosure, or no block at all for a surface none of whose cells has strata — a
+        campaign whose cases declare no stratum reads exactly as it did before strata existed.
+    """
+    control = surface.control_variant_key
+    cells = sorted(
+        (cell for cell in surface.cells if cell.strata),
+        key=lambda c: (c.variant_key != control, c.variant_key, c.apparatus_class_id),
+    )
+    if not cells:
+        return []
+    labels = cell_arm_labels(surface, list(variant_index))
+    names = sorted(
+        {stratum.stratum for cell in cells for stratum in cell.strata},
+        key=lambda name: (name is None, name or ""),
+    )
+    columns = {name: f"stratum_{index}" for index, name in enumerate(names)}
+    rows: list[dict[str, Cell]] = []
+    thin: list[str] = []
+    for cell in cells:
+        # Every cell on the surface is named, so the lookup cannot miss.
+        arm = labels[cell_ref(cell.variant_key, cell.apparatus_class_id)]
+        arm = f"{arm} (control)" if cell.variant_key == control else arm
+        by_name = {stratum.stratum: stratum for stratum in cell.strata}
+        cases: dict[str, Cell] = {"arm": arm, "reading": "cases", "all": _cases_text(cell.n_observations, cell.n_cases)}
+        for name, stratum in by_name.items():
+            cases[columns[name]] = _cases_text(stratum.n_observations, stratum.n_cases)
+            if stratum.n_cases < STRATUM_MIN_CASES:
+                cases[columns[name]] = f"{cases[columns[name]]} — {TOO_FEW_CASES}"
+                thin.append(
+                    f"{_stratum_word(name)} in {arm} ({stratum.n_cases} case{'' if stratum.n_cases == 1 else 's'})"
+                )
+        rows.append(cases)
+        rows.extend(_measure_rows(arm, cell, by_name, columns, surface))
+        rows.extend(_judged_rows(arm, cell, by_name, columns))
+    blocks: list[ReportBlock] = [
+        TableBlock(
+            section="surface",
+            name="strata",
+            title="By stratum",
+            columns=[
+                TableColumn(key="arm", header="Arm"),
+                TableColumn(key="reading", header="Reading"),
+                TableColumn(key="all", header="All cases"),
+                *(TableColumn(key=columns[name], header=_stratum_word(name)) for name in names),
+            ],
+            rows=rows,
+            order="the control's cells first, then every other cell by arm and rig; within each, its cases, then each "
+            "measure by name, then each judged dimension",
+            total_rows=len(rows),
+        )
+    ]
+    if thin:
+        blocks.append(
+            DisclosureBlock(
+                section="surface",
+                source="strata",
+                text=(
+                    f"A stratum needs at least {STRATUM_MIN_CASES} cases to be read on its own, and these hold fewer, "
+                    "so read each of their figures with its interval, which at that size is wide: "
+                    + "; ".join(thin)
+                    + "."
+                ),
+            )
+        )
+    return blocks
+
+
+def _stratum_word(name: str | None) -> str:
+    """A stratum as a column header and a disclosure name it: its own name, or :data:`NO_STRATUM`."""
+    return NO_STRATUM if name is None else name
+
+
+def _cases_text(n_observations: int, n_cases: int | None) -> str:
+    """How many cases and observations a figure rests on — cases first, since they are the independent draws."""
+    if n_cases is None:
+        return f"{n_observations} obs, cases unrecorded"
+    return f"{n_cases} case{'' if n_cases == 1 else 's'}, {n_observations} obs"
+
+
+def _measure_rows(
+    arm: str,
+    cell: CellFacts,
+    by_name: dict[str | None, StratumFacts],
+    columns: dict[str | None, str],
+    surface: DecisionSurface,
+) -> list[dict[str, Cell]]:
+    """One row per measure the cell or any of its strata holds — every one but a text measure, which is never summarised."""
+    pooled = {summary.name: summary for summary in cell.measures.measures}
+    per_stratum = {
+        name: {summary.name: summary for summary in stratum.measures.measures} for name, stratum in by_name.items()
+    }
+    measures = sorted(
+        {
+            summary.name
+            for summaries in (pooled, *per_stratum.values())
+            for summary in summaries.values()
+            if not summary.texts
+        }
+    )
+    rows: list[dict[str, Cell]] = []
+    for measure in measures:
+        found = [summary for summaries in (pooled, *per_stratum.values()) if (summary := summaries.get(measure))]
+        facts = surface.measures.get(measure)
+        # One unit for the row, chosen over every figure in it, so a stratum in ms beside a pool in s never happens.
+        factor, unit = display_scale(
+            [value for summary in found for value in (summary.mean,) if value is not None],
+            facts.unit if facts else None,
+        )
+        row: dict[str, Cell] = {
+            "arm": arm,
+            "reading": f"{measure} ({unit})" if unit else measure,
+            "all": _summary_text(pooled[measure], factor) if measure in pooled else None,
+        }
+        for name, summaries in per_stratum.items():
+            row[columns[name]] = _summary_text(summaries[measure], factor) if measure in summaries else None
+        rows.append(row)
+    return rows
+
+
+def _judged_rows(
+    arm: str, cell: CellFacts, by_name: dict[str | None, StratumFacts], columns: dict[str | None, str]
+) -> list[dict[str, Cell]]:
+    """One row per judged dimension the cell or any of its strata was scored on."""
+    pooled = {reading.dimension: reading for reading in cell.judged}
+    per_stratum = {
+        name: {reading.dimension: reading for reading in stratum.judged} for name, stratum in by_name.items()
+    }
+    dimensions = sorted({dimension for readings in (pooled, *per_stratum.values()) for dimension in readings})
+    rows: list[dict[str, Cell]] = []
+    for dimension in dimensions:
+        row: dict[str, Cell] = {
+            "arm": arm,
+            "reading": f"{dimension} (judged)",
+            "all": _judged_text(pooled[dimension]) if dimension in pooled else None,
+        }
+        for name, readings in per_stratum.items():
+            row[columns[name]] = _judged_text(readings[dimension]) if dimension in readings else None
+        rows.append(row)
+    return rows
+
+
+def _summary_text(summary: MeasureSummary, factor: float) -> str:
+    """One measure's figure as a cell of the strata table, with the n it rests on.
+
+    A rate with its Wilson interval, which stays inside 0 to 1 at any n; a mean with its standard error, as
+    the decision surface's table spells one; and a categorical measure — a confusion matrix — as its counts,
+    largest first.
+    """
+    n = f"(n={summary.n})"
+    if summary.rate is not None:
+        return f"{format_number(summary.rate)}{_interval(summary.ci_low, summary.ci_high)} {n}"
+    if summary.mean is not None:
+        spread = f" ± {format_number(summary.sem * factor)}" if summary.sem is not None else ""
+        return f"{format_number(summary.mean * factor)}{spread} {n}"
+    counts = sorted(summary.categories.items(), key=lambda item: (-item[1], item[0]))
+    return "; ".join(f"{category}: {count}" for category, count in counts) + f" {n}"
+
+
+def _interval(low: float | None, high: float | None) -> str:
+    """An interval as ``[low, high]``, or nothing when either end is unestimated."""
+    if low is None or high is None:
+        return ""
+    return f" [{format_number(low)}, {format_number(high)}]"
+
+
+def _judged_text(reading: JudgedReading) -> str:
+    """One judged dimension's mean, with its standard error and the scores it rests on."""
+    if reading.mean is None:
+        return f"no score (n={reading.n})"
+    spread = f" ± {format_number(reading.sem)}" if reading.sem is not None else ""
+    return f"{format_number(reading.mean)}{spread} (n={reading.n})"
+
+
 def _method_blocks(analysis: EvalAnalysis) -> list[ReportBlock]:
     """The analysis-wide disclosures no finding or table owns: the time axis's basis and the generation."""
     blocks = _time_axis_blocks(analysis.decision_surface.time_axis)
@@ -449,6 +660,7 @@ def build_code_only_report(bundle: AnalysisContextBundle, *, measures: MeasureRe
         )
     )
     blocks.extend(_surface_blocks(surface_table_of(surface, variant_index)))
+    blocks.extend(_strata_blocks(surface, variant_index))
     blocks.extend(_comparison_blocks(bundle, surface))
     blocks.extend(_measure_chart_blocks(surface, bundle, measures))
     blocks.extend(_time_axis_blocks(surface.time_axis))

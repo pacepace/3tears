@@ -853,7 +853,8 @@
             "runs",
             "measurement",
             "apparatus",
-            "comparisons"
+            "comparisons",
+            "strata"
           ],
           "title": "Source",
           "type": "string"
@@ -1017,7 +1018,7 @@
           "type": "string"
         },
         "name": {
-          "description": "Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them) or `questions` (the declared questions, on a code-only report).",
+          "description": "Which table this is: `evidence`, `arms`, `surface`, `unadjudicated_bars`, `comparisons` (the contrasts against the control, as code tested them), `questions` (the declared questions, on a code-only report) or `strata` (each arm's figures per stratum of its cases, beside its pooled figure, when its cases declare strata).",
           "minLength": 1,
           "title": "Name",
           "type": "string"
@@ -1389,8 +1390,8 @@
       "type": "string"
     },
     "report_version": {
-      "const": 2,
-      "default": 2,
+      "const": 3,
+      "default": 3,
       "description": "This shape's version.",
       "title": "Report Version",
       "type": "integer"
