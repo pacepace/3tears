@@ -606,8 +606,10 @@ class FeatureCache(BaseCollection[FeatureEntity]):
 def _drop_index_entries(backend: Any, rtree_table: str, map_table: str, prefix: str) -> None:
     """delete a collected :class:`FeatureCache`'s R-Tree entries; best effort, never raises.
 
-    run by :func:`weakref.finalize`, so it may run during interpreter shutdown or after the L1 has
-    closed; an entry left behind is only an unread row in an in-memory table.
+    run by :func:`weakref.finalize`, so it may run on any thread -- whichever one triggers the
+    collection -- during interpreter shutdown, or after the L1 has closed, and SQLite may refuse
+    the connection from there. the worst case is orphaned entries: rows in an in-memory table that
+    no live cache reads, since every key carries the collected instance's token.
     """
     try:
         conn = backend.get_connection()

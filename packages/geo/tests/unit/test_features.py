@@ -706,16 +706,23 @@ class TestOneReadClaimsAtMostHalfTheBound:
 class TestACollectedCache:
     async def test_leaves_no_index_entries(self, request: pytest.FixtureRequest) -> None:
         # caches of one scope share the L1's tables, so one that is dropped must take its entries
+        # -- and only its own: a second live cache on the same L1 keeps every entry it holds
         tile = _chunk_tile(0)
-        loader, _ = _recording_loader([_point_row("f", tile)])
+        loader, calls = _recording_loader([_point_row("f", tile)])
         cache = _cache_over(request, loader)
+        survivor = _cache_over(request, loader)
         backend = SQLiteBackend(f"geo_wide_{abs(hash(request.node.nodeid))}")
         backend.initialize(MetaData())
         await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
+        await survivor.features_in_bbox("tracts", 1, tile_bounds(tile))
         count_sql = f"SELECT count(*) AS n FROM geo_features_{SCOPE}_rtree_map"
-        assert backend.execute_query(count_sql)[0]["n"] == 1
+        assert backend.execute_query(count_sql)[0]["n"] == 2
 
         del cache
         gc.collect()
 
-        assert backend.execute_query(count_sql)[0]["n"] == 0
+        assert backend.execute_query(count_sql)[0]["n"] == 1
+        assert survivor.indexed_keys_in_bbox("tracts", 1, tile_bounds(tile)) == ["f"]
+        found = await survivor.features_in_bbox("tracts", 1, tile_bounds(tile))
+        assert [row["feature_id"] for row in found] == ["f"]
+        assert len(calls) == 2, "the surviving cache's chunk should still be covered"
