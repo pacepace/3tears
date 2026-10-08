@@ -30,7 +30,7 @@ reading carries no policy of its own: what it names either resolves here or is r
 
 **Every interval here is computed and labelled at one level.** A measure's arrives already computed
 on its summary, a judged dimension's is computed here, and both widths come from
-:func:`threetears.evals.analysis.stats.ci_half_width` at :data:`threetears.evals.analysis.stats.INTERVAL_LEVEL` — the same
+:func:`threetears.evals.analysis.stats.mean_interval` at :data:`threetears.evals.analysis.stats.INTERVAL_LEVEL` — the same
 constant the dispersion text and every chart caption state. The level is not a second decision this
 module makes; it reads the one the width was computed at.
 """
@@ -319,11 +319,16 @@ def _resolve_judged(surface: DecisionSurface, cell: CellFacts, ref: str, dimensi
         raise UnresolvableReference(
             f"reference names judged dimension {dimension!r} at cell {ref!r}, which has no scores"
         )
-    # The same width function the bundle computes every measure's interval with, so a judged
-    # interval and a measure's drawn side by side are at one level by construction.
-    half = None if judged.sem is None else stats.ci_half_width(judged.sem, judged.n)
-    ci_low, ci_high = (None, None) if half is None else (judged.mean - half, judged.mean + half)
+    # The same interval function the bundle computes every measure's interval with, so a judged
+    # interval and a measure's drawn side by side are at one level by construction — and inside the
+    # dimension's scale, which a mean near its top would otherwise overrun.
     facts = _dimension_facts(surface, dimension)
+    interval = (
+        None
+        if judged.sem is None
+        else stats.mean_interval(judged.mean, judged.sem, judged.n, value_range=facts.value_range)
+    )
+    ci_low, ci_high = (None, None) if interval is None else interval
     return ResolvedReading(
         cell_ref=ref,
         measure_id=dimension,

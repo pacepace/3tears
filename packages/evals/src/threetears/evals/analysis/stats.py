@@ -250,6 +250,13 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
         n_true: Observations that held.
         n: Observations.
 
+    The interval always contains the rate, exactly. Algebraically the Wilson bound at a rate of 1 is
+    1 and at a rate of 0 is 0, but ``centre ± half`` reaches them through cancelling floating-point
+    terms and lands a hair to either side — 4 of 4 gave an upper bound of ``0.9999999999999999``. An
+    interval that misses its own estimate by one ulp is refused by every surface that draws it
+    (:class:`~threetears.evals.analysis.viz.payloads.ConfidenceInterval`), so the bounds are pinned
+    to contain the rate rather than every consumer tolerating the noise.
+
     Returns:
         ``(low, high)``, or ``None`` with no observations — there is no rate to bound.
 
@@ -265,7 +272,68 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
     denominator = 1 + z * z / n
     centre = (rate + z * z / (2 * n)) / denominator
     half = z * math.sqrt(rate * (1 - rate) / n + z * z / (4 * n * n)) / denominator
-    return max(0.0, centre - half), min(1.0, centre + half)
+    return min(rate, max(0.0, centre - half)), max(rate, min(1.0, centre + half))
+
+
+def mean_interval(
+    mean: float, sem: float, n: int, *, value_range: tuple[float, float] | None = None
+) -> tuple[float, float] | None:
+    """The interval on a mean at :data:`INTERVAL_LEVEL`, kept inside the scale the measure is declared on.
+
+    ``mean ± t·sem`` (:func:`ci_half_width`), clipped to ``value_range`` when one is declared. The
+    symmetric t interval knows nothing of a bound, so a mean near the top of a bounded scale got an
+    upper bound past it — a 0.8 accuracy over ten observations read ``[0.498, 1.102]``, a share above
+    all of them. The scale is a fact about every value the mean could take, so no part of the
+    interval beyond it is a value the mean could have.
+
+    Args:
+        mean: The point estimate.
+        sem: Its standard error.
+        n: Observations behind it.
+        value_range: The measure's declared inclusive bounds, or None when it declares none.
+
+    Returns:
+        ``(low, high)``, or ``None`` below two observations, where no interval is estimable.
+    """
+    half = ci_half_width(sem, n)
+    if half is None:
+        return None
+    low, high = mean - half, mean + half
+    if value_range is not None:
+        floor, ceiling = value_range
+        low, high = max(floor, low), min(ceiling, high)
+    return low, high
+
+
+def observed_mean_interval(
+    values: Sequence[float], *, value_range: tuple[float, float] | None = None
+) -> tuple[float, float] | None:
+    """The interval on the mean of a numeric measure's observations — the ONE rule every numeric summary takes.
+
+    Observations that are each 0 or 1 on a measure declared on ``[0, 1]`` are trials, and their mean
+    is a proportion: ``accuracy``, derived from each observation's ``match``, is exactly that. A
+    proportion is bounded by :func:`wilson_interval`, the rule its boolean twin takes, so ``accuracy``
+    and ``match`` over the same observations state one interval rather than two different ones — and
+    a perfect score keeps a width instead of the t interval's zero-width point. Every other numeric
+    measure takes :func:`mean_interval`, clipped to its declared scale.
+
+    Args:
+        values: The observations.
+        value_range: The measure's declared inclusive bounds, or None when it declares none.
+
+    Returns:
+        ``(low, high)``, or ``None`` below two observations, where no interval is estimable — the
+        position :func:`standard_error_of_mean` takes, held for a proportion too, so a numeric
+        measure's interval appears and disappears at one n whatever its values.
+    """
+    n = len(values)
+    if n < 2:
+        return None
+    mean = sum(values) / n
+    if value_range == (0.0, 1.0) and all(value in (0.0, 1.0) for value in values):
+        return wilson_interval(sum(1 for value in values if value == 1.0), n)
+    sem = standard_error_of_mean(list(values))
+    return None if sem is None else mean_interval(mean, sem, n, value_range=value_range)
 
 
 def cohen_kappa(
@@ -635,6 +703,8 @@ __all__ = [
     "cohen_kappa",
     "composite_significance",
     "holm_adjust",
+    "mean_interval",
+    "observed_mean_interval",
     "paired_change",
     "standard_error_of_mean",
     "t_critical_two_sided",
