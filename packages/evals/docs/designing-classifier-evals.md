@@ -285,25 +285,45 @@ are lookalikes, and the 60% is the number to act on.
 ### Rung zero
 
 `run_eval` ([Rung zero](../README.md#rung-zero-one-call) in the README) runs a classifier function over a
-list of cases in one call. Each scorer is a function of the case and the answer, returning a bool or a
-number:
+list of cases in one call. Pass `expected=`, a function that returns the label a case expects, and `run_eval`
+grades the function as a classifier:
 
 ```python
 from threetears.evals.quick import run_eval
 
-def correct(case: dict, label: str) -> bool:
-    """Whether the label is the expected one."""
-    return label == case["expected"]
+async def classify(case: dict) -> str:
+    """Call the production classifier on the case and return the label its parser gives."""
+    ...
 
-summary = await run_eval(cases, classify, [correct], scope_id="dev", k=3)
+summary = await run_eval(cases, classify, scope_id="dev", expected=lambda case: case["expected"], k=3)
+print(summary.render())
 ```
 
-That reports the share of answers `correct` accepted, with its interval. It does not report a confusion
-matrix or per-label precision and recall.
+Each result records whether the answer was the expected label (`match`) and which cell of the confusion
+matrix it landed in (`confusion_cell`). These are the two measures a classifier kind lands, so the analysis
+reads a rung-zero run the same way. The summary reports:
 
-> **Contingent on [#564](https://github.com/pacepace/3tears/issues/564).** Once rung zero can be told a
-> function is a classifier (its expected label per case), the same call will report the confusion matrix and
-> per-label statistics from [section 7](#7-reading-the-results). Until then, those need a classifier kind.
+- `summary.confusion`: the confusion matrix, one `ConfusionCount` (expected label, predicted label, count)
+  per cell.
+- `summary.labels`: one `LabelStatistics` per label, with its counts, its precision and recall with their
+  intervals, and its F1. A label that was never predicted has no precision, and one that was never expected
+  has no recall. Neither of those has an F1.
+- The `match` measure. Its mean is the share of answers that matched. The analysis reports it as `accuracy`.
+
+`render()` prints all three. A call to `classify` that raises an exception fails its result. It is counted in
+`summary.n_candidate_failed` and is in no cell of the matrix.
+
+An answer that is not a non-blank string (`None`, an empty or blank string, a number) is counted under its own
+predicted label, `UNUSABLE_ANSWER` (printed as `(unusable answer)`), and never matches. This is the label for
+unusable answers from [section 5](#5-feed-the-classifier-exactly-what-production-feeds-it), applied for you.
+Any other string is a label exactly as written. A label outside your set shows as its own predicted label, and `"DIRECT "` is a
+different label from `"DIRECT"`. Return what your production parser returns and do not clean it up in the
+eval, or the eval stops measuring the parser.
+
+No case may expect `UNUSABLE_ANSWER`, and `run_eval` refuses an `expected=` that gives a case a blank or
+non-string label. Scorers still work beside `expected=`, for anything else you want to grade, such as answer
+length. Each is reported as its own measure. Two runs over the same cases are runs of one template, and so
+comparable, only when they expect the same labels.
 
 ### A classifier kind
 

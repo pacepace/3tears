@@ -3,7 +3,9 @@
 The quickest way in. :func:`run_eval` takes a list of cases, an async candidate and scorer
 functions, builds what a host would — a kind over the callable, a profile with one measure per
 scorer, the in-memory reference store — launches through the engine's own launch path, and returns
-an :class:`EvalSummary`. :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls`` and
+an :class:`EvalSummary`. Handed each case's expected label (``expected=``), it grades the candidate as a
+classifier, and the summary carries its confusion matrix (:class:`ConfusionCount`) and each label's
+precision, recall and F1 (:class:`LabelStatistics`). :func:`run_cli` is ``python -m threetears.evals``: ``run``, ``ls`` and
 ``report`` over a host named ``module:factory``, or mounted under a product's own CLI with its host
 factory and any subcommands of its own (:class:`HostCommand`).
 
@@ -16,6 +18,7 @@ and only the names in ``__all__``.
 
 from __future__ import annotations
 
+from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics
 from threetears.evals.quick.cli import (
     DEFAULT_PROG,
     ENGINE_COMMANDS,
@@ -32,7 +35,9 @@ from threetears.evals.quick.one_call import (
     CALLABLE_KIND,
     CALLABLE_KIND_CONTRACT,
     CALLABLE_UNSEATED,
+    UNUSABLE_ANSWER,
     Candidate,
+    ExpectedLabel,
     Scorer,
     callable_host,
     run_eval,
@@ -49,10 +54,14 @@ __all__ = [
     "EXIT_OK",
     "EXIT_REFUSED",
     "EXIT_RUN_DID_NOT_COMPLETE",
+    "UNUSABLE_ANSWER",
     "Candidate",
+    "ConfusionCount",
     "EvalSummary",
+    "ExpectedLabel",
     "HostCommand",
     "HostFactory",
+    "LabelStatistics",
     "MeasureSummary",
     "Scorer",
     "build_parser",

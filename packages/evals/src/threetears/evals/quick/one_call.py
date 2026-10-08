@@ -7,6 +7,11 @@ here, from the public roots, on the terms the engine already sets:
 - **The kind** is :class:`CallableKind`: ``invoke`` calls the candidate on the case and each scorer
   on what it returned, and reports the scores as the host's measures. It is unjudged — the scorers
   are the grade — and seeds no world.
+- **A classifier** is a candidate whose answer is a label, declared by handing ``run_eval`` the
+  case's expected label (``expected=``). Each cell then lands the core ``match`` and
+  ``confusion_cell`` as a classifier kind does, so the summary carries the confusion matrix and each
+  label's precision, recall and F1, and the analysis derives ``accuracy``. An answer that is not a
+  usable label lands under :data:`UNUSABLE_ANSWER`, a predicted label of its own.
 - **The host**, when none is given, is :func:`callable_host`: the shared sweepable core, one measure
   per scorer, no world, and the in-memory reference store. Given one, its storage and vocabulary are
   used: every scorer must already be a measure it declares, and it must declare a contract for the
@@ -32,7 +37,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals.contracts import (
+    ACCURACY_MEASURE,
+    CONFUSION_CELL_MEASURE,
     DEFAULT_LAUNCH_K_RUNS,
+    MATCH_MEASURE,
     CandidateOutput,
     CellCassettes,
     CellSink,
@@ -47,6 +55,7 @@ from threetears.evals.contracts import (
     WorldSeed,
     WorldSession,
     canonical_digest,
+    confusion_cell,
     withhold_failure_detail,
 )
 from threetears.evals.contracts.host import (
@@ -79,6 +88,19 @@ Candidate = Callable[[Mapping[str, Any]], Awaitable[Any]]
 #: as 1 and 0). Its ``__name__`` is the measure's name, and higher is better.
 Scorer = Callable[[Mapping[str, Any], Any], float | bool]
 
+#: A classifier's expected label for one case: takes the case, returns the label a correct answer gives.
+ExpectedLabel = Callable[[Mapping[str, Any]], str]
+
+#: The predicted label a classifier's answer is counted under when it is not a usable label: not a
+#: string, or a blank one. It is its own cell in the confusion matrix and never a match, so an answer the
+#: classifier could not give is never counted as one it did. No case may expect it.
+UNUSABLE_ANSWER = "(unusable answer)"
+
+#: The names a classifier lands (``match``, ``confusion_cell``) and the one the engine derives from them
+#: (``accuracy``). No scorer may take one: it would collide with a classifier's own measure, or be read
+#: under the core descriptor of a measure it is not.
+_CLASSIFIER_NAMES = frozenset({MATCH_MEASURE, CONFUSION_CELL_MEASURE, ACCURACY_MEASURE})
+
 #: The kind :func:`run_eval` launches, as its template names it.
 CALLABLE_KIND = "callable"
 
@@ -87,6 +109,9 @@ CALLABLE_HOST_ID = "run_eval"
 
 #: Where a case rides on its stored test case: verbatim, for the candidate to be handed back.
 _CASE_KEY = "case"
+
+#: Where a classifier's case carries its expected label on its stored test case.
+_EXPECTED_KEY = "expected"
 
 #: The callable kind's contract: no overlays, no spec, and no rig seat — nothing in a ``run_eval`` run is
 #: graded by a model or talks to a simulated user. Without the empty seats each blank judge and simulator
@@ -153,12 +178,13 @@ def scorer_measure(scorer: Scorer) -> MetricDescriptor:
     )
 
 
-def callable_host(scorers: Sequence[Scorer]) -> EvalHost:
+def callable_host(scorers: Sequence[Scorer] = ()) -> EvalHost:
     """The least host there is: the shared core, one measure per scorer, no world, an in-memory store.
 
     What :func:`run_eval` builds when it is handed no host. Its store lives as long as the returned
     value, so a caller wanting to run several candidates into one store and compare them builds this
-    once and hands it to each call.
+    once and hands it to each call. A classifier's ``match`` and ``confusion_cell`` are core measures,
+    so a host for a classifier with no scorers of its own declares none: ``callable_host()``.
 
     Args:
         scorers: The scorer functions whose measures the host declares.
@@ -167,7 +193,7 @@ def callable_host(scorers: Sequence[Scorer]) -> EvalHost:
         The host.
 
     Raises:
-        ValueError: A scorer has no usable name, or two share one.
+        ValueError: A scorer has no usable name, two share one, or one takes a classifier measure's name.
     """
     _refuse_unnamed_or_repeated(scorers)
     return EvalHost(
@@ -199,20 +225,23 @@ class CallableKind:
     answer, and reports the scores as host measures. A candidate that raises FAILS its cell (a
     candidate error lowers the score; a broken candidate must not vanish); a scorer that raises, or
     returns something that is not a number, EXCLUDES it, because the grader is the rig rather than
-    the thing under test.
+    the thing under test. A classifying kind also lands ``match`` and ``confusion_cell`` against the
+    expected label its case carries, the answer counted as :data:`UNUSABLE_ANSWER` when it is no label.
     """
 
     judged_artifact = JudgedArtifact.UNJUDGED
 
-    def __init__(self, candidate: Candidate, scorers: Sequence[Scorer]) -> None:
+    def __init__(self, candidate: Candidate, scorers: Sequence[Scorer], *, classifies: bool = False) -> None:
         """Bind the candidate and its scorers.
 
         Args:
             candidate: The async callable under test.
             scorers: The grades, each reported under its own name.
+            classifies: Whether the candidate is a classifier, whose every case carries its expected label.
         """
         self._candidate = candidate
         self._scorers = tuple(scorers)
+        self._classifies = classifies
 
     async def prepare(
         self,
@@ -248,7 +277,8 @@ class CallableKind:
             sink: The cell's sink, unused: the scores are reported on the output.
 
         Returns:
-            The answer as the stored trace, and each scorer's grade as a host measure.
+            The answer as the stored trace, and each scorer's grade as a host measure, beside a
+            classifier's ``match`` and ``confusion_cell``.
         """
         case = test_case.host_payload[_CASE_KEY]
         try:
@@ -258,6 +288,11 @@ class CallableKind:
             return CandidateOutput(candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"])
         trace = [_as_stored(answer)]
         measures: dict[str, bool | float | str] = {}
+        if self._classifies:
+            expected = test_case.host_payload[_EXPECTED_KEY]
+            predicted = answer if isinstance(answer, str) and answer.strip() else UNUSABLE_ANSWER
+            measures[MATCH_MEASURE] = predicted == expected
+            measures[CONFUSION_CELL_MEASURE] = confusion_cell(expected, predicted)
         for scorer in self._scorers:
             name = _scorer_name(scorer)
             try:
@@ -293,8 +328,6 @@ def _scorer_name(scorer: Scorer) -> str:
 
 
 def _refuse_unnamed_or_repeated(scorers: Sequence[Scorer]) -> None:
-    if not scorers:
-        raise ValueError("run_eval needs at least one scorer: a run nothing grades measures nothing")
     names = [_scorer_name(scorer) for scorer in scorers]
     if unnamed := [repr(scorer) for scorer, name in zip(scorers, names, strict=True) if not name.isidentifier()]:
         raise ValueError(
@@ -303,6 +336,31 @@ def _refuse_unnamed_or_repeated(scorers: Sequence[Scorer]) -> None:
         )
     if repeated := sorted({name for name in names if names.count(name) > 1}):
         raise ValueError(f"scorers named {', '.join(repeated)} more than once; each name is one measure")
+    if taken := sorted(set(names) & _CLASSIFIER_NAMES):
+        raise ValueError(
+            f"a scorer named {', '.join(taken)} takes a measure the classifier track owns; to grade a classifier, "
+            "pass run_eval its expected label (expected=), and name any other scorer something else"
+        )
+
+
+def _expected_labels(cases: list[dict[str, Any]], expected: ExpectedLabel) -> list[str]:
+    """Each case's expected label, refusing a case whose label no confusion matrix could hold."""
+    labels: list[str] = []
+    for index, case in enumerate(cases):
+        try:
+            label = expected(case)
+        # prawduct:ok-broad-except — expected= is the caller's code: what it raises on a case is refused with that case named
+        except Exception as raised:
+            raise ValueError(f"expected= raised on case {index}: {type(raised).__name__}: {raised}") from raised
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(f"expected= gave case {index} {label!r}; an expected label is a non-blank string")
+        if label == UNUSABLE_ANSWER:
+            raise ValueError(
+                f"expected= gave case {index} {UNUSABLE_ANSWER!r}, the label an unusable answer is counted under; "
+                "a case expecting it would count an answer the classifier could not give as a match"
+            )
+        labels.append(label)
+    return labels
 
 
 def _refuse_an_undeclared_callable_contract(host: EvalHost) -> None:
@@ -346,8 +404,8 @@ def _refuse_undeclared_measures(host: EvalHost, scorers: Sequence[Scorer]) -> No
         )
 
 
-def _case_set(cases: Sequence[Mapping[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
-    """The template id the case list is addressed by, and the cases as plain JSON objects."""
+def _plain_cases(cases: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The cases as plain JSON objects."""
     if isinstance(cases, Mapping | str) or not cases:
         raise ValueError("run_eval needs a non-empty list of cases, each a mapping")
     plain: list[dict[str, Any]] = []
@@ -355,16 +413,27 @@ def _case_set(cases: Sequence[Mapping[str, Any]]) -> tuple[str, list[dict[str, A
         if not isinstance(case, Mapping) or not all(isinstance(key, str) for key in case):
             raise ValueError(f"case {index} is not a mapping with string keys: {case!r}")
         plain.append(dict(case))
+    return plain
+
+
+def _template_id(cases: list[dict[str, Any]], labels: list[str] | None) -> str:
+    """The id the case set is addressed by: its cases, and a classifier's expected labels with them.
+
+    A classifier's labels are part of what its runs measure, so two classifier calls over one case list
+    share a template only when they expect the same labels, and neither shares one with a scorer call.
+    """
     try:
-        digest = canonical_digest(plain)
+        digest = canonical_digest(cases if labels is None else {"cases": cases, "expected": labels})
     except TypeError as unencodable:
         raise ValueError(f"every case must be JSON: {unencodable}") from unencodable
-    return f"{CALLABLE_HOST_ID}-{digest[:16]}", plain
+    return f"{CALLABLE_HOST_ID}-{digest[:16]}"
 
 
-def _case_payload(case: dict[str, Any]) -> dict[str, Any]:
-    """The ``host_payload`` a case's stored test case carries: the case, verbatim, under this module's key."""
-    return {_CASE_KEY: case}
+def _case_payload(case: dict[str, Any], label: str | None) -> dict[str, Any]:
+    """The ``host_payload`` a case's stored test case carries: the case, verbatim, and a classifier's expected label."""
+    if label is None:
+        return {_CASE_KEY: case}
+    return {_CASE_KEY: case, _EXPECTED_KEY: label}
 
 
 def _flat(value: Any) -> str:
@@ -406,9 +475,10 @@ def _launch_host(host: EvalHost, kind: CallableKind, subject: SubjectSnapshot, c
 async def run_eval(
     cases: Sequence[Mapping[str, Any]],
     candidate: Candidate,
-    scorers: Sequence[Scorer],
+    scorers: Sequence[Scorer] = (),
     *,
     scope_id: str,
+    expected: ExpectedLabel | None = None,
     host: EvalHost | None = None,
     k: int = DEFAULT_LAUNCH_K_RUNS,
     model: str | None = None,
@@ -419,8 +489,13 @@ async def run_eval(
         cases: The cases, each a JSON object; the candidate and the scorers receive each one as given.
         candidate: The async callable under test, called once per case and repeat.
         scorers: The grades. Each is reported as a measure named by its ``__name__``; ``True`` and
-            ``False`` count as 1 and 0, and higher is better.
+            ``False`` count as 1 and 0, and higher is better. None is needed when ``expected`` is given.
         scope_id: The scope the template, cases and run are stored in. The engine never defaults it.
+        expected: Declares the candidate a classifier: called once per case, it returns the label a
+            correct answer gives. Each cell then lands ``match`` (the answer is that label) and
+            ``confusion_cell`` (expected, then predicted), and the summary carries the confusion matrix
+            and each label's precision, recall and F1. An answer that is not a non-blank string is
+            counted as :data:`UNUSABLE_ANSWER`; any other answer is a label as written, whitespace and all.
         host: Where to run and store: ``None`` builds :func:`callable_host` over the scorers, whose
             in-memory store lives only as long as this call. A host of the caller's own must declare
             a measure for every scorer, and a contract for the callable kind (:data:`CALLABLE_KIND_CONTRACT`,
@@ -433,14 +508,23 @@ async def run_eval(
         The finished run's summary, read back from the store.
 
     Raises:
-        ValueError: No cases, a case that is not a JSON object with string keys, no scorers, a
-            scorer with no name or a repeated one, a given host that declares no callable-kind contract
+        ValueError: No cases, a case that is not a JSON object with string keys, neither scorers nor
+            ``expected``, a scorer with no name, a repeated one or one named ``match``, ``confusion_cell`` or
+            ``accuracy``, an ``expected`` that raises or gives a case a blank, non-string or
+            :data:`UNUSABLE_ANSWER` label, a given host that declares no callable-kind contract
             (or one with no seats, a seat in :data:`CALLABLE_UNSEATED`, overlays or a spec), a scorer
             the given host declares no measure for, or no ``model`` for a candidate that has no ``__name__``.
         ValidationFailedError: The launch refused: a ``k`` outside the run's bounds.
     """
-    template_id, plain_cases = _case_set(cases)
+    plain_cases = _plain_cases(cases)
+    if not scorers and expected is None:
+        raise ValueError(
+            "run_eval needs at least one scorer, or a classifier's expected labels (expected=): a run nothing "
+            "grades measures nothing"
+        )
     _refuse_unnamed_or_repeated(scorers)
+    labels = None if expected is None else _expected_labels(plain_cases, expected)
+    template_id = _template_id(plain_cases, labels)
     if host is None:
         host = callable_host(scorers)
     else:
@@ -464,7 +548,7 @@ async def run_eval(
             scope_id=scope_id,
             template_id=template_id,
             variation_params={key: _flat(value) for key, value in case.items()},
-            host_payload=_case_payload(case),
+            host_payload=_case_payload(case, None if labels is None else labels[index]),
         )
         for index, case in enumerate(plain_cases)
     ]
@@ -472,7 +556,8 @@ async def run_eval(
     for test_case in test_cases:
         host.storage.save_test_case(test_case)
     subject = SubjectSnapshot(subject_id=model, subject_label=model, state={})
-    launch_host = _launch_host(host, CallableKind(candidate, scorers), subject, test_cases)
+    kind = CallableKind(candidate, scorers, classifies=labels is not None)
+    launch_host = _launch_host(host, kind, subject, test_cases)
     runs = await start_run(
         launch_host, template_id=template_id, subject_id=model, models=[model], k_runs=k, scope_id=scope_id
     )
@@ -492,8 +577,10 @@ __all__ = [
     "CALLABLE_KIND",
     "CALLABLE_KIND_CONTRACT",
     "CALLABLE_UNSEATED",
+    "UNUSABLE_ANSWER",
     "CallableKind",
     "Candidate",
+    "ExpectedLabel",
     "Scorer",
     "callable_host",
     "run_eval",

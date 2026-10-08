@@ -1,4 +1,4 @@
-"""Rung zero holds: a product with a case list and a scorer function integrates in one short file.
+"""Rung zero holds: a product with a case list and a classifier or scorer function integrates in one short file.
 
 ``examples/rung_zero.py`` is that file. These tests execute it, read the summary it returns, and
 hold it to the two properties that make it rung zero rather than merely an example: it stays under
@@ -59,7 +59,7 @@ def _foreign_imports(source: str) -> list[str]:
 
 
 async def test_the_example_runs_and_its_summary_reads_what_it_measured(capsys: pytest.CaptureFixture[str]) -> None:
-    """Five cases, two repeats, two scorers: the summary counts every cell and averages each scorer."""
+    """Five cases, two repeats, a classifier and a scorer: the summary counts every cell and reads both."""
     summary = await _load(RUNG_ZERO).main()
     assert isinstance(summary, EvalSummary)
     assert summary.status == "completed"
@@ -68,11 +68,27 @@ async def test_the_example_runs_and_its_summary_reads_what_it_measured(capsys: p
     assert summary.n_candidate_failed == summary.n_excluded == 0
     by_name = {measure.name: measure for measure in summary.measures}
     # One case of five is misread ("Not bad at all." comes back neutral), and two of five are neutral.
-    assert by_name["correct"].mean == pytest.approx(0.8)
+    assert by_name["match"].mean == pytest.approx(0.8)
     assert by_name["decisive"].mean == pytest.approx(0.6)
-    assert by_name["correct"].n == by_name["decisive"].n == 10
+    assert by_name["match"].n == by_name["decisive"].n == by_name["confusion_cell"].n == 10
+    # The misread is one direction: a positive case read as neutral, never the reverse.
+    assert [(cell.expected, cell.predicted, cell.count) for cell in summary.confusion] == [
+        ("negative", "negative", 4),
+        ("neutral", "neutral", 2),
+        ("positive", "neutral", 2),
+        ("positive", "positive", 2),
+    ]
+    labels = {statistics.label: statistics for statistics in summary.labels}
+    assert sorted(labels) == ["negative", "neutral", "positive"]
+    assert (labels["neutral"].precision, labels["neutral"].recall) == (0.5, 1.0)
+    assert (labels["positive"].precision, labels["positive"].recall) == (1.0, 0.5)
+    assert labels["neutral"].f1 == labels["positive"].f1 == pytest.approx(2 / 3)
+    assert labels["negative"].f1 == 1.0
     assert summary.errors == []
-    assert summary.render() in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert summary.render() in out
+    assert "positive → neutral: 2" in out
+    assert "neutral: precision 0.5 (2/4, 95% CI" in out
 
 
 def test_the_example_stays_under_sixty_lines() -> None:
