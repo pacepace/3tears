@@ -449,6 +449,54 @@ class TestPartitions:
         assert searches[0] < 20, f"{searches[0]} import-path searches for one bulk insert of 2000 rows"
         assert backend.export_partition("results", "state", "TX", order_by=("race", "county")).num_rows == 2000
 
+    def test_a_column_arrow_cannot_type_as_one_still_round_trips_exactly(self) -> None:
+        """mixed kinds in one column, and an int past 64 bits, fall back to binding the values; the
+        rows must come back exactly as written either way."""
+        pytest.importorskip("pyarrow")
+        from sqlalchemy import Numeric
+
+        metadata = MetaData()
+        Table(
+            "mixed",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("label", String(32)),
+            Column("big", Numeric(30, 0)),
+        )
+        backend = DuckDBBackend()
+        backend.initialize(metadata)
+        rows = [
+            {"id": 1, "label": "a", "big": 2**70},
+            {"id": 2, "label": 7, "big": 3},  # an int where the others are text
+        ]
+
+        backend.upsert_many("mixed", rows, "id")
+
+        held = backend.execute_query("SELECT id, label, big FROM mixed ORDER BY id")
+        assert [(r["id"], r["label"], int(r["big"])) for r in held] == [(1, "a", 2**70), (2, "7", 3)]
+
+    def test_a_read_holds_the_state_from_when_it_began_not_from_its_first_query(self) -> None:
+        pytest.importorskip("pyarrow")
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        backend = _partitioned_backend()
+        key = ("race", "county")
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1)], key)
+
+        with backend.read_snapshot() as cursor:
+            backend.replace_partitions(
+                [
+                    PartitionReplacement(
+                        table="results",
+                        column="state",
+                        value="TX",
+                        rows=[_result("r1", "c1", "TX", 2)],
+                        primary_key=key,
+                    )
+                ]
+            )
+            assert cursor.execute("SELECT votes FROM results").fetchall() == [(1,)], "the read saw a later commit"
+
     def test_rows_export_as_the_partition_would_hold_them_and_change_nothing(self) -> None:
         pytest.importorskip("pyarrow")
         from threetears.core.cache.duckdb import PartitionReplacement

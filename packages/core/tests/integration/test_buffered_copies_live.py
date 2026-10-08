@@ -159,7 +159,7 @@ async def test_a_reader_keeps_the_set_it_took_while_the_next_is_built_and_swappe
         seen_mid_build.append(_votes(copies.require().backend))
         return rows
 
-    l3.fetch = fetch_and_read_the_live_set  # type: ignore[method-assign]
+    l3.fetch = fetch_and_read_the_live_set
     second = await copies.build()
 
     assert seen_mid_build and all(seen == [100 + i for i in range(7)] for seen in seen_mid_build)
@@ -193,7 +193,7 @@ async def test_a_write_landing_between_two_tables_is_refused_and_the_live_set_st
             held.writer.version = 2  # a whole write committed after results was read
         return rows
 
-    l3.fetch = fetch_then_commit  # type: ignore[method-assign]
+    l3.fetch = fetch_then_commit
 
     with pytest.raises(IncompleteCopyError, match="changed while the copies were built"):
         await copies.build()
@@ -211,7 +211,7 @@ async def test_a_build_that_fails_part_way_leaves_the_live_set(held: _Held) -> N
             raise ConnectionError("the L3 rail went away")
         return await read(query, *args)
 
-    l3.fetch = fails_on_races  # type: ignore[method-assign]
+    l3.fetch = fails_on_races
 
     with pytest.raises(ConnectionError):
         await copies.build()
@@ -246,7 +246,7 @@ async def test_builds_asked_for_together_run_one_at_a_time(held: _Held) -> None:
         finally:
             in_build -= 1
 
-    l3.fetch = counted  # type: ignore[method-assign]
+    l3.fetch = counted
 
     first, second = await asyncio.gather(copies.build_if_behind(), copies.build_if_behind())
 
@@ -298,7 +298,7 @@ async def test_a_build_that_fails_closes_the_backend_it_was_filling(held: _Held)
             raise ConnectionError("the L3 rail went away")
         return await read(query, *args)
 
-    l3.fetch = fails_on_races  # type: ignore[method-assign]
+    l3.fetch = fails_on_races
     with pytest.raises(ConnectionError):
         await copies.build()
 

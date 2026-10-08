@@ -65,6 +65,8 @@ from typing import Any, TypeAlias, TypedDict, TypeVar
 
 from threetears.observe import BuildOnce, get_logger
 
+from threetears.core.sql_fragments import quote_identifier
+
 __all__ = [
     "CallbackTransaction",
     "ColumnCoverage",
@@ -180,21 +182,6 @@ class ColumnCoverage(TypedDict):
     nonzero_count: int
 
 
-def _quote_ident(name: str) -> str:
-    """double-quote a SQL identifier, escaping embedded quotes by doubling.
-
-    identifiers (schema / table / column names) cannot be passed as bind
-    parameters, so the coverage probe interpolates them -- quoting defends the
-    interpolation even though the names come from the warehouse catalog.
-
-    :param name: raw identifier
-    :ptype name: str
-    :return: a safely double-quoted identifier
-    :rtype: str
-    """
-    return '"' + name.replace('"', '""') + '"'
-
-
 def _build_coverage_sql(schema: str, table: str, columns: list[str]) -> str:
     """build the single-scan coverage aggregate for ``columns`` in ``schema.table``.
 
@@ -214,9 +201,9 @@ def _build_coverage_sql(schema: str, table: str, columns: list[str]) -> str:
     :return: the coverage SELECT statement
     :rtype: str
     """
-    qualified = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+    qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
     selects = ["COUNT(*) AS total_rows"]
-    selects.extend(f"COUNT(NULLIF({_quote_ident(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
+    selects.extend(f"COUNT(NULLIF({quote_identifier(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
     return f"SELECT {', '.join(selects)} FROM {qualified}"
 
 
@@ -246,10 +233,10 @@ def _build_coverage_by_dimension_sql(
     :return: the grouped coverage SELECT statement
     :rtype: str
     """
-    qualified = f"{_quote_ident(schema)}.{_quote_ident(table)}"
-    dimension = _quote_ident(dimension_column)
+    qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
+    dimension = quote_identifier(dimension_column)
     selects = [f"{dimension} AS dim_value", "COUNT(*) AS total_rows"]
-    selects.extend(f"COUNT(NULLIF({_quote_ident(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
+    selects.extend(f"COUNT(NULLIF({quote_identifier(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
     return f"SELECT {', '.join(selects)} FROM {qualified} GROUP BY {dimension}"
 
 

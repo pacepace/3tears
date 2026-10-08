@@ -21,6 +21,63 @@ packages (bumped in lock-step).
 - **Wire:** additive. A manifest without `cache_max_age` reads it as `None`; a hub built before it
   ignores the field and serves the read origin-only.
 
+### NATS: a KV bucket whose stream is briefly offline is no longer blamed on a missing grant
+
+During a NATS restart a catalog write failed with `stream is offline`, and the error told the
+operator to grant the principal a KV bucket it already held. The write landed again thirty seconds
+later, unprompted.
+
+- **Fixed:** every KV failure that used to append the grant remedy now chooses it by whether a
+  missing grant can be the cause. A refused request is never answered, so only an unanswered failure
+  (a deadline) still names the grant. A stream the server says is temporarily unavailable
+  (err_code 10118 or 10194 "stream is offline", 10008 "JetStream system temporarily unavailable",
+  10009 "JetStream cluster can not handle request", or a codeless 503 from a JetStream API nothing
+  is serving yet) is reported as an outage that recovers on its own. Any other answered error is
+  reported as not a grant. The classification reads nats-py's exception types and the server's
+  error codes, never message text. No API change.
+
+### Geo: each tile's geometry is clipped to the tile and a buffer
+
+- **Changed, `threetears.geo.mvt.encode_tile`**: geometry is clipped to the tile plus a 64-unit
+  margin before it is encoded (**added `TILE_BUFFER` and `clip_to_tile(projected, buffer=)`**). A
+  shape far larger than its tile (Aleutians West at z3) reached 32,747 units on a 4,096 extent, past
+  the 16-bit range MapLibre reads ("Geometry exceeds allowed extent").
+- **Consequence for tiles already built:** a tile is cached as immutable per `(layer, version, z,
+  x, y)`, and the encoder is not part of that key. Tiles already in L1, L2, the L3 object store or a
+  CDN keep their unclipped bytes until the layer's version moves. A consumer (the hub, the
+  geography pod) that served a refused tile must bump or reload each affected layer to get clipped
+  tiles.
+
+### Enforcement: a test subclass may not reach its base's private state
+
+- **Added, underscore-access shape I (`shape_i_violations`, walker `"shape_i"`, in `"all"`):** a
+  class a `tests/` tree defines that reads or writes `self._x` / `cls._x` where `_x` is private
+  STATE of any production ancestor (assigned on `self` in its methods, or a class-body value;
+  followed through generic bases and test-defined classes in between) is reported. A base's private methods stay callable, as protected hooks. SLF001 exempts every
+  `self` access, so a test borrowing its base's lock passed every gate and would go on passing,
+  testing nothing, once the base kept that state another way. Two members here were fixed: an
+  epoch test that wrote its listener's last-seen map, and a fake NATS client that replaced its
+  base's subscriber map with a list of another shape.
+
+### Core: one home for SQL identifiers, and a typed L3 seam for the copies
+
+- **Added, `threetears.core.sql_fragments`:** `quote_identifier` (moved here; still importable from
+  `threetears.core.cache.base`), `equality_conditions(where, first=, quote=)` and `as_written`. The
+  L1 backends, the whole-table copies, scope epochs, the scoped snapshot and the datasources drivers
+  all spell identifiers and equality filters through it. The drivers' `build_equality_filter` keeps
+  its columns unquoted (`as_written`), as the rest of its statement is: no behaviour change.
+- **Added, `threetears.core.backends.L3Reader`:** the two reads (`fetch`, `fetchrow`) the copies
+  make. `l3_fingerprint`, `read_l3_rows`, `copy_table`, `ScopedSnapshot` and
+  `open_tool_pod_snapshot` take it where they took `Any`; every `L3Backend` is one.
+
+### Core: a DuckDB bulk write converts its rows once, through Arrow
+
+- **Changed, `DuckDBBackend` bulk writes (`upsert_many`, `replace_all`, `replace_partitions`,
+  `export_rows`)**: rows go through one Arrow table when pyarrow is installed. Binding Python lists
+  made DuckDB try to import pandas once per value, a search of the whole import path where pandas
+  is absent: seconds for a few thousand rows. A column Arrow cannot type as one, or no pyarrow,
+  falls back to binding the values, and says so in the log. Output is unchanged.
+
 ### Datasources: the catalog is what the datasource's own user can SELECT
 
 - **Changed, `AsyncpgDriver` and `RedshiftDriver`**: `list_tables`, `list_columns` and
@@ -144,6 +201,19 @@ so a starting replica loads them without reading L3, and a refresh moves only th
   again and retries); `open_tool_pod_snapshot(...)` builds and starts a `ScopedSnapshot` over them,
   refusing `store`/`pointers`/`ensure_buckets`/`retire` it wires itself. `ORPHAN_CHUNK_MIN_AGE` states
   the hub's orphan-chunk sweep bound, and is `purge_orphan_chunks`'s default.
+- **Added, reads that say what they are behind on, and the mixed-version rule:**
+  `ScopedSnapshot.read_with_behind()` is a read with the scopes its data is an epoch behind on (taken
+  before the read opens and cleared only after a scope's commit, so it may over-report, never
+  under-report); `applied_epoch(scope)` / `applied_epochs()` are the epochs the L1 holds, each listed
+  only once committed. During a rolling deploy a replica never loads chunks of other columns: a later
+  epoch under other columns marks the scope behind and rebuilds it from L3, and a same-epoch pointer
+  of other columns stays until `stray_age` while the replica serves that scope from L3.
+- **Changed, after review, the snapshot's threads:** the state a reader on any thread takes (the
+  applied pointers, the behind set, the row counts, the status) is changed only on the event loop, by
+  rebinding a new read-only value, never in place, so `status()`, `read_with_behind()` and
+  `applied_epoch(s)` are safe from a worker thread; only the backend runs off the loop. A read never
+  waits on a write: `DuckDBBackend.read_snapshot()` opens its cursor from a connection no write
+  locks, so a request on the event loop is not frozen behind a long replacement.
 - **Added, `OperationStatusTool(progress=)`** (the ENR pod's `enr.load_status`): what the operation
   is doing now, answered with its status; a progress that raises is reported as unavailable, never
   taking the last run's error with it.
@@ -171,7 +241,7 @@ copies swapped in whole.
   tables kept apart from the collections' own L1. `build()` copies every table into a fresh backend
   beside the live set, proves each, and swaps the new set in with one assignment only when every
   table is proven and the writer's record (`settled`: a stamp naming the last committed write, or
-  None while one is in progress) was the same before the first table and after the last; otherwise
+  `Unsettled(reason)` while one is in progress; `None` is a stamp like any other) was the same before the first table and after the last; otherwise
   it raises `IncompleteCopyError`, closes the half-filled backend and the live set stays. `require()`
   answers the live `CopyGeneration` (`backend`, `proofs`, `stamp`, `built_at`), which a reader holds
   for its whole read: a swap never changes a generation a reader holds. `build_if_behind()` builds
