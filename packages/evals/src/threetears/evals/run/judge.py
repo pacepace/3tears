@@ -53,8 +53,9 @@ log = get_logger(__name__)
 #: see :func:`run_judge_llm`.
 _JUDGE_PARSE_RETRIES = 1
 
-#: Calls one judge dimension can make: the first, plus its parse retries. What a caller sizing a
-#: judge phase's wall clock multiplies by (:func:`threetears.evals.analysis.reporter_kind.reporter_cell_timeout_s`).
+#: Calls one judge dimension can make: the first, plus its parse retries. Each is one request on the
+#: host's client, so a caller sizing a judge phase's wall clock multiplies the host's own request ceiling
+#: by this (:func:`threetears.evals.analysis.reporter_kind.judge_phase_ceiling_s`).
 JUDGE_CALL_ATTEMPTS = _JUDGE_PARSE_RETRIES + 1
 
 #: How many tokens the eval judge may spend on private reasoning before it answers.

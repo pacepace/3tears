@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, Self
 
@@ -38,11 +39,17 @@ log = get_logger(__name__)
 #: array rather than passing this and hoping.
 JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 
-#: Full provider calls one completed request can cost: the host's client re-sends a request whose
-#: response body fails to parse, once, because a severed body is a completion already billed. A
-#: caller bounding a request's wall clock multiplies by this. Duplicated from the host client's own
-#: ``BODY_PARSE_ATTEMPTS`` for the same reason as the literal above; a test pins the two equal.
-PROVIDER_REQUEST_ATTEMPTS = 2
+#: The longest one request capped at ``max_tokens`` output tokens can take on the host's client, in
+#: seconds: every provider call the client makes for that one request and every wait between them
+#: (re-sends of a severed body, SDK retries, their back-off sleeps). The host answers it, because only
+#: the host knows its client: how many calls one request can become, how long it sleeps between them,
+#: and how slowly a finishing call may write. Every wall-clock ceiling the engine derives over a
+#: request (:func:`~threetears.evals.analysis.generation_ceiling_s`,
+#: :func:`~threetears.evals.analysis.judge_phase_ceiling_s`,
+#: :func:`~threetears.evals.analysis.reporter_cell_timeout_s`) is a count of requests times this, so
+#: an answer below the client's real worst case cancels requests that were still going to finish,
+#: after they were billed.
+RequestCeiling = Callable[[int], float]
 
 
 #: Why a completion stopped, in the engine's words. A host maps its provider's own finish reason
@@ -780,6 +787,7 @@ __all__ = [
     "PricedCompletion",
     "ProviderFailure",
     "ProviderFailureDescriber",
+    "RequestCeiling",
     "SimulatorLLM",
     "StopReason",
     "VariationLLM",

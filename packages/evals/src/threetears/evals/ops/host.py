@@ -28,8 +28,9 @@ class AnalysisGeneration:
         max_output_tokens: The output cap the host's generator clients are built with, for the
             pre-spend disclosure.
         budget_s: The job's wall-clock ceiling. Derive it ABOVE the generation's own ceiling
-            (:func:`~threetears.evals.analysis.generation_ceiling_s`): a budget below it cancels a
-            repair round-trip still writing inside its cap, after both calls were billed.
+            (:func:`~threetears.evals.analysis.generation_ceiling_s`, over the host's own ceiling for one
+            request on its client): a budget below it cancels a repair round-trip still writing inside
+            its cap, after both calls were billed.
     """
 
     prompt_id: str
