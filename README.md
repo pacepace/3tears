@@ -176,6 +176,14 @@ Getting content in from the open web, and describing it once it is here.
 | [`3tears-scrape`](packages/scrape/) | `threetears.scrape` | AI-driven, self-healing web scraping. Pluggable render backends plus LLM-proposed extraction candidates, each structurally validated and judged against real page content, then persisted as a reusable recipe rather than a hand-written per-site parser |
 | [`3tears-media-contracts`](packages/media-contracts/) | `threetears.media.contracts` | Dependency-free media capability contracts shared by providers and tools |
 
+### Evaluation
+
+Finding out whether a change to an LLM-backed feature made it better.
+
+| Package | Import | Description |
+|---|---|---|
+| [`3tears-evals`](packages/evals/) | `threetears.evals` | Experiment-style evals for LLM-backed products. Variants run over a corpus of cases, graded by code checks and model judges, with cost caps and analysis reports that say which variant is better, by how much, and when the evidence cannot tell. `run_eval` grades a function in one call |
+
 ### Development
 
 | Package | Import | Description |
