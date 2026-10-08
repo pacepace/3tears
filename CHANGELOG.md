@@ -149,6 +149,12 @@ so a starting replica loads them without reading L3, and a refresh moves only th
   again and retries); `open_tool_pod_snapshot(...)` builds and starts a `ScopedSnapshot` over them,
   refusing `store`/`pointers`/`ensure_buckets`/`retire` it wires itself. `ORPHAN_CHUNK_MIN_AGE` states
   the hub's orphan-chunk sweep bound, and is `purge_orphan_chunks`'s default.
+- **Changed, after review, the snapshot's threads:** the state a reader on any thread takes (the
+  applied pointers, the behind set, the row counts, the status) is changed only on the event loop, by
+  rebinding a new read-only value, never in place, so `status()`, `read_with_behind()` and
+  `applied_epoch(s)` are safe from a worker thread; only the backend runs off the loop. A read never
+  waits on a write: `DuckDBBackend.read_snapshot()` opens its cursor from a connection no write
+  locks, so a request on the event loop is not frozen behind a long replacement.
 - **Added, `OperationStatusTool(progress=)`** (the ENR pod's `enr.load_status`): what the operation
   is doing now, answered with its status; a progress that raises is reported as unavailable, never
   taking the last run's error with it.

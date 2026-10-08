@@ -63,14 +63,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager, nullcontext, suppress
-from dataclasses import dataclass, field
+from contextlib import aclosing, asynccontextmanager, contextmanager, nullcontext, suppress
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS
@@ -362,17 +362,33 @@ class _Lost(Exception):
     """the snapshot in L2 is incomplete or unreadable; L3 must rebuild it."""
 
 
-@dataclass
+def _updated[K, V](mapping: Mapping[K, V], put: Mapping[K, V] | None = None, drop: Iterable[K] = ()) -> Mapping[K, V]:
+    """a new read-only mapping: ``mapping`` with ``put`` set and ``drop`` removed; ``mapping`` is untouched.
+
+    The one way the snapshot changes a mapping a reader on another thread may hold (see
+    :class:`ScopedSnapshot`): it builds the next value and rebinds the attribute, so a reader
+    iterating the value it took never sees it change.
+
+    :return: the new mapping
+    :rtype: Mapping[K, V]
+    """
+    dropped = set(drop)
+    merged = {key: value for key, value in mapping.items() if key not in dropped}
+    merged.update(put or {})
+    return MappingProxyType(merged)
+
+
+@dataclass(frozen=True)
 class _Progress:
-    """the mutable half of the status."""
+    """the derived half of the status, one immutable value rebound on the event loop at each change."""
 
     phase: SnapshotPhase = SnapshotPhase.STARTING
     source: SnapshotSource | None = None
     detail: str = "watching the pointers"
     scopes_total: int = 0
     scopes_done: int = 0
-    timings: dict[str, float] = field(default_factory=dict)
-    history: list[SnapshotPhase] = field(default_factory=lambda: [SnapshotPhase.STARTING])
+    timings: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
+    history: tuple[SnapshotPhase, ...] = (SnapshotPhase.STARTING,)
     last_change: ScopeChange | None = None
     ready_at: datetime | None = None
 
@@ -549,11 +565,13 @@ class ScopedSnapshot:
         self._caught_up = False
         self._ever_indexed = False
         self._watch_ended: str | None = None
-        # what the L1 holds
-        self._applied: dict[str, _Pointer] = {}
+        # What the L1 holds. This, `_behind`, `_rows` and `_progress` are the state a reader on any
+        # thread may take (status, read_with_behind, applied_epoch(s)). The event loop is their one
+        # writer, and it never changes a value in place: it builds the next one (_updated, replace)
+        # and rebinds the attribute, so whatever a reader took stays as it was while it iterates.
+        # Code run on a worker thread touches the backend and nothing else here.
+        self._applied: Mapping[str, _Pointer] = _updated({})
         self._local = asyncio.Lock()
-        # a replacement's commit and its scopes leaving `behind` are one step to a read that takes both
-        self._view = threading.Lock()
         self._changed = asyncio.Event()
         self._ready = asyncio.Event()
         self._progress = _Progress()
@@ -564,10 +582,10 @@ class ScopedSnapshot:
         self._waited: dict[str, bool] = {}
         self._failure: str | None = None
         # scope -> (how many passes in a row its current chunks could not be applied, why the last failed)
-        self._behind: dict[str, tuple[int, str]] = {}
+        self._behind: Mapping[str, tuple[int, str]] = _updated({})
         # table -> scope -> rows the L1 holds, kept as each replacement commits, so the status never
         # queries DuckDB (a query would wait on the lock a load or a swap holds, on the event loop)
-        self._rows: dict[str, dict[str, int]] = {t.name: {} for t in self._tables}
+        self._rows: Mapping[str, Mapping[str, int]] = _updated({t.name: _updated({}) for t in self._tables})
         self._tasks: list[asyncio.Task[None]] = []
         self._listeners: list[Callable[[], None]] = []
 
@@ -644,11 +662,8 @@ class ScopedSnapshot:
         progress = self._progress
         if progress.phase is not phase or progress.detail != detail:
             log.info("scoped snapshot %s: %s", self._name, detail, extra={"extra_data": {"phase": phase.value}})
-        progress.phase = phase
-        progress.detail = detail
-        if progress.history[-1] is not phase:
-            progress.history.append(phase)
-            del progress.history[:-_HISTORY]
+        history = progress.history if progress.history[-1] is phase else (*progress.history, phase)[-_HISTORY:]
+        self._progress = replace(progress, phase=phase, detail=detail, history=history)
 
     @contextmanager
     def _doing(self, phase: SnapshotPhase, detail: str, *, total: int) -> Iterator[None]:
@@ -658,8 +673,7 @@ class ScopedSnapshot:
         :rtype: Iterator[None]
         """
         self._activity = (phase, detail)
-        self._progress.scopes_total = total
-        self._progress.scopes_done = 0
+        self._progress = replace(self._progress, scopes_total=total, scopes_done=0)
         self._settle()
         try:
             yield
@@ -705,9 +719,11 @@ class ScopedSnapshot:
         :return: nothing
         :rtype: None
         """
+        rows = dict(self._rows)
         for r in replacements:
             held = r.arrow.num_rows if r.arrow is not None else len(r.rows or ())
-            self._rows[r.table][str(r.value)] = held
+            rows[r.table] = _updated(rows[r.table], {str(r.value): held})
+        self._rows = _updated(rows)
 
     def status(self) -> SnapshotStatus:
         """what the snapshot is doing and has done.
@@ -715,19 +731,20 @@ class ScopedSnapshot:
         :return: the status
         :rtype: SnapshotStatus
         """
-        progress = self._progress
+        # each taken once: the loop rebinds them, never changes them, so this is one state of each
+        progress, rows, behind = self._progress, self._rows, self._behind
         return SnapshotStatus(
             phase=progress.phase,
             source=progress.source,
             detail=progress.detail,
             scopes_total=progress.scopes_total,
             scopes_done=progress.scopes_done,
-            rows={table: sum(scopes.values()) for table, scopes in self._rows.items()},
+            rows={table: sum(scopes.values()) for table, scopes in rows.items()},
             timings=dict(progress.timings),
             history=tuple(progress.history),
             last_change=progress.last_change,
             ready_at=progress.ready_at,
-            behind={scope: why for scope, (_, why) in sorted(self._behind.items())},
+            behind={scope: why for scope, (_, why) in sorted(behind.items())},
         )
 
     @property
@@ -748,38 +765,42 @@ class ScopedSnapshot:
         """
         return self._ready.is_set()
 
-    def _replace_current(self, replacements: Sequence[PartitionReplacement], scopes: Sequence[str]) -> None:
-        """commit replacements that bring ``scopes`` current, and take them off ``behind``, as one step a
-        read sees whole (:meth:`read_with_behind`); on a worker thread.
+    async def _commit(self, replacements: Sequence[PartitionReplacement], current: Sequence[str]) -> None:
+        """commit replacements in this L1 on a worker thread, then, back on the event loop, take the
+        scopes they bring current off ``behind`` and count what each scope holds.
+
+        Only the backend is touched off the loop. ``behind`` changes after the commit, never before,
+        so a reader that takes ``behind`` before it opens its read (:meth:`read_with_behind`) is
+        never told a scope is current when its read holds the older rows.
 
         :param replacements: the scopes' new contents
         :ptype replacements: Sequence[PartitionReplacement]
-        :param scopes: the scopes they bring current
-        :ptype scopes: Sequence[str]
+        :param current: the scopes they bring current
+        :ptype current: Sequence[str]
         :return: nothing
         :rtype: None
         """
-        with self._view:
-            self._backend.replace_partitions(replacements)
-            for scope in scopes:
-                self._behind.pop(scope, None)
+        await asyncio.to_thread(self._backend.replace_partitions, replacements)
+        self._behind = _updated(self._behind, drop=current)
+        self._count(replacements)
 
     @contextmanager
     def read_with_behind(self) -> Iterator[tuple[Any, Mapping[str, str]]]:
         """a read of one state of every table, and the scopes that state is behind on, taken together.
 
-        A scope brought current is committed and taken off ``behind`` in one step, so the behind set
-        here is exactly the one for the data this cursor reads: an answer computed over it can say
-        which scopes it is an epoch behind on without a later look that might disagree.
+        The behind set is taken before the read opens, and a scope leaves it only once its new rows
+        have committed, so it names every scope the cursor's data is behind on; it may also name one
+        brought current just as the read opened (over-reporting is the safe side). Safe on any
+        thread, and it never waits on a write in progress.
 
         :return: the cursor, and scope -> why it is behind
         :rtype: Iterator[tuple[duckdb.DuckDBPyConnection, Mapping[str, str]]]
         """
-        with ExitStack() as stack:
-            with self._view:
-                cursor = stack.enter_context(self._backend.read_snapshot())
-                behind = {scope: why for scope, (_, why) in self._behind.items()}
-            yield cursor, behind
+        # taken before the read opens, and a scope leaves it only after its commit: so it names every
+        # scope the read is behind on, and may still name one brought current in between
+        behind = self._behind
+        with self._backend.read_snapshot() as cursor:
+            yield cursor, MappingProxyType({scope: why for scope, (_, why) in behind.items()})
 
     def applied_epoch(self, scope: str) -> int | None:
         """the epoch of ``scope`` this replica's L1 holds; None when it holds none.
@@ -789,8 +810,8 @@ class ScopedSnapshot:
         :return: the epoch
         :rtype: int | None
         """
-        applied = self._applied.get(scope)
-        return None if applied is None else applied.epoch
+        held = self._applied.get(scope)
+        return None if held is None else held.epoch
 
     def applied_epochs(self) -> dict[str, int]:
         """every scope this replica's L1 holds, and its epoch. A scope is listed only once its
@@ -799,7 +820,8 @@ class ScopedSnapshot:
         :return: scope -> epoch
         :rtype: dict[str, int]
         """
-        return {scope: pointer.epoch for scope, pointer in self._applied.items()}
+        applied = self._applied  # taken once: the loop rebinds it, never changes it
+        return {scope: pointer.epoch for scope, pointer in applied.items()}
 
     @contextmanager
     def read(self) -> Iterator[Any]:
@@ -827,7 +849,8 @@ class ScopedSnapshot:
 
         A load from L2, a scope applied or dropped, a publish made here: each calls every listener
         once its DuckDB transaction has committed, so a reader opened from the listener sees the
-        change. Called on the event loop; a listener that raises is logged, never propagated.
+        change. Called on the event loop; a listener that raises is logged, never propagated. Call
+        this on the event loop too: the listeners are the loop's.
 
         :param listener: called with no arguments
         :ptype listener: Callable[[], None]
@@ -1095,7 +1118,9 @@ class ScopedSnapshot:
         :return: nothing
         :rtype: None
         """
-        self._behind[scope] = (_BEHIND_REBUILD_AFTER, "its pointer carries other columns; rebuilt from L3")
+        self._behind = _updated(
+            self._behind, {scope: (_BEHIND_REBUILD_AFTER, "its pointer carries other columns; rebuilt from L3")}
+        )
 
     async def _fetch(self, pointer: _Pointer) -> list[PartitionReplacement]:
         """every table's chunk of one scope, decoded and checked.
@@ -1183,7 +1208,7 @@ class ScopedSnapshot:
             async with semaphore:
                 fetched.append(await self._fetch_current(scope, pointer))
             if cold:
-                self._progress.scopes_done += 1
+                self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
 
         try:
             async with asyncio.TaskGroup() as group:
@@ -1199,21 +1224,21 @@ class ScopedSnapshot:
         replacements = [replacement for _, scope_replacements in fetched for replacement in scope_replacements]
         async with self._local:
             fresh = [(p, r) for p, r in fetched if p.supersedes(self._applied.get(p.scope))]
-            await asyncio.to_thread(
-                self._replace_current, [x for _, rs in fresh for x in rs], [p.scope for p, _ in fresh]
-            )
-            for pointer, _ in fresh:
-                self._applied[pointer.scope] = pointer
-            self._count(x for _, rs in fresh for x in rs)
+            await self._commit([x for _, rs in fresh for x in rs], [p.scope for p, _ in fresh])
+            self._applied = _updated(self._applied, {pointer.scope: pointer for pointer, _ in fresh})
         self._notify()
         done = time.perf_counter()
         if cold:
-            self._progress.timings.update(
-                {
-                    "fetch": round(fetched_at - started, 3),
-                    "load": round(done - fetched_at, 3),
-                    "total": round(done - started, 3),
-                }
+            self._progress = replace(
+                self._progress,
+                timings=_updated(
+                    self._progress.timings,
+                    {
+                        "fetch": round(fetched_at - started, 3),
+                        "load": round(done - fetched_at, 3),
+                        "total": round(done - started, 3),
+                    },
+                ),
             )
             self._become_ready(SnapshotSource.L2)
         log.info(
@@ -1237,9 +1262,7 @@ class ScopedSnapshot:
         :return: nothing
         :rtype: None
         """
-        self._progress.source = source
-        if self._progress.ready_at is None:
-            self._progress.ready_at = datetime.now(UTC)
+        self._progress = replace(self._progress, source=source, ready_at=self._progress.ready_at or datetime.now(UTC))
         self._ready.set()
         self._settle()
 
@@ -1267,10 +1290,11 @@ class ScopedSnapshot:
                 self._mark_foreign(scope)
         failed = await self._apply_pointers(moved)
         # a scope removed before it was ever applied leaves no `behind` entry to report, or to rebuild
-        for scope in [scope for scope in self._behind if scope not in index and scope not in self._seen]:
-            del self._behind[scope]
-        for scope, why in failed.items():
-            self._behind[scope] = (self._behind.get(scope, (0, ""))[0] + 1, why)
+        self._behind = _updated(
+            self._behind,
+            {scope: (self._behind.get(scope, (0, ""))[0] + 1, why) for scope, why in failed.items()},
+            drop=[scope for scope in self._behind if scope not in index and scope not in self._seen],
+        )
         # a scope that failed is tried again at the next recheck, not at once; one that keeps failing
         # is rebuilt from L3, which writes its chunks again
         stuck = {scope for scope, (failures, _) in self._behind.items() if failures >= _BEHIND_REBUILD_AFTER}
@@ -1301,8 +1325,7 @@ class ScopedSnapshot:
             await claim.release()
         # a rebuild that returns has applied every scope the index names at its pointer (or it raises,
         # leaving them behind), and each scope applied left `behind` as it was applied
-        for scope in rebuilt or ():
-            self._behind.pop(scope, None)
+        self._behind = _updated(self._behind, drop=rebuilt or ())
 
     async def _apply_pointers(self, pointers: Mapping[str, _Pointer]) -> dict[str, str]:
         """fetch each scope's chunks and replace it in this L1, unless the L1 already holds as new.
@@ -1324,9 +1347,8 @@ class ScopedSnapshot:
             async with self._local:
                 if not current.supersedes(self._applied.get(scope)):
                     continue
-                await asyncio.to_thread(self._replace_current, replacements, [scope])
-                self._applied[scope] = current
-                self._count(replacements)
+                await self._commit(replacements, [scope])
+                self._applied = _updated(self._applied, {scope: current})
             self._notify()
             self._record_change(scope, current, replacements, started)
         return failed
@@ -1340,8 +1362,7 @@ class ScopedSnapshot:
         :rtype: None
         """
         async with self._local:
-            await asyncio.to_thread(
-                self._replace_current,
+            await self._commit(
                 [
                     PartitionReplacement(table=t.name, column=t.scope_column, value=scope, rows=[])
                     for scope in scopes
@@ -1349,10 +1370,8 @@ class ScopedSnapshot:
                 ],
                 list(scopes),
             )
-            for scope in scopes:
-                self._applied.pop(scope, None)
-                for table in self._rows.values():
-                    table.pop(scope, None)
+            self._applied = _updated(self._applied, drop=scopes)
+            self._rows = _updated({table: _updated(held, drop=scopes) for table, held in self._rows.items()})
         self._notify()
         log.info("scoped snapshot %s: scopes dropped", self._name, extra={"extra_data": {"scopes": list(scopes)}})
 
@@ -1372,7 +1391,7 @@ class ScopedSnapshot:
             seconds=round(time.perf_counter() - started, 3),
             applied_at=datetime.now(UTC),
         )
-        self._progress.last_change = change
+        self._progress = replace(self._progress, last_change=change)
         log.info(
             "scoped snapshot %s: scope applied",
             self._name,
@@ -1450,8 +1469,7 @@ class ScopedSnapshot:
                 )
                 for t in self._tables
             ]
-            await asyncio.to_thread(self._replace_current, local, [scope])
-            self._count(local)
+            await self._commit(local, [scope])
             self._notify()
             objects: dict[str, str] = {}
             counts: dict[str, int] = {}
@@ -1462,7 +1480,7 @@ class ScopedSnapshot:
                 objects[table.name] = await self._put_chunk(scope, epoch, table, arrow)
                 counts[table.name] = arrow.num_rows
             pointer = _Pointer(scope=scope, epoch=epoch, objects=objects, rows=counts, schema=self._schema)
-            self._applied[scope] = pointer
+            self._applied = _updated(self._applied, {scope: pointer})
             result = await self._move_pointer(pointer)
         return result
 
@@ -2051,7 +2069,7 @@ class ScopedSnapshot:
         async def one(scope: str) -> None:
             async with semaphore:
                 read[scope] = await self._read_scope(scope)
-            self._progress.scopes_done += 1
+            self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
 
         # a TaskGroup: one failed read cancels the rest rather than leave them reading for nothing
         async with asyncio.TaskGroup() as group:
@@ -2072,12 +2090,16 @@ class ScopedSnapshot:
                 await self._remove_scopes(gone)
             await self._apply_published()
             done = time.perf_counter()
-            self._progress.timings.update(
-                {
-                    "read_l3": round(read_at - started, 3),
-                    "publish": round(done - read_at, 3),
-                    "total": round(done - started, 3),
-                }
+            self._progress = replace(
+                self._progress,
+                timings=_updated(
+                    self._progress.timings,
+                    {
+                        "read_l3": round(read_at - started, 3),
+                        "publish": round(done - read_at, 3),
+                        "total": round(done - started, 3),
+                    },
+                ),
             )
             # only a rebuild of every scope makes a copy ready; a rebuild of some scopes repairs them
             if only is None:

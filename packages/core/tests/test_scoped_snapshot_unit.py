@@ -8,10 +8,16 @@ shown, retried at the recheck and not in a spin.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
+import linecache
 import logging
-from collections.abc import AsyncIterator
+import sys
+import threading
+import time
+from types import FrameType
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -24,10 +30,12 @@ from sqlalchemy import MetaData  # noqa: E402
 from threetears.core.cache.duckdb import DuckDBBackend  # noqa: E402
 from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
+from threetears.core.collections import scoped_snapshot as scoped_snapshot_module  # noqa: E402
 from threetears.core.collections.scoped_snapshot import (  # noqa: E402
     ScopedSnapshot,
     SnapshotPhase,
     SnapshotTable,
+    encode_chunk,
     open_tool_pod_snapshot,
 )
 from threetears.nats import ObjectNotFoundError, Subject, set_default_namespace  # noqa: E402
@@ -219,11 +227,11 @@ async def test_the_status_counts_rows_from_memory_and_never_queries_duckdb() -> 
     await snapshot.stop()
 
 
-def _point_at_a_missing_chunk(pointers: _Pointers) -> None:
-    """move TX's pointer to epoch 2, naming a chunk that is not in the store."""
-    held = json.loads(pointers.entries["enr.s.TX"][0])
-    held["epoch"], held["tables"]["results"]["object"] = 2, "enr/TX/2/results.gone"
-    pointers.put_now("enr.s.TX", json.dumps(held).encode())
+def _point_at_a_missing_chunk(pointers: _Pointers, scope: str = "TX") -> None:
+    """move a scope's pointer to epoch 2, naming a chunk that is not in the store."""
+    held = json.loads(pointers.entries[f"enr.s.{scope}"][0])
+    held["epoch"], held["tables"]["results"]["object"] = 2, f"enr/{scope}/2/results.gone"
+    pointers.put_now(f"enr.s.{scope}", json.dumps(held).encode())
 
 
 async def _reads_in(store: _Store, seconds: float) -> int:
@@ -516,8 +524,6 @@ async def test_a_read_carries_the_behind_set_of_the_data_it_reads() -> None:
     epoch's; a read opened after sees it current and the new data."""
     import pyarrow as pa  # noqa: PLC0415
 
-    from threetears.core.collections.scoped_snapshot import encode_chunk  # noqa: PLC0415
-
     snapshot, pointers, store, _ = _snapshot()
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
@@ -538,3 +544,306 @@ async def test_a_read_carries_the_behind_set_of_the_data_it_reads() -> None:
         assert "TX" not in behind
         assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(5,)]
     await snapshot.stop()
+
+
+# ----------------------------------------------------------------------
+# readers on other threads: the loop is the one writer of what they read
+# ----------------------------------------------------------------------
+
+
+def _tx_chunk(votes: int) -> bytes:
+    import pyarrow as pa  # noqa: PLC0415
+
+    return encode_chunk(pa.table({"county": ["c1"], "state": ["TX"], "votes": pa.array([votes], pa.int64())}))
+
+
+async def _ready_with_tx_and_de_behind() -> tuple[ScopedSnapshot, _Pointers, _Store]:
+    """a ready copy holding TX and DE at epoch 1, both behind on an epoch 2 whose chunks are not in the
+    store, and no rebuild here (another replica holds the claim): only a chunk arriving moves them."""
+    snapshot, pointers, store, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    pointers.put_now("enr.rebuild", b"another replica")
+    _point_at_a_missing_chunk(pointers, "TX")
+    _point_at_a_missing_chunk(pointers, "DE")
+    await _until(lambda: set(snapshot.status().behind) == {"TX", "DE"}, what="TX and DE behind")
+    return snapshot, pointers, store
+
+
+class _PauseAtFirstLoopStep:
+    """pause a worker thread inside the snapshot's own code mid-iteration, deterministically.
+
+    A line event that repeats the line before it, on a line with a ``for``, is a loop going round
+    again: in a comprehension it comes after the first item and before the next, so the thread is
+    paused while it iterates. Code with no loop runs through unpaused.
+    """
+
+    def __init__(self) -> None:
+        self.paused = threading.Event()
+        self.resume = threading.Event()
+        self._fired = False
+
+    def _local(self) -> Callable[[FrameType, str, Any], Any]:
+        last: list[int | None] = [None]
+
+        def trace(frame: FrameType, event: str, arg: Any) -> Any:
+            if event == "line" and not self._fired:
+                looping = " for " in linecache.getline(frame.f_code.co_filename, frame.f_lineno)
+                if frame.f_lineno == last[0] and looping:
+                    self._fired = True
+                    self.paused.set()
+                    self.resume.wait(10)
+                last[0] = frame.f_lineno
+            return trace
+
+        return trace
+
+    def _call(self, frame: FrameType, event: str, arg: Any) -> Any:
+        mine = event == "call" and frame.f_code.co_filename == scoped_snapshot_module.__file__
+        return self._local() if mine and not self._fired else None
+
+    def run[T](self, read: Callable[[], T]) -> T:
+        sys.settrace(self._call)
+        try:
+            return read()
+        finally:
+            sys.settrace(None)
+
+
+def _rows_and_behind(status: Any) -> tuple[dict[str, int], set[str]]:
+    return dict(status.rows), set(status.behind)
+
+
+def _read_behind(snapshot: ScopedSnapshot) -> set[str]:
+    with snapshot.read_with_behind() as (_, behind):
+        return set(behind)
+
+
+_READERS: dict[str, Callable[[ScopedSnapshot], Any]] = {
+    "applied_epochs": lambda snapshot: snapshot.applied_epochs(),
+    "status": lambda snapshot: _rows_and_behind(snapshot.status()),
+    "read_with_behind": _read_behind,
+}
+_BEFORE: dict[str, Any] = {
+    "applied_epochs": {"TX": 1, "DE": 1},
+    "status": ({"results": 2}, {"TX", "DE"}),
+    "read_with_behind": {"TX", "DE"},
+}
+
+
+@pytest.mark.parametrize("reader", sorted(_READERS))
+async def test_a_reader_on_a_worker_thread_paused_mid_iteration_is_untouched_by_the_loop_s_changes(
+    reader: str,
+) -> None:
+    """a worker thread is paused inside an accessor while the loop adds a scope (NV, published here)
+    and brings TX current (its chunk arrives): what the reader took is the state from before, and it
+    finishes without 'dictionary changed size during iteration'."""
+    snapshot, _, store = await _ready_with_tx_and_de_behind()
+    pause = _PauseAtFirstLoopStep()
+    read = asyncio.create_task(asyncio.to_thread(pause.run, lambda: _READERS[reader](snapshot)))
+    await _until(lambda: pause.paused.is_set() or read.done(), what="the reader paused or done")
+
+    async def change() -> None:
+        await snapshot.publish("NV", 1, {"results": [{"county": "c9", "state": "NV", "votes": 9}]})
+        store.objects["enr/TX/2/results.gone"] = _tx_chunk(5)
+        await _until(lambda: snapshot.applied_epoch("TX") == 2, what="TX applied at epoch 2")
+
+    try:
+        # bounded: a change that waited for the paused reader would otherwise wait out its pause
+        await asyncio.wait_for(change(), 3)
+    finally:
+        pause.resume.set()
+    assert snapshot.applied_epochs() == {"TX": 2, "DE": 1, "NV": 1}
+
+    assert await read == _BEFORE[reader]
+    assert pause.paused.is_set(), "the reader never iterated: nothing was interleaved"
+    await snapshot.stop()
+
+
+class _HeldWrites(DuckDBBackend):
+    """a DuckDB L1 whose next replacement is held on its worker thread until released: a long write."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hold_next = False
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def replace_partitions(self, replacements: Any) -> int:
+        if self.hold_next:
+            self.hold_next = False
+            with self._db_lock:  # as the real write holds it across its transaction
+                self.entered.set()
+                self.release.wait(10)
+        written: int = super().replace_partitions(replacements)
+        return written
+
+
+async def test_a_read_during_a_long_write_neither_waits_for_it_nor_is_told_its_scope_is_current() -> None:
+    """while a replacement bringing TX current is held mid-write on its worker thread, a read opened
+    on the event loop opens at once (the loop is not frozen behind the write), reads TX's old rows and
+    is told TX is behind; once the write commits, a new read has the new rows and TX current."""
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    backend = _HeldWrites()
+    backend.initialize(metadata)
+    snapshot, pointers, store, _ = _snapshot(backend=backend)
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    pointers.put_now("enr.rebuild", b"another replica")
+    _point_at_a_missing_chunk(pointers)
+    await _until(lambda: "TX" in snapshot.status().behind, what="TX behind")
+    backend.hold_next = True
+    store.objects["enr/TX/2/results.gone"] = _tx_chunk(5)
+    await _until(backend.entered.is_set, what="the write bringing TX current to start")
+    # if the read waited for the write, this lets it go after 3 s so the test fails rather than hangs
+    threading.Timer(3.0, backend.release.set).start()
+
+    started = time.perf_counter()
+    with snapshot.read_with_behind() as (cursor, behind):
+        opened = time.perf_counter() - started
+        assert "TX" in behind
+        assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(1,)]
+    assert opened < 0.5, f"the read waited {opened:.1f} s on the event loop for a write in progress"
+    assert "TX" in snapshot.status().behind
+
+    backend.release.set()
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="TX applied at epoch 2")
+    with snapshot.read_with_behind() as (cursor, behind):
+        assert "TX" not in behind
+        assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(5,)]
+    await snapshot.stop()
+
+
+# the state readers on any thread take, which the event loop alone writes, by rebinding
+_SHARED = frozenset({"_applied", "_behind", "_rows", "_progress"})
+# set once at construction, and safe to use from any thread
+_SET_AT_START = frozenset({"_backend", "_ready", "_name", "_tables", "_schema"})
+# public, synchronous, and called on the event loop only, said so in its docstring
+_LOOP_ONLY = {"on_change": "registers a listener; the listener list is the loop's, read by _notify there"}
+_IN_PLACE = frozenset(
+    {"append", "extend", "insert", "pop", "popitem", "remove", "clear", "update", "setdefault", "add", "discard"}
+)
+_REBINDERS = frozenset({"_updated", "replace", "_Progress"})
+
+
+def _module_tree() -> ast.Module:
+    with open(scoped_snapshot_module.__file__, encoding="utf-8") as source:
+        return ast.parse(source.read())
+
+
+def _class_def(name: str) -> ast.ClassDef:
+    found = [n for n in _module_tree().body if isinstance(n, ast.ClassDef) and n.name == name]
+    assert found, f"{name} is not in the module"
+    return found[0]
+
+
+def _self_attr(node: ast.AST) -> str | None:
+    """``X`` when ``node`` is ``self.X``."""
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
+        return node.attr
+    return None
+
+
+def _shared_root(node: ast.AST) -> str | None:
+    """the shared attribute ``node`` reaches into (``self.X[k]``, ``self.X.y``), not ``self.X`` itself."""
+    inner = node.value if isinstance(node, (ast.Attribute, ast.Subscript)) else None
+    while inner is not None:
+        attr = _self_attr(inner)
+        if attr is not None:
+            return attr if attr in _SHARED else None
+        inner = inner.value if isinstance(inner, (ast.Attribute, ast.Subscript)) else None
+    return None
+
+
+def test_the_state_other_threads_read_is_changed_only_by_rebinding_an_immutable_value() -> None:
+    """no code changes the shared state in place: every write builds a new read-only value and
+    rebinds the attribute, so a reader on another thread never sees a value it holds change."""
+    wrong: list[str] = []
+    for node in ast.walk(_class_def("ScopedSnapshot")):
+        targets: list[ast.AST] = []
+        if isinstance(node, (ast.Assign, ast.Delete)):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            targets = [node.target]
+        line = getattr(node, "lineno", 0)
+        for target in targets:
+            if _shared_root(target) is not None or (isinstance(node, ast.AugAssign) and _self_attr(target) in _SHARED):
+                wrong.append(f"line {line}: changes {ast.unparse(target)} in place")
+            elif _self_attr(target) in _SHARED and isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                built_by = value.func.id if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) else None
+                if built_by not in _REBINDERS:
+                    wrong.append(f"line {line}: binds {ast.unparse(target)} to a value not built read-only")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _IN_PLACE:
+            if _self_attr(node.func.value) in _SHARED or _shared_root(node.func.value) is not None:
+                wrong.append(f"line {node.lineno}: {ast.unparse(node.func)} changes shared state in place")
+    progress = _class_def("_Progress")
+    frozen = any(
+        isinstance(d, ast.Call) and any(k.arg == "frozen" and getattr(k.value, "value", False) for k in d.keywords)
+        for d in progress.decorator_list
+    )
+    if not frozen:
+        wrong.append("_Progress is not a frozen dataclass")
+    for item in progress.body:
+        if isinstance(item, ast.AnnAssign) and ast.unparse(item.annotation).split("[")[0] in {"dict", "list", "set"}:
+            wrong.append(f"_Progress.{ast.unparse(item.target)} is a mutable {ast.unparse(item.annotation)}")
+    assert not wrong, "\n".join(wrong)
+
+
+def test_what_any_thread_may_call_reads_only_the_shared_state_each_once_and_runs_nothing_of_the_snapshot_off_the_loop() -> (
+    None
+):
+    """every public synchronous method (callable from a worker thread) reads only the shared state
+    and what is set at construction, each shared attribute once, so it sees one state of each; and
+    nothing the snapshot hands to a worker thread is one of its own methods, which could reach state
+    the loop is changing."""
+    snapshot_class = _class_def("ScopedSnapshot")
+    methods = {n.name: n for n in snapshot_class.body if isinstance(n, ast.FunctionDef)}
+    wrong: list[str] = []
+    for name, method in methods.items():
+        if name.startswith("_") or name in _LOOP_ONLY:
+            continue
+        reads: dict[str, int] = {}
+        for node in ast.walk(method):
+            attr = _self_attr(node)
+            if attr is None:
+                continue
+            if attr in methods:
+                wrong.append(f"{name} calls self.{attr}: check what that reads, or inline it")
+            elif attr not in _SHARED | _SET_AT_START:
+                wrong.append(f"{name} reads self.{attr}, which the loop changes in place")
+            reads[attr] = reads.get(attr, 0) + 1
+        wrong.extend(
+            f"{name} reads self.{a} {n} times: it may see two states"
+            for a, n in reads.items()
+            if a in _SHARED and n > 1
+        )
+    for node in ast.walk(snapshot_class):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                if _self_attr(target) in _SET_AT_START:
+                    owner = next(m for m in methods.values() if any(n is node for n in ast.walk(m)))
+                    if owner.name != "__init__":
+                        wrong.append(
+                            f"{owner.name} rebinds self.{_self_attr(target)}, which is set once at construction"
+                        )
+    for node in ast.walk(_module_tree()):
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "asyncio.to_thread" and node.args:
+            work = node.args[0]
+            if isinstance(work, ast.Lambda) or (_self_attr(work) is not None):
+                wrong.append(
+                    f"line {node.lineno}: to_thread runs {ast.unparse(work)}, the snapshot's own code, off the loop"
+                )
+    assert not wrong, "\n".join(wrong)
+
+
+def test_the_loop_only_public_methods_say_so() -> None:
+    methods = {n.name: n for n in _class_def("ScopedSnapshot").body if isinstance(n, ast.FunctionDef)}
+    for name in _LOOP_ONLY:
+        assert "Call this on the event loop" in " ".join((ast.get_docstring(methods[name]) or "").split()), (
+            f"{name} does not say it is loop-only"
+        )
+
