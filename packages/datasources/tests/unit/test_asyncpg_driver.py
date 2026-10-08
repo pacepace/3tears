@@ -549,6 +549,18 @@ class TestIntrospectionCatalogsOnlySelectableTables:
         assert "table_hashes" in message
 
     @pytest.mark.asyncio
+    async def test_the_hash_probe_runs_the_formula_constant_verbatim(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """the privilege check wraps the formula's one owner; it never restates the formula."""
+        from threetears.datasources.drivers import asyncpg_driver
+
+        pool = _build_mock_pool(fetch_records=[])
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        await driver.table_hashes(["s1"])
+        assert vars(asyncpg_driver)["_POSTGRES_TABLE_HASHES_SQL"] in _single_catalog_query(pool, ["s1"])
+
+    @pytest.mark.asyncio
     async def test_nothing_left_out_logs_nothing(
         self,
         postgres_config: PostgresConnectionConfig,
