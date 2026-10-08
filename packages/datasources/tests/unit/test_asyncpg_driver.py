@@ -549,7 +549,7 @@ class TestIntrospectionCatalogsOnlySelectableTables:
         assert "table_hashes" in message
 
     @pytest.mark.asyncio
-    async def test_the_hash_probe_runs_the_formula_constant_verbatim(
+    async def test_the_hash_probe_hashes_once_over_selectable_tables_only(
         self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """the privilege check wraps the column-hash formula once; it adds no second hash.
