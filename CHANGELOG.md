@@ -35,7 +35,7 @@ packages (bumped in lock-step).
   `supersedes`, scoped to the caller — answering with the `FrozenReporterCase` receipt (the case id, its bundle
   fingerprint and the `limits` the freeze recorded); `reporter_cases_list` (read), the template's bank with each
   case's liveness, what superseded it, the cases this build cannot read (listed, not refused) and pairs holding two
-  live cases; and `reporter_case_archive` (write) over `set_reporter_case_archived`. Before, no operation or action
+  live cases; and `reporter_case_archive` (write) over `set_reporter_case_archived`, whose case parameter is `reporter_case_id` because a host's own actions may already declare `test_case_id` with another meaning on the same tool. Before, no operation or action
   froze a case, so a host mounting `evals` / `evals_admin` could not reach a reporter run without a script of its own.
 - **`freeze_reporter_case` refuses a template that is not of the `analysis_reporter` kind**, before anything is
   stored. It froze into any template, leaving a case no launch reads.

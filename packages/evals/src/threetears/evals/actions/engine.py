@@ -285,7 +285,7 @@ class ReporterCasesListParams(EvalBaseModel):
 class ReporterCaseArchiveParams(EvalBaseModel):
     """``reporter_case_archive``."""
 
-    test_case_id: ReporterCaseId
+    reporter_case_id: ReporterCaseId
     archived: Archived = True
     archive_reason: ArchiveReason = None
 
@@ -517,7 +517,7 @@ async def _reporter_case_archive(
         eval_host.blocking_executor,
         partial(reporter_case_archive, archived=params.archived, reason=params.archive_reason),
         eval_host,
-        params.test_case_id,
+        params.reporter_case_id,
         caller.scope_id,
     )
 
@@ -995,7 +995,7 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_reporter_case_archive,
             render=render.render_reporter_case,
             example={
-                "test_case_id": reporter_case_id,
+                "reporter_case_id": reporter_case_id,
                 "archived": True,
                 "archive_reason": "its bundle no longer re-assembles",
             },

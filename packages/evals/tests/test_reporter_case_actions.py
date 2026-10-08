@@ -334,7 +334,7 @@ async def test_an_agent_lists_retires_and_restores_through_the_actions() -> None
     assert f"- {case_id}: live — campaign {fixture.campaign.id}" in listed.text
 
     retired = await tools["evals"].call(
-        {"action": "reporter_case_archive", "test_case_id": case_id, "archive_reason": "orphaned"},
+        {"action": "reporter_case_archive", "reporter_case_id": case_id, "archive_reason": "orphaned"},
         host=fixture.host,
         caller=CALLER,
     )
