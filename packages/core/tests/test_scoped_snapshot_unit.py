@@ -483,3 +483,56 @@ async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on
         (look.phase, sorted(look.behind)) for look in looks if "TX" not in look.behind
     ][:3]
     await snapshot.stop()
+
+
+async def test_a_versioned_read_names_the_epoch_of_every_scope_it_reads() -> None:
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+
+    with snapshot.read_versioned() as read:
+        votes = read.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall()
+        assert read.epochs == {"TX": 1, "DE": 1}
+    assert votes == [(1,)]
+
+    await snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    with snapshot.read_versioned() as read:
+        votes = read.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall()
+        assert read.epochs == {"TX": 2, "DE": 1}
+    assert votes == [(20,)]
+    await snapshot.stop()
+
+
+async def test_a_versioned_read_never_pairs_a_scopes_rows_with_another_epoch() -> None:
+    """a reader on another thread, while the scope moves epoch after epoch: rows and epoch always agree.
+
+    A scope at epoch ``n`` holds ``votes = 10 * n`` here, so a read whose rows are one epoch and whose
+    epochs say another is seen at once; the reads before and after each swap both land.
+    """
+    snapshot, _, _, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await snapshot.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 20}]})
+    stop = False
+    mismatches: list[tuple[int, int]] = []
+    seen: set[int] = set()
+
+    def reader() -> None:
+        while not stop:
+            with snapshot.read_versioned() as read:
+                (votes,) = read.cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchone()
+                epoch = read.epochs["TX"]
+            seen.add(epoch)
+            if votes != 10 * epoch:
+                mismatches.append((epoch, votes))
+
+    reading = asyncio.ensure_future(asyncio.to_thread(reader))
+    for epoch in range(3, 30):
+        await snapshot.publish("TX", epoch, {"results": [{"county": "c1", "state": "TX", "votes": 10 * epoch}]})
+        await asyncio.sleep(0.005)
+    stop = True
+    await reading
+    await snapshot.stop()
+
+    assert mismatches == []
+    assert len(seen) > 5, f"the reader saw only epochs {sorted(seen)}; the test raced nothing"

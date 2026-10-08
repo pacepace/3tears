@@ -70,6 +70,7 @@ from contextlib import aclosing, asynccontextmanager, contextmanager, nullcontex
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS
@@ -92,6 +93,7 @@ __all__ = [
     "SnapshotStatus",
     "SnapshotTable",
     "StagedScope",
+    "VersionedRead",
     "decode_chunk",
     "encode_chunk",
     "open_tool_pod_snapshot",
@@ -214,6 +216,22 @@ class StagedScope:
     epoch: int
     objects: Mapping[str, str]
     rows: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class VersionedRead:
+    """a read of the copy, and the epoch of every scope it reads (:meth:`ScopedSnapshot.read_versioned`).
+
+    :ivar cursor: the read's cursor: one state of every table, held still for the block
+    :ivar epochs: scope -> the epoch whose rows the cursor reads, exactly
+    """
+
+    cursor: Any
+    epochs: Mapping[str, int]
+
+
+#: how many times a versioned read opens again when a swap committed while it opened
+_VERSIONED_READ_ATTEMPTS: Final = 200
 
 
 @dataclass(frozen=True)
@@ -546,6 +564,11 @@ class ScopedSnapshot:
         self._watch_ended: str | None = None
         # what the L1 holds
         self._applied: dict[str, _Pointer] = {}
+        # the epoch of every scope's rows in the L1, moved in the same step as the rows themselves,
+        # behind a sequence counter (odd while a swap is in progress) so a reader on any thread can
+        # pair a read with exactly the epochs it reads (read_versioned)
+        self._held: Mapping[str, int] = MappingProxyType({})
+        self._swaps = 0
         self._local = asyncio.Lock()
         self._changed = asyncio.Event()
         self._ready = asyncio.Event()
@@ -747,6 +770,58 @@ class ScopedSnapshot:
         """
         with self._backend.read_snapshot() as cursor:
             yield cursor
+
+    @contextmanager
+    def read_versioned(self) -> Iterator[VersionedRead]:
+        """a read of the copy, as :meth:`read`, and the epoch of every scope whose rows it reads.
+
+        For an answer published under the version of the data it was computed from: the epochs are
+        those of the rows the cursor sees, never one swap before or after, so an answer labelled
+        with them is the answer at those epochs. A swap that commits while the read opens makes it
+        open again (a swap takes milliseconds; the read is retried, never waited on).
+
+        :return: the read and its epochs
+        :rtype: Iterator[VersionedRead]
+        :raises RuntimeError: when swaps never left the read a moment to open between them
+        """
+        table = quote_identifier(self._tables[0].name)
+        for _ in range(_VERSIONED_READ_ATTEMPTS):
+            before = self._swaps
+            if before % 2:
+                time.sleep(0.001)
+                continue
+            epochs = self._held
+            with self._backend.read_snapshot() as cursor:
+                # DuckDB fixes a read's state at its first statement, not at BEGIN: pin it here,
+                # before the counter is checked, so the state read is the one the epochs name
+                cursor.execute(f"SELECT 1 FROM {table} LIMIT 0").fetchall()
+                if self._swaps == before:
+                    yield VersionedRead(cursor=cursor, epochs=epochs)
+                    return
+        raise RuntimeError(f"scoped snapshot {self._name}: no versioned read could open between swaps")
+
+    def _swap(self, replacements: Sequence[PartitionReplacement], epochs: Mapping[str, int | None]) -> None:
+        """replace scopes in the L1 and move their held epochs as one step; on a worker thread.
+
+        :param replacements: what each scope is to hold
+        :ptype replacements: Sequence[PartitionReplacement]
+        :param epochs: scope -> its epoch after the swap; ``None`` for a scope dropped
+        :ptype epochs: Mapping[str, int | None]
+        :return: nothing
+        :rtype: None
+        """
+        self._swaps += 1
+        try:
+            self._backend.replace_partitions(replacements)
+            held = dict(self._held)
+            for scope, epoch in epochs.items():
+                if epoch is None:
+                    held.pop(scope, None)
+                else:
+                    held[scope] = epoch
+            self._held = MappingProxyType(held)
+        finally:
+            self._swaps += 1
 
     async def wait_ready(self, *, timeout: float) -> None:
         """wait until every scope has been loaded.
@@ -1097,7 +1172,9 @@ class ScopedSnapshot:
         replacements = [replacement for _, scope_replacements in fetched for replacement in scope_replacements]
         async with self._local:
             fresh = [(p, r) for p, r in fetched if p.supersedes(self._applied.get(p.scope))]
-            await asyncio.to_thread(self._backend.replace_partitions, [x for _, rs in fresh for x in rs])
+            await asyncio.to_thread(
+                self._swap, [x for _, rs in fresh for x in rs], {p.scope: p.epoch for p, _ in fresh}
+            )
             for pointer, _ in fresh:
                 self._applied[pointer.scope] = pointer
                 self._behind.pop(pointer.scope, None)
@@ -1215,7 +1292,7 @@ class ScopedSnapshot:
             async with self._local:
                 if not current.supersedes(self._applied.get(scope)):
                     continue
-                await asyncio.to_thread(self._backend.replace_partitions, replacements)
+                await asyncio.to_thread(self._swap, replacements, {scope: current.epoch})
                 self._applied[scope] = current
                 self._count(replacements)
             self._behind.pop(scope, None)
@@ -1233,12 +1310,13 @@ class ScopedSnapshot:
         """
         async with self._local:
             await asyncio.to_thread(
-                self._backend.replace_partitions,
+                self._swap,
                 [
                     PartitionReplacement(table=t.name, column=t.scope_column, value=scope, rows=[])
                     for scope in scopes
                     for t in self._tables
                 ],
+                dict.fromkeys(scopes),
             )
             for scope in scopes:
                 self._applied.pop(scope, None)
@@ -1342,7 +1420,7 @@ class ScopedSnapshot:
                 )
                 for t in self._tables
             ]
-            await asyncio.to_thread(self._backend.replace_partitions, local)
+            await asyncio.to_thread(self._swap, local, {scope: epoch})
             self._count(local)
             self._behind.pop(scope, None)
             self._notify()
