@@ -192,6 +192,16 @@ a statement with compute-node work such as the hash query's `LISTAGG`
 (`0A000`). The Redshift driver runs the check as its own statement over
 `SVV_TABLES` and filters the column and hash rows in Python.
 
+Mind concurrent DDL too: given a NAME, `has_table_privilege` resolves it
+against the current catalog rather than the statement's snapshot, so a
+relation dropped or renamed mid-read raises `relation does not exist`
+and fails the catalog for every table. Ask by OID where the catalog has
+one (the Postgres driver joins `pg_class`; a vanished OID answers NULL)
+or retry the statement on that error (the Redshift driver, since
+`SVV_TABLES` has no OID). And say what you left out: answer the check as
+a column, filter in Python, and pass the ungranted pairs to
+`base.log_unselectable_relations`, so a missing grant leaves a trace.
+
 `data_type` is also the raw warehouse-reported type string. Don't
 normalize it.
 

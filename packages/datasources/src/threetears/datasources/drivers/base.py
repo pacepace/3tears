@@ -59,7 +59,7 @@ import functools
 import inspect
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from types import TracebackType
 from typing import Any, TypeAlias, TypedDict, TypeVar
 
@@ -71,6 +71,7 @@ __all__ = [
     "ColumnRow",
     "Driver",
     "check_max_rows",
+    "log_unselectable_relations",
     "RelationFingerprint",
     "TableRow",
     "Transaction",
@@ -723,6 +724,42 @@ class TransactionContext:
 # ---------------------------------------------------------------------------
 # Driver ABC (DS-09-01..06)
 # ---------------------------------------------------------------------------
+
+
+#: how many left-out relations :func:`log_unselectable_relations` names; the count covers the rest
+UNSELECTABLE_EXAMPLES = 5
+
+
+def log_unselectable_relations(*, datasource_name: str, method: str, left_out: Iterable[tuple[str, str]]) -> None:
+    """say, once per catalog call, which relations were left out because the user cannot SELECT them.
+
+    the catalog methods drop a relation the connected user cannot read (see
+    ``IMPLEMENTING_DRIVERS.md``), and the drop is silent where the old failure was a loud
+    ``42501``. an operator who widened ``allowed_schemas`` and forgot a ``GRANT SELECT`` would
+    find the table missing and nothing saying why; this line is the why. nothing is logged when
+    nothing was left out. a relation dropped while the catalog was read is not "left out" -- the
+    caller excludes it from ``left_out``.
+
+    :param datasource_name: the datasource the driver serves
+    :ptype datasource_name: str
+    :param method: the catalog method that filtered (``list_tables`` / ``list_columns`` /
+        ``table_hashes``)
+    :ptype method: str
+    :param left_out: the ``(schema, table)`` pairs filtered out; duplicates are counted once
+    :ptype left_out: Iterable[tuple[str, str]]
+    """
+    names = sorted(set(left_out))
+    if names:
+        examples = ", ".join(f"{schema}.{table}" for schema, table in names[:UNSELECTABLE_EXAMPLES])
+        log.info(
+            "catalog left out %d relation(s) the datasource user cannot SELECT: datasource=%s method=%s "
+            "examples=%s%s -- GRANT SELECT on a table to catalog it",
+            len(names),
+            datasource_name,
+            method,
+            examples,
+            ", ..." if len(names) > UNSELECTABLE_EXAMPLES else "",
+        )
 
 
 def check_max_rows(max_rows: int) -> None:

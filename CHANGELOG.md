@@ -24,6 +24,19 @@ packages (bumped in lock-step).
   functions ... not supported on Redshift tables`, which the first version, joining the check into
   the hash query, hit on the warehouse). The column-hash formula and both column queries are
   unchanged, so no stored hash moves.
+- **A relation dropped or renamed while the catalog is read no longer fails it.** A name handed to
+  `has_table_privilege` resolves against the current catalog, not the query's snapshot, so a dbt
+  promote's DROP mid-read raised `relation does not exist` for every table in scope. Postgres asks
+  by the snapshot's `pg_class` OID instead (`has_table_privilege(current_user, rel.oid, 'SELECT')`,
+  NULL for a vanished relation, which is left out). `SVV_TABLES` has no OID, so Redshift runs the
+  privilege statement again on `42P01`, after a rollback, at most `NAME_RACE_ATTEMPTS` (3) times.
+- **Added, `threetears.datasources.drivers.base.log_unselectable_relations`**: each catalog call
+  that leaves relations out for want of a grant logs it once at INFO, with the count and up to five
+  names, so a table missing because a `GRANT SELECT` was forgotten says why. Both drivers now
+  answer the privilege check as a `selectable` column and filter in Python, which is how they know
+  what they left out.
+- Not covered: a relation readable only through column-level grants (`GRANT SELECT (col) ON t`)
+  fails the table-level check and is left out. No datasource uses column-level grants today.
 
 ### Datasources: a Redshift keepalive no longer gives up before the statement ceiling
 

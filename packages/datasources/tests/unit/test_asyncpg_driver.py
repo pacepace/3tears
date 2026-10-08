@@ -376,7 +376,7 @@ class TestIntrospectionRouting:
         self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """:meth:`list_tables` reads base tables from ``information_schema`` with the allow-list bound."""
-        pool = _build_mock_pool(fetch_records=[{"table_schema": "s1", "table_name": "t1"}])
+        pool = _build_mock_pool(fetch_records=[{"table_schema": "s1", "table_name": "t1", "selectable": True}])
         driver = _driver_owning(pool, postgres_config, monkeypatch)
         rows = await driver.list_tables(["s1"])
         assert rows == [{"table_schema": "s1", "table_name": "t1"}]
@@ -398,6 +398,7 @@ class TestIntrospectionRouting:
                     "data_type": "integer",
                     "is_nullable": "NO",
                     "ordinal_position": 1,
+                    "selectable": True,
                 }
             ]
         )
@@ -420,6 +421,7 @@ class TestIntrospectionRouting:
                     "table_schema": "s1",
                     "table_name": "t1",
                     "column_hash": "abc123",
+                    "selectable": True,
                 }
             ]
         )
@@ -431,9 +433,30 @@ class TestIntrospectionRouting:
         assert "AS column_hash" in sql
 
 
-#: the privilege test every catalog query applies: the datasource's own user can SELECT the table,
-#: named schema-qualified and quoted so a mixed-case or keyword name resolves to itself
-_SELECTABLE = "has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT')"
+#: the privilege test every catalog query applies: the datasource's own user can SELECT the relation,
+#: asked by the relation's OID -- a name would be resolved against the CURRENT catalog, and a table
+#: dropped or renamed while the catalog query runs would fail the whole query
+_SELECTABLE = "has_table_privilege(current_user, rel.oid, 'SELECT')"
+
+_LOGGER = "threetears.datasources.drivers.base"
+
+
+def _column(table: str, selectable: bool | None, column: str = "c1") -> dict[str, Any]:
+    """one ``list_columns`` record as the catalog query returns it, its privilege answer included."""
+    return {
+        "table_schema": "s1",
+        "table_name": table,
+        "column_name": column,
+        "data_type": "integer",
+        "is_nullable": "NO",
+        "ordinal_position": 1,
+        "selectable": selectable,
+    }
+
+
+def _left_out(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """the messages saying the catalog left relations out for want of a grant."""
+    return [r.getMessage() for r in caplog.records if r.name == _LOGGER and "cannot SELECT" in r.getMessage()]
 
 
 class TestIntrospectionCatalogsOnlySelectableTables:
@@ -446,31 +469,97 @@ class TestIntrospectionCatalogsOnlySelectableTables:
     """
 
     @pytest.mark.asyncio
-    async def test_list_tables_filters_on_the_select_grant(
-        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("method", ["list_tables", "list_columns", "table_hashes"])
+    async def test_every_catalog_query_asks_the_select_grant_by_oid(
+        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch, method: str
     ) -> None:
         pool = _build_mock_pool(fetch_records=[])
         driver = _driver_owning(pool, postgres_config, monkeypatch)
-        await driver.list_tables(["s1"])
-        assert _SELECTABLE in _single_catalog_query(pool, ["s1"])
+        await getattr(driver, method)(["s1"])
+        sql = _single_catalog_query(pool, ["s1"])
+        assert _SELECTABLE in sql
+        # never by name: a name is resolved against the current catalog, not the query's snapshot
+        assert "quote_ident" not in sql
 
     @pytest.mark.asyncio
-    async def test_list_columns_filters_on_the_select_grant(
-        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    async def test_list_tables_keeps_only_the_selectable_and_says_what_it_left_out(
+        self,
+        postgres_config: PostgresConnectionConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        pool = _build_mock_pool(fetch_records=[])
+        records = [
+            {"table_schema": "s1", "table_name": "granted", "selectable": True},
+            # a relation dropped while the query ran: its OID answers NULL, and it is simply gone
+            {"table_schema": "s1", "table_name": "vanished", "selectable": None},
+        ] + [{"table_schema": "s1", "table_name": f"ungranted_{i}", "selectable": False} for i in range(7)]
+        pool = _build_mock_pool(fetch_records=records)
         driver = _driver_owning(pool, postgres_config, monkeypatch)
-        await driver.list_columns(["s1"])
-        assert _SELECTABLE in _single_catalog_query(pool, ["s1"])
+        with caplog.at_level("INFO", logger=_LOGGER):
+            rows = await driver.list_tables(["s1"])
+        assert rows == [{"table_schema": "s1", "table_name": "granted"}]
+        (message,) = _left_out(caplog)
+        assert "7 relation" in message
+        assert "list_tables" in message
+        # at most five examples, and never the vanished one
+        assert message.count("s1.ungranted_") == 5
+        assert "vanished" not in message
 
     @pytest.mark.asyncio
-    async def test_table_hashes_filters_on_the_select_grant(
-        self, postgres_config: PostgresConnectionConfig, monkeypatch: pytest.MonkeyPatch
+    async def test_list_columns_counts_relations_not_columns(
+        self,
+        postgres_config: PostgresConnectionConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        pool = _build_mock_pool(fetch_records=[])
+        records = [
+            _column("granted", True),
+            _column("ungranted", False, "a"),
+            _column("ungranted", False, "b"),
+            _column("vanished", None),
+        ]
+        pool = _build_mock_pool(fetch_records=records)
         driver = _driver_owning(pool, postgres_config, monkeypatch)
-        await driver.table_hashes(["s1"])
-        assert _SELECTABLE in _single_catalog_query(pool, ["s1"])
+        with caplog.at_level("INFO", logger=_LOGGER):
+            rows = await driver.list_columns(["s1"])
+        assert [(r["table_name"], r["column_name"]) for r in rows] == [("granted", "c1")]
+        assert "selectable" not in rows[0]
+        (message,) = _left_out(caplog)
+        assert "1 relation" in message
+        assert "s1.ungranted" in message
+
+    @pytest.mark.asyncio
+    async def test_table_hashes_keeps_only_the_selectable(
+        self,
+        postgres_config: PostgresConnectionConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        records = [
+            {"table_schema": "s1", "table_name": "granted", "column_hash": "h1", "selectable": True},
+            {"table_schema": "s1", "table_name": "ungranted", "column_hash": "h2", "selectable": False},
+            {"table_schema": "s1", "table_name": "vanished", "column_hash": "h3", "selectable": None},
+        ]
+        pool = _build_mock_pool(fetch_records=records)
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        with caplog.at_level("INFO", logger=_LOGGER):
+            hashes = await driver.table_hashes(["s1"])
+        assert hashes == {("s1", "granted"): "h1"}
+        (message,) = _left_out(caplog)
+        assert "table_hashes" in message
+
+    @pytest.mark.asyncio
+    async def test_nothing_left_out_logs_nothing(
+        self,
+        postgres_config: PostgresConnectionConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        pool = _build_mock_pool(fetch_records=[{"table_schema": "s1", "table_name": "t1", "selectable": True}])
+        driver = _driver_owning(pool, postgres_config, monkeypatch)
+        with caplog.at_level("INFO", logger=_LOGGER):
+            await driver.list_tables(["s1"])
+        assert _left_out(caplog) == []
 
 
 # ---------------------------------------------------------------------------

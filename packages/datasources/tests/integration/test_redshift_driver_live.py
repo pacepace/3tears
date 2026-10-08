@@ -209,8 +209,9 @@ async def assert_catalog_is_only_selectable(driver: Driver, schemas: list[str]) 
     refuse ``table_hashes`` outright (``0A000``: ``has_table_privilege`` is leader-node-only,
     ``LISTAGG`` runs on the compute nodes), which no mock can show. so the three methods must
     complete; their answers must agree on which tables exist; a sample of what they return must
-    really be SELECT-able; and a table the user can see in ``SVV_TABLES`` but not read, when the
-    warehouse has one for this user, must be absent and must really refuse a SELECT.
+    really be SELECT-able; and the user must be able to SEE base tables in ``SVV_TABLES`` it
+    cannot read -- the proof fails, rather than passing hollow, for a user who reads everything --
+    and a sample of those must be absent and must really refuse a SELECT.
 
     a module-level helper rather than a test body so the same proof can be run as another
     least-privilege user from outside pytest.
@@ -238,9 +239,15 @@ async def assert_catalog_is_only_selectable(driver: Driver, schemas: list[str]) 
         *schemas,
     )
     unreadable = sorted({(r["table_schema"], r["table_name"]) for r in visible} - tables)
-    if unreadable:
-        schema, table = unreadable[0]
+    # without a table this user can see and not read, every assertion above holds for an
+    # unfiltered catalog too, and the proof would pass while proving nothing
+    assert unreadable, (
+        f"the user can read every base table in {schemas}: run this proof as a least-privilege user "
+        "(granted only some of these schemas' tables), or it cannot tell a filtered catalog from an unfiltered one"
+    )
+    for schema, table in unreadable[:_PRIVILEGE_PROOF_SAMPLE]:
         assert (schema, table) not in hashed
+        assert (schema, table) not in column_tables
         with pytest.raises(Exception, match="permission denied"):
             await driver.fetch(f"SELECT 1 FROM {_quoted(schema, table)} LIMIT 1")  # noqa: S608
 

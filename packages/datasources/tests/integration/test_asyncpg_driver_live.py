@@ -30,6 +30,7 @@ from threetears.datasources.config import (
     BorrowedPoolConnectionConfig,
     PostgresConnectionConfig,
 )
+from threetears.datasources.drivers import asyncpg_driver as asyncpg_driver_module
 from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
 from threetears.datasources.drivers.base import Driver
 from threetears.datasources.entities import DataSourceType
@@ -314,6 +315,44 @@ class TestIntrospectionCatalogsOnlySelectableTables:
         assert tables == {"widgets", "Gadgets"}
         assert columns == {"widgets", "Gadgets"}
         assert hashed == {"widgets", "Gadgets"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "statement", ["_POSTGRES_TABLES_SQL", "_POSTGRES_COLUMNS_SQL", "_POSTGRES_TABLE_HASHES_SQL"]
+    )
+    async def test_a_table_dropped_while_the_catalog_is_read_is_skipped_not_fatal(
+        self, seeded_schema: tuple[str, str], statement: str
+    ) -> None:
+        """a relation dropped mid-read (a dbt promote's DROP, a rename) must not fail the catalog query.
+
+        deterministic: the reader holds a REPEATABLE READ snapshot taken before a second session
+        drops the table, so ``information_schema`` still returns its rows. a privilege check by
+        NAME resolves against the current catalog and raises ``relation does not exist`` -- for
+        every table in scope; by OID it answers NULL and the relation is simply left out.
+        """
+        db_url, schema = seeded_schema
+        parsed = _parse_db_url(db_url)
+        connect = {
+            "host": parsed["host"],
+            "port": parsed["port"],
+            "database": parsed["database"],
+            "user": parsed["username"],
+            "password": parsed["password"],
+        }
+        reader = await asyncpg.connect(**connect)
+        dropper = await asyncpg.connect(**connect)
+        try:
+            await dropper.execute(f'CREATE TABLE "{schema}"."doomed" (id integer)')
+            async with reader.transaction(isolation="repeatable_read"):
+                await reader.fetchval("SELECT 1")  # the snapshot is taken here
+                await dropper.execute(f'DROP TABLE "{schema}"."doomed"')
+                rows = await reader.fetch(getattr(asyncpg_driver_module, statement), [schema])
+            names = {r["table_name"] for r in rows}
+            assert "doomed" in names, "the snapshot no longer shows the dropped table; the test proves nothing"
+            assert {r["table_name"] for r in rows if r["selectable"]} == {"widgets"}
+        finally:
+            await reader.close()
+            await dropper.close()
 
 
 # ---------------------------------------------------------------------------
