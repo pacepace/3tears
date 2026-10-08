@@ -374,6 +374,57 @@ class DuckDBBackend:
             fetch = getattr(result, "to_arrow_table", None) or result.fetch_arrow_table
             return fetch()
 
+    def export_rows(
+        self,
+        table: str,
+        column: str,
+        value: Any,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        primary_key: str | tuple[str, ...],
+        order_by: Sequence[str],
+    ) -> Any:
+        """the Arrow table one scope WOULD hold with ``rows``, as :meth:`export_partition` would
+        write it after a replacement, changing nothing.
+
+        For a writer that encodes a scope's next content before it may show it: the rows are typed
+        and ordered by this backend's own columns, so the export equals the one taken after
+        :meth:`replace_partitions` with the same rows. It runs in a transaction that is rolled back,
+        so no reader, on :meth:`read_snapshot` or otherwise, ever sees the rows. Needs ``pyarrow``.
+
+        :param table: a table this backend created
+        :ptype table: str
+        :param column: the scope column
+        :ptype column: str
+        :param value: the scope's value; ``None`` for the rows where the column is null
+        :ptype value: Any
+        :param rows: every row the scope would hold, each keyed by column name
+        :ptype rows: Sequence[Mapping[str, Any]]
+        :param primary_key: the table's key, as :meth:`upsert_many` takes it
+        :ptype primary_key: str | tuple[str, ...]
+        :param order_by: the columns ordering the rows, the table's key
+        :ptype order_by: Sequence[str]
+        :return: the rows
+        :rtype: pyarrow.Table
+        :raises ValueError: when the table or column is unknown
+        """
+        condition, params = self._partition_filter(table, column, value)
+        quoted = quote_identifier(table)
+        order = ", ".join(quote_identifier(c) for c in order_by)
+        sql = f"SELECT * FROM {quoted} WHERE {condition}" + (f" ORDER BY {order}" if order else "")  # noqa: S608
+        with self._db_lock:
+            self._db.execute("BEGIN TRANSACTION")
+            try:
+                self._db.execute(f"DELETE FROM {quoted} WHERE {condition}", params)  # noqa: S608
+                if rows:
+                    self._insert_rows(self._db, table, rows, primary_key)
+                result = self._db.execute(sql, params)
+                fetch = getattr(result, "to_arrow_table", None) or result.fetch_arrow_table
+                exported = fetch()
+            finally:
+                self._db.execute("ROLLBACK")
+        return exported
+
     def replace_partitions(self, replacements: Sequence[PartitionReplacement]) -> int:
         """make each named scope hold exactly what its replacement gives, all in ONE transaction.
 

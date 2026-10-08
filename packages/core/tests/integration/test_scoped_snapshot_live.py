@@ -516,10 +516,13 @@ async def test_a_scope_gone_from_l3_leaves_every_replica(platform: _Platform) ->
     reader, _ = await platform.replica()
     await reader.start()
     await reader.wait_ready(timeout=_WAIT)
+    served = await _de_chunks(platform)
     await platform.pool.execute("DELETE FROM results WHERE state = 'DE'")
     await platform.pool.execute("DELETE FROM counties WHERE state = 'DE'")
     await writer.catch_up_from_l3()
     await _until(lambda: _count(reader, "results", "DE") == 0, what="DE to leave the reader")
+    assert served and served <= set(platform.retired), "the removal left the chunks its pointer served"
+    assert not await _de_chunks(platform), "a removed scope's chunks stayed in the bounded store"
     assert _count(reader, "results", "CA") == 40
     # a removal is a change the reader applies, not a lost snapshot: it stays READY and reads no L3
     await _until(lambda: reader.status().phase is SnapshotPhase.READY, what="the reader to be READY", timeout=5)
@@ -546,6 +549,7 @@ async def test_a_watch_that_ends_says_so(platform: _Platform) -> None:
     await platform.clients[-1].shutdown(drain_timeout=timedelta(seconds=1))
     await _until(lambda: replica.status().phase is SnapshotPhase.FAILED, what="the watch's end")
     assert "watch" in replica.status().detail
+
     await replica.stop()
 
 
@@ -816,6 +820,9 @@ async def test_a_removal_retires_only_the_epochs_its_deleted_pointer_named(platf
     stores[0].release.set()
     await publish
     await _assert_de_stands_at(platform, 5, [remover, reader])
+    left = await _de_chunks(platform)
+    assert left and all("/DE/5/" in name for name in left), f"the removal left epoch 1, or took epoch 5: {left}"
+    assert any("/DE/1/" in name for name in platform.retired), "the removal retired nothing it served"
     for replica in (remover, reader):
         await replica.stop()
 
@@ -882,3 +889,154 @@ async def test_a_replica_that_waited_on_a_rebuild_is_ready_again(platform: _Plat
     assert l3.statements == statements, "the replica rebuilt for itself rather than apply the pointers"
     assert _count(replica, "results") == 1580
     await replica.stop()
+
+
+async def test_a_staged_scope_shows_nowhere_until_its_pointer_moves_and_then_everywhere(platform: _Platform) -> None:
+    writer, _ = await platform.replica()
+    await writer.start()
+    await writer.wait_ready(timeout=_WAIT)
+    reader, _ = await platform.replica()
+    await reader.start()
+    await reader.wait_ready(timeout=_WAIT)
+    changes: list[int] = []
+    reader.on_change(lambda: changes.append(1))
+
+    # the writer changes only results in DE; counties are carried from DE's current chunk
+    await platform.pool.execute("UPDATE results SET votes = 9 WHERE state = 'DE'")
+    staged = await writer.stage("DE", 2, {"results": await _rows(platform.pool, "results", "DE")})
+    await asyncio.sleep(0.5)
+    for replica in (writer, reader):
+        with replica.read() as cursor:
+            shown = cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall()
+        assert shown == [(1000,)], "a staged chunk was shown before its pointer moved"
+
+    platform.epochs["DE"] = 2
+    moved, skipped = await writer.publish_staged([staged], carry_at={"DE": 1})
+
+    assert (moved, skipped) == (["DE"], [])
+    for replica in (writer, reader):
+        await _until(
+            lambda r=replica: r.status().last_change is not None and r.status().last_change.epoch == 2,
+            what="DE applied",
+        )
+        with replica.read() as cursor:
+            assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(9,)]
+        assert _count(replica, "counties", "DE") == 40, "the carried table lost its rows"
+    assert changes, "the reader's change listener was not called"
+    assert not any("/DE/1/counties" in name for name in platform.retired), "a carried chunk was retired"
+    assert any("/DE/1/results" in name for name in platform.retired), "the superseded chunk was kept"
+    fresh, l3 = await platform.replica()
+    await fresh.start()
+    await fresh.wait_ready(timeout=_WAIT)
+    assert l3.statements == 0 and _count(fresh, "counties", "DE") == 40
+    for replica in (writer, reader, fresh):
+        await replica.stop()
+
+
+async def test_a_staged_scope_whose_pointer_moved_elsewhere_is_left_for_the_catch_up(platform: _Platform) -> None:
+    writer, _ = await platform.replica()
+    await writer.start()
+    await writer.wait_ready(timeout=_WAIT)
+    # a write that died after its commit moved CA to 3 in L3, and CA's pointer still says 1
+    await platform.pool.execute("UPDATE counties SET total = 5 WHERE state = 'CA'")
+    await platform.pool.execute("UPDATE results SET votes = 6 WHERE state = 'CA'")
+    staged = await writer.stage("CA", 4, {"results": await _rows(platform.pool, "results", "CA")})
+    platform.epochs["CA"] = 4
+
+    moved, skipped = await writer.publish_staged([staged], carry_at={"CA": 3})
+
+    assert (moved, skipped) == ([], ["CA"]), "a chunk was carried from an epoch the writer did not see"
+    assert await writer.catch_up_from_l3() == ["CA"]
+    with writer.read() as cursor:
+        assert cursor.execute("SELECT DISTINCT total FROM counties WHERE state = 'CA'").fetchall() == [(5,)]
+    await writer.stop()
+
+
+async def test_a_whole_write_into_an_empty_snapshot_is_loaded_from_l2_with_no_rebuild(platform: _Platform) -> None:
+    async with platform.pool.acquire() as conn:
+        await conn.execute("DELETE FROM results")
+        await conn.execute("DELETE FROM counties")
+    platform.epochs.clear()
+    # the very first load: nothing in NATS, a write in progress, every replica waiting on it
+    platform.writing = True
+    writer, writer_l3 = await platform.replica()
+    await writer.start()
+    waiting, l3 = await platform.replica()
+    await waiting.start()
+    await _until(lambda: "write" in waiting.status().detail, what="the replica waiting on the write")
+
+    # both tables of DE, results alone of TX (TX has no counties yet)
+    async with platform.pool.acquire() as conn:
+        await conn.execute("INSERT INTO counties VALUES ('DE-1', 'DE', 3)")
+        await conn.execute("INSERT INTO results VALUES ('DE-gov', 'DE-1', 'DE', 3), ('TX-gov', 'TX-1', 'TX', 4)")
+    staged = [
+        await writer.stage("DE", 1, {t.name: await _rows(platform.pool, t.name, "DE") for t in _TABLES}),
+        await writer.stage("TX", 1, {"results": await _rows(platform.pool, "results", "TX")}),
+    ]
+    async with writer.holding_rebuilds() as held:
+        assert held
+        platform.epochs.update({"DE": 1, "TX": 1})
+        platform.writing = False  # the commit
+        await asyncio.sleep(0.5)  # the waiting replicas look again while the claim is held
+        moved, skipped = await writer.publish_staged(staged, carry_at={}, whole=True)
+
+    assert (sorted(moved), skipped) == (["DE", "TX"], [])
+    for replica in (writer, waiting):
+        await replica.wait_ready(timeout=_WAIT)
+        assert replica.status().source is SnapshotSource.L2, "a replica rebuilt from L3"
+        assert _count(replica, "results") == 2 and _count(replica, "counties", "TX") == 0
+    assert l3.statements == 0 and writer_l3.statements == 0, "a replica read L3"
+    await writer.stop()
+    await waiting.stop()
+
+
+async def test_a_writers_staged_chunks_survive_a_rebuilds_sweep_and_apply_everywhere(platform: _Platform) -> None:
+    """a write stages its chunks long before it moves their pointer; a rebuild that sweeps chunks no
+    pointer names in the meantime must not take them, or the pointer would move onto nothing."""
+    writer, writer_l3 = await platform.replica()
+    await writer.start()
+    await writer.wait_ready(timeout=_WAIT)
+
+    # the write: DE's results change in L3 and are staged at the write's version, its pointer unmoved
+    await platform.pool.execute("UPDATE results SET votes = 9 WHERE state = 'DE'")
+    staged = await writer.stage("DE", 2, {"results": await _rows(platform.pool, "results", "DE")})
+
+    # meanwhile NATS loses the pointers (not the chunks): the writer rebuilds every scope and sweeps
+    before = writer_l3.statements
+    js = platform.hub.jetstream_context()
+    await js.delete_stream(f"KV_{platform.namespace}-pod-pointers")
+    await platform.hub.reconnect()
+    await _until(
+        lambda: writer_l3.statements > before and writer.status().phase is SnapshotPhase.READY,
+        what="the rebuild and its sweep",
+    )
+    objects = await (await platform.hub.object_store(name="pod-objects")).list_objects(prefix="enr/DE/2/")
+    assert {info.name for info in objects} == set(staged.objects.values()), "the sweep took a staged chunk"
+
+    reader, _ = await platform.replica()
+    await reader.start()
+    await reader.wait_ready(timeout=_WAIT)
+    platform.epochs["DE"] = 2  # the commit
+    moved, skipped = await writer.publish_staged([staged], carry_at={"DE": 1})
+
+    assert (moved, skipped) == (["DE"], [])
+    for replica in (writer, reader):
+        await _until(
+            lambda r=replica: (
+                r.status().last_change is not None
+                and r.status().last_change.scope == "DE"
+                and r.status().last_change.epoch == 2
+            ),
+            what="DE applied at epoch 2",
+        )
+        assert replica.status().behind == {}
+        with replica.read() as cursor:
+            assert cursor.execute("SELECT DISTINCT votes FROM results WHERE state = 'DE'").fetchall() == [(9,)]
+    await writer.stop()
+    await reader.stop()
+
+
+async def _de_chunks(platform: _Platform) -> set[str]:
+    """every chunk of DE in the store."""
+    store = await platform.hub.object_store(name="pod-objects")
+    return {info.name for info in await store.list_objects(prefix="enr/DE/")}

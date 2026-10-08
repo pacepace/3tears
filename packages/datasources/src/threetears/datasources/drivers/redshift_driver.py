@@ -180,6 +180,7 @@ from threetears.datasources.drivers.base import (
     _check_otel_metrics,
     _instrument_cache,
     check_max_rows,
+    log_unselectable_relations,
     observed,
 )
 from threetears.datasources.drivers.connect_guard import ConnectGuard, guarded_connect
@@ -205,6 +206,26 @@ log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
+#: the privilege test every catalog query applies: the datasource's own user can SELECT the
+#: relation. a least-privilege warehouse user is granted a few tables of a schema it can see
+#: whole, and ``SVV_TABLES`` / ``SVV_COLUMNS`` list them all; without this the catalog carried
+#: tables every later read of which -- the coverage probe, the schema tool -- raised 42501
+#: permission denied. the name is schema-qualified and quoted so a keyword or case-sensitive
+#: name resolves to itself. the catalog therefore follows the grants by construction: a revoked
+#: table drops out at the next introspection, a new grant comes in.
+#:
+#: ``has_table_privilege`` RAISES on a relation outside ``pg_class`` -- a Spectrum external table,
+#: whose access is the external schema's USAGE, not a per-table grant -- and one such row would fail
+#: the query for every table in scope. so each use sits behind a ``CASE`` on ``table_type``: SQL
+#: takes a ``CASE`` branch only when it applies, where the operands of an ``AND`` have no order.
+#:
+#: the name is resolved against the CURRENT catalog, not the statement's snapshot, so a relation
+#: dropped or renamed mid-read raises ``42P01``; :func:`_privilege_rows` runs the statement again.
+#: the answer is a column (``selectable``), not a WHERE filter, so the driver can say what it left
+#: out for want of a grant (:func:`~threetears.datasources.drivers.base.log_unselectable_relations`).
+_SELECTABLE = "has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT')"
+
+
 #: list tables visible inside the schema allow-list.
 #:
 #: NOTE 1 (placeholder shape): Redshift's ``redshift_connector`` lib
@@ -227,13 +248,50 @@ log = get_logger(__name__)
 #: execute in seconds and support arbitrary aggregates (which
 #: ``information_schema.columns`` does NOT -- LISTAGG over it raises
 #: ``Specified types or functions not supported on Redshift tables``).
-_REDSHIFT_TABLES_SQL_TEMPLATE = """
-SELECT table_schema, table_name
+_REDSHIFT_TABLES_SQL_TEMPLATE = (
+    """
+SELECT table_schema, table_name,
+       CASE WHEN table_type = 'BASE TABLE' THEN """
+    + _SELECTABLE
+    + """ ELSE FALSE END AS selectable
 FROM SVV_TABLES
 WHERE table_schema IN ({placeholders})
 AND table_type = 'BASE TABLE'
 ORDER BY table_schema, table_name
-""".strip()
+"""
+).strip()
+
+
+#: the relations in the allow-list the user can read, as their OWN statement.
+#:
+#: ``has_table_privilege`` is a leader-node-only function and the column-hash query's ``LISTAGG``
+#: runs on the compute nodes; Redshift refuses one statement mixing the two (``0A000 Specified
+#: types or functions (one per INFO message) not supported on Redshift tables`` -- seen on the
+#: warehouse when the check was joined into the hash query, 2026-10-07). so the check runs
+#: here, over ``SVV_TABLES`` alone (the shape :data:`_REDSHIFT_TABLES_SQL_TEMPLATE` proves
+#: runs), and ``list_columns`` / ``table_hashes`` keep their unchanged queries and drop, in
+#: python, every row outside the set this returns -- on the same connection, one statement
+#: after the other. ``SVV_COLUMNS`` carries no ``table_type`` to guard the check with, which
+#: is the other reason it cannot ride the column queries. a local table or view is kept only
+#: with its SELECT grant; an external table passes, its access being the external schema's
+#: USAGE (see :data:`_SELECTABLE`).
+_REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE = (
+    """
+SELECT table_schema, table_name,
+       CASE WHEN table_type IN ('BASE TABLE', 'VIEW') THEN """
+    + _SELECTABLE
+    + """ ELSE TRUE END AS selectable
+FROM SVV_TABLES
+WHERE table_schema IN ({placeholders})
+"""
+).strip()
+
+#: how many times a privilege statement is run when a relation vanished under it (see
+#: :func:`_privilege_rows`); past this the warehouse is mid-churn and the sweep fails loudly
+NAME_RACE_ATTEMPTS = 3
+
+#: SQLSTATE ``undefined_table``: what ``has_table_privilege`` raises for a name that no longer resolves
+_UNDEFINED_TABLE = "42P01"
 
 
 #: the boolean columns of one relation, for the fingerprint: Redshift refuses to cast a boolean to
@@ -302,6 +360,84 @@ WHERE table_schema IN ({placeholders})
 GROUP BY table_schema, table_name
 ORDER BY table_schema, table_name
 """.strip()
+
+
+def _is_undefined_table(exc: BaseException) -> bool:
+    """report whether ``exc`` is Redshift saying a relation named in the statement does not exist.
+
+    :param exc: the error a statement raised
+    :ptype exc: BaseException
+    :return: True for SQLSTATE 42P01
+    :rtype: bool
+    """
+    detail = exc.args[0] if exc.args else None
+    return isinstance(detail, dict) and detail.get("C") == _UNDEFINED_TABLE
+
+
+def _privilege_rows(conn: RedshiftConnection, cursor: Any, sql: str, params: tuple[str, ...]) -> list[tuple[Any, ...]]:
+    """run a statement that answers ``has_table_privilege``, outlasting a relation dropped under it.
+
+    the check takes a NAME, and Redshift resolves it against the CURRENT catalog rather than the
+    statement's: a relation a promote drops or renames between ``SVV_TABLES``' listing and the
+    check raises ``42P01`` and fails the statement for every relation in scope. ``SVV_TABLES``
+    exposes no OID to ask by instead (as the Postgres driver does), so the statement is run again
+    -- after a rollback, in a fresh transaction whose snapshot no longer lists the relation -- at
+    most :data:`NAME_RACE_ATTEMPTS` times. any other error is raised at once.
+
+    :param conn: the connection ``cursor`` belongs to (rolled back between attempts)
+    :ptype conn: RedshiftConnection
+    :param cursor: open cursor
+    :ptype cursor: Any
+    :param sql: the rendered privilege statement
+    :ptype sql: str
+    :param params: the schema allow-list, bound once per placeholder
+    :ptype params: tuple[str, ...]
+    :return: the statement's rows
+    :rtype: list[tuple[Any, ...]]
+    :raises Exception: the statement's error, when it is not 42P01 or the attempts are spent
+    """
+    attempt = 1
+    while True:
+        try:
+            cursor.execute(sql, params)
+            rows: list[tuple[Any, ...]] = cursor.fetchall()
+            return rows
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- classified, then re-raised unless it is the one retryable race
+            if attempt >= NAME_RACE_ATTEMPTS or not _is_undefined_table(exc):
+                raise
+            log.info(
+                "a relation vanished under the catalog's privilege check; reading again (attempt %d of %d): %s",
+                attempt + 1,
+                NAME_RACE_ATTEMPTS,
+                exc,
+            )
+            conn.rollback()
+            attempt += 1
+
+
+def _selectable_relations(
+    conn: RedshiftConnection, cursor: Any, selectable_sql: str, params: tuple[str, ...]
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """the ``(schema, table)`` pairs in the allow-list the connected user can and cannot read.
+
+    run as a statement of its own: see :data:`_REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE`.
+
+    :param conn: the connection ``cursor`` belongs to
+    :ptype conn: RedshiftConnection
+    :param cursor: open cursor on the connection the column query will use next
+    :ptype cursor: Any
+    :param selectable_sql: the rendered selectable-relations statement
+    :ptype selectable_sql: str
+    :param params: the schema allow-list, bound once per placeholder
+    :ptype params: tuple[str, ...]
+    :return: ``(readable, unreadable)``
+    :rtype: tuple[set[tuple[str, str]], set[tuple[str, str]]]
+    """
+    readable: set[tuple[str, str]] = set()
+    unreadable: set[tuple[str, str]] = set()
+    for row in _privilege_rows(conn, cursor, selectable_sql, params):
+        (readable if row[2] else unreadable).add((row[0], row[1]))
+    return readable, unreadable
 
 
 def _build_in_clause(n: int) -> str:
@@ -2160,17 +2296,13 @@ class RedshiftDriver(Driver):
                 # guard at the python level.
                 if not params:
                     return []
-                cursor.execute(sql, params)
-                rows = cursor.fetchall()
-                cols = [c[0] for c in cursor.description]
-                dicts = [dict(zip(cols, row)) for row in rows]
-                return [
-                    TableRow(
-                        table_schema=r["table_schema"],
-                        table_name=r["table_name"],
-                    )
-                    for r in dicts
-                ]
+                rows = _privilege_rows(conn, cursor, sql, params)
+                log_unselectable_relations(
+                    datasource_name=self._datasource_name,
+                    method="list_tables",
+                    left_out=((row[0], row[1]) for row in rows if not row[2]),
+                )
+                return [TableRow(table_schema=row[0], table_name=row[1]) for row in rows if row[2]]
             finally:
                 cursor.close()
 
@@ -2208,6 +2340,7 @@ class RedshiftDriver(Driver):
             raise RuntimeError("RedshiftDriver is closed")
 
         sql = _REDSHIFT_COLUMNS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
+        selectable_sql = _REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
         params = tuple(schemas)
 
         def _do_sync(
@@ -2217,6 +2350,10 @@ class RedshiftDriver(Driver):
             try:
                 if not params:
                     return []
+                selectable, unselectable = _selectable_relations(conn, cursor, selectable_sql, params)
+                log_unselectable_relations(
+                    datasource_name=self._datasource_name, method="list_columns", left_out=unselectable
+                )
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
                 cols = [c[0] for c in cursor.description]
@@ -2231,6 +2368,7 @@ class RedshiftDriver(Driver):
                         ordinal_position=r["ordinal_position"],
                     )
                     for r in dicts
+                    if (r["table_schema"], r["table_name"]) in selectable
                 ]
             finally:
                 cursor.close()
@@ -2346,6 +2484,7 @@ class RedshiftDriver(Driver):
             raise RuntimeError("RedshiftDriver is closed")
 
         sql = _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
+        selectable_sql = _REDSHIFT_SELECTABLE_RELATIONS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
         params = tuple(schemas)
 
         def _do_sync(
@@ -2355,11 +2494,19 @@ class RedshiftDriver(Driver):
             try:
                 if not params:
                     return {}
+                selectable, unselectable = _selectable_relations(conn, cursor, selectable_sql, params)
+                log_unselectable_relations(
+                    datasource_name=self._datasource_name, method="table_hashes", left_out=unselectable
+                )
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
                 cols = [c[0] for c in cursor.description]
                 dicts = [dict(zip(cols, row)) for row in rows]
-                return {(r["table_schema"], r["table_name"]): r["column_hash"] for r in dicts}
+                return {
+                    (r["table_schema"], r["table_name"]): r["column_hash"]
+                    for r in dicts
+                    if (r["table_schema"], r["table_name"]) in selectable
+                }
             finally:
                 cursor.close()
 

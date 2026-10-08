@@ -23,6 +23,7 @@ from threetears.nats.object_store_requests import (
     ObjectStoreRequestRefusedError,
     ObjectStoreRequestUnavailableError,
     RetiredObjects,
+    bind_pod_object_store,
     declare_pod_object_store,
     retire_pod_objects,
 )
@@ -178,3 +179,53 @@ def test_the_vocabulary_is_the_one_the_hub_answers() -> None:
         )
         == OBJECT_STORE_REQUEST_ERROR_CODES
     )
+
+
+class _BindingClient(_ScriptedRequests):
+    """a scripted client that also binds buckets, recording what it was asked to bind."""
+
+    namespace = "3tears"
+
+    def __init__(self, *replies: dict[str, Any] | Exception) -> None:
+        super().__init__(*replies)
+        self.bound: list[tuple[str, dict[str, Any]]] = []
+
+    async def object_store(self, *, name: str, prefix_namespace: bool = True) -> str:
+        self.bound.append(("object_store", {"name": name, "prefix_namespace": prefix_namespace}))
+        return "store"
+
+    async def kv_bucket(self, *, name: str, create_if_missing: bool = True) -> str:
+        self.bound.append(("kv_bucket", {"name": name, "create_if_missing": create_if_missing}))
+        return "pointers"
+
+
+class TestBind:
+    async def test_a_pod_binds_the_buckets_the_hub_declared_and_creates_none(self) -> None:
+        nc = _BindingClient(_DECLARED)
+        bound = await bind_pod_object_store(nc, identity_token=lambda: _TOKEN)  # type: ignore[arg-type]
+        assert (bound.store, bound.pointers) == ("store", "pointers")
+        assert nc.bound == [
+            ("object_store", {"name": "3tears-tool_pod-x-objects", "prefix_namespace": False}),
+            ("kv_bucket", {"name": "tool_pod-x-pointers", "create_if_missing": False}),
+        ]
+
+    async def test_a_pointer_bucket_outside_the_namespace_is_refused(self) -> None:
+        nc = _BindingClient({**_DECLARED, "pointers_bucket": "other-tool_pod-x-pointers"})
+        with pytest.raises(ObjectStoreRequestUnavailableError, match="outside"):
+            await bind_pod_object_store(nc, identity_token=lambda: _TOKEN)  # type: ignore[arg-type]
+
+    async def test_a_retire_after_nats_lost_the_bucket_declares_it_and_asks_again(self) -> None:
+        nc = _BindingClient(
+            _DECLARED,
+            {"success": False, "error_code": "OBJECT_STORE_NOT_DECLARED", "error_message": "gone"},
+            _DECLARED,
+            {"success": True, "retired": 1, "absent": 0, "orphan_chunks": 0},
+        )
+        tokens = iter(["t1", "t2", "t3", "t4"])
+        bound = await bind_pod_object_store(nc, identity_token=lambda: next(tokens))  # type: ignore[arg-type]
+
+        retired = await bound.retire(["enr/VA/3/t.abc"])
+
+        assert retired == RetiredObjects(retired=1, absent=0, orphan_chunks=0)
+        assert [path.rsplit(".", 1)[-1] for path, _ in nc.sent] == ["declare", "retire", "declare", "retire"]
+        assert [body["identity_token"] for _, body in nc.sent] == ["t1", "t2", "t3", "t4"], "a stale token was sent"

@@ -68,6 +68,21 @@ def _is_open_setup_stmt(sql: str) -> bool:
     return sql.startswith("SET ") or sql.startswith("SELECT pg_backend_pid")
 
 
+#: the privilege test every catalog query applies: the datasource's own user can SELECT the table,
+#: named schema-qualified and quoted so a mixed-case or keyword name resolves to itself
+_SELECTABLE = "has_table_privilege(current_user, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT')"
+
+#: the error a relation dropped between SVV_TABLES' listing and the privilege check raises
+_UNDEFINED_RELATION = {"S": "ERROR", "C": "42P01", "M": 'relation "s1.doomed" does not exist'}
+
+_BASE_LOGGER = "threetears.datasources.drivers.base"
+
+
+def _left_out(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """the messages saying the catalog left relations out for want of a grant."""
+    return [r.getMessage() for r in caplog.records if r.name == _BASE_LOGGER and "cannot SELECT" in r.getMessage()]
+
+
 # ---------------------------------------------------------------------------
 # Mock builder
 # ---------------------------------------------------------------------------
@@ -813,8 +828,8 @@ class TestQueryRouting:
     async def test_list_tables_uses_tables_sql(self, redshift_config: RedshiftConnectionConfig) -> None:
         """:meth:`list_tables` issues the canonical tables SQL."""
         conn = _build_mock_connection(
-            fetchall_rows=[("s1", "t1")],
-            description=[("table_schema", None), ("table_name", None)],
+            fetchall_rows=[("s1", "t1", True)],
+            description=[("table_schema", None), ("table_name", None), ("selectable", None)],
         )
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
@@ -863,10 +878,237 @@ class TestQueryRouting:
             calls = [
                 c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
-            sql = calls[0].args[0]
-            assert "FROM SVV_COLUMNS" in sql
+            columns_calls = [c for c in calls if "FROM SVV_COLUMNS" in c.args[0]]
+            assert len(columns_calls) == 1
+            sql = columns_calls[0].args[0]
             assert "WHERE table_schema IN (%s)" in sql
-            assert calls[0].args[1] == ("s1",)
+            assert columns_calls[0].args[1] == ("s1",)
+
+    async def _catalog_statements(
+        self,
+        redshift_config: RedshiftConnectionConfig,
+        method: str,
+        schemas: list[str],
+        fetchall_results: list[list[tuple[Any, ...]]] | None = None,
+        description: list[tuple[str, Any]] | None = None,
+    ) -> tuple[Any, list[tuple[str, tuple[Any, ...]]]]:
+        """run one introspection method on a mocked connection: its result and every statement it issued.
+
+        :param fetchall_results: successive ``fetchall`` answers, one per statement, in order
+        """
+        conn = _build_mock_connection(description=description)
+        if fetchall_results is not None:
+            conn.recorded_cursor.fetchall = MagicMock(side_effect=fetchall_results)
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            result = await getattr(driver, method)(schemas)
+        statements = [
+            (c.args[0], c.args[1])
+            for c in conn.recorded_cursor.execute.call_args_list
+            if c.args and not _is_open_setup_stmt(c.args[0])
+        ]
+        return result, statements
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["list_tables", "list_columns", "table_hashes"])
+    async def test_introspection_catalogs_only_tables_the_user_can_select(
+        self, redshift_config: RedshiftConnectionConfig, method: str
+    ) -> None:
+        """the warehouse users are least-privilege: a table they cannot SELECT never enters the catalog.
+
+        ``allowed_schemas`` names a whole schema while the grants name a few of its tables, so an
+        unfiltered catalog sent every later read of the rest into ``42501`` permission denied.
+        """
+        _result, statements = await self._catalog_statements(redshift_config, method, ["s1", "s2"])
+        checked = [(sql, binds) for sql, binds in statements if _SELECTABLE in sql]
+        assert len(checked) == 1
+        for sql, binds in statements:
+            # bound, never inlined
+            assert "s1" not in sql
+            assert binds == ("s1", "s2")
+            assert "IN (%s, %s)" in sql
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["list_tables", "list_columns", "table_hashes"])
+    async def test_the_privilege_check_never_shares_a_statement_with_compute_node_work(
+        self, redshift_config: RedshiftConnectionConfig, method: str
+    ) -> None:
+        """``has_table_privilege`` is leader-node-only; a statement mixing it with compute-node work fails.
+
+        joined into the hash query, the check made Redshift refuse the whole statement
+        (``0A000 Specified types or functions ... not supported on Redshift tables``) -- the
+        ``LISTAGG`` runs on the compute nodes. so the check runs in a statement over
+        ``SVV_TABLES`` alone: no ``LISTAGG``, no aggregate, no ``SVV_COLUMNS``, no join.
+        """
+        _result, statements = await self._catalog_statements(redshift_config, method, ["s1"])
+        for sql, _binds in statements:
+            if "has_table_privilege(" in sql:
+                upper = sql.upper()
+                assert "LISTAGG" not in upper
+                assert "SVV_COLUMNS" not in upper
+                assert "GROUP BY" not in upper
+                assert " JOIN " not in f" {upper} "
+                assert upper.count("FROM ") == 1 and "FROM SVV_TABLES" in upper
+            if "LISTAGG" in sql.upper():
+                assert "has_table_privilege" not in sql
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["list_tables", "list_columns", "table_hashes"])
+    async def test_the_privilege_test_only_reaches_relations_redshift_can_check(
+        self, redshift_config: RedshiftConnectionConfig, method: str
+    ) -> None:
+        """``has_table_privilege`` raises on a relation outside ``pg_class`` (a Spectrum external table).
+
+        one such row would fail the catalog query for every table in scope, so the call sits
+        behind a ``CASE`` on the relation's type -- SQL evaluates a ``CASE`` branch only when it
+        is taken, where an ``AND`` gives no order.
+        """
+        _result, statements = await self._catalog_statements(redshift_config, method, ["s1"])
+        (sql,) = [sql for sql, _binds in statements if "has_table_privilege(" in sql]
+        assert "CASE WHEN table_type" in sql
+        assert sql.index("CASE WHEN table_type") < sql.index("has_table_privilege(")
+
+    @pytest.mark.asyncio
+    async def test_list_columns_drops_the_columns_of_a_table_the_user_cannot_select(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        selectable = [("s1", "granted", True), ("s1", "ungranted", False)]
+        columns = [("s1", "granted", "id", "INT4", "NO", 1), ("s1", "ungranted", "token", "VARCHAR", "YES", 1)]
+        description = [
+            ("table_schema", None),
+            ("table_name", None),
+            ("column_name", None),
+            ("data_type", None),
+            ("is_nullable", None),
+            ("ordinal_position", None),
+        ]
+        rows, _statements = await self._catalog_statements(
+            redshift_config, "list_columns", ["s1"], [selectable, columns], description
+        )
+        assert [(r["table_name"], r["column_name"]) for r in rows] == [("granted", "id")]
+
+    @pytest.mark.asyncio
+    async def test_table_hashes_drops_a_table_the_user_cannot_select(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        selectable = [("s1", "granted", True), ("s1", "ungranted", False)]
+        hashes = [("s1", "granted", "h1"), ("s1", "ungranted", "h2")]
+        description = [("table_schema", None), ("table_name", None), ("column_hash", None)]
+        result, _statements = await self._catalog_statements(
+            redshift_config, "table_hashes", ["s1"], [selectable, hashes], description
+        )
+        assert result == {("s1", "granted"): "h1"}
+
+    @pytest.mark.asyncio
+    async def test_list_tables_keeps_only_the_selectable_and_says_what_it_left_out(
+        self, redshift_config: RedshiftConnectionConfig, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        rows = [("s1", "granted", True)] + [("s1", f"ungranted_{i}", False) for i in range(6)]
+        description = [("table_schema", None), ("table_name", None), ("selectable", None)]
+        with caplog.at_level("INFO", logger=_BASE_LOGGER):
+            tables, _statements = await self._catalog_statements(
+                redshift_config, "list_tables", ["s1"], [rows], description
+            )
+        assert tables == [{"table_schema": "s1", "table_name": "granted"}]
+        (message,) = _left_out(caplog)
+        assert "6 relation" in message
+        assert "list_tables" in message
+        assert message.count("s1.ungranted_") == 5
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["list_columns", "table_hashes"])
+    async def test_the_column_queries_say_what_they_left_out(
+        self, redshift_config: RedshiftConnectionConfig, caplog: pytest.LogCaptureFixture, method: str
+    ) -> None:
+        selectable = [("s1", "granted", True), ("s1", "ungranted", False)]
+        with caplog.at_level("INFO", logger=_BASE_LOGGER):
+            await self._catalog_statements(redshift_config, method, ["s1"], [selectable, []])
+        (message,) = _left_out(caplog)
+        assert "1 relation" in message
+        assert "s1.ungranted" in message
+        assert method in message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["list_tables", "list_columns", "table_hashes"])
+    async def test_a_relation_dropped_mid_read_is_retried_not_fatal(
+        self, redshift_config: RedshiftConnectionConfig, method: str
+    ) -> None:
+        """``has_table_privilege`` resolves a name against the CURRENT catalog, not the statement's.
+
+        a table a dbt promote drops or renames while ``SVV_TABLES`` is read raises ``42P01``
+        and fails the statement for every table in scope. SVV_TABLES exposes no OID to ask by
+        instead, so the privilege statement is run again -- in a fresh transaction, where the
+        dropped relation is no longer listed -- a bounded number of times.
+        """
+        conn = _build_mock_connection(description=[("table_schema", None), ("table_name", None), ("selectable", None)])
+        raised = {"n": 0}
+        last = {"sql": ""}
+        # the privilege statement answers a granted table; the column statement, no rows
+        conn.recorded_cursor.fetchall = MagicMock(
+            side_effect=lambda: [] if "SVV_COLUMNS" in last["sql"] else [("s1", "granted", True)]
+        )
+
+        def execute(sql: str, *args: Any) -> None:
+            last["sql"] = sql
+            if "has_table_privilege(" in sql and raised["n"] == 0:
+                raised["n"] += 1
+                raise redshift_connector.ProgrammingError(_UNDEFINED_RELATION)
+
+        conn.recorded_cursor.execute.side_effect = execute
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            result = await getattr(driver, method)(["s1"])
+        assert raised["n"] == 1
+        assert result is not None
+        if method == "list_tables":
+            assert result == [{"table_schema": "s1", "table_name": "granted"}]
+        conn.rollback.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_the_retry_is_bounded(self, redshift_config: RedshiftConnectionConfig) -> None:
+        conn = _build_mock_connection()
+        attempts = {"n": 0}
+
+        def execute(sql: str, *args: Any) -> None:
+            if "has_table_privilege(" in sql:
+                attempts["n"] += 1
+                raise redshift_connector.ProgrammingError(_UNDEFINED_RELATION)
+
+        conn.recorded_cursor.execute.side_effect = execute
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            with pytest.raises(redshift_connector.ProgrammingError):
+                await driver.table_hashes(["s1"])
+        assert attempts["n"] == redshift_driver_module.NAME_RACE_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_any_other_error_is_not_retried(self, redshift_config: RedshiftConnectionConfig) -> None:
+        conn = _build_mock_connection()
+        attempts = {"n": 0}
+
+        def execute(sql: str, *args: Any) -> None:
+            if "has_table_privilege(" in sql:
+                attempts["n"] += 1
+                raise redshift_connector.ProgrammingError({"S": "ERROR", "C": "42501", "M": "permission denied"})
+
+        conn.recorded_cursor.execute.side_effect = execute
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            with pytest.raises(redshift_connector.ProgrammingError):
+                await driver.list_tables(["s1"])
+        assert attempts["n"] == 1
 
     @pytest.mark.asyncio
     async def test_a_fingerprint_renders_the_relations_boolean_columns_without_a_cast(
@@ -1007,12 +1249,13 @@ class TestQueryRouting:
             calls = [
                 c for c in conn.recorded_cursor.execute.call_args_list if c.args and not _is_open_setup_stmt(c.args[0])
             ]
-            sql = calls[0].args[0]
+            hash_calls = [c for c in calls if "FROM SVV_COLUMNS" in c.args[0]]
+            assert len(hash_calls) == 1
+            sql = hash_calls[0].args[0]
             # the per-column pre-hash is load-bearing (Redshift's LISTAGG ceiling)
             assert "MD5(LISTAGG(MD5(" in sql
-            assert "FROM SVV_COLUMNS" in sql
             assert "WHERE table_schema IN (%s)" in sql
-            assert calls[0].args[1] == ("s1",)
+            assert hash_calls[0].args[1] == ("s1",)
 
     @pytest.mark.asyncio
     async def test_execute_commits(self, redshift_config: RedshiftConnectionConfig) -> None:

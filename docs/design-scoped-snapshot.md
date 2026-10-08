@@ -45,6 +45,41 @@ S3 or parquet stays a fallback only. L3 is the truth, and NATS is a cache rebuil
   at most `MAX_RETIRED_OBJECTS`. A pod holds no purge. A reader that loses a race to a retired
   chunk reads the scope's pointer again.
 
+## A writer that stages
+
+**Decided 2026-10-07, for the ENR pod's refresh.** A first load writes every state of 517,000 rows;
+publishing after the commit with the rows in hand would hold them all in memory. So a writer stages:
+
+- **Stage, then publish.** As each scope is written to L3, `stage()` writes its chunks under the
+  write's version, which the commit makes the scope's epoch. After the commit, `publish_staged()`
+  moves every staged pointer. Nothing reads a chunk until its pointer moves, so a write that never
+  commits shows nothing.
+- **Carry only from the epoch the writer saw.** A table a write did not change in a scope keeps the
+  scope's chunk, but only when the pointer is at the epoch the writer read before it began. Any
+  other pointer may hold a dead write's rows that L3 has and no chunk does. The move is a
+  compare-and-set against exactly the entry the carry was judged on.
+- **Anything else goes to the catch-up.** A skipped scope's L3 epoch is now ahead of its pointer, so
+  `catch_up_from_l3` republishes it from L3, the slow path but the correct one. A writer that finds
+  an earlier write unfinished stages nothing and leaves every state to the catch-up.
+- **Hold the claim across commit and publish.** Otherwise a replica waiting on the write rebuilds
+  every scope from L3 in the moment between them.
+
+## Chunk lifecycle
+
+One rule (`_deletable`) decides whether a chunk may be deleted. It is judged against the scope's
+pointer as KV holds it, never a replica's view of the pointers, which lags another replica's publish:
+
+| The chunk | Kept or deleted |
+|---|---|
+| Named by the pointer | Kept: it is being served |
+| At an epoch above the pointer's | Kept: a writer's stage whose pointer has not moved yet |
+| At an epoch below the pointer's, not named | Deleted: superseded |
+| At the pointer's epoch, not named; or its scope has no pointer | Deleted only once older than `stray_age` |
+
+A stage whose write never commits is below the scope's pointer after its next publish, which
+retires it. The hub's own sweep of chunk subjects no object names takes only those older than
+`ORPHAN_CHUNK_MIN_AGE`, since an object's chunks land before its metadata.
+
 ## The pod's own buckets
 
 A tool pod gets an Object Store and a pointer bucket only when its registry row opts in. The hub

@@ -405,6 +405,26 @@ class TestPartitions:
         assert exported.column("county").to_pylist() == ["c1", "c2"]
         assert backend.export_partition("results", "state", None, order_by=("race",)).num_rows == 0
 
+    def test_rows_export_as_the_partition_would_hold_them_and_change_nothing(self) -> None:
+        pytest.importorskip("pyarrow")
+        from threetears.core.cache.duckdb import PartitionReplacement
+
+        backend = _partitioned_backend()
+        key = ("race", "county")
+        backend.upsert_many("results", [_result("r1", "c1", "TX", 1), _result("r1", "c9", "CA", 9)], key)
+        fresh = [_result("r2", "c3", "TX", 30), _result("r1", "c2", "TX", 20)]
+
+        staged = backend.export_rows("results", "state", "TX", fresh, primary_key=key, order_by=key)
+
+        assert staged.column("county").to_pylist() == ["c2", "c3"]
+        held = backend.execute_query("SELECT county FROM results ORDER BY county")
+        assert held == [{"county": "c1"}, {"county": "c9"}], "an export changed the table"
+        backend.replace_partitions(
+            [PartitionReplacement(table="results", column="state", value="TX", rows=fresh, primary_key=key)]
+        )
+        assert staged.equals(backend.export_partition("results", "state", "TX", order_by=key))
+        assert backend.export_rows("results", "state", "TX", [], primary_key=key, order_by=key).num_rows == 0
+
     def test_replacing_partitions_swaps_each_scope_whole_and_leaves_the_rest(self) -> None:
         pytest.importorskip("pyarrow")
         from threetears.core.cache.duckdb import PartitionReplacement

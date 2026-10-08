@@ -184,6 +184,7 @@ from threetears.datasources.drivers.base import (
     _check_otel_metrics,
     _instrument_cache,
     check_max_rows,
+    log_unselectable_relations,
     observed,
 )
 from pydantic import SecretStr
@@ -232,18 +233,46 @@ def _pool_start_budget_seconds(pool_min_size: int) -> float:
 # ---------------------------------------------------------------------------
 
 
-#: list tables visible inside the schema allow-list.
+#: the privilege test every catalog query answers: can the datasource's own user SELECT the
+#: relation. ``information_schema`` lists a table its user holds ANY privilege on (an INSERT, a
+#: REFERENCES), and a least-privilege warehouse user is granted a few tables of a schema it can
+#: see whole; without this the catalog carried tables every later read of which -- the coverage
+#: probe, the schema tool -- raised 42501 permission denied. the catalog therefore follows the
+#: grants by construction: a revoked table drops out at the next introspection, a new grant
+#: comes in.
+#:
+#: ASKED BY OID, NEVER BY NAME. ``information_schema`` answers from the query's snapshot, but a
+#: name handed to ``has_table_privilege`` is resolved against the CURRENT catalog: a relation
+#: dropped or renamed while the query runs (a promote's DROP / ALTER) raised ``relation does not
+#: exist`` and failed the query for every table in scope. the snapshot's ``pg_class`` row
+#: carries the OID, and for an OID that no longer exists the check answers NULL -- that relation
+#: is simply left out (``tests/integration/test_asyncpg_driver_live.py`` drops one mid-read).
+#:
+#: the answer is a column (``selectable``: true, false, or NULL for vanished), not a WHERE
+#: filter, so the driver can say which relations it left out for want of a grant
+#: (:func:`~threetears.datasources.drivers.base.log_unselectable_relations`).
+_SELECTABLE = "has_table_privilege(current_user, rel.oid, 'SELECT')"
+
+#: the snapshot's ``pg_class`` row behind an ``information_schema`` row aliased ``src``
+_RELATION_JOIN = (
+    "JOIN pg_catalog.pg_namespace AS nsp ON nsp.nspname = src.table_schema\n"
+    "JOIN pg_catalog.pg_class AS rel ON rel.relnamespace = nsp.oid AND rel.relname = src.table_name"
+)
+
+
+#: list tables visible inside the schema allow-list, each with whether the user can SELECT it.
 #:
 #: originally migrated verbatim from Hub's
 #: ``aibots.hub.datasources.schema_introspector``; the shard-13 rewire has
 #: since landed and the introspector calls this driver directly instead of
 #: embedding its own copy of the SQL.
-_POSTGRES_TABLES_SQL = """
-SELECT table_schema, table_name
-FROM information_schema.tables
-WHERE table_schema = ANY($1)
-AND table_type = 'BASE TABLE'
-ORDER BY table_schema, table_name
+_POSTGRES_TABLES_SQL = f"""
+SELECT src.table_schema, src.table_name, {_SELECTABLE} AS selectable
+FROM information_schema.tables AS src
+{_RELATION_JOIN}
+WHERE src.table_schema = ANY($1)
+AND src.table_type = 'BASE TABLE'
+ORDER BY src.table_schema, src.table_name
 """.strip()
 
 
@@ -253,11 +282,13 @@ ORDER BY table_schema, table_name
 #: the :class:`ColumnRow` TypedDict pins it that way so the Tier-2 hash
 #: stays byte-equivalent with the warehouse-side MD5 (see
 #: :data:`_POSTGRES_TABLE_HASHES_SQL`).
-_POSTGRES_COLUMNS_SQL = """
-SELECT table_schema, table_name, column_name, data_type, is_nullable, ordinal_position
-FROM information_schema.columns
-WHERE table_schema = ANY($1)
-ORDER BY table_schema, table_name, ordinal_position
+_POSTGRES_COLUMNS_SQL = f"""
+SELECT src.table_schema, src.table_name, src.column_name, src.data_type, src.is_nullable, src.ordinal_position,
+       {_SELECTABLE} AS selectable
+FROM information_schema.columns AS src
+{_RELATION_JOIN}
+WHERE src.table_schema = ANY($1)
+ORDER BY src.table_schema, src.table_name, src.ordinal_position
 """.strip()
 
 
@@ -276,13 +307,15 @@ ORDER BY table_schema, table_name, ordinal_position
 #: formula to stay byte-identical to the Redshift driver and to
 #: ``column_hash_payload``, which had to change because Redshift's LISTAGG
 #: does. All three move together or none of them do.
-_POSTGRES_TABLE_HASHES_SQL = """
-SELECT table_schema, table_name,
-       MD5(STRING_AGG(MD5(column_name || ':' || data_type || ':' || COALESCE(is_nullable, '')), ',' ORDER BY ordinal_position)) AS column_hash
-FROM information_schema.columns
-WHERE table_schema = ANY($1)
-GROUP BY table_schema, table_name
-ORDER BY table_schema, table_name
+_POSTGRES_TABLE_HASHES_SQL = f"""
+SELECT src.table_schema, src.table_name,
+       MD5(STRING_AGG(MD5(src.column_name || ':' || src.data_type || ':' || COALESCE(src.is_nullable, '')), ',' ORDER BY src.ordinal_position)) AS column_hash,
+       {_SELECTABLE} AS selectable
+FROM information_schema.columns AS src
+{_RELATION_JOIN}
+WHERE src.table_schema = ANY($1)
+GROUP BY src.table_schema, src.table_name, rel.oid
+ORDER BY src.table_schema, src.table_name
 """.strip()
 
 
@@ -1246,8 +1279,26 @@ class AsyncpgDriver(Driver):
                 table_name=r["table_name"],
             )
             for r in records
+            if r["selectable"]
         ]
+        self._log_left_out("list_tables", records)
         return result
+
+    def _log_left_out(self, method: str, records: Any) -> None:
+        """report the relations a catalog query answered ``selectable = false`` for.
+
+        ``NULL`` is a relation dropped while the query ran, which is gone rather than ungranted.
+
+        :param method: the catalog method that read ``records``
+        :ptype method: str
+        :param records: the catalog rows, each carrying ``selectable``
+        :ptype records: Any
+        """
+        log_unselectable_relations(
+            datasource_name=self._datasource_name,
+            method=method,
+            left_out=((r["table_schema"], r["table_name"]) for r in records if r["selectable"] is False),
+        )
 
     @traced
     @observed(driver_type="asyncpg")
@@ -1280,7 +1331,9 @@ class AsyncpgDriver(Driver):
                 ordinal_position=r["ordinal_position"],
             )
             for r in records
+            if r["selectable"]
         ]
+        self._log_left_out("list_columns", records)
         return result
 
     @traced
@@ -1340,7 +1393,10 @@ class AsyncpgDriver(Driver):
         records = await self._acquire_and_run(
             lambda conn: conn.fetch(_POSTGRES_TABLE_HASHES_SQL, schemas),
         )
-        result: dict[tuple[str, str], str] = {(r["table_schema"], r["table_name"]): r["column_hash"] for r in records}
+        result: dict[tuple[str, str], str] = {
+            (r["table_schema"], r["table_name"]): r["column_hash"] for r in records if r["selectable"]
+        }
+        self._log_left_out("table_hashes", records)
         return result
 
     # -------------------------------------------------------------------
