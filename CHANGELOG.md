@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Knowledge: a draft carries the agent's token and the turn's user assertion
+
+- `KnowledgeDraftMessage` gains optional `identity_token` and `user_identity_token`, and
+  `for_event` / `for_command` take them. `threetears.agent.knowledge.KnowledgeIntegration` takes
+  `identity_token_provider`, and `publish_draft` / `publish_command` take `user_identity_token`.
+  The hub takes the draft's customer from the agent's token and its author from the assertion,
+  never the payload, and refuses a draft without them from 2027-01-05.
+
 ### Workspace: a workspace-create event carries the creating agent's token
 
 - `WorkspaceCreateEvent` gains an optional `identity_token`, and `workspace_create` attaches the
