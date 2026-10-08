@@ -59,8 +59,9 @@ inbox and request token from a sequential NUID, so one reply subject predicted t
 - **Added, `threetears.nats.own_consumer`**: `random_consumer_name` and `delivered_by_own_consumer`,
   which accepts a delivery only when its ack reply names the receiver's own stream and consumer, and
   logs one refusal event otherwise.
-- **Changed: the durable result waiter, the KV key watch, the KV key listing and the op-log replay
-  accept only their own consumer's deliveries**, and name their consumers at random. A forged
+- **Changed: the durable result waiter, the KV key watch (prefix watches included), the shared
+  named read behind the KV key listing and the Object Store, and the op-log replay accept only their
+  own consumer's deliveries**, and name their consumers at random. A forged
   message is dropped unacked and logged, and the receiver keeps waiting. The key watch no longer
   delivers a message with no JetStream metadata as revision 0. The op-log replay now creates its
   named consumer and binds to it, the same consumer-create subject as before.
