@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.metadata
+import inspect
 import os
 import signal
 from collections.abc import Awaitable, Callable
@@ -226,7 +227,9 @@ class RegistryServer:
             "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[LimitGuard | None]] | None"
         ) = None,
         usage_emitter: "EndpointUsageEmitter | None" = None,
-        usage_emitter_factory: ("Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None") = None,
+        usage_emitter_factory: (
+            "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]] | None"
+        ) = None,
         on_shutdown: "Callable[[], Awaitable[None]] | None" = None,
         version: str | None = None,
     ) -> None:
@@ -331,11 +334,12 @@ class RegistryServer:
             (or a factory) to publish the ``EndpointUsageEvent`` gu-task-16 consumes.
         :ptype usage_emitter: EndpointUsageEmitter | None
         :param usage_emitter_factory: optional async factory taking the connected
-            :class:`NatsClient` and returning the usage emitter (or ``None`` for no emit). invoked
+            :class:`NatsClient` and the registry's own identity-token provider (``None`` when the
+            registry has no identity), and returning the usage emitter (or ``None`` for no emit). invoked
             from :meth:`serve` after NATS connects (alongside ``limit_guard_factory``) so an emitter
             whose publish path needs the live connection can build against it. takes precedence over
             ``usage_emitter`` when both are set. ``None`` keeps the constructor-supplied ``usage_emitter``.
-        :ptype usage_emitter_factory: Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None
+        :ptype usage_emitter_factory: Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]] | None
         :param version: release version the health server echoes on its JSON body and startup
             log. ``python -m threetears.registry`` passes the installed ``3tears-registry``
             distribution's version; ``None`` (an embedding caller that passes none) leaves the
@@ -579,8 +583,15 @@ class RegistryServer:
         :return: the resolved emitter (also stored on self), or ``None`` when no factory / no emitter
         :rtype: EndpointUsageEmitter | None
         """
-        if self._usage_emitter_factory is not None:
-            self._usage_emitter = await self._usage_emitter_factory(nc)
+        factory = self._usage_emitter_factory
+        if factory is not None:
+            # the registry's own identity, so each event can prove the registry published it. A
+            # host factory written before the identity was handed over takes the client alone, and
+            # keeps working: a 3tears upgrade never requires the host to release in lockstep
+            if _takes_a_second_argument(factory):
+                self._usage_emitter = await factory(nc, self._identity_token_provider())
+            else:
+                self._usage_emitter = await factory(nc)  # type: ignore[call-arg]
         return self._usage_emitter
 
     async def serve(self) -> None:
@@ -1275,19 +1286,38 @@ def _resolve_limit_guard_factory() -> (
     return result
 
 
-def _resolve_usage_emitter_factory() -> "Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None":
+def _takes_a_second_argument(factory: Callable[..., object]) -> bool:
+    """whether ``factory`` accepts a second positional argument.
+
+    :param factory: a host-supplied factory
+    :ptype factory: Callable[..., object]
+    :return: True when it takes two positional arguments, or any number
+    :rtype: bool
+    """
+    try:
+        parameters = list(inspect.signature(factory).parameters.values())
+    except TypeError, ValueError:
+        parameters = []
+    positional = [p for p in parameters if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 2 or any(p.kind is p.VAR_POSITIONAL for p in parameters)
+
+
+def _resolve_usage_emitter_factory() -> (
+    "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]] | None"
+):
     """resolve the post-call endpoint-usage emitter factory from a configurable plugin path.
 
     3tears stays host-agnostic: the standalone registry has no metering bus, so the usage emitter is
     supplied out-of-band via ``THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY``, a ``module:callable``
     dotted path the operator points at a host-provided factory (the aibots Hub's factory that
     publishes an ``EndpointUsageEvent`` on the metering subject gu-task-16 consumes). the referenced
-    object is the async factory itself -- ``Callable[[NatsClient], Awaitable[EndpointUsageEmitter |
-    None]]`` -- invoked by :meth:`RegistryServer.serve` once NATS is up. UNSET -> ``None`` -> no
-    per-call usage emit (the pure-3tears / dev default; no metering pipeline to publish to).
+    object is the async factory itself, taking the connected client and the registry's own
+    identity-token provider (so each event can prove the registry published it), invoked by
+    :meth:`RegistryServer.serve` once NATS is up. UNSET -> ``None`` -> no per-call usage emit (the
+    pure-3tears / dev default; no metering pipeline to publish to).
 
     :return: the resolved factory, or ``None`` when the env var is unset
-    :rtype: Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None
+    :rtype: Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]] | None
     :raises ValueError: when the env var is set but not a ``module:callable`` dotted path
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured emitter plugin must crash startup, never silently drop usage events)
@@ -1295,7 +1325,7 @@ def _resolve_usage_emitter_factory() -> "Callable[[NatsClient], Awaitable[Endpoi
     import importlib
 
     spec = os.environ.get("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "").strip()
-    result: "Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None" = None
+    result: "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[EndpointUsageEmitter | None]] | None" = None
     if spec:
         module_name, sep, attr = spec.partition(":")
         if not module_name or not sep or not attr:

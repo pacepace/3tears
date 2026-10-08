@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Registry: the usage emitter factory receives the registry's own identity
+
+- `THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY`'s factory is called with the connected client and
+  the registry's identity-token provider (`None` when the registry holds no identity), as the
+  limit-guard and authenticator factories already are, so each endpoint-usage event can prove the
+  registry published it. A factory taking the client alone is still called with it alone, so a
+  host need not release in step with this 3tears.
+
 ### Core: a fetched JWKS is never trusted blind
 
 Any client in the account can get bytes delivered onto a verifier's JWKS reply inbox, and a

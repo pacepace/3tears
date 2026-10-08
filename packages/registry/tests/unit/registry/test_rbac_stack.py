@@ -678,8 +678,26 @@ class TestRegistryServerUsageEmitterFactory:
             usage_emitter_factory=factory,
         )
         result = await server.apply_usage_emitter_factory(nc)
-        factory.assert_awaited_once_with(nc)
+        # the registry's own identity provider rides along, so an event can prove its publisher;
+        # this server was built with no identity factory, so there is none to hand over
+        factory.assert_awaited_once_with(nc, None)
         assert result is emitter
+
+    @pytest.mark.asyncio
+    async def test_a_factory_taking_the_client_alone_still_builds(self) -> None:
+        """a host factory written before the identity was handed over keeps working: no lockstep."""
+        nc = AsyncMock()
+        emitter = MagicMock()
+        seen: list[object] = []
+
+        async def factory(client: object) -> object:
+            seen.append(client)
+            return emitter
+
+        server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer(), usage_emitter_factory=factory)  # type: ignore[arg-type]
+
+        assert await server.apply_usage_emitter_factory(nc) is emitter
+        assert seen == [nc]
 
     @pytest.mark.asyncio
     async def test_fixed_emitter_kept_when_no_factory(self) -> None:
