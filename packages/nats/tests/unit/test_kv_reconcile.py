@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 from nats.js.api import DiscardPolicy, StorageType, StreamConfig
-from nats.js.errors import BucketNotFoundError, NotFoundError
+from nats.js.errors import APIError, BucketNotFoundError, NotFoundError
 
 from threetears.nats.errors import KvConfigMismatch, KvError, NatsClientError, StreamSubjectsOverlapError
 from threetears.nats.kv import (
@@ -968,3 +968,88 @@ class _RecreatedElsewhereJetStream(_VanishingStreamJetStream):
     def recreate_elsewhere(self, live: StreamConfig) -> None:
         self.live = live
         self.add_raises = _name_in_use()
+
+
+def _server_answer(*, code: int, err_code: int, description: str) -> APIError:
+    """the exception nats-py raises for a JetStream API error body the server sent.
+
+    built through nats-py's own ``APIError.from_error``, the path every JetStream API reply and
+    publish ack takes, so the type (``ServerError`` for a 500, ``ServiceUnavailableError`` for a
+    503) and the code are exactly what production sees.
+
+    :param code: the HTTP-like status in the error body
+    :ptype code: int
+    :param err_code: the server's JetStream error code
+    :ptype err_code: int
+    :param description: the server's description
+    :ptype description: str
+    :return: the exception nats-py raised
+    :rtype: APIError
+    """
+    try:
+        APIError.from_error({"code": code, "err_code": err_code, "description": description})
+    except APIError as raised:
+        return raised
+    raise AssertionError("nats-py's APIError.from_error returned instead of raising")
+
+
+def _stream_offline() -> APIError:
+    """the server's answer while a NATS restart has the stream offline (``JSStreamOfflineErr``).
+
+    :return: the exception nats-py raises for it
+    :rtype: APIError
+    """
+    return _server_answer(code=500, err_code=10118, description="stream is offline")
+
+
+class TestAStreamManagementCallTheServerAnsweredIsNotBlamedOnAGrant:
+    """the update, delete and create an owner sends: an answered failure is never a missing grant.
+
+    a refused request is never answered, so only a deadline may name the grant. A stream the server
+    says is offline is a restart in progress and recovers on its own; any other answer names its own
+    cause, which the message must carry.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_update_answered_stream_offline_is_reported_as_an_outage(self) -> None:
+        js = _ScriptedJetStream(add_raises=_name_in_use(), live=_live(allow_direct=True, max_age=300.0))
+        js.update_raises = _stream_offline()
+        with pytest.raises(KvError) as caught:
+            await open_kv_stream(
+                js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True, owns_bucket=True
+            )
+        message = str(caught.value)
+        assert "stream is offline" in message
+        assert "temporarily unavailable" in message, message
+        assert "grant this principal" not in message, message
+
+    @pytest.mark.asyncio
+    async def test_a_delete_answered_stream_offline_is_reported_as_an_outage(self) -> None:
+        js = _OwnedRecreateJetStream(live=_nonce_bucket_on_file(), delete_raises=_stream_offline())
+        with pytest.raises(KvError) as caught:
+            await open_kv_stream(
+                js=js,
+                full_name="probe",
+                config=_memory_declaration(),
+                create_if_missing=True,
+                owns_bucket=True,
+                drop_file_storage=True,
+            )
+        message = str(caught.value)
+        assert "stream is offline" in message
+        assert "temporarily unavailable" in message, message
+        assert "grant this principal" not in message, message
+
+    @pytest.mark.asyncio
+    async def test_a_create_answered_with_its_own_error_then_an_absent_bind_names_that_error(self) -> None:
+        """the create is the call that decides: the server answered it, so the grant is not the cause."""
+        js = _ScriptedJetStream(
+            add_raises=_server_answer(code=503, err_code=10023, description="insufficient resources"),
+            bind_raises=BucketNotFoundError(),
+        )
+        with pytest.raises(KvError) as caught:
+            await open_kv_stream(js=js, full_name="probe", config=_memory_declaration(), create_if_missing=True)
+        message = str(caught.value)
+        assert "insufficient resources" in message, "the server's own answer to the create must survive"
+        assert "grant this principal" not in message, message
+        assert "temporarily unavailable" not in message, "a capacity answer is not an outage"

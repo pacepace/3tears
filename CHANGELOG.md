@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### NATS: a KV bucket whose stream is briefly offline is no longer blamed on a missing grant
+
+During a NATS restart a catalog write failed with `stream is offline`, and the error told the
+operator to grant the principal a KV bucket it already held. The write landed again thirty seconds
+later, unprompted.
+
+- **Fixed:** every KV failure that used to append the grant remedy now chooses it by whether a
+  missing grant can be the cause. A refused request is never answered, so only an unanswered failure
+  (a deadline) still names the grant. A stream the server says is temporarily unavailable
+  (err_code 10118 or 10194 "stream is offline", 10008 "JetStream system temporarily unavailable",
+  10009 "JetStream cluster can not handle request", or a codeless 503 from a JetStream API nothing
+  is serving yet) is reported as an outage that recovers on its own. Any other answered error is
+  reported as not a grant. The classification reads nats-py's exception types and the server's
+  error codes, never message text. No API change.
+
 ### Datasources: the catalog is what the datasource's own user can SELECT
 
 - **Changed, `AsyncpgDriver` and `RedshiftDriver`**: `list_tables`, `list_columns` and
