@@ -111,7 +111,28 @@ graded by its expected labels, beside one scorer.
 
 ## Comparing two variants
 
-<!-- TODO(onramp): filled in when examples/compare_two_prompts.py lands -->
+`compare` runs each candidate over the same cases as one arm, files the runs as one campaign, and tests
+every arm against the one you name as the control. It returns each arm's summary and the campaign's report.
+
+```python
+from threetears.evals.quick import compare
+
+result = await compare(
+    CASES,
+    {"baseline": classify_v1, "candidate": classify_v2},  # arm name -> async candidate
+    expected=lambda case: case["label"],                   # or scorers=[...]
+    control="baseline",
+    scope_id="dev",
+    k=2,
+)
+print(result.render())  # "Contrasts against the control": the difference, a Holm-adjusted p, and a verdict
+```
+
+Each contrast's verdict reads "improved on the control", "regressed from the control" or "not separated
+from the control". The last one means the cases could not tell the arms apart, not that they are equal:
+add cases (above all hard ones) before you read it as a tie. `result.arms["candidate"]` is that arm's
+`EvalSummary`, and `result.campaign_id` names the campaign holding every run.
+`examples/compare_two_prompts.py` compares two prompts through Claude, or runs offline with no API key.
 
 ## Grading with an LLM judge
 
