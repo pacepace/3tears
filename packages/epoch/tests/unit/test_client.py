@@ -13,13 +13,16 @@ while every other epoch positively benefits from one that does.
 
 from __future__ import annotations
 
+import asyncio
 import re
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch.client import DurableEpoch, EpochClient
+from threetears.epoch.listener import EpochListener
 from threetears.epoch.wire import EpochBumpMessage
 from threetears.nats.errors import PublishError
 from threetears.nats.subjects import Subject, Subjects
@@ -504,3 +507,218 @@ class TestBucketIdentityFailsSafe:
         # three attempts: the documented bound on the create/read retry, asserted as a number so a
         # change to the bound is a visible decision here rather than one the test follows silently.
         assert bucket.create.await_count == 3
+
+
+def _versions_pool(*answers: Any) -> Any:
+    """a pool whose ``fetchrow`` answers each call in turn: a row, ``None``, or an exception to raise."""
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(side_effect=list(answers))
+    pool.fetchval = AsyncMock(return_value=None)
+    return pool
+
+
+#: long enough that nothing in a test outlives it
+_HOUR = timedelta(hours=1)
+
+
+class TestCachedVersions:
+    """``versions(subject, max_age=...)``: one pool read per subject per ``max_age``, per process.
+
+    the hub reads a tile subject's versions on every TileJSON and tile request, and that read went
+    down with a connection drop live. a value this process already holds, and that nothing has
+    moved since, answers it.
+    """
+
+    async def test_two_reads_within_max_age_are_one_pool_call(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2})
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+
+        first = await client.versions(subject, max_age=_HOUR)
+        second = await client.versions(subject, max_age=_HOUR)
+
+        assert first == second == DurableEpoch(epoch=3, previous=2)
+        assert pool.fetchrow.await_count == 1
+
+    async def test_subjects_are_cached_separately(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 9, "previous_epoch": 8})
+        client = EpochClient(pool, _nats_mock())
+
+        assert await client.versions(_durable_subject("a"), max_age=_HOUR) == DurableEpoch(epoch=3, previous=2)
+        assert await client.versions(_durable_subject("b"), max_age=_HOUR) == DurableEpoch(epoch=9, previous=8)
+        assert pool.fetchrow.await_count == 2
+
+    async def test_without_max_age_every_read_is_a_pool_call(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        client = EpochClient(pool, _nats_mock())
+
+        await client.versions(_durable_subject())
+        assert await client.versions(_durable_subject()) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 2
+
+    async def test_this_process_advancing_updates_the_cache_with_no_pool_read(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 5, "previous_epoch": 3})
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+
+        await client.versions(subject, max_age=_HOUR)
+        await client.advance_to(subject, 5)
+
+        assert await client.versions(subject, max_age=_HOUR) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 2, "the read after advance_to went to the pool"
+
+    async def test_an_advance_seeds_a_subject_never_read(self) -> None:
+        pool = _versions_pool({"epoch": 5, "previous_epoch": 3})
+        client = EpochClient(pool, _nats_mock())
+
+        await client.advance_to(_durable_subject(), 5)
+
+        assert await client.versions(_durable_subject(), max_age=_HOUR) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 1
+
+    async def test_a_bump_drops_the_cached_value(self) -> None:
+        # a bump returns the new epoch only, not the one it replaced, so the next read asks the row
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4}, {"epoch": 4, "previous_epoch": 3})
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+
+        await client.versions(subject, max_age=_HOUR)
+        await client.bump(subject)
+
+        assert await client.versions(subject, max_age=_HOUR) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 3
+
+    async def test_another_process_advancing_invalidates_it_through_the_listener(self) -> None:
+        nats = FakeNatsClient()
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        client = EpochClient(pool, nats)
+        subject = _durable_subject()
+        bumps: list[int] = []
+
+        async def _on_bump(epoch: int, payload: dict[str, object] | None) -> None:
+            bumps.append(epoch)
+
+        await EpochListener(nats, client).subscribe(subject, _on_bump, primed_epoch=3)
+        await client.versions(subject, max_age=_HOUR)
+        # another pod's advance_to, as its broadcast arrives here
+        await nats.publish(subject=subject, message=EpochBumpMessage(subject_path=subject.path, epoch=4))
+
+        assert await client.versions(subject, max_age=_HOUR) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 2
+        assert bumps == [4]
+
+    async def test_this_process_hearing_its_own_advance_keeps_the_cache(self) -> None:
+        # the broadcast of an advance reaches the process that made it too; the cache already holds
+        # that epoch, so dropping it would only cost a read
+        nats = FakeNatsClient()
+        pool = _versions_pool({"epoch": 5, "previous_epoch": 3})
+        client = EpochClient(pool, nats)
+        subject = _durable_subject()
+
+        async def _on_bump(epoch: int, payload: dict[str, object] | None) -> None:
+            return None
+
+        await EpochListener(nats, client).subscribe(subject, _on_bump, primed_epoch=3)
+        await client.advance_to(subject, 5)
+
+        assert await client.versions(subject, max_age=_HOUR) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 1
+
+    async def test_an_older_broadcast_keeps_the_cache(self) -> None:
+        pool = _versions_pool({"epoch": 5, "previous_epoch": 3})
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+
+        await client.versions(subject, max_age=_HOUR)
+        client.observe_broadcast(EpochBumpMessage(subject_path=subject.path, epoch=4))
+
+        assert await client.versions(subject, max_age=_HOUR) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 1
+
+    async def test_after_max_age_the_read_goes_to_the_pool_again(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, {"epoch": 4, "previous_epoch": 3})
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+        max_age = timedelta(milliseconds=5)
+
+        await client.versions(subject, max_age=max_age)
+        await asyncio.sleep(0.02)
+
+        assert await client.versions(subject, max_age=max_age) == DurableEpoch(epoch=4, previous=3)
+        assert pool.fetchrow.await_count == 2
+
+    async def test_a_failed_read_inside_the_grace_window_answers_the_cached_value(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, ConnectionError("connection was closed"))
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+        max_age = timedelta(milliseconds=5)
+
+        await client.versions(subject, max_age=max_age)
+        await asyncio.sleep(0.02)
+
+        assert await client.versions(subject, max_age=max_age, grace=_HOUR) == DurableEpoch(epoch=3, previous=2)
+        assert pool.fetchrow.await_count == 2
+
+    async def test_a_failed_read_past_the_grace_window_raises(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, ConnectionError("connection was closed"))
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+        max_age = timedelta(milliseconds=5)
+
+        await client.versions(subject, max_age=max_age)
+        await asyncio.sleep(0.02)
+
+        with pytest.raises(ConnectionError):
+            await client.versions(subject, max_age=max_age, grace=timedelta(0))
+
+    async def test_a_failed_read_without_max_age_raises_as_before(self) -> None:
+        pool = _versions_pool({"epoch": 3, "previous_epoch": 2}, ConnectionError("connection was closed"))
+        client = EpochClient(pool, _nats_mock())
+
+        await client.versions(_durable_subject())
+        with pytest.raises(ConnectionError):
+            await client.versions(_durable_subject())
+
+    async def test_a_failed_read_with_nothing_cached_raises(self) -> None:
+        pool = _versions_pool(ConnectionError("connection was closed"))
+        client = EpochClient(pool, _nats_mock())
+
+        with pytest.raises(ConnectionError):
+            await client.versions(_durable_subject(), max_age=_HOUR)
+
+    async def test_a_read_racing_an_advance_does_not_cache_the_older_value(self) -> None:
+        # a read that left for the pool before this process advanced, and answers after, holds the
+        # row as it stood before the advance; caching it would undo the advance's update
+        release = asyncio.Event()
+
+        async def _fetchrow(sql: str, *args: Any) -> Any:
+            if "SELECT" in sql:
+                await release.wait()
+                return {"epoch": 3, "previous_epoch": 2}
+            return {"epoch": 5, "previous_epoch": 3}
+
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        client = EpochClient(pool, _nats_mock())
+        subject = _durable_subject()
+
+        slow_read = asyncio.create_task(client.versions(subject, max_age=_HOUR))
+        await asyncio.sleep(0)
+        await client.advance_to(subject, 5)
+        release.set()
+        assert await slow_read == DurableEpoch(epoch=3, previous=2)
+
+        assert await client.versions(subject, max_age=_HOUR) == DurableEpoch(epoch=5, previous=3)
+        assert pool.fetchrow.await_count == 2
+
+    async def test_an_ephemeral_subject_is_still_refused(self) -> None:
+        client = EpochClient(_versions_pool(), _nats_mock())
+        with pytest.raises(ValueError, match="durable"):
+            await client.versions(_subject(), max_age=_HOUR)
+        with pytest.raises(ValueError, match="durable"):
+            await client.versions(_subject())
+
+    async def test_a_negative_max_age_is_refused(self) -> None:
+        client = EpochClient(_versions_pool(), _nats_mock())
+        with pytest.raises(ValueError, match="max_age"):
+            await client.versions(_durable_subject(), max_age=timedelta(seconds=-1))

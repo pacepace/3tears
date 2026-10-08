@@ -13,7 +13,9 @@ that only a durable subject has:
 - :meth:`advance_to` -- move a durable subject forward to a target, never
   back, then broadcast as :meth:`bump` does
 - :meth:`versions` -- read a durable subject's epoch and the one its
-  latest move replaced
+  latest move replaced; with ``max_age``, from a per-process copy kept
+  current by this process's own moves and by the advance broadcasts its
+  :class:`~threetears.epoch.listener.EpochListener` hears
 
 **two substrates, routed by what the number means.** an epoch is a
 coherence signal, not a durable fact, so the counter for one lives in a
@@ -42,7 +44,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Final, Protocol
 
 from threetears.core.coordination.distributed_counter import DistributedCounter
@@ -276,6 +280,23 @@ _ADVANCE_SQL = (
 #: a durable subject's epoch and the one its latest move replaced, in one read
 _VERSIONS_SQL = "SELECT epoch, previous_epoch FROM config_epochs WHERE subject_path = $1"
 
+#: how long past its ``max_age`` a cached :meth:`EpochClient.versions` value still answers when the
+#: read that would refresh it fails. long enough to ride out a dropped connection being replaced,
+#: short enough that a database that is really gone surfaces as an error within the minute.
+_VERSIONS_GRACE: Final = timedelta(seconds=30)
+
+
+@dataclass(frozen=True)
+class _CachedVersions:
+    """one subject's versions as this process last knew them.
+
+    :ivar value: the versions
+    :ivar read_at: ``time.monotonic()`` when they were read from, or written to, the row
+    """
+
+    value: DurableEpoch
+    read_at: float
+
 
 @dataclass(frozen=True)
 class DurableEpoch:
@@ -328,6 +349,13 @@ class EpochClient:
         self._pool = pool
         self._nats = nats_client
         self._counter = DistributedCounter(nats_client, bucket_name=_EPOCH_BUCKET, ttl=None)
+        # :meth:`versions` with ``max_age``: the last versions of each durable subject this process
+        # read or wrote, by subject path. one entry per durable subject asked about, which is one per
+        # tile layer, so it is left unbounded.
+        self._versions: dict[str, _CachedVersions] = {}
+        # bumped by every change this process makes to a cached entry, so a pool read that left
+        # before one and lands after cannot overwrite it with the row as it stood before
+        self._versions_fence: dict[str, int] = {}
 
     async def bucket_identity(self) -> str | None:
         """the epoch bucket's opaque identity, minting one if it has none.
@@ -469,6 +497,8 @@ class EpochClient:
                     f"config_epochs upsert returned no row for subject={subject.path!r}",
                 )
             new_epoch = int(row["epoch"])
+            # the row moved, and RETURNING names only the new epoch, not the one it replaced
+            self._forget_versions(subject.path)
         else:
             new_epoch = await self._counter.increment(_key_for(subject))
 
@@ -538,6 +568,8 @@ class EpochClient:
         else:
             previous = row["previous_epoch"]
             result = DurableEpoch(epoch=int(row["epoch"]), previous=None if previous is None else int(previous))
+            # this process knows the row as it now stands, so later cached reads need not ask
+            self._remember_versions(subject.path, result)
             message = EpochBumpMessage(subject_path=subject.path, epoch=result.epoch, payload=payload)
             try:
                 await self._nats.publish(subject=subject, message=message)
@@ -549,20 +581,114 @@ class EpochClient:
                 )
         return result
 
-    async def versions(self, subject: Subject) -> DurableEpoch:
+    async def versions(
+        self,
+        subject: Subject,
+        *,
+        max_age: timedelta | None = None,
+        grace: timedelta = _VERSIONS_GRACE,
+    ) -> DurableEpoch:
         """a durable subject's epoch and the one its latest move replaced, in one read.
+
+        **with ``max_age``, a per-process copy answers** for up to ``max_age`` after it was read, so a
+        caller on a hot path (a tile or TileJSON request) does not read the row every time. the copy
+        is kept current without waiting for ``max_age``:
+
+        - this process's own :meth:`advance_to` writes the new versions into it, with no read;
+          :meth:`bump` drops it, since the row's previous epoch is not returned;
+        - an advance by ANOTHER process drops it when the broadcast arrives, through
+          :meth:`observe_broadcast` -- which :class:`~threetears.epoch.listener.EpochListener` calls
+          for every broadcast on a subject it is subscribed to. a process that caches without
+          subscribing learns of another's advance only once ``max_age`` lapses.
+
+        a read that fails (a dropped connection) answers the cached copy instead while it is no older
+        than ``max_age + grace``, and logs it; past that, or with nothing cached, it raises as an
+        uncached read does. every successful read refreshes the copy, ``max_age`` or not.
+
+        **constraint for callers: a cached value must never be used to BUILD at a version whose rows
+        may be gone.** it may lag the row by up to ``max_age`` (plus ``grace`` through an outage) when
+        a broadcast is missed, and in that window the version it names may already have been
+        reclaimed. use it to pick what to SERVE or advertise -- a tile URL, TileJSON -- where a lagging
+        answer is a version clients still hold. before reading source rows at a version, read
+        without ``max_age`` (or check the rows are still there).
 
         :param subject: target subject, of a durable family
         :ptype subject: Subject
+        :param max_age: how old a cached copy may be and still answer; ``None`` (the default) always
+            reads the row
+        :ptype max_age: timedelta | None
+        :param grace: how much longer than ``max_age`` a cached copy answers when the read fails;
+            only with ``max_age``
+        :ptype grace: timedelta
         :return: the epoch (``0`` when the subject has never moved) and its previous one
         :rtype: DurableEpoch
-        :raises ValueError: for a subject outside the durable families
+        :raises ValueError: for a subject outside the durable families, or a negative ``max_age`` or
+            ``grace``
         """
         if not _is_durable(subject):
             raise ValueError(f"versions needs a durable epoch subject; {subject.path!r} counts in NATS KV")
-        row = await self._pool.fetchrow(_VERSIONS_SQL, subject.path)
+        if max_age is not None and max_age < timedelta(0):
+            raise ValueError(f"versions max_age must not be negative, got {max_age}")
+        if grace < timedelta(0):
+            raise ValueError(f"versions grace must not be negative, got {grace}")
+        path = subject.path
+        cached = self._versions.get(path) if max_age is not None else None
+        if cached is not None and max_age is not None and time.monotonic() - cached.read_at <= max_age.total_seconds():
+            return cached.value
+        fence = self._versions_fence.get(path, 0)
+        try:
+            row = await self._pool.fetchrow(_VERSIONS_SQL, path)
+        # prawduct:allow prawduct/broad-except -- the pool raises whatever its driver does on a lost
+        # connection (OSError, asyncpg's ConnectionDoesNotExistError, InterfaceError ...); a cached copy
+        # inside its grace answers any of them, and anything else is re-raised unchanged
+        except Exception:
+            if cached is None or max_age is None:
+                raise
+            age = time.monotonic() - cached.read_at
+            if age > (max_age + grace).total_seconds():
+                raise
+            log.warning(
+                "durable epoch read failed; answering the cached versions inside their grace",
+                exc_info=True,
+                extra={"extra_data": {"subject": path, "epoch": cached.value.epoch, "age_seconds": round(age, 3)}},
+            )
+            return cached.value
         result = DurableEpoch(epoch=0, previous=None)
         if row is not None:
             previous = row["previous_epoch"]
             result = DurableEpoch(epoch=int(row["epoch"]), previous=None if previous is None else int(previous))
+        if self._versions_fence.get(path, 0) == fence:
+            # nothing this process did to the copy since the read left, so the row it read is current
+            self._versions[path] = _CachedVersions(value=result, read_at=time.monotonic())
         return result
+
+    def observe_broadcast(self, message: EpochBumpMessage) -> None:
+        """drop the cached :meth:`versions` of the subject a broadcast names, when it names a later epoch.
+
+        the hook that keeps a ``max_age`` read current across processes: another process's
+        :meth:`advance_to` or :meth:`bump` broadcasts the new epoch, and this process's copy, older
+        than it, must not answer after it arrives. a broadcast at or below the cached epoch -- this
+        process hearing its own advance, or a redelivery -- leaves the copy alone.
+
+        :class:`~threetears.epoch.listener.EpochListener` calls this for every broadcast it receives,
+        so a process subscribed to the subject through one needs nothing more. a process with its own
+        subscription calls it from its callback.
+
+        :param message: the broadcast as received
+        :ptype message: EpochBumpMessage
+        :return: nothing
+        :rtype: None
+        """
+        cached = self._versions.get(message.subject_path)
+        if cached is not None and message.epoch > cached.value.epoch:
+            self._forget_versions(message.subject_path)
+
+    def _remember_versions(self, path: str, value: DurableEpoch) -> None:
+        """write this process's own knowledge of a row into the cached copy."""
+        self._versions_fence[path] = self._versions_fence.get(path, 0) + 1
+        self._versions[path] = _CachedVersions(value=value, read_at=time.monotonic())
+
+    def _forget_versions(self, path: str) -> None:
+        """drop a subject's cached copy, so its next read asks the row."""
+        self._versions_fence[path] = self._versions_fence.get(path, 0) + 1
+        self._versions.pop(path, None)

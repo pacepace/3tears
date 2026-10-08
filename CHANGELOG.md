@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Epoch: a durable subject's versions can be read from a per-process copy
+
+`EpochClient.versions` read the `config_epochs` row on every call, and the hub calls it on every
+TileJSON and tile request; that read failed live when a pool connection dropped.
+
+- **Added, `EpochClient.versions(subject, *, max_age: timedelta | None = None, grace: timedelta =
+  timedelta(seconds=30))`**: with `max_age`, a per-process copy per subject answers for up to
+  `max_age` after it was read. This process's own `advance_to` writes the new versions into it
+  with no read, and its `bump` drops it. A read that fails answers the copy while it is no older
+  than `max_age + grace`, logged at WARNING; past that, or with nothing cached, it raises as
+  before. Without `max_age` every call reads the row, as before, and a non-durable subject still
+  raises `ValueError`. A read that left for the pool before this process moved the subject cannot
+  overwrite the move.
+- **Added, `EpochClient.observe_broadcast(message: EpochBumpMessage) -> None`**: drops the cached
+  copy when a broadcast names a later epoch than it holds. `EpochListener` now calls it for every
+  broadcast it receives, before its dedupe, so another process's advance invalidates the copy as
+  its broadcast arrives.
+- **Constraint for callers**: a cached value may lag the row by up to `max_age` when a broadcast
+  is missed, so it is for choosing what to serve or advertise, never for building at a version
+  whose rows may already be gone. Read without `max_age` before reading source rows.
+
 ### Geo: a feature-cache read with no L1 is one loader call, and a wide rectangle is read once
 
 A z3 tile through `FeatureCache` made 1,025 loader queries live, and a z0 tile 65,537: the read
