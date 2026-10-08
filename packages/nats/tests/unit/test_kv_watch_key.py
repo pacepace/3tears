@@ -517,44 +517,39 @@ class TestTheKeyListingReadsOnlyItsOwnConsumer:
         assert name is not None and len(name.removeprefix("kl_")) == 32
 
 
-class TestTheSharedNamedReadReadsOnlyItsOwnConsumer:
-    """the one read loop the key listing and the Object Store share refuses what its consumer did not deliver."""
+class TestTheObjectStoreReadsOnlyItsOwnConsumer:
+    """the Object Store reads through the same named read as the key listing, and refuses what its
+    consumer did not deliver."""
 
-    async def test_an_object_store_read_takes_only_its_own_consumers_chunks(
+    async def test_an_object_listing_takes_only_its_own_consumers_records(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        from threetears.nats._named_read import NamedRead, read_through_named_consumer
+        import json
+
+        from threetears.nats import NatsObjectStore
+
+        stream = "OBJ_pods"
+
+        def record(name: str) -> bytes:
+            return json.dumps({"name": name, "bucket": "pods", "nuid": f"n-{name}", "size": 0, "chunks": 0}).encode()
 
         forged = [
-            _delivered(b"forged", sequence=1, stream="OBJ_forger"),
-            _delivered(b"forged", sequence=2, consumer="obr_someone_else"),
+            _delivered(record("forged-stream"), sequence=1, stream="OBJ_forger"),
+            _delivered(record("forged-consumer"), sequence=2, stream=stream, consumer="ol_someone_else"),
         ]
-        own = [_delivered(b"chunk-1", sequence=3), _delivered(b"chunk-2", sequence=4)]
+        own = [_delivered(record("real"), sequence=3, stream=stream)]
         log: list[str] = []
         raw = _Raw([[*forged, *own]], log)
-        js = _JetStream(log)
+        js = _JetStream(log, pending=1)
+        store = NatsObjectStore(client=_Client(raw, js), full_name="pods")  # type: ignore[arg-type]
 
         with caplog.at_level(logging.WARNING, logger="threetears.nats.own_consumer"):
-            messages = await read_through_named_consumer(
-                _Client(raw, js),  # type: ignore[arg-type]
-                NamedRead(
-                    stream=_STREAM,
-                    filter_subject=_SUBJECT,
-                    deliver_policy=DeliverPolicy.ALL,
-                    name_prefix="obr_",
-                    count=2,
-                    timeout_seconds=1.0,
-                    receiver="object store read",
-                ),
-                failure=lambda message, _cause: KvError(message),
-            )
+            listed = await asyncio.wait_for(store.list_objects(), timeout=2)
 
-        assert [bytes(m.data) for m in messages] == [b"chunk-1", b"chunk-2"]
+        assert [info.name for info in listed] == ["real"]
         refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
         assert len(refusals) == len(forged)
         assert all(r.getMessage().startswith("object store read ") for r in refusals)
-        name = js.creates[0][1].name
-        assert name is not None and len(name.removeprefix("obr_")) == 32
 
 
 class TestForgeriesAreNoProofOfLife:
