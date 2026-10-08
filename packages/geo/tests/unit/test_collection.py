@@ -16,10 +16,15 @@ import mapbox_vector_tile
 import pytest
 from shapely.geometry import Polygon
 
+from sqlalchemy import Column as SAColumn
+from sqlalchemy import Integer, MetaData, String, Table
+
+from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.geo.bands import AggregateSpec, FeatureSpec
 from threetears.geo.collection import LayerDefinition, TileCollection, ViewportRequest
+from threetears.geo.features import FeatureCache
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds
 from threetears.object_store.filesystem import FilesystemObjectStore
 
@@ -414,3 +419,79 @@ class TestSerialization:
         collection, _ = _make_collection(tmp_path)
         row = {"layer": "l", "version": 1, "z": 0, "x": 0, "y": 0, "mvt": b""}
         assert collection.deserialize(collection.serialize(row)) == row
+
+
+class TestThroughAFeatureCache:
+    """a low-zoom build through a cache-wired collection reads its rectangle once.
+
+    live, a z0 tile through the feature cache was 65,537 loader queries -- one per z8 chunk under
+    the world, then the world again -- and a z3 tile 1,025.
+    """
+
+    @staticmethod
+    def _wired(
+        request: pytest.FixtureRequest, tmp_path: Path, *, l1: bool
+    ) -> tuple[TileCollection, list[tuple[str, int, BoundingBox]]]:
+        calls: list[tuple[str, int, BoundingBox]] = []
+        layer = _tracts_layer(minzoom=0)
+
+        async def _loader(name: str, version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+            calls.append((name, version, bounds))
+            return [_tract_row("a", lon=_PHOENIX_LON, lat=_PHOENIX_LAT)]
+
+        def _bounds_of(row: dict[str, Any]) -> BoundingBox:
+            geometry = layer.geometry_of(row)
+            assert geometry is not None
+            min_lon, min_lat, max_lon, max_lat = geometry.bounds
+            return BoundingBox(min_lon, min_lat, max_lon, max_lat)
+
+        backend: SQLiteBackend | None = None
+        if l1:
+            metadata = MetaData()
+            Table(
+                "geo_features_ds_aibotsmap",
+                metadata,
+                SAColumn("layer", String, primary_key=True),
+                SAColumn("source_version", Integer, primary_key=True),
+                SAColumn("feature_id", String, primary_key=True),
+            )
+            backend = SQLiteBackend(f"geo_wired_{abs(hash(request.node.nodeid))}")
+            backend.initialize(metadata)
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=backend, l2_client=None, l3_pool=None)
+        cache = FeatureCache(
+            registry,
+            DefaultCoreConfig(),
+            None,
+            None,
+            loader=_loader,
+            bounds_of=_bounds_of,
+            feature_id_column="geoid",
+            cache_scope="ds_aibotsmap",
+        )
+        collection = TileCollection(
+            registry,
+            DefaultCoreConfig(),
+            None,
+            None,
+            layers={"census_tracts": layer},
+            loader=_loader,
+            object_store=FilesystemObjectStore(tmp_path),
+            datasource_name="aibotsmap-data",
+            cache_scope="ds_aibotsmap",
+            feature_caches={"census_tracts": cache},
+        )
+        return collection, calls
+
+    @pytest.mark.parametrize("l1", [True, False], ids=["with-l1", "without-l1"])
+    async def test_a_z0_build_is_one_loader_call(
+        self, request: pytest.FixtureRequest, tmp_path: Path, l1: bool
+    ) -> None:
+        collection, calls = self._wired(request, tmp_path, l1=l1)
+
+        built = await collection.compute(("census_tracts", 3, 0, 0, 0))
+
+        assert built is not None
+        assert len(calls) == 1, f"a z0 build made {len(calls)} loader calls"
+        features = mapbox_vector_tile.decode(built["mvt"])["census_tracts"]["features"]
+        assert features[0]["properties"]["count"] == 1
