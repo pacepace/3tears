@@ -31,6 +31,12 @@ implementation notes:
   of a private access that every attribute-node check, SLF001
   included, cannot see. unlike A, C, D and E it is meant to scan the
   ``tests/`` trees too.
+- shape I walks the classes a ``tests/`` tree defines for ``self._x`` / ``cls._x`` reaching a
+  PRIVATE STATE attribute a production base class keeps (one its methods assign on ``self`` or
+  ``cls``, or its class body binds to a non-function value), and that the test class does not
+  define itself. a base's private METHODS stay callable: a protected hook is what a subclass is
+  for. its state is the base's implementation, and a test bound to it passes vacuously once the
+  base keeps that state another way.
 """
 
 from __future__ import annotations
@@ -57,6 +63,7 @@ __all__ = [
     "shape_d_violations",
     "shape_e_violations",
     "shape_f_violations",
+    "shape_i_violations",
 ]
 
 
@@ -741,7 +748,7 @@ def _reflective_private_violations(tree: ast.Module, file: Path) -> list[Violati
     candidates: list[tuple[ast.Call, str, str]] = []
     for call, scopes in _reflective_private_calls(tree):
         accessor = call.func.id if isinstance(call.func, ast.Name) else ""
-        name = _private_name_argument(call)
+        name = _private_name_argument(call, scopes)
         receiver = call.args[0]
         if isinstance(receiver, ast.Name) and receiver.id in _OWNER_RECEIVERS:
             continue
@@ -750,7 +757,7 @@ def _reflective_private_violations(tree: ast.Module, file: Path) -> list[Violati
                 owned_markers.add(name)
             continue
         candidates.append((call, accessor, name))
-    violations: list[Violation] = []
+    violations: list[Violation] = _namespace_subscript_violations(tree, file)
     for call, accessor, name in candidates:
         if name in owned_markers:
             continue
@@ -787,7 +794,7 @@ def _reflective_private_calls(tree: ast.Module) -> list[tuple[ast.Call, tuple[_S
             if isinstance(child, _NESTED_SCOPES):
                 _visit(child, (*scopes, child))
                 continue
-            if isinstance(child, ast.Call) and _private_name_argument(child):
+            if isinstance(child, ast.Call) and _private_name_argument(child, scopes):
                 found.append((child, scopes))
             _visit(child, scopes)
 
@@ -795,25 +802,147 @@ def _reflective_private_calls(tree: ast.Module) -> list[tuple[ast.Call, tuple[_S
     return sorted(found, key=lambda pair: (pair[0].lineno, pair[0].col_offset))
 
 
-def _private_name_argument(call: ast.Call) -> str:
+def _private_name_argument(call: ast.Call, scopes: tuple[_ScopeNode, ...] = ()) -> str:
     """the private attribute name a reflective builtin call names, or ``""`` when it names none.
+
+    The name is a string literal, or a variable whose values the enclosing code spells as literals:
+    a ``for`` over a literal list or tuple, or a ``pytest.mark.parametrize`` of the function it sits
+    in. ``getattr(module, name)`` over ``["_A", "_B"]`` binds the privates as surely as the literal.
 
     :param call: a call node
     :ptype call: ast.Call
+    :param scopes: the call's enclosing scopes, outermost first
+    :ptype scopes: tuple[_ScopeNode, ...]
     :return: the private name, or the empty string for any other call
     :rtype: str
     """
     result = ""
-    if (
-        isinstance(call.func, ast.Name)
-        and call.func.id in _REFLECTIVE_ACCESSORS
-        and len(call.args) >= 2
-        and isinstance(call.args[1], ast.Constant)
-        and isinstance(call.args[1].value, str)
-        and is_private_name(call.args[1].value)
-    ):
-        result = call.args[1].value
+    if isinstance(call.func, ast.Name) and call.func.id in _REFLECTIVE_ACCESSORS and len(call.args) >= 2:
+        argument = call.args[1]
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str) and is_private_name(argument.value):
+            result = argument.value
+        elif isinstance(argument, ast.Name):
+            result = next((v for v in _literal_values(argument.id, scopes) if is_private_name(v)), "")
     return result
+
+
+def _literal_values(name: str, scopes: tuple[_ScopeNode, ...]) -> list[str]:
+    """the string literals a variable is given by the code around it: the ``for`` loops over literal
+    sequences that bind it, and a ``parametrize`` decorator of an enclosing function that names it.
+
+    :param name: the variable
+    :ptype name: str
+    :param scopes: the enclosing scopes, outermost first
+    :ptype scopes: tuple[_ScopeNode, ...]
+    :return: the literal strings, in source order
+    :rtype: list[str]
+    """
+    values: list[str] = []
+    for scope in scopes:
+        for node in ast.walk(scope):
+            if (
+                isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension))
+                and isinstance(node.target, ast.Name)
+                and node.target.id == name
+            ):
+                values += _strings_in(node.iter)
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for decorator in scope.decorator_list:
+                values += _parametrized_strings(decorator, name)
+    return values
+
+
+def _parametrized_strings(decorator: ast.expr, name: str) -> list[str]:
+    """the strings a ``parametrize(...)`` decorator gives ``name``, or none.
+
+    :param decorator: a decorator expression
+    :ptype decorator: ast.expr
+    :param name: the parameter
+    :ptype name: str
+    :return: its literal strings
+    :rtype: list[str]
+    """
+    found: list[str] = []
+    if (
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr == "parametrize"
+        and len(decorator.args) >= 2
+        and isinstance(decorator.args[0], ast.Constant)
+        and isinstance(decorator.args[0].value, str)
+    ):
+        names = [n.strip() for n in decorator.args[0].value.split(",")]
+        if name in names:
+            position = names.index(name)
+            for case in getattr(decorator.args[1], "elts", []):
+                if len(names) == 1:
+                    found += _strings_in(case)
+                elif isinstance(case, (ast.Tuple, ast.List)) and position < len(case.elts):
+                    found += _strings_in(case.elts[position])
+    return found
+
+
+def _strings_in(expr: ast.expr) -> list[str]:
+    """the string constants an expression is, or holds as a literal list, tuple or set.
+
+    :param expr: the expression
+    :ptype expr: ast.expr
+    :return: its strings
+    :rtype: list[str]
+    """
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return [expr.value]
+    if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+        return [e.value for e in expr.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+    return []
+
+
+def _namespace_subscript_violations(tree: ast.Module, file: Path) -> list[Violation]:
+    """a private name read out of another object's namespace by subscript: ``vars(x)["_y"]`` or
+    ``x.__dict__["_y"]`` -- the getattr of shape F, spelled as a dictionary lookup.
+
+    :param tree: the parsed module
+    :ptype tree: ast.Module
+    :param file: the module's path
+    :ptype file: Path
+    :return: the violations, in source order
+    :rtype: list[Violation]
+    """
+    violations: list[Violation] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+            and is_private_name(node.slice.value)
+        ):
+            continue
+        namespace = node.value
+        receiver: ast.expr | None = None
+        if (
+            isinstance(namespace, ast.Call)
+            and isinstance(namespace.func, ast.Name)
+            and namespace.func.id == "vars"
+            and namespace.args
+        ):
+            receiver = namespace.args[0]
+        elif isinstance(namespace, ast.Attribute) and namespace.attr == "__dict__":
+            receiver = namespace.value
+        if receiver is None or (isinstance(receiver, ast.Name) and receiver.id in _OWNER_RECEIVERS):
+            continue
+        violations.append(
+            Violation(
+                category="underscore_access.F",
+                file=file,
+                line=node.lineno,
+                symbol=node.slice.value,
+                reason=(
+                    f"reads private '{node.slice.value}' out of another object's namespace (vars() / "
+                    f"__dict__), which SLF001 cannot see; reach it through public behaviour, or promote it"
+                ),
+            )
+        )
+    return violations
 
 
 def _is_module_own_object(
@@ -920,3 +1049,274 @@ def _extract_all_value(node: ast.stmt) -> tuple[ast.expr | None, int]:
             return node.value, node.lineno
         return None, 0
     return None, 0
+
+
+def _collect_class_private_state(
+    src_roots: tuple[Path, ...],
+) -> dict[str, dict[str, tuple[Path, int]]]:
+    """build a map of ``class_name`` -> ``{_private state name -> (file, line)}``.
+
+    state is a private name the class's own methods assign on ``self`` / ``cls``
+    (``self._lock = ...``), or that its class body binds to anything but a function.
+    keyed by bare class name, as :func:`_collect_class_private_attrs` is, with the
+    same accepted imprecision.
+
+    :param src_roots: every src root the scanner should consider
+    :ptype src_roots: tuple[Path, ...]
+    :return: nested map class -> private state name -> defining (file, line)
+    :rtype: dict[str, dict[str, tuple[Path, int]]]
+    """
+    result: dict[str, dict[str, tuple[Path, int]]] = {}
+    for root in src_roots:
+        for file in iter_python_files(root):
+            tree = parse_python_file(file)
+            if tree is None:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    entries = result.setdefault(node.name, {})
+                    for name, line in _class_state(node):
+                        entries.setdefault(name, (file, line))
+    return result
+
+
+def _class_state(cls: ast.ClassDef) -> list[tuple[str, int]]:
+    """every private state name ``cls`` binds: class-body values, and ``self``/``cls`` stores in its methods.
+
+    :param cls: the class
+    :ptype cls: ast.ClassDef
+    :return: (name, line) pairs
+    :rtype: list[tuple[str, int]]
+    """
+    found: list[tuple[str, int]] = []
+    for item in cls.body:
+        targets: list[ast.expr] = []
+        if isinstance(item, ast.Assign):
+            targets = list(item.targets)
+        elif isinstance(item, ast.AnnAssign):
+            targets = [item.target]
+        found.extend(
+            (target.id, item.lineno)
+            for target in targets
+            if isinstance(target, ast.Name) and is_private_name(target.id)
+        )
+    for node in _own_nodes(cls):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, ast.Store)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in _OWNER_RECEIVERS
+            and is_private_name(node.attr)
+        ):
+            found.append((node.attr, node.lineno))
+    return found
+
+
+def _own_nodes(cls: ast.ClassDef) -> list[ast.AST]:
+    """every node in ``cls``'s body that belongs to it, not to a class nested in it.
+
+    :param cls: the class
+    :ptype cls: ast.ClassDef
+    :return: the nodes
+    :rtype: list[ast.AST]
+    """
+    out: list[ast.AST] = []
+    stack: list[ast.AST] = list(cls.body)
+    while stack:
+        node = stack.pop()
+        out.append(node)
+        stack.extend(child for child in ast.iter_child_nodes(node) if not isinstance(child, ast.ClassDef))
+    return out
+
+
+def _class_defines(cls: ast.ClassDef) -> set[str]:
+    """every private name ``cls`` itself declares: its methods and its class-body bindings.
+
+    a ``self._x = ...`` in its methods is not a declaration of ``_x`` when a base keeps ``_x``:
+    that is a write of the base's state.
+
+    :param cls: the class
+    :ptype cls: ast.ClassDef
+    :return: the names
+    :rtype: set[str]
+    """
+    names: set[str] = set()
+    for item in cls.body:
+        targets: list[ast.expr] = []
+        if isinstance(item, ast.Assign):
+            targets = list(item.targets)
+        elif isinstance(item, ast.AnnAssign):
+            targets = [item.target]
+        names.update(target.id for target in targets if isinstance(target, ast.Name) and is_private_name(target.id))
+    names.update(
+        item.name
+        for item in cls.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and is_private_name(item.name)
+    )
+    return names
+
+
+def shape_i_violations(
+    scan_roots: tuple[Path, ...],
+    repo_root: Path,
+    inheritance_roots: tuple[Path, ...],
+) -> list[Violation]:
+    """walk the classes ``scan_roots`` define for a reach into a production base's private state (shape I).
+
+    a class violates shape I when one of its own methods reads or writes ``self._x`` /
+    ``cls._x`` where ``_x`` is private state of any production ancestor (a base, its bases, and
+    so on, followed through test-defined classes in between) the inheritance roots define
+    (see :func:`_collect_class_private_state`) and the class does not declare ``_x`` itself
+    (as a method or a class-body binding; assigning ``self._x`` is writing the base's state).
+    a base's private methods are not state, and calling one is not flagged. meant for the
+    ``tests/`` trees: a test subclass reaches its base through the front door.
+
+    :param scan_roots: where to look; the ``tests/`` trees
+    :ptype scan_roots: tuple[Path, ...]
+    :param repo_root: repo root for the relative-path rendering in the reason text
+    :ptype repo_root: Path
+    :param inheritance_roots: src roots whose classes' private state is protected
+    :ptype inheritance_roots: tuple[Path, ...]
+    :return: shape-I violations
+    :rtype: list[Violation]
+    """
+    base_state = _collect_class_private_state(inheritance_roots)
+    production_bases = _collect_class_bases(inheritance_roots)
+    scanned: list[tuple[ast.ClassDef, Path]] = []
+    for root in scan_roots:
+        for file in iter_python_files(root):
+            tree = parse_python_file(file)
+            if tree is not None:
+                scanned.extend((n, file) for n in ast.walk(tree) if isinstance(n, ast.ClassDef))
+    # a test class's ancestors run through test-defined classes too (a harness over a harness)
+    test_bases = {cls.name: _base_names_generic(cls) for cls, _ in scanned}
+    test_declares = {cls.name: _class_defines(cls) for cls, _ in scanned}
+    violations: list[Violation] = []
+    for cls, file in scanned:
+        ancestry = _ancestors(cls, test_bases, production_bases)
+        violations.extend(_base_state_reaches(cls, file, ancestry, base_state, test_declares, repo_root))
+    return violations
+
+
+def _collect_class_bases(src_roots: tuple[Path, ...]) -> dict[str, list[str]]:
+    """``class_name`` -> its bases' last-segment names, over every class the roots define.
+
+    :param src_roots: every src root the scanner should consider
+    :ptype src_roots: tuple[Path, ...]
+    :return: class -> base names (merged across same-named classes, as the other maps are)
+    :rtype: dict[str, list[str]]
+    """
+    result: dict[str, list[str]] = {}
+    for root in src_roots:
+        for file in iter_python_files(root):
+            tree = parse_python_file(file)
+            if tree is None:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    result.setdefault(node.name, []).extend(_base_names_generic(node))
+    return result
+
+
+def _ancestors(
+    cls: ast.ClassDef,
+    test_bases: dict[str, list[str]],
+    production_bases: dict[str, list[str]],
+) -> tuple[list[str], list[str]]:
+    """every ancestor of ``cls`` by name, nearest first: those the tests define, and production ones.
+
+    a name the tests define is followed through the tests' classes; any other through the
+    production classes. each name is visited once, so a cycle of same-named classes ends.
+
+    :return: (test-defined ancestors, production ancestors)
+    :rtype: tuple[list[str], list[str]]
+    """
+    test_side: list[str] = []
+    production: list[str] = []
+    seen = {cls.name}
+    pending = [name for name in _base_names_generic(cls) if name != cls.name]
+    while pending:
+        name = pending.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+        if name in test_bases:
+            test_side.append(name)
+            pending.extend(test_bases[name])
+        else:
+            production.append(name)
+            pending.extend(production_bases.get(name, []))
+    return test_side, production
+
+
+def _base_state_reaches(
+    cls: ast.ClassDef,
+    file: Path,
+    ancestry: tuple[list[str], list[str]],
+    base_state: dict[str, dict[str, tuple[Path, int]]],
+    test_declares: dict[str, set[str]],
+    repo_root: Path,
+) -> list[Violation]:
+    """the shape-I violations of one class, against the state every production ancestor keeps.
+
+    :return: the violations
+    :rtype: list[Violation]
+    """
+    test_side, production = ancestry
+    inherited: dict[str, tuple[str, tuple[Path, int]]] = {}
+    for base in production:
+        for name, where in base_state.get(base, {}).items():
+            inherited.setdefault(name, (base, where))
+    if not inherited:
+        return []
+    own = _class_defines(cls).union(*(test_declares.get(name, set()) for name in test_side))
+    found: list[Violation] = []
+    for node in _own_nodes(cls):
+        if not (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in _OWNER_RECEIVERS
+            and node.attr in inherited
+            and node.attr not in own
+        ):
+            continue
+        base, (defining_file, defining_line) = inherited[node.attr]
+        try:
+            rel_def: Path | str = defining_file.relative_to(repo_root)
+        except ValueError:
+            rel_def = defining_file
+        found.append(
+            Violation(
+                category="underscore_access.I",
+                file=file,
+                line=node.lineno,
+                symbol=node.attr,
+                reason=(
+                    f"class '{cls.name}' reaches '{node.attr}', private state of its base "
+                    f"'{base}' ({rel_def}:{defining_line}); reach the base through its public "
+                    f"surface, or a protected method it offers subclasses"
+                ),
+            )
+        )
+    return found
+
+
+def _base_names_generic(cls: ast.ClassDef) -> list[str]:
+    """every base's last-segment name, a generic one (``Base[T]``) included by its class.
+
+    shape I follows ancestry through generic bases (``SchemaBackedCollection[Conversation]``),
+    which :func:`_base_names_textual` skips for shape D.
+
+    :param cls: class definition to inspect
+    :ptype cls: ast.ClassDef
+    :return: last-segment base names in source order
+    :rtype: list[str]
+    """
+    names: list[str] = []
+    for base in cls.bases:
+        target = base.value if isinstance(base, ast.Subscript) else base
+        if isinstance(target, ast.Name):
+            names.append(target.id)
+        elif isinstance(target, ast.Attribute):
+            names.append(target.attr)
+    return names

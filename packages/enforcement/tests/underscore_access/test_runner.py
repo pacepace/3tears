@@ -469,3 +469,37 @@ class TestShapeFScansTheTestsTrees:
         config = UnderscoreAccessConfig(repo_root=repo, enable_shape_b_ruff=False, test_roots=())
 
         run_underscore_enforcement(config, walker="shape_f")
+
+
+# ------------------------------------------------------------------
+# shape I reaches the tests trees
+# ------------------------------------------------------------------
+
+
+class TestShapeIScansTheTestsTrees:
+    """a test subclass holding its production base's private state fails the gate."""
+
+    @staticmethod
+    def _repo(tmp_path: Path) -> Path:
+        repo = _make_repo_with_pyproject(tmp_path / "repo")
+        _write(
+            repo / "packages" / "pkg" / "src" / "pkg" / "__init__.py",
+            "__all__ = ['Backend']\n\nclass Backend:\n    def __init__(self):\n        self._lock = object()\n",
+        )
+        _write(
+            repo / "packages" / "pkg" / "tests" / "test_held.py",
+            "from pkg import Backend\n\nclass Held(Backend):\n    def write(self):\n        return self._lock\n",
+        )
+        return repo
+
+    def test_a_subclass_reaching_base_state_fails_shape_i_and_all(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("UNDERSCORE_AUDIT_MODE", raising=False)
+        repo = self._repo(tmp_path)
+        config = UnderscoreAccessConfig(repo_root=repo, enable_shape_b_ruff=False)
+
+        with pytest.raises(pytest.fail.Exception, match="underscore_access.I"):
+            run_underscore_enforcement(config, walker="shape_i")
+        with pytest.raises(pytest.fail.Exception, match="_lock"):
+            run_underscore_enforcement(config, walker="all")

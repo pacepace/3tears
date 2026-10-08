@@ -27,8 +27,8 @@ from threetears.core.cache.base import (
     build_select_clause,
     bulk_columns,
     entry_is_fresh,
-    quote_identifier,
 )
+from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import counter, get_logger
 
 __all__ = [
