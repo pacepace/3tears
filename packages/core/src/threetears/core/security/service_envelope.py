@@ -38,9 +38,10 @@ from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 from threetears.observe.metrics import counter
 
-from threetears.core.security.door_proof import ProofOutcome
+from threetears.core.security.door_proof import DoorWindow, ProofOutcome
 from threetears.core.security.identity_token import build_jwks, jwk_thumbprint
 from threetears.core.security.freshness import ISSUE_TIME_FUTURE_TOLERANCE
+from threetears.core.security.secret_refs import SecretResolutionError, resolve_secret
 
 if TYPE_CHECKING:
     from threetears.core.coordination.replay_guard import ReplayGuard
@@ -223,6 +224,40 @@ class ServiceEnvelopeSigner:
         except ValueError:
             raise ValueError(f"{what} is not a base64 32-byte Ed25519 seed") from None
         return cls(signing_key=key, kid=jwk_thumbprint(key.public_key()), issuer=issuer)
+
+    @classmethod
+    def from_secret_ref(cls, ref: str, *, issuer: str, what: str, window: DoorWindow) -> ServiceEnvelopeSigner | None:
+        """a sender's signer from its seed's secret reference, or ``None`` while it is not provisioned.
+
+        Unprovisioned, the sender sends unsigned, which the receiving door accepts only until
+        ``window``'s date; the warning says so, naming the setting. A provisioned seed that is
+        malformed fails, like every other signing key.
+
+        :param ref: the secret reference (``scheme://locator``) to the base64 seed
+        :ptype ref: str
+        :param issuer: the sending service principal
+        :ptype issuer: str
+        :param what: the setting that provisions the seed, for the warning and the error
+        :ptype what: str
+        :param window: the receiving door's window, whose date the warning names
+        :ptype window: DoorWindow
+        :return: the signer, or ``None``
+        :rtype: ServiceEnvelopeSigner | None
+        :raises ValueError: when the referenced secret is not a 32-byte seed
+        """
+        signer: ServiceEnvelopeSigner | None = None
+        try:
+            secret = resolve_secret(ref)
+        except SecretResolutionError:
+            log.warning(
+                "%s is not provisioned: messages to the %s door go unsigned, and it refuses them from %s",
+                what,
+                window.door,
+                window.required_from.isoformat(),
+            )
+        else:
+            signer = cls.from_seed_text(secret.get_secret_value(), issuer=issuer, what=what)
+        return signer
 
     def sign(self, *, audience: str, op: str, body: Mapping[str, Any]) -> str:
         """an envelope over ``body`` for ``audience``'s ``op``.

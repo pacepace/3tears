@@ -355,25 +355,23 @@ class TestAdmitMessage:
         assert await door.admit_message(b"\xff", op="ensure") is False
 
 
+def _seed_and_public():
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+
+    priv, pub = generate_signing_keypair()
+    raw = priv.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
+    return base64.b64encode(raw).decode(), pub
+
+
 class TestPinnedSender:
     """a sender with no JWKS of its own: a seed on its side, the public half pinned at the door."""
-
-    @staticmethod
-    def _seed_and_public():
-        import base64
-
-        from cryptography.hazmat.primitives import serialization
-
-        priv, pub = generate_signing_keypair()
-        raw = priv.private_bytes(
-            serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()
-        )
-        return base64.b64encode(raw).decode(), pub
 
     async def test_an_envelope_from_the_seed_verifies_under_the_pinned_half(self) -> None:
         from threetears.core.security import PinnedEnvelopeJwks, ServiceEnvelopeSigner
 
-        seed, pub = self._seed_and_public()
+        seed, pub = _seed_and_public()
         signer = ServiceEnvelopeSigner.from_seed_text(seed, issuer="identity-core", what="SEED")
         door = _door(PinnedEnvelopeJwks(pub))
         sealed = signer.seal(audience="hub.claim_grant", op="ensure", body=_BODY)
@@ -382,7 +380,7 @@ class TestPinnedSender:
     async def test_without_a_pinned_key_no_envelope_verifies(self) -> None:
         from threetears.core.security import PinnedEnvelopeJwks, ServiceEnvelopeSigner
 
-        seed, _ = self._seed_and_public()
+        seed, _ = _seed_and_public()
         signer = ServiceEnvelopeSigner.from_seed_text(seed, issuer="identity-core", what="SEED")
         sealed = signer.seal(audience="hub.claim_grant", op="ensure", body=_BODY)
         assert await _door(PinnedEnvelopeJwks(None)).admit(sealed, op="ensure") is False
@@ -393,3 +391,35 @@ class TestPinnedSender:
         with pytest.raises(ValueError, match="GATEWAY_SEED is not") as caught:
             ServiceEnvelopeSigner.from_seed_text("c2hvcnQ=", issuer="gateway", what="GATEWAY_SEED")
         assert "c2hvcnQ" not in str(caught.value)
+
+
+class TestSignerFromSecretRef:
+    @staticmethod
+    def _window():
+        from datetime import date
+
+        from threetears.core.security.door_proof import DoorWindow
+
+        return DoorWindow(door="hub.claim_grant", opened=date(2026, 10, 8), required_from=date(2027, 1, 5))
+
+    def test_a_provisioned_seed_gives_a_signer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from threetears.core.security import ServiceEnvelopeSigner
+
+        seed, pub = _seed_and_public()
+        monkeypatch.setenv("TEST_ENVELOPE_SEED", seed)
+        signer = ServiceEnvelopeSigner.from_secret_ref(
+            "env://TEST_ENVELOPE_SEED", issuer="svc", what="TEST_ENVELOPE_SEED", window=self._window()
+        )
+        assert signer is not None
+        assert signer.signing_key.public_key().public_bytes_raw() == pub.public_bytes_raw()
+
+    def test_an_unprovisioned_seed_gives_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from threetears.core.security import ServiceEnvelopeSigner
+
+        monkeypatch.delenv("TEST_ENVELOPE_SEED", raising=False)
+        assert (
+            ServiceEnvelopeSigner.from_secret_ref(
+                "env://TEST_ENVELOPE_SEED", issuer="svc", what="TEST_ENVELOPE_SEED", window=self._window()
+            )
+            is None
+        )
