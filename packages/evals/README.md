@@ -35,7 +35,7 @@ conditional writes, and the shape to compare your own adapter against.
 
 ## Guides
 
-- [Designing a classifier eval set](docs/designing-classifier-evals.md) — the labels, the kinds of case a set
+- [Designing a classifier eval set](docs/designing-classifier-evals.md): the labels, the kinds of case a set
   needs (boundaries, lookalikes, contrast pairs, context), how many, and how to read the results. Start here
   if you have not built an eval before.
 
