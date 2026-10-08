@@ -63,10 +63,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import aclosing, asynccontextmanager, contextmanager, nullcontext, suppress
+from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -551,6 +552,8 @@ class ScopedSnapshot:
         # what the L1 holds
         self._applied: dict[str, _Pointer] = {}
         self._local = asyncio.Lock()
+        # a replacement's commit and its scopes leaving `behind` are one step to a read that takes both
+        self._view = threading.Lock()
         self._changed = asyncio.Event()
         self._ready = asyncio.Event()
         self._progress = _Progress()
@@ -744,6 +747,50 @@ class ScopedSnapshot:
         :rtype: bool
         """
         return self._ready.is_set()
+
+    def _replace_current(self, replacements: Sequence[PartitionReplacement], scopes: Sequence[str]) -> None:
+        """commit replacements that bring ``scopes`` current, and take them off ``behind``, as one step a
+        read sees whole (:meth:`read_with_behind`); on a worker thread.
+
+        :param replacements: the scopes' new contents
+        :ptype replacements: Sequence[PartitionReplacement]
+        :param scopes: the scopes they bring current
+        :ptype scopes: Sequence[str]
+        :return: nothing
+        :rtype: None
+        """
+        with self._view:
+            self._backend.replace_partitions(replacements)
+            for scope in scopes:
+                self._behind.pop(scope, None)
+
+    @contextmanager
+    def read_with_behind(self) -> Iterator[tuple[Any, Mapping[str, str]]]:
+        """a read of one state of every table, and the scopes that state is behind on, taken together.
+
+        A scope brought current is committed and taken off ``behind`` in one step, so the behind set
+        here is exactly the one for the data this cursor reads: an answer computed over it can say
+        which scopes it is an epoch behind on without a later look that might disagree.
+
+        :return: the cursor, and scope -> why it is behind
+        :rtype: Iterator[tuple[duckdb.DuckDBPyConnection, Mapping[str, str]]]
+        """
+        with ExitStack() as stack:
+            with self._view:
+                cursor = stack.enter_context(self._backend.read_snapshot())
+                behind = {scope: why for scope, (_, why) in self._behind.items()}
+            yield cursor, behind
+
+    def applied_epoch(self, scope: str) -> int | None:
+        """the epoch of ``scope`` this replica's L1 holds; None when it holds none.
+
+        :param scope: the scope
+        :ptype scope: str
+        :return: the epoch
+        :rtype: int | None
+        """
+        applied = self._applied.get(scope)
+        return None if applied is None else applied.epoch
 
     @contextmanager
     def read(self) -> Iterator[Any]:
@@ -1143,10 +1190,11 @@ class ScopedSnapshot:
         replacements = [replacement for _, scope_replacements in fetched for replacement in scope_replacements]
         async with self._local:
             fresh = [(p, r) for p, r in fetched if p.supersedes(self._applied.get(p.scope))]
-            await asyncio.to_thread(self._backend.replace_partitions, [x for _, rs in fresh for x in rs])
+            await asyncio.to_thread(
+                self._replace_current, [x for _, rs in fresh for x in rs], [p.scope for p, _ in fresh]
+            )
             for pointer, _ in fresh:
                 self._applied[pointer.scope] = pointer
-                self._behind.pop(pointer.scope, None)
             self._count(x for _, rs in fresh for x in rs)
         self._notify()
         done = time.perf_counter()
@@ -1267,10 +1315,9 @@ class ScopedSnapshot:
             async with self._local:
                 if not current.supersedes(self._applied.get(scope)):
                     continue
-                await asyncio.to_thread(self._backend.replace_partitions, replacements)
+                await asyncio.to_thread(self._replace_current, replacements, [scope])
                 self._applied[scope] = current
                 self._count(replacements)
-            self._behind.pop(scope, None)
             self._notify()
             self._record_change(scope, current, replacements, started)
         return failed
@@ -1285,16 +1332,16 @@ class ScopedSnapshot:
         """
         async with self._local:
             await asyncio.to_thread(
-                self._backend.replace_partitions,
+                self._replace_current,
                 [
                     PartitionReplacement(table=t.name, column=t.scope_column, value=scope, rows=[])
                     for scope in scopes
                     for t in self._tables
                 ],
+                list(scopes),
             )
             for scope in scopes:
                 self._applied.pop(scope, None)
-                self._behind.pop(scope, None)
                 for table in self._rows.values():
                     table.pop(scope, None)
         self._notify()
@@ -1394,9 +1441,8 @@ class ScopedSnapshot:
                 )
                 for t in self._tables
             ]
-            await asyncio.to_thread(self._backend.replace_partitions, local)
+            await asyncio.to_thread(self._replace_current, local, [scope])
             self._count(local)
-            self._behind.pop(scope, None)
             self._notify()
             objects: dict[str, str] = {}
             counts: dict[str, int] = {}

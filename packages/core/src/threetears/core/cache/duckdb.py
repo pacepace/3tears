@@ -538,6 +538,9 @@ class DuckDBBackend:
             cursor = self._db.cursor()
         try:
             cursor.execute("BEGIN TRANSACTION")
+            # DuckDB starts a transaction's snapshot at its first statement that reads, not at BEGIN:
+            # read the catalog now, so the block reads the database as it stood when it began
+            cursor.execute("SELECT count(*) FROM duckdb_tables()").fetchall()
             try:
                 yield cursor
             finally:

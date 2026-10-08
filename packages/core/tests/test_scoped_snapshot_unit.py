@@ -509,3 +509,31 @@ async def test_a_scope_removed_before_it_was_ever_applied_leaves_nothing_behind(
     assert snapshot.status().behind == {} and "behind" not in snapshot.status().detail
     assert l3.statements == reads, "a removed scope kept being rebuilt from L3"
     await snapshot.stop()
+
+
+async def test_a_read_carries_the_behind_set_of_the_data_it_reads() -> None:
+    """a scope applied while a read is open is still behind for that read, whose data is the old
+    epoch's; a read opened after sees it current and the new data."""
+    import pyarrow as pa  # noqa: PLC0415
+
+    from threetears.core.collections.scoped_snapshot import encode_chunk  # noqa: PLC0415
+
+    snapshot, pointers, store, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    pointers.put_now("enr.rebuild", b"another replica")  # no rebuild here: only the chunk arriving helps
+    _point_at_a_missing_chunk(pointers)
+    await _until(lambda: "TX" in snapshot.status().behind, what="TX behind")
+
+    with snapshot.read_with_behind() as (cursor, behind):
+        store.objects["enr/TX/2/results.gone"] = encode_chunk(
+            pa.table({"county": ["c1"], "state": ["TX"], "votes": pa.array([5], pa.int64())})
+        )
+        await _until(lambda: snapshot.applied_epoch("TX") == 2, what="TX applied at epoch 2")
+        assert "TX" in behind, "the read's behind set changed under it"
+        assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(1,)]
+    with snapshot.read_with_behind() as (cursor, behind):
+        assert "TX" not in behind
+        assert cursor.execute("SELECT votes FROM results WHERE state = 'TX'").fetchall() == [(5,)]
+    await snapshot.stop()
