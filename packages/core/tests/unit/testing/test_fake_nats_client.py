@@ -8,6 +8,7 @@ listeners on ONE registry is the thing that is forbidden.
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -497,3 +498,123 @@ async def test_a_bind_only_declaration_cannot_take_a_refill() -> None:
 
     with pytest.raises(ValueError, match="on_restored needs create_if_missing=True"):
         await client.ensure_kv_bucket(name="catalog", create_if_missing=False, on_restored=_write_back)
+
+
+@pytest.mark.asyncio
+async def test_the_doubles_declaration_takes_every_argument_the_real_one_does() -> None:
+    # a bucket that declares a bound could not be tested against the double while it refused
+    # ``max_bytes``; the signature is the contract, so it is compared rather than remembered
+    real = inspect.signature(KvDeclaring.ensure_kv_bucket).parameters
+    double = inspect.signature(FakeNatsClient.ensure_kv_bucket).parameters
+    assert list(double) == list(real)
+    for name, parameter in real.items():
+        assert double[name].default == parameter.default, f"{name}: default differs from the real client's"
+
+
+@pytest.mark.asyncio
+async def test_a_bounded_bucket_refuses_writes_past_its_bound_and_nothing_else() -> None:
+    # the shape of the live test (test_declared_bucket_bounds_live): a write past the bound raises
+    # KvError, the bucket keeps what it held, and every other bucket still takes writes
+    client = FakeNatsClient()
+    bounded = await client.ensure_kv_bucket(name="pointers", owns_bucket=True, max_bytes=4096)
+    neighbour = await client.ensure_kv_bucket(name="neighbour", owns_bucket=True)
+    assert bounded.max_bytes == 4096
+    assert neighbour.max_bytes is None
+    refused_at = None
+    for index in range(64):
+        try:
+            await bounded.put(key=f"k{index}", value=b"x" * 200)
+        except KvError:
+            refused_at = index
+            break
+    assert refused_at is not None, "a write past the bucket's bound was accepted"
+    assert 0 < refused_at < 64
+    assert f"k{refused_at}" not in bounded.keys(), "the refused write landed"
+    assert await bounded.get(key="k0") == b"x" * 200
+    await neighbour.put(key="k", value=b"y" * 10_000)
+    assert await neighbour.get(key="k") == b"y" * 10_000
+
+
+@pytest.mark.asyncio
+async def test_a_full_bucket_still_takes_a_replacement_no_larger_than_what_it_replaces() -> None:
+    # history 1: the server drops a key's old message as it stores the new one, and with
+    # ``discard: new`` it admits the write at the bound when that old message is at least as large
+    client = FakeNatsClient()
+    bucket = await client.ensure_kv_bucket(name="pointers", owns_bucket=True, max_bytes=1024)
+    index = 0
+    while True:
+        try:
+            await bucket.put(key=f"k{index}", value=b"x" * 100)
+        except KvError:
+            break
+        index += 1
+    await bucket.put(key="k0", value=b"z" * 100)
+    assert await bucket.get(key="k0") == b"z" * 100
+    with pytest.raises(KvError):
+        await bucket.put(key="k0", value=b"z" * 400)
+    assert await bucket.get(key="k0") == b"z" * 100
+    # CAS writes and creates are refused the same way, and a refusal is not a lost CAS
+    entry = await bucket.get_entry(key="k1")
+    assert entry is not None
+    with pytest.raises(KvError):
+        await bucket.update(key="k1", value=b"z" * 400, revision=entry[1])
+    with pytest.raises(KvError):
+        await bucket.create(key="new", value=b"z" * 100)
+
+
+@pytest.mark.asyncio
+async def test_a_deletion_frees_room_in_a_full_bucket() -> None:
+    client = FakeNatsClient()
+    bucket = await client.ensure_kv_bucket(name="pointers", owns_bucket=True, max_bytes=1024)
+    index = 0
+    while True:
+        try:
+            await bucket.put(key=f"k{index}", value=b"x" * 100)
+        except KvError:
+            break
+        index += 1
+    # the delete marker that replaces a key's value is smaller than it, so it is admitted
+    assert await bucket.delete(key="k0") is True
+    await bucket.put(key="fits", value=b"x" * 10)
+    assert await bucket.get(key="fits") == b"x" * 10
+
+
+@pytest.mark.asyncio
+async def test_only_the_owner_moves_a_live_buckets_bound() -> None:
+    # the real declaration reconciles max_bytes only for a declarer that owns the bucket
+    client = FakeNatsClient()
+    bucket = await client.ensure_kv_bucket(name="pointers", owns_bucket=True, max_bytes=4096)
+    await client.ensure_kv_bucket(name="pointers", max_bytes=1)
+    assert bucket.max_bytes == 4096
+    await client.ensure_kv_bucket(name="pointers", owns_bucket=True, max_bytes=65536)
+    assert bucket.max_bytes == 65536
+    # a declaration that names no bound asks nothing of the live one
+    await client.ensure_kv_bucket(name="pointers", owns_bucket=True)
+    assert bucket.max_bytes == 65536
+
+
+@pytest.mark.asyncio
+async def test_a_bound_survives_a_broker_restart() -> None:
+    client = FakeNatsClient()
+    bucket = await client.ensure_kv_bucket(name="pointers", owns_bucket=True, max_bytes=512)
+    await client.restart_broker()
+    with pytest.raises(KvError):
+        await bucket.put(key="big", value=b"x" * 600)
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_no_longer_wanted_is_not_put_back() -> None:
+    # the double's restoration asks ``still_wanted`` as the real one does
+    client = FakeNatsClient()
+    wanted = {"pointers": True, "kept": True}
+
+    async def _want_pointers() -> bool:
+        return wanted["pointers"]
+
+    await client.ensure_kv_bucket(name="pointers", still_wanted=_want_pointers)
+    await client.ensure_kv_bucket(name="kept")
+    wanted["pointers"] = False
+    await client.restart_broker()
+    assert client.bucket_exists("kept")
+    assert not client.bucket_exists("pointers")
+    assert "pointers" not in client.remembered_declarations

@@ -55,7 +55,16 @@ use:
   declaration that may create, on memory or file storage; :meth:`FakeNatsClient.restart_broker`
   loses every bucket, puts back only the remembered ones, runs each declaration's ``on_restored``
   refill with its bucket (one that raises stays owed, :meth:`FakeNatsClient.refill_owed`), then
-  runs the reconnect hooks.
+  runs the reconnect hooks. A declaration that ``still_wanted`` says is no longer wanted is
+  forgotten instead of put back.
+- a bucket declared with ``max_bytes`` refuses, with :class:`threetears.nats.KvError`, a write that
+  would bring what it holds to the bound, as a ``discard: new`` stream does -- unless the write
+  replaces a key's latest message no smaller than itself, which the server admits at the bound
+  because it drops that message as it stores the new one. What it holds is counted the way the
+  server's memory store counts it: per retained message (the latest per key, deletion markers
+  included), the subject ``$KV.<bucket>.<key>``, the value, a delete marker's ``KV-Operation``
+  header, and 16 bytes of overhead. The headers a TTL or CAS write carries are not counted, so the
+  double's total runs a few dozen bytes per such message under the server's.
 
 the fake stores data in a plain dict keyed by bucket name so multiple
 buckets created from the same client share no state. revision counter
@@ -72,13 +81,20 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iter
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch
+from threetears.nats.errors import KvBucketNotFoundError, KvConfigMismatch, KvError
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.observe import get_logger
 
 __all__ = ["FakeKvBucket", "FakeNatsClient"]
 
 log = get_logger(__name__)
+
+#: the bytes nats-server's memory store adds to each message's subject, headers and value when it
+#: counts a stream's size against ``max_bytes``
+_STORED_MESSAGE_OVERHEAD = 16
+
+#: the header block a KV delete publishes its marker with, as nats-py encodes it
+_DELETE_MARKER_HEADERS = b"NATS/1.0\r\nKV-Operation: DEL\r\n\r\n"
 
 
 class _YieldOnce:
@@ -133,6 +149,7 @@ class FakeKvBucket:
         storage: str = "memory",
         direct: bool | None = None,
         may_create: bool = True,
+        max_bytes: int | None = None,
     ) -> None:
         """initialize empty fake bucket with zero revision counter.
 
@@ -160,6 +177,9 @@ class FakeKvBucket:
             bind-only handle, whose operations on a vanished bucket raise
             :class:`threetears.nats.KvBucketNotFoundError` instead; see :meth:`set_may_create`
         :ptype may_create: bool
+        :param max_bytes: the most bytes the bucket may hold, applied as a ``discard: new`` stream
+            applies it (see the module docstring); ``None``, zero or negative for no bound
+        :ptype max_bytes: int | None
         :return: None
         :rtype: None
         """
@@ -168,7 +188,12 @@ class FakeKvBucket:
         self._ttl = ttl
         self._storage = storage
         self._direct = direct
+        self._max_bytes = max_bytes
         self._entries: dict[str, _Entry] = {}
+        # the stored size of each key's latest message (its value or its deletion marker), and their
+        # total: what a bounded bucket counts against ``max_bytes``
+        self._sizes: dict[str, int] = {}
+        self._stored_bytes = 0
         # the revision of each deleted key's marker: its latest message once its value is gone.
         self._markers: dict[str, int] = {}
         self._revision = 0
@@ -238,6 +263,7 @@ class FakeKvBucket:
         if entry is not None and entry.expires_at is not None and self._elapsed >= entry.expires_at:
             # the server removes a lapsed entry's message, leaving no marker behind.
             del self._entries[key]
+            self._forget_size(key)
             entry = None
         return entry
 
@@ -265,6 +291,7 @@ class FakeKvBucket:
         :rtype: int
         """
         expires_at = self._expiry(ttl)
+        self._store_size(key, len(value))
         self._revision += 1
         self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=expires_at)
         self._markers.pop(key, None)
@@ -278,10 +305,45 @@ class FakeKvBucket:
         :ptype key: str
         :return: None
         :rtype: None
+        :raises KvError: when the marker would bring a bounded bucket to its bound
         """
+        self._store_size(key, len(_DELETE_MARKER_HEADERS))
         self._revision += 1
         self._markers[key] = self._revision
         self._notify(KvKeyUpdate(key=key, value=None, revision=self._revision))
+
+    def _store_size(self, key: str, payload: int) -> None:
+        """admit one new message for ``key`` against the bound, then count it in place of the old one.
+
+        :param key: the key the message is written under
+        :ptype key: str
+        :param payload: the message's header and value bytes
+        :ptype payload: int
+        :return: None
+        :rtype: None
+        :raises KvError: when the message would bring the bucket to its bound and does not replace a
+            message of the key no smaller than itself -- the server's ``maximum bytes exceeded``
+        """
+        size = len(f"$KV.{self._bucket_name}.{key}") + payload + _STORED_MESSAGE_OVERHEAD
+        old = self._sizes.get(key)
+        bound = self._max_bytes
+        if bound is not None and bound > 0 and self._stored_bytes + size >= bound and (old is None or old < size):
+            raise KvError(
+                f"KV write refused: bucket={self._bucket_name} key={key}: maximum bytes exceeded "
+                f"({self._stored_bytes} held, {size} more, bound {bound})"
+            )
+        self._stored_bytes += size - (old or 0)
+        self._sizes[key] = size
+
+    def _forget_size(self, key: str) -> None:
+        """stop counting ``key``'s message, which the server no longer holds.
+
+        :param key: the key whose message is gone
+        :ptype key: str
+        :return: None
+        :rtype: None
+        """
+        self._stored_bytes -= self._sizes.pop(key, 0)
 
     def _notify(self, update: KvKeyUpdate) -> None:
         """hand one new message to every open watch of its key.
@@ -420,6 +482,8 @@ class FakeKvBucket:
             raise ValueError("FakeKvBucket.wipe requires a timezone-aware date_created")
         self._entries.clear()
         self._markers.clear()
+        self._sizes.clear()
+        self._stored_bytes = 0
         self._date_created = date_created if date_created is not None else datetime.now(UTC)
         self._vanished = False
         # the revision is the stream sequence, and a recreated stream starts it again.
@@ -442,6 +506,8 @@ class FakeKvBucket:
         """
         self._entries.clear()
         self._markers.clear()
+        self._sizes.clear()
+        self._stored_bytes = 0
         self._vanished = True
 
     @property
@@ -476,7 +542,9 @@ class FakeKvBucket:
         """
         return self._vanished
 
-    def reconcile(self, *, ttl: timedelta | None, direct: bool, storage: str | None = None) -> None:
+    def reconcile(
+        self, *, ttl: timedelta | None, direct: bool, storage: str | None = None, max_bytes: int | None = None
+    ) -> None:
         """take a declaration's reconciled fields, as a real declaration does.
 
         Entries are kept, except across a change of storage: JetStream cannot change a live stream's
@@ -488,11 +556,17 @@ class FakeKvBucket:
         :ptype direct: bool
         :param storage: the declared storage, ``"memory"`` or ``"file"``; ``None`` keeps the live one
         :ptype storage: str | None
+        :param max_bytes: the declared bound; ``None`` keeps the live one, as a declaration naming no
+            bound asks nothing of it. entries already held past a lowered bound are kept, as the
+            server keeps them, and only later writes are refused
+        :ptype max_bytes: int | None
         :return: None
         :rtype: None
         """
         self._ttl = ttl
         self._direct = direct
+        if max_bytes is not None:
+            self._max_bytes = max_bytes
         if storage is not None and storage != self._storage:
             self.wipe()
             self._storage = storage
@@ -540,6 +614,15 @@ class FakeKvBucket:
         :rtype: timedelta | None
         """
         return self._ttl
+
+    @property
+    def max_bytes(self) -> int | None:
+        """the bound this bucket refuses writes at; ``None`` for none.
+
+        :return: the bound as declared
+        :rtype: int | None
+        """
+        return self._max_bytes
 
     @property
     def storage(self) -> str:
@@ -671,9 +754,10 @@ class FakeKvBucket:
             return revision is None
         if revision is not None and entry.revision != revision:
             return False
-        del self._entries[key]
-        # a real delete publishes a marker, which is the key's latest message from now on.
+        # a real delete publishes a marker, which is the key's latest message from now on. marked
+        # first: a bounded bucket may refuse the marker, and then the value stays.
         self._mark_deleted(key)
+        del self._entries[key]
         return True
 
     async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
@@ -757,6 +841,8 @@ class FakeNatsClient:
         # bucket name -> the declarer's refill (``ensure_kv_bucket(on_restored=...)``) and whether the
         # bucket is owed it, as the real client remembers it with the declaration.
         self._refills: dict[str, _Refill] = {}
+        # bucket name -> the declaration's ``still_wanted``, asked before each restoration
+        self._still_wanted: dict[str, Callable[[], Awaitable[bool]]] = {}
 
     @property
     def remembered_declarations(self) -> frozenset[str]:
@@ -796,11 +882,18 @@ class FakeNatsClient:
         operation raises :class:`threetears.nats.KvBucketNotFoundError` until a declaration puts
         the bucket back. Entries are put back only by their declarer: a declaration given
         ``on_restored`` is owed its refill once its bucket is created again, and :meth:`reconnect`
-        runs it with the bucket.
+        runs it with the bucket. A declaration whose ``still_wanted`` answers ``False`` is forgotten
+        first, and its bucket stays absent like any other.
 
         :return: None
         :rtype: None
         """
+        for name, still_wanted in list(self._still_wanted.items()):
+            if name in self._remembered and not await still_wanted():
+                # forgotten instead of put back, as the real restoration does
+                self._remembered.discard(name)
+                self._refills.pop(name, None)
+                del self._still_wanted[name]
         for name, bucket in self._buckets.items():
             if name in self._remembered:
                 bucket.wipe()
@@ -986,6 +1079,8 @@ class FakeNatsClient:
         drop_file_storage: bool = False,
         prefix_namespace: bool = True,
         on_restored: Callable[[FakeKvBucket], Awaitable[None]] | None = None,
+        max_bytes: int | None = None,
+        still_wanted: Callable[[], Awaitable[bool]] | None = None,
     ) -> FakeKvBucket:
         """declare a bucket -- create it, or reconcile a live one in place -- or bind one somebody declared.
 
@@ -1024,6 +1119,14 @@ class FakeNatsClient:
             bucket by :meth:`reconnect` once :meth:`restart_broker` has created it again; a
             re-declaration without it gives it up. only with ``create_if_missing``
         :ptype on_restored: Callable[[FakeKvBucket], Awaitable[None]] | None
+        :param max_bytes: the bucket's bound, enforced as a ``discard: new`` stream does (see the
+            module docstring); set on a bucket this call creates, and on a live one only by its owner,
+            as the real declaration reconciles it only then. ``None`` asks nothing of a live bucket
+        :ptype max_bytes: int | None
+        :param still_wanted: asked by :meth:`restart_broker` before putting this declaration back; one
+            answering ``False`` is forgotten instead. remembered with the declaration; a
+            re-declaration without it gives it up
+        :ptype still_wanted: Callable[[], Awaitable[bool]] | None
         :return: the bucket, the same instance every later open receives
         :rtype: FakeKvBucket
         :raises ValueError: when ``owns_bucket=True`` with ``create_if_missing=False`` or file storage,
@@ -1064,7 +1167,7 @@ class FakeNatsClient:
                 f"KV bucket {name!r} does not exist, and this declaration only binds it", bucket=name
             )
         if bucket is None:
-            bucket = self._new_bucket(name=name, ttl=ttl, storage=storage, direct=direct)
+            bucket = self._new_bucket(name=name, ttl=ttl, storage=storage, direct=direct, max_bytes=max_bytes)
             self._buckets[name] = bucket
         elif create_if_missing:
             # a declaration CREATES a lost bucket with its own shape; a live one keeps its TTL and
@@ -1086,7 +1189,10 @@ class FakeNatsClient:
                 # the declaration creates the lost bucket now, empty, as the real one creates its stream
                 bucket.wipe()
             bucket.reconcile(
-                ttl=ttl if takes_shape else bucket.ttl, direct=direct, storage=storage if takes_shape else None
+                ttl=ttl if takes_shape else bucket.ttl,
+                direct=direct,
+                storage=storage if takes_shape else None,
+                max_bytes=max_bytes if takes_shape else None,
             )
         # the real declaration replaces the client's one cached handle with one opened as it asked
         bucket.set_may_create(create_if_missing)
@@ -1094,6 +1200,10 @@ class FakeNatsClient:
             self._remembered.add(name)
             # the latest declaration's refill is the one remembered; one that keeps a refill keeps
             # whatever is still owed
+            if still_wanted is None:
+                self._still_wanted.pop(name, None)
+            else:
+                self._still_wanted[name] = still_wanted
             refill = self._refills.get(name)
             if on_restored is None:
                 self._refills.pop(name, None)
@@ -1104,7 +1214,14 @@ class FakeNatsClient:
         return bucket
 
     def _new_bucket(
-        self, *, name: str, ttl: timedelta | None, storage: str, direct: bool | None, may_create: bool = True
+        self,
+        *,
+        name: str,
+        ttl: timedelta | None,
+        storage: str,
+        direct: bool | None,
+        may_create: bool = True,
+        max_bytes: int | None = None,
     ) -> FakeKvBucket:
         """create one fake bucket, aged by ``bucket_age`` when the client was given one.
 
@@ -1118,10 +1235,14 @@ class FakeNatsClient:
         :ptype direct: bool | None
         :param may_create: whether operations through the handle recreate a vanished bucket
         :ptype may_create: bool
+        :param max_bytes: the bucket's bound, or ``None``
+        :ptype max_bytes: int | None
         :return: the bucket
         :rtype: FakeKvBucket
         """
-        bucket = FakeKvBucket(bucket_name=name, ttl=ttl, storage=storage, direct=direct, may_create=may_create)
+        bucket = FakeKvBucket(
+            bucket_name=name, ttl=ttl, storage=storage, direct=direct, may_create=may_create, max_bytes=max_bytes
+        )
         if self._bucket_age is not None:
             # `wipe` is how a creation time is placed, and on a bucket with no entries it
             # removes nothing -- so this ages the bucket without pretending anything was lost.

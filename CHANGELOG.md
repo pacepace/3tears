@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Testing: `FakeNatsClient.ensure_kv_bucket` takes `max_bytes` and `still_wanted`, and enforces the bound
+
+The shipped double refused `max_bytes` (and `still_wanted`), both of which the real
+`NatsClient.ensure_kv_bucket` and the `KvDeclaring` protocol accept, so a bucket that declared a
+bound could not be tested against it.
+
+- **Fixed, `FakeNatsClient.ensure_kv_bucket(..., max_bytes=None, still_wanted=None)`**: its
+  signature now matches `KvDeclaring.ensure_kv_bucket` parameter for parameter, which a test
+  compares. `max_bytes` is set on a bucket the declaration creates and moved on a live one only by
+  its owner, as the real declaration reconciles it; `None` asks nothing of a live bucket. The bound
+  survives `restart_broker`.
+- **The bound is enforced as a `discard: new` stream enforces it**: a write (`put`, `create`,
+  `update`, or a delete's marker) that would bring the bucket to its bound raises `KvError` and
+  lands nothing, unless it replaces a key's latest message no smaller than itself, which the server
+  admits. Size is counted per retained message as the server's memory store counts it: subject
+  `$KV.<bucket>.<key>`, value, a delete marker's header, and 16 bytes. Headers of TTL and CAS
+  writes are not counted. `FakeKvBucket(max_bytes=...)` and `FakeKvBucket.max_bytes` are added.
+- **`still_wanted`** is asked by `restart_broker` before a declaration is put back; one answering
+  `False` is forgotten and its bucket stays absent, as the real restoration does.
+
 ### Epoch: a durable subject's versions can be read from a per-process copy
 
 `EpochClient.versions` read the `config_epochs` row on every call, and the hub calls it on every
