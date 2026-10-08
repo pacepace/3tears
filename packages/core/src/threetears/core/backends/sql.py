@@ -270,7 +270,13 @@ class _LedRead:
         self.paged_values += 1
         select_from = f"SELECT {schema_sql.build_select_column_list(self.schema, self.columns)} FROM {self.schema.name}"
         read = await read_keyset_pages(
-            self.reader, select_from, rest, where={lead: value}, page_size=row_cap - 1, quote=as_written
+            self.reader,
+            select_from,
+            rest,
+            where={lead: value},
+            page_size=row_cap - 1,
+            quote=as_written,
+            mark=lambda column, index: schema_sql.render_param(self.schema.column(column), index),
         )
         self.statements += read.statements
         return read.rows

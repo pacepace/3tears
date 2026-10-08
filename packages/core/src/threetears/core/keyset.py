@@ -45,6 +45,7 @@ async def read_keyset_pages(
     where: Mapping[str, Any] | None = None,
     page_size: int,
     quote: Callable[[str], str] = quote_identifier,
+    mark: Callable[[str, int], str] | None = None,
 ) -> KeysetRead:
     """every row ``select_from`` names (within ``where``), in ``key`` order, ``page_size`` rows a statement.
 
@@ -65,6 +66,10 @@ async def read_keyset_pages(
     :param quote: how ``key`` and ``where``'s columns are spelled: quoted (the default), or
         :func:`~threetears.core.sql_fragments.as_written` beside a schema's unquoted names
     :ptype quote: Callable[[str], str]
+    :param mark: the cursor's placeholder for a key column and its number, with any write cast it
+        needs (a schema's ``render_param``, so a jsonb key binds ``$n::jsonb``); a plain ``$n``
+        when None
+    :ptype mark: Callable[[str, int], str] | None
     :return: the rows and the statement count
     :rtype: KeysetRead
     :raises ValueError: when ``page_size`` is under one
@@ -82,7 +87,10 @@ async def read_keyset_pages(
         conditions = [filters] if filters else []
         params = list(values)
         if cursor is not None:
-            marks = ", ".join(f"${len(values) + index}" for index in range(1, len(key) + 1))
+            marks = ", ".join(
+                mark(column, len(values) + index) if mark is not None else f"${len(values) + index}"
+                for index, column in enumerate(key, start=1)
+            )
             conditions.append(f"({order}) > ({marks})")
             params += list(cursor)
         where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""

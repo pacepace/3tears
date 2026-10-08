@@ -324,6 +324,7 @@ async def read_l3_rows(
     :ptype page_size: int
     :return: the rows
     :rtype: list[dict[str, Any]]
+    :raises ValueError: when ``page_size`` is under one
     """
     selected = ", ".join(quote_identifier(c) for c in columns)
     select_from = f"SELECT {selected} FROM {quote_identifier(table)}"  # noqa: S608 - trusted identifiers

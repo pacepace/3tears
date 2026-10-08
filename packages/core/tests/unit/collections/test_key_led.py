@@ -21,7 +21,7 @@ import pytest
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
 from threetears.core.backends.schema_sql import build_key_led_delete_sql
 from threetears.core.backends.sql import SqlL3Backend
-from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE
+from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, read_l3_rows
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -365,11 +365,12 @@ async def test_the_rail_s_cap_has_one_owner_the_copies_page_under() -> None:
 
 
 async def test_a_transport_that_cuts_nothing_is_never_read_again() -> None:
-    table = _Table(_rows(8, 3), cap=10_000)
+    # past the rail's cap in one answer: a transport that never cuts is believed, not split
+    table = _Table(_rows(400, 3), cap=10_000)
 
-    held = await _layer(cap=None).read_rows_led_by([f"f{i:04d}" for i in range(8)], conn=table)
+    held = await _layer(cap=None).read_rows_led_by([f"f{i:04d}" for i in range(400)], max_values=400, conn=table)
 
-    assert len(held) == 24
+    assert len(held) == 1200 > L3_RAIL_ROW_CAP
     assert len(table.fetched) == 1
 
 
@@ -435,3 +436,49 @@ async def test_a_table_whose_schema_the_store_does_not_hold_is_refused() -> None
         await SqlL3Backend(_Pool()).fetch_led_by("layer", ["f0001"], columns=["feature_id"], max_values=1)
     with pytest.raises(ValueError, match="registered"):
         await SqlL3Backend(_Pool()).delete_many("layer", [("f0001", 1)], max_rows=1)
+
+
+async def test_a_whole_table_read_refuses_a_page_of_no_rows() -> None:
+    with pytest.raises(ValueError, match="at least one row"):
+        await read_l3_rows(_Table([], cap=L3_RAIL_ROW_CAP), "layer", ["feature_id"], ["feature_id"], page_size=0)
+
+
+async def test_the_store_refuses_a_batch_size_under_one() -> None:
+    store = SqlL3Backend(_Pool())
+    store.register_schema("layer", LAYER)
+    with pytest.raises(ValueError, match="max_values"):
+        await store.fetch_led_by("layer", ["f0001"], columns=["feature_id"], max_values=0)
+    with pytest.raises(ValueError, match="max_rows"):
+        await store.delete_many("layer", [("f0001", 1)], max_rows=0)
+
+
+JSONB_KEYED = TableSchema(
+    name="tiles",
+    primary_key=("tile", "doc"),
+    columns=[Column("tile", STRING_TYPE), Column("doc", JSONB_TYPE)],
+)
+
+
+async def test_a_paged_cursor_binds_each_key_value_with_its_write_cast() -> None:
+    class _Paging:
+        """a transport answering the batch read full, then one short page."""
+
+        rows_per_statement = 2
+
+        def __init__(self) -> None:
+            self.fetched: list[str] = []
+
+        async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+            self.fetched.append(sql)
+            if len(self.fetched) <= 2:
+                return [{"tile": "t", "doc": {"n": 1}}, {"tile": "t", "doc": {"n": 2}}]
+            return [{"tile": "t", "doc": {"n": 3}}]
+
+    transport = _Paging()
+    store = SqlL3Backend(transport)
+    store.register_schema("tiles", JSONB_KEYED)
+    await store.fetch_led_by("tiles", ["t"], columns=["tile", "doc"], max_values=1)
+
+    # the batch, the first page, then a page past a cursor whose jsonb value keeps its cast
+    assert len(transport.fetched) == 3
+    assert "WHERE tile = $1 AND (doc) > ($2::jsonb) ORDER BY doc LIMIT 2" in transport.fetched[2]

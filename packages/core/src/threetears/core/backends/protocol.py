@@ -61,8 +61,9 @@ class L3Reader(Protocol):
 #: the most rows the L3 rail (the hub's broker, behind ``NatsProxyL3Backend``) answers one
 #: statement. It cuts there and does not say so, so every reader that might pass it pages or reads
 #: in halves against this number: the one owner of it. A transport states its own cap as
-#: ``rows_per_statement`` (``None`` for one that never cuts, a direct asyncpg pool); one that
-#: states nothing is taken to be the rail, which costs a needless split at worst and never a row.
+#: ``rows_per_statement``, ``None`` for one that never cuts. One that states nothing -- a direct
+#: asyncpg pool, which cuts nothing but does not say so -- is taken to be the rail, which costs a
+#: needless split at worst and never a row.
 L3_RAIL_ROW_CAP: Final = 1000
 
 
