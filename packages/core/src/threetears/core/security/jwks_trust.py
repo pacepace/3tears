@@ -10,7 +10,8 @@ into a :class:`ReplyTrust`, and its keys are adopted with their provenance:
 **A signed statement.** The publisher signs a statement over exactly its key set with a root key
 the verifier pins from deployment configuration, never from this channel (:func:`sign_jwks_statement`,
 :func:`verify_jwks_statement`). A verified reply is :attr:`ReplyTrust.VERIFIED`. A statement is
-refused when it is older than the newest one already verified, or claims a life longer than
+refused when it is older than the newest one already verified by more than
+:data:`STATEMENT_ORDER_LEEWAY` (replicas' clocks differ), or claims a life longer than
 :data:`MAX_STATEMENT_LIFETIME`, so a stored genuine reply cannot be replayed to bring back a key the
 publisher has rotated out.
 
@@ -63,6 +64,7 @@ __all__ = [
     "HUB_JWKS_STATEMENT_WINDOW",
     "JWKS_STATEMENT_FIELD",
     "MAX_STATEMENT_LIFETIME",
+    "STATEMENT_ORDER_LEEWAY",
     "REACTIVE_REFRESH_WINDOW_SECONDS",
     "ROTATION_OVERLAP",
     "THUMBPRINT_WINDOW",
@@ -100,6 +102,14 @@ REACTIVE_REFRESH_WINDOW_SECONDS: Final[float] = 5.0
 #: per reply, so this needs to outlive only a round trip and clock skew; a longer claimed life
 #: would let a stored reply stand for the key set long after it changed.
 MAX_STATEMENT_LIFETIME: Final[timedelta] = timedelta(minutes=15)
+
+#: how far behind the newest verified statement a statement may be issued and still be taken.
+#: Replicas behind one queue group each stamp ``iat`` from their own clock, so genuine replies
+#: arrive out of order by up to the replicas' clock skew; refusing every one of those would read
+#: as a forgery signal on each fetch that lands on the slower replica. A replay inside this leeway
+#: can bring back only a key the publisher served within it, which a verified key's rotation
+#: overlap holds anyway.
+STATEMENT_ORDER_LEEWAY: Final[timedelta] = timedelta(seconds=30)
 
 #: the pod environment entry carrying the hub's pinned JWKS root public key: the 32 raw Ed25519
 #: bytes, base64 or base64url. It reaches a pod through deployment configuration, never over NATS.
@@ -517,10 +527,11 @@ class JwksTrust:
         except JwksStatementError as exc:
             judgement = ReplyJudgement(ReplyTrust.REFUSED, f"statement does not verify: {exc}")
         else:
-            if self._newest_statement_iat is not None and claims.iat < self._newest_statement_iat:
+            newest = self._newest_statement_iat
+            if newest is not None and claims.iat < newest - STATEMENT_ORDER_LEEWAY.total_seconds():
                 judgement = ReplyJudgement(ReplyTrust.REFUSED, "statement is older than one already verified")
             else:
-                self._newest_statement_iat = claims.iat
+                self._newest_statement_iat = claims.iat if newest is None else max(newest, claims.iat)
                 self._statement_switch.judge(presented=True, claimed_sender=self._issuer)
         return judgement
 

@@ -15,9 +15,10 @@ then accepts.
 - **Added, `threetears.core.security.jwks_trust`**, with `JwksTrust`, the one place a verifier
   decides what a reply is worth (`ReplyTrust`: refused, verified, unverified):
   - the publisher signs a statement over exactly its key set under a root key the verifier pins
-    (`sign_jwks_statement` / `verify_jwks_statement`). A statement older than one already verified,
-    or claiming a life longer than `MAX_STATEMENT_LIFETIME`, is refused, so a stored reply cannot
-    bring back a rotated-out key;
+    (`sign_jwks_statement` / `verify_jwks_statement`). A statement older than one already verified
+    by more than `STATEMENT_ORDER_LEEWAY` (30 seconds: replicas behind one queue group stamp `iat`
+    from their own clocks), or claiming a life longer than `MAX_STATEMENT_LIFETIME`, is refused, so
+    a stored reply cannot bring back a rotated-out key;
   - an unsigned reply is taken only while `HUB_JWKS_STATEMENT_WINDOW` is open (required from
     2027-01-05) and the publisher has not yet signed one. This ratchet only tightens: a publisher
     rolling out the signing release should finish promptly, and rolling the publisher back to a

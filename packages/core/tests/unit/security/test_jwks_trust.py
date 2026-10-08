@@ -37,6 +37,7 @@ from threetears.core.security.jwks_trust import (
     THUMBPRINT_WINDOW,
     JWKS_STATEMENT_FIELD,
     ROTATION_OVERLAP,
+    STATEMENT_ORDER_LEEWAY,
     JwksKeyring,
     JwksStatementError,
     RefreshGate,
@@ -498,8 +499,37 @@ class TestNoReplay:
         )
         await provider.refresh()
         await provider.refresh()  # the replay, signed a minute before the reply already taken
+        assert 60 > STATEMENT_ORDER_LEEWAY.total_seconds()
 
         assert _kids(provider) == {_HUB_KID}
+
+    async def test_two_replicas_a_second_apart_are_both_taken_in_either_order(self) -> None:
+        """replicas behind one queue group stamp ``iat`` from their own clocks; the slower one's
+        genuine reply, fetched after the faster one's, is taken, not refused as a replay."""
+        now = int(time.time())
+
+        def signed(keys: list[dict[str, Any]], at: int) -> bytes:
+            statement = sign_jwks_statement(
+                keys, signing_key=_ROOT, issuer=HUB_JWKS_ISSUER, now=at, ttl=timedelta(minutes=5)
+            )
+            return json.dumps({"keys": keys, JWKS_STATEMENT_FIELD: statement}).encode("utf-8")
+
+        rotated_signing, rotated_public = generate_signing_keypair()
+        rotated_kid = jwk_thumbprint(rotated_public)
+        provider = CachedHubJwksProvider(
+            _client(
+                signed(_keys(_HUB_PUBLIC), now),
+                signed(_keys(_HUB_PUBLIC, rotated_public), now - 1),
+            ),
+            request_timeout_seconds=1.0,
+            root_public_key=_ROOT.public_key(),
+            statement_switch=_switch(required=True),
+        )
+        await provider.refresh()  # replica A, its clock a second ahead
+        await provider.refresh()  # replica B, a second behind, already serving the new key
+
+        assert _kids(provider) == {_HUB_KID, rotated_kid}
+        verify_identity_token(_token(rotated_signing, rotated_kid), jwks=provider(), issuer="aibots-hub")
 
     def test_a_statement_claiming_a_longer_life_than_the_maximum_is_refused(self) -> None:
         keys = _keys(_HUB_PUBLIC)
