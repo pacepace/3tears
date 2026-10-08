@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Geo: a feature-cache read with no L1 is one loader call, and a wide rectangle is read once
+
+A z3 tile through `FeatureCache` made 1,025 loader queries live, and a z0 tile 65,537: the read
+swept every z8 chunk under the rectangle, one loader call each, and with no L1 bound then asked the
+loader for the whole rectangle anyway. The rows it swept were kept in two unbounded per-process
+maps, with or without an L1.
+
+- **Fixed, `FeatureCache.features_in_bbox` with no L1**: one loader call for the rectangle, and
+  nothing is kept.
+- **Fixed, with an L1**: a rectangle spanning more than `FeatureCache.max_chunk_reads` (16)
+  uncovered chunks is one loader call for the rectangle. Its rows cover each chunk it wholly
+  contains, with the rows that intersect that chunk; a chunk it only overlaps is left uncovered, so
+  a later tile there loads that chunk alone. A z0 build through a cache-wired `TileCollection` is
+  one loader call.
+- **Fixed, held rows are bounded**: `FeatureCache(max_cached_rows=...)`, default
+  `FeatureCache.max_cached_rows` (100,000 row entries across covered chunks). Past it the least
+  recently read chunk is evicted, its features leaving the R-Tree once no held chunk carries them,
+  and it is loaded again when next asked for. A wide read carrying more rows than the bound is not
+  held. A read answers from the rows it gathered, so an eviction mid-read cannot make it partial.
+- **Added**: `FeatureCache.max_chunk_reads: ClassVar[int] = 16`, `FeatureCache.max_cached_rows:
+  ClassVar[int] = 100_000`, and the `max_cached_rows: int | None = None` keyword (below 1 raises
+  `ValueError`).
+
 ### NATS: a KV bucket whose stream is briefly offline is no longer blamed on a missing grant
 
 During a NATS restart a catalog write failed with `stream is offline`, and the error told the

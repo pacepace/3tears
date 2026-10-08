@@ -272,3 +272,213 @@ class TestChunkCoverage:
         wide = BoundingBox(-113.0, 33.0, -111.0, 34.0)
         await cache.features_in_bbox("tracts", 1, wide)
         assert len(calls) > 1
+
+
+def _recording_loader(rows: list[dict[str, Any]]) -> tuple[Any, list[BoundingBox]]:
+    """a loader answering ``rows`` by rectangle, and the list of every rectangle it was asked for."""
+    calls: list[BoundingBox] = []
+
+    async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+        calls.append(bounds)
+        return [row for row in rows if row["bounds"].intersects(bounds)]
+
+    return _loader, calls
+
+
+def _cache_over(request: pytest.FixtureRequest, loader: Any, *, l1: bool = True, **kwargs: Any) -> FeatureCache:
+    """a FeatureCache over ``loader``, with a real per-test SQLite L1 or with none."""
+    backend: SQLiteBackend | None = None
+    if l1:
+        metadata = MetaData()
+        Table(
+            f"geo_features_{SCOPE}",
+            metadata,
+            SAColumn("layer", String, primary_key=True),
+            SAColumn("source_version", Integer, primary_key=True),
+            SAColumn("feature_id", String, primary_key=True),
+        )
+        backend = SQLiteBackend(f"geo_wide_{abs(hash(request.node.nodeid))}")
+        backend.initialize(metadata)
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=backend, l2_client=None, l3_pool=None)
+    return FeatureCache(
+        registry,
+        DefaultCoreConfig(),
+        None,
+        None,
+        loader=loader,
+        bounds_of=_row_bounds,
+        feature_id_column="feature_id",
+        cache_scope=SCOPE,
+        **kwargs,
+    )
+
+
+#: the z3 tile over Phoenix: 32x32 z8 chunks, far past what a chunk sweep should walk
+_Z3 = TileId(z=3, x=1, y=3)
+
+
+def _inside_z3(z: int = 12) -> TileId:
+    """a tile well inside :data:`_Z3`, off every z8 chunk boundary, so it falls in one chunk."""
+    scale = 1 << (z - _Z3.z)
+    return TileId(z=z, x=_Z3.x * scale + scale // 2 + 3, y=_Z3.y * scale + scale // 2 + 3)
+
+
+class TestWithoutL1TheLoaderIsAskedOnce:
+    """with no L1 nothing can be held, so a chunk sweep is pure cost: one loader call per z8 chunk
+    under the rectangle (1,025 for a z3 tile, 65,537 for z0, live) and then the whole rectangle
+    again. the loader is the only source of truth, so it is asked exactly once."""
+
+    async def test_a_z3_rectangle_is_one_loader_call(self, request: pytest.FixtureRequest) -> None:
+        row = {"feature_id": "a", "bounds": BoundingBox(-112.10, 33.40, -112.09, 33.41)}
+        loader, calls = _recording_loader([row])
+        cache = _cache_over(request, loader, l1=False)
+
+        found = await cache.features_in_bbox("tracts", 1, tile_bounds(_Z3))
+
+        assert len(calls) == 1, f"expected one loader call with no L1, got {len(calls)}"
+        assert calls[0] == tile_bounds(_Z3)
+        assert [r["feature_id"] for r in found] == ["a"]
+
+    async def test_nothing_is_kept_between_reads(self, request: pytest.FixtureRequest) -> None:
+        # with no L1 there is nothing to evict from, so anything kept would grow for the life of
+        # the pod: the same rectangle twice is the loader twice
+        loader, calls = _recording_loader([{"feature_id": "a", "bounds": BoundingBox(-112.10, 33.40, -112.09, 33.41)}])
+        cache = _cache_over(request, loader, l1=False)
+        tile = tile_bounds(_inside_z3())
+
+        await cache.features_in_bbox("tracts", 1, tile)
+        await cache.features_in_bbox("tracts", 1, tile)
+
+        assert len(calls) == 2
+
+
+class TestAWideRectangleIsOneLoad:
+    """a rectangle spanning more than :attr:`FeatureCache.max_chunk_reads` uncovered chunks is one
+    loader call for the rectangle; the chunks it fully contains are then covered."""
+
+    async def test_a_z3_rectangle_is_one_loader_call(self, request: pytest.FixtureRequest) -> None:
+        loader, calls = _recording_loader([])
+        cache = _cache_over(request, loader)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(_Z3))
+
+        assert len(calls) == 1, f"expected one loader call for a z3 rectangle, got {len(calls)}"
+        assert calls[0] == tile_bounds(_Z3)
+
+    async def test_it_returns_exactly_the_rows_in_the_rectangle(self, request: pytest.FixtureRequest) -> None:
+        inside = {"feature_id": "in", "bounds": BoundingBox(-112.10, 33.40, -112.09, 33.41)}
+        outside = {"feature_id": "out", "bounds": BoundingBox(-80.0, 40.0, -79.0, 41.0)}
+        loader, _ = _recording_loader([inside, outside])
+        cache = _cache_over(request, loader)
+
+        found = await cache.features_in_bbox("tracts", 1, tile_bounds(_Z3))
+        assert [r["feature_id"] for r in found] == ["in"]
+
+    async def test_a_tile_inside_it_is_served_with_no_loader_call(self, request: pytest.FixtureRequest) -> None:
+        tile = _inside_z3()
+        bounds = tile_bounds(tile)
+        near = {
+            "feature_id": "near",
+            "bounds": BoundingBox(bounds.min_lon, bounds.min_lat, bounds.min_lon + 1e-4, bounds.min_lat + 1e-4),
+        }
+        elsewhere = {"feature_id": "elsewhere", "bounds": BoundingBox(-112.9, 34.9, -112.8, 35.0)}
+        loader, calls = _recording_loader([near, elsewhere])
+        cache = _cache_over(request, loader)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(_Z3))
+        found = await cache.features_in_bbox("tracts", 1, bounds)
+
+        assert len(calls) == 1, f"a z12 tile inside a loaded z3 rectangle went back to the loader ({len(calls)} calls)"
+        assert [r["feature_id"] for r in found] == ["near"]
+
+    async def test_a_tile_whose_chunk_crosses_the_edge_loads_that_chunk(self, request: pytest.FixtureRequest) -> None:
+        # a z12 tile on the z3 tile's eastern edge touches the z8 chunk beyond it, which the z3 load
+        # did not contain and so did not cover: that chunk alone is loaded
+        scale = 1 << (12 - _Z3.z)
+        edge = TileId(z=12, x=(_Z3.x + 1) * scale - 1, y=_Z3.y * scale + scale // 2)
+        loader, calls = _recording_loader([])
+        cache = _cache_over(request, loader)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(_Z3))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(edge))
+
+        assert len(calls) == 2, f"expected the one uncovered chunk to load, got {len(calls) - 1} loads"
+        beyond = TileId(z=FeatureCache.chunk_zoom, x=(_Z3.x + 1) * (1 << (FeatureCache.chunk_zoom - _Z3.z)), y=0)
+        assert calls[1].min_lon == tile_bounds(beyond).min_lon
+
+    async def test_a_feature_straddling_the_edge_is_still_served(self, request: pytest.FixtureRequest) -> None:
+        # a row crossing the z3 edge belongs to the chunks on both sides of it; the inside chunk must
+        # still answer it once covered by the wide load
+        inner = tile_bounds(_inside_z3())
+        west_of_z3 = tile_bounds(_Z3).min_lon - 10.0
+        straddler = {
+            "feature_id": "wide",
+            "bounds": BoundingBox(west_of_z3, inner.min_lat, inner.max_lon, inner.max_lat),
+        }
+        loader, calls = _recording_loader([straddler])
+        cache = _cache_over(request, loader)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(_Z3))
+        found = await cache.features_in_bbox("tracts", 1, tile_bounds(_inside_z3()))
+
+        assert len(calls) == 1
+        assert [r["feature_id"] for r in found] == ["wide"]
+
+
+class TestHeldRowsAreBounded:
+    """the rows a pod holds are bounded and evicted, least recently used chunk first."""
+
+    @staticmethod
+    def _two_chunks() -> tuple[TileId, TileId, list[dict[str, Any]]]:
+        first = _inside_z3()
+        second = TileId(z=12, x=first.x + 64, y=first.y)  # a different z8 chunk
+        rows = []
+        for name, tile in (("a", first), ("b", second)):
+            bounds = tile_bounds(tile)
+            rows.append(
+                {
+                    "feature_id": name,
+                    "bounds": BoundingBox(bounds.min_lon, bounds.min_lat, bounds.min_lon + 1e-4, bounds.min_lat + 1e-4),
+                }
+            )
+        return first, second, rows
+
+    async def test_a_chunk_past_the_bound_is_evicted_and_reloaded(self, request: pytest.FixtureRequest) -> None:
+        first, second, rows = self._two_chunks()
+        loader, calls = _recording_loader(rows)
+        cache = _cache_over(request, loader, max_cached_rows=1)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(first))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(second))
+        again = await cache.features_in_bbox("tracts", 1, tile_bounds(first))
+
+        assert len(calls) == 3, "the first chunk should have been evicted to hold the second"
+        assert [r["feature_id"] for r in again] == ["a"]
+
+    async def test_within_the_bound_both_stay_held(self, request: pytest.FixtureRequest) -> None:
+        first, second, rows = self._two_chunks()
+        loader, calls = _recording_loader(rows)
+        cache = _cache_over(request, loader, max_cached_rows=10)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(first))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(second))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(first))
+
+        assert len(calls) == 2
+
+    async def test_an_evicted_feature_leaves_the_spatial_index(self, request: pytest.FixtureRequest) -> None:
+        # the R-Tree is in L1 too, so it is bounded with the rows rather than growing behind them
+        first, second, rows = self._two_chunks()
+        loader, _ = _recording_loader(rows)
+        cache = _cache_over(request, loader, max_cached_rows=1)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(first))
+        assert cache.indexed_keys_in_bbox("tracts", 1, tile_bounds(first)) == ["a"]
+        await cache.features_in_bbox("tracts", 1, tile_bounds(second))
+        assert cache.indexed_keys_in_bbox("tracts", 1, tile_bounds(first)) == []
+        assert cache.indexed_keys_in_bbox("tracts", 1, tile_bounds(second)) == ["b"]
+
+    def test_a_bound_below_one_is_refused(self, request: pytest.FixtureRequest) -> None:
+        with pytest.raises(ValueError, match="max_cached_rows"):
+            _cache_over(request, _empty_loader, max_cached_rows=0)
