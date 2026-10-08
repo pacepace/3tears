@@ -1179,10 +1179,66 @@ def test_what_any_thread_may_call_reads_only_the_shared_state_each_once_and_runs
     for node in ast.walk(_module_tree()):
         if isinstance(node, ast.Call) and ast.unparse(node.func) == "asyncio.to_thread" and node.args:
             work = node.args[0]
-            if isinstance(work, ast.Lambda) or (_self_attr(work) is not None):
+            # what a worker may run: the backend's methods, and the versioned L1's (which owns its state)
+            owner = _self_attr(work.value) if isinstance(work, ast.Attribute) else None
+            if isinstance(work, ast.Lambda) or _self_attr(work) is not None or owner not in (None, *_OFF_LOOP):
                 wrong.append(
                     f"line {node.lineno}: to_thread runs {ast.unparse(work)}, the snapshot's own code, off the loop"
                 )
+    assert not wrong, "\n".join(wrong)
+
+
+# what the snapshot may hand a worker thread: the backend, and the versioned L1, whose state is its own
+_OFF_LOOP = frozenset({"_backend", "_versioned"})
+# the versioned L1's own state: its backend and lock, set once, and the epochs, rebound under the lock
+_VERSIONED_SET_AT_START = frozenset({"_backend", "_lock"})
+_VERSIONED_REBOUND = frozenset({"_held"})
+
+
+def test_the_versioned_l1_touches_only_its_own_state_and_rebinds_its_epochs_under_its_lock() -> None:
+    """it runs on worker threads: it reads nothing of the snapshot, sets its backend and lock once,
+    reads its epochs once per method, and only rebinds them (never in place), inside ``with self._lock``."""
+    versioned = _class_def("_VersionedL1")
+    methods = {n.name: n for n in versioned.body if isinstance(n, ast.FunctionDef)}
+    wrong: list[str] = []
+    for name, method in methods.items():
+        reads: dict[str, int] = {}
+        locked = {
+            id(inner)
+            for node in ast.walk(method)
+            if isinstance(node, ast.With) and any(ast.unparse(item.context_expr) == "self._lock" for item in node.items)
+            for inner in ast.walk(node)
+        }
+        for node in ast.walk(method):
+            attr = _self_attr(node)
+            if attr is None:
+                continue
+            if attr not in _VERSIONED_SET_AT_START | _VERSIONED_REBOUND:
+                wrong.append(f"_VersionedL1.{name} reaches self.{attr}, which is not the versioned L1's own state")
+            if attr in _VERSIONED_REBOUND and isinstance(node.ctx, ast.Load):
+                reads[attr] = reads.get(attr, 0) + 1
+                if name != "__init__" and id(node) not in locked:
+                    wrong.append(f"_VersionedL1.{name} reads self.{attr} outside the lock")
+        wrong.extend(f"_VersionedL1.{name} reads self.{a} {n} times" for a, n in reads.items() if n > 1)
+        for node in ast.walk(method):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    attr = _self_attr(target)
+                    if attr in _VERSIONED_SET_AT_START and name != "__init__":
+                        wrong.append(f"_VersionedL1.{name} rebinds self.{attr}, which is set once at construction")
+                    if attr in _VERSIONED_REBOUND:
+                        value = node.value
+                        built = (
+                            value.func.id if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) else None
+                        )
+                        if isinstance(node, ast.AugAssign) or built not in _REBINDERS:
+                            wrong.append(f"_VersionedL1.{name} binds self.{attr} to a value not built read-only")
+                        if name != "__init__" and id(node) not in locked:
+                            wrong.append(f"_VersionedL1.{name} rebinds self.{attr} outside the lock")
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _IN_PLACE:
+                if _self_attr(node.func.value) in _VERSIONED_REBOUND:
+                    wrong.append(f"_VersionedL1.{name}: {ast.unparse(node.func)} changes the epochs in place")
     assert not wrong, "\n".join(wrong)
 
 

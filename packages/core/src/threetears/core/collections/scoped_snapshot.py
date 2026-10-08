@@ -908,7 +908,8 @@ class ScopedSnapshot:
         # thread may take (status, read_with_behind, applied_epoch(s)). The event loop is their one
         # writer, and it never changes a value in place: it builds the next one (_updated, replace)
         # and rebinds the attribute, so whatever a reader took stays as it was while it iterates.
-        # Code run on a worker thread touches the backend and nothing else here.
+        # Code run on a worker thread touches the backend and the versioned L1 (_VersionedL1, which
+        # owns its own lock and epochs), and nothing else here.
         self._applied: Mapping[str, _Pointer] = _updated({})
         # the L1's commits, each with the epoch of every scope's rows moved in the same step, so a
         # versioned read on any thread pairs its rows with exactly their epochs (read_versioned).
@@ -1087,7 +1088,8 @@ class ScopedSnapshot:
         """commit replacements in this L1 on a worker thread, then, back on the event loop, take the
         scopes they bring current off ``behind`` and count what each scope holds.
 
-        Only the backend is touched off the loop. ``behind`` changes after the commit, never before,
+        Only the versioned L1 (:class:`_VersionedL1`: the backend's commit and the epochs' move,
+        under its own lock) runs off the loop. ``behind`` changes after the commit, never before,
         so a reader that takes ``behind`` before it opens its read (:meth:`read_with_behind`) is
         never told a scope is current when its read holds the older rows.
 
