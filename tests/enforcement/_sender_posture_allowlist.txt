@@ -21,8 +21,8 @@ packages/core/src/threetears/core/collections/registry.py :: S3 :: 1 :: backlog 
 packages/epoch/src/threetears/epoch/listener.py :: G12 :: 1 :: backlog :: a forged broadcast epoch is taken as last seen without confirming it against KV
 packages/epoch/src/threetears/epoch/listener.py :: G13 :: 1 :: backlog :: same listener; a forged huge epoch delays revocations until the catch-up tick
 packages/nats/src/threetears/nats/auth_callout_responder.py :: H3 :: 1 :: 11 :: the request JWT is not verified, so a pod can take over another connection's owner row
-packages/nats/src/threetears/nats/client.py :: S2 :: 1 :: 06 :: a renewal request is acted on when is_mine matches claims a tool pod can read
-packages/nats/src/threetears/nats/client.py :: S1 :: 1 :: 06 :: a credential refusal closes every connection when is_mine matches claims a tool pod can read
+packages/nats/src/threetears/nats/client.py :: S2 :: 1 :: 06 :: a renewal request is judged by the runner's door (the hub's envelope) when it passes one; without one, or inside the SDK door's window, is_mine alone decides
+packages/nats/src/threetears/nats/client.py :: S1 :: 1 :: 06 :: a credential refusal is judged by the runner's door (the hub's envelope) when it passes one; without one, or inside the SDK door's window, is_mine alone decides
 packages/nats/src/threetears/nats/cross_worker_cancel.py :: S7 :: 1 :: backlog :: a cancel is acted on with no sender check; not wired in any repo today
 packages/registry/src/threetears/registry/discovery.py :: R6 :: 1 :: backlog :: lists tools for the agent the body names
 packages/registry/src/threetears/registry/health.py :: R5 :: 1 :: backlog :: a heartbeat marks the pod_id in its body available

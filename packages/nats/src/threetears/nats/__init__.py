@@ -122,6 +122,8 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     )
 
 from threetears.nats.credential_refusal import (
+    CREDENTIAL_REFUSAL_ENVELOPE_AUDIENCE,
+    CREDENTIAL_REFUSAL_ENVELOPE_OP,
     CREDENTIAL_REFUSAL_SUBJECT_TOKEN,
     CredentialRefusal,
     CredentialRefusalReason,
@@ -166,6 +168,8 @@ from threetears.nats.errors import (
 )
 from threetears.nats.persisted_copy import WRITE_FAILURE_THRESHOLD, CopyWriteHealth, PersistedCopyBucket
 from threetears.nats.renewal_request import (
+    CREDENTIAL_RENEWAL_ENVELOPE_AUDIENCE,
+    CREDENTIAL_RENEWAL_ENVELOPE_OP,
     CREDENTIAL_RENEWAL_SUBJECT_TOKEN,
     CredentialRenewalReason,
     CredentialRenewalRequest,
@@ -421,10 +425,14 @@ __all__ = [
     # renewing a connection whose credential expires (NatsClient.renew_credential's arithmetic)
     "NATS_USER_JWT_TTL_ENV",
     "PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS",
+    "CREDENTIAL_REFUSAL_ENVELOPE_AUDIENCE",
+    "CREDENTIAL_REFUSAL_ENVELOPE_OP",
     "CREDENTIAL_REFUSAL_SUBJECT_TOKEN",
     "CredentialRefusal",
     "CredentialRefusalReason",
     "RefusedPrincipal",
+    "CREDENTIAL_RENEWAL_ENVELOPE_AUDIENCE",
+    "CREDENTIAL_RENEWAL_ENVELOPE_OP",
     "CREDENTIAL_RENEWAL_SUBJECT_TOKEN",
     "CredentialRenewalReason",
     "CredentialRenewalRequest",

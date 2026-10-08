@@ -330,6 +330,17 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/security/service_envelope.py",
+        class_name="InProcessEnvelopeLedger",
+        attr_name="_spent",
+        rationale=(
+            "spent envelope ids for a door ONE process consumes (a runner's own inbox): only this "
+            "process can be replayed to, a restart brings a new identity generation a replayed refusal "
+            "does not name, and each id is forgotten once its envelope expires (65s), so a shared or "
+            "durable store would add a round trip and protect nothing"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/dynamic_pod.py",
         class_name="DynamicToolPod",
         attr_name="_resources",

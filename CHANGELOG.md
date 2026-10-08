@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### NATS: a runner's refusal and renewal doors can require the hub's envelope (S1, S2)
+
+- `CredentialRefusal` and `CredentialRenewalRequest` gain an optional `service_envelope` (audiences
+  `nats.credential_refusal` / `nats.credential_renewal`, ops `refuse` / `renew`).
+  `NatsClient.abandon_on_refusal` and `renew_on_request` take `admits`, asked with the message bytes
+  before `is_mine`: any client that can name a runner's inbox could deliver a refusal that closed
+  every connection it held. A malformed message is now logged and ignored there.
+- Core: `InProcessEnvelopeLedger` (an `EnvelopeLedger` for a door one process consumes) and
+  `HubJwksEnvelopeSource` (the hub's key set from a pod's `CachedHubJwksProvider`), for the runner's
+  door. `ServiceEnvelopeDoor` takes any `EnvelopeLedger`. Additive: without `admits` nothing changes.
+
 ### NATS: `round_trip`, the barrier nats-py's `flush` is not, for a raw connection
 
 - `threetears.nats.round_trip(connection, *, timeout)` proves the server processed everything a raw

@@ -1062,3 +1062,61 @@ async def test_a_renewal_request_for_another_runner_moves_nothing() -> None:
 
     assert client.raw is current
     await client.shutdown()
+
+
+async def test_a_refusal_the_runners_door_does_not_admit_closes_nothing() -> None:
+    """S1: anyone who can name a runner's inbox can deliver a refusal; the door decides first."""
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(current, successor)
+    asked: list[bytes] = []
+
+    async def _admits(data: bytes) -> bool:
+        asked.append(data)
+        return b'"service_envelope":"signed"' in data
+
+    await client.abandon_on_refusal(inbox_prefix="_INBOX_agent_pod_a1", is_mine=lambda refusal: True, admits=_admits)
+    refusals = current.subs[-1]
+
+    forged = CredentialRefusal(reason=CredentialRefusalReason.SUPERSEDED, pod_id="pod-7", identity_generation="g-3")
+    await refusals.queue_in.put(_Msg(forged.model_dump_json().encode(), subject=refusals.subject))
+    await _settle()
+    assert len(asked) == 1
+    assert not client.is_closed
+
+    signed = forged.model_copy(update={"service_envelope": "signed"})
+    await refusals.queue_in.put(_Msg(signed.model_dump_json().encode(), subject=refusals.subject))
+    for _ in range(100):
+        if client.is_closed:
+            break
+        await asyncio.sleep(0.01)
+    assert client.is_closed
+
+
+async def test_a_renewal_request_the_runners_door_does_not_admit_moves_nothing() -> None:
+    """S2: a forged request costs a reconnect each; the door refuses it before any move."""
+    from threetears.nats import CredentialRenewalReason, CredentialRenewalRequest
+
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(current, successor)
+
+    async def _refuse(data: bytes) -> bool:
+        return False
+
+    await client.renew_on_request(inbox_prefix="_INBOX_pod", is_mine=lambda request: True, admits=_refuse)
+    notice = current.subs[-1]
+    request = CredentialRenewalRequest(reason=CredentialRenewalReason.GRANTS_CHANGED, pod_id=None)
+    await notice.queue_in.put(_Msg(request.model_dump_json().encode(), subject=notice.subject))
+    await _settle()
+    assert client.raw is current
+    await client.shutdown()
+
+
+async def test_a_malformed_refusal_is_ignored() -> None:
+    current, successor = _Conn("current"), _Conn("successor")
+    client = await _connected(current, successor)
+    await client.abandon_on_refusal(inbox_prefix="_INBOX_agent_pod_a1", is_mine=lambda refusal: True)
+    refusals = current.subs[-1]
+    await refusals.queue_in.put(_Msg(b"not json", subject=refusals.subject))
+    await _settle()
+    assert not client.is_closed
+    await client.shutdown()

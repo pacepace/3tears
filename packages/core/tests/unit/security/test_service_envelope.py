@@ -423,3 +423,68 @@ class TestSignerFromSecretRef:
             )
             is None
         )
+
+
+class TestInProcessLedger:
+    async def test_an_id_is_spent_once(self) -> None:
+        from datetime import UTC, datetime
+
+        from threetears.core.security import InProcessEnvelopeLedger
+
+        ledger = InProcessEnvelopeLedger()
+        now = datetime.now(UTC)
+        assert await ledger.record_unique("a", issued_at=now) is True
+        assert await ledger.record_unique("a", issued_at=now) is False
+
+    async def test_an_id_is_forgotten_only_once_its_envelope_can_no_longer_be_accepted(self) -> None:
+        from datetime import UTC, datetime
+
+        from threetears.core.security import InProcessEnvelopeLedger
+
+        clock = {"now": datetime(2026, 10, 8, 12, 0, tzinfo=UTC)}
+        ledger = InProcessEnvelopeLedger(clock=lambda: clock["now"])
+        issued = clock["now"]
+        await ledger.record_unique("a", issued_at=issued)
+        clock["now"] = issued + SERVICE_ENVELOPE_REPLAY_TTL
+        assert await ledger.record_unique("a", issued_at=issued) is False
+        clock["now"] = issued + SERVICE_ENVELOPE_REPLAY_TTL + timedelta(seconds=1)
+        assert await ledger.record_unique("b", issued_at=clock["now"]) is True
+        assert await ledger.record_unique("a", issued_at=issued) is True  # its envelope expired long ago
+
+    def test_a_verifier_wider_than_the_leeway_is_refused(self) -> None:
+        from threetears.core.security import InProcessEnvelopeLedger
+
+        with pytest.raises(ValueError, match="sized for"):
+            InProcessEnvelopeLedger().require_covers(SERVICE_ENVELOPE_LEEWAY + timedelta(seconds=1))
+
+    async def test_a_door_on_the_ledger_refuses_a_replay(self) -> None:
+        from threetears.core.security import InProcessEnvelopeLedger
+
+        priv, jwks = _keys()
+        door = _door(_Jwks(jwks), guard=InProcessEnvelopeLedger())
+        body = _with_envelope(_mint(priv))
+        assert await door.admit(body, op="ensure") is True
+        assert await door.admit(body, op="ensure") is False
+
+
+class TestHubJwksSource:
+    async def test_it_serves_the_providers_set_and_asks_it_to_refresh(self) -> None:
+        from threetears.core.security import HubJwksEnvelopeSource
+
+        _, jwks = _keys()
+
+        class _Provider:
+            refreshed = 0
+
+            def __call__(self):
+                return jwks
+
+            async def refresh_now(self) -> bool:
+                self.refreshed += 1
+                return True
+
+        provider = _Provider()
+        source = HubJwksEnvelopeSource(provider)
+        assert await source.get_jwks() == jwks
+        await source.get_jwks(refresh=True)
+        assert provider.refreshed == 1

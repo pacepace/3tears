@@ -44,7 +44,8 @@ from threetears.core.security.freshness import ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.security.secret_refs import SecretResolutionError, resolve_secret
 
 if TYPE_CHECKING:
-    from threetears.core.coordination.replay_guard import ReplayGuard
+    from collections.abc import Callable
+
     from threetears.core.security.door_proof import DoorProofSwitch
 
 __all__ = [
@@ -53,6 +54,9 @@ __all__ = [
     "SERVICE_ENVELOPE_MAX_LIFETIME",
     "SERVICE_ENVELOPE_REPLAY_TTL",
     "EnvelopeJwksSource",
+    "EnvelopeLedger",
+    "HubJwksEnvelopeSource",
+    "InProcessEnvelopeLedger",
     "PinnedEnvelopeJwks",
     "ServiceEnvelopeClaims",
     "ServiceEnvelopeDoor",
@@ -371,7 +375,7 @@ async def verify_and_record(
     audience: str,
     op: str,
     body: Mapping[str, Any],
-    replay_guard: ReplayGuard,
+    replay_guard: EnvelopeLedger,
 ) -> ServiceEnvelopeClaims:
     """verify ``envelope`` and consume its single-use id; a second use is refused.
 
@@ -389,7 +393,7 @@ async def verify_and_record(
     :ptype body: Mapping[str, Any]
     :param replay_guard: the door's single-use ledger, remembering ids for at least
         :data:`SERVICE_ENVELOPE_REPLAY_TTL` and sized for :data:`SERVICE_ENVELOPE_LEEWAY`
-    :ptype replay_guard: ReplayGuard
+    :ptype replay_guard: EnvelopeLedger
     :return: the verified claims
     :rtype: ServiceEnvelopeClaims
     :raises ServiceEnvelopeError: when it does not verify, or its id was already used
@@ -428,6 +432,116 @@ def _public_key(jwks: Mapping[str, Any], kid: str) -> Ed25519PublicKey:
     if not isinstance(found, Ed25519PublicKey):
         raise ServiceEnvelopeError("no Ed25519 key in the JWKS carries the envelope's kid")
     return found
+
+
+class EnvelopeLedger(Protocol):
+    """where a door spends envelope ids: a shared ``ReplayGuard``, or one process's own ledger."""
+
+    def require_covers(self, future_tolerance: timedelta) -> None:
+        """refuse a verifier whose future tolerance the ledger was not sized for.
+
+        :param future_tolerance: the verifier's tolerance
+        :ptype future_tolerance: timedelta
+        :raises ValueError: when it exceeds the ledger's sizing
+        """
+        ...
+
+    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
+        """spend ``nonce``; ``False`` when it was spent before (or must be refused).
+
+        :param nonce: the id
+        :ptype nonce: str
+        :param issued_at: the envelope's issue time, timezone-aware
+        :ptype issued_at: datetime
+        :return: whether it was fresh
+        :rtype: bool
+        """
+        ...
+
+
+class InProcessEnvelopeLedger:
+    """one process's ledger of spent envelope ids, for a door only this process consumes.
+
+    A runner's own inbox has exactly one consumer per runner, so the ids it has spent are the whole
+    ledger: a replay can only reach this process again. Ids are forgotten once their envelope could
+    no longer be accepted (:data:`SERVICE_ENVELOPE_REPLAY_TTL` after issue), so the ledger stays
+    bounded. Nothing survives a restart, and nothing needs to: a restarted runner holds a new
+    identity generation, which a replayed refusal does not name.
+    """
+
+    def __init__(self, *, clock: Callable[[], datetime] | None = None) -> None:
+        """
+        start with nothing spent.
+
+        :param clock: the current time, timezone-aware; the system clock when ``None``
+        :ptype clock: Callable[[], datetime] | None
+        """
+        self._clock = clock if clock is not None else (lambda: datetime.now(UTC))
+        self._spent: dict[str, datetime] = {}
+
+    def require_covers(self, future_tolerance: timedelta) -> None:
+        """accept any verifier tolerance up to the envelope's own leeway.
+
+        :param future_tolerance: the verifier's tolerance
+        :ptype future_tolerance: timedelta
+        :raises ValueError: when it exceeds :data:`SERVICE_ENVELOPE_LEEWAY`, past which an id could be
+            forgotten while its envelope is still accepted
+        """
+        if future_tolerance > SERVICE_ENVELOPE_LEEWAY:
+            raise ValueError(
+                f"InProcessEnvelopeLedger is sized for a verifier future tolerance of {SERVICE_ENVELOPE_LEEWAY}, "
+                f"not {future_tolerance}"
+            )
+
+    async def record_unique(self, nonce: str, *, issued_at: datetime) -> bool:
+        """spend ``nonce``, forgetting ids whose envelopes have expired.
+
+        :param nonce: the id
+        :ptype nonce: str
+        :param issued_at: the envelope's issue time, timezone-aware
+        :ptype issued_at: datetime
+        :return: whether it was fresh
+        :rtype: bool
+        :raises ValueError: when ``issued_at`` is timezone-naive
+        """
+        if issued_at.tzinfo is None:
+            raise ValueError("InProcessEnvelopeLedger.record_unique requires a timezone-aware issued_at")
+        horizon = self._clock() - SERVICE_ENVELOPE_REPLAY_TTL
+        self._spent = {key: when for key, when in self._spent.items() if when >= horizon}
+        fresh = nonce not in self._spent
+        if fresh:
+            self._spent[nonce] = issued_at
+        return fresh
+
+
+class HubJwksEnvelopeSource:
+    """the hub's key set for a door on a pod, read from the pod's trusted ``CachedHubJwksProvider``.
+
+    The provider takes a JWKS reply only under the hub's root statement, so an envelope verifies
+    only under a key the hub published.
+    """
+
+    def __init__(self, provider: Any) -> None:
+        """
+        wrap the pod's provider.
+
+        :param provider: a ``CachedHubJwksProvider``: called for the cached set, ``refresh_now`` to fetch
+        :ptype provider: Any
+        """
+        self._provider = provider
+
+    async def get_jwks(self, *, refresh: bool = False) -> Mapping[str, Any]:
+        """the hub's trusted JWKS; a refresh asks the provider for one (rate-limited there).
+
+        :param refresh: ask for a fresh fetch
+        :ptype refresh: bool
+        :return: the JWKS, empty until the provider's first fetch (nothing verifies then)
+        :rtype: Mapping[str, Any]
+        """
+        if refresh:
+            await self._provider.refresh_now()
+        jwks: Mapping[str, Any] = self._provider()
+        return jwks
 
 
 class EnvelopeJwksSource(Protocol):
@@ -493,7 +607,7 @@ class ServiceEnvelopeDoor:
         issuer: str,
         audience: str,
         jwks: EnvelopeJwksSource,
-        replay_guard: ReplayGuard,
+        replay_guard: EnvelopeLedger,
     ) -> None:
         """
         build a door for messages from ``issuer``.
@@ -507,7 +621,7 @@ class ServiceEnvelopeDoor:
         :param jwks: the sender's trusted JWKS
         :ptype jwks: EnvelopeJwksSource
         :param replay_guard: the door's single-use ledger
-        :ptype replay_guard: ReplayGuard
+        :ptype replay_guard: EnvelopeLedger
         :raises ValueError: when ``replay_guard`` was not sized for :data:`SERVICE_ENVELOPE_LEEWAY`,
             so a mis-sized ledger fails the boot rather than a replay
         """

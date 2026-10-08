@@ -1957,6 +1957,28 @@ async def _round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_S
         raise _NatsFlushTimeoutError from None
 
 
+def _decoded(data: bytes | bytearray | memoryview, model: type[_T]) -> _T | None:
+    """``data`` as ``model``, or ``None`` (logged) when it is not one.
+
+    :param data: the message bytes
+    :ptype data: bytes | bytearray | memoryview
+    :param model: the wire model
+    :ptype model: type[_T]
+    :return: the decoded message, or ``None``
+    :rtype: _T | None
+    """
+    decoded: _T | None = None
+    try:
+        decoded = model.model_validate_json(bytes(data))
+    except ValidationError as exc:
+        log.warning(
+            "a malformed %s was ignored",
+            model.__name__,
+            extra={"extra_data": {"errors": exc.error_count()}},
+        )
+    return decoded
+
+
 async def round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SECONDS) -> None:
     """the barrier nats-py's ``flush`` is not: proof the server processed everything sent before now.
 
@@ -4398,6 +4420,7 @@ class NatsClient:
         *,
         inbox_prefix: str,
         is_mine: Callable[[CredentialRenewalRequest], bool],
+        admits: Callable[[bytes], Awaitable[bool]] | None = None,
     ) -> Subscription:
         """renew this client's connection at once whenever its credential's minter asks.
 
@@ -4413,9 +4436,18 @@ class NatsClient:
         :ptype inbox_prefix: str
         :param is_mine: whether a request is for this runner; read at the moment it arrives
         :ptype is_mine: Callable[[CredentialRenewalRequest], bool]
+        :param admits: whether the request's bytes prove the minter sent them (the runner's
+            :class:`~threetears.core.security.service_envelope.ServiceEnvelopeDoor`), asked before
+            ``is_mine``; ``None`` takes every request, as before the door existed
+        :ptype admits: Callable[[bytes], Awaitable[bool]] | None
         :return: the subscription, for :meth:`unsubscribe`
         :rtype: Subscription
         """
+
+        async def _on_message(msg: IncomingMessage) -> None:
+            request = _decoded(msg.data, CredentialRenewalRequest)
+            if request is not None and (admits is None or await admits(bytes(msg.data))):
+                await _on_request(request)
 
         async def _on_request(request: CredentialRenewalRequest) -> None:
             if not is_mine(request):
@@ -4426,11 +4458,10 @@ class NatsClient:
                 return
             self._start_successor_move(why=f"its credential's minter asked for a renewal ({request.reason.value})")
 
-        # sender-posture: unauthenticated open S2 -- is_mine compares claims a tool pod can read
-        return await self.subscribe_typed(
+        # sender-posture: signed-envelope open S2 -- the hub's envelope when the runner passes its door; else is_mine alone
+        return await self.subscribe(
             subject=Subjects.credential_renewal_request(inbox_prefix),
-            cb=_on_request,
-            message_type=CredentialRenewalRequest,
+            cb=_on_message,
             deadletter_on_failure=False,
         )
 
@@ -4524,6 +4555,7 @@ class NatsClient:
         *,
         inbox_prefix: str,
         is_mine: Callable[[CredentialRefusal], bool],
+        admits: Callable[[bytes], Awaitable[bool]] | None = None,
     ) -> Subscription:
         """abandon this client the moment the auth-callout says it refused this client's credential.
 
@@ -4539,9 +4571,18 @@ class NatsClient:
         :ptype inbox_prefix: str
         :param is_mine: whether a refusal names this runner; read at the moment it arrives
         :ptype is_mine: Callable[[CredentialRefusal], bool]
+        :param admits: whether the refusal's bytes prove the hub sent them (the runner's
+            :class:`~threetears.core.security.service_envelope.ServiceEnvelopeDoor`), asked before
+            ``is_mine``; ``None`` takes every refusal, as before the door existed
+        :ptype admits: Callable[[bytes], Awaitable[bool]] | None
         :return: the subscription, for :meth:`unsubscribe`
         :rtype: Subscription
         """
+
+        async def _on_message(msg: IncomingMessage) -> None:
+            refusal = _decoded(msg.data, CredentialRefusal)
+            if refusal is not None and (admits is None or await admits(bytes(msg.data))):
+                await _on_refusal(refusal)
 
         async def _on_refusal(refusal: CredentialRefusal) -> None:
             if not is_mine(refusal):
@@ -4558,11 +4599,10 @@ class NatsClient:
                     name=f"nats-abandon:{self._client_name}",
                 )
 
-        # sender-posture: unauthenticated open S1 -- is_mine compares claims a tool pod can read
-        return await self.subscribe_typed(
+        # sender-posture: signed-envelope open S1 -- the hub's envelope when the runner passes its door; else is_mine alone
+        return await self.subscribe(
             subject=Subjects.credential_refusal(inbox_prefix),
-            cb=_on_refusal,
-            message_type=CredentialRefusal,
+            cb=_on_message,
             deadletter_on_failure=False,
         )
 
