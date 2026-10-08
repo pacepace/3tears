@@ -1,0 +1,225 @@
+"""a service envelope verifies only from its signer, for its door and operation, over its body, now, once."""
+
+from __future__ import annotations
+
+import time
+from datetime import timedelta
+
+import jwt as pyjwt
+import pytest
+
+from threetears.core.security import (
+    SERVICE_ENVELOPE_FIELD,
+    SERVICE_ENVELOPE_LEEWAY,
+    SERVICE_ENVELOPE_MAX_LIFETIME,
+    SERVICE_ENVELOPE_REPLAY_TTL,
+    ServiceEnvelopeError,
+    body_hash,
+    build_jwks,
+    generate_signing_keypair,
+    mint_service_envelope,
+    verify_and_record,
+    verify_service_envelope,
+)
+from threetears.core.testing.replay_guard import FakeReplayGuard
+
+_BODY = {"principal_id": "p-1", "grant": "workspace.read", "nested": {"b": 2, "a": 1}}
+
+
+def _keys(kid: str = "idc-1"):
+    priv, pub = generate_signing_keypair()
+    return priv, build_jwks({kid: pub})
+
+
+def _mint(priv, **overrides):
+    args = {
+        "signing_key": priv,
+        "kid": "idc-1",
+        "issuer": "identity-core",
+        "audience": "hub.claim_grant",
+        "op": "ensure",
+        "body": _BODY,
+    }
+    args.update(overrides)
+    return mint_service_envelope(**args)
+
+
+def _verify(envelope, jwks, **overrides):
+    args = {"jwks": jwks, "issuer": "identity-core", "audience": "hub.claim_grant", "op": "ensure", "body": _BODY}
+    args.update(overrides)
+    return verify_service_envelope(envelope, **args)
+
+
+class TestVerify:
+    def test_round_trip_carries_the_signed_facts(self) -> None:
+        priv, jwks = _keys()
+        claims = _verify(_mint(priv), jwks)
+        assert claims.issuer == "identity-core"
+        assert claims.audience == "hub.claim_grant"
+        assert claims.op == "ensure"
+        assert claims.body_hash == body_hash(_BODY)
+        assert claims.jti
+        assert claims.exp - claims.iat == int(SERVICE_ENVELOPE_MAX_LIFETIME.total_seconds())
+
+    def test_another_signers_key_is_refused(self) -> None:
+        priv, _ = _keys()
+        _, other_jwks = _keys()
+        with pytest.raises(ServiceEnvelopeError, match="does not verify"):
+            _verify(_mint(priv), other_jwks)
+
+    def test_an_unknown_kid_is_refused(self) -> None:
+        priv, jwks = _keys()
+        with pytest.raises(ServiceEnvelopeError, match="kid"):
+            _verify(_mint(priv, kid="idc-2"), jwks)
+
+    def test_another_issuer_is_refused(self) -> None:
+        priv, jwks = _keys()
+        with pytest.raises(ServiceEnvelopeError, match="InvalidIssuer"):
+            _verify(_mint(priv, issuer="gateway"), jwks)
+
+    def test_an_envelope_for_another_door_is_refused(self) -> None:
+        priv, jwks = _keys()
+        with pytest.raises(ServiceEnvelopeError, match="InvalidAudience"):
+            _verify(_mint(priv, audience="hub.audit_merge"), jwks)
+
+    def test_an_envelope_for_another_operation_is_refused(self) -> None:
+        priv, jwks = _keys()
+        with pytest.raises(ServiceEnvelopeError, match="another operation"):
+            _verify(_mint(priv, op="revoke"), jwks)
+
+    def test_an_envelope_moved_onto_another_body_is_refused(self) -> None:
+        priv, jwks = _keys()
+        with pytest.raises(ServiceEnvelopeError, match="another body"):
+            _verify(_mint(priv), jwks, body={**_BODY, "grant": "workspace.admin"})
+
+    def test_the_envelope_field_itself_is_not_hashed(self) -> None:
+        # the envelope travels inside the body it signs, so it cannot be part of what it signs
+        priv, jwks = _keys()
+        envelope = _mint(priv)
+        _verify(envelope, jwks, body={**_BODY, SERVICE_ENVELOPE_FIELD: envelope})
+
+    def test_key_order_does_not_change_the_hash(self) -> None:
+        reordered = {"nested": {"a": 1, "b": 2}, "grant": "workspace.read", "principal_id": "p-1"}
+        assert body_hash(reordered) == body_hash(_BODY)
+
+    def test_a_non_json_value_is_refused_rather_than_stringified(self) -> None:
+        with pytest.raises(TypeError):
+            body_hash({"when": object()})
+
+    def test_an_expired_envelope_is_refused(self) -> None:
+        priv, jwks = _keys()
+        stale = int(time.time()) - int((SERVICE_ENVELOPE_MAX_LIFETIME + SERVICE_ENVELOPE_LEEWAY).total_seconds()) - 1
+        with pytest.raises(ServiceEnvelopeError, match="ExpiredSignature"):
+            _verify(_mint(priv, now=stale), jwks)
+
+    def test_an_issue_time_beyond_the_leeway_ahead_is_refused(self) -> None:
+        priv, jwks = _keys()
+        ahead = int(time.time()) + int(SERVICE_ENVELOPE_LEEWAY.total_seconds()) + 5
+        with pytest.raises(ServiceEnvelopeError, match="ImmatureSignature"):
+            _verify(_mint(priv, now=ahead), jwks)
+
+    def test_minting_a_longer_life_than_the_maximum_is_refused(self) -> None:
+        priv, _ = _keys()
+        with pytest.raises(ValueError, match="at most"):
+            _mint(priv, ttl=SERVICE_ENVELOPE_MAX_LIFETIME + timedelta(seconds=1))
+
+    def test_a_signed_longer_life_than_the_maximum_is_refused(self) -> None:
+        # a signer that bypasses the minter's bound is still held to it by the verifier
+        priv, jwks = _keys()
+        now = int(time.time())
+        payload = {
+            "iss": "identity-core",
+            "aud": "hub.claim_grant",
+            "op": "ensure",
+            "bh": body_hash(_BODY),
+            "jti": "j-1",
+            "iat": now,
+            "exp": now + 3600,
+        }
+        envelope = pyjwt.encode(payload, key=priv, algorithm="EdDSA", headers={"kid": "idc-1"})
+        with pytest.raises(ServiceEnvelopeError, match="longer life"):
+            _verify(envelope, jwks)
+
+    def test_a_missing_claim_is_refused(self) -> None:
+        priv, jwks = _keys()
+        now = int(time.time())
+        payload = {"iss": "identity-core", "aud": "hub.claim_grant", "op": "ensure", "bh": body_hash(_BODY)}
+        payload |= {"iat": now, "exp": now + 30}
+        envelope = pyjwt.encode(payload, key=priv, algorithm="EdDSA", headers={"kid": "idc-1"})
+        with pytest.raises(ServiceEnvelopeError, match="MissingRequiredClaim"):
+            _verify(envelope, jwks)
+
+    def test_a_non_eddsa_envelope_is_refused(self) -> None:
+        _, jwks = _keys()
+        now = int(time.time())
+        payload = {"iss": "identity-core", "aud": "hub.claim_grant", "op": "ensure", "bh": body_hash(_BODY)}
+        payload |= {"jti": "j", "iat": now, "exp": now + 30}
+        envelope = pyjwt.encode(payload, key="a-shared-secret-long-enough-for-hs256!", algorithm="HS256")
+        with pytest.raises(ServiceEnvelopeError, match="not EdDSA"):
+            _verify(envelope, jwks)
+
+    def test_garbage_is_refused(self) -> None:
+        _, jwks = _keys()
+        with pytest.raises(ServiceEnvelopeError, match="malformed"):
+            _verify("not-a-jws", jwks)
+
+
+class TestVerifyAndRecord:
+    async def test_the_first_use_is_accepted_and_a_replay_refused(self) -> None:
+        priv, jwks = _keys()
+        envelope = _mint(priv)
+        guard = FakeReplayGuard()
+        args = {"jwks": jwks, "issuer": "identity-core", "audience": "hub.claim_grant", "op": "ensure"}
+        await verify_and_record(envelope, body=_BODY, replay_guard=guard, **args)
+        with pytest.raises(ServiceEnvelopeError, match="already used"):
+            await verify_and_record(envelope, body=_BODY, replay_guard=guard, **args)
+
+    async def test_an_envelope_that_does_not_verify_spends_nothing(self) -> None:
+        priv, jwks = _keys()
+        envelope = _mint(priv, jti="shared-id")
+        guard = FakeReplayGuard()
+        args = {"jwks": jwks, "issuer": "identity-core", "audience": "hub.claim_grant", "op": "ensure"}
+        with pytest.raises(ServiceEnvelopeError, match="another body"):
+            await verify_and_record(envelope, body={"other": 1}, replay_guard=guard, **args)
+        await verify_and_record(envelope, body=_BODY, replay_guard=guard, **args)
+
+    async def test_ids_are_scoped_to_their_issuer(self) -> None:
+        # one service choosing another's id spends only its own
+        idc_priv, idc_jwks = _keys()
+        gw_priv, gw_jwks = _keys("gw-1")
+        guard = FakeReplayGuard()
+        await verify_and_record(
+            _mint(gw_priv, kid="gw-1", issuer="gateway", jti="same"),
+            jwks=gw_jwks,
+            issuer="gateway",
+            audience="hub.claim_grant",
+            op="ensure",
+            body=_BODY,
+            replay_guard=guard,
+        )
+        await verify_and_record(
+            _mint(idc_priv, jti="same"),
+            jwks=idc_jwks,
+            issuer="identity-core",
+            audience="hub.claim_grant",
+            op="ensure",
+            body=_BODY,
+            replay_guard=guard,
+        )
+
+    async def test_a_guard_not_sized_for_the_leeway_is_refused(self) -> None:
+        priv, jwks = _keys()
+        guard = FakeReplayGuard(verifier_future_tolerance=timedelta(0))
+        with pytest.raises(ValueError, match="sized for"):
+            await verify_and_record(
+                _mint(priv),
+                jwks=jwks,
+                issuer="identity-core",
+                audience="hub.claim_grant",
+                op="ensure",
+                body=_BODY,
+                replay_guard=guard,
+            )
+
+    def test_the_replay_memory_covers_the_whole_accept_window(self) -> None:
+        assert SERVICE_ENVELOPE_REPLAY_TTL >= SERVICE_ENVELOPE_MAX_LIFETIME + SERVICE_ENVELOPE_LEEWAY

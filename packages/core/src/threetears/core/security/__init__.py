@@ -30,6 +30,10 @@ public surface:
   (the same for a proof a user's device signs) -- the numbers a proof verifier's replay guard is
   sized for / :data:`DEFAULT_PROOF_MAX_AGE` (how old one may be) /
   :func:`issue_time_is_fresh` (the check, each direction on its own bound).
+- service envelopes (``service_envelope``): :func:`mint_service_envelope` /
+  :func:`verify_service_envelope` / :func:`verify_and_record` / :func:`body_hash` /
+  :class:`ServiceEnvelopeError` -- a service with no caller token to forward signs "from me, for
+  this door and operation, over this body, now, once" with its own JWKS key.
 """
 
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
@@ -78,6 +82,18 @@ from threetears.core.security.sandbox import (
     SandboxDecision,
     SandboxDenied,
 )
+from threetears.core.security.service_envelope import (
+    SERVICE_ENVELOPE_FIELD,
+    SERVICE_ENVELOPE_LEEWAY,
+    SERVICE_ENVELOPE_MAX_LIFETIME,
+    SERVICE_ENVELOPE_REPLAY_TTL,
+    ServiceEnvelopeClaims,
+    ServiceEnvelopeError,
+    body_hash,
+    mint_service_envelope,
+    verify_and_record,
+    verify_service_envelope,
+)
 from threetears.core.security.secret_refs import (
     Resolver,
     SecretResolutionError,
@@ -109,6 +125,17 @@ __all__ = [
     "DEFAULT_PROOF_MAX_AGE",
     "ISSUE_TIME_FUTURE_TOLERANCE",
     "issue_time_is_fresh",
+    # service envelopes
+    "SERVICE_ENVELOPE_FIELD",
+    "SERVICE_ENVELOPE_LEEWAY",
+    "SERVICE_ENVELOPE_MAX_LIFETIME",
+    "SERVICE_ENVELOPE_REPLAY_TTL",
+    "ServiceEnvelopeClaims",
+    "ServiceEnvelopeError",
+    "body_hash",
+    "mint_service_envelope",
+    "verify_and_record",
+    "verify_service_envelope",
     # identity tokens
     "DEFAULT_IDENTITY_TTL_SECONDS",
     "IDENTITY_REFUSED",

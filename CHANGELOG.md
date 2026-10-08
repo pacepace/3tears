@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Core: a signed service envelope for a service that has no caller token to forward
+
+- `threetears.core.security.service_envelope`: `mint_service_envelope` signs, with the sending
+  service's own JWKS key, "from me, for this door and operation, over this body, now, once":
+  claims `iss`, `aud`, `op`, `bh` (`body_hash`, canonical JSON with the envelope field left out),
+  `iat`, `exp` (at most `SERVICE_ENVELOPE_MAX_LIFETIME`, 60s) and `jti`. `verify_service_envelope`
+  checks each, EdDSA-pinned, and `verify_and_record` also spends the `jti` in the door's
+  `ReplayGuard`, which must remember ids for `SERVICE_ENVELOPE_REPLAY_TTL` and be sized for
+  `SERVICE_ENVELOPE_LEEWAY`. Additive: nothing calls it until a door adopts it.
+
 ### Knowledge: a draft carries the agent's token and the turn's user assertion
 
 - `KnowledgeDraftMessage` gains optional `identity_token` and `user_identity_token`, and
