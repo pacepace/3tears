@@ -380,30 +380,75 @@ class _Lost(Exception):
     """the snapshot in L2 is incomplete or unreadable; L3 must rebuild it."""
 
 
-def _replace_holding(
-    lock: threading.Lock, backend: DuckDBBackend, replacements: Sequence[PartitionReplacement]
-) -> None:
-    """commit replacements in the L1 while holding the swap lock, and return still holding it.
+def _on_an_event_loop() -> bool:
+    """whether this thread is running an event loop.
 
-    Run on a worker thread; it touches the backend and the lock only. The event loop moves the held
-    epochs and releases the lock once this returns (``ScopedSnapshot._commit``), so no versioned
-    read opens between the commit and the epochs' move. A failed commit releases the lock here.
+    :return: True on a thread running an event loop
+    :rtype: bool
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False  # asyncio's answer for a thread running no loop: a worker thread
+    return True
 
-    :param lock: the snapshot's swap lock
-    :ptype lock: threading.Lock
+
+class _VersionedL1:
+    """the L1, and the epoch of every scope whose rows it holds, moved together under one lock.
+
+    The one owner of the swap lock, from acquire to release: a swap holds it on the worker thread
+    that runs it, across the commit and the epochs' move, and lets it go on every path (a commit
+    that raises; an awaiter or the commit's own task cancelled, which a worker thread outlives and
+    runs to its end). A versioned read holds it only to take the epochs and pin its read, so the
+    read sees exactly the rows the epochs name. Nothing here is the snapshot's loop-owned state:
+    the loop never reads or writes the epochs, so a swap may move them off the loop.
+
     :param backend: the L1
     :ptype backend: DuckDBBackend
-    :param replacements: the scopes' new contents
-    :ptype replacements: Sequence[PartitionReplacement]
-    :return: nothing
-    :rtype: None
     """
-    lock.acquire()
-    try:
-        backend.replace_partitions(replacements)
-    except BaseException:
-        lock.release()
-        raise
+
+    def __init__(self, backend: DuckDBBackend) -> None:
+        self._backend = backend
+        self._lock = threading.Lock()
+        self._held: Mapping[str, int] = _updated({})
+
+    def swap(self, replacements: Sequence[PartitionReplacement], put: Mapping[str, int], drop: Sequence[str]) -> None:
+        """commit replacements in the L1 and move the epochs with them, as one step to any reader.
+
+        Blocking: run on a worker thread.
+
+        :param replacements: the scopes' new contents
+        :ptype replacements: Sequence[PartitionReplacement]
+        :param put: scope -> its epoch after the commit
+        :ptype put: Mapping[str, int]
+        :param drop: the scopes the commit drops
+        :ptype drop: Sequence[str]
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            self._backend.replace_partitions(replacements)
+            self._held = _updated(self._held, put, drop=drop)
+
+    @contextmanager
+    def open(self, table: str) -> Iterator[tuple[Any, Mapping[str, int]]]:
+        """a read pinned to one state of the L1, and the epochs of exactly that state.
+
+        Blocking (it waits for a swap in progress): run on a worker thread.
+
+        :param table: a table of the L1, quoted, which the read's first statement touches
+        :ptype table: str
+        :return: the cursor and the epochs
+        :rtype: Iterator[tuple[duckdb.DuckDBPyConnection, Mapping[str, int]]]
+        """
+        with ExitStack() as stack:
+            with self._lock:
+                epochs = self._held
+                cursor = stack.enter_context(self._backend.read_snapshot())
+                # DuckDB fixes a read's state at its first statement, not at BEGIN: pin it while no
+                # swap can commit, so the state read is the one the epochs name
+                cursor.execute(f"SELECT 1 FROM {table} LIMIT 0").fetchall()
+            yield cursor, epochs
 
 
 def _updated[K, V](mapping: Mapping[K, V], put: Mapping[K, V] | None = None, drop: Iterable[K] = ()) -> Mapping[K, V]:
@@ -865,12 +910,10 @@ class ScopedSnapshot:
         # and rebinds the attribute, so whatever a reader took stays as it was while it iterates.
         # Code run on a worker thread touches the backend and nothing else here.
         self._applied: Mapping[str, _Pointer] = _updated({})
-        # the epoch of every scope's rows in the L1, moved in the same step as the rows themselves:
-        # a swap holds this lock across its commit and the epochs' move, and a versioned read across
-        # taking the epochs and pinning its state, so a reader on any thread pairs a read with
-        # exactly the epochs it reads (read_versioned)
-        self._held: Mapping[str, int] = _updated({})
-        self._swap_lock = threading.Lock()
+        # the L1's commits, each with the epoch of every scope's rows moved in the same step, so a
+        # versioned read on any thread pairs its rows with exactly their epochs (read_versioned).
+        # it owns its lock and its epochs; this snapshot's commits run through it, off the loop
+        self._versioned = _VersionedL1(self._backend)
         self._local = asyncio.Lock()
         self._changed = asyncio.Event()
         self._ready = asyncio.Event()
@@ -1053,7 +1096,7 @@ class ScopedSnapshot:
         :param current: the scopes they bring current
         :ptype current: Sequence[str]
         :param epochs: scope -> its epoch after the commit, ``None`` for a scope dropped; moved with the
-            rows in one step under the swap lock, for :meth:`read_versioned`
+            rows in one step, for :meth:`read_versioned`
         :ptype epochs: Mapping[str, int | None]
         :param count: whether to count what each scope now holds (a drop forgets them instead)
         :ptype count: bool
@@ -1062,21 +1105,8 @@ class ScopedSnapshot:
         """
         put = {scope: epoch for scope, epoch in epochs.items() if epoch is not None}
         dropped = [scope for scope, epoch in epochs.items() if epoch is None]
-        replaced = asyncio.ensure_future(
-            asyncio.to_thread(_replace_holding, self._swap_lock, self._backend, replacements)
-        )
-
-        def moved(done: asyncio.Future[None]) -> None:
-            # on the loop, before anything awaiting the commit resumes, and even when that awaiter
-            # was cancelled: the held epochs move with the rows the worker committed, then the swap
-            # lock the worker left held is let go, so a versioned read never pairs the new rows with
-            # the old epochs and is never left waiting on a lock nobody will release
-            if not done.cancelled() and done.exception() is None:
-                self._held = _updated(self._held, put, drop=dropped)
-                self._swap_lock.release()
-
-        replaced.add_done_callback(moved)
-        await asyncio.shield(replaced)
+        # the worker takes and lets go of the swap lock itself, whatever happens to this task
+        await asyncio.to_thread(self._versioned.swap, replacements, put, dropped)
         self._behind = _updated(self._behind, drop=current)
         if count:
             self._count(replacements)
@@ -1138,23 +1168,22 @@ class ScopedSnapshot:
         those of the rows the cursor sees, never one swap before or after, so an answer labelled
         with them is the answer at those epochs. A read opened while a swap is in progress waits
         for the swap and its epochs' move, and reads their result; it never fails for a swap however
-        long. Blocking: call it from a worker thread.
+        long. Blocking: call it from a worker thread; on the event loop it raises at once.
 
         :return: the read, its epochs and the scopes it is behind on
         :rtype: Iterator[VersionedRead]
+        :raises RuntimeError: when called on a thread running an event loop
         """
+        if _on_an_event_loop():
+            raise RuntimeError(
+                "read_versioned blocks while a swap commits; call it from a worker thread "
+                "(asyncio.to_thread), never on the event loop"
+            )
         table = quote_identifier(self._tables[0].name)
-        backend, lock = self._backend, self._swap_lock
-        with ExitStack() as stack:
-            with lock:
-                epochs = self._held  # taken once, under the lock: the loop rebinds it, never changes it
-                # taken before the read opens, and a scope leaves it only after its commit (as
-                # read_with_behind): it names every scope the read is behind on
-                behind = self._behind
-                cursor = stack.enter_context(backend.read_snapshot())
-                # DuckDB fixes a read's state at its first statement, not at BEGIN: pin it while no
-                # swap can commit, so the state read is the one the epochs name
-                cursor.execute(f"SELECT 1 FROM {table} LIMIT 0").fetchall()
+        # taken before the read opens, and a scope leaves it only after its commit (as
+        # read_with_behind): it names every scope the read is behind on
+        behind = self._behind
+        with self._versioned.open(table) as (cursor, epochs):
             yield VersionedRead(
                 cursor=cursor,
                 epochs=epochs,
