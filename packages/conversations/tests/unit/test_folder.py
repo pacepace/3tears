@@ -28,6 +28,8 @@ from threetears.conversations.folder_collection import FolderCollection
 from threetears.core.testing import entity_collection_stub
 from threetears.conversations.folder_entity import Folder
 from threetears.core.collections.flush import FlushStrategy
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 
 
 class _BackendlessFolderCollection(FolderCollection):
@@ -123,14 +125,15 @@ class _CoherentConversationsCollection(ConversationsCollection):
         :return: nothing
         :rtype: None
         """
-        self.l3_pool = postgres_pool
-        self._l1 = None
-        # no L2 bucket: ``save_entity`` then takes its unfenced L2 write, which is the
-        # ``_save_to_l2`` seam this harness records.
-        self._nats_client = None
-        self._write_buffer = None
-        self._flush_strategy = FlushStrategy.ALWAYS
-        self._flush_tables = frozenset()
+        # the real constructor over an empty registry: no L1, and no NATS client, so
+        # ``save_entity`` takes its unfenced L2 write, the ``_save_to_l2`` seam this harness
+        # records; flushing ALWAYS (no table deferred) keeps the L3 and L2 writes synchronous
+        super().__init__(
+            CollectionRegistry(),
+            DefaultCoreConfig(collection_flush=FlushStrategy.ALWAYS.value, collection_flush_tables=""),
+            postgres_pool,
+            nats_client=None,
+        )
         self._l2_writes = l2_writes
 
     async def _save_to_l2(self, entity_id: Any, data: dict[str, Any]) -> bool:
