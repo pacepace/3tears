@@ -33,6 +33,12 @@ with a map of which file holds which step. Both run on `InMemoryDocumentStore`
 (`threetears.evals.storage`), the engine's in-memory reference `DocumentStore`: scoped, with
 conditional writes, and the shape to compare your own adapter against.
 
+## Guides
+
+- [Designing a classifier eval set](docs/designing-classifier-evals.md): the labels, the kinds of case a set
+  needs (boundaries, lookalikes, contrast pairs, context), how many, and how to read the results. Start here
+  if you have not built an eval before.
+
 ## Rung zero: one call
 
 A function to test, cases to test it on, and code that grades an answer are enough:
