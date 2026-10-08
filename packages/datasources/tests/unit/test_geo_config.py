@@ -19,6 +19,7 @@ from threetears.datasources.geo_config import (
     GeometryConfig,
     GeometryKind,
     MeasureAggregation,
+    layer_name_fits,
 )
 
 
@@ -215,3 +216,28 @@ class TestCheckAgainstTables:
             _layer(aggregate={"rollup_by": "county", "measures": {"votes": "sum"}}, features={"attributes": ["name"]})
         )
         assert layer.columns_read() == self.COLUMNS | {"county", "votes"}
+
+
+class TestLayerName:
+    """a layer's name becomes a token of a NATS subject (its tile epoch), so it is refused at write
+    time unless it is letters, digits, ``-`` and ``_``: the one rule the hub applies too."""
+
+    @pytest.mark.parametrize("name", ["census_tracts", "locations", "precincts-2024", "Z9", "a", "_", "-"])
+    def test_a_fitting_name_is_accepted(self, name: str) -> None:
+        assert GeoLayerConfig.model_validate(_layer(name=name)).name == name
+        assert layer_name_fits(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["", "census.tracts", "census tracts", "tracts*", "tracts>", "a/b", "caf\u00e9", "\u0663", "tracts\n"],
+        ids=["empty", "dot", "space", "star", "gt", "slash", "non-ascii-letter", "non-ascii-digit", "newline"],
+    )
+    def test_any_other_name_is_refused_with_the_rule(self, name: str) -> None:
+        assert not layer_name_fits(name)
+        with pytest.raises(ValidationError, match="letters, digits, '-' and '_'") as caught:
+            GeoLayerConfig.model_validate(_layer(name=name))
+        assert repr(name) in str(caught.value)
+
+    def test_a_datasource_with_an_unfit_layer_name_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="letters, digits"):
+            GeoConfig.model_validate({"layers": [_layer(name="census.tracts")]})

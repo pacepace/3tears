@@ -28,11 +28,12 @@ under the name this package has always used. one enum object, two names.
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from collections.abc import Collection, Mapping
-from typing import Any
+from typing import Any, Final
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from threetears.core.http_cache import CacheClass as CacheClassConfig
 
@@ -45,7 +46,28 @@ __all__ = [
     "GeometryConfig",
     "GeometryKind",
     "MeasureAggregation",
+    "layer_name_fits",
 ]
+
+#: what a layer name may be: ASCII letters, digits, ``-`` and ``_``, at least one. explicit ASCII
+#: classes rather than ``\w``, which would admit any Unicode letter or digit.
+_LAYER_NAME: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def layer_name_fits(name: str) -> bool:
+    """whether ``name`` can name a geo layer: ASCII letters, digits, ``-`` and ``_``, and not empty.
+
+    a layer's name becomes one token of a NATS subject -- the epoch that carries its tile version
+    -- where a ``.`` would split the token, ``*`` and ``>`` are wildcards, and whitespace ends the
+    subject. it is also a path segment of the tile URL. :class:`GeoLayerConfig` refuses any other
+    name when it is written; this is the same rule for a caller holding only the name.
+
+    :param name: the layer's name
+    :ptype name: str
+    :return: whether the name fits
+    :rtype: bool
+    """
+    return _LAYER_NAME.fullmatch(name) is not None
 
 
 class GeometryKind(StrEnum):
@@ -151,7 +173,9 @@ class GeoLayerConfig(BaseModel):
     """one tileable layer on a datasource.
 
     :param name: layer name, unique within the datasource; appears in the
-        tile URL and as the MVT layer name
+        tile URL, as the MVT layer name and as a token of its tile epoch's NATS
+        subject, so it is ASCII letters, digits, ``-`` and ``_`` only
+        (:func:`layer_name_fits`)
     :ptype name: str
     :param table: source table
     :ptype table: str
@@ -196,6 +220,24 @@ class GeoLayerConfig(BaseModel):
     bbox_columns: tuple[str, str, str, str] = ("bbox_minx", "bbox_miny", "bbox_maxx", "bbox_maxy")
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("name")
+    @classmethod
+    def name_fits_a_subject(cls, name: str) -> str:
+        """refuse a name that cannot be one token of a NATS subject.
+
+        :param name: the declared name
+        :ptype name: str
+        :return: the name, unchanged
+        :rtype: str
+        :raises ValueError: when the name is not ASCII letters, digits, ``-`` and ``_``
+        """
+        if not layer_name_fits(name):
+            raise ValueError(
+                f"layer name {name!r} must be one or more ASCII letters, digits, '-' and '_' only: it becomes "
+                f"a token of the layer's NATS subject and a tile URL path segment"
+            )
+        return name
 
     @model_validator(mode="after")
     def zooms_are_coherent(self) -> GeoLayerConfig:

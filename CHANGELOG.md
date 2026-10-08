@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Datasources: a geo layer's name is refused at write time unless it fits a NATS subject token
+
+A geo layer's name becomes a token of its tile epoch's NATS subject and a tile URL path segment.
+The hub refused anything but letters, digits, `-` and `_` (`GEO_LAYER_NAME_INVALID`), but
+`GeoLayerConfig` accepted any name, so a datasource declaring `census.tracts` was written and only
+refused later, by the hub.
+
+- **Changed, `GeoLayerConfig.name`**: a pydantic validator refuses a name that is not one or more
+  ASCII letters, digits, `-` and `_`, naming the name and the rule. A `.` would split the subject
+  token, `*` and `>` are wildcards, whitespace ends a subject, and a non-ASCII letter or digit is
+  refused too (the class is explicit ASCII, not `\w`). A declaration that passed before with such
+  a name now fails validation.
+- **Added, `threetears.datasources.layer_name_fits(name: str) -> bool`** (also in
+  `threetears.datasources.geo_config`): the same rule for a caller holding only the name, so the
+  hub can call it rather than keep its own copy.
+
 ### Testing: `FakeNatsClient.ensure_kv_bucket` takes `max_bytes` and `still_wanted`, and enforces the bound
 
 The shipped double refused `max_bytes` (and `still_wanted`), both of which the real
