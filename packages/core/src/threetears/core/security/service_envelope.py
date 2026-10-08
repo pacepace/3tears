@@ -39,6 +39,7 @@ from threetears.observe import get_logger
 from threetears.observe.metrics import counter
 
 from threetears.core.security.door_proof import ProofOutcome
+from threetears.core.security.identity_token import build_jwks, jwk_thumbprint
 from threetears.core.security.freshness import ISSUE_TIME_FUTURE_TOLERANCE
 
 if TYPE_CHECKING:
@@ -51,6 +52,7 @@ __all__ = [
     "SERVICE_ENVELOPE_MAX_LIFETIME",
     "SERVICE_ENVELOPE_REPLAY_TTL",
     "EnvelopeJwksSource",
+    "PinnedEnvelopeJwks",
     "ServiceEnvelopeClaims",
     "ServiceEnvelopeDoor",
     "ServiceEnvelopeError",
@@ -197,6 +199,30 @@ class ServiceEnvelopeSigner:
     signing_key: Ed25519PrivateKey
     kid: str
     issuer: str
+
+    @classmethod
+    def from_seed_text(cls, seed: str, *, issuer: str, what: str) -> ServiceEnvelopeSigner:
+        """a sender's signer from its configured seed: 32 raw Ed25519 bytes, base64 or base64url.
+
+        The kid is the public key's RFC 7638 thumbprint, the one :class:`PinnedEnvelopeJwks` names
+        it by, so the pinned public half alone is enough for a door to find the key.
+
+        :param seed: the configured seed; never echoed
+        :ptype seed: str
+        :param issuer: the sending service principal
+        :ptype issuer: str
+        :param what: the setting's name, for the error
+        :ptype what: str
+        :return: the signer
+        :rtype: ServiceEnvelopeSigner
+        :raises ValueError: when the value is not a 32-byte seed in either encoding
+        """
+        text = seed.strip().replace("+", "-").replace("/", "_")
+        try:
+            key = Ed25519PrivateKey.from_private_bytes(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)))
+        except ValueError:
+            raise ValueError(f"{what} is not a base64 32-byte Ed25519 seed") from None
+        return cls(signing_key=key, kid=jwk_thumbprint(key.public_key()), issuer=issuer)
 
     def sign(self, *, audience: str, op: str, body: Mapping[str, Any]) -> str:
         """an envelope over ``body`` for ``audience``'s ``op``.
@@ -382,6 +408,37 @@ class EnvelopeJwksSource(Protocol):
         :raises ServiceEnvelopeError: when no trusted key set is available
         """
         ...
+
+
+class PinnedEnvelopeJwks:
+    """a sender's key set from its one public key, pinned in the receiver's configuration.
+
+    For a sender that publishes no JWKS of its own (the gateway, a channel adapter): the key is
+    named by its thumbprint, as :meth:`ServiceEnvelopeSigner.from_seed_text` names it. Without a
+    pinned key no envelope from the sender verifies.
+    """
+
+    def __init__(self, public_key: Ed25519PublicKey | None) -> None:
+        """
+        pin the sender's key.
+
+        :param public_key: the sender's public key, or ``None`` while it is not provisioned
+        :ptype public_key: Ed25519PublicKey | None
+        """
+        self._jwks = None if public_key is None else build_jwks({jwk_thumbprint(public_key): public_key})
+
+    async def get_jwks(self, *, refresh: bool = False) -> Mapping[str, Any]:
+        """the pinned key set; a refresh changes nothing.
+
+        :param refresh: ignored: nothing is fetched
+        :ptype refresh: bool
+        :return: the JWKS
+        :rtype: Mapping[str, Any]
+        :raises ServiceEnvelopeError: when no key is pinned
+        """
+        if self._jwks is None:
+            raise ServiceEnvelopeError("no public key is pinned for this sender")
+        return self._jwks
 
 
 class ServiceEnvelopeDoor:

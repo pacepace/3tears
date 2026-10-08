@@ -353,3 +353,43 @@ class TestAdmitMessage:
         door = _door(_Jwks(jwks))
         assert await door.admit_message(b"[1, 2]", op="ensure") is False
         assert await door.admit_message(b"\xff", op="ensure") is False
+
+
+class TestPinnedSender:
+    """a sender with no JWKS of its own: a seed on its side, the public half pinned at the door."""
+
+    @staticmethod
+    def _seed_and_public():
+        import base64
+
+        from cryptography.hazmat.primitives import serialization
+
+        priv, pub = generate_signing_keypair()
+        raw = priv.private_bytes(
+            serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()
+        )
+        return base64.b64encode(raw).decode(), pub
+
+    async def test_an_envelope_from_the_seed_verifies_under_the_pinned_half(self) -> None:
+        from threetears.core.security import PinnedEnvelopeJwks, ServiceEnvelopeSigner
+
+        seed, pub = self._seed_and_public()
+        signer = ServiceEnvelopeSigner.from_seed_text(seed, issuer="identity-core", what="SEED")
+        door = _door(PinnedEnvelopeJwks(pub))
+        sealed = signer.seal(audience="hub.claim_grant", op="ensure", body=_BODY)
+        assert await door.admit(sealed, op="ensure") is True
+
+    async def test_without_a_pinned_key_no_envelope_verifies(self) -> None:
+        from threetears.core.security import PinnedEnvelopeJwks, ServiceEnvelopeSigner
+
+        seed, _ = self._seed_and_public()
+        signer = ServiceEnvelopeSigner.from_seed_text(seed, issuer="identity-core", what="SEED")
+        sealed = signer.seal(audience="hub.claim_grant", op="ensure", body=_BODY)
+        assert await _door(PinnedEnvelopeJwks(None)).admit(sealed, op="ensure") is False
+
+    def test_a_malformed_seed_names_the_setting_and_not_the_value(self) -> None:
+        from threetears.core.security import ServiceEnvelopeSigner
+
+        with pytest.raises(ValueError, match="GATEWAY_SEED is not") as caught:
+            ServiceEnvelopeSigner.from_seed_text("c2hvcnQ=", issuer="gateway", what="GATEWAY_SEED")
+        assert "c2hvcnQ" not in str(caught.value)

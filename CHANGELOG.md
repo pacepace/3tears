@@ -31,6 +31,9 @@ packages (bumped in lock-step).
   whose model is a tolerant reader: a field a newer sender adds still counts toward the hash.
 - `ServiceEnvelopeSigner` holds one sending service's key, kid and issuer; `seal` returns a body with
   its envelope added, ready to send.
+- For a sender with no JWKS of its own (the gateway, a channel adapter): `ServiceEnvelopeSigner.from_seed_text`
+  builds the signer from its configured base64 seed, its kid the key's thumbprint, and
+  `PinnedEnvelopeJwks` is the door's key set from the pinned public half (none pinned: nothing verifies).
 
 ### Knowledge: a draft carries the agent's token and the turn's user assertion
 
