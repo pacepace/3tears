@@ -99,6 +99,8 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "analysis_estimate": "read",
         "analyses_list": "read",
         "report_read": "read",
+        "reporter_case_freeze": "write",
+        "reporter_cases_list": "read",
         "scope_pivot": "read",
         "scope_history": "read",
         "scope_out_of_run_spend": "read",
@@ -107,6 +109,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "campaign_archive": "write",
         "analysis_archive": "write",
         "result_rate": "write",
+        "reporter_case_archive": "write",
         "run_delete": "destructive",
         "analysis_delete": "destructive",
     }

@@ -31,12 +31,15 @@ from threetears.evals.ops import (
     CampaignListing,
     LaunchEstimate,
     EvalSummary,
+    FrozenReporterCase,
     HistoryResult,
     JobsStarted,
     JobStatus,
     OutOfRunSpendReport,
     PivotTable,
     ReportDocument,
+    ReporterCaseEntry,
+    ReporterCaseListing,
     ResultRated,
     RunDeleted,
     RunLine,
@@ -279,6 +282,69 @@ def render_report(document: ReportDocument) -> str:
     return document.body
 
 
+def render_reporter_case(case: FrozenReporterCase) -> str:
+    """A reporter case's receipt: what it froze, its fingerprint, its labels and every limit it recorded."""
+    memo = case.recorded_analysis_id or "none (only a generating candidate can run it)"
+    lines = [
+        f"reporter case {case.test_case_id} of template {case.template_id}: campaign {case.source_campaign_id}, "
+        f"recorded memo {memo}",
+        f"bundle fingerprint {case.bundle_fingerprint}, assembled {case.bundle_assembled_at}",
+    ]
+    if case.writer_message_check is not None:
+        lines.append(f"writer message: {case.writer_message_check}")
+    lines.append(f"labels ({len(case.labels)})")
+    lines += [f'- {label.dimension}: {label.direction} — "{label.quote}"' for label in case.labels]
+    lines.append(f"limits ({len(case.limits)}){'' if case.limits else ': none — the frozen evidence limits nothing'}")
+    lines += [f"- {limit}" for limit in case.limits]
+    if case.supersedes:
+        lines.append(f"supersedes: {', '.join(case.supersedes)}")
+    if case.archived:
+        lines.append(f"retired{': ' + case.archived_reason if case.archived_reason else ''} — no launch runs it")
+    return "\n".join(lines)
+
+
+def _reporter_case_state(entry: ReporterCaseEntry) -> str:
+    """Whether a launch runs the case, and if not, every reason it does not."""
+    if entry.live:
+        return "live"
+    reasons = []
+    if entry.superseded_by:
+        reasons.append(f"superseded by {', '.join(entry.superseded_by)}")
+    if entry.case.archived:
+        reasons.append(f"retired{': ' + entry.case.archived_reason if entry.case.archived_reason else ''}")
+    return "; ".join(reasons)
+
+
+def render_reporter_cases(listing: ReporterCaseListing) -> str:
+    """A reporter template's bank: each case and its state, then what cannot be read and what a launch refuses."""
+    scope = "including retired" if listing.include_archived else "retired cases left out"
+    lines = [f"reporter cases of template {listing.template_id} ({len(listing.cases)}, {scope})"]
+    for entry in listing.cases:
+        case = entry.case
+        lines.append(
+            f"- {case.test_case_id}: {_reporter_case_state(entry)} — campaign {case.source_campaign_id}, recorded memo "
+            f"{case.recorded_analysis_id or 'none'}; fingerprint {case.bundle_fingerprint}; {len(case.labels)} "
+            f"label(s), {len(case.limits)} limit(s)"
+        )
+    if listing.unreadable:
+        lines.append(
+            f"unreadable ({len(listing.unreadable)}) — which case is live cannot be decided until each is read with "
+            "the build that wrote it:"
+        )
+        lines += [f"- {unread.test_case_id}: {unread.reason}" for unread in listing.unreadable]
+    if listing.ambiguous:
+        lines.append(
+            f"pairs with more than one live case ({len(listing.ambiguous)}) — every launch of this template refuses "
+            "until one reporter_case_freeze names all of a pair's live cases in supersedes:"
+        )
+        lines += [
+            f"- campaign {pair.campaign_id}, recorded memo {pair.recorded_analysis_id or 'none'}: "
+            f"{', '.join(pair.live_case_ids)}"
+            for pair in listing.ambiguous
+        ]
+    return "\n".join(lines)
+
+
 def render_pivot(table: PivotTable) -> str:
     """A pivot: each cell with its denominators, and every caveat the table carries."""
     return pivot_text(table)
@@ -348,6 +414,8 @@ __all__ = [
     "render_jobs_started",
     "render_pivot",
     "render_report",
+    "render_reporter_case",
+    "render_reporter_cases",
     "render_run_deleted",
     "render_run_line",
     "render_runs",

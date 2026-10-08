@@ -28,6 +28,22 @@ packages (bumped in lock-step).
   `strata` disclosure naming every stratum under `STRATUM_MIN_CASES` (10) cases. A campaign whose cases declare no
   stratum gets neither, and reads as before.
 
+### 3tears-evals: a reporter case is frozen, listed and retired through the standard tools (#566)
+
+- **New operations and actions over the reporter case bank** (`threetears.evals.ops`): `reporter_case_freeze`
+  (write) over `freeze_reporter_case` — template id, campaign id, optional `recorded_analysis_id`, `labels` and
+  `supersedes`, scoped to the caller — answering with the `FrozenReporterCase` receipt (the case id, its bundle
+  fingerprint and the `limits` the freeze recorded); `reporter_cases_list` (read), the template's bank with each
+  case's liveness, what superseded it, the cases this build cannot read (listed, not refused) and pairs holding two
+  live cases; and `reporter_case_archive` (write) over `set_reporter_case_archived`. Before, no operation or action
+  froze a case, so a host mounting `evals` / `evals_admin` could not reach a reporter run without a script of its own.
+- **`freeze_reporter_case` refuses a template that is not of the `analysis_reporter` kind**, before anything is
+  stored. It froze into any template, leaving a case no launch reads.
+- **`set_reporter_case_archived` refuses to retire a reporter case that names no template**, as it already refused to
+  restore one: no template's bank holds it, so no launch would honour the retirement.
+- `analysis_archive`'s `archive_reason` is now the one `archive_reason` parameter both archive actions share, so its
+  description names both.
+
 ### 3tears-evals: the simulated user asks for its reasoning by effort, and a role's settings can record one
 
 - **`ClientRequestSettings.reasoning_effort`** (`ReasoningEffort`: `max`/`xhigh`/`high`/`medium`/`low`/`minimal`/`none`,
