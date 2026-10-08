@@ -26,6 +26,7 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
 from threetears.core.backends.schema_sql import json_default
 from threetears.core.exceptions import (
     DataLayerUnavailableError,
@@ -534,6 +535,10 @@ class NatsProxyL3Backend:
     #: isinstance-checked: NatsProxyL3Backend does not satisfy the L3Backend protocol
     #: structurally (it omits ``fetchval``), so an isinstance gate would silently fail.
     accepts_scoped_reads: bool = True
+
+    #: the most rows the broker answers one statement: the rail's cap, read by a wrapping
+    #: :class:`SqlL3Backend` so its key-led reads know when an answer may have been cut
+    rows_per_statement: int | None = L3_RAIL_ROW_CAP
 
     def __init__(
         self,

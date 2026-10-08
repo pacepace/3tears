@@ -276,6 +276,17 @@ _ALLOWLIST = (
     ),
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeKvBucket",
+        attr_name="_sizes",
+        rationale=(
+            "the stored size of each key's latest message, which a bounded bucket (max_bytes) "
+            "counts against its bound the way the server's store does -- derived from the "
+            "double's own storage beside _entries and _markers, and cleared with them. Same "
+            "test-double rationale as FakeKvBucket._entries above"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
         class_name="FakeNatsClient",
         attr_name="_buckets",
         rationale=(
@@ -295,6 +306,18 @@ _ALLOWLIST = (
             "which no backend can serialise or hand to another process -- same test-double "
             "rationale as FakeNatsClient._subscribers below, and it lives for one test's client "
             "instance"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeNatsClient",
+        attr_name="_still_wanted",
+        rationale=(
+            "the double's bucket name to still_wanted map, standing in for the predicate the real "
+            "client remembers with each declaration (ensure_kv_bucket(still_wanted=...)) and asks "
+            "before a restoration. The values are live coroutine functions, which no backend can "
+            "serialise -- same rationale as FakeNatsClient._refills above, and it lives for one "
+            "test's client instance"
         ),
     ),
     DictStateAllowlistEntry(

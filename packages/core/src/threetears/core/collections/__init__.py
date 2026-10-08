@@ -15,7 +15,7 @@ from threetears.core.collections.asyncpg_init import (
     init_connection,
     register_jsonb_text_codec,
 )
-from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.base import NO_L2, BaseCollection, NoL2
 from threetears.core.collections.bucket import (
     COLLECTIONS_BUCKET_SUFFIX,
     bind_collections_bucket,
@@ -94,6 +94,8 @@ __all__ = [
     "FlushStrategy",
     "INT_TYPE",
     "JSONB_TYPE",
+    "NO_L2",
+    "NoL2",
     "PartitionEnforcementError",
     "REAPPLY_BACKOFF_SECONDS",
     "REAPPLY_MAX_ATTEMPTS",

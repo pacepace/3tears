@@ -38,7 +38,9 @@ sets of the same features.
   `mapbox_vector_tile` handles the protobuf once the coordinates are right.
 - **A per-pod feature cache with a SQLite R-Tree bbox index** (`FeatureCache`,
   `FeatureLoader`) -- the spatial index the database cannot provide, sized to the
-  fact that neighbouring tiles reuse most of their source features.
+  fact that neighbouring tiles reuse most of their source features. It answers a
+  covered rectangle's read, holds at most `max_cached_rows` row entries, and with
+  no L1 bound reads straight through to the loader.
 - **A durable tile collection** (`TileCollection`, `TileEntity`,
   `ViewportRequest`) -- a quantized key, a computed value, and a durable tier that
   outlives any one pod, built on `core`'s `DerivedCollection` so the quantization

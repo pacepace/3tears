@@ -276,7 +276,13 @@ class EpochListener:
             subject followed by a bump to 1 on another would see
             ``1 <= 5`` and drop the second silently.
             """
-            dedupe_path = message.subject_path or subject.path
+            if not message.subject_path:
+                # one key for the message everywhere below: the subscribed subject's path
+                message = message.model_copy(update={"subject_path": subject.path})
+            dedupe_path = message.subject_path
+            # before the dedupe: a cached versions read must hear of every later epoch, including
+            # one this listener's last-seen already passed by another route (a catch-up)
+            self._epoch_client.observe_broadcast(message)
             current_last_seen = self._last_seen.get(dedupe_path, 0)
             if message.epoch <= current_last_seen:
                 log.debug(

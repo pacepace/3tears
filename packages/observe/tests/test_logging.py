@@ -279,6 +279,27 @@ class TestThreeTearsLogger:
 
         logger.removeHandler(handler)
 
+    def test_each_record_names_the_class_of_the_instance_that_logged_it(self):
+        """one logging line in a base class, run by instances of two subclasses: each record names its own."""
+        logger = get_logger("test.class_per_record")
+        records = _records_of(logger)
+
+        class Base:
+            def report(self):
+                logger.info("from the base")
+
+        class First(Base):
+            pass
+
+        class Second(Base):
+            pass
+
+        First().report()
+        Second().report()
+        First().report()
+
+        assert [r.call_site_class for r in records] == ["First", "Second", "First"]  # type: ignore[attr-defined]
+
 
 def _records_of(logger: logging.Logger) -> list[logging.LogRecord]:
     """attach a capturing handler to *logger* and return the list it fills.

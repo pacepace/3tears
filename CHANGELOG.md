@@ -23,6 +23,156 @@ packages (bumped in lock-step).
 - **Wire:** additive. A manifest without `cache_max_age` reads it as `None`; a hub built before it
   ignores the field and serves the read origin-only.
 
+### Core: a collection can declare it has no L2 by design
+
+The geography pod's layer tables and the ENR pod's report tables are built L1+L3 only on purpose,
+as the integration guide documents, and every one of them logged `collection invalidation is
+silently disabled ... wiring gap: datasource-task-06 DS-06-04` on its first write.
+
+- **Added, `threetears.core.collections.NO_L2`** (and its type, `NoL2`): pass it as a collection's
+  `nats_client` to run it without L2 by design. It has no L2 client whatever the registry offers,
+  never logs the wiring-gap WARNING, and logs `collection runs without L2 by design: table=<t>`
+  once per table at INFO when the first such collection is built. An explicit `nats_client=None`
+  keeps its meaning and its WARNING, which now names `NO_L2` as the declaration for a deliberate
+  opt-out. Integration guide §8.2 says which to use.
+
+### Core: reads and deletes by many keys stay bounded on a hash-sharded key
+
+The geography pod's census tracts (84,091 polygons a generation, two or three generations held)
+stopped loading: on YugabyteDB a statement no key leads reads every row of the table, geometry
+included, and runs into the broker's five-second statement ceiling. The pod wrote the bounded
+forms itself; they are the collection's now.
+
+- **Added, `SchemaBackedCollection.read_rows_led_by(values, *, columns=None, max_values=None,
+  conn=None)`**: the rows whose leading key column is one of `values` (each read once), the key
+  columns and any `columns` named beside them, read from L3 around the caches. Every statement
+  is led by the key: `LED_READ_MAX_VALUES` (250) values a statement as
+  `WHERE <lead> = ANY($1::<type>[])`; an answer that reaches the transport's row cap is read again
+  in halves; and a single value that alone reaches it is paged by the rest of its key
+  (`WHERE <lead> = $1 AND (<rest>) > (...) ORDER BY <rest> LIMIT <cap>`), which is the key's own
+  order inside one hash bucket. A read that had to split or page logs it once at INFO with its
+  statement, split and paged-value counts. Through `KeyLedReadingStore.fetch_led_by` (new
+  protocol, which `SqlL3Backend` implements), or an equality `scan` a value at a time on a store
+  without it, which refuses a `conn` (`scan` takes none) rather than read outside the caller's
+  transaction. A `max_values` under one is refused. `schema_sql` gains `build_led_by_select_sql`,
+  `build_key_led_delete_sql`, `build_whole_key_delete_sql` and `key_array_type`;
+  `build_select_column_list` takes the columns to project.
+- **Added, `threetears.core.backends.protocol.L3_RAIL_ROW_CAP`** (1,000): the one owner of the L3
+  rail's row cap. `NatsProxyL3Backend.rows_per_statement` states it, `SqlL3Backend.rows_per_statement`
+  reads its transport's (`None` for one that never cuts; one that says nothing is taken to be the
+  rail), and `complete_copy.DEFAULT_PAGE_SIZE` is derived from it.
+- **Added, `threetears.core.keyset.read_keyset_pages`**: the one keyset pager. `read_l3_rows` and
+  the key-led read's paging of one value both page through it, each spelling names in its own
+  policy (`quote`, as `sql_fragments.equality_conditions` takes it).
+- **Changed, `SchemaBackedCollection.delete_rows`** (unreleased): its statements are key-led, in
+  place of a row-constructor `IN` list, which YugabyteDB need not look up by key. Whichever of two
+  forms needs fewer statements: keys grouped by all but one key column
+  (`<k> = ANY($1::<type>[]) AND <rest of the key> = $2 ...`, each fixed column with its write cast,
+  so a jsonb key column binds `$n::jsonb`), or whole keys
+  (`<k1> = ANY($1) AND (<key>) IN (SELECT * FROM unnest($1, $2, ...))`) for keys that share no
+  value. At most `ceil(keys / max_rows)` statements; a `max_rows` under one is refused.
+  `schema_sql.build_bulk_delete_sql` is gone.
+- Not changed: `complete_copy.read_l3_rows` still pages `ORDER BY` the whole key. It reads a table
+  whole by design, and on a hash-sharded key each page sorts every row its filters leave; its
+  docstring now says so and names `read_rows_led_by` for a key-bounded read.
+
+### Observe: a log line names the class of the instance that logged it
+
+- **Fixed, `ThreeTearsLogger`**: the call-site class a record carries (`call_site_class`, the
+  `Class` in `path/Class.func.line`) was cached by file and line, so a line in a base class named
+  the first instance's class on every record after: every layer table's missing-L2 warning read
+  `LayerShapeCollection[us_state_census2022]`, whichever table it was about. The class is now read
+  from the logging frame for each record. The shortened path is no longer cached either, so a
+  prefix added to `path_strip_prefixes` after a file first logged applies to its later records. The cost: a
+  stack walk per enabled record, measured at 6.47 us a record against 5.82 us with the cache (a
+  method logging to a no-op handler, best of five runs of 100,000).
+
+### Testing: `FakeNatsClient.ensure_kv_bucket` takes `max_bytes` and `still_wanted`, and enforces the bound
+
+The shipped double refused `max_bytes` (and `still_wanted`), both of which the real
+`NatsClient.ensure_kv_bucket` and the `KvDeclaring` protocol accept, so a bucket that declared a
+bound could not be tested against it.
+
+- **Fixed, `FakeNatsClient.ensure_kv_bucket(..., max_bytes=None, still_wanted=None)`**: its
+  signature now matches `KvDeclaring.ensure_kv_bucket` parameter for parameter, which a test
+  compares. `max_bytes` is set on a bucket the declaration creates and moved on a live one only by
+  its owner, as the real declaration reconciles it; `None` asks nothing of a live bucket. The bound
+  survives `restart_broker`.
+- **The bound is enforced as a `discard: new` stream enforces it**: a write (`put`, `create`,
+  `update`, or a delete's marker) that would bring the bucket to its bound raises `KvError` and
+  lands nothing, unless it replaces a key's latest message no smaller than itself, which the server
+  admits. Size is counted per retained message as the server's memory store counts it: subject
+  `$KV.<bucket>.<key>`, value, a delete marker's header, and 16 bytes. Headers of TTL and CAS
+  writes are not counted. An entry whose per-entry TTL has lapsed stops counting at once, as the
+  server removes it on its own. `FakeKvBucket(max_bytes=...)` and `FakeKvBucket.max_bytes` are
+  added.
+- **`still_wanted`** is asked by `restart_broker` before a declaration is put back; one answering
+  `False` is forgotten and its bucket stays absent; one that raises is logged at ERROR and the
+  declaration is restored. Both are what the real restoration does.
+
+### Epoch: a durable subject's versions can be read from a per-process copy
+
+`EpochClient.versions` read the `config_epochs` row on every call, and the hub calls it on every
+TileJSON and tile request; that read failed live when a pool connection dropped.
+
+- **Added, `EpochClient.versions(subject, *, max_age: timedelta | None = None, grace: timedelta =
+  timedelta(seconds=30))`**: with `max_age`, a per-process copy per subject answers for up to
+  `max_age` after it was read. This process's own `advance_to` writes the new versions into it
+  with no read, and its `bump` drops it. A read that fails answers the copy while it is no older
+  than `max_age + grace`, logged at WARNING; past that, or with nothing cached, it raises as
+  before. Without `max_age` every call reads the row, as before, and a non-durable subject still
+  raises `ValueError`. A read that left for the pool before this process moved the subject cannot
+  overwrite the move.
+- **Added, `EpochClient.observe_broadcast(message: EpochBumpMessage) -> None`**: drops the cached
+  copy when a broadcast names a later epoch than it holds, and fences any read in flight when it
+  arrives (cached or not), so that read cannot cache the row as it stood before the move.
+  `EpochListener` now calls it for every broadcast it receives, before its dedupe, so another
+  process's advance invalidates the copy as its broadcast arrives. A broadcast with an empty
+  `subject_path` is keyed by the subscribed subject for both the dedupe and the cache.
+- **Changed, for stand-in epoch clients**: because `EpochListener` calls `observe_broadcast` on every
+  broadcast, an object handed to it as the epoch client must have that method. A real `EpochClient`
+  or a subclass of it does; a hand-rolled duck-typed stub must add it (a no-op is enough).
+- **Constraint for callers**: a cached value may lag the row by up to `max_age` when a broadcast
+  is missed, so it is for choosing what to serve or advertise, never for building at a version
+  whose rows may already be gone. Read without `max_age` before reading source rows.
+
+### Geo: a feature-cache read with no L1 is one loader call, and a wide rectangle is read once
+
+A z3 tile through `FeatureCache` made 1,025 loader queries live, and a z0 tile 65,537: the read
+swept every z8 chunk under the rectangle, one loader call each, and with no L1 bound then asked the
+loader for the whole rectangle anyway. The rows it swept were kept in two unbounded per-process
+maps, with or without an L1.
+
+- **Fixed, `FeatureCache.features_in_bbox` with no L1**: one loader call for the rectangle, and
+  nothing is kept.
+- **Fixed, with an L1**: a rectangle spanning more than `FeatureCache.max_chunk_reads` (16)
+  uncovered chunks is one loader call for the rectangle. Its rows cover each chunk it wholly
+  contains, with the rows that intersect that chunk; a chunk it only overlaps is left uncovered, so
+  a later tile there loads that chunk alone. A z0 build through a cache-wired `TileCollection` is
+  one loader call.
+- **Fixed, held rows are bounded**: `FeatureCache(max_cached_rows=...)`, default
+  `FeatureCache.max_cached_rows` (100,000 row entries across covered chunks; a row in two chunks
+  counts twice, an empty chunk once). Past it the least recently read chunk is evicted, its rows
+  and R-Tree entries leaving once no held chunk carries them, and it is loaded again when next asked
+  for. Eviction never takes a chunk a read in progress depends on, and is logged at DEBUG. One read
+  newly holds at most half the bound, counted the same way and summed over every chunk it loads:
+  the chunks past that, or a wide rectangle whose entries would pass it, are answered from the
+  read's own rows and not held, so no read can flush the working set.
+- **Fixed, caches sharing an L1**: every R-Tree key carries a token minted per `FeatureCache`
+  instance, so several caches of one scope on one L1 (the hub builds one per layer) never read or
+  evict each other's index entries. A collected instance's entries are deleted, best effort.
+- **Changed, the R-Tree answers the read**: once a rectangle's chunks are covered, the held features
+  overlapping it come from an R-Tree query, then an exact rectangle test. Before, the index was
+  written and never read. `index_feature` and the read path share one insert. The layer prefix is
+  matched exactly rather than with `LIKE`, so a layer name containing `%` or `_` cannot match
+  another layer's features.
+- **Changed, one rule for every read path**: rows with no feature id are dropped and every row is
+  tested against the rectangle, with or without an L1, narrow or wide. Before, the no-L1 and wide
+  paths returned id-less rows and the no-L1 path returned rows outside the rectangle.
+- **Added**: `FeatureCache.max_chunk_reads: ClassVar[int] = 16`, `FeatureCache.max_cached_rows:
+  ClassVar[int] = 100_000`, and the `max_cached_rows: int | None = None` keyword (below 1 raises
+  `ValueError`).
+
 ### NATS: a KV bucket whose stream is briefly offline is no longer blamed on a missing grant
 
 During a NATS restart a catalog write failed with `stream is offline`, and the error told the
@@ -297,11 +447,13 @@ copies swapped in whole.
   that) but answered "requested", and the run in progress is followed by one more, which takes it
   even when the drain had already made its last look for requests.
 - **Added, `SchemaBackedCollection.delete_rows(keys, *, conn, max_rows=None)`** (the ENR pod's
-  refresh deletes the rows the warehouse no longer holds): rows deleted by key in multi-row
-  `DELETE ... WHERE (k1, k2) IN ((...), ...)` statements on the caller's transaction, settled with
-  the rest when it ends; through `BulkDeletingStore.delete_many` (new protocol, which
-  `SqlL3Backend` implements), or a key at a time through `delete` on a store without it.
-  `schema_sql.build_bulk_delete_sql` builds the statement.
+  refresh deletes the rows the warehouse no longer holds): rows deleted by key in key-led
+  statements on the caller's transaction, settled with the rest when it ends; through
+  `BulkDeletingStore.delete_many` (new protocol, which `SqlL3Backend` implements), or a key at a
+  time through `delete` on a store without it. Each statement is
+  `DELETE ... WHERE <k> = ANY($1::<type>[]) AND <rest of the key> = $2 ...`
+  (`schema_sql.build_key_led_delete_sql`): the keys are grouped by all but one key column, the one
+  leaving the fewest groups, so the ENR refresh's keys of one race go as one array of geographies.
 - **Added, `nats_proxy.LOCK_NOT_AVAILABLE_ERROR_CODE`**: the broker's code for a statement whose
   `NOWAIT` lock another transaction holds (SQLSTATE 55P03); the proxy rebuilds
   `asyncpg.LockNotAvailableError` from it, as a direct pool raises. The hub sends it from its
